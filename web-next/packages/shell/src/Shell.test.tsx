@@ -24,6 +24,15 @@ const pluginB = definePlugin({
   render: () => <div data-testid="beta-content">beta-rendered</div>,
 });
 
+const pluginWithSimpleMode = definePlugin({
+  id: 'simple-capable',
+  rune: 'S',
+  title: 'Simple capable',
+  subtitle: 'secondary description',
+  simple: {},
+  render: () => <div data-testid="simple-capable-content">simple-capable</div>,
+});
+
 // Plugin with tabs (including count badges), subnav, and footer
 const pluginWithTabs = definePlugin({
   id: 'tabbed',
@@ -159,6 +168,25 @@ describe('Shell', () => {
       expect(screen.getByTestId('beta-content')).toBeInTheDocument();
     });
     expect(screen.queryByTestId('alpha-content')).not.toBeInTheDocument();
+  });
+
+  it('keeps essential application controls directly available in the header', async () => {
+    wrap(
+      <Shell
+        plugins={[pluginWithSimpleMode]}
+        topbarContent={<button type="button">Disconnect</button>}
+        _testHistory={memHistory('/simple-capable')}
+      />,
+    );
+    await screen.findByTestId('simple-capable-content');
+
+    expect(screen.queryByText('secondary description')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ui-mode-switch')).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Color theme' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Open command palette' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Open application menu' })).not.toBeInTheDocument();
+    expect(screen.queryByText('LIVE')).not.toBeInTheDocument();
   });
 
   it('switches active plugin on rail click and persists to localStorage', async () => {

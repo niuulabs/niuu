@@ -151,7 +151,7 @@ vi.mock('@niuulabs/query', () => ({
   })),
 }));
 
-function wrap(children: ReactNode, enableSessions = false) {
+function wrap(children: ReactNode, enableSessions = false, enableInterface = false) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -171,6 +171,7 @@ function wrap(children: ReactNode, enableSessions = false) {
           integrations: { enabled: true, order: 2 },
           ting: { enabled: true, order: 3 },
           setup: { enabled: true, order: 4 },
+          settings: { enabled: enableInterface, order: 5 },
         },
         services: {
           identity: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/identity' },
@@ -190,6 +191,20 @@ describe('SettingsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     installDefaultGetMock();
+  });
+
+  it('renders interface mode as a local settings section', () => {
+    routerMocks.params = { providerId: 'interface', sectionId: 'mode' };
+    wrap(<SettingsPage />, false, true);
+
+    expect(screen.getByRole('heading', { name: 'Interface mode' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Interface mode' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Simple' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('button', { name: 'Advanced' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(apiMocks.get).not.toHaveBeenCalled();
   });
 
   it('renders local session checkboxes without fetching or saving a remote schema', () => {

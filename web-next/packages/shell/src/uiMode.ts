@@ -1,4 +1,4 @@
-import { useContext, useSyncExternalStore, type ReactNode } from 'react';
+import { useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
 import {
   useOptionalService,
   type IFeatureCatalogService,
@@ -59,6 +59,32 @@ function subscribe(listener: () => void) {
 
 export function useUiMode(): UiMode {
   return useSyncExternalStore(subscribe, readUiMode, () => DEFAULT_UI_MODE);
+}
+
+/** Hydrate the cached mode from the signed-in user's preference at shell startup. */
+export function useUiModePreferenceSync(): string | null {
+  const features = useOptionalService<IFeatureCatalogService>('features');
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!features) return;
+    let cancelled = false;
+    features
+      .getUserFeaturePreferences()
+      .then((preferences) => {
+        if (cancelled) return;
+        setError(null);
+        const saved = uiModeFromPreferences(preferences);
+        if (saved && saved !== readUiMode()) cacheUiMode(saved);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [features]);
+  return error;
 }
 
 /** The mode a saved preference set encodes, or null when none was saved. */

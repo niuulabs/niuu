@@ -258,6 +258,8 @@ export interface DeliveryExecution extends Omit<WorkflowExecution, 'children'> {
 /** Launch a generic durable workflow execution — no git identity involved. */
 export interface WorkflowExecutionLaunch {
   workflowId: string;
+  /** Exact immutable workflow version to expand; omission resolves the current head. */
+  workflowVersion?: string;
   /** The `kind: subworkflow` node in the workflow graph this execution expands. */
   parentNodeId: string;
   prompt: string;
@@ -272,6 +274,8 @@ export interface WorkflowExecutionLaunch {
 /** Launch a code-delivery execution — bound to a repository and base branch. */
 export interface DeliveryExecutionLaunch {
   workflowId: string;
+  /** Exact immutable workflow version to expand; omission resolves the current head. */
+  workflowVersion?: string;
   /** The `kind: subworkflow` node in the workflow graph this execution expands. */
   parentNodeId: string;
   prompt: string;

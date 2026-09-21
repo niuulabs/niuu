@@ -9,6 +9,7 @@ import {
   createMockDispatchBus,
   createMockWorkflowService,
   createMockResearchService,
+  createMockSpecsService,
 } from './mock';
 
 // ---------------------------------------------------------------------------
@@ -371,9 +372,13 @@ describe('createMockTrackerService', () => {
         { repo: 'niuulabs/ting', branch: 'feat/x' },
         { repo: 'niuulabs/volundr', branch: 'main' },
       ],
+      workflowId: 'workflow-pinned',
+      workflowVersion: '1.7.0',
     });
     expect(saga.repos).toEqual(['niuulabs/ting', 'niuulabs/volundr']);
     expect(saga.baseBranch).toBe('feat/x');
+    expect(saga.workflowId).toBe('workflow-pinned');
+    expect(saga.workflowVersion).toBe('1.7.0');
   });
 
   it('importProject pins to an instance target', async () => {
@@ -514,11 +519,15 @@ describe('createMockWorkflowService', () => {
     const svc = createMockWorkflowService();
     const result = await svc.launchWorkflow('00000000-0000-0000-0000-000000000a01', {
       prompt: 'Ship The Release!',
+      workflowVersion: '0.9.0',
     });
     expect(result.slug).toBe('ship-the-release');
     expect(result.status).toBe('starting');
     expect(result.clusterName).toBe('mock');
     expect(result.sessionName).toContain('ship-the-release');
+    expect(result.workflowVersion).toBe('0.9.0');
+    expect(result.documentRevision).toBeTruthy();
+    expect(result.chatEndpoint).toBeNull();
   });
 
   it('launchWorkflow falls back to the workflow name when prompt is empty', async () => {
@@ -587,9 +596,11 @@ describe('createMockResearchService', () => {
       question: 'q',
       name: 'Pinned workflow',
       workflowId: '00000000-0000-0000-0000-000000000a02',
+      workflowVersion: '0.8.0',
     });
     expect(campaign.workflowId).toBe('00000000-0000-0000-0000-000000000a02');
     expect(campaign.workflowName).toContain('deep-review');
+    expect(campaign.workflowVersion).toBe('0.8.0');
   });
 
   it('createCampaign falls back to a seed workflow for unknown workflow ids', async () => {
@@ -697,6 +708,17 @@ describe('createMockResearchService', () => {
     const svc = createMockResearchService();
     expect(await svc.getArtifact('rag-landscape', 'missing.md')).toBeNull();
     expect(await svc.getArtifact('nope', 'missing.md')).toBeNull();
+  });
+});
+
+describe('createMockSpecsService', () => {
+  it('preserves the selected workflow version on a created campaign', async () => {
+    const campaign = await createMockSpecsService().createCampaign({
+      prompt: 'Specify the release',
+      workflowVersion: '2.3.0',
+    });
+
+    expect(campaign.workflowVersion).toBe('2.3.0');
   });
 });
 

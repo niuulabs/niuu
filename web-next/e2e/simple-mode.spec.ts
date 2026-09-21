@@ -6,13 +6,21 @@ const config = JSON.parse(
 );
 config.services.setup = { mode: 'http', baseUrl: '/api/v1/niuu/setup' };
 config.services.integrations = { mode: 'http', baseUrl: '/api/v1/integrations' };
+config.services.features = { mode: 'http', baseUrl: '/api/v1' };
 
 // An already configured installation: the first-run wizard stays out of the way.
 test.beforeEach(async ({ page }) => {
+  let preferences: Array<{ feature_key: string; visible: boolean; sort_order: number }> = [];
   await page.route('**/api/v1/niuu/setup', (route) =>
     route.fulfill({ json: { enabled: false, completed: true, steps: [], completedSteps: [] } }),
   );
   await page.route('**/api/v1/integrations{,/**}', (route) => route.fulfill({ json: [] }));
+  await page.route('**/api/v1/features/preferences', async (route) => {
+    if (route.request().method() === 'PUT') {
+      preferences = route.request().postDataJSON() as typeof preferences;
+    }
+    await route.fulfill({ json: preferences });
+  });
   await page.route(/\/config(?:\.live)?\.json$/, (route) => route.fulfill({ json: config }));
 });
 
@@ -60,32 +68,57 @@ test('the sessions list groups by state and opens a session', async ({ page }) =
   await expect(page.getByTestId('simple-session-list')).toBeVisible();
 });
 
-test('the workflows page shows a workflow, its strip and a launch card', async ({ page }) => {
+test('the workflow specialist remains reachable from its direct route', async ({ page }) => {
   await useSimpleMode(page);
-  await page.goto('/ting');
+  await page.goto('/ting/workflows');
   await expect(page).toHaveURL(/\/ting\/workflows/);
   await expect(page.getByTestId('simple-workflows-page')).toBeVisible({ timeout: 8_000 });
   await expect(page.getByTestId('simple-workflow-launch')).toBeVisible();
   await expect(page.getByTestId('simple-workflow-edit')).toBeVisible();
 });
 
-test('the residents page lists residents and personas', async ({ page }) => {
+test('the residents page shows its empty state and lists personas', async ({ page }) => {
   await useSimpleMode(page);
   await page.goto('/ravn');
   await expect(page).toHaveURL(/\/ravn\/residents$/);
   await expect(page.getByTestId('residents-page')).toBeVisible({ timeout: 8_000 });
-  await expect(page.getByTestId('resident-cards')).toBeVisible();
+  await expect(page.getByText('No residents yet', { exact: true })).toBeVisible();
   await expect(page.getByTestId('personas-section')).toBeVisible();
   await expect(page.getByTestId('resident-deploy-open')).toBeVisible();
 });
 
-test('the home page can switch to the Advanced dashboard', async ({ page }) => {
+test('Settings changes the interface mode and preserves it across reload', async ({ page }) => {
   await useSimpleMode(page);
   await page.goto('/home');
   await expect(page.getByTestId('home-page')).toBeVisible({ timeout: 8_000 });
-  await page.getByTestId('home-open-advanced').click();
-  await expect(page).toHaveURL(/\/volundr\/forge$/);
-  await expect(page.getByTestId('ui-mode-switch')).toHaveAttribute('data-mode', 'advanced');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Display mode', exact: true }).click();
+  await expect(page).toHaveURL(/\/settings\/interface\/mode$/);
+  const modes = page.getByRole('group', { name: 'Interface mode' });
+  await expect(modes.getByRole('button', { name: 'Simple', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  const preferenceSave = page.waitForRequest(
+    (request) =>
+      request.method() === 'PUT' &&
+      new URL(request.url()).pathname === '/api/v1/features/preferences',
+  );
+  await modes.getByRole('button', { name: 'Advanced', exact: true }).click();
+  expect((await preferenceSave).postDataJSON()).toEqual(
+    expect.arrayContaining([expect.objectContaining({ feature_key: 'ui.mode', visible: true })]),
+  );
+  await expect(modes.getByRole('button', { name: 'Advanced', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await page.reload();
+  await expect(page).toHaveURL(/\/settings\/interface\/mode$/);
+  await expect(
+    page
+      .getByRole('group', { name: 'Interface mode' })
+      .getByRole('button', { name: 'Advanced', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
 });
 
 test('escape closes the command palette on the home page', async ({ page }) => {

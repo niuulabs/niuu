@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
@@ -46,9 +46,15 @@ class ResizeObserverStub {
 vi.stubGlobal('ResizeObserver', ResizeObserverStub);
 
 // TanStack Router: stub useParams so route components work outside a router.
+const routeState = vi.hoisted(() => ({
+  search: {} as { instance_id?: unknown; returnTo?: unknown },
+  navigate: vi.fn(),
+}));
+
 vi.mock('@tanstack/react-router', () => ({
-  useNavigate: vi.fn().mockReturnValue(vi.fn()),
+  useNavigate: () => routeState.navigate,
   useParams: vi.fn().mockReturnValue({ sessionId: 'sess-route-test' }),
+  useSearch: () => routeState.search,
 }));
 
 // ---------------------------------------------------------------------------
@@ -94,7 +100,11 @@ function wrap(ui: React.ReactNode) {
 // Tests
 // ---------------------------------------------------------------------------
 
-beforeEach(() => localStorage.clear());
+beforeEach(() => {
+  localStorage.clear();
+  routeState.search = {};
+  routeState.navigate.mockReset();
+});
 
 describe('VolundrSessionRoute', () => {
   it('renders the session page with the param sessionId', async () => {
@@ -108,6 +118,31 @@ describe('VolundrSessionRoute', () => {
     wrap(<VolundrSessionRoute />);
     await screen.findByTestId('live-session-detail-page');
     expect(screen.queryByText('Archived')).not.toBeInTheDocument();
+  });
+
+  it('consumes a source-qualified Work return route', async () => {
+    routeState.search = {
+      instance_id: 'forge-east',
+      returnTo: '/ting/work/campaign%3Acampaign-1',
+    };
+    wrap(<VolundrSessionRoute />);
+
+    const back = await screen.findByRole('button', { name: 'Back to Work' });
+    fireEvent.click(back);
+    expect(routeState.navigate).toHaveBeenCalledWith({
+      to: '/ting/work/campaign%3Acampaign-1',
+    });
+  });
+
+  it('does not render navigation for an external return target', async () => {
+    routeState.search = {
+      instance_id: 'forge-east',
+      returnTo: 'https://malicious.example/ting/work/campaign-1',
+    };
+    wrap(<VolundrSessionRoute />);
+
+    await screen.findByTestId('live-session-detail-page');
+    expect(screen.queryByRole('button', { name: 'Back to Work' })).not.toBeInTheDocument();
   });
 });
 

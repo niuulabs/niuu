@@ -4,7 +4,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { ToastProvider } from '@niuulabs/ui';
 import { SagasPage } from './SagasPage';
-import { createMockTingService, createMockTrackerService } from '../adapters/mock';
+import {
+  createMockTingService,
+  createMockTrackerService,
+  createMockWorkflowService,
+} from '../adapters/mock';
 import type { Saga } from '../domain/saga';
 import type { ITrackerBrowserService } from '../ports';
 
@@ -15,6 +19,7 @@ const mockDispatchBus = {
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
   useParams: () => ({}),
+  useSearch: () => ({}),
 }));
 
 function wrap(services: Record<string, unknown>) {
@@ -35,6 +40,7 @@ function withDefaults(services: Record<string, unknown>) {
   return {
     ting: volundrRepos,
     'ting.tracker': createMockTrackerService(),
+    'ting.workflows': createMockWorkflowService(),
     'niuu.repos': {
       getRepos: async () => [
         {

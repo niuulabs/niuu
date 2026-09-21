@@ -1054,7 +1054,15 @@ class WorkflowTaskHandler(RequestHandler):
                 return pinned_child_workflow(execution, child)
             except WorkflowExecutionError as exc:
                 raise InvalidParamsError(str(exc)) from exc
-        workflow = await self._workflow_repo.get_workflow(workflow_id)
+        raw_version = str(metadata.get("workflowVersion") or "").strip()
+        workflow = (
+            await self._workflow_repo.get_workflow_version(
+                workflow_id,
+                version=raw_version,
+            )
+            if raw_version
+            else await self._workflow_repo.get_workflow(workflow_id)
+        )
         if workflow is None or not _can_view_workflow(workflow, self._principal):
             raise InvalidParamsError(f"unknown skill: {raw_id}")
         return workflow

@@ -1,13 +1,6 @@
 import { createRootRoute } from '@tanstack/react-router';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { tingPlugin } from './index';
-
-const mockMode = vi.hoisted(() => ({ current: 'simple' as 'simple' | 'advanced' }));
-
-vi.mock('@niuulabs/shell', async () => {
-  const actual = await vi.importActual<Record<string, unknown>>('@niuulabs/shell');
-  return { ...actual, readUiMode: () => mockMode.current };
-});
 
 const rootRoute = createRootRoute();
 const routes = tingPlugin.routes?.(rootRoute) ?? [];
@@ -19,24 +12,23 @@ function routeFor(path: string) {
 }
 
 describe('tingPlugin descriptor', () => {
-  beforeEach(() => {
-    mockMode.current = 'simple';
-  });
-
-  it('shows only the workflows tab in Simple mode', () => {
+  it('shows Work and Workflows in Simple mode', () => {
     expect(tingPlugin.simple).toMatchObject({
-      tabs: ['workflows'],
-      title: 'Workflows',
-      subtitle: 'stages with gates you approve',
+      tabs: ['work', 'workflows', 'builder'],
+      title: 'Ting',
+      subtitle: 'run and oversee work',
     });
+    expect(tingPlugin.tabs.map((tab) => tab.id)).toEqual(['work', 'workflows', 'builder']);
   });
 
-  it('routes the builder separately from the workflows page', () => {
+  it('routes Work and the builder separately from the workflows catalog', () => {
+    expect(routeFor('/ting/work')).toBeDefined();
+    expect(routeFor('/ting/work/$workId')).toBeDefined();
     expect(routeFor('/ting/workflows')).toBeDefined();
     expect(routeFor('/ting/workflows/build')).toBeDefined();
   });
 
-  it('sends /ting to the workflows page in Simple mode', () => {
+  it('sends /ting to Work in every mode', () => {
     const beforeLoad = routeFor('/ting').options.beforeLoad as () => void;
     let thrown: unknown;
     try {
@@ -44,12 +36,6 @@ describe('tingPlugin descriptor', () => {
     } catch (error) {
       thrown = error;
     }
-    expect((thrown as { options?: { to?: string } })?.options?.to).toBe('/ting/workflows');
-  });
-
-  it('keeps /ting on the dashboard in Advanced mode', () => {
-    mockMode.current = 'advanced';
-    const beforeLoad = routeFor('/ting').options.beforeLoad as () => void;
-    expect(() => beforeLoad()).not.toThrow();
+    expect((thrown as { options?: { to?: string } })?.options?.to).toBe('/ting/work');
   });
 });

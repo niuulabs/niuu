@@ -57,6 +57,24 @@ function makeWait(id: string): WorkflowNode {
   };
 }
 
+function makeSubworkflow(id: string, templates: Record<string, string> = { default: 'worker' }): WorkflowNode {
+  return {
+    id,
+    kind: 'subworkflow',
+    label: `Children ${id}`,
+    position: { x: 0, y: 0 },
+    templates,
+    allowedCoordinator: 'coordinator',
+    inputSchema: { type: 'object' },
+    resultSchema: { type: 'object' },
+    maxChildren: 10,
+    maxAttempts: 3,
+    maxActiveChildren: 4,
+    joinMode: 'all',
+    blockedEvent: 'children.blocked',
+  };
+}
+
 function makeEdge(id: string, source: string, target: string, label?: string): WorkflowEdge {
   return {
     id,
@@ -424,6 +442,227 @@ describe('validateWorkflowFull — no_consumer', () => {
       expect(issue.severity).toBe('warning');
     }
   });
+});
+
+describe('validateWorkflowFull — child workflow contract', () => {
+  function validChildWorkflow(): Workflow {
+    return {
+      ...makeWorkflow(
+        [makeSubworkflow('children'), makeGate('next')],
+        [makeEdge('joined', 'children', 'next', 'children.completed -> children.completed')],
+      ),
+      workflowDependencies: {
+        worker: {
+          id: '10000000-0000-0000-0000-000000000001',
+          revision: 'child-revision',
+          digest: `sha256:${'a'.repeat(64)}`,
+        },
+      },
+      personaDependencies: {
+        coordinator: {
+          id: 'coordinator',
+          revision: 'persona-revision',
+          digest: `sha256:${'b'.repeat(64)}`,
+        },
+      },
+    };
+  }
+
+  it('accepts a pinned child with one edge-defined joined event', () => {
+    const issues = validateWorkflowFull(validChildWorkflow());
+    expect(issues.filter((issue) => issue.kind.startsWith('subworkflow_'))).toEqual([]);
+  });
+
+  it('requires declared dependency and coordinator aliases', () => {
+    const workflow = validChildWorkflow();
+    workflow.workflowDependencies = {};
+    workflow.personaDependencies = {};
+
+    const issues = validateWorkflowFull(workflow);
+
+    expect(issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'subworkflow_dependency', severity: 'error' }),
+        expect.objectContaining({ kind: 'subworkflow_coordinator', severity: 'error' }),
+      ]),
+    );
+  });
+
+  it('requires a blocked event and one distinct edge-defined joined event', () => {
+    const workflow = validChildWorkflow();
+    const child = workflow.nodes[0]!;
+    if (child.kind !== 'subworkflow') throw new Error('expected subworkflow');
+    child.blockedEvent = '';
+    workflow.edges = [];
+
+    const issues = validateWorkflowFull(workflow);
+
+    expect(issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'subworkflow_blocked_event', severity: 'error' }),
+        expect.objectContaining({ kind: 'subworkflow_joined_event', severity: 'error' }),
+      ]),
+    );
+  });
+
+  it.each([
+    ['the blocked event', ['children.blocked -> next.input']],
+    [
+      'ambiguous joined events',
+      ['children.completed -> next.input', 'children.other -> next.input'],
+    ],
+    ['a malformed contract', ['not a typed contract']],
+  ])('rejects %s as the joined continuation', (_name, labels) => {
+    const workflow = validChildWorkflow();
+    workflow.edges = labels.map((label, index) =>
+      makeEdge(`edge-${index}`, 'children', 'next', label),
+    );
+
+    const issues = validateWorkflowFull(workflow);
+
+    expect(issues).toContainEqual(
+      expect.objectContaining({ kind: 'subworkflow_joined_event', severity: 'error' }),
+    );
+  });
+
+  it.each([
+    { maxChildren: 0 },
+    { maxChildren: 101 },
+    { maxAttempts: 0 },
+    { maxAttempts: 11 },
+    { maxActiveChildren: 0 },
+    { maxChildren: 3, maxActiveChildren: 4 },
+  ])('rejects runtime-incompatible expansion limits %o', (limits) => {
+    const workflow = validChildWorkflow();
+    workflow.nodes[0] = { ...workflow.nodes[0]!, ...limits } as WorkflowNode;
+
+    const issues = validateWorkflowFull(workflow);
+
+    expect(issues).toContainEqual(
+      expect.objectContaining({ kind: 'subworkflow_limits', severity: 'error' }),
+    );
+  });
+});
+
+describe('validateWorkflowFull — child workflow templates', () => {
+  function multiTemplateWorkflow(): Workflow {
+    return {
+      ...makeWorkflow(
+        [
+          makeSubworkflow('children', { breadth: 'worker', depth: 'thread' }),
+          makeGate('next'),
+        ],
+        [makeEdge('joined', 'children', 'next', 'children.completed -> children.completed')],
+      ),
+      workflowDependencies: {
+        worker: {
+          id: '10000000-0000-0000-0000-000000000001',
+          revision: 'child-revision',
+          digest: `sha256:${'a'.repeat(64)}`,
+        },
+        thread: {
+          id: '10000000-0000-0000-0000-000000000002',
+          revision: 'child-revision-2',
+          digest: `sha256:${'c'.repeat(64)}`,
+        },
+      },
+      personaDependencies: {
+        coordinator: {
+          id: 'coordinator',
+          revision: 'persona-revision',
+          digest: `sha256:${'b'.repeat(64)}`,
+        },
+      },
+    };
+  }
+
+  it('accepts several templates each pinned to a declared dependency', () => {
+    const issues = validateWorkflowFull(multiTemplateWorkflow());
+    expect(issues.filter((issue) => issue.kind.startsWith('subworkflow_'))).toEqual([]);
+  });
+
+  it('flags a template whose alias is not declared', () => {
+    const workflow = multiTemplateWorkflow();
+    workflow.workflowDependencies = { worker: workflow.workflowDependencies!.worker! };
+
+    const issues = validateWorkflowFull(workflow);
+
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        kind: 'subworkflow_dependency',
+        nodeId: 'children',
+        message: expect.stringContaining("Template 'depth'"),
+      }),
+    );
+  });
+
+  it('requires a static child to name a template when the node offers several', () => {
+    const workflow = multiTemplateWorkflow();
+    const node = workflow.nodes[0]!;
+    if (node.kind !== 'subworkflow') throw new Error('expected subworkflow');
+    node.children = [{ key: 'first', objective: 'Map broadly' }];
+
+    const issues = validateWorkflowFull(workflow);
+
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        kind: 'subworkflow_template',
+        nodeId: 'children',
+        message: expect.stringContaining("Child 'first' must name a template"),
+      }),
+    );
+  });
+
+  it('does not require a template name from a static child when the node offers exactly one', () => {
+    const workflow = validChildWorkflowWithOneTemplate();
+    const node = workflow.nodes[0]!;
+    if (node.kind !== 'subworkflow') throw new Error('expected subworkflow');
+    node.children = [{ key: 'first', objective: 'Map broadly' }];
+
+    const issues = validateWorkflowFull(workflow);
+
+    expect(issues.filter((issue) => issue.kind === 'subworkflow_template')).toEqual([]);
+  });
+
+  it('flags a static child naming an unknown template', () => {
+    const workflow = multiTemplateWorkflow();
+    const node = workflow.nodes[0]!;
+    if (node.kind !== 'subworkflow') throw new Error('expected subworkflow');
+    node.children = [{ key: 'first', objective: 'Map broadly', template: 'unknown' }];
+
+    const issues = validateWorkflowFull(workflow);
+
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        kind: 'subworkflow_template',
+        nodeId: 'children',
+        message: expect.stringContaining("names unknown template 'unknown'"),
+      }),
+    );
+  });
+
+  function validChildWorkflowWithOneTemplate(): Workflow {
+    return {
+      ...makeWorkflow(
+        [makeSubworkflow('children'), makeGate('next')],
+        [makeEdge('joined', 'children', 'next', 'children.completed -> children.completed')],
+      ),
+      workflowDependencies: {
+        worker: {
+          id: '10000000-0000-0000-0000-000000000001',
+          revision: 'child-revision',
+          digest: `sha256:${'a'.repeat(64)}`,
+        },
+      },
+      personaDependencies: {
+        coordinator: {
+          id: 'coordinator',
+          revision: 'persona-revision',
+          digest: `sha256:${'b'.repeat(64)}`,
+        },
+      },
+    };
+  }
 });
 
 // ---------------------------------------------------------------------------

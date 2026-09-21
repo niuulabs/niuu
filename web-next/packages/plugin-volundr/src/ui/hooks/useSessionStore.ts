@@ -128,11 +128,11 @@ export function useSessionList(filters?: SessionFilters) {
 }
 
 /** Queries a single session by id from ISessionStore. */
-export function useSessionDetail(sessionId: string) {
+export function useSessionDetail(sessionId: string, instanceId?: string) {
   const store = useService<ISessionStore>('sessionStore');
   return useQuery({
-    queryKey: ['volundr', 'domain-session', sessionId],
-    queryFn: () => store.getSession(sessionId),
+    queryKey: ['volundr', 'domain-session', sessionId, instanceId ?? null],
+    queryFn: ({ signal }) => store.getSession(sessionId, { instanceId, signal }),
     refetchInterval: LIVE_REFETCH_MS,
   });
 }

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { LibraryPanel, DEFAULT_PERSONAS } from './LibraryPanel';
 import type { WorkflowRegistryMount } from './mimirRegistry';
 
@@ -69,6 +69,34 @@ describe('LibraryPanel', () => {
     render(<LibraryPanel personas={DEFAULT_PERSONAS} />);
     expect(screen.getByText('Ephemeral Local Mimir')).toBeInTheDocument();
     expect(screen.getByText(/workspace-local scratch/i)).toBeInTheDocument();
+  });
+
+  it('adds flow control and personas directly from the contextual picker', () => {
+    const onAddNode = vi.fn();
+    const onAddPersona = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <LibraryPanel
+        personas={DEFAULT_PERSONAS}
+        onAddNode={onAddNode}
+        onAddPersona={onAddPersona}
+        onClose={onClose}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('library-add-wait'));
+    expect(onAddNode).toHaveBeenCalledWith('wait');
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId(`persona-chip-${DEFAULT_PERSONAS[0]!.id}`));
+    expect(onAddPersona).toHaveBeenCalledWith(DEFAULT_PERSONAS[0]!.id);
+  });
+
+  it('searches flow-control candidates as well as actors and resources', () => {
+    render(<LibraryPanel personas={DEFAULT_PERSONAS} />);
+    fireEvent.change(screen.getByTestId('library-search'), { target: { value: 'child' } });
+    expect(screen.getByTestId('library-add-subworkflow')).toBeInTheDocument();
+    expect(screen.queryByTestId('library-add-stage')).not.toBeInTheDocument();
   });
 
   it('DEFAULT_PERSONAS has 5 entries', () => {

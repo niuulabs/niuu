@@ -11,6 +11,7 @@ import {
   buildDispatchBusHttpAdapter,
   buildWorkflowHttpAdapter,
   buildResearchHttpAdapter,
+  buildSpecsHttpAdapter,
   buildTingSettingsHttpAdapter,
   buildTingAuditLogHttpAdapter,
 } from './http';
@@ -880,6 +881,68 @@ describe('buildWorkflowHttpAdapter', () => {
     });
   });
 
+  it('maps immutable version metadata and loads an exact historical version', async () => {
+    const client = makeClient();
+    const historical = {
+      ...rawWorkflow,
+      version: '1.2.0',
+      revision: 'head-cas-4',
+      document_revision: 'sha256:document-12',
+      is_head: false,
+      origin: 'bundled' as const,
+      can_edit: true,
+    };
+    client.get.mockResolvedValue(historical);
+
+    const workflow = await buildWorkflowHttpAdapter(client).getWorkflowVersion(
+      rawWorkflow.id,
+      '1.2.0',
+    );
+
+    expect(client.get).toHaveBeenCalledWith(
+      `/workflows/${encodeURIComponent(rawWorkflow.id)}/versions/1.2.0`,
+    );
+    expect(workflow).toMatchObject({
+      id: rawWorkflow.id,
+      version: '1.2.0',
+      revision: 'head-cas-4',
+      documentRevision: 'sha256:document-12',
+      isHead: false,
+      origin: 'bundled',
+      canEdit: true,
+    });
+  });
+
+  it('lists immutable workflow version summaries', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      {
+        version: '1.3.0',
+        document_revision: 'sha256:document-13',
+        created_at: '2026-09-20T12:00:00Z',
+        is_head: true,
+        based_on_revision: 'sha256:document-12',
+        origin: 'authored',
+      },
+    ]);
+
+    const versions = await buildWorkflowHttpAdapter(client).listWorkflowVersions(rawWorkflow.id);
+
+    expect(client.get).toHaveBeenCalledWith(
+      `/workflows/${encodeURIComponent(rawWorkflow.id)}/versions`,
+    );
+    expect(versions).toEqual([
+      {
+        version: '1.3.0',
+        documentRevision: 'sha256:document-13',
+        createdAt: '2026-09-20T12:00:00Z',
+        isHead: true,
+        basedOnRevision: 'sha256:document-12',
+        origin: 'authored',
+      },
+    ]);
+  });
+
   it('maps resource bindings from the API payload', async () => {
     const client = makeClient();
     client.get.mockResolvedValue([rawWorkflow]);
@@ -943,9 +1006,9 @@ describe('buildWorkflowHttpAdapter', () => {
     const [workflow] = await buildWorkflowHttpAdapter(client).listWorkflows();
 
     expect(workflow.nodes.map((node) => node.position)).toEqual([
-      { x: 96, y: 144 },
-      { x: 336, y: 144 },
-      { x: 576, y: 144 },
+      { x: 96, y: 64 },
+      { x: 336, y: 64 },
+      { x: 632, y: 64 },
     ]);
     expect(workflow.edges).toEqual([
       {
@@ -965,6 +1028,109 @@ describe('buildWorkflowHttpAdapter', () => {
     ]);
   });
 
+  it('topologically lays out imported branches while preserving authored positions', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      {
+        ...rawWorkflow,
+        nodes: [
+          {
+            id: 'trigger',
+            kind: 'trigger',
+            label: 'Start',
+            source: 'manual',
+            position: { x: 777, y: 333 },
+          },
+          { id: 'left', kind: 'wait', label: 'Left' },
+          { id: 'right', kind: 'wait', label: 'Right' },
+          { id: 'done', kind: 'end', label: 'Done' },
+        ],
+        edges: [
+          { id: 'left-edge', source: 'trigger', target: 'left' },
+          { id: 'right-edge', source: 'trigger', target: 'right' },
+          { id: 'left-done', source: 'left', target: 'done' },
+          { id: 'right-done', source: 'right', target: 'done' },
+        ],
+      },
+    ]);
+
+    const [workflow] = await buildWorkflowHttpAdapter(client).listWorkflows();
+    expect(workflow.nodes.find((node) => node.id === 'trigger')?.position).toEqual({
+      x: 777,
+      y: 333,
+    });
+    const left = workflow.nodes.find((node) => node.id === 'left')!.position;
+    const right = workflow.nodes.find((node) => node.id === 'right')!.position;
+    const done = workflow.nodes.find((node) => node.id === 'done')!.position;
+    expect(left.x).toBe(right.x);
+    expect(left.y).not.toBe(right.y);
+    expect(done.x).toBeGreaterThan(left.x);
+  });
+
+  it('leaves exact measured clearance between positionless multi-member stage cards', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      {
+        ...rawWorkflow,
+        nodes: [
+          { id: 'trigger', kind: 'trigger', label: 'Start', source: 'manual' },
+          {
+            id: 'a-review',
+            kind: 'stage',
+            label: 'Review',
+            stageMembers: [{ personaId: 'lead' }, { personaId: 'critic' }, { personaId: 'writer' }],
+            executionMode: 'parallel',
+            joinMode: 'all',
+          },
+          {
+            id: 'b-replacement',
+            kind: 'stage',
+            label: 'Replacement',
+            stageMembers: [{ personaId: 'implementer' }],
+            executionMode: 'parallel',
+            joinMode: 'all',
+          },
+          { id: 'done', kind: 'end', label: 'Done' },
+        ],
+        edges: [
+          {
+            id: 'start-review',
+            source: 'trigger',
+            target: 'a-review',
+            label: 'review.requested -> review.requested',
+          },
+          {
+            id: 'start-replacement',
+            source: 'trigger',
+            target: 'b-replacement',
+            label: 'replacement.requested -> replacement.requested',
+          },
+          {
+            id: 'review-done',
+            source: 'a-review',
+            target: 'done',
+            label: 'review.completed -> review.completed',
+          },
+          {
+            id: 'replacement-done',
+            source: 'b-replacement',
+            target: 'done',
+            label: 'replacement.completed -> replacement.completed',
+          },
+        ],
+      },
+    ]);
+
+    const [workflow] = await buildWorkflowHttpAdapter(client).listWorkflows();
+    const review = workflow.nodes.find((node) => node.id === 'a-review')!.position;
+    const replacement = workflow.nodes.find((node) => node.id === 'b-replacement')!.position;
+
+    expect(replacement.x).toBe(review.x);
+    // Three members render a 136px header; its connected input/output row adds
+    // 36px. The layout then reserves the configured 36px row gap.
+    expect(replacement.y).toBe(review.y + 172 + 36);
+  });
+
   it('launches a workflow through the direct launch endpoint', async () => {
     const client = makeClient();
     client.post.mockResolvedValue({
@@ -975,6 +1141,9 @@ describe('buildWorkflowHttpAdapter', () => {
       sessionName: 'knowledge-flow',
       status: 'starting',
       clusterName: 'valhalla',
+      chatEndpoint: 'wss://forge.example/sessions/sess-123/chat',
+      workflowVersion: '1.2.0',
+      documentRevision: 'sha256:workflow-12',
     });
 
     const result = await buildWorkflowHttpAdapter(client).launchWorkflow(rawWorkflow.id, {
@@ -982,6 +1151,7 @@ describe('buildWorkflowHttpAdapter', () => {
       sessionName: 'knowledge-flow',
       repo: 'https://github.com/niuulabs/volundr.git',
       branch: 'feat/workflow-launch',
+      workflowVersion: '1.2.0',
     });
 
     expect(client.post).toHaveBeenCalledWith(
@@ -991,9 +1161,15 @@ describe('buildWorkflowHttpAdapter', () => {
         sessionName: 'knowledge-flow',
         repo: 'https://github.com/niuulabs/volundr.git',
         branch: 'feat/workflow-launch',
+        workflow_version: '1.2.0',
       },
     );
     expect(result.sessionId).toBe('sess-123');
+    expect(result).toMatchObject({
+      chatEndpoint: 'wss://forge.example/sessions/sess-123/chat',
+      workflowVersion: '1.2.0',
+      documentRevision: 'sha256:workflow-12',
+    });
   });
 
   it('returns null when a workflow lookup fails', async () => {
@@ -1045,7 +1221,7 @@ describe('buildWorkflowHttpAdapter', () => {
   it('updates existing workflows with normalized defaults in the request body', async () => {
     const client = makeClient();
     client.get.mockResolvedValue(rawWorkflow);
-    client.put.mockResolvedValue(rawWorkflow);
+    client.post.mockResolvedValue(rawWorkflow);
 
     await buildWorkflowHttpAdapter(client).saveWorkflow({
       id: rawWorkflow.id,
@@ -1060,12 +1236,11 @@ describe('buildWorkflowHttpAdapter', () => {
       resourceBindings: undefined,
     } as Workflow);
 
-    expect(client.put).toHaveBeenCalledWith(
-      `/workflows/${encodeURIComponent(rawWorkflow.id)}`,
+    expect(client.post).toHaveBeenCalledWith(
+      `/workflows/${encodeURIComponent(rawWorkflow.id)}/versions`,
       expect.objectContaining({
         name: rawWorkflow.name,
         description: '',
-        version: 'draft',
         scope: 'user',
         tags: [],
         nodes: rawWorkflow.nodes,
@@ -1081,8 +1256,7 @@ describe('buildWorkflowHttpAdapter', () => {
     const client = makeClient();
     const systemWorkflow = { ...rawWorkflow, scope: 'system' as const, owner_id: null };
     client.get.mockResolvedValue(systemWorkflow);
-    client.put.mockRejectedValue(new Error('403'));
-    client.post.mockResolvedValue({ ...rawWorkflow, scope: 'user' as const });
+    client.post.mockRejectedValue(new Error('403'));
 
     await expect(
       buildWorkflowHttpAdapter(client).saveWorkflow({
@@ -1099,17 +1273,16 @@ describe('buildWorkflowHttpAdapter', () => {
       } as Workflow),
     ).rejects.toThrow('403');
 
-    expect(client.put).toHaveBeenCalledWith(
-      `/workflows/${encodeURIComponent(systemWorkflow.id)}`,
+    expect(client.post).toHaveBeenCalledWith(
+      `/workflows/${encodeURIComponent(systemWorkflow.id)}/versions`,
       expect.objectContaining({ scope: 'system' }),
     );
-    expect(client.post).not.toHaveBeenCalled();
   });
 
   it('surfaces update failures for owned user workflows', async () => {
     const client = makeClient();
     client.get.mockResolvedValue(rawWorkflow);
-    client.put.mockRejectedValue(new Error('500'));
+    client.post.mockRejectedValue(new Error('500'));
 
     await expect(
       buildWorkflowHttpAdapter(client).saveWorkflow({
@@ -1125,13 +1298,16 @@ describe('buildWorkflowHttpAdapter', () => {
       } as Workflow),
     ).rejects.toThrow('500');
 
-    expect(client.post).not.toHaveBeenCalled();
+    expect(client.post).toHaveBeenCalledWith(
+      `/workflows/${encodeURIComponent(rawWorkflow.id)}/versions`,
+      expect.any(Object),
+    );
   });
 
   it('turns a conditional save conflict into a visible workflow conflict', async () => {
     const client = makeClient();
     client.get.mockResolvedValue(rawWorkflow);
-    client.put.mockRejectedValue(new ApiClientError('conflict', 409, 'revision changed'));
+    client.post.mockRejectedValue(new ApiClientError('conflict', 409, 'revision changed'));
 
     await expect(
       buildWorkflowHttpAdapter(client).saveWorkflow({
@@ -1142,8 +1318,8 @@ describe('buildWorkflowHttpAdapter', () => {
         revision: 'rev-1',
       } as Workflow),
     ).rejects.toMatchObject({ name: 'WorkflowRevisionConflictError', message: 'revision changed' });
-    expect(client.put).toHaveBeenCalledWith(
-      `/workflows/${encodeURIComponent(rawWorkflow.id)}`,
+    expect(client.post).toHaveBeenCalledWith(
+      `/workflows/${encodeURIComponent(rawWorkflow.id)}/versions`,
       expect.objectContaining({ expected_revision: 'rev-1' }),
     );
   });
@@ -1241,10 +1417,14 @@ describe('buildWorkflowHttpAdapter', () => {
       ),
     );
 
-    const exported = await buildWorkflowHttpAdapter(client).exportWorkflow(rawWorkflow.id, 'yaml');
+    const exported = await buildWorkflowHttpAdapter(client).exportWorkflow(
+      rawWorkflow.id,
+      'yaml',
+      '1.2.0',
+    );
 
     expect(fetch).toHaveBeenCalledWith(
-      `/api/v1/ting/workflows/${encodeURIComponent(rawWorkflow.id)}/export?format=yaml`,
+      `/api/v1/ting/workflows/${encodeURIComponent(rawWorkflow.id)}/export?format=yaml&version=1.2.0`,
       expect.objectContaining({ headers: expect.any(Headers) }),
     );
     expect(exported.filename).toBe('review.yaml');
@@ -1350,6 +1530,9 @@ describe('buildWorkflowHttpAdapter', () => {
       session_name: 'knowledge-flow-2',
       status: 'queued',
       cluster_name: 'bifrost',
+      chat_endpoint: null,
+      workflow_version: '1.1.0',
+      document_revision: 'sha256:workflow-11',
     });
 
     const result = await buildWorkflowHttpAdapter(client).launchWorkflow(rawWorkflow.id, {
@@ -1365,6 +1548,9 @@ describe('buildWorkflowHttpAdapter', () => {
       sessionId: 'sess-999',
       sessionName: 'knowledge-flow-2',
       clusterName: 'bifrost',
+      chatEndpoint: null,
+      workflowVersion: '1.1.0',
+      documentRevision: 'sha256:workflow-11',
     });
   });
 });
@@ -1592,12 +1778,16 @@ describe('buildTrackerHttpAdapter', () => {
     await buildTrackerHttpAdapter(client).importProject('proj-1', ['niuulabs/volundr'], 'main');
     expect(client.post).toHaveBeenCalledWith('/tracker/import', {
       project_id: 'proj-1',
+      tracker_connection_id: undefined,
       repos: ['niuulabs/volundr'],
       base_branch: 'main',
       repo_refs: undefined,
       instance_id: null,
       target_tags: [],
       target_match: 'all',
+      workflow_id: undefined,
+      workflowVersion: undefined,
+      start_immediately: false,
     });
   });
 
@@ -1616,11 +1806,15 @@ describe('buildTrackerHttpAdapter', () => {
           { repo: 'niuulabs/infrastructure', branch: 'prod' },
         ],
         target: { mode: 'tags', tags: ['gpu', 'valhalla'], match: 'all' },
+        trackerConnectionId: 'tracker-main',
+        workflowId: rawWorkflow.id,
+        workflowVersion: '1.2.0',
       },
     );
 
     expect(client.post).toHaveBeenCalledWith('/tracker/import', {
       project_id: 'proj-1',
+      tracker_connection_id: 'tracker-main',
       repos: ['niuulabs/volundr', 'niuulabs/infrastructure'],
       base_branch: 'main',
       repo_refs: [
@@ -1630,6 +1824,9 @@ describe('buildTrackerHttpAdapter', () => {
       instance_id: null,
       target_tags: ['gpu', 'valhalla'],
       target_match: 'all',
+      workflow_id: rawWorkflow.id,
+      workflowVersion: '1.2.0',
+      start_immediately: false,
     });
   });
 
@@ -1890,7 +2087,7 @@ describe('buildResearchHttpAdapter', () => {
 
   it('returns null when a campaign lookup fails', async () => {
     const client = makeClient();
-    client.get.mockRejectedValue(new Error('404'));
+    client.get.mockRejectedValue(new ApiClientError('not found', 404));
 
     const detail = await buildResearchHttpAdapter(client).getCampaign('missing');
 
@@ -1908,6 +2105,7 @@ describe('buildResearchHttpAdapter', () => {
       question: 'Which rollout should we pick?',
       name: 'Council Human Research',
       workflowId: rawWorkflow.id,
+      workflowVersion: '1.0.0',
       repo: 'https://github.com/niuulabs/volundr.git',
       branch: 'feat/research',
       mode: 'direct',
@@ -1929,6 +2127,7 @@ describe('buildResearchHttpAdapter', () => {
       question: 'Which rollout should we pick?',
       name: 'Council Human Research',
       workflowId: rawWorkflow.id,
+      workflowVersion: '1.0.0',
       repo: 'https://github.com/niuulabs/volundr.git',
       branch: 'feat/research',
       mode: 'direct',
@@ -1955,7 +2154,7 @@ describe('buildResearchHttpAdapter', () => {
         ...rawArtifact,
         content: '# Final Report',
       })
-      .mockRejectedValueOnce(new Error('404'));
+      .mockRejectedValueOnce(new ApiClientError('not found', 404));
 
     const service = buildResearchHttpAdapter(client);
     const found = await service.getArtifact('research/council-human-v1', 'reports/final.md');
@@ -1978,6 +2177,37 @@ describe('buildResearchHttpAdapter', () => {
     expect(typeof svc.updateCampaign).toBe('function');
     expect(typeof svc.deleteCampaign).toBe('function');
     expect(typeof svc.getArtifact).toBe('function');
+  });
+});
+
+describe('buildSpecsHttpAdapter', () => {
+  it('forwards the selected immutable workflow version when creating a campaign', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue(rawResearchCampaign);
+
+    await buildSpecsHttpAdapter(client).createCampaign({
+      prompt: 'Specify the work.',
+      name: 'Release specification',
+      workflowId: rawWorkflow.id,
+      workflowVersion: '1.3.0',
+      repo: 'niuulabs/volundr',
+      repos: ['niuulabs/volundr'],
+      branch: 'main',
+      context: 'Existing release notes.',
+      connectionId: 'forge-main',
+    });
+
+    expect(client.post).toHaveBeenCalledWith('/specs/campaigns', {
+      prompt: 'Specify the work.',
+      name: 'Release specification',
+      workflowId: rawWorkflow.id,
+      workflowVersion: '1.3.0',
+      repo: 'niuulabs/volundr',
+      repos: ['niuulabs/volundr'],
+      branch: 'main',
+      context: 'Existing release notes.',
+      connectionId: 'forge-main',
+    });
   });
 });
 
@@ -2248,5 +2478,26 @@ describe('research campaign artifact summary', () => {
     // Null reads as "not summarised", which the cards show as unknown rather
     // than as a campaign with no artifacts.
     expect(campaign?.artifactSummary).toBeNull();
+  });
+});
+
+describe.each([
+  ['research', buildResearchHttpAdapter],
+  ['specifications', buildSpecsHttpAdapter],
+] as const)('%s evidence read failures', (_surface, build) => {
+  it('preserves permission and transport failures instead of presenting missing evidence', async () => {
+    const client = makeClient();
+    const denied = new ApiClientError('Forbidden', 403);
+    client.get.mockRejectedValue(denied);
+    const service = build(client);
+    await expect(service.getCampaign('campaign')).rejects.toBe(denied);
+    await expect(service.getArtifact('campaign', 'report.md')).rejects.toBe(denied);
+    const offline = new Error('Network unavailable');
+    client.get.mockRejectedValue(offline);
+    await expect(service.getCampaign('campaign')).rejects.toBe(offline);
+    await expect(service.getArtifact('campaign', 'report.md')).rejects.toBe(offline);
+    client.get.mockRejectedValue(new ApiClientError('Missing', 404));
+    await expect(service.getCampaign('missing')).resolves.toBeNull();
+    await expect(service.getArtifact('campaign', 'missing.md')).resolves.toBeNull();
   });
 });

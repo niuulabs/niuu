@@ -35,6 +35,33 @@ export function useWorkflow(id: string) {
   });
 }
 
+export function useWorkflowVersions(id: string) {
+  const svc = useService<IWorkflowService>('ting.workflows');
+  return useQuery({
+    queryKey: ['ting', 'workflows', id, 'versions'],
+    queryFn: () => svc.listWorkflowVersions(id),
+    enabled: !!id,
+  });
+}
+
+export function useLoadWorkflowVersion() {
+  const svc = useService<IWorkflowService>('ting.workflows');
+  const queryClient = useQueryClient();
+  return useMutation<Workflow, Error, { id: string; version: string }>({
+    mutationFn: async ({ id, version }) => {
+      const workflow = await svc.getWorkflowVersion(id, version);
+      if (!workflow) throw new Error(`Workflow version ${version} was not found.`);
+      return workflow;
+    },
+    onSuccess: (workflow, variables) => {
+      queryClient.setQueryData(
+        ['ting', 'workflows', variables.id, 'versions', variables.version],
+        workflow,
+      );
+    },
+  });
+}
+
 export function useCreateWorkflow() {
   const svc = useService<IWorkflowService>('ting.workflows');
   const queryClient = useQueryClient();
@@ -63,6 +90,9 @@ export function useSaveWorkflow() {
     onSuccess: (saved) => {
       queryClient.setQueryData(['ting', 'workflows', saved.id], saved);
       void queryClient.invalidateQueries({ queryKey: ['ting', 'workflows'] });
+      void queryClient.invalidateQueries({
+        queryKey: ['ting', 'workflows', saved.id, 'versions'],
+      });
     },
   });
 }
@@ -80,8 +110,12 @@ export function useDeleteWorkflow() {
 
 export function useExportWorkflow() {
   const svc = useService<IWorkflowService>('ting.workflows');
-  return useMutation<WorkflowExport, Error, { id: string; format: WorkflowExportFormat }>({
-    mutationFn: ({ id, format }) => svc.exportWorkflow(id, format),
+  return useMutation<
+    WorkflowExport,
+    Error,
+    { id: string; format: WorkflowExportFormat; version?: string }
+  >({
+    mutationFn: ({ id, format, version }) => svc.exportWorkflow(id, format, version),
   });
 }
 

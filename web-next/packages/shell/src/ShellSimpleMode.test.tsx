@@ -6,6 +6,7 @@ import {
   FeatureCatalogProvider,
   ServicesProvider,
   definePlugin,
+  type UserFeaturePreference,
 } from '@niuulabs/plugin-sdk';
 import { Shell } from './Shell';
 import { UI_MODE_STORAGE_KEY } from './uiMode';
@@ -50,10 +51,24 @@ const observatory = definePlugin({
   render: () => <div data-testid="observatory-content">observatory</div>,
 });
 
-function wrap(path: string) {
+function featureService(saved: UserFeaturePreference[] | Error) {
+  return {
+    getFeatureModules: async () => [],
+    toggleFeature: async () => {
+      throw new Error('not used');
+    },
+    getUserFeaturePreferences: async () => {
+      if (saved instanceof Error) throw saved;
+      return saved;
+    },
+    updateUserFeaturePreferences: async (preferences: UserFeaturePreference[]) => preferences,
+  };
+}
+
+function wrap(path: string, features?: ReturnType<typeof featureService>) {
   return render(
     <ConfigProvider value={{ demoMode: false, theme: 'ice', plugins: {}, services: {} }}>
-      <ServicesProvider services={{}}>
+      <ServicesProvider services={features ? { features } : {}}>
         <FeatureCatalogProvider>
           <Shell
             plugins={[home, realms, volundr, observatory]}
@@ -84,7 +99,7 @@ describe('Shell in simple mode', () => {
     expect(screen.getByTestId('volundr-tab-forge')).toBeInTheDocument();
     expect(screen.getByTestId('volundr-tab-quick')).toBeInTheDocument();
     expect(screen.queryByTestId('volundr-tab-catalog')).not.toBeInTheDocument();
-    expect(screen.getByTestId('ui-mode-switch')).toHaveAttribute('data-mode', 'simple');
+    expect(screen.queryByTestId('ui-mode-switch')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Sessions' })).toBeInTheDocument();
     // The rail item stays keyed on the plugin id even when the mode renames it,
     // so hosts outside the monorepo can find it without knowing the mode.
@@ -108,7 +123,7 @@ describe('Shell in simple mode', () => {
     localStorage.removeItem(UI_MODE_STORAGE_KEY);
     wrap('/volundr');
     await screen.findByTestId('volundr-content');
-    expect(screen.getByTestId('ui-mode-switch')).toHaveAttribute('data-mode', 'advanced');
+    expect(screen.queryByTestId('ui-mode-switch')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Observatory' })).toBeInTheDocument();
     expect(screen.getByTestId('volundr-tab-catalog')).toBeInTheDocument();
   });
@@ -142,5 +157,19 @@ describe('Shell in simple mode', () => {
     await screen.findByTestId('observatory-content');
     expect(screen.queryByTestId('ui-mode-switch')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Observatory' })).toBeInTheDocument();
+  });
+
+  it('hydrates the saved mode at shell boot without mounting the settings control', async () => {
+    localStorage.setItem(UI_MODE_STORAGE_KEY, 'advanced');
+    wrap('/volundr', featureService([{ featureKey: 'ui.mode', visible: false, sortOrder: 0 }]));
+    await waitFor(() => expect(localStorage.getItem(UI_MODE_STORAGE_KEY)).toBe('simple'));
+    expect(screen.queryByRole('button', { name: 'Observatory' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ui-mode-switch')).not.toBeInTheDocument();
+  });
+
+  it('reports preference hydration failures and retains the cached mode', async () => {
+    wrap('/volundr', featureService(new Error('preferences endpoint is down')));
+    expect(await screen.findByRole('alert')).toHaveTextContent('interface preference unavailable');
+    expect(localStorage.getItem(UI_MODE_STORAGE_KEY)).toBe('simple');
   });
 });

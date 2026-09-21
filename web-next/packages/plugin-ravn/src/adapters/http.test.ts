@@ -34,6 +34,7 @@ const rawSummary = {
   is_builtin: true,
   has_override: false,
   produces_event: 'code.changed',
+  outcome_events: { pass: 'review.passed', fail: 'review.changes_requested' },
   consumes_events: ['code.requested'],
 };
 
@@ -99,6 +100,7 @@ describe('listPersonas', () => {
       isBuiltin: true,
       hasOverride: false,
       producesEvent: 'code.changed',
+      outcomeEvents: { pass: 'review.passed', fail: 'review.changes_requested' },
       consumesEvents: ['code.requested'],
     });
   });

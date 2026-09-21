@@ -76,17 +76,19 @@ def load_bundled_workflow(
         lineage=(),
     )
     timestamp = datetime.fromtimestamp(document_path.stat().st_mtime, tz=UTC)
-    return document.to_workflow(
+    revision = workflow_document_revision(document)
+    workflow = document.to_workflow(
         scope=WorkflowScope.SYSTEM,
         owner_id=None,
         created_at=timestamp,
         updated_at=timestamp,
-        revision=workflow_document_revision(document),
+        revision=revision,
         read_only=True,
         source=f"bundled:{document_path.name}",
         persona_definitions=persona_definitions,
         workflow_definitions=workflow_definitions,
     )
+    return replace(workflow, document_revision=revision, origin="bundled")
 
 
 def _load_bundled_definitions(
@@ -159,19 +161,15 @@ async def seed_system_workflows(
     *,
     path: Path = BUNDLED_SYSTEM_WORKFLOWS_PATH,
 ) -> list[WorkflowDefinition]:
-    """Upsert bundled system workflows into the workflow catalog.
+    """Register bundled versions without replacing authored successors.
 
-    The bundled YAML is the source of truth for system workflows. Any older
-    system workflow rows that are no longer present in the bundle, or duplicate
-    rows left behind by earlier seeds, are removed during this pass.
+    A package restart is idempotent. Once an operator has created an authored
+    successor for the same stable workflow identity, that head wins over future
+    package seeding. Reusing one semantic version for different bundled content
+    is rejected because versions are immutable.
     """
     seeds = load_system_workflows(path)
     existing = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
-    seed_by_id = {workflow.id: workflow for workflow in seeds}
-
-    for workflow in existing:
-        if workflow.id not in seed_by_id:
-            await repo.delete_workflow(workflow.id)
 
     if not seeds:
         return []
@@ -181,17 +179,36 @@ async def seed_system_workflows(
     saved: list[WorkflowDefinition] = []
     for seed in seeds:
         current = existing_by_id.get(seed.id)
-        if current is not None:
-            seed = replace(
-                seed,
-                id=current.id,
-                created_at=current.created_at,
-                updated_at=datetime.now(UTC),
-                revision=current.revision,
-                read_only=False,
-                source="postgres",
+        if current is None:
+            saved.append(
+                await repo.save_workflow(
+                    replace(seed, revision=None, read_only=True, source="postgres")
+                )
             )
-        else:
-            seed = replace(seed, revision=None, read_only=False, source="postgres")
-        saved.append(await repo.save_workflow(seed))
+            continue
+        if current.origin == "authored":
+            saved.append(current)
+            continue
+        current_document_revision = current.document_revision or workflow_document_revision(current)
+        seed_document_revision = seed.document_revision or workflow_document_revision(seed)
+        if current.version == seed.version:
+            if current_document_revision != seed_document_revision:
+                raise WorkflowDocumentError(
+                    f"Bundled workflow {seed.id} version {seed.version} changed content; "
+                    "publish it under a new version"
+                )
+            saved.append(current)
+            continue
+        saved.append(
+            await repo.save_workflow(
+                replace(
+                    seed,
+                    created_at=current.created_at,
+                    updated_at=datetime.now(UTC),
+                    revision=current.revision,
+                    read_only=True,
+                    source="postgres",
+                )
+            )
+        )
     return saved

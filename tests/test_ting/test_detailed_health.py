@@ -44,6 +44,8 @@ def mock_pool():
     pool.fetchrow = AsyncMock(return_value=None)
     pool.execute = AsyncMock(return_value="OK")
     pool.close = AsyncMock()
+    pool.acquire.return_value.__aenter__.return_value = pool
+    pool.transaction.return_value.__aenter__.return_value = None
     return pool
 
 

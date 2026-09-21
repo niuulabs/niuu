@@ -11,6 +11,7 @@
 import type { Workflow } from './workflow';
 import { detectCycle } from './topologicalSort';
 import {
+  parseWorkflowEdgeLabel,
   stagePersonaIds,
   structuralWorkflowEdges,
   workflowPersonaModelConflicts,
@@ -31,7 +32,13 @@ export type WorkflowIssueKind =
   | 'missing_model'
   | 'persona_model_conflict'
   | 'no_producer'
-  | 'no_consumer';
+  | 'no_consumer'
+  | 'subworkflow_dependency'
+  | 'subworkflow_template'
+  | 'subworkflow_coordinator'
+  | 'subworkflow_blocked_event'
+  | 'subworkflow_joined_event'
+  | 'subworkflow_limits';
 
 export interface WorkflowIssue {
   kind: WorkflowIssueKind;
@@ -57,8 +64,10 @@ export interface WorkflowIssue {
  * 4. **confidence_underset** — when any stage is run-mapped, other `stage`
  *    nodes without `runId` are treated as unplanned work.
  * 5. **missing_persona** — `stage` node has no stage members or persona IDs.
- * 6. **no_producer** — `gate`/`cond` node has no incoming edges.
- * 7. **no_consumer** — `stage`/`wait` node has no outgoing edges
+ * 6. **subworkflow contract** — child dependency, coordinator, events, and
+ *    runtime expansion limits are complete and internally consistent.
+ * 7. **no_producer** — `gate`/`cond` node has no incoming edges.
+ * 8. **no_consumer** — `stage`/`wait` node has no outgoing edges
  *    (non-singleton workflow).
  *
  * Returns an empty array when the workflow is valid.
@@ -182,7 +191,130 @@ export function validateWorkflowFull(
     });
   }
 
-  // ── 6. No-producer ────────────────────────────────────────────────────────
+  // A child workflow is executable only when every runtime-owned part of its
+  // expansion contract can be resolved from the saved parent document. The
+  // joined event deliberately lives on its outgoing edge; it is not a second
+  // node field that could drift from the graph.
+  for (const node of nodes) {
+    if (node.kind !== 'subworkflow') continue;
+
+    const templateEntries = Object.entries(node.templates ?? {});
+    if (templateEntries.length === 0) {
+      issues.push({
+        kind: 'subworkflow_dependency',
+        nodeId: node.id,
+        message: 'Child workflow must declare at least one template',
+        severity: 'error',
+      });
+    }
+    for (const [templateName, alias] of templateEntries) {
+      if (!templateName.trim()) {
+        issues.push({
+          kind: 'subworkflow_template',
+          nodeId: node.id,
+          message: 'Child workflow template names must not be blank',
+          severity: 'error',
+        });
+        continue;
+      }
+      if (!alias || !workflow.workflowDependencies?.[alias]) {
+        issues.push({
+          kind: 'subworkflow_dependency',
+          nodeId: node.id,
+          message: `Template '${templateName}' must select a declared workflow dependency`,
+          severity: 'error',
+        });
+      }
+    }
+
+    const templateNames = new Set(templateEntries.map(([templateName]) => templateName));
+    for (const declaredChild of node.children ?? []) {
+      const childTemplate = declaredChild.template?.trim();
+      if (!childTemplate) {
+        if (templateNames.size > 1) {
+          issues.push({
+            kind: 'subworkflow_template',
+            nodeId: node.id,
+            message: `Child '${declaredChild.key}' must name a template; this node offers: ${[...templateNames].sort().join(', ')}`,
+            severity: 'error',
+          });
+        }
+        continue;
+      }
+      if (!templateNames.has(childTemplate)) {
+        issues.push({
+          kind: 'subworkflow_template',
+          nodeId: node.id,
+          message: `Child '${declaredChild.key}' names unknown template '${childTemplate}'`,
+          severity: 'error',
+        });
+      }
+    }
+
+    if (!node.allowedCoordinator || !workflow.personaDependencies?.[node.allowedCoordinator]) {
+      issues.push({
+        kind: 'subworkflow_coordinator',
+        nodeId: node.id,
+        message: 'Child workflow coordinator must be a declared persona dependency',
+        severity: 'error',
+      });
+    }
+
+    const blockedEvent = node.blockedEvent?.trim() ?? '';
+    if (!blockedEvent) {
+      issues.push({
+        kind: 'subworkflow_blocked_event',
+        nodeId: node.id,
+        message: 'Child workflow must declare the event published when its children block',
+        severity: 'error',
+      });
+    }
+
+    const outgoingEdges = edges.filter((edge) => edge.source === node.id);
+    const parsedOutgoing = outgoingEdges.map((edge) => parseWorkflowEdgeLabel(edge.label));
+    const joinedEvents = new Set(
+      parsedOutgoing.map((contract) => contract?.sourceEventType.trim() ?? '').filter(Boolean),
+    );
+    if (
+      outgoingEdges.length === 0 ||
+      parsedOutgoing.some((contract) => contract === null) ||
+      joinedEvents.size !== 1
+    ) {
+      issues.push({
+        kind: 'subworkflow_joined_event',
+        nodeId: node.id,
+        message: 'Child workflow outgoing connections must name one joined event',
+        severity: 'error',
+      });
+    } else if (blockedEvent && joinedEvents.has(blockedEvent)) {
+      issues.push({
+        kind: 'subworkflow_joined_event',
+        nodeId: node.id,
+        message: 'Child workflow joined event must differ from its blocked event',
+        severity: 'error',
+      });
+    }
+
+    const maxActiveChildren = node.maxActiveChildren ?? node.maxChildren;
+    if (
+      node.maxChildren <= 0 ||
+      node.maxChildren > 100 ||
+      node.maxAttempts <= 0 ||
+      node.maxAttempts > 10 ||
+      maxActiveChildren <= 0 ||
+      maxActiveChildren > node.maxChildren
+    ) {
+      issues.push({
+        kind: 'subworkflow_limits',
+        nodeId: node.id,
+        message:
+          'Child workflow limits require at most 100 children, 10 attempts, and active children no greater than total children',
+        severity: 'error',
+      });
+    }
+  }
+
+  // ── 7. No-producer ────────────────────────────────────────────────────────
   // Gates, conditions, and terminal nodes should have at least one inbound connection.
   if (nodes.length > 1) {
     for (const node of nodes) {
@@ -199,7 +331,7 @@ export function validateWorkflowFull(
     }
   }
 
-  // ── 7. No-consumer ────────────────────────────────────────────────────────
+  // ── 8. No-consumer ────────────────────────────────────────────────────────
   // Stage and passive wait nodes with no outgoing edges are dead ends.
   if (nodes.length > 1) {
     for (const node of nodes) {

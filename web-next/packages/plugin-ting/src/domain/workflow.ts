@@ -321,7 +321,15 @@ export const workflowSchema = z
     personaDependencies: z.record(z.string(), workflowPersonaDependencySchema).default({}),
     /** Storage revision used for conditional writes. */
     revision: z.string().nullable().optional(),
-    /** Bundled definitions cannot be overwritten; edit-as-copy creates a local workflow. */
+    /** Immutable document revision for the selected workflow version. */
+    documentRevision: z.string().nullable().optional(),
+    /** Whether this immutable document is the current workflow head. */
+    isHead: z.boolean().optional(),
+    /** Where this workflow identity originated. */
+    origin: z.enum(['bundled', 'authored']).optional(),
+    /** Whether the current principal may create a successor version. */
+    canEdit: z.boolean().optional(),
+    /** Legacy backend hint. Editor view/edit mode is controlled separately. */
     readOnly: z.boolean().optional(),
     /** Backend canonical source for the persisted document. */
     canonicalYaml: z.string().optional(),

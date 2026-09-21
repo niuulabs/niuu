@@ -27,6 +27,10 @@ const PERSONAS: PersonaEntry[] = [
     role: 'plan',
     consumes: ['code.requested'],
     produces: ['plan.created'],
+    outcomeEvents: {
+      approved: 'plan.created',
+      needs_research: 'plan.research_requested',
+    },
   },
   {
     id: 'coder',
@@ -257,6 +261,13 @@ function renderPanel(
     personas: PersonaEntry[];
     models: WorkflowStageModelOption[];
     registryMounts: WorkflowRegistryMount[];
+    workflows: Workflow[];
+    onOpenWorkflow: (workflow: Workflow) => void;
+    onSelectSubworkflowTemplate: (nodeId: string, templateName: string, workflow: Workflow) => void;
+    onAddSubworkflowTemplate: (nodeId: string, name?: string) => void;
+    onRenameSubworkflowTemplate: (nodeId: string, previousName: string, nextName: string) => void;
+    onRemoveSubworkflowTemplate: (nodeId: string, name: string) => void;
+    readOnly: boolean;
   }> = {},
 ) {
   const props = {
@@ -268,6 +279,13 @@ function renderPanel(
     personas: overrides.personas ?? PERSONAS,
     models: overrides.models ?? MODELS,
     registryMounts: overrides.registryMounts ?? REGISTRY_MOUNTS,
+    workflows: overrides.workflows ?? [],
+    readOnly: overrides.readOnly,
+    onOpenWorkflow: overrides.onOpenWorkflow ?? vi.fn(),
+    onSelectSubworkflowTemplate: overrides.onSelectSubworkflowTemplate ?? vi.fn(),
+    onAddSubworkflowTemplate: overrides.onAddSubworkflowTemplate ?? vi.fn(),
+    onRenameSubworkflowTemplate: overrides.onRenameSubworkflowTemplate ?? vi.fn(),
+    onRemoveSubworkflowTemplate: overrides.onRemoveSubworkflowTemplate ?? vi.fn(),
     onDeleteNode: vi.fn(),
     onUpdateNode: vi.fn(),
     onUpdateLabel: vi.fn(),
@@ -302,8 +320,11 @@ describe('WorkflowDetailPanel', () => {
     });
     expect(props.onUpdateWorkflowMeta).toHaveBeenCalledWith({ description: 'Revised description' });
 
-    fireEvent.change(screen.getByDisplayValue('0.1.0'), { target: { value: '1.0.0' } });
-    expect(props.onUpdateWorkflowMeta).toHaveBeenCalledWith({ version: '1.0.0' });
+    expect(screen.getByDisplayValue('0.1.0')).toHaveAttribute('readonly');
+    expect(screen.getByDisplayValue('0.1.0')).toHaveAttribute(
+      'title',
+      'The server assigns the next version when this workflow is saved.',
+    );
 
     fireEvent.change(screen.getByPlaceholderText('research, campaign, review'), {
       target: { value: 'Alpha, Beta' },
@@ -312,6 +333,11 @@ describe('WorkflowDetailPanel', () => {
 
     expect(screen.getByText('ERR 1')).toBeInTheDocument();
     expect(screen.getByText('WARN 2')).toBeInTheDocument();
+  });
+
+  it('keeps system-template inspector fields read only', () => {
+    renderPanel(STAGE_NODE, { workflow: { ...BASE_WORKFLOW, readOnly: true } });
+    expect(screen.getByDisplayValue('Plan work')).toBeDisabled();
   });
 
   it('updates stage configuration and validation details', () => {
@@ -337,6 +363,9 @@ describe('WorkflowDetailPanel', () => {
     const { props } = renderPanel(STAGE_NODE);
 
     fireEvent.click(screen.getByRole('button', { name: 'flock' }));
+    expect(screen.getByText('approved')).toBeInTheDocument();
+    expect(screen.getByText('needs research')).toBeInTheDocument();
+    expect(screen.getByText('plan.research_requested')).toBeInTheDocument();
     const selects = screen.getAllByRole('combobox');
 
     fireEvent.change(screen.getByDisplayValue('40'), { target: { value: '55' } });
@@ -615,6 +644,320 @@ describe('WorkflowDetailPanel', () => {
     expect(screen.getByText(/Terminal node/)).toBeInTheDocument();
   });
 
+  it('opens a resolved child workflow from a subworkflow inspector', () => {
+    const child: Workflow = {
+      ...BASE_WORKFLOW,
+      id: 'bca8d32b-12fc-402e-b632-c1c13db19b47',
+      name: 'Research Thread',
+      documentRevision: 'sha256:child',
+    };
+    const node: WorkflowNode = {
+      id: 'child-1',
+      kind: 'subworkflow',
+      label: 'Research threads',
+      position: { x: 300, y: 120 },
+      templates: { default: 'thread' },
+      allowedCoordinator: 'research-coordinator',
+      inputSchema: { type: 'object' },
+      resultSchema: { type: 'object' },
+      maxChildren: 8,
+      maxAttempts: 2,
+      joinMode: 'all',
+    };
+    const parent: Workflow = {
+      ...BASE_WORKFLOW,
+      nodes: [node],
+      workflowDependencies: {
+        thread: {
+          id: child.id,
+          revision: 'sha256:child',
+          digest: 'sha256:child',
+        },
+      },
+    };
+    const onOpenWorkflow = vi.fn();
+    renderPanel(node, {
+      workflow: parent,
+      workflows: [child],
+      onOpenWorkflow,
+      readOnly: true,
+    });
+
+    expect(screen.getByLabelText('Child workflow')).toBeDisabled();
+    expect(screen.getByTestId('open-child-workflow')).toBeEnabled();
+    fireEvent.click(screen.getByTestId('open-child-workflow'));
+    expect(onOpenWorkflow).toHaveBeenCalledWith(child);
+  });
+
+  it('uses the pinned child id instead of an earlier catalog name or alias match', () => {
+    const pinnedChild: Workflow = {
+      ...BASE_WORKFLOW,
+      id: 'bca8d32b-12fc-402e-b632-c1c13db19b47',
+      name: 'Pinned child',
+      documentRevision: 'sha256:pinned',
+    };
+    const decoy: Workflow = {
+      ...BASE_WORKFLOW,
+      id: 'bca8d32b-12fc-402e-b632-c1c13db19b48',
+      name: pinnedChild.id,
+      documentRevision: 'sha256:decoy',
+    };
+    const node: WorkflowNode = {
+      id: 'child-1',
+      kind: 'subworkflow',
+      label: 'Child work',
+      position: { x: 300, y: 120 },
+      templates: { default: 'thread' },
+      allowedCoordinator: 'planner',
+      inputSchema: { type: 'object', properties: {} },
+      resultSchema: { type: 'object', properties: {} },
+      maxChildren: 8,
+      maxAttempts: 2,
+      maxActiveChildren: 4,
+      joinMode: 'all',
+      blockedEvent: 'children.blocked',
+    };
+    const parent: Workflow = {
+      ...BASE_WORKFLOW,
+      nodes: [node],
+      workflowDependencies: {
+        thread: {
+          id: pinnedChild.id,
+          revision: 'sha256:pinned',
+          digest: 'sha256:pinned',
+        },
+      },
+    };
+    const onOpenWorkflow = vi.fn();
+    renderPanel(node, {
+      workflow: parent,
+      workflows: [decoy, pinnedChild],
+      onOpenWorkflow,
+    });
+
+    fireEvent.click(screen.getByTestId('open-child-workflow'));
+
+    expect(onOpenWorkflow).toHaveBeenCalledWith(pinnedChild);
+    expect(onOpenWorkflow).not.toHaveBeenCalledWith(decoy);
+  });
+
+  it('does not navigate by alias when an authoritative pin is absent from the catalog', () => {
+    const aliasMatch: Workflow = {
+      ...BASE_WORKFLOW,
+      id: 'thread',
+      name: 'Wrong child',
+      documentRevision: 'sha256:wrong',
+    };
+    const node: WorkflowNode = {
+      id: 'child-1',
+      kind: 'subworkflow',
+      label: 'Child work',
+      position: { x: 300, y: 120 },
+      templates: { default: 'thread' },
+      allowedCoordinator: 'planner',
+      inputSchema: { type: 'object', properties: {} },
+      resultSchema: { type: 'object', properties: {} },
+      maxChildren: 8,
+      maxAttempts: 2,
+      maxActiveChildren: 4,
+      joinMode: 'all',
+      blockedEvent: 'children.blocked',
+    };
+    const parent: Workflow = {
+      ...BASE_WORKFLOW,
+      nodes: [node],
+      workflowDependencies: {
+        thread: {
+          id: 'bca8d32b-12fc-402e-b632-c1c13db19b49',
+          revision: 'sha256:missing',
+          digest: 'sha256:missing',
+        },
+      },
+    };
+    renderPanel(node, { workflow: parent, workflows: [aliasMatch] });
+
+    expect(screen.queryByTestId('open-child-workflow')).not.toBeInTheDocument();
+  });
+
+  it('selects exact catalog children and exposes saveable coordinator and limit controls', () => {
+    const child: Workflow = {
+      ...BASE_WORKFLOW,
+      id: 'bca8d32b-12fc-402e-b632-c1c13db19b47',
+      name: 'Research Thread',
+      version: '1.2.0',
+      documentRevision: 'sha256:exact-child',
+    };
+    const node: WorkflowNode = {
+      id: 'child-1',
+      kind: 'subworkflow',
+      label: 'Research threads',
+      position: { x: 300, y: 120 },
+      templates: { default: '' },
+      allowedCoordinator: '',
+      inputSchema: { type: 'object', properties: {} },
+      resultSchema: { type: 'object', properties: {} },
+      maxChildren: 8,
+      maxAttempts: 2,
+      maxActiveChildren: 4,
+      joinMode: 'all',
+      blockedEvent: 'children.blocked',
+    };
+    const parent: Workflow = {
+      ...BASE_WORKFLOW,
+      nodes: [node],
+      personaDependencies: {
+        planner: { id: 'planner', revision: 'persona-r1', digest: 'sha256:planner' },
+      },
+    };
+    const onSelectSubworkflowTemplate = vi.fn();
+    const { props } = renderPanel(node, {
+      workflow: parent,
+      workflows: [parent, child],
+      onSelectSubworkflowTemplate,
+    });
+
+    const selector = screen.getByTestId('child-workflow-select');
+    expect(screen.getByLabelText('Child workflow')).toBe(selector);
+    expect(selector).not.toHaveTextContent('Research Workflow');
+    fireEvent.change(selector, {
+      target: { value: `catalog:${child.id}:${child.documentRevision}` },
+    });
+    expect(onSelectSubworkflowTemplate).toHaveBeenCalledWith('child-1', 'default', child);
+
+    fireEvent.change(screen.getByTestId('subworkflow-coordinator'), {
+      target: { value: 'planner' },
+    });
+    expect(props.onUpdateNode).toHaveBeenCalledWith('child-1', {
+      allowedCoordinator: 'planner',
+    });
+
+    fireEvent.change(screen.getByTestId('subworkflow-max-children'), {
+      target: { value: '3' },
+    });
+    expect(props.onUpdateNode).toHaveBeenCalledWith('child-1', {
+      maxChildren: 3,
+      maxActiveChildren: 3,
+    });
+
+    fireEvent.change(screen.getByTestId('subworkflow-max-active'), {
+      target: { value: '20' },
+    });
+    expect(props.onUpdateNode).toHaveBeenCalledWith('child-1', {
+      maxActiveChildren: 8,
+    });
+
+    fireEvent.change(screen.getByTestId('subworkflow-max-attempts'), {
+      target: { value: '20' },
+    });
+    expect(props.onUpdateNode).toHaveBeenCalledWith('child-1', {
+      maxAttempts: 10,
+    });
+
+    fireEvent.change(screen.getByTestId('subworkflow-blocked-event'), {
+      target: { value: 'research.children.blocked' },
+    });
+    expect(props.onUpdateNode).toHaveBeenCalledWith('child-1', {
+      blockedEvent: 'research.children.blocked',
+    });
+    expect(screen.getByText(/Connect this node to a next step/)).toBeInTheDocument();
+  });
+
+  it('keeps an older pin explicit when the catalog head is newer', () => {
+    const latest: Workflow = {
+      ...BASE_WORKFLOW,
+      id: 'bca8d32b-12fc-402e-b632-c1c13db19b47',
+      name: 'Research Thread',
+      documentRevision: 'sha256:latest',
+    };
+    const node: WorkflowNode = {
+      id: 'child-1',
+      kind: 'subworkflow',
+      label: 'Research threads',
+      position: { x: 300, y: 120 },
+      templates: { default: 'thread' },
+      allowedCoordinator: 'planner',
+      inputSchema: { type: 'object', properties: {} },
+      resultSchema: { type: 'object', properties: {} },
+      maxChildren: 8,
+      maxAttempts: 2,
+      maxActiveChildren: 4,
+      joinMode: 'all',
+      blockedEvent: 'children.blocked',
+    };
+    const parent: Workflow = {
+      ...BASE_WORKFLOW,
+      nodes: [node],
+      workflowDependencies: {
+        thread: { id: latest.id, revision: 'sha256:old', digest: 'sha256:old' },
+      },
+    };
+    const onSelectSubworkflowTemplate = vi.fn();
+    renderPanel(node, { workflow: parent, workflows: [latest], onSelectSubworkflowTemplate });
+
+    expect(screen.getByTestId('child-workflow-select')).toHaveValue('pinned:sha256:old');
+    expect(screen.getByTestId('child-workflow-pin')).toHaveTextContent('sha256:old');
+    expect(screen.getByTestId('open-child-workflow')).toHaveTextContent('Open latest child');
+    expect(screen.getByTestId('subworkflow-coordinator')).toBeDisabled();
+    expect(screen.getByText(/No coordinator personas are available/i)).toBeInTheDocument();
+    expect(onSelectSubworkflowTemplate).not.toHaveBeenCalled();
+  });
+
+  it('marks unpinnable catalog entries unavailable and accepts one joined event on many edges', () => {
+    const unavailable: Workflow = {
+      ...BASE_WORKFLOW,
+      id: 'bca8d32b-12fc-402e-b632-c1c13db19b47',
+      name: 'Unsaved child',
+      documentRevision: null,
+    };
+    const node: WorkflowNode = {
+      id: 'child-1',
+      kind: 'subworkflow',
+      label: 'Child work',
+      position: { x: 300, y: 120 },
+      templates: { default: '' },
+      allowedCoordinator: '',
+      inputSchema: { type: 'object', properties: {} },
+      resultSchema: { type: 'object', properties: {} },
+      maxChildren: 8,
+      maxAttempts: 2,
+      maxActiveChildren: 4,
+      joinMode: 'all',
+      blockedEvent: 'children.completed',
+    };
+    const parent: Workflow = {
+      ...BASE_WORKFLOW,
+      nodes: [node, END_NODE, { ...END_NODE, id: 'end-2' }],
+      edges: [
+        {
+          id: 'joined-1',
+          source: node.id,
+          target: END_NODE.id,
+          label: 'children.completed -> complete',
+          cp1: { x: 1, y: 0 },
+          cp2: { x: -1, y: 0 },
+        },
+        {
+          id: 'joined-2',
+          source: node.id,
+          target: 'end-2',
+          label: 'children.completed -> complete',
+          cp1: { x: 1, y: 0 },
+          cp2: { x: -1, y: 0 },
+        },
+      ],
+    };
+    const onSelectSubworkflowTemplate = vi.fn();
+    renderPanel(node, { workflow: parent, workflows: [unavailable], onSelectSubworkflowTemplate });
+
+    expect(screen.getByRole('option', { name: /not ready to use/ })).toBeDisabled();
+    expect(screen.getByText('children.completed')).toBeInTheDocument();
+    expect(screen.getByText(/blocked event must differ/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('child-workflow-select'), {
+      target: { value: `catalog:${unavailable.id}:` },
+    });
+    expect(onSelectSubworkflowTemplate).not.toHaveBeenCalled();
+  });
+
   it('shows stage empty states, fallback validation, and stage delete actions', () => {
     const workflow: Workflow = {
       ...BASE_WORKFLOW,
@@ -743,6 +1086,10 @@ describe('WorkflowDetailPanel', () => {
         registryMounts={REGISTRY_MOUNTS}
         onDeleteNode={props.onDeleteNode}
         onUpdateNode={props.onUpdateNode}
+        onSelectSubworkflowTemplate={props.onSelectSubworkflowTemplate}
+        onAddSubworkflowTemplate={props.onAddSubworkflowTemplate}
+        onRenameSubworkflowTemplate={props.onRenameSubworkflowTemplate}
+        onRemoveSubworkflowTemplate={props.onRemoveSubworkflowTemplate}
         onUpdateLabel={props.onUpdateLabel}
         onUpdateWorkflowMeta={props.onUpdateWorkflowMeta}
         onAddPersona={props.onAddPersona}

@@ -33,6 +33,8 @@ class TestTrackerPort:
             "list_issues",
             "update_run_progress",
             "get_run_progress_for_saga",
+            "get_authorized_run_progress_for_saga",
+            "has_unscoped_run_progress_for_saga",
             "get_run_by_session",
             "list_runs_by_status",
             "get_run_by_id",

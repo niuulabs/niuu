@@ -25,11 +25,17 @@ from ting.domain.exceptions import (
     WorkflowDocumentError,
     WorkflowReadOnlyError,
 )
-from ting.domain.models import WorkflowDefinition, WorkflowScope
+from ting.domain.models import WorkflowDefinition, WorkflowScope, WorkflowVersionSummary
 from ting.domain.workflow_document import (
     dump_workflow_document,
     load_workflow_document,
     workflow_document_revision,
+)
+from ting.domain.workflow_versioning import (
+    WorkflowVersionBump,
+    deserialize_workflow_version,
+    next_workflow_version,
+    serialize_workflow_version,
 )
 from ting.ports.workflow_repository import WorkflowRepository
 from ting.system_workflows import load_bundled_workflow
@@ -45,6 +51,8 @@ _METADATA_KEYS = {
     "requirements",
 }
 _OPTIONAL_METADATA_KEYS = {"workflow_definitions"}
+_VERSION_METADATA_KEYS = {"origin", "based_on_revision"}
+_REVISION_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class FilesystemWorkflowRepository(WorkflowRepository):
@@ -71,6 +79,7 @@ class FilesystemWorkflowRepository(WorkflowRepository):
         else:
             self._bundled_path = None
         self._metadata_path = self._catalog_path / ".metadata"
+        self._history_path = self._catalog_path / ".history"
         self._transaction_path = self._catalog_path / ".transactions"
         self._lock_path = self._catalog_path / ".catalog.lock"
         self._create_directory = create_directory
@@ -89,6 +98,39 @@ class FilesystemWorkflowRepository(WorkflowRepository):
 
     async def save_workflow(self, workflow: WorkflowDefinition) -> WorkflowDefinition:
         return await asyncio.to_thread(self._save_sync, workflow)
+
+    async def list_workflow_versions(self, workflow_id: UUID) -> list[WorkflowVersionSummary]:
+        return await asyncio.to_thread(self._list_versions_sync, workflow_id)
+
+    async def get_workflow_version(
+        self,
+        workflow_id: UUID,
+        *,
+        version: str | None = None,
+        document_revision: str | None = None,
+    ) -> WorkflowDefinition | None:
+        return await asyncio.to_thread(
+            self._get_version_sync,
+            workflow_id,
+            version,
+            document_revision,
+        )
+
+    async def save_workflow_version(
+        self,
+        workflow: WorkflowDefinition,
+        *,
+        expected_revision: str | None,
+        base_revision: str,
+        bump: WorkflowVersionBump = "patch",
+    ) -> WorkflowDefinition:
+        return await asyncio.to_thread(
+            self._save_version_sync,
+            workflow,
+            expected_revision,
+            base_revision,
+            bump,
+        )
 
     async def delete_workflow(self, workflow_id: UUID) -> bool:
         return await asyncio.to_thread(self._delete_sync, workflow_id)
@@ -172,6 +214,7 @@ class FilesystemWorkflowRepository(WorkflowRepository):
                     f"Bundled workflow directory is not readable: {self._bundled_path}"
                 )
         self._metadata_path.mkdir(mode=0o700, exist_ok=True)
+        self._history_path.mkdir(mode=0o700, exist_ok=True)
         self._transaction_path.mkdir(mode=0o700, exist_ok=True)
         self._lock_path.touch(mode=0o600, exist_ok=True)
         probe = self._catalog_path / f".write-probe-{os.getpid()}"
@@ -211,11 +254,66 @@ class FilesystemWorkflowRepository(WorkflowRepository):
             self._recover_transactions()
             return self._load_all().get(workflow_id)
 
+    def _list_versions_sync(self, workflow_id: UUID) -> list[WorkflowVersionSummary]:
+        with self._locked():
+            self._recover_transactions()
+            head = self._load_all().get(workflow_id)
+            if head is None:
+                return []
+            versions = self._version_candidates(workflow_id, head)
+        summaries = [
+            WorkflowVersionSummary(
+                workflow_id=workflow_id,
+                version=item.version,
+                document_revision=self._document_revision(item),
+                created_at=item.updated_at,
+                is_head=item.is_head,
+                based_on_revision=item.based_on_revision,
+                origin=item.origin,
+            )
+            for item in versions
+        ]
+        return sorted(summaries, key=lambda item: (item.created_at, item.version), reverse=True)
+
+    def _get_version_sync(
+        self,
+        workflow_id: UUID,
+        version: str | None,
+        document_revision: str | None,
+    ) -> WorkflowDefinition | None:
+        if version is not None and document_revision is not None:
+            raise ValueError("Select a workflow version by version or document revision, not both")
+        with self._locked():
+            self._recover_transactions()
+            head = self._load_all().get(workflow_id)
+            if head is None:
+                return None
+            versions = self._version_candidates(workflow_id, head)
+        if version is None and document_revision is None:
+            return head
+        matches = [
+            item
+            for item in versions
+            if (version is not None and item.version == version)
+            or (
+                document_revision is not None and self._document_revision(item) == document_revision
+            )
+        ]
+        if len(matches) > 1:
+            raise WorkflowDocumentError(
+                f"Workflow {workflow_id} has multiple immutable snapshots for version {version!r}"
+            )
+        return matches[0] if matches else None
+
     def _save_sync(self, workflow: WorkflowDefinition) -> WorkflowDefinition:
         with self._locked():
             self._recover_transactions()
             workflows = self._load_all()
             existing = workflows.get(workflow.id)
+            if existing is None and workflow.revision is not None:
+                raise WorkflowConflictError(
+                    f"Workflow {workflow.id} no longer exists at revision {workflow.revision!r}"
+                )
             if existing is not None and existing.read_only:
                 raise WorkflowReadOnlyError(
                     f"Bundled workflow {workflow.id} is read-only; save an editable copy "
@@ -227,18 +325,38 @@ class FilesystemWorkflowRepository(WorkflowRepository):
                     f"(expected revision {workflow.revision!r}, current {existing.revision!r})"
                 )
             if existing is not None and (
-                workflow.owner_id != existing.owner_id or workflow.tenant_id != existing.tenant_id
+                workflow.owner_id != existing.owner_id
+                or workflow.tenant_id != existing.tenant_id
+                or workflow.scope != existing.scope
             ):
-                raise AuthorizationDeniedError("Resource ownership is immutable")
+                raise AuthorizationDeniedError("Resource ownership and scope are immutable")
 
             now = datetime.now(UTC)
+            version = workflow.version
+            if existing is not None:
+                version = next_workflow_version(existing.version)
+                if any(
+                    payload.get("document", {}).get("version") == version
+                    for payload in self._load_history_payloads(workflow.id)
+                ):
+                    raise WorkflowConflictError(
+                        f"Workflow {workflow.id} version {version} already exists"
+                    )
+            elif self._load_history_payloads(workflow.id):
+                raise WorkflowConflictError(
+                    f"Workflow {workflow.id} was deleted and cannot be recreated implicitly"
+                )
             stored = replace(
                 workflow,
+                version=version,
                 created_at=existing.created_at if existing is not None else workflow.created_at,
                 updated_at=now if existing is not None else workflow.updated_at,
                 read_only=False,
                 source=None,
                 revision=None,
+                is_head=True,
+                origin="authored",
+                based_on_revision=self._legacy_base_revision(existing),
             )
             document_path = self._existing_document_path(existing)
             if document_path is None:
@@ -248,13 +366,98 @@ class FilesystemWorkflowRepository(WorkflowRepository):
             # Validate exactly what will become visible before starting publication.
             load_workflow_document(document_text)
             revision = self._aggregate_revision(stored)
-            stored = replace(stored, revision=revision)
+            stored = replace(
+                stored,
+                revision=revision,
+                document_revision=workflow_document_revision(stored),
+            )
             metadata_text = self._dump_metadata(stored)
-            self._publish_transaction(
+            snapshots = self._snapshots_for_legacy_save(existing, stored)
+            self._publish_version_transaction(
                 stored.id,
                 document_path.name,
                 document_text,
                 metadata_text,
+                snapshots,
+                bundled_replacement=self._is_bundled(existing),
+            )
+            return stored
+
+    def _save_version_sync(
+        self,
+        workflow: WorkflowDefinition,
+        expected_revision: str | None,
+        base_revision: str,
+        bump: WorkflowVersionBump,
+    ) -> WorkflowDefinition:
+        with self._locked():
+            self._recover_transactions()
+            existing = self._load_all().get(workflow.id)
+            if existing is None:
+                raise WorkflowConflictError(
+                    f"Workflow {workflow.id} has no current head to advance"
+                )
+            if existing.revision != expected_revision:
+                raise WorkflowConflictError(
+                    f"Workflow {workflow.id} changed after it was read "
+                    f"(expected revision {expected_revision!r}, current {existing.revision!r})"
+                )
+            if (
+                workflow.owner_id != existing.owner_id
+                or workflow.tenant_id != existing.tenant_id
+                or workflow.scope != existing.scope
+            ):
+                raise AuthorizationDeniedError("Resource ownership and scope are immutable")
+
+            candidates = self._version_candidates(workflow.id, existing)
+            bases = [item for item in candidates if self._document_revision(item) == base_revision]
+            if not bases:
+                raise WorkflowConflictError(
+                    f"Workflow {workflow.id} base revision {base_revision!r} does not exist"
+                )
+            if len(bases) > 1:  # pragma: no cover - document revisions are content hashes
+                raise WorkflowDocumentError(
+                    f"Workflow {workflow.id} has duplicate base revision {base_revision!r}"
+                )
+
+            next_version = next_workflow_version(existing.version, bump)
+            if any(item.version == next_version for item in candidates):
+                raise WorkflowConflictError(
+                    f"Workflow {workflow.id} version {next_version} already exists"
+                )
+            now = datetime.now(UTC)
+            stored = replace(
+                workflow,
+                version=next_version,
+                created_at=existing.created_at,
+                updated_at=now,
+                read_only=False,
+                source=None,
+                revision=None,
+                document_revision=None,
+                is_head=True,
+                origin="authored",
+                based_on_revision=base_revision,
+            )
+            document_path = self._existing_document_path(existing)
+            if document_path is None:
+                document_path = self._new_document_path(stored)
+            stored = replace(stored, source=f"local:{document_path.name}")
+            document_text = dump_workflow_document(stored)
+            load_workflow_document(document_text)
+            stored = replace(
+                stored,
+                revision=self._aggregate_revision(stored),
+                document_revision=workflow_document_revision(stored),
+            )
+            snapshots = self._snapshot_payloads(candidates, stored)
+            self._publish_version_transaction(
+                stored.id,
+                document_path.name,
+                document_text,
+                self._dump_metadata(stored),
+                snapshots,
+                bundled_replacement=self._is_bundled(existing),
             )
             return stored
 
@@ -273,6 +476,194 @@ class FilesystemWorkflowRepository(WorkflowRepository):
                 )
             self._publish_delete(workflow_id, document_path.name)
             return True
+
+    @staticmethod
+    def _document_revision(workflow: WorkflowDefinition) -> str:
+        return workflow.document_revision or workflow_document_revision(workflow)
+
+    @staticmethod
+    def _is_bundled(workflow: WorkflowDefinition | None) -> bool:
+        return bool(
+            workflow is not None
+            and (workflow.origin == "bundled" or (workflow.source or "").startswith("bundled:"))
+        )
+
+    def _find_bundled(self, workflow_id: UUID) -> WorkflowDefinition | None:
+        if self._bundled_path is None:
+            return None
+        found: WorkflowDefinition | None = None
+        for path in sorted(self._bundled_path.glob("*.yaml")):
+            candidate = self._load_bundled(path)
+            if candidate.id != workflow_id:
+                continue
+            if found is not None:
+                raise WorkflowDocumentError(
+                    f"Duplicate bundled workflow id {workflow_id} found while loading {path}"
+                )
+            found = candidate
+        return found
+
+    def _history_files(self, workflow_id: UUID) -> list[Path]:
+        directory = self._history_path / str(workflow_id)
+        if not directory.is_dir():
+            return []
+        return sorted(directory.glob("*.json"))
+
+    def _load_history_payloads(self, workflow_id: UUID) -> list[dict[str, Any]]:
+        payloads: list[dict[str, Any]] = []
+        for path in self._history_files(workflow_id):
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise WorkflowDocumentError(
+                    f"Cannot read workflow version snapshot {path}: {exc}"
+                ) from exc
+            if not isinstance(value, dict):
+                raise WorkflowDocumentError(f"Workflow version snapshot {path} must be an object")
+            revision = value.get("document_revision")
+            if not isinstance(revision, str) or self._history_filename(revision) != path.name:
+                raise WorkflowDocumentError(
+                    f"Workflow version snapshot {path} does not match its filename"
+                )
+            try:
+                restored = deserialize_workflow_version(
+                    value,
+                    head_revision=None,
+                    is_head=False,
+                )
+            except (TypeError, ValueError) as exc:
+                raise WorkflowDocumentError(
+                    f"Invalid immutable workflow snapshot {path}: {exc}"
+                ) from exc
+            if restored.id != workflow_id:
+                raise WorkflowDocumentError(
+                    f"Workflow version snapshot {path} belongs to {restored.id}"
+                )
+            payloads.append(value)
+        return payloads
+
+    def _legacy_base_revision(self, existing: WorkflowDefinition | None) -> str | None:
+        if existing is None:
+            return None
+        existing_revision = self._document_revision(existing)
+        payloads = self._load_history_payloads(existing.id)
+        if any(payload["document_revision"] == existing_revision for payload in payloads):
+            return existing_revision
+        if not payloads:
+            return existing_revision
+        latest = max(payloads, key=lambda payload: str(payload["updated_at"]))
+        return str(latest["document_revision"])
+
+    def _version_candidates(
+        self,
+        workflow_id: UUID,
+        head: WorkflowDefinition,
+    ) -> list[WorkflowDefinition]:
+        head_document_revision = self._document_revision(head)
+        result: list[WorkflowDefinition] = []
+        payloads = self._load_history_payloads(workflow_id)
+        revisions = {str(payload["document_revision"]) for payload in payloads}
+        for payload in payloads:
+            item_revision = str(payload["document_revision"])
+            item = deserialize_workflow_version(
+                payload,
+                head_revision=head.revision,
+                is_head=item_revision == head_document_revision,
+            )
+            result.append(head if item_revision == head_document_revision else item)
+        if head_document_revision not in revisions:
+            result.append(head)
+        versions: dict[str, str] = {}
+        for item in result:
+            revision = self._document_revision(item)
+            prior = versions.get(item.version)
+            if prior is not None and prior != revision:
+                raise WorkflowDocumentError(
+                    f"Workflow {workflow_id} has conflicting snapshots for version {item.version}"
+                )
+            versions[item.version] = revision
+        return result
+
+    def _snapshots_for_legacy_save(
+        self,
+        existing: WorkflowDefinition | None,
+        stored: WorkflowDefinition,
+    ) -> list[dict[str, Any]]:
+        payloads = self._load_history_payloads(stored.id)
+        if not payloads:
+            original = existing
+            # Migration authorizes a divergent package replacement before it
+            # writes the imported row. Preserve that established cutover path:
+            # its source version may deliberately equal the bundled label.
+            if original is None and stored.id not in self._load_bundled_replacements():
+                original = self._find_bundled(stored.id)
+            if original is not None:
+                payloads.append(serialize_workflow_version(original))
+        payloads.append(serialize_workflow_version(stored))
+        return self._deduplicate_snapshot_payloads(payloads)
+
+    def _snapshot_payloads(
+        self,
+        candidates: list[WorkflowDefinition],
+        stored: WorkflowDefinition,
+    ) -> list[dict[str, Any]]:
+        return self._deduplicate_snapshot_payloads(
+            [
+                *(serialize_workflow_version(item) for item in candidates),
+                serialize_workflow_version(stored),
+            ]
+        )
+
+    @staticmethod
+    def _deduplicate_snapshot_payloads(
+        payloads: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        result: dict[str, dict[str, Any]] = {}
+        for payload in payloads:
+            revision = payload.get("document_revision")
+            if not isinstance(revision, str) or not _REVISION_PATTERN.fullmatch(revision):
+                raise WorkflowDocumentError("Workflow version has an invalid document revision")
+            existing = result.get(revision)
+            if existing is not None and existing != payload:
+                raise WorkflowDocumentError(f"Workflow document revision collision for {revision}")
+            result[revision] = payload
+        return list(result.values())
+
+    def _assert_snapshot_publication_safe(
+        self,
+        workflow_id: UUID,
+        payloads: list[dict[str, Any]],
+    ) -> None:
+        versions: dict[str, str] = {}
+        for payload in payloads:
+            document = payload.get("document")
+            version = document.get("version") if isinstance(document, dict) else None
+            revision = payload.get("document_revision")
+            if not isinstance(version, str) or not isinstance(revision, str):
+                raise WorkflowDocumentError("Workflow version snapshot is missing identity fields")
+            prior = versions.get(version)
+            if prior is not None and prior != revision:
+                raise WorkflowConflictError(
+                    f"Workflow {workflow_id} has conflicting snapshots for version {version}"
+                )
+            versions[version] = revision
+            path = self._history_path / str(workflow_id) / self._history_filename(revision)
+            if not path.is_file():
+                continue
+            try:
+                current = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise WorkflowDocumentError(
+                    f"Cannot verify immutable workflow version {path}: {exc}"
+                ) from exc
+            if current != payload:
+                raise WorkflowDocumentError(f"Immutable workflow version collision at {path}")
+
+    @staticmethod
+    def _history_filename(document_revision: str) -> str:
+        if not _REVISION_PATTERN.fullmatch(document_revision):
+            raise WorkflowDocumentError(f"Invalid workflow document revision {document_revision!r}")
+        return f"{document_revision.removeprefix('sha256:')}.json"
 
     def _load_all(self) -> dict[UUID, WorkflowDefinition]:
         result: dict[UUID, WorkflowDefinition] = {}
@@ -337,7 +728,14 @@ class FilesystemWorkflowRepository(WorkflowRepository):
     def _load_bundled(self, path: Path) -> WorkflowDefinition:
         if self._bundled_path is None:  # pragma: no cover - guarded by callers
             raise WorkflowDocumentError("Bundled workflow storage is disabled")
-        return load_bundled_workflow(path, bundle_root=self._bundled_path.parent)
+        workflow = load_bundled_workflow(path, bundle_root=self._bundled_path.parent)
+        return replace(
+            workflow,
+            document_revision=workflow_document_revision(workflow),
+            is_head=True,
+            origin="bundled",
+            based_on_revision=None,
+        )
 
     def _load_local(self, path: Path) -> WorkflowDefinition:
         document = self._read_document(path)
@@ -347,7 +745,7 @@ class FilesystemWorkflowRepository(WorkflowRepository):
                 f"Workflow {document.id} is missing metadata sidecar {metadata_path}"
             )
         metadata = self._load_metadata(metadata_path, document.id)
-        return document.to_workflow(
+        workflow = document.to_workflow(
             scope=metadata["scope"],
             owner_id=metadata["owner_id"],
             tenant_id=metadata["tenant_id"],
@@ -361,12 +759,21 @@ class FilesystemWorkflowRepository(WorkflowRepository):
                 persona_definitions=metadata["persona_definitions"],
                 workflow_definitions=metadata["workflow_definitions"],
                 requirements=metadata["requirements"],
+                origin=metadata["origin"],
+                based_on_revision=metadata["based_on_revision"],
             ),
             read_only=False,
             source=f"local:{path.name}",
             persona_definitions=metadata["persona_definitions"],
             workflow_definitions=metadata["workflow_definitions"],
             requirements=metadata["requirements"],
+        )
+        return replace(
+            workflow,
+            document_revision=workflow_document_revision(document),
+            is_head=True,
+            origin=metadata["origin"],
+            based_on_revision=metadata["based_on_revision"],
         )
 
     @staticmethod
@@ -389,7 +796,7 @@ class FilesystemWorkflowRepository(WorkflowRepository):
             raise WorkflowDocumentError(f"Workflow metadata {path} must be a mapping")
         if any(not isinstance(key, str) for key in raw):
             raise WorkflowDocumentError(f"Workflow metadata {path} has a non-string field name")
-        unknown = set(raw) - _METADATA_KEYS - _OPTIONAL_METADATA_KEYS
+        unknown = set(raw) - _METADATA_KEYS - _OPTIONAL_METADATA_KEYS - _VERSION_METADATA_KEYS
         missing = _METADATA_KEYS - set(raw)
         if unknown or missing:
             detail = []
@@ -420,6 +827,17 @@ class FilesystemWorkflowRepository(WorkflowRepository):
                 f"Workflow metadata {path} persona_definitions must be a mapping"
             )
         requirements = raw["requirements"]
+        origin = raw.get("origin", "authored")
+        based_on_revision = raw.get("based_on_revision")
+        if not isinstance(origin, str) or not origin:
+            raise WorkflowDocumentError(f"Workflow metadata {path} origin must be a string")
+        if based_on_revision is not None and (
+            not isinstance(based_on_revision, str)
+            or not _REVISION_PATTERN.fullmatch(based_on_revision)
+        ):
+            raise WorkflowDocumentError(
+                f"Workflow metadata {path} based_on_revision must be a document revision or null"
+            )
         workflow_definitions = raw.get("workflow_definitions", {})
         if not isinstance(workflow_definitions, dict):
             raise WorkflowDocumentError(
@@ -440,6 +858,8 @@ class FilesystemWorkflowRepository(WorkflowRepository):
             "persona_definitions": persona_definitions,
             "workflow_definitions": workflow_definitions,
             "requirements": requirements,
+            "origin": origin,
+            "based_on_revision": based_on_revision,
         }
 
     @staticmethod
@@ -475,22 +895,30 @@ class FilesystemWorkflowRepository(WorkflowRepository):
             "persona_definitions": workflow.persona_definitions,
             "workflow_definitions": workflow.workflow_definitions,
             "requirements": workflow.requirements,
+            "origin": workflow.origin,
+            "based_on_revision": workflow.based_on_revision,
         }
         return yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, width=100)
 
-    def _publish_transaction(
+    def _publish_version_transaction(
         self,
         workflow_id: UUID,
         document_name: str,
         document_text: str,
         metadata_text: str,
+        versions: list[dict[str, Any]],
+        *,
+        bundled_replacement: bool,
     ) -> None:
+        self._assert_snapshot_publication_safe(workflow_id, versions)
         journal = {
-            "operation": "write",
+            "operation": "write_version",
             "id": str(workflow_id),
             "document_name": document_name,
             "document": document_text,
             "metadata": metadata_text,
+            "versions": versions,
+            "bundled_replacement": bundled_replacement,
         }
         journal_path = self._transaction_path / f"{workflow_id}.yaml"
         self._atomic_replace(
@@ -577,6 +1005,29 @@ class FilesystemWorkflowRepository(WorkflowRepository):
             journal_path.unlink()
             self._fsync_directory(self._transaction_path)
             return
+        if operation == "write_version":
+            if set(raw) != {
+                "operation",
+                "id",
+                "document_name",
+                "document",
+                "metadata",
+                "versions",
+                "bundled_replacement",
+            }:
+                raise WorkflowDocumentError(
+                    f"Malformed versioned workflow transaction {journal_path}"
+                )
+            self._apply_version_write(
+                journal_path,
+                workflow_id=workflow_id,
+                document_path=document_path,
+                document_text=raw["document"],
+                metadata_text=raw["metadata"],
+                versions=raw["versions"],
+                bundled_replacement=raw["bundled_replacement"],
+            )
+            return
         if operation != "write" or set(raw) != {
             "operation",
             "id",
@@ -605,6 +1056,103 @@ class FilesystemWorkflowRepository(WorkflowRepository):
             self._load_metadata(metadata_temp, workflow_id)
         finally:
             metadata_temp.unlink(missing_ok=True)
+        self._atomic_replace(self._metadata_file(workflow_id), metadata_text)
+        self._atomic_replace(document_path, document_text)
+        journal_path.unlink()
+        self._fsync_directory(self._transaction_path)
+
+    def _apply_version_write(
+        self,
+        journal_path: Path,
+        *,
+        workflow_id: UUID,
+        document_path: Path,
+        document_text: object,
+        metadata_text: object,
+        versions: object,
+        bundled_replacement: object,
+    ) -> None:
+        if (
+            not isinstance(document_text, str)
+            or not isinstance(metadata_text, str)
+            or not isinstance(versions, list)
+            or not isinstance(bundled_replacement, bool)
+        ):
+            raise WorkflowDocumentError(
+                f"Malformed versioned workflow transaction content in {journal_path}"
+            )
+        document = load_workflow_document(document_text)
+        if document.id != workflow_id:
+            raise WorkflowDocumentError(f"Workflow transaction id mismatch in {journal_path}")
+        if document_path.is_file():
+            target = self._read_document(document_path)
+            if target.id != workflow_id:
+                raise WorkflowDocumentError(
+                    f"Workflow write transaction {journal_path} targets document "
+                    f"{target.id}, not {workflow_id}"
+                )
+
+        metadata_temp = self._transaction_path / f".{workflow_id}.metadata.validation.yaml"
+        try:
+            metadata_temp.write_text(metadata_text, encoding="utf-8")
+            self._load_metadata(metadata_temp, workflow_id)
+        finally:
+            metadata_temp.unlink(missing_ok=True)
+
+        validated: list[tuple[Path, str]] = []
+        for value in versions:
+            if not isinstance(value, dict):
+                raise WorkflowDocumentError(
+                    f"Malformed workflow version snapshot in {journal_path}"
+                )
+            try:
+                restored = deserialize_workflow_version(
+                    value,
+                    head_revision=None,
+                    is_head=False,
+                )
+            except (TypeError, ValueError) as exc:
+                raise WorkflowDocumentError(
+                    f"Invalid workflow version snapshot in {journal_path}: {exc}"
+                ) from exc
+            if restored.id != workflow_id:
+                raise WorkflowDocumentError(
+                    f"Workflow version snapshot in {journal_path} belongs to {restored.id}"
+                )
+            revision = self._document_revision(restored)
+            path = self._history_path / str(workflow_id) / self._history_filename(revision)
+            encoded = json.dumps(
+                value,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if path.is_file():
+                try:
+                    current = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise WorkflowDocumentError(
+                        f"Cannot verify immutable workflow version {path}: {exc}"
+                    ) from exc
+                if current != value:
+                    raise WorkflowDocumentError(f"Immutable workflow version collision at {path}")
+            validated.append((path, encoded))
+
+        # History is durable before the mutable head becomes visible. Recovery
+        # repeats each idempotent write while the journal remains present.
+        for path, encoded in validated:
+            self._atomic_replace(path, encoded)
+        if bundled_replacement:
+            replacements = self._load_bundled_replacements()
+            replacements.add(workflow_id)
+            self._atomic_replace(
+                self._catalog_path / ".bundled-replacements.yaml",
+                yaml.safe_dump(
+                    {"workflow_ids": sorted(str(value) for value in replacements)},
+                    sort_keys=False,
+                ),
+            )
         self._atomic_replace(self._metadata_file(workflow_id), metadata_text)
         self._atomic_replace(document_path, document_text)
         journal_path.unlink()
@@ -675,6 +1223,8 @@ class FilesystemWorkflowRepository(WorkflowRepository):
             persona_definitions=workflow.persona_definitions,
             workflow_definitions=workflow.workflow_definitions,
             requirements=workflow.requirements,
+            origin=workflow.origin,
+            based_on_revision=workflow.based_on_revision,
         )
 
     @staticmethod
@@ -687,6 +1237,8 @@ class FilesystemWorkflowRepository(WorkflowRepository):
         persona_definitions: dict[str, dict[str, Any]],
         requirements: list[dict[str, Any]],
         workflow_definitions: dict[str, dict[str, Any]] | None = None,
+        origin: str = "authored",
+        based_on_revision: str | None = None,
     ) -> str:
         payload = {
             "document_revision": workflow_document_revision(document),
@@ -695,6 +1247,8 @@ class FilesystemWorkflowRepository(WorkflowRepository):
             "tenant_id": tenant_id,
             "persona_definitions": persona_definitions,
             "requirements": requirements,
+            "origin": origin,
+            "based_on_revision": based_on_revision,
         }
         if workflow_definitions:
             payload["workflow_definitions"] = workflow_definitions

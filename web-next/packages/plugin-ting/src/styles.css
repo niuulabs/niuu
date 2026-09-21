@@ -2,3 +2,5 @@
 @config "../tailwind.config.ts";
 
 @import './ui/DashboardPage.css';
+@import './ui/WorkflowBuilder/nodeAccent.css';
+@import './ui/WorkflowBuilder/workflowCanvas.css';

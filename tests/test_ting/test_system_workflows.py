@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 
+from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition, WorkflowScope
+from ting.domain.workflow_document import workflow_document_revision
 from ting.ports.workflow_repository import WorkflowRepository
 from ting.system_workflows import load_system_workflows, seed_system_workflows
 
@@ -13,6 +16,7 @@ from ting.system_workflows import load_system_workflows, seed_system_workflows
 class _InMemoryWorkflowRepository(WorkflowRepository):
     def __init__(self, workflows: list[WorkflowDefinition] | None = None) -> None:
         self._workflows = {workflow.id: workflow for workflow in workflows or []}
+        self.save_calls: list[WorkflowDefinition] = []
 
     async def list_workflows(
         self,
@@ -29,8 +33,19 @@ class _InMemoryWorkflowRepository(WorkflowRepository):
         return self._workflows.get(workflow_id)
 
     async def save_workflow(self, workflow: WorkflowDefinition) -> WorkflowDefinition:
+        self.save_calls.append(workflow)
         self._workflows[workflow.id] = workflow
         return workflow
+
+    async def list_workflow_versions(self, workflow_id):
+        return []
+
+    async def get_workflow_version(self, workflow_id, *, version=None, document_revision=None):
+        workflow = await self.get_workflow(workflow_id)
+        return workflow if workflow is not None and workflow.version == version else None
+
+    async def save_workflow_version(self, workflow, **kwargs):
+        raise NotImplementedError
 
     async def delete_workflow(self, workflow_id) -> bool:
         return self._workflows.pop(workflow_id, None) is not None
@@ -355,8 +370,27 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     assert "specifications/" in builder_binding["writePrefixes"]
 
 
+def test_load_system_workflows_rejects_missing_bundle_directory(tmp_path) -> None:
+    with pytest.raises(WorkflowDocumentError, match="directory does not exist"):
+        load_system_workflows(tmp_path / "missing")
+
+
+def test_load_system_workflows_rejects_empty_bundle_directory(tmp_path) -> None:
+    with pytest.raises(WorkflowDocumentError, match="directory is empty"):
+        load_system_workflows(tmp_path)
+
+
 @pytest.mark.asyncio
-async def test_seed_system_workflows_prunes_obsolete_and_duplicate_entries() -> None:
+async def test_seed_system_workflows_handles_empty_seed_set(monkeypatch) -> None:
+    repo = _InMemoryWorkflowRepository()
+    monkeypatch.setattr("ting.system_workflows.load_system_workflows", lambda _path: [])
+
+    assert await seed_system_workflows(repo) == []
+    assert repo.save_calls == []
+
+
+@pytest.mark.asyncio
+async def test_seed_system_workflows_preserves_authored_and_obsolete_entries() -> None:
     seeds = load_system_workflows()
     current = seeds[0]
     duplicate = WorkflowDefinition(
@@ -404,6 +438,77 @@ async def test_seed_system_workflows_prunes_obsolete_and_duplicate_entries() -> 
     }
 
     current_catalog = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
-    assert {workflow.name for workflow in current_catalog} == names
-    assert len(current_catalog) == len(names)
-    assert all(workflow.id in {seed.id for seed in seeds} for workflow in current_catalog)
+    assert {workflow.name for workflow in current_catalog} == names | {obsolete.name}
+    assert len(current_catalog) == len(seeds) + len([duplicate, obsolete])
+    assert obsolete in current_catalog
+
+
+@pytest.mark.asyncio
+async def test_seed_system_workflows_is_idempotent_for_identical_bundle(monkeypatch) -> None:
+    seed = load_system_workflows()[0]
+    repo = _InMemoryWorkflowRepository([seed])
+    monkeypatch.setattr("ting.system_workflows.load_system_workflows", lambda _path: [seed])
+
+    saved = await seed_system_workflows(repo)
+
+    assert saved == [seed]
+    assert repo.save_calls == []
+
+
+@pytest.mark.asyncio
+async def test_seed_system_workflows_preserves_authored_successor(monkeypatch) -> None:
+    seed = load_system_workflows()[0]
+    authored = replace(
+        seed,
+        version="9.0.0",
+        origin="authored",
+        read_only=False,
+        graph={"nodes": [{"id": "operator-edit", "kind": "stage"}], "edges": []},
+    )
+    repo = _InMemoryWorkflowRepository([authored])
+    monkeypatch.setattr("ting.system_workflows.load_system_workflows", lambda _path: [seed])
+
+    saved = await seed_system_workflows(repo)
+
+    assert saved == [authored]
+    assert repo.save_calls == []
+
+
+@pytest.mark.asyncio
+async def test_seed_system_workflows_rejects_reused_changed_bundle_version(monkeypatch) -> None:
+    seed = load_system_workflows()[0]
+    changed = replace(
+        seed,
+        graph={"nodes": [{"id": "changed", "kind": "stage"}], "edges": []},
+        document_revision=None,
+    )
+    changed = replace(changed, document_revision=workflow_document_revision(changed))
+    repo = _InMemoryWorkflowRepository([changed])
+    monkeypatch.setattr("ting.system_workflows.load_system_workflows", lambda _path: [seed])
+
+    with pytest.raises(WorkflowDocumentError, match="changed content"):
+        await seed_system_workflows(repo)
+
+    assert repo.save_calls == []
+
+
+@pytest.mark.asyncio
+async def test_seed_system_workflows_records_distinct_bundle_upgrade(monkeypatch) -> None:
+    seed = load_system_workflows()[0]
+    previous = replace(
+        seed,
+        version="0.9.0",
+        created_at=seed.created_at - timedelta(days=30),
+        updated_at=seed.updated_at - timedelta(days=30),
+        document_revision=None,
+    )
+    previous = replace(previous, document_revision=workflow_document_revision(previous))
+    repo = _InMemoryWorkflowRepository([previous])
+    monkeypatch.setattr("ting.system_workflows.load_system_workflows", lambda _path: [seed])
+
+    saved = await seed_system_workflows(repo)
+
+    assert saved[0].version == seed.version
+    assert saved[0].origin == "bundled"
+    assert saved[0].created_at == previous.created_at
+    assert repo.save_calls == saved

@@ -72,9 +72,17 @@ class WorkflowCampaignProjector:
                     exc_info=True,
                 )
 
-    async def handle_activity(self, event: ActivityEvent, owner_id: str) -> bool:
+    async def handle_activity(
+        self,
+        event: ActivityEvent,
+        owner_id: str,
+        *,
+        connection_id: str | None = None,
+    ) -> bool:
         """Apply one Volundr stream event; return whether it was a campaign event."""
-        campaign = await self._active_campaign(owner_id, event.session_id)
+        campaign = await self._active_campaign(
+            owner_id, event.session_id, connection_id=connection_id
+        )
         if campaign is None:
             return False
 
@@ -120,9 +128,10 @@ class WorkflowCampaignProjector:
         *,
         session_id: str,
         gate: dict[str, object],
+        connection_id: str | None = None,
     ) -> bool:
         """Persist an input-required event and immediately notify A2A callbacks."""
-        campaign = await self._active_campaign(owner_id, session_id)
+        campaign = await self._active_campaign(owner_id, session_id, connection_id=connection_id)
         if campaign is None:
             return False
 
@@ -158,10 +167,17 @@ class WorkflowCampaignProjector:
         )
         return True
 
-    async def _active_campaign(self, owner_id: str, session_id: str) -> WorkflowCampaign | None:
+    async def _active_campaign(
+        self,
+        owner_id: str,
+        session_id: str,
+        *,
+        connection_id: str | None = None,
+    ) -> WorkflowCampaign | None:
         return await self._repo.get_active_campaign_by_session(
             owner_id=owner_id,
             session_id=session_id,
+            connection_id=connection_id,
         )
 
     async def _refresh_campaign(self, campaign: WorkflowCampaign) -> None:

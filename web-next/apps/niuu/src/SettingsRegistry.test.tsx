@@ -3,6 +3,26 @@ import { describe, expect, it } from 'vitest';
 import { buildMountedSettingsProviders } from './SettingsRegistry';
 
 describe('buildMountedSettingsProviders', () => {
+  it('mounts the interface mode control with the Settings plugin', () => {
+    const providers = buildMountedSettingsProviders({
+      demoMode: false,
+      theme: 'ice',
+      plugins: { settings: { enabled: true, order: 0 } },
+      services: {},
+    });
+
+    expect(providers).toHaveLength(1);
+    expect(providers[0]).toMatchObject({
+      source: 'local',
+      id: 'interface',
+      defaultSectionId: 'mode',
+      scope: 'user',
+    });
+    const provider = providers[0];
+    if (provider?.source !== 'local') throw new Error('Expected local interface settings');
+    expect(provider.sections[0]).toMatchObject({ id: 'mode', label: 'Display mode' });
+  });
+
   it('includes remote providers for enabled plugins', () => {
     const providers = buildMountedSettingsProviders({
       demoMode: false,

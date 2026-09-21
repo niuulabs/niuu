@@ -89,12 +89,17 @@ from ting.api.tracker import (
     create_tracker_router,
     resolve_trackers,
 )
+from ting.api.work import create_work_router, resolve_work_trackers
 from ting.api.workflow_executions import (
     create_workflow_executions_router,
     resolve_workflow_execution_repo,
     resolve_workflow_execution_service,
 )
-from ting.api.workflows import create_workflows_router, resolve_workflow_repo
+from ting.api.workflows import (
+    create_workflows_router,
+    resolve_workflow_launch_campaign_repo,
+    resolve_workflow_repo,
+)
 from ting.config import Settings
 from ting.delivery.api import (
     create_delivery_executions_router,
@@ -130,7 +135,7 @@ from ting.ports.event_bus import EventBusPort
 from ting.ports.flock_flow import FlockFlowProvider
 from ting.ports.git import GitPort
 from ting.ports.saga_repository import SagaRepository
-from ting.ports.tracker import TrackerPort
+from ting.ports.tracker import TrackerPort, TrackerResolution, TrackerResolutionFailure
 from ting.ports.volundr import VolundrPort
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
@@ -610,6 +615,7 @@ def create_app(
     app.include_router(create_sessions_router())
     app.include_router(create_settings_router())
     app.include_router(create_workflows_router())
+    app.include_router(create_work_router())
     app.include_router(create_agent_card_router(settings.a2a))
     app.include_router(create_a2a_router())
     app.include_router(create_research_router())
@@ -732,6 +738,28 @@ def create_app(
 
             app.dependency_overrides[resolve_trackers] = _resolve
 
+            async def _resolve_work_trackers(
+                principal: Principal = Depends(extract_principal),
+            ) -> TrackerResolution:
+                try:
+                    return await app.state.tracker_factory.for_owner_with_resolution(
+                        principal.user_id
+                    )
+                except Exception:
+                    logger.exception("Work tracker source resolution failed")
+                    return TrackerResolution(
+                        adapters=(),
+                        failures=(
+                            TrackerResolutionFailure(
+                                connection_id="",
+                                code="sourceCatalogUnavailable",
+                                message="Tracker source configuration could not be read.",
+                            ),
+                        ),
+                    )
+
+            app.dependency_overrides[resolve_work_trackers] = _resolve_work_trackers
+
             # Wire saga repository
             saga_repo = PostgresSagaRepository(pool)
             app.state.saga_repo = saga_repo
@@ -833,6 +861,10 @@ def create_app(
 
             workflow_execution_worker = None
             attested_review_projector = None
+            # Work history is read-only and remains available when execution
+            # workers are disabled. The base ledger is migrated independently
+            # of whether this process may launch or reconcile executions.
+            app.state.work_execution_read_repo = PostgresWorkflowExecutionRepository(pool)
             if settings.workflow_execution.enabled:
                 we_settings = settings.workflow_execution
                 delivery_settings = we_settings.delivery
@@ -1066,6 +1098,9 @@ def create_app(
                 )
 
             app.dependency_overrides[resolve_workflow_campaign_repo] = (
+                _resolve_workflow_campaign_repo
+            )
+            app.dependency_overrides[resolve_workflow_launch_campaign_repo] = (
                 _resolve_workflow_campaign_repo
             )
 

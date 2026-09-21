@@ -129,7 +129,7 @@ export interface IVolundrService {
 
   // Sessions
   getSessions(options?: SessionReadOptions): Promise<VolundrSession[]>;
-  getSession(id: string): Promise<VolundrSession | null>;
+  getSession(id: string, options?: SessionReadOptions): Promise<VolundrSession | null>;
   getActiveSessions(): Promise<VolundrSession[]>;
   getStats(options?: SessionReadOptions): Promise<VolundrStats>;
   getRepos(): Promise<VolundrRepo[]>;

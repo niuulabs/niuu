@@ -1,0 +1,56 @@
+.workflow-canvas {
+  background-color: var(--color-bg-primary);
+  background-image: radial-gradient(var(--color-border-subtle) 0.75px, transparent 0.75px);
+  background-size: 20px 20px;
+}
+
+.workflow-canvas__control {
+  align-items: center;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  display: inline-flex;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  justify-content: center;
+  min-height: 30px;
+  min-width: 30px;
+  padding: 0 9px;
+}
+
+.workflow-canvas__control:hover,
+.workflow-canvas__control:focus-visible {
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-brand);
+  outline: none;
+}
+
+.workflow-canvas__socket {
+  background: var(--color-bg-primary);
+  border: 1.5px solid var(--color-brand);
+  border-radius: 999px;
+  cursor: crosshair;
+  height: 10px;
+  padding: 0;
+  width: 10px;
+}
+
+.workflow-canvas__socket:hover,
+.workflow-canvas__socket:focus-visible,
+.workflow-canvas__socket[data-active='true'] {
+  background: var(--color-brand);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand) 22%, transparent);
+  outline: none;
+}
+
+.workflow-canvas__picker {
+  background: color-mix(in srgb, var(--color-bg-secondary) 96%, transparent);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-lg);
+}
+
+.workflow-canvas__edge--feedback {
+  stroke: var(--status-amber);
+  stroke-dasharray: 5 4;
+}

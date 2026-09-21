@@ -81,6 +81,7 @@ interface RawPersonaSummary {
   is_builtin: boolean;
   has_override: boolean;
   produces_event: string;
+  outcome_events?: Record<string, string>;
   consumes_events: string[];
 }
 
@@ -115,6 +116,7 @@ function toSummary(raw: RawPersonaSummary): PersonaSummary {
     isBuiltin: raw.is_builtin,
     hasOverride: raw.has_override,
     producesEvent: raw.produces_event,
+    outcomeEvents: raw.outcome_events ?? {},
     consumesEvents: raw.consumes_events,
   };
 }

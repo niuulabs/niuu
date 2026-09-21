@@ -284,15 +284,21 @@ class SessionActivitySubscriber:
         if (
             terminal_event
             and self._workflow_campaign_projector is not None
-            and await self._workflow_campaign_projector.handle_activity(event, owner_id)
+            and await self._workflow_campaign_projector.handle_activity(
+                event, owner_id, connection_id=volundr.target_id or None
+            )
         ):
             return
-        if await self._maybe_handle_help_needed(event, owner_id):
+        if await self._maybe_handle_help_needed(
+            event, owner_id, connection_id=volundr.target_id or None
+        ):
             return
         if (
             not terminal_event
             and self._workflow_campaign_projector is not None
-            and await self._workflow_campaign_projector.handle_activity(event, owner_id)
+            and await self._workflow_campaign_projector.handle_activity(
+                event, owner_id, connection_id=volundr.target_id or None
+            )
         ):
             return
         if await self._try_handle_authoritative_completion(event, volundr, owner_id):
@@ -497,14 +503,22 @@ class SessionActivitySubscriber:
             pr_url=pr_url,
         )
 
-    async def _maybe_handle_help_needed(self, event: ActivityEvent, owner_id: str) -> bool:
+    async def _maybe_handle_help_needed(
+        self,
+        event: ActivityEvent,
+        owner_id: str,
+        *,
+        connection_id: str | None = None,
+    ) -> bool:
         payload = _help_needed_payload(event.metadata)
         if payload is None:
             return False
 
         run, tracker = await self._find_run_for_session(event.session_id, owner_id)
         if run is None or tracker is None:
-            if await self._maybe_record_workflow_campaign_help_needed(event, payload, owner_id):
+            if await self._maybe_record_workflow_campaign_help_needed(
+                event, payload, owner_id, connection_id=connection_id
+            ):
                 return True
             logger.warning(
                 "Help-needed activity received for unknown session %s",
@@ -564,6 +578,8 @@ class SessionActivitySubscriber:
         event: ActivityEvent,
         payload: dict[str, object],
         owner_id: str,
+        *,
+        connection_id: str | None = None,
     ) -> bool:
         if self._workflow_campaign_projector is None:
             return False
@@ -578,6 +594,7 @@ class SessionActivitySubscriber:
             owner_id,
             session_id=session_id,
             gate=gate,
+            connection_id=connection_id,
         )
 
     async def _try_handle_flock_completion(

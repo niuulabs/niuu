@@ -52,6 +52,16 @@ class InMemoryWorkflowRepository(WorkflowRepository):
         self._workflows[workflow.id] = workflow
         return workflow
 
+    async def list_workflow_versions(self, workflow_id):
+        return []
+
+    async def get_workflow_version(self, workflow_id, *, version=None, document_revision=None):
+        workflow = await self.get_workflow(workflow_id)
+        return workflow if workflow is not None and workflow.version == version else None
+
+    async def save_workflow_version(self, workflow, **kwargs):
+        raise NotImplementedError
+
     async def delete_workflow(self, workflow_id: UUID) -> bool:
         return self._workflows.pop(workflow_id, None) is not None
 

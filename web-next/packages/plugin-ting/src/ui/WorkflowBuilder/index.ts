@@ -1,5 +1,9 @@
 export { WorkflowBuilder } from './WorkflowBuilder';
-export type { WorkflowBuilderProps } from './WorkflowBuilder';
+export type {
+  WorkflowBuilderProps,
+  WorkflowEditorLocation,
+  WorkflowEditorMode,
+} from './WorkflowBuilder';
 export { GraphView } from './GraphView';
 export { PipelineView } from './PipelineView';
 export { YamlView } from './YamlView';

@@ -44,6 +44,7 @@ class PersonaSummaryResponse(BaseModel):
     is_builtin: bool
     has_override: bool
     produces_event: str
+    outcome_events: dict[str, str] = Field(default_factory=dict)
     consumes_events: list[str]
 
 
@@ -59,6 +60,7 @@ class PersonaProducesResponse(BaseModel):
     """Produced event configuration."""
 
     event_type: str
+    event_type_map: dict[str, str] = Field(default_factory=dict)
     schema_def: dict[str, str]
 
 
@@ -487,6 +489,7 @@ def _to_summary(view: PersonaView) -> PersonaSummaryResponse:
         is_builtin=view.is_builtin,
         has_override=view.has_override,
         produces_event=str(payload["produces_event_type"]),
+        outcome_events=dict(payload.get("produces_event_map") or {}),
         consumes_events=[
             str(event["name"]) for event in payload["consumes_events"] if str(event.get("name", ""))
         ],
@@ -519,6 +522,7 @@ def _to_detail(view: PersonaView) -> PersonaDetailResponse:
         ),
         produces=PersonaProducesResponse(
             event_type=str(payload["produces_event_type"]),
+            event_type_map=dict(payload.get("produces_event_map") or {}),
             schema_def=dict(payload["produces_schema"]),
         ),
         consumes=PersonaConsumesResponse(

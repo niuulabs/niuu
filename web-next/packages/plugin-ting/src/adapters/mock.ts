@@ -1484,6 +1484,8 @@ export function createMockTrackerService(): ITrackerBrowserService {
         instanceId: target?.mode === 'instance' ? target.instanceId : (instanceId ?? undefined),
         targetTags: target?.mode === 'tags' ? target.tags : undefined,
         targetMatch: target?.mode === 'tags' ? (target.match ?? 'all') : undefined,
+        workflowId: options?.workflowId,
+        workflowVersion: options?.workflowVersion,
       };
       return saga;
     },
@@ -1625,6 +1627,25 @@ export function createMockWorkflowService(): IWorkflowService {
       return workflows.get(id) ?? null;
     },
 
+    async listWorkflowVersions(id: string) {
+      const workflow = workflows.get(id);
+      if (!workflow) return [];
+      return [
+        {
+          version: workflow.version ?? 'draft',
+          documentRevision: workflow.documentRevision ?? workflow.revision ?? id,
+          createdAt: '2026-01-01T00:00:00Z',
+          isHead: true,
+          basedOnRevision: null,
+        },
+      ];
+    },
+
+    async getWorkflowVersion(id: string, version: string) {
+      const workflow = workflows.get(id);
+      return workflow?.version === version ? workflow : null;
+    },
+
     async saveWorkflow(workflow: Workflow) {
       workflows.set(workflow.id, workflow);
       return workflow;
@@ -1670,6 +1691,9 @@ export function createMockWorkflowService(): IWorkflowService {
         sessionName: request.sessionName || `${workflow.name}-${slug || 'workflow'}`,
         status: 'starting',
         clusterName: 'mock',
+        chatEndpoint: null,
+        workflowVersion: request.workflowVersion ?? workflow.version ?? '',
+        documentRevision: workflow.documentRevision ?? workflow.revision ?? workflow.id,
       };
     },
   };
@@ -1794,7 +1818,7 @@ export function createMockResearchService(): IResearchService {
         name: request.name || request.question.slice(0, 80),
         ownerId: 'dev-user',
         workflowId: workflow?.id ?? '00000000-0000-4000-8000-000000000001',
-        workflowVersion: workflow?.version ?? '1.0.0',
+        workflowVersion: request.workflowVersion ?? workflow?.version ?? '1.0.0',
         workflowName: workflow?.name ?? 'Research Campaign',
         sessionId: `mock-session-${slug}`,
         sessionName: request.name || slug,
@@ -1980,7 +2004,7 @@ export function createMockSpecsService(): ISpecsService {
         name: request.name || request.prompt.slice(0, 80),
         ownerId: 'dev-user',
         workflowId: request.workflowId ?? '96ecf5df-18a0-542b-9df6-aef6aef6a5db',
-        workflowVersion: '1.0.0',
+        workflowVersion: request.workflowVersion ?? '1.0.0',
         workflowName: 'Specification Stack',
         sessionId: `mock-session-${slug}`,
         sessionName: request.name || slug,

@@ -18,7 +18,13 @@ import { serializePortableWorkflow } from '../../domain/workflowPortable';
 // Node geometry constants
 // ---------------------------------------------------------------------------
 
-export const STAGE_WIDTH = 172;
+// 224, not 172: the redesigned stage card (GraphView's StageNode) needs room
+// for a typed port footer with real event-type text. Every consumer of this
+// constant (edgeAnchor, findStageAtPoint, drop-to-create hit-testing) already
+// parametrizes on it, so this is the only geometry constant the new card
+// treatment changes — stageNodeHeight/renderedStageHeight's formulas are
+// unchanged.
+export const STAGE_WIDTH = 224;
 export const STAGE_HEIGHT = 92;
 export const GATE_SIZE = 76; // diamond bounding box
 export const COND_RADIUS = 34; // circle radius

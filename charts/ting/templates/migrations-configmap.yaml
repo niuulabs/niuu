@@ -1835,4 +1835,44 @@ data:
         ON workflow_waits (state, next_poll_at, lease_expires_at)
         WHERE state IN ('pending', 'ready', 'failed');
 
+  000044_workflow_versions.down.sql: |
+    DROP TABLE IF EXISTS workflow_versions;
+    ALTER TABLE workflows DROP COLUMN IF EXISTS based_on_revision;
+    ALTER TABLE workflows DROP COLUMN IF EXISTS version_origin;
+
+  000044_workflow_versions.up.sql: |
+    -- Preserve complete pinned workflow aggregates while the catalog row remains the head.
+    ALTER TABLE workflows ADD COLUMN IF NOT EXISTS version_origin TEXT NOT NULL DEFAULT 'authored';
+    ALTER TABLE workflows ADD COLUMN IF NOT EXISTS based_on_revision TEXT;
+
+    CREATE TABLE IF NOT EXISTS workflow_versions (
+        workflow_id UUID NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+        version TEXT NOT NULL,
+        document_revision TEXT NOT NULL,
+        snapshot JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (workflow_id, version),
+        UNIQUE (workflow_id, document_revision)
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_versions_created
+        ON workflow_versions (workflow_id, created_at DESC);
+
+  000045_run_progress_tenant.down.sql: |
+    DROP INDEX IF EXISTS idx_run_progress_work_scope;
+    ALTER TABLE run_progress DROP COLUMN IF EXISTS tenant_id;
+
+  000045_run_progress_tenant.up.sql: |
+    -- Bind operational session/PR links to the same tenant as the authorized saga.
+    -- Legacy rows remain attributable only to the empty/default tenant.
+    ALTER TABLE run_progress
+        ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
+
+    CREATE INDEX IF NOT EXISTS idx_run_progress_work_scope
+        ON run_progress (
+            owner_id,
+            tenant_id,
+            tracker_connection_id,
+            saga_tracker_id
+        );
+
 {{- end }}

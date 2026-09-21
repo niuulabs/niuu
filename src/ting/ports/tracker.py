@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
@@ -18,6 +19,23 @@ from ting.domain.models import (
     TrackerMilestone,
     TrackerProject,
 )
+
+
+@dataclass(frozen=True)
+class TrackerResolutionFailure:
+    """Sanitized failure for one configured tracker connection."""
+
+    connection_id: str
+    code: str
+    message: str
+
+
+@dataclass(frozen=True)
+class TrackerResolution:
+    """Resolved tracker adapters plus visible configuration failures."""
+
+    adapters: tuple[TrackerPort, ...]
+    failures: tuple[TrackerResolutionFailure, ...] = ()
 
 
 class TrackerFactory(Protocol):
@@ -152,6 +170,7 @@ class TrackerPort(ABC):
         retry_count: int | None = None,
         reason: str | None = None,
         owner_id: str | None = None,
+        tenant_id: str | None = None,
         phase_tracker_id: str | None = None,
         saga_tracker_id: str | None = None,
         chronicle_summary: str | None = None,
@@ -163,6 +182,30 @@ class TrackerPort(ABC):
     @abstractmethod
     async def get_run_progress_for_saga(self, saga_tracker_id: str) -> list[Run]:
         raise NotImplementedError
+
+    async def get_authorized_run_progress_for_saga(
+        self,
+        saga_tracker_id: str,
+        *,
+        owner_id: str,
+        tenant_id: str,
+    ) -> list[Run]:
+        """Read operational links scoped to the authorized saga identity.
+
+        External adapters must override this method.  The default fails closed
+        so callers never turn legacy unscoped progress into session links.
+        """
+        raise NotImplementedError
+
+    async def has_unscoped_run_progress_for_saga(
+        self,
+        saga_tracker_id: str,
+        *,
+        owner_id: str,
+        tenant_id: str,
+    ) -> bool:
+        """Whether legacy progress was withheld for missing tenant attribution."""
+        return False
 
     @abstractmethod
     async def get_run_by_session(self, session_id: str) -> Run | None:

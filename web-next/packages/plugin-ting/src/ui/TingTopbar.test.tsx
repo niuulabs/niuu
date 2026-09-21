@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { TingTopbar } from './TingTopbar';
@@ -33,38 +34,21 @@ function wrap(dispatcher: IDispatcherService) {
 }
 
 describe('TingTopbar', () => {
-  it('renders dispatcher stats on dashboard route', async () => {
+  it('keeps detailed dispatcher stats in a compact status popover', async () => {
+    const user = userEvent.setup();
     mockPathname = '/ting';
     render(<TingTopbar />, { wrapper: wrap(createMockDispatcherService()) });
-    await waitFor(() => {
-      expect(screen.getByTestId('ting-topbar')).toBeInTheDocument();
-    });
-  });
+    const trigger = await screen.findByRole('button', { name: 'Dispatcher status: active' });
+    expect(screen.getByTestId('ting-chip-dispatcher-active')).toBeInTheDocument();
+    expect(document.getElementById('ting-dispatcher-status')).not.toBeVisible();
 
-  it('shows dispatcher on chip when running', async () => {
-    mockPathname = '/ting';
-    render(<TingTopbar />, { wrapper: wrap(createMockDispatcherService()) });
-    await waitFor(() => {
-      expect(screen.getByTestId('ting-chip-dispatcher-on')).toBeInTheDocument();
-    });
-  });
+    await user.click(trigger);
 
-  it('shows threshold value from dispatcher state', async () => {
-    mockPathname = '/ting';
-    render(<TingTopbar />, { wrapper: wrap(createMockDispatcherService()) });
-    // Mock dispatcher threshold is 70 → displayed as 0.70
-    await waitFor(() => {
-      expect(screen.getByTestId('ting-chip-threshold-0.70')).toBeInTheDocument();
-    });
-  });
-
-  it('shows concurrent runs value', async () => {
-    mockPathname = '/ting/sagas';
-    render(<TingTopbar />, { wrapper: wrap(createMockDispatcherService()) });
-    // Mock maxConcurrentRuns is 5
-    await waitFor(() => {
-      expect(screen.getByTestId('ting-chip-concurrent-5')).toBeInTheDocument();
-    });
+    expect(screen.getByRole('dialog', { name: 'Dispatcher status' })).toBeVisible();
+    expect(screen.getByText('Threshold')).toBeVisible();
+    expect(screen.getByText('0.70')).toBeVisible();
+    expect(screen.getByText('Concurrent runs')).toBeVisible();
+    expect(screen.getByText('5')).toBeVisible();
   });
 
   it('keeps dispatcher stats even on legacy settings paths', async () => {
@@ -87,10 +71,12 @@ describe('TingTopbar', () => {
     };
     render(<TingTopbar />, { wrapper: wrap(slow) });
     expect(screen.getByTestId('ting-topbar')).toBeInTheDocument();
-    expect(screen.getByTestId('ting-chip-dispatcher-…')).toBeInTheDocument();
+    expect(screen.getByTestId('ting-chip-dispatcher-loading')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Dispatcher status: loading' })).toBeInTheDocument();
   });
 
-  it('shows the stopped dispatcher state', async () => {
+  it('shows the paused dispatcher details', async () => {
+    const user = userEvent.setup();
     const stopped: IDispatcherService = {
       ...createMockDispatcherService(),
       getState: async () => ({
@@ -103,8 +89,38 @@ describe('TingTopbar', () => {
       }),
     };
     render(<TingTopbar />, { wrapper: wrap(stopped) });
-    await waitFor(() => expect(screen.getByTestId('ting-chip-dispatcher-off')).toBeInTheDocument());
-    expect(screen.getByTestId('ting-chip-threshold-0.55')).toBeInTheDocument();
-    expect(screen.getByTestId('ting-chip-concurrent-2')).toBeInTheDocument();
+    const trigger = await screen.findByRole('button', { name: 'Dispatcher status: paused' });
+    expect(screen.getByTestId('ting-chip-dispatcher-paused')).toBeInTheDocument();
+    await user.click(trigger);
+    expect(screen.getByText('0.55')).toBeVisible();
+    expect(screen.getByText('2')).toBeVisible();
+  });
+
+  it('dismisses the popover with Escape and returns focus', async () => {
+    const user = userEvent.setup();
+    render(<TingTopbar />, { wrapper: wrap(createMockDispatcherService()) });
+    const trigger = await screen.findByRole('button', { name: 'Dispatcher status: active' });
+    await user.click(trigger);
+    expect(screen.getByRole('dialog', { name: 'Dispatcher status' })).toBeVisible();
+
+    await user.keyboard('{Escape}');
+
+    expect(document.getElementById('ting-dispatcher-status')).not.toBeVisible();
+    expect(trigger).toHaveFocus();
+  });
+
+  it('dismisses the popover after an outside pointer action', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <TingTopbar />
+        <button type="button">Outside</button>
+      </>,
+      { wrapper: wrap(createMockDispatcherService()) },
+    );
+    const trigger = await screen.findByRole('button', { name: 'Dispatcher status: active' });
+    await user.click(trigger);
+    await user.click(screen.getByRole('button', { name: 'Outside' }));
+    expect(document.getElementById('ting-dispatcher-status')).not.toBeVisible();
   });
 });

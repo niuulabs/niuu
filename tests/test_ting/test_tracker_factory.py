@@ -273,6 +273,37 @@ async def test_credential_missing_skips_adapter() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolution_reports_enabled_connection_failures_without_secrets() -> None:
+    missing = _make_connection(id="conn-missing", credential_name="missing")
+    unsupported = _make_connection(
+        id="conn-unsupported",
+        credential_name="shared",
+        adapter="volundr.adapters.outbound.github.GitHubAdapter",
+    )
+    broken = _make_connection(
+        id="conn-broken",
+        credential_name="shared",
+        adapter="tests.test_ting.test_tracker_factory.NonExistentClass",
+    )
+    factory = TrackerAdapterFactory(
+        integration_repo=StubIntegrationRepo(connections=[missing, unsupported, broken]),
+        credential_store=StubCredentialStore(
+            values={"user:owner-1:shared": {"api_key": "must-not-leak"}}
+        ),
+    )
+
+    resolution = await factory.for_owner_with_resolution("owner-1")
+
+    assert resolution.adapters == ()
+    assert [(item.connection_id, item.code) for item in resolution.failures] == [
+        ("conn-missing", "credentialUnavailable"),
+        ("conn-unsupported", "unsupportedAdapter"),
+        ("conn-broken", "adapterUnavailable"),
+    ]
+    assert "must-not-leak" not in repr(resolution.failures)
+
+
+@pytest.mark.asyncio
 async def test_adapter_instantiation_failure_logged_and_skipped(caplog) -> None:  # noqa: ANN001
     conn = _make_connection(
         id="conn-bad",

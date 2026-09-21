@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -25,9 +26,12 @@ from ting.api.workflow_personas import authoring_persona_source
 from ting.domain.exceptions import WorkflowConflictError, WorkflowReadOnlyError
 from ting.domain.models import (
     PersonaDependency,
+    WorkflowCampaign,
+    WorkflowCampaignStatus,
     WorkflowDefinition,
     WorkflowDependency,
     WorkflowScope,
+    WorkflowVersionSummary,
 )
 from ting.domain.services.dispatch_service import (
     _resolve_workflow_execution,
@@ -48,10 +52,14 @@ from ting.domain.workflow_snapshot import (
     workflow_mimir_from_snapshot,
     workflow_personas_from_snapshot,
 )
+from ting.domain.workflow_versioning import WorkflowVersionBump
 from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrPort, VolundrSession
+from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
 
 _DEFAULT_WORKFLOW_LAUNCH_DEFINITION = "skuldCodex"
+_DIRECT_LAUNCH_SURFACE = "ting.workflow-launch"
+logger = logging.getLogger(__name__)
 
 
 class WorkflowBody(BaseModel):
@@ -64,6 +72,8 @@ class WorkflowBody(BaseModel):
     graph: dict[str, Any] | None = None
     persona_dependencies: dict[str, PersonaDependency] = Field(default_factory=dict)
     expected_revision: str | None = None
+    base_revision: str | None = None
+    bump: Literal["patch", "minor", "major"] = "patch"
     copy_from: UUID | None = None
     refresh_personas: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
@@ -98,7 +108,12 @@ class WorkflowResponse(BaseModel):
     graph: dict[str, Any] = Field(default_factory=dict)
     persona_dependencies: dict[str, PersonaDependency] = Field(default_factory=dict)
     revision: str | None = None
+    document_revision: str
+    is_head: bool = True
+    origin: Literal["authored", "bundled"] = "authored"
+    based_on_revision: str | None = None
     read_only: bool = False
+    can_edit: bool = False
     canonical_yaml: str = ""
     requirements: list[dict[str, Any]] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
@@ -123,6 +138,7 @@ class WorkflowLaunchBody(BaseModel):
     branch: str = Field(default="", max_length=255)
     connection_id: str | None = Field(default=None, max_length=255, alias="connectionId")
     model: str = Field(default="", max_length=255)
+    workflow_version: str | None = Field(default=None, alias="workflowVersion", max_length=64)
     definition: str | None = Field(default=None, max_length=255)
     context: dict[str, Any] = Field(default_factory=dict)
     provenance: dict[str, Any] = Field(default_factory=dict)
@@ -162,8 +178,19 @@ class WorkflowLaunchResponse(BaseModel):
     status: str
     cluster_name: str = Field(default="", serialization_alias="clusterName")
     chat_endpoint: str | None = Field(default=None, serialization_alias="chatEndpoint")
+    workflow_version: str = Field(serialization_alias="workflowVersion")
+    document_revision: str = Field(serialization_alias="documentRevision")
 
     model_config = {"populate_by_name": True}
+
+
+class WorkflowVersionSummaryResponse(BaseModel):
+    version: str
+    document_revision: str
+    created_at: datetime
+    is_head: bool
+    based_on_revision: str | None = None
+    origin: Literal["authored", "bundled"] = "authored"
 
 
 @dataclass(frozen=True)
@@ -185,6 +212,13 @@ async def resolve_workflow_repo() -> WorkflowRepository:
     )
 
 
+async def resolve_workflow_launch_campaign_repo() -> WorkflowCampaignRepository:
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Workflow launch history is not configured",
+    )
+
+
 def create_workflows_router() -> APIRouter:
     from ting.api.workflow_sharing import create_workflow_sharing_router
 
@@ -202,7 +236,40 @@ def create_workflows_router() -> APIRouter:
             owner_id=principal.user_id,
             scope=scope_filter,
         )
-        return [_to_response(workflow) for workflow in workflows]
+        return [_to_response(workflow, principal=principal) for workflow in workflows]
+
+    @router.get(
+        "/{workflow_id}/versions",
+        response_model=list[WorkflowVersionSummaryResponse],
+    )
+    async def list_workflow_versions(
+        workflow_id: UUID = Path(description="Workflow UUID"),
+        principal: Principal = Depends(extract_principal),
+        repo: WorkflowRepository = Depends(resolve_workflow_repo),
+    ) -> list[WorkflowVersionSummaryResponse]:
+        workflow = await repo.get_workflow(workflow_id)
+        if workflow is None or not _can_view_workflow(workflow, principal):
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        versions = await repo.list_workflow_versions(workflow_id)
+        return [_to_version_summary(item) for item in versions]
+
+    @router.get(
+        "/{workflow_id}/versions/{version}",
+        response_model=WorkflowResponse,
+    )
+    async def get_workflow_version(
+        version: str,
+        workflow_id: UUID = Path(description="Workflow UUID"),
+        principal: Principal = Depends(extract_principal),
+        repo: WorkflowRepository = Depends(resolve_workflow_repo),
+    ) -> WorkflowResponse:
+        head = await repo.get_workflow(workflow_id)
+        if head is None or not _can_view_workflow(head, principal):
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        workflow = await repo.get_workflow_version(workflow_id, version=version)
+        if workflow is None:
+            raise HTTPException(status_code=404, detail="Workflow version not found")
+        return _to_response(workflow, principal=principal)
 
     @router.get("/{workflow_id}", response_model=WorkflowResponse)
     async def get_workflow(
@@ -213,7 +280,7 @@ def create_workflows_router() -> APIRouter:
         workflow = await repo.get_workflow(workflow_id)
         if workflow is None or not _can_view_workflow(workflow, principal):
             raise HTTPException(status_code=404, detail="Workflow not found")
-        return _to_response(workflow)
+        return _to_response(workflow, principal=principal)
 
     @router.post("", response_model=WorkflowResponse, status_code=status.HTTP_201_CREATED)
     async def create_workflow(
@@ -270,7 +337,7 @@ def create_workflows_router() -> APIRouter:
             principal=principal,
             refresh_personas=body.refresh_personas,
         )
-        return _to_response(saved)
+        return _to_response(saved, principal=principal)
 
     @router.put("/{workflow_id}", response_model=WorkflowResponse)
     async def update_workflow(
@@ -287,8 +354,25 @@ def create_workflows_router() -> APIRouter:
         scope = WorkflowScope(body.scope)
         _assert_can_manage_existing(existing, principal)
         _assert_can_manage_scope(scope, principal)
+        if scope != existing.scope:
+            raise HTTPException(
+                status_code=422,
+                detail="Workflow scope cannot change across versions",
+            )
         _assert_revision(existing, body.expected_revision)
         graph = _body_to_graph(body)
+
+        base_revision = (
+            body.base_revision or existing.document_revision or workflow_document_revision(existing)
+        )
+        base = existing
+        if base_revision != (existing.document_revision or workflow_document_revision(existing)):
+            base = await repo.get_workflow_version(
+                workflow_id,
+                document_revision=base_revision,
+            )
+            if base is None:
+                raise HTTPException(status_code=404, detail="Workflow base revision not found")
 
         saved = await _save_workflow(
             repo,
@@ -297,37 +381,65 @@ def create_workflows_router() -> APIRouter:
                 id=existing.id,
                 name=body.name,
                 description=body.description,
-                version=body.version,
-                scope=scope,
-                owner_id=_owner_id_for_scope(scope, principal),
+                version=existing.version,
+                scope=existing.scope,
+                owner_id=existing.owner_id,
                 graph=graph,
                 created_at=existing.created_at,
                 updated_at=datetime.now(UTC),
                 persona_dependencies=(
                     body.persona_dependencies
                     if "persona_dependencies" in body.model_fields_set
-                    else existing.persona_dependencies
+                    else base.persona_dependencies
                 ),
-                persona_definitions=existing.persona_definitions,
+                persona_definitions=base.persona_definitions,
                 schema_version=(
                     body.schema_version
                     if "schema_version" in body.model_fields_set
-                    else existing.schema_version
+                    else base.schema_version
                 ),
                 workflow_dependencies=(
                     body.workflow_dependencies
                     if "workflow_dependencies" in body.model_fields_set
-                    else existing.workflow_dependencies
+                    else base.workflow_dependencies
                 ),
-                workflow_definitions=existing.workflow_definitions,
-                requirements=existing.requirements,
+                workflow_definitions=base.workflow_definitions,
+                requirements=base.requirements,
                 revision=existing.revision,
+                origin="authored",
+                based_on_revision=base_revision,
             ),
             request=request,
             principal=principal,
             refresh_personas=body.refresh_personas,
+            versioned=True,
+            expected_revision=body.expected_revision,
+            base_revision=base_revision,
+            bump=body.bump,
         )
-        return _to_response(saved)
+        return _to_response(saved, principal=principal)
+
+    @router.post(
+        "/{workflow_id}/versions",
+        response_model=WorkflowResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_workflow_version(
+        body: WorkflowBody,
+        request: Request,
+        workflow_id: UUID = Path(description="Workflow UUID"),
+        principal: Principal = Depends(extract_principal),
+        repo: WorkflowRepository = Depends(resolve_workflow_repo),
+    ) -> WorkflowResponse:
+        if body.base_revision is None:
+            raise HTTPException(status_code=422, detail="base_revision is required")
+        return await update_workflow(
+            body=body,
+            request=request,
+            workflow_id=workflow_id,
+            principal=principal,
+            repo=repo,
+        )
 
     @router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def delete_workflow(
@@ -339,6 +451,8 @@ def create_workflows_router() -> APIRouter:
         if existing is None or not _can_view_workflow(existing, principal):
             raise HTTPException(status_code=404, detail="Workflow not found")
 
+        if existing.read_only:
+            raise HTTPException(status_code=409, detail="Bundled workflows cannot be deleted")
         _assert_can_manage_existing(existing, principal)
         try:
             deleted = await repo.delete_workflow(workflow_id)
@@ -359,10 +473,15 @@ def create_workflows_router() -> APIRouter:
         principal: Principal = Depends(extract_principal),
         bearer_token: str | None = Depends(extract_bearer_token),
         repo: WorkflowRepository = Depends(resolve_workflow_repo),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_launch_campaign_repo),
         volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
         _build_scope: None = Depends(require_scope("ting:workflow:launch")),
     ) -> WorkflowLaunchResponse:
-        workflow = await repo.get_workflow(workflow_id)
+        workflow = (
+            await repo.get_workflow_version(workflow_id, version=body.workflow_version)
+            if body.workflow_version
+            else await repo.get_workflow(workflow_id)
+        )
         if workflow is None or not _can_view_workflow(workflow, principal):
             raise HTTPException(status_code=404, detail="Workflow not found")
 
@@ -374,6 +493,76 @@ def create_workflows_router() -> APIRouter:
             principal=principal,
             bearer_token=bearer_token,
         )
+        now = datetime.now(UTC)
+        campaign_id = uuid4()
+        campaign = WorkflowCampaign(
+            id=campaign_id,
+            tenant_id=principal.tenant_id,
+            slug=f"{execution.slug}-{campaign_id.hex[:12]}",
+            name=execution.session.name or execution.workflow.name,
+            owner_id=principal.user_id,
+            workflow_id=execution.workflow.id,
+            workflow_version=execution.workflow.version,
+            workflow_name=execution.workflow.name,
+            workflow_snapshot=execution.workflow_snapshot,
+            session_id=execution.session.id,
+            session_name=execution.session.name,
+            status=_campaign_status_from_launch(execution.session.status),
+            active_stage_id=None,
+            stage_state=[],
+            metadata={
+                "surface": _DIRECT_LAUNCH_SURFACE,
+                "launch_slug": execution.slug,
+                "document_revision": (
+                    execution.workflow.document_revision
+                    or workflow_document_revision(execution.workflow)
+                ),
+            },
+            created_at=now,
+            updated_at=now,
+            last_activity_at=now,
+            completed_at=(
+                now
+                if _campaign_status_from_launch(execution.session.status)
+                in {WorkflowCampaignStatus.COMPLETED, WorkflowCampaignStatus.FAILED}
+                else None
+            ),
+            connection_id=execution.connection_id,
+        )
+        try:
+            await campaign_repo.save_campaign(campaign)
+        except Exception as exc:
+            stopped = False
+            try:
+                await execution.adapter.stop_session(
+                    execution.session.id,
+                    auth_token=bearer_token,
+                    principal=principal,
+                )
+                stopped = True
+            except Exception:
+                logger.exception(
+                    "Workflow launch history failed and session compensation failed for %s",
+                    execution.session.id,
+                )
+            logger.exception(
+                "Workflow session %s launched but its durable Work record failed",
+                execution.session.id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "launchRecordFailed",
+                    "message": (
+                        "The workflow session launched but its Work record could not be saved."
+                    ),
+                    "sessionId": execution.session.id,
+                    "sessionName": execution.session.name,
+                    "clusterName": execution.session.cluster_name,
+                    "sessionStopped": stopped,
+                    "reconciliationRequired": not stopped,
+                },
+            ) from exc
         return _launch_response(
             execution.workflow,
             execution.slug,
@@ -382,6 +571,19 @@ def create_workflows_router() -> APIRouter:
         )
 
     return router
+
+
+def _campaign_status_from_launch(status_value: str) -> WorkflowCampaignStatus:
+    normalized = status_value.strip().lower()
+    if normalized in {"completed", "complete", "succeeded"}:
+        return WorkflowCampaignStatus.COMPLETED
+    if normalized in {"failed", "cancelled", "canceled"}:
+        return WorkflowCampaignStatus.FAILED
+    if normalized in {"pending", "queued", "created"}:
+        return WorkflowCampaignStatus.PENDING
+    if normalized == "stopped":
+        return WorkflowCampaignStatus.BLOCKED
+    return WorkflowCampaignStatus.RUNNING
 
 
 def _coerce_scope_filter(scope: Literal["all", "system", "user"]) -> WorkflowScope | None:
@@ -406,8 +608,13 @@ def _body_to_graph(body: WorkflowBody) -> dict[str, Any]:
     return graph
 
 
-def _to_response(workflow: WorkflowDefinition) -> WorkflowResponse:
+def _to_response(
+    workflow: WorkflowDefinition,
+    *,
+    principal: Principal | None = None,
+) -> WorkflowResponse:
     graph = workflow.graph or {}
+    document_revision = workflow.document_revision or workflow_document_revision(workflow)
     return WorkflowResponse(
         id=str(workflow.id),
         name=workflow.name,
@@ -420,7 +627,12 @@ def _to_response(workflow: WorkflowDefinition) -> WorkflowResponse:
         schema_version=workflow.schema_version,
         workflow_dependencies=workflow.workflow_dependencies,
         revision=workflow.revision,
+        document_revision=document_revision,
+        is_head=workflow.is_head,
+        origin="bundled" if workflow.origin == "bundled" else "authored",
+        based_on_revision=workflow.based_on_revision,
         read_only=workflow.read_only,
+        can_edit=principal is not None and _can_edit_workflow(workflow, principal),
         canonical_yaml=dump_workflow_document(workflow),
         requirements=workflow.requirements,
         tags=[str(tag).strip() for tag in list(graph.get("tags") or []) if str(tag).strip()],
@@ -436,6 +648,17 @@ def _to_response(workflow: WorkflowDefinition) -> WorkflowResponse:
         ],
         created_at=workflow.created_at,
         updated_at=workflow.updated_at,
+    )
+
+
+def _to_version_summary(item: WorkflowVersionSummary) -> WorkflowVersionSummaryResponse:
+    return WorkflowVersionSummaryResponse(
+        version=item.version,
+        document_revision=item.document_revision,
+        created_at=item.created_at,
+        is_head=item.is_head,
+        based_on_revision=item.based_on_revision,
+        origin="bundled" if item.origin == "bundled" else "authored",
     )
 
 
@@ -455,6 +678,8 @@ def _launch_response(
         status=session.status,
         cluster_name=session.cluster_name,
         chat_endpoint=public_session_endpoint(session.chat_endpoint, public_host=public_host),
+        workflow_version=workflow.version,
+        document_revision=workflow.document_revision or workflow_document_revision(workflow),
     )
 
 
@@ -860,11 +1085,13 @@ def _can_view_workflow(workflow: WorkflowDefinition, principal: Principal) -> bo
     return workflow.owner_id == principal.user_id
 
 
+def _can_edit_workflow(workflow: WorkflowDefinition, principal: Principal) -> bool:
+    if workflow.scope == WorkflowScope.SYSTEM:
+        return _can_manage_system_workflows(principal)
+    return workflow.owner_id == principal.user_id
+
+
 def _assert_can_manage_existing(workflow: WorkflowDefinition, principal: Principal) -> None:
-    if workflow.read_only:
-        raise HTTPException(
-            status_code=409, detail="Bundled workflows are read-only; create a copy"
-        )
     if workflow.scope == WorkflowScope.SYSTEM:
         if _can_manage_system_workflows(principal):
             return
@@ -897,6 +1124,10 @@ async def _save_workflow(
     request: Request | None = None,
     principal: Principal | None = None,
     refresh_personas: list[str] | None = None,
+    versioned: bool = False,
+    expected_revision: str | None = None,
+    base_revision: str | None = None,
+    bump: WorkflowVersionBump = "patch",
 ) -> WorkflowDefinition:
     try:
         if request is not None:
@@ -917,6 +1148,15 @@ async def _save_workflow(
             workflow = pin_workflow_personas(workflow, source)
             workflow = await _resolve_workflow_dependencies(workflow, repo, principal)
         load_workflow_document(dump_workflow_document(workflow))
+        if versioned:
+            if base_revision is None:
+                raise ValueError("base_revision is required for a workflow successor")
+            return await repo.save_workflow_version(
+                workflow,
+                expected_revision=expected_revision,
+                base_revision=base_revision,
+                bump=bump,
+            )
         return await repo.save_workflow(workflow)
     except (WorkflowConflictError, WorkflowReadOnlyError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -968,19 +1208,32 @@ async def _resolve_workflow_dependencies(workflow, repo, principal, ancestors=()
     definitions = {}
     for alias, pin in workflow.workflow_dependencies.items():
         aggregate = workflow.workflow_definitions.get(alias)
+        child = None
+        document = None
         if aggregate:
-            document = load_workflow_document(json.dumps(aggregate["document"]))
-            child = document.to_workflow(
-                scope=WorkflowScope.USER,
-                owner_id=principal.user_id,
-                persona_definitions=aggregate.get("persona_definitions", {}),
-                workflow_definitions=aggregate.get("workflow_definitions", {}),
+            embedded_document = load_workflow_document(json.dumps(aggregate["document"]))
+            embedded_revision = workflow_document_revision(embedded_document)
+            if (
+                embedded_document.id == pin.id
+                and embedded_revision == pin.revision
+                and embedded_revision == pin.digest
+            ):
+                document = embedded_document
+                child = document.to_workflow(
+                    scope=WorkflowScope.USER,
+                    owner_id=principal.user_id,
+                    persona_definitions=aggregate.get("persona_definitions", {}),
+                    workflow_definitions=aggregate.get("workflow_definitions", {}),
+                )
+        if child is None:
+            child = await repo.get_workflow_version(
+                pin.id,
+                document_revision=pin.digest,
             )
-        else:
-            child = await repo.get_workflow(pin.id)
             if child is None or not _can_view_workflow(child, principal):
                 raise ValueError(f"Pinned workflow dependency unavailable: {alias}")
             document = document_from_workflow(child)
+        assert document is not None
         revision = workflow_document_revision(document)
         if child.id != pin.id or revision != pin.revision or revision != pin.digest:
             raise ValueError(f"Workflow dependency pin mismatch: {alias}")

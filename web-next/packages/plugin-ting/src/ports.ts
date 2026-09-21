@@ -12,6 +12,12 @@ import type { DispatcherState } from './domain/dispatcher';
 import type { SessionInfo } from './domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from './domain/tracker';
 import type { Workflow } from './domain/workflow';
+import type { WorkCollection, WorkDetail, WorkResourceKind } from './domain/work';
+
+export interface IWorkService {
+  list(options?: { executionLimit?: number; executionCursor?: string }): Promise<WorkCollection>;
+  get(kind: WorkResourceKind, id: string): Promise<WorkDetail>;
+}
 import type {
   WorkflowExecutionTrace,
   ExecutionTraceOptions,
@@ -308,6 +314,10 @@ export interface ImportProjectOptions {
   repoRefs?: { repo: string; branch: string }[];
   target?: SagaTargetSelection;
   trackerConnectionId?: string;
+  /** Saved workflow to assign to the imported project. */
+  workflowId?: string;
+  /** Exact immutable workflow version to assign. */
+  workflowVersion?: string;
 }
 
 export type SagaTargetSelection =
@@ -328,6 +338,8 @@ export interface WorkflowLaunchRequest {
   repo?: string;
   branch?: string;
   connectionId?: string;
+  /** Exact immutable workflow version to run; omission resolves the current head. */
+  workflowVersion?: string;
 }
 
 export interface WorkflowLaunchResult {
@@ -338,6 +350,9 @@ export interface WorkflowLaunchResult {
   sessionName: string;
   status: string;
   clusterName: string;
+  chatEndpoint: string | null;
+  workflowVersion: string;
+  documentRevision: string;
 }
 
 export type WorkflowExportFormat = 'yaml' | 'bundle';
@@ -346,6 +361,15 @@ export interface WorkflowExport {
   data: Blob;
   filename: string;
   mediaType: string;
+}
+
+export interface WorkflowVersionSummary {
+  version: string;
+  documentRevision: string;
+  createdAt: string;
+  isHead: boolean;
+  basedOnRevision?: string | null;
+  origin?: 'bundled' | 'authored';
 }
 
 export type WorkflowPersonaImportStatus = 'reuse' | 'bundled' | 'missing' | 'conflict' | 'mapped';
@@ -398,9 +422,15 @@ export interface WorkflowImportPreview {
 export interface IWorkflowService {
   listWorkflows(): Promise<Workflow[]>;
   getWorkflow(id: string): Promise<Workflow | null>;
+  listWorkflowVersions(id: string): Promise<WorkflowVersionSummary[]>;
+  getWorkflowVersion(id: string, version: string): Promise<Workflow | null>;
   saveWorkflow(workflow: Workflow): Promise<Workflow>;
   deleteWorkflow(id: string): Promise<void>;
-  exportWorkflow(id: string, format: WorkflowExportFormat): Promise<WorkflowExport>;
+  exportWorkflow(
+    id: string,
+    format: WorkflowExportFormat,
+    version?: string,
+  ): Promise<WorkflowExport>;
   previewWorkflowImport(request: WorkflowImportSource): Promise<WorkflowImportPreview>;
   applyWorkflowImport(request: WorkflowImportSource): Promise<Workflow>;
   launchWorkflow(workflowId: string, request: WorkflowLaunchRequest): Promise<WorkflowLaunchResult>;
@@ -417,6 +447,7 @@ export interface CreateResearchCampaignRequest {
   question: string;
   name?: string;
   workflowId?: string;
+  workflowVersion?: string;
   repo?: string;
   branch?: string;
   mode?: string;
@@ -447,6 +478,7 @@ export interface CreateSpecCampaignRequest {
   prompt: string;
   name?: string;
   workflowId?: string;
+  workflowVersion?: string;
   repo?: string;
   repos?: string[];
   branch?: string;
@@ -577,6 +609,8 @@ export interface TingPersonaSummary {
   isBuiltin: boolean;
   hasOverride: boolean;
   producesEvent: string;
+  /** Outcome value → emitted event type for personas with branched completion contracts. */
+  outcomeEvents?: Readonly<Record<string, string>>;
   consumesEvents: string[];
   /** Functional role — drives the avatar shape (plan, build, verify, …). */
   role?: string;

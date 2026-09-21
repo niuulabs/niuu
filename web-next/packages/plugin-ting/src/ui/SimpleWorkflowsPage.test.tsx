@@ -321,7 +321,9 @@ describe('SimpleWorkflowsPage', () => {
     await waitFor(() =>
       expect(screen.getByTestId(`workflow-issue-${issue.id}`)).toBeInTheDocument(),
     );
-    expect(screen.getByTestId(`workflow-issue-board-${board.id}`)).toBeInTheDocument();
+    expect(
+      screen.getByTestId(`workflow-issue-project-default-${board.id}`),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId(`workflow-issue-${issue.id}`));
 

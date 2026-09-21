@@ -63,6 +63,35 @@ class AuthorizedWorkflowRepository(_Policy, WorkflowRepository):
         await self.save_check(workflow, await self.repo.get_workflow(workflow.id), "workflow")
         return await self.repo.save_workflow(workflow)
 
+    async def list_workflow_versions(self, workflow_id):
+        await self.check(await self.repo.get_workflow(workflow_id), "workflow", "read")
+        return await self.repo.list_workflow_versions(workflow_id)
+
+    async def get_workflow_version(self, workflow_id, *, version=None, document_revision=None):
+        await self.check(await self.repo.get_workflow(workflow_id), "workflow", "read")
+        return await self.repo.get_workflow_version(
+            workflow_id,
+            version=version,
+            document_revision=document_revision,
+        )
+
+    async def save_workflow_version(
+        self,
+        workflow,
+        *,
+        expected_revision,
+        base_revision,
+        bump="patch",
+    ):
+        existing = await self.repo.get_workflow(workflow.id)
+        await self.save_check(workflow, existing, "workflow")
+        return await self.repo.save_workflow_version(
+            workflow,
+            expected_revision=expected_revision,
+            base_revision=base_revision,
+            bump=bump,
+        )
+
     async def delete_workflow(self, workflow_id):
         await self.check(await self.repo.get_workflow(workflow_id), "workflow", "delete")
         return await self.repo.delete_workflow(workflow_id)

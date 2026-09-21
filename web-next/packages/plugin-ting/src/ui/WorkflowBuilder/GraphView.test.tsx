@@ -12,6 +12,7 @@ import {
 } from './GraphView';
 import type { WorkflowNode, WorkflowEdge } from '../../domain/workflow';
 import { MIMIR_MOUNT_MIME, serializeWorkflowRegistryMount } from './mimirRegistry';
+import { STAGE_WIDTH, WAIT_HEIGHT, stageNodeHeight } from './graphUtils';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -123,14 +124,161 @@ function defaultProps() {
   };
 }
 
+function openAddMenu() {
+  fireEvent.click(screen.getByTestId('open-add-step'));
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 describe('GraphView', () => {
+  function pickerBounds() {
+    const bounds = {
+      left: 50,
+      top: 60,
+      width: 800,
+      height: 600,
+      right: 850,
+      bottom: 660,
+      x: 50,
+      y: 60,
+      toJSON: () => ({}),
+    };
+    vi.spyOn(screen.getByTestId('graph-view'), 'getBoundingClientRect').mockReturnValue(bounds);
+    vi.spyOn(screen.getByTestId('graph-canvas'), 'getBoundingClientRect').mockReturnValue(bounds);
+  }
+
+  it('opens all eight node kinds on background right-click and inserts at the transformed point', () => {
+    const props = defaultProps();
+    render(<GraphView {...props} />);
+    pickerBounds();
+    const canvas = screen.getByTestId('graph-canvas');
+    fireEvent.mouseDown(canvas, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.mouseMove(canvas, { clientX: 150, clientY: 120 });
+    fireEvent.mouseUp(canvas);
+    fireEvent.click(screen.getByTestId('zoom-in'));
+    const scale = Number(canvas.getAttribute('data-scale'));
+    fireEvent.mouseDown(canvas, { button: 2, clientX: 350, clientY: 260 });
+    fireEvent.contextMenu(canvas, { clientX: 350, clientY: 260 });
+    expect(screen.getByTestId('library-search')).toHaveFocus();
+    for (const kind of [
+      'trigger',
+      'stage',
+      'gate',
+      'cond',
+      'wait',
+      'subworkflow',
+      'resource',
+      'end',
+    ]) {
+      expect(screen.getByTestId(`library-add-${kind}`)).toBeInTheDocument();
+    }
+    fireEvent.change(screen.getByTestId('library-search'), { target: { value: 'child' } });
+    expect(screen.queryByTestId('library-add-stage')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('library-add-subworkflow'));
+    expect(props.onAddNode).toHaveBeenCalledWith('subworkflow', { x: 250 / scale, y: 180 / scale });
+    expect(screen.queryByTestId('canvas-node-picker')).not.toBeInTheDocument();
+    expect(screen.getByTestId('graph-view')).toHaveFocus();
+  });
+
+  it('clamps the picker at the canvas edge and dismisses with Escape or outside pointer', () => {
+    render(<GraphView {...defaultProps()} />);
+    pickerBounds();
+    const canvas = screen.getByTestId('graph-canvas');
+    fireEvent.contextMenu(canvas, { clientX: 840, clientY: 650 });
+    expect(screen.getByTestId('canvas-node-picker')).toHaveStyle({ left: '468px', top: '108px' });
+    fireEvent.keyDown(screen.getByTestId('library-search'), { key: 'Escape' });
+    expect(screen.queryByTestId('canvas-node-picker')).not.toBeInTheDocument();
+    fireEvent.contextMenu(canvas, { clientX: 200, clientY: 200 });
+    fireEvent.pointerDown(screen.getByTestId('library-search'));
+    expect(screen.getByTestId('canvas-node-picker')).toBeInTheDocument();
+    fireEvent.pointerDown(canvas);
+    expect(screen.queryByTestId('canvas-node-picker')).not.toBeInTheDocument();
+  });
+
+  it('uses the injected persona and resource actions at the chosen point', () => {
+    const props = defaultProps();
+    const onAddStageWithPersona = vi.fn();
+    render(
+      <GraphView
+        {...props}
+        onAddStageWithPersona={onAddStageWithPersona}
+        personas={[{ id: 'analyst', label: 'Analyst', role: 'plan' }]}
+      />,
+    );
+    pickerBounds();
+    const canvas = screen.getByTestId('graph-canvas');
+    fireEvent.contextMenu(canvas, { clientX: 200, clientY: 200 });
+    fireEvent.click(screen.getByText('Analyst'));
+    expect(onAddStageWithPersona).toHaveBeenCalledWith('analyst', undefined, { x: 150, y: 140 });
+    fireEvent.contextMenu(canvas, { clientX: 200, clientY: 200 });
+    fireEvent.click(document.querySelector('[data-testid^="mimir-mount-"]')!);
+    expect(props.onAddMimirResource).toHaveBeenCalledWith(
+      expect.objectContaining({ lifecycle: 'ephemeral' }),
+      { x: 150, y: 140 },
+    );
+  });
+
+  it('keeps node right-click inspection and immutable workflows free of creation menus', () => {
+    const props = defaultProps();
+    const view = render(<GraphView {...props} />);
+    fireEvent.contextMenu(screen.getByTestId('workflow-node-stage-1'));
+    expect(props.onInspectNode).toHaveBeenCalledWith('stage-1');
+    expect(screen.queryByTestId('canvas-node-picker')).not.toBeInTheDocument();
+    fireEvent.mouseDown(screen.getByTestId('workflow-node-stage-1'), { button: 2 });
+    fireEvent.mouseMove(screen.getByTestId('workflow-node-stage-1'), {
+      clientX: 200,
+      clientY: 200,
+    });
+    fireEvent.mouseUp(screen.getByTestId('workflow-node-stage-1'));
+    expect(props.onMoveNode).not.toHaveBeenCalled();
+    const onEdit = vi.fn();
+    view.rerender(<GraphView {...props} readOnly onEdit={onEdit} />);
+    pickerBounds();
+    fireEvent.contextMenu(screen.getByTestId('graph-canvas'));
+    expect(screen.getByText('Viewing saved workflow')).toBeInTheDocument();
+    expect(screen.queryByTestId('library-add-stage')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit workflow' }));
+    expect(onEdit).toHaveBeenCalledOnce();
+    expect(props.onAddNode).not.toHaveBeenCalled();
+    view.rerender(
+      <GraphView {...props} readOnly readOnlyMessage="Loading the selected version…" />,
+    );
+    fireEvent.contextMenu(screen.getByTestId('graph-canvas'));
+    expect(screen.getByText('Loading the selected version…')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit workflow' })).not.toBeInTheDocument();
+  });
+
+  it('opens on Control-click without starting a pan or moving the insertion position', () => {
+    const props = defaultProps();
+    render(<GraphView {...props} />);
+    pickerBounds();
+    const canvas = screen.getByTestId('graph-canvas');
+    fireEvent.mouseDown(canvas, { button: 0, ctrlKey: true, clientX: 200, clientY: 200 });
+    fireEvent.mouseMove(canvas, { clientX: 260, clientY: 240 });
+    fireEvent.mouseUp(canvas);
+    fireEvent.click(screen.getByTestId('library-add-end'));
+    expect(props.onAddNode).toHaveBeenCalledWith('end', { x: 150, y: 140 });
+    expect(props.onSelectNode).not.toHaveBeenCalled();
+  });
+
   it('renders the graph-view container', () => {
     render(<GraphView {...defaultProps()} />);
     expect(screen.getByTestId('graph-view')).toBeInTheDocument();
+  });
+
+  it('hides the auto-layout button when onAutoLayout is not supplied', () => {
+    render(<GraphView {...defaultProps()} />);
+    expect(screen.queryByTestId('auto-layout')).not.toBeInTheDocument();
+  });
+
+  it('shows the auto-layout button and calls the handler on click', () => {
+    const onAutoLayout = vi.fn();
+    render(<GraphView {...defaultProps()} onAutoLayout={onAutoLayout} />);
+    openAddMenu();
+    fireEvent.click(screen.getByTestId('auto-layout'));
+    expect(onAutoLayout).toHaveBeenCalledTimes(1);
   });
 
   it('renders the SVG canvas', () => {
@@ -262,68 +410,80 @@ describe('GraphView', () => {
 
   it('renders add-stage toolbar button', () => {
     render(<GraphView {...defaultProps()} />);
-    expect(screen.getByTestId('add-stage')).toBeInTheDocument();
+    openAddMenu();
+    expect(screen.getByTestId('library-add-stage')).toBeInTheDocument();
   });
 
   it('renders add-gate toolbar button', () => {
     render(<GraphView {...defaultProps()} />);
-    expect(screen.getByTestId('add-gate')).toBeInTheDocument();
+    openAddMenu();
+    expect(screen.getByTestId('library-add-gate')).toBeInTheDocument();
   });
 
   it('renders add-resource toolbar button', () => {
     render(<GraphView {...defaultProps()} />);
-    expect(screen.getByTestId('add-resource')).toBeInTheDocument();
+    openAddMenu();
+    expect(screen.getByTestId('library-add-resource')).toBeInTheDocument();
   });
 
   it('renders add-cond toolbar button', () => {
     render(<GraphView {...defaultProps()} />);
-    expect(screen.getByTestId('add-cond')).toBeInTheDocument();
+    openAddMenu();
+    expect(screen.getByTestId('library-add-cond')).toBeInTheDocument();
   });
 
   it('renders add-trigger and add-end toolbar buttons', () => {
     render(<GraphView {...defaultProps()} />);
-    expect(screen.getByTestId('add-trigger')).toBeInTheDocument();
-    expect(screen.getByTestId('add-end')).toBeInTheDocument();
-    expect(screen.getByTestId('add-wait')).toBeInTheDocument();
+    openAddMenu();
+    expect(screen.getByTestId('library-add-trigger')).toBeInTheDocument();
+    expect(screen.getByTestId('library-add-end')).toBeInTheDocument();
+    expect(screen.getByTestId('library-add-wait')).toBeInTheDocument();
   });
 
   it('calls onAddNode("stage") when add-stage clicked', () => {
     const props = defaultProps();
     render(<GraphView {...props} />);
-    fireEvent.click(screen.getByTestId('add-stage'));
-    expect(props.onAddNode).toHaveBeenCalledWith('stage');
+    openAddMenu();
+    fireEvent.click(screen.getByTestId('library-add-stage'));
+    expect(props.onAddNode).toHaveBeenCalledWith('stage', expect.any(Object));
   });
 
   it('calls onAddNode("gate") when add-gate clicked', () => {
     const props = defaultProps();
     render(<GraphView {...props} />);
-    fireEvent.click(screen.getByTestId('add-gate'));
-    expect(props.onAddNode).toHaveBeenCalledWith('gate');
+    openAddMenu();
+    fireEvent.click(screen.getByTestId('library-add-gate'));
+    expect(props.onAddNode).toHaveBeenCalledWith('gate', expect.any(Object));
   });
 
   it('calls onAddNode("cond") when add-cond clicked', () => {
     const props = defaultProps();
     render(<GraphView {...props} />);
-    fireEvent.click(screen.getByTestId('add-cond'));
-    expect(props.onAddNode).toHaveBeenCalledWith('cond');
+    openAddMenu();
+    fireEvent.click(screen.getByTestId('library-add-cond'));
+    expect(props.onAddNode).toHaveBeenCalledWith('cond', expect.any(Object));
   });
 
   it('calls onAddNode("resource") when add-resource clicked', () => {
     const props = defaultProps();
     render(<GraphView {...props} />);
-    fireEvent.click(screen.getByTestId('add-resource'));
-    expect(props.onAddNode).toHaveBeenCalledWith('resource');
+    openAddMenu();
+    fireEvent.click(screen.getByTestId('library-add-resource'));
+    expect(props.onAddNode).toHaveBeenCalledWith('resource', expect.any(Object));
   });
 
   it('calls onAddNode for trigger and end toolbar actions', () => {
     const props = defaultProps();
     render(<GraphView {...props} />);
-    fireEvent.click(screen.getByTestId('add-trigger'));
-    fireEvent.click(screen.getByTestId('add-end'));
-    fireEvent.click(screen.getByTestId('add-wait'));
-    expect(props.onAddNode).toHaveBeenCalledWith('trigger');
-    expect(props.onAddNode).toHaveBeenCalledWith('end');
-    expect(props.onAddNode).toHaveBeenCalledWith('wait');
+    openAddMenu();
+    fireEvent.click(screen.getByTestId('library-add-trigger'));
+    openAddMenu();
+    fireEvent.click(screen.getByTestId('library-add-end'));
+    openAddMenu();
+    fireEvent.click(screen.getByTestId('library-add-wait'));
+    expect(props.onAddNode).toHaveBeenCalledWith('trigger', expect.any(Object));
+    expect(props.onAddNode).toHaveBeenCalledWith('end', expect.any(Object));
+    expect(props.onAddNode).toHaveBeenCalledWith('wait', expect.any(Object));
   });
 
   it('routes dropped Mimir mount payloads to onAddMimirResource', () => {
@@ -392,7 +552,7 @@ describe('GraphView', () => {
   it('shows "Click target input…" hint when in connecting mode', () => {
     const props = { ...defaultProps(), connectingFromId: 'stage-1', selectedNodeId: 'stage-1' };
     render(<GraphView {...props} />);
-    expect(screen.getByText(/click target input/i)).toBeInTheDocument();
+    expect(screen.getByText(/choose a compatible input/i)).toBeInTheDocument();
   });
 
   it('renders with no nodes', () => {
@@ -460,9 +620,10 @@ describe('GraphView', () => {
       ...defaultProps(),
       nodes: [triggerNode, stageNode],
       edges: [],
+      selectedNodeId: 'trigger-1',
     };
     render(<GraphView {...props} />);
-    fireEvent.click(screen.getByTestId('trigger-output-trigger-1'));
+    fireEvent.click(screen.getByTestId('workflow-socket-trigger-1-output-0'));
     expect(props.onStartConnect).toHaveBeenCalledWith('trigger-1', 'code.requested');
   });
 
@@ -470,13 +631,58 @@ describe('GraphView', () => {
     const props = {
       ...defaultProps(),
       nodes: [stageNode, endNode],
-      edges: [],
+      edges: [
+        {
+          id: 'existing-end-input',
+          source: 'stage-1',
+          target: 'end-1',
+          label: 'stage.completed -> complete',
+          cp1: { x: 80, y: 0 },
+          cp2: { x: -80, y: 0 },
+        },
+      ],
       connectingFromId: 'stage-1',
       selectedNodeId: 'stage-1',
     };
     render(<GraphView {...props} />);
-    fireEvent.click(screen.getByTestId('end-input-end-1'));
+    fireEvent.click(screen.getByTestId('workflow-socket-end-1-input-0'));
     expect(props.onCompleteConnect).toHaveBeenCalledWith('end-1', 'complete');
+  });
+
+  it('keeps foreignObject card roots non-positioned for WebKit SVG transforms', () => {
+    const { container } = render(
+      <GraphView
+        {...defaultProps()}
+        nodes={[
+          triggerNode,
+          stageNode,
+          gateNode,
+          condNode,
+          waitNode,
+          endNode,
+          resourceNode,
+        ]}
+        edges={[]}
+      />,
+    );
+
+    const leftAccentCards = ['stage', 'trigger', 'wait', 'resource'];
+    const topAccentCards = ['gate', 'cond'];
+    for (const kind of [...leftAccentCards, ...topAccentCards, 'end']) {
+      const card = container.querySelector(`.workflow-${kind}-card`);
+      expect(card).not.toBeNull();
+      expect(card).not.toHaveClass('niuu:relative');
+    }
+    for (const kind of leftAccentCards) {
+      expect(container.querySelector(`.workflow-${kind}-card`)).toHaveStyle({
+        borderLeftWidth: '3px',
+      });
+    }
+    for (const kind of topAccentCards) {
+      expect(container.querySelector(`.workflow-${kind}-card`)).toHaveStyle({
+        borderTopWidth: '3px',
+      });
+    }
   });
 
   it('inspects trigger and end nodes from their context menus', () => {
@@ -555,6 +761,7 @@ describe('GraphView', () => {
     expect(props.onDeleteEdge).toHaveBeenCalledWith('e1');
 
     fireEvent.click(edgeTarget);
+    screen.getByTestId('graph-view').focus();
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete' }));
     expect(props.onDeleteEdge).toHaveBeenCalledWith('e1');
   });
@@ -566,6 +773,7 @@ describe('GraphView', () => {
       onDeleteEdge: vi.fn(),
     };
     render(<GraphView {...props} />);
+    screen.getByTestId('graph-view').focus();
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace' }));
     expect(props.onDeleteNode).toHaveBeenCalledWith('stage-1');
   });
@@ -617,11 +825,14 @@ describe('GraphView', () => {
 
     const { rerender } = render(<GraphView {...connectProps} />);
     const stageGroup = screen.getByTestId('workflow-node-stage-1');
-    const connectCircles = stageGroup.querySelectorAll('circle');
-    expect(connectCircles).toHaveLength(4);
+    // Stage ports are HTML buttons inside a foreignObject (see StageNode),
+    // not SVG <circle>s — connecting mode shows both input ports (only
+    // rendered while connecting) and output ports (always rendered).
+    const connectPorts = stageGroup.querySelectorAll('[data-testid^="stage-port-"]');
+    expect(connectPorts).toHaveLength(4);
 
-    fireEvent.click(connectCircles[0]!);
-    fireEvent.click(connectCircles[3]!);
+    fireEvent.click(connectPorts[0]!);
+    fireEvent.click(connectPorts[3]!);
     fireEvent.mouseDown(screen.getByTestId('workflow-node-gate-1'), { clientX: 300, clientY: 100 });
 
     expect(connectProps.onCompleteConnect).toHaveBeenCalledWith('stage-1', 'brief');
@@ -639,7 +850,9 @@ describe('GraphView', () => {
 
     rerender(<GraphView {...idleProps} />);
     const idleStageGroup = screen.getByTestId('workflow-node-stage-1');
-    const outputPorts = idleStageGroup.querySelectorAll('circle.niuu\\:cursor-pointer');
+    // Idle (not connecting): only output ports render — inputs are gated on
+    // isConnectingMode, same as before.
+    const outputPorts = idleStageGroup.querySelectorAll('[data-testid^="stage-port-out-"]');
     expect(outputPorts).toHaveLength(2);
 
     fireEvent.click(outputPorts[1]!);
@@ -662,9 +875,10 @@ describe('GraphView', () => {
     expect(props.onMoveNode).not.toHaveBeenCalled();
 
     fireEvent.mouseMove(stage, { clientX: 112, clientY: 118 });
-    expect(props.onMoveNode).toHaveBeenCalledWith('stage-1', { x: 112, y: 118 });
+    expect(props.onMoveNode).not.toHaveBeenCalled();
 
     fireEvent.mouseUp(stage);
+    expect(props.onMoveNode).toHaveBeenCalledWith('stage-1', { x: 112, y: 118 });
     fireEvent.mouseMove(stage, { clientX: 130, clientY: 140 });
     expect(props.onMoveNode).toHaveBeenCalledTimes(1);
   });
@@ -745,6 +959,7 @@ describe('GraphView', () => {
     fireEvent(svg, drop);
     expect(props.onAddNode).not.toHaveBeenCalled();
 
+    screen.getByTestId('graph-view').focus();
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     expect(props.onCancelConnect).toHaveBeenCalledTimes(1);
   });
@@ -825,7 +1040,7 @@ describe('GraphView', () => {
     expect(isGraphNodeKind('unknown')).toBe(false);
   });
 
-  it('anchors stage edges to matching ports and falls back to node centres otherwise', () => {
+  it('anchors stage edges to explicit boundary ports and never falls back to node centres', () => {
     const stageWithMembers = {
       ...stageNode,
       personaIds: ['ravn-alpha', 'ravn-beta'],
@@ -834,23 +1049,17 @@ describe('GraphView', () => {
     expect(
       edgeAnchor(stageWithMembers as never, 'source', 'summary', personaFixtures as never),
     ).toMatchObject({
-      x: stageWithMembers.position.x + 172 - 10,
+      x: stageWithMembers.position.x + STAGE_WIDTH,
     });
     expect(
       edgeAnchor(stageWithMembers as never, 'target', 'brief', personaFixtures as never),
     ).toMatchObject({
-      x: stageWithMembers.position.x + 10,
+      x: stageWithMembers.position.x,
     });
     expect(
       edgeAnchor(stageWithMembers as never, 'source', 'missing', personaFixtures as never),
-    ).toEqual({
-      x: 186,
-      y: 157,
-    });
-    expect(edgeAnchor(gateNode as never, 'target', 'brief', personaFixtures as never)).toEqual({
-      x: 338,
-      y: 138,
-    });
+    ).toBeNull();
+    expect(edgeAnchor(gateNode as never, 'target', 'brief', personaFixtures as never)).toBeNull();
   });
 
   it('anchors wait edges to their configured topic rows', () => {
@@ -862,12 +1071,12 @@ describe('GraphView', () => {
     ];
 
     expect(edgeAnchor(waitNode, 'target', 'review.waiting', [], edges)).toEqual({
-      x: waitNode.position.x + 8,
-      y: waitNode.position.y + 58 + 8 + 14,
+      x: waitNode.position.x,
+      y: waitNode.position.y + WAIT_HEIGHT + 16 + 7,
     });
     expect(edgeAnchor(waitNode, 'source', 'merged', [], edges)).toEqual({
-      x: waitNode.position.x + 168 - 8,
-      y: waitNode.position.y + 58 + 8 + 14,
+      x: waitNode.position.x + 168,
+      y: waitNode.position.y + WAIT_HEIGHT + 16 + 7,
     });
   });
 
@@ -881,9 +1090,10 @@ describe('GraphView', () => {
     render(<GraphView {...props} />);
 
     const paths = screen.getByTestId('workflow-edge-labeled-edge').querySelectorAll('path');
-    expect(screen.getByText('notes -> brief')).toBeInTheDocument();
+    expect(screen.queryByText('notes -> brief')).not.toBeInTheDocument();
 
     fireEvent.click(paths[1]!);
+    expect(screen.getByText('notes -> brief')).toBeInTheDocument();
     expect(screen.getByTestId('delete-selected-edge')).toBeInTheDocument();
   });
 
@@ -992,5 +1202,342 @@ describe('GraphView', () => {
     expect(screen.getByText('code.requested')).toBeInTheDocument();
     expect(screen.getByText('Finish f…')).toBeInTheDocument();
     expect(screen.getByTestId('delete-btn-resource-ephemeral')).toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
+  // InsertFromPortMenu — "add a step from a port"
+  // ---------------------------------------------------------------------------
+
+  const insertPersonas = [
+    {
+      id: 'reviewer',
+      label: 'reviewer',
+      role: 'review',
+      consumes: ['code.changed'],
+      produces: ['review.completed'],
+    },
+    {
+      id: 'unrelated',
+      label: 'unrelated',
+      role: 'build',
+      consumes: ['other.event'],
+      produces: ['other.done'],
+    },
+  ];
+
+  it('does not show the insert-from-port menu when onAddStageWithPersona is not supplied', () => {
+    render(
+      <GraphView
+        {...defaultProps()}
+        personas={insertPersonas as never}
+        connectingFromId="stage-1"
+        connectingFromLabel="code.changed"
+      />,
+    );
+    expect(screen.queryByTestId('insert-from-port-menu')).not.toBeInTheDocument();
+  });
+
+  it('lists only personas that consume the port event type, and inserts + exits connecting mode on pick', () => {
+    const onAddStageWithPersona = vi.fn();
+    const onCancelConnect = vi.fn();
+    render(
+      <GraphView
+        {...defaultProps()}
+        personas={insertPersonas as never}
+        connectingFromId="stage-1"
+        connectingFromLabel="code.changed"
+        onAddStageWithPersona={onAddStageWithPersona}
+        onCancelConnect={onCancelConnect}
+      />,
+    );
+
+    expect(screen.getByTestId('insert-from-port-menu')).toBeInTheDocument();
+    expect(screen.getByTestId('insert-from-port-reviewer')).toBeInTheDocument();
+    expect(screen.queryByTestId('insert-from-port-unrelated')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('insert-from-port-reviewer'));
+
+    // stageNode fixture sits at (100, 100); the inserted stage lands to its right.
+    expect(onAddStageWithPersona).toHaveBeenCalledWith('reviewer', undefined, {
+      x: 100 + STAGE_WIDTH + 96,
+      y: 100,
+    });
+    expect(onCancelConnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows an empty state when nothing in the catalog consumes the port event type', () => {
+    render(
+      <GraphView
+        {...defaultProps()}
+        personas={insertPersonas as never}
+        connectingFromId="stage-1"
+        connectingFromLabel="no.such.event"
+        onAddStageWithPersona={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('insert-from-port-menu')).toHaveTextContent(
+      'Nothing in the persona catalog consumes',
+    );
+  });
+
+  it('creates a persona stage from the exact selected output contract', () => {
+    const onAddStageFromPort = vi.fn();
+    render(
+      <GraphView
+        {...defaultProps()}
+        personas={insertPersonas as never}
+        connectingFromId="stage-1"
+        connectingFromLabel="code.changed"
+        onAddStageWithPersona={vi.fn()}
+        onAddStageFromPort={onAddStageFromPort}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('insert-from-port-reviewer'));
+    expect(onAddStageFromPort).toHaveBeenCalledWith('stage-1', 'code.changed', 'reviewer', {
+      x: 100 + STAGE_WIDTH + 96,
+      y: 100,
+    });
+  });
+
+  it('hides the flow-control section when onAddNodeFromPort is not supplied', () => {
+    render(
+      <GraphView
+        {...defaultProps()}
+        personas={insertPersonas as never}
+        connectingFromId="stage-1"
+        connectingFromLabel="code.changed"
+        onAddStageWithPersona={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('insert-from-port-flow-gate')).not.toBeInTheDocument();
+  });
+
+  it('offers flow-control candidates and wires the edge via addNodeFromPort on pick', () => {
+    const onAddNodeFromPort = vi.fn();
+    const onCancelConnect = vi.fn();
+    render(
+      <GraphView
+        {...defaultProps()}
+        personas={insertPersonas as never}
+        connectingFromId="stage-1"
+        connectingFromLabel="code.changed"
+        onAddStageWithPersona={vi.fn()}
+        onAddNodeFromPort={onAddNodeFromPort}
+        onCancelConnect={onCancelConnect}
+      />,
+    );
+
+    expect(screen.getByTestId('insert-from-port-flow-gate')).toBeInTheDocument();
+    expect(screen.getByTestId('insert-from-port-flow-cond')).toBeInTheDocument();
+    expect(screen.getByTestId('insert-from-port-flow-wait')).toBeInTheDocument();
+    expect(screen.getByTestId('insert-from-port-flow-end')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('insert-from-port-flow-gate'));
+
+    expect(onAddNodeFromPort).toHaveBeenCalledWith('gate', 'stage-1', 'code.changed', {
+      x: 100 + STAGE_WIDTH + 96,
+      y: 100,
+    });
+    expect(onCancelConnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the same shared endpoint coordinates for visible sockets and edge paths', () => {
+    const typedStage: WorkflowNode = {
+      ...stageNode,
+      personaIds: ['ravn-alpha'],
+      stageMembers: [{ personaId: 'ravn-alpha', model: 'gpt-5', budget: 40 }],
+    };
+    const typedEdge: WorkflowEdge = { ...edge, label: 'notes -> brief' };
+    render(
+      <GraphView
+        {...defaultProps()}
+        nodes={[typedStage, gateNode]}
+        edges={[typedEdge]}
+        personas={personaFixtures}
+      />,
+    );
+
+    const source = document.querySelector(
+      '[data-workflow-socket="true"][data-node-id="stage-1"][data-direction="output"][data-event-type="notes"]',
+    );
+    const target = document.querySelector(
+      '[data-workflow-socket="true"][data-node-id="gate-1"][data-direction="input"][data-event-type="brief"]',
+    );
+    const path = screen.getByTestId('workflow-edge-e1').querySelectorAll('path')[1];
+    const coordinates =
+      path
+        ?.getAttribute('d')
+        ?.match(/-?\d+(?:\.\d+)?/g)
+        ?.map(Number) ?? [];
+
+    expect(source).not.toBeNull();
+    expect(target).not.toBeNull();
+    expect(coordinates.slice(0, 2)).toEqual([
+      Number(source?.getAttribute('cx')),
+      Number(source?.getAttribute('cy')),
+    ]);
+    expect(coordinates.slice(-2)).toEqual([
+      Number(target?.getAttribute('cx')),
+      Number(target?.getAttribute('cy')),
+    ]);
+  });
+
+  it('keeps unselected cards compact and reveals their full typed contract on selection', () => {
+    const typedStage: WorkflowNode = {
+      ...stageNode,
+      personaIds: ['ravn-alpha', 'ravn-beta'],
+      stageMembers: [
+        { personaId: 'ravn-alpha', model: 'gpt-5', budget: 40 },
+        { personaId: 'ravn-beta', model: 'gpt-5', budget: 40 },
+      ],
+    };
+    const connected: WorkflowEdge = { ...edge, label: 'notes -> approval.requested' };
+    const props = {
+      ...defaultProps(),
+      nodes: [typedStage, gateNode],
+      edges: [connected],
+      personas: personaFixtures,
+    };
+    const { rerender } = render(<GraphView {...props} />);
+
+    expect(
+      document.querySelectorAll(
+        '[data-workflow-socket="true"][data-node-id="stage-1"][data-direction="output"]',
+      ),
+    ).toHaveLength(1);
+    expect(screen.queryByText('summary')).not.toBeInTheDocument();
+    expect(screen.getByText('+1 outcomes')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('hidden-outcomes-stage-1'));
+    expect(props.onSelectNode).toHaveBeenCalledWith('stage-1');
+
+    rerender(<GraphView {...props} selectedNodeId="stage-1" />);
+    expect(
+      document.querySelectorAll(
+        '[data-workflow-socket="true"][data-node-id="stage-1"][data-direction="output"]',
+      ),
+    ).toHaveLength(2);
+    expect(screen.getAllByText('summary')).toHaveLength(2);
+    const socketRows = document.querySelectorAll(
+      '[data-workflow-socket="true"][data-node-id="stage-1"]',
+    );
+    for (const socket of socketRows) {
+      expect(Number(socket.getAttribute('cy'))).toBeGreaterThan(
+        typedStage.position.y + stageNodeHeight(typedStage as never),
+      );
+    }
+  });
+
+  it('routes feedback edges through a lane below every card', () => {
+    const feedback: WorkflowEdge = {
+      ...edge,
+      id: 'feedback',
+      label: 'review.changes_requested -> brief',
+    };
+    render(<GraphView {...defaultProps()} edges={[feedback]} />);
+    const group = screen.getByTestId('workflow-edge-feedback');
+    const path = group.querySelectorAll('path')[1]?.getAttribute('d') ?? '';
+    const points = path.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+
+    expect(group).toHaveAttribute('data-feedback', 'true');
+    expect(Math.max(...points.filter((_, index) => index % 2 === 1))).toBeGreaterThan(210);
+    expect(path).toContain(' L ');
+  });
+
+  it('uses short horizontal tangents for close forward connections', () => {
+    const closeGate = { ...gateNode, position: { x: 350, y: 100 } };
+    const typedStage: WorkflowNode = {
+      ...stageNode,
+      personaIds: ['ravn-alpha'],
+      stageMembers: [{ personaId: 'ravn-alpha', model: 'gpt-5', budget: 40 }],
+    };
+    const forward: WorkflowEdge = {
+      ...edge,
+      label: 'notes -> approval.requested',
+      cp1: { x: 400, y: 300 },
+      cp2: { x: -400, y: -300 },
+    };
+    render(
+      <GraphView
+        {...defaultProps()}
+        nodes={[typedStage, closeGate]}
+        edges={[forward]}
+        personas={personaFixtures}
+      />,
+    );
+    const path = screen.getByTestId('workflow-edge-e1').querySelectorAll('path')[1];
+    const numbers =
+      path
+        ?.getAttribute('d')
+        ?.match(/-?\d+(?:\.\d+)?/g)
+        ?.map(Number) ?? [];
+    expect(numbers[3]).toBe(numbers[1]);
+    expect(numbers[5]).toBe(numbers[7]);
+    expect(Math.abs((numbers[2] ?? 0) - (numbers[0] ?? 0))).toBeLessThanOrEqual(80);
+  });
+
+  it('provides working zoom, fit, and one-to-one controls', () => {
+    render(<GraphView {...defaultProps()} />);
+    const canvas = screen.getByTestId('graph-canvas');
+    Object.defineProperty(canvas, 'getBoundingClientRect', {
+      value: () => ({ left: 0, top: 0, width: 900, height: 600 }),
+    });
+
+    fireEvent.click(screen.getByTestId('zoom-in'));
+    expect(screen.getByTestId('zoom-level')).toHaveTextContent('115%');
+    fireEvent.click(screen.getByTestId('zoom-fit'));
+    expect(screen.getByTestId('zoom-level')).not.toHaveTextContent('115%');
+    fireEvent.click(screen.getByTestId('zoom-one-to-one'));
+    expect(screen.getByTestId('zoom-level')).toHaveTextContent('100%');
+  });
+
+  it('opens the add-step menu from a canvas-scoped Tab shortcut', () => {
+    render(<GraphView {...defaultProps()} />);
+    screen.getByTestId('graph-view').focus();
+    fireEvent.keyDown(screen.getByTestId('graph-view'), { key: 'Tab' });
+    expect(screen.getByTestId('canvas-node-picker')).toBeInTheDocument();
+  });
+
+  it('keeps immutable workflows inspectable while disabling canvas mutations', () => {
+    const props = { ...defaultProps(), selectedNodeId: 'stage-1', readOnly: true };
+    render(<GraphView {...props} />);
+    const stage = screen.getByTestId('workflow-node-stage-1');
+
+    expect(screen.queryByTestId('open-add-step')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('delete-selected')).not.toBeInTheDocument();
+    fireEvent.mouseDown(stage, { clientX: 100, clientY: 100 });
+    fireEvent.mouseMove(stage, { clientX: 140, clientY: 140 });
+    fireEvent.mouseUp(stage);
+    expect(props.onMoveNode).not.toHaveBeenCalled();
+    fireEvent.contextMenu(stage);
+    expect(props.onInspectNode).toHaveBeenCalledWith('stage-1');
+  });
+
+  it('does not intercept delete keys from editable targets inside the canvas', () => {
+    const props = { ...defaultProps(), selectedNodeId: 'stage-1' };
+    render(<GraphView {...props} />);
+    const input = document.createElement('input');
+    screen.getByTestId('graph-view').append(input);
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
+    expect(props.onDeleteNode).not.toHaveBeenCalled();
+  });
+
+  it('supports keyboard selection and inspection on a focused node', () => {
+    const props = defaultProps();
+    render(<GraphView {...props} />);
+    const stage = screen.getByTestId('workflow-node-stage-1');
+    fireEvent.keyDown(stage, { key: ' ' });
+    fireEvent.keyDown(stage, { key: 'Enter' });
+    expect(props.onSelectNode).toHaveBeenCalledWith('stage-1');
+    expect(props.onInspectNode).toHaveBeenCalledWith('stage-1');
+  });
+
+  it('resets fit safely when the workflow has no nodes', () => {
+    render(<GraphView {...defaultProps()} nodes={[]} edges={[]} />);
+    fireEvent.click(screen.getByTestId('zoom-in'));
+    expect(screen.getByTestId('zoom-level')).toHaveTextContent('115%');
+    fireEvent.click(screen.getByTestId('zoom-fit'));
+    expect(screen.getByTestId('zoom-level')).toHaveTextContent('100%');
   });
 });

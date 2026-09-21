@@ -57,6 +57,7 @@ class DeliveryExecutionLaunchBody(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     workflow_id: UUID = Field(alias="workflowId")
+    workflow_version: str | None = Field(default=None, alias="workflowVersion", max_length=64)
     parent_node_id: str = Field(alias="parentNodeId", min_length=1, max_length=255)
     prompt: str = Field(min_length=1, max_length=100_000)
     repo: str = Field(min_length=1, max_length=2_000)
@@ -142,7 +143,14 @@ def create_delivery_executions_router() -> APIRouter:
                 status_code=422,
                 detail="Idempotency-Key header is required and must be at most 255 characters",
             )
-        workflow = await workflow_repo.get_workflow(body.workflow_id)
+        workflow = (
+            await workflow_repo.get_workflow_version(
+                body.workflow_id,
+                version=body.workflow_version,
+            )
+            if body.workflow_version
+            else await workflow_repo.get_workflow(body.workflow_id)
+        )
         if workflow is None:
             raise HTTPException(status_code=404, detail="Developer workflow not found")
         if workflow.schema_version < 2:

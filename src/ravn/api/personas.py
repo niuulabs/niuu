@@ -32,6 +32,10 @@ class PersonaProducesResponse(BaseModel):
     """Output event schema for a persona."""
 
     event_type: str = Field(description="Event type produced on completion")
+    event_type_map: dict[str, str] = Field(
+        default_factory=dict,
+        description="Outcome field values mapped to their emitted event types",
+    )
     schema_def: dict = Field(alias="schema", description="Output schema field definitions")
 
     model_config = {"populate_by_name": True}
@@ -63,6 +67,10 @@ class PersonaSummary(BaseModel):
     is_builtin: bool = Field(description="Whether this is a built-in persona")
     has_override: bool = Field(description="Whether a user file overrides the built-in")
     produces_event: str = Field(description="Event type produced on completion (empty if none)")
+    outcome_events: dict[str, str] = Field(
+        default_factory=dict,
+        description="Outcome field values mapped to their emitted event types",
+    )
     consumes_events: list[str] = Field(description="Event types this persona consumes")
 
     @classmethod
@@ -80,6 +88,7 @@ class PersonaSummary(BaseModel):
             is_builtin=is_builtin,
             has_override=has_override,
             produces_event=config.produces.event_type,
+            outcome_events=dict(config.produces.event_type_map),
             consumes_events=config.consumes.event_types,
         )
 
@@ -125,6 +134,7 @@ class PersonaDetail(PersonaSummary):
             is_builtin=is_builtin,
             has_override=has_override,
             produces_event=config.produces.event_type,
+            outcome_events=dict(config.produces.event_type_map),
             consumes_events=config.consumes.event_types,
             system_prompt_template=config.system_prompt_template,
             forbidden_tools=config.forbidden_tools,
@@ -135,6 +145,7 @@ class PersonaDetail(PersonaSummary):
             ),
             produces=PersonaProducesResponse(
                 event_type=config.produces.event_type,
+                event_type_map=dict(config.produces.event_type_map),
                 schema=produces_schema,
             ),  # type: ignore[call-arg]
             consumes=PersonaConsumesResponse(

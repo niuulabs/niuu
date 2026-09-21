@@ -60,6 +60,8 @@ import type { DispatcherState } from '../domain/dispatcher';
 import type { SessionInfo } from '../domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from '../domain/tracker';
 import type { Workflow } from '../domain/workflow';
+import { layoutWorkflow } from '../domain/workflowLayout';
+import { estimateWorkflowNodeSize } from '../domain/workflowGeometry';
 
 // ---------------------------------------------------------------------------
 // Raw server types (snake_case)
@@ -293,11 +295,24 @@ interface RawWorkflow {
   personaDependencies?: Workflow['personaDependencies'];
   persona_dependencies?: Workflow['personaDependencies'];
   revision?: string | null;
+  document_revision?: string | null;
+  is_head?: boolean;
+  origin?: 'bundled' | 'authored';
+  can_edit?: boolean;
   readOnly?: boolean;
   read_only?: boolean;
   canonicalYaml?: string;
   canonical_yaml?: string;
   requirements?: Workflow['requirements'];
+}
+
+interface RawWorkflowVersionSummary {
+  version: string;
+  document_revision: string;
+  created_at: string;
+  is_head: boolean;
+  based_on_revision?: string | null;
+  origin?: 'bundled' | 'authored';
 }
 
 interface RawWorkflowImportPreview {
@@ -325,6 +340,12 @@ interface RawWorkflowLaunchResult {
   status: string;
   clusterName?: string;
   cluster_name?: string;
+  chatEndpoint?: string | null;
+  chat_endpoint?: string | null;
+  workflowVersion?: string;
+  workflow_version?: string;
+  documentRevision?: string;
+  document_revision?: string;
 }
 
 interface RawCampaignStageState {
@@ -720,9 +741,19 @@ function toCommitRequestBody(req: CommitSagaRequest): Record<string, unknown> {
 }
 
 function toWorkflow(raw: RawWorkflow): Workflow {
+  const nodeSizes = new Map(
+    raw.nodes.map((node) => [node.id, estimateWorkflowNodeSize(node, { edges: raw.edges })]),
+  );
+  const initialLayout = layoutWorkflow(
+    raw.nodes.map((node) => node.id),
+    raw.edges,
+    // The canvas routes feedback below cards; reserve no empty lanes above them.
+    { originX: 96, originY: 64, nodeSizes, columnGap: 72, rowGap: 36, feedbackLaneSpacing: 0 },
+  );
   const nodes = raw.nodes.map((node, index) => ({
     ...node,
-    position: node.position ?? { x: 96 + index * 240, y: 144 },
+    position: node.position ??
+      initialLayout.positions.get(node.id) ?? { x: 96, y: 144 + index * 160 },
   }));
 
   const positions = new Map(nodes.map((node) => [node.id, node.position]));
@@ -759,6 +790,10 @@ function toWorkflow(raw: RawWorkflow): Workflow {
     graph: raw.graph,
     personaDependencies: raw.personaDependencies ?? raw.persona_dependencies ?? {},
     revision: raw.revision ?? null,
+    documentRevision: raw.document_revision ?? null,
+    isHead: raw.is_head ?? true,
+    origin: raw.origin ?? (raw.scope === 'system' ? 'bundled' : 'authored'),
+    canEdit: raw.can_edit ?? !(raw.readOnly ?? raw.read_only ?? false),
     readOnly: raw.readOnly ?? raw.read_only ?? false,
     canonicalYaml: raw.canonicalYaml ?? raw.canonical_yaml,
     requirements: raw.requirements ?? [],
@@ -769,7 +804,6 @@ function toWorkflowBody(workflow: Workflow): Record<string, unknown> {
   return {
     name: workflow.name,
     description: workflow.description ?? '',
-    version: workflow.version ?? 'draft',
     scope: workflow.scope ?? 'user',
     tags: workflow.tags ?? [],
     nodes: workflow.nodes,
@@ -786,6 +820,7 @@ function toWorkflowBody(workflow: Workflow): Record<string, unknown> {
     schema_version: workflow.schemaVersion ?? 1,
     workflow_dependencies: workflow.workflowDependencies ?? {},
     expected_revision: workflow.revision ?? undefined,
+    base_revision: workflow.documentRevision ?? undefined,
     refresh_personas: workflow.refreshPersonas ?? [],
   };
 }
@@ -831,12 +866,16 @@ async function exportWorkflowFile(
   client: ApiClient,
   id: string,
   format: WorkflowExportFormat,
+  version?: string,
 ): Promise<WorkflowExport> {
   if (!client.basePath) {
     throw new Error('Workflow export requires an HTTP client with a basePath.');
   }
   const response = await fetch(
-    `${client.basePath}/workflows/${encodeURIComponent(id)}/export?format=${format}`,
+    `${client.basePath}/workflows/${encodeURIComponent(id)}/export?${new URLSearchParams({
+      format,
+      ...(version ? { version } : {}),
+    }).toString()}`,
     { headers: getAuthHeaders() },
   );
   if (!response.ok) {
@@ -858,6 +897,7 @@ function toWorkflowLaunchBody(request: WorkflowLaunchRequest): Record<string, un
     repo: request.repo,
     branch: request.branch,
     connectionId: request.connectionId,
+    workflow_version: request.workflowVersion,
   };
 }
 
@@ -870,6 +910,9 @@ function toWorkflowLaunchResult(raw: RawWorkflowLaunchResult): WorkflowLaunchRes
     sessionName: raw.sessionName ?? raw.session_name ?? '',
     status: raw.status,
     clusterName: raw.clusterName ?? raw.cluster_name ?? '',
+    chatEndpoint: raw.chatEndpoint ?? raw.chat_endpoint ?? null,
+    workflowVersion: raw.workflowVersion ?? raw.workflow_version ?? '',
+    documentRevision: raw.documentRevision ?? raw.document_revision ?? '',
   };
 }
 
@@ -1002,6 +1045,7 @@ function toResearchCampaignCreateBody(
     question: request.question,
     name: request.name,
     workflowId: request.workflowId,
+    workflowVersion: request.workflowVersion,
     repo: request.repo,
     branch: request.branch,
     mode: request.mode,
@@ -1029,6 +1073,7 @@ function toSpecCampaignCreateBody(request: CreateSpecCampaignRequest): Record<st
     prompt: request.prompt,
     name: request.name,
     workflowId: request.workflowId,
+    workflowVersion: request.workflowVersion,
     repo: request.repo,
     repos: request.repos,
     branch: request.branch,
@@ -1321,6 +1366,9 @@ export function buildTrackerHttpAdapter(client: ApiClient): ITrackerBrowserServi
               : (instanceId ?? null),
         target_tags: target?.mode === 'tags' ? target.tags : [],
         target_match: target?.mode === 'tags' ? (target.match ?? 'all') : 'all',
+        workflow_id: options?.workflowId,
+        workflowVersion: options?.workflowVersion,
+        start_immediately: false,
       });
       return toSaga(raw);
     },
@@ -1397,9 +1445,35 @@ export function buildWorkflowHttpAdapter(client: ApiClient): IWorkflowService {
       }
     },
 
+    async listWorkflowVersions(id: string) {
+      const raw = await client.get<RawWorkflowVersionSummary[]>(
+        `/workflows/${encodeURIComponent(id)}/versions`,
+      );
+      return raw.map((item) => ({
+        version: item.version,
+        documentRevision: item.document_revision,
+        createdAt: item.created_at,
+        isHead: item.is_head,
+        basedOnRevision: item.based_on_revision ?? null,
+        origin: item.origin,
+      }));
+    },
+
+    async getWorkflowVersion(id: string, version: string) {
+      try {
+        const raw = await client.get<RawWorkflow>(
+          `/workflows/${encodeURIComponent(id)}/versions/${encodeURIComponent(version)}`,
+        );
+        return toWorkflow(raw);
+      } catch (error) {
+        if (error instanceof ApiClientError && error.status === 404) return null;
+        throw error;
+      }
+    },
+
     async saveWorkflow(workflow: Workflow) {
-      if (workflow.readOnly) {
-        throw new Error('Bundled workflows are read-only. Create an editable copy first.');
+      if (workflow.canEdit === false) {
+        throw new Error('You do not have permission to create a new workflow version.');
       }
       const body = toWorkflowBody(workflow);
       let existing: RawWorkflow | null;
@@ -1415,8 +1489,8 @@ export function buildWorkflowHttpAdapter(client: ApiClient): IWorkflowService {
 
       if (existing) {
         try {
-          const raw = await client.put<RawWorkflow>(
-            `/workflows/${encodeURIComponent(workflow.id)}`,
+          const raw = await client.post<RawWorkflow>(
+            `/workflows/${encodeURIComponent(workflow.id)}/versions`,
             body,
           );
           return toWorkflow(raw);
@@ -1437,8 +1511,8 @@ export function buildWorkflowHttpAdapter(client: ApiClient): IWorkflowService {
       await client.delete<void>(`/workflows/${encodeURIComponent(id)}`);
     },
 
-    exportWorkflow(id: string, format: WorkflowExportFormat) {
-      return exportWorkflowFile(client, id, format);
+    exportWorkflow(id: string, format: WorkflowExportFormat, version?: string) {
+      return exportWorkflowFile(client, id, format, version);
     },
 
     async previewWorkflowImport(request: WorkflowImportSource) {
@@ -1480,8 +1554,9 @@ export function buildResearchHttpAdapter(client: ApiClient): IResearchService {
           `/research/campaigns/${encodeURIComponent(slug)}`,
         );
         return toResearchCampaignDetail(raw);
-      } catch {
-        return null;
+      } catch (error) {
+        if (error instanceof ApiClientError && error.status === 404) return null;
+        throw error;
       }
     },
 
@@ -1511,8 +1586,9 @@ export function buildResearchHttpAdapter(client: ApiClient): IResearchService {
           `/research/campaigns/${encodeURIComponent(slug)}/artifact?path=${encodeURIComponent(path)}`,
         );
         return toCampaignArtifactDetail(raw);
-      } catch {
-        return null;
+      } catch (error) {
+        if (error instanceof ApiClientError && error.status === 404) return null;
+        throw error;
       }
     },
   };
@@ -1531,8 +1607,9 @@ export function buildSpecsHttpAdapter(client: ApiClient): ISpecsService {
           `/specs/campaigns/${encodeURIComponent(slug)}`,
         );
         return toResearchCampaignDetail(raw);
-      } catch {
-        return null;
+      } catch (error) {
+        if (error instanceof ApiClientError && error.status === 404) return null;
+        throw error;
       }
     },
 
@@ -1554,8 +1631,9 @@ export function buildSpecsHttpAdapter(client: ApiClient): ISpecsService {
           `/specs/campaigns/${encodeURIComponent(slug)}/artifact?path=${encodeURIComponent(path)}`,
         );
         return toCampaignArtifactDetail(raw);
-      } catch {
-        return null;
+      } catch (error) {
+        if (error instanceof ApiClientError && error.status === 404) return null;
+        throw error;
       }
     },
 

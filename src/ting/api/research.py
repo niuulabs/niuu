@@ -63,6 +63,7 @@ class ResearchCampaignCreateBody(BaseModel):
     question: str = Field(min_length=1, max_length=100_000)
     name: str | None = Field(default=None, max_length=255)
     workflow_id: UUID | None = Field(default=None, alias="workflowId")
+    workflow_version: str | None = Field(default=None, alias="workflowVersion", max_length=64)
     repo: str = Field(default="", max_length=500)
     branch: str = Field(default="", max_length=255)
     model: str = Field(default="", max_length=255)
@@ -251,6 +252,7 @@ def create_research_router() -> APIRouter:
             repo=workflow_repo,
             owner_id=principal.user_id,
             workflow_id=body.workflow_id,
+            workflow_version=body.workflow_version,
         )
         initiative_prompt = _build_campaign_prompt(body)
         campaign_name = _campaign_name(body)
@@ -263,6 +265,7 @@ def create_research_router() -> APIRouter:
             connectionId=body.connection_id,
             model=body.model,
             definition=body.definition,
+            workflowVersion=workflow.version,
             gateAutoForwardAfter=body.gate_auto_forward_after,
         )
         execution = await launch_workflow_execution(
@@ -528,9 +531,14 @@ async def _resolve_research_workflow(
     repo: WorkflowRepository,
     owner_id: str,
     workflow_id: UUID | None,
+    workflow_version: str | None = None,
 ) -> WorkflowDefinition:
     if workflow_id is not None:
-        workflow = await repo.get_workflow(workflow_id)
+        workflow = (
+            await repo.get_workflow_version(workflow_id, version=workflow_version)
+            if workflow_version
+            else await repo.get_workflow(workflow_id)
+        )
         if workflow is None:
             raise HTTPException(status_code=404, detail="Workflow not found")
         return workflow
@@ -539,13 +547,26 @@ async def _resolve_research_workflow(
     tagged = [workflow for workflow in workflows if _workflow_has_tag(workflow, "research")]
     for workflow in tagged:
         if workflow.name == _DEFAULT_RESEARCH_WORKFLOW_NAME:
-            return workflow
+            return await _selected_version(repo, workflow, workflow_version)
     if tagged:
-        return tagged[0]
+        return await _selected_version(repo, tagged[0], workflow_version)
     for workflow in workflows:
         if workflow.name == _DEFAULT_RESEARCH_WORKFLOW_NAME:
-            return workflow
+            return await _selected_version(repo, workflow, workflow_version)
     raise HTTPException(status_code=404, detail="Research Campaign workflow not found")
+
+
+async def _selected_version(
+    repo: WorkflowRepository,
+    workflow: WorkflowDefinition,
+    version: str | None,
+) -> WorkflowDefinition:
+    if not version:
+        return workflow
+    selected = await repo.get_workflow_version(workflow.id, version=version)
+    if selected is None:
+        raise HTTPException(status_code=404, detail="Workflow version not found")
+    return selected
 
 
 def _graph_tags(graph: object) -> set[str]:

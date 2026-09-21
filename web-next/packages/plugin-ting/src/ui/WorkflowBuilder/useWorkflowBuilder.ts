@@ -21,6 +21,14 @@ import type { PersonaEntry } from './LibraryPanel';
 import { makeNodeId, makeEdgeId, defaultBezierCPs } from './graphUtils';
 import { EPHEMERAL_LOCAL_MOUNT_ID, type WorkflowRegistryMount } from './mimirRegistry';
 import { normalizeWorkflowGraph } from '../../domain/workflowSemantics';
+import { layoutWorkflow } from '../../domain/workflowLayout';
+import { estimateWorkflowNodeSize } from '../../domain/workflowGeometry';
+import {
+  addSubworkflowTemplate as addSubworkflowTemplateToWorkflow,
+  bindSubworkflowTemplate,
+  removeSubworkflowTemplate as removeSubworkflowTemplateFromWorkflow,
+  renameSubworkflowTemplate as renameSubworkflowTemplateOnWorkflow,
+} from '../../domain/workflowDependencies';
 
 export type WorkflowView = 'graph' | 'pipeline' | 'yaml';
 
@@ -32,6 +40,9 @@ export interface WorkflowStageModelOption {
 
 export interface WorkflowBuilderState {
   workflow: Workflow;
+  /** Persisted baseline used for dirty comparison and draft restoration. */
+  savedWorkflow: Workflow;
+  isDirty: boolean;
   view: WorkflowView;
   selectedNodeId: string | null;
   /** When non-null, we're in "connect" mode — next node click completes the edge. */
@@ -39,6 +50,8 @@ export interface WorkflowBuilderState {
   connectingFromLabel: string | null;
   /** When non-null, the NodeInspector Dialog is open for this node. */
   inspectorNodeId: string | null;
+  canUndo: boolean;
+  canRedo: boolean;
 }
 
 export interface WorkflowBuilderActions {
@@ -46,11 +59,32 @@ export interface WorkflowBuilderActions {
   selectNode(id: string | null): void;
   inspectNode(id: string | null): void;
   addNode(kind: WorkflowNodeKind, position?: { x: number; y: number }): void;
+  /** Insert a non-persona node wired from an existing node's typed output. */
+  addNodeFromPort(
+    kind: WorkflowNodeKind,
+    sourceId: string,
+    eventType: string,
+    position?: { x: number; y: number },
+  ): void;
   addMimirResource(mount: WorkflowRegistryMount, position?: { x: number; y: number }): void;
   addStageWithPersona(personaId: string, model?: string, position?: { x: number; y: number }): void;
+  /** Add one persona stage and only the exact connection requested from a source port. */
+  addStageFromPort(
+    sourceId: string,
+    eventType: string,
+    personaId: string,
+    position?: { x: number; y: number },
+    model?: string,
+  ): void;
   deleteNode(id: string): void;
   deleteEdge(id: string): void;
   moveNode(id: string, position: { x: number; y: number }): void;
+  /** Reposition every node via `layoutWorkflow`, as one undo step. */
+  autoLayout(): void;
+  /** Step back to the previous committed workflow state. No-op at the start of history. */
+  undo(): void;
+  /** Step forward again after an undo. No-op with nothing to redo. */
+  redo(): void;
   startConnect(sourceId: string, label?: string): void;
   cancelConnect(): void;
   completeConnect(targetId: string, inputLabel?: string): void;
@@ -66,6 +100,19 @@ export interface WorkflowBuilderActions {
   removePersonaFromStage(nodeId: string, personaId: string): void;
   updateNodeLabel(id: string, label: string): void;
   updateNode(id: string, patch: Partial<WorkflowNode>): void;
+  /** Select and exactly pin one of a subworkflow node's templates to a child
+   *  workflow, as one undoable mutation. */
+  selectSubworkflowTemplate(nodeId: string, templateName: string, child: Workflow): void;
+  /** Offer another child workflow on a subworkflow node under a new template
+   *  name (auto-generated when omitted); repoint it with
+   *  `selectSubworkflowTemplate`. */
+  addSubworkflowTemplate(nodeId: string, name?: string): void;
+  /** Rename one of a subworkflow node's templates, keeping any static
+   *  `children[].template` reference to it consistent. */
+  renameSubworkflowTemplate(nodeId: string, previousName: string, nextName: string): void;
+  /** Remove one of a subworkflow node's templates. Refused when it is the
+   *  node's last template or a declared static child still names it. */
+  removeSubworkflowTemplate(nodeId: string, name: string): void;
   addResourceBinding(
     resourceNodeId: string,
     patch?: Partial<Omit<WorkflowResourceBinding, 'id' | 'resourceNodeId'>>,
@@ -76,6 +123,15 @@ export interface WorkflowBuilderActions {
     patch: Partial<Pick<Workflow, 'name' | 'description' | 'version' | 'tags'>>,
   ): void;
   setWorkflow(workflow: Workflow): void;
+  /** Replace the active document and clear edit history/dirty state. */
+  resetWorkflow(workflow: Workflow): void;
+  /** Discard the draft and restore the latest successfully persisted document. */
+  discardChanges(): void;
+  /**
+   * Rebase the editor on a successfully persisted immutable version.
+   * Returns true when edits made while the save was pending remain dirty.
+   */
+  markSaved(savedWorkflow?: Workflow, submittedWorkflow?: Workflow): boolean;
 }
 
 const DEFAULT_STAGE_POSITION = { x: 120, y: 120 };
@@ -96,14 +152,15 @@ function makeNewNode(kind: WorkflowNodeKind, position: { x: number; y: number })
         kind,
         label: 'Child workflows',
         position,
-        templates: {},
+        templates: { default: '' },
         allowedCoordinator: '',
-        inputSchema: { type: 'object' },
-        resultSchema: { type: 'object' },
+        inputSchema: { type: 'object', properties: {} },
+        resultSchema: { type: 'object', properties: {} },
         maxChildren: 10,
         maxAttempts: 3,
         maxActiveChildren: 4,
         joinMode: 'all',
+        blockedEvent: 'children.blocked',
       };
     case 'stage':
       return {
@@ -422,11 +479,75 @@ export function useWorkflowBuilder(
   initial: Workflow,
   personas: PersonaEntry[] = [],
   models: WorkflowStageModelOption[] = [],
+  initialSavedWorkflow: Workflow = initial,
 ): WorkflowBuilderState & WorkflowBuilderActions {
   const defaultStageModelId = defaultStageModelIdForWorkflow(models);
-  const [workflow, setWorkflowState] = useState<Workflow>(() =>
+  const initialWorkflow = useState<Workflow>(() =>
     normalizeWorkflowWithStageDefaults(initial, defaultStageModelId),
-  );
+  )[0];
+  const savedInitialWorkflow = useState<Workflow>(() =>
+    normalizeWorkflowWithStageDefaults(initialSavedWorkflow, defaultStageModelId),
+  )[0];
+  const initiallyDirty = JSON.stringify(initialWorkflow) !== JSON.stringify(savedInitialWorkflow);
+  const [workflow, setWorkflow_] = useState<Workflow>(initialWorkflow);
+  const [savedWorkflow, setSavedWorkflow] = useState<Workflow>(savedInitialWorkflow);
+
+  // Undo/redo history. `workflowRef` is the synchronous source of truth for
+  // `commit()` — reading `workflow` from render scope would be one render
+  // stale for the second of two commits in the same tick (e.g. double-click).
+  // `historyRef` is a plain mutable stack, not state: it's written by
+  // `commit`, `undo`, and `redo`, all ordinary functions called from event
+  // handlers, never from inside a state updater (which React/StrictMode may
+  // invoke more than once — mutating a ref there would double-push) or an
+  // effect (which would make this derived-state-via-effect, exactly the
+  // anti-pattern removed from the detail-panel logic above).
+  const workflowRef = useRef<Workflow>(initialWorkflow);
+  const savedWorkflowRef = useRef<Workflow>(savedInitialWorkflow);
+  const historyRef = useRef<{ stack: Workflow[]; index: number }>({
+    stack: initiallyDirty ? [savedInitialWorkflow, initialWorkflow] : [initialWorkflow],
+    index: initiallyDirty ? 1 : 0,
+  });
+  const [historyFlags, setHistoryFlags] = useState({ canUndo: initiallyDirty, canRedo: false });
+  const [isDirty, setIsDirty] = useState(initiallyDirty);
+
+  /** Apply `updater` to the latest workflow, as one undo step. Replaces the
+   *  raw `setState` setter everywhere in this file so every mutation is
+   *  captured in history uniformly. */
+  const commit = useCallback((updater: (prev: Workflow) => Workflow) => {
+    const current = workflowRef.current;
+    const next = updater(current);
+    if (next === current || JSON.stringify(next) === JSON.stringify(current)) return;
+    workflowRef.current = next;
+    const h = historyRef.current;
+    h.stack = [...h.stack.slice(0, h.index + 1), next];
+    h.index = h.stack.length - 1;
+    setHistoryFlags({ canUndo: h.index > 0, canRedo: false });
+    setIsDirty(JSON.stringify(next) !== JSON.stringify(savedWorkflowRef.current));
+    setWorkflow_(next);
+  }, []);
+
+  const undo = useCallback(() => {
+    const h = historyRef.current;
+    if (h.index <= 0) return;
+    h.index -= 1;
+    const next = h.stack[h.index]!;
+    workflowRef.current = next;
+    setHistoryFlags({ canUndo: h.index > 0, canRedo: true });
+    setIsDirty(JSON.stringify(next) !== JSON.stringify(savedWorkflowRef.current));
+    setWorkflow_(next);
+  }, []);
+
+  const redo = useCallback(() => {
+    const h = historyRef.current;
+    if (h.index >= h.stack.length - 1) return;
+    h.index += 1;
+    const next = h.stack[h.index]!;
+    workflowRef.current = next;
+    setHistoryFlags({ canUndo: true, canRedo: h.index < h.stack.length - 1 });
+    setIsDirty(JSON.stringify(next) !== JSON.stringify(savedWorkflowRef.current));
+    setWorkflow_(next);
+  }, []);
+
   const [view, setViewState] = useState<WorkflowView>('graph');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [connectingFromId, setConnectingFromId] = useState<string | null>(null);
@@ -448,13 +569,89 @@ export function useWorkflowBuilder(
   const inspectNode = useCallback((id: string | null) => setInspectorNodeId(id), []);
 
   const setWorkflow = useCallback(
-    (w: Workflow) => setWorkflowState(normalizeWorkflowWithStageDefaults(w, defaultStageModelId)),
+    (w: Workflow) => commit(() => normalizeWorkflowWithStageDefaults(w, defaultStageModelId)),
+    [commit, defaultStageModelId],
+  );
+
+  const resetWorkflow = useCallback(
+    (nextWorkflow: Workflow) => {
+      const next = normalizeWorkflowWithStageDefaults(nextWorkflow, defaultStageModelId);
+      workflowRef.current = next;
+      savedWorkflowRef.current = next;
+      historyRef.current = { stack: [next], index: 0 };
+      setWorkflow_(next);
+      setSavedWorkflow(next);
+      setHistoryFlags({ canUndo: false, canRedo: false });
+      setIsDirty(false);
+      setSelectedNodeId(null);
+      setInspectorNodeId(null);
+      connectingFromRef.current = null;
+      connectingLabelRef.current = null;
+      setConnectingFromId(null);
+      setConnectingFromLabel(null);
+    },
     [defaultStageModelId],
   );
 
+  const markSaved = useCallback(
+    (
+      savedWorkflow: Workflow = workflowRef.current,
+      submittedWorkflow: Workflow = savedWorkflow,
+    ) => {
+      const saved = normalizeWorkflowWithStageDefaults(savedWorkflow, defaultStageModelId);
+      const submitted = normalizeWorkflowWithStageDefaults(submittedWorkflow, defaultStageModelId);
+      const changedWhileSaving = JSON.stringify(workflowRef.current) !== JSON.stringify(submitted);
+      savedWorkflowRef.current = saved;
+      setSavedWorkflow(saved);
+      const persistedMeta: Partial<Workflow> = {
+        version: saved.version,
+        revision: saved.revision,
+        documentRevision: saved.documentRevision,
+        isHead: saved.isHead,
+        origin: saved.origin,
+        canEdit: saved.canEdit,
+        readOnly: saved.readOnly,
+        canonicalYaml: saved.canonicalYaml,
+      };
+      if (!changedWhileSaving) {
+        workflowRef.current = saved;
+        const history = historyRef.current;
+        const stack = history.stack.map((entry) => ({ ...entry, ...persistedMeta }));
+        stack[history.index] = saved;
+        historyRef.current = { ...history, stack };
+        setWorkflow_(saved);
+        setHistoryFlags({
+          canUndo: history.index > 0,
+          canRedo: history.index < stack.length - 1,
+        });
+        setIsDirty(false);
+        return false;
+      }
+
+      const rebased = normalizeWorkflowWithStageDefaults(
+        { ...workflowRef.current, ...persistedMeta },
+        defaultStageModelId,
+      );
+      const history = historyRef.current;
+      historyRef.current = {
+        ...history,
+        stack: history.stack.map((entry) => ({ ...entry, ...persistedMeta })),
+      };
+      workflowRef.current = rebased;
+      setWorkflow_(rebased);
+      setIsDirty(true);
+      return true;
+    },
+    [defaultStageModelId],
+  );
+
+  const discardChanges = useCallback(() => {
+    resetWorkflow(savedWorkflowRef.current);
+  }, [resetWorkflow]);
+
   const addNode = useCallback(
     (kind: WorkflowNodeKind, position?: { x: number; y: number }) => {
-      setWorkflowState((prev) => {
+      commit((prev) => {
         const pos = position ?? nextPosition(prev);
         const node = makeNewNode(kind, pos);
         return normalizeWorkflowWithStageDefaults(
@@ -467,12 +664,47 @@ export function useWorkflowBuilder(
         );
       });
     },
-    [defaultStageModelId],
+    [commit, defaultStageModelId],
+  );
+
+  /**
+   * Insert a flow-control node (gate/cond/wait/end — anything that isn't
+   * persona-shaped) wired from an existing node's typed output in one step.
+   * The persona equivalent is `addStageWithPersona`, whose auto-wire this
+   * mirrors directly; unlike that one, there's no produces/consumes profile
+   * to match against, so the caller supplies the exact source and event
+   * type (this is what backs InsertFromPortMenu's flow-control candidates).
+   */
+  const addNodeFromPort = useCallback(
+    (
+      kind: WorkflowNodeKind,
+      sourceId: string,
+      eventType: string,
+      position?: { x: number; y: number },
+    ) => {
+      commit((prev) => {
+        const sourceNode = prev.nodes.find((n) => n.id === sourceId);
+        if (!sourceNode || !eventType.trim()) return prev;
+        const pos = position ?? nextPosition(prev);
+        const node = makeNewNode(kind, pos);
+        const edges = [...prev.edges, buildEdge(sourceNode, node, eventType)];
+        return normalizeWorkflowWithStageDefaults(
+          {
+            ...prev,
+            ...(kind === 'wait' ? { schemaVersion: 2 as const } : {}),
+            nodes: [...prev.nodes, node],
+            edges,
+          },
+          defaultStageModelId,
+        );
+      });
+    },
+    [commit, defaultStageModelId],
   );
 
   const addMimirResource = useCallback(
     (mount: WorkflowRegistryMount, position?: { x: number; y: number }) => {
-      setWorkflowState((prev) => {
+      commit((prev) => {
         const pos = position ?? nextPosition(prev);
         const node = makeResourceNodeFromMount(mount, pos);
         return normalizeWorkflowWithStageDefaults(
@@ -488,12 +720,12 @@ export function useWorkflowBuilder(
         );
       });
     },
-    [defaultStageModelId],
+    [commit, defaultStageModelId],
   );
 
   const addStageWithPersona = useCallback(
     (personaId: string, model = defaultStageModelId, position?: { x: number; y: number }) => {
-      setWorkflowState((prev) => {
+      commit((prev) => {
         const preferredModelId = defaultStageModelIdForWorkflow(models);
         const pos = position ?? nextPosition(prev);
         const node = makeNewNode('stage', pos);
@@ -527,24 +759,85 @@ export function useWorkflowBuilder(
         );
       });
     },
-    [defaultStageModelId, models, personas],
+    [commit, defaultStageModelId, models, personas],
+  );
+
+  const addStageFromPort = useCallback(
+    (
+      sourceId: string,
+      eventType: string,
+      personaId: string,
+      position?: { x: number; y: number },
+      model = defaultStageModelId,
+    ) => {
+      commit((prev) => {
+        const sourceNode = prev.nodes.find((node) => node.id === sourceId);
+        const persona = personas.find((entry) => entry.id === personaId);
+        const normalizedEvent = eventType.trim();
+        if (!sourceNode || !persona || !normalizedEvent) return prev;
+        const preferredModelId = defaultStageModelIdForWorkflow(models);
+        const candidate = makeNewNode('stage', position ?? nextPosition(prev));
+        if (candidate.kind !== 'stage') return prev;
+        const stage = syncStagePersonaIds(
+          {
+            ...candidate,
+            stageMembers: [
+              {
+                personaId,
+                model: model || preferredModelId,
+                budget: 40,
+                consumesEventTypes: [normalizedEvent],
+                eventFilters: {},
+              },
+            ],
+          },
+          preferredModelId,
+        );
+        return normalizeWorkflowWithStageDefaults(
+          {
+            ...prev,
+            nodes: [...prev.nodes, stage],
+            edges: [...prev.edges, buildEdge(sourceNode, stage, normalizedEvent)],
+          },
+          preferredModelId,
+        );
+      });
+    },
+    [commit, defaultStageModelId, models, personas],
   );
 
   const deleteNode = useCallback(
     (id: string) => {
-      setWorkflowState((prev) =>
-        normalizeWorkflowWithStageDefaults(
+      commit((prev) => {
+        const deletedNode = prev.nodes.find((node) => node.id === id);
+        if (!deletedNode) return prev;
+        const nodes = prev.nodes.filter((node) => node.id !== id);
+        const workflowDependencies = { ...(prev.workflowDependencies ?? {}) };
+        if (deletedNode.kind === 'subworkflow') {
+          const remainingAliases = new Set(
+            nodes.flatMap((node) =>
+              node.kind === 'subworkflow' ? Object.values(node.templates ?? {}) : [],
+            ),
+          );
+          for (const alias of Object.values(deletedNode.templates ?? {})) {
+            if (alias && !remainingAliases.has(alias)) {
+              delete workflowDependencies[alias];
+            }
+          }
+        }
+        return normalizeWorkflowWithStageDefaults(
           {
             ...prev,
-            nodes: prev.nodes.filter((n) => n.id !== id),
+            nodes,
             edges: prev.edges.filter((e) => e.source !== id && e.target !== id),
             resourceBindings: (prev.resourceBindings ?? []).filter(
               (binding) => binding.resourceNodeId !== id && binding.targetId !== id,
             ),
+            workflowDependencies,
           },
           defaultStageModelId,
-        ),
-      );
+        );
+      });
       setSelectedNodeId((s) => (s === id ? null : s));
       if (connectingFromRef.current === id) {
         connectingFromRef.current = null;
@@ -552,38 +845,74 @@ export function useWorkflowBuilder(
       }
       setInspectorNodeId((s) => (s === id ? null : s));
     },
-    [defaultStageModelId],
+    [commit, defaultStageModelId],
   );
 
   const deleteEdge = useCallback(
     (id: string) => {
-      setWorkflowState((prev) =>
-        normalizeWorkflowWithStageDefaults(
+      commit((prev) => {
+        if (!prev.edges.some((edge) => edge.id === id)) return prev;
+        return normalizeWorkflowWithStageDefaults(
           {
             ...prev,
             edges: prev.edges.filter((edge) => edge.id !== id),
           },
           defaultStageModelId,
-        ),
-      );
+        );
+      });
     },
-    [defaultStageModelId],
+    [commit, defaultStageModelId],
   );
 
   const moveNode = useCallback(
     (id: string, position: { x: number; y: number }) => {
-      setWorkflowState((prev) =>
-        normalizeWorkflowWithStageDefaults(
+      commit((prev) => {
+        const current = prev.nodes.find((node) => node.id === id);
+        if (!current) return prev;
+        if (current.position.x === position.x && current.position.y === position.y) return prev;
+        return normalizeWorkflowWithStageDefaults(
           {
             ...prev,
             nodes: prev.nodes.map((n) => (n.id === id ? { ...n, position } : n)),
           },
           defaultStageModelId,
-        ),
-      );
+        );
+      });
     },
-    [defaultStageModelId],
+    [commit, defaultStageModelId],
   );
+
+  /**
+   * Reposition every node with `layoutWorkflow` — a single state update
+   * (not N `moveNode` calls) so it's one undo step. Positions currently
+   * outside the canvas viewport (a node dragged off-screen, or one restored
+   * from a YAML document that never carried a `position:` at all) are the
+   * main case this fixes.
+   */
+  const autoLayout = useCallback(() => {
+    commit((prev) => {
+      const { positions } = layoutWorkflow(
+        prev.nodes.map((n) => n.id),
+        prev.edges,
+        {
+          nodeSizes: new Map(
+            prev.nodes.map((node) => [
+              node.id,
+              estimateWorkflowNodeSize(node, { personas, edges: prev.edges }),
+            ]),
+          ),
+          feedbackLaneSpacing: 0,
+        },
+      );
+      return normalizeWorkflowWithStageDefaults(
+        {
+          ...prev,
+          nodes: prev.nodes.map((n) => ({ ...n, position: positions.get(n.id) ?? n.position })),
+        },
+        defaultStageModelId,
+      );
+    });
+  }, [commit, defaultStageModelId, personas]);
 
   const startConnect = useCallback((sourceId: string, label?: string) => {
     if (!label) return;
@@ -610,7 +939,7 @@ export function useWorkflowBuilder(
       setConnectingFromId(null);
       setConnectingFromLabel(null);
       if (!fromId || !fromLabel || fromId === targetId) return;
-      setWorkflowState((prev) => {
+      commit((prev) => {
         const srcNode = prev.nodes.find((n) => n.id === fromId);
         const tgtNode = prev.nodes.find((n) => n.id === targetId);
         if (!srcNode || !tgtNode) return prev;
@@ -645,12 +974,12 @@ export function useWorkflowBuilder(
         );
       });
     },
-    [defaultStageModelId],
+    [commit, defaultStageModelId],
   );
 
   const addPersonaToStage = useCallback(
     (nodeId: string, personaId: string, model = defaultStageModelId, budget = 40) => {
-      setWorkflowState((prev) => {
+      commit((prev) => {
         const preferredModelId = defaultStageModelIdForWorkflow(models);
         return normalizeWorkflowWithStageDefaults(
           {
@@ -682,12 +1011,12 @@ export function useWorkflowBuilder(
         );
       });
     },
-    [defaultStageModelId, models],
+    [commit, defaultStageModelId, models],
   );
 
   const replacePersonaInStage = useCallback(
     (nodeId: string, previousPersonaId: string, personaId: string, model?: string) => {
-      setWorkflowState((prev) =>
+      commit((prev) =>
         normalizeWorkflowWithStageDefaults(
           {
             ...prev,
@@ -719,12 +1048,12 @@ export function useWorkflowBuilder(
         ),
       );
     },
-    [defaultStageModelId],
+    [commit, defaultStageModelId],
   );
 
   const updatePersonaModel = useCallback(
     (nodeId: string, personaId: string, model: string) => {
-      setWorkflowState((prev) =>
+      commit((prev) =>
         normalizeWorkflowWithStageDefaults(
           {
             ...prev,
@@ -747,12 +1076,12 @@ export function useWorkflowBuilder(
         ),
       );
     },
-    [defaultStageModelId],
+    [commit, defaultStageModelId],
   );
 
   const updatePersonaBudget = useCallback(
     (nodeId: string, personaId: string, budget: number) => {
-      setWorkflowState((prev) =>
+      commit((prev) =>
         normalizeWorkflowWithStageDefaults(
           {
             ...prev,
@@ -775,12 +1104,12 @@ export function useWorkflowBuilder(
         ),
       );
     },
-    [defaultStageModelId],
+    [commit, defaultStageModelId],
   );
 
   const removePersonaFromStage = useCallback(
     (nodeId: string, personaId: string) => {
-      setWorkflowState((prev) =>
+      commit((prev) =>
         normalizeWorkflowWithStageDefaults(
           {
             ...prev,
@@ -801,12 +1130,12 @@ export function useWorkflowBuilder(
         ),
       );
     },
-    [defaultStageModelId],
+    [commit, defaultStageModelId],
   );
 
   const updateNodeLabel = useCallback(
     (id: string, label: string) => {
-      setWorkflowState((prev) =>
+      commit((prev) =>
         normalizeWorkflowWithStageDefaults(
           {
             ...prev,
@@ -816,12 +1145,12 @@ export function useWorkflowBuilder(
         ),
       );
     },
-    [defaultStageModelId],
+    [commit, defaultStageModelId],
   );
 
   const updateNode = useCallback(
     (id: string, patch: Partial<WorkflowNode>) => {
-      setWorkflowState((prev) => {
+      commit((prev) => {
         const current = prev.nodes.find((node) => node.id === id);
         const triggerDispatchEvent =
           current?.kind === 'trigger' &&
@@ -848,7 +1177,35 @@ export function useWorkflowBuilder(
         );
       });
     },
-    [defaultStageModelId],
+    [commit, defaultStageModelId],
+  );
+
+  const selectSubworkflowTemplate = useCallback(
+    (nodeId: string, templateName: string, child: Workflow) => {
+      commit((prev) => bindSubworkflowTemplate(prev, nodeId, templateName, child));
+    },
+    [commit],
+  );
+
+  const addSubworkflowTemplate = useCallback(
+    (nodeId: string, name?: string) => {
+      commit((prev) => addSubworkflowTemplateToWorkflow(prev, nodeId, name));
+    },
+    [commit],
+  );
+
+  const renameSubworkflowTemplate = useCallback(
+    (nodeId: string, previousName: string, nextName: string) => {
+      commit((prev) => renameSubworkflowTemplateOnWorkflow(prev, nodeId, previousName, nextName));
+    },
+    [commit],
+  );
+
+  const removeSubworkflowTemplate = useCallback(
+    (nodeId: string, name: string) => {
+      commit((prev) => removeSubworkflowTemplateFromWorkflow(prev, nodeId, name));
+    },
+    [commit],
   );
 
   const addResourceBinding = useCallback(
@@ -856,7 +1213,7 @@ export function useWorkflowBuilder(
       resourceNodeId: string,
       patch: Partial<Omit<WorkflowResourceBinding, 'id' | 'resourceNodeId'>> = {},
     ) => {
-      setWorkflowState((prev) =>
+      commit((prev) =>
         normalizeWorkflowGraph({
           ...prev,
           resourceBindings: [
@@ -871,12 +1228,12 @@ export function useWorkflowBuilder(
         }),
       );
     },
-    [],
+    [commit],
   );
 
   const updateResourceBinding = useCallback(
     (id: string, patch: Partial<WorkflowResourceBinding>) => {
-      setWorkflowState((prev) =>
+      commit((prev) =>
         normalizeWorkflowGraph({
           ...prev,
           resourceBindings: (prev.resourceBindings ?? []).map((binding) =>
@@ -885,46 +1242,58 @@ export function useWorkflowBuilder(
         }),
       );
     },
-    [],
+    [commit],
   );
 
-  const removeResourceBinding = useCallback((id: string) => {
-    setWorkflowState((prev) =>
-      normalizeWorkflowGraph({
-        ...prev,
-        resourceBindings: (prev.resourceBindings ?? []).filter((binding) => binding.id !== id),
-      }),
-    );
-  }, []);
+  const removeResourceBinding = useCallback(
+    (id: string) => {
+      commit((prev) =>
+        normalizeWorkflowGraph({
+          ...prev,
+          resourceBindings: (prev.resourceBindings ?? []).filter((binding) => binding.id !== id),
+        }),
+      );
+    },
+    [commit],
+  );
 
   const updateWorkflowMeta = useCallback(
     (patch: Partial<Pick<Workflow, 'name' | 'description' | 'version' | 'tags'>>) => {
-      setWorkflowState((prev) =>
+      commit((prev) =>
         normalizeWorkflowWithStageDefaults(
           { ...prev, ...patch },
           defaultStageModelIdForWorkflow(models),
         ),
       );
     },
-    [models],
+    [commit, models],
   );
 
   return {
     workflow,
+    savedWorkflow,
+    isDirty,
     view,
     selectedNodeId,
     connectingFromId,
     connectingFromLabel,
     inspectorNodeId,
+    canUndo: historyFlags.canUndo,
+    canRedo: historyFlags.canRedo,
     setView,
     selectNode,
     inspectNode,
     addNode,
+    addNodeFromPort,
     addMimirResource,
     addStageWithPersona,
+    addStageFromPort,
     deleteNode,
     deleteEdge,
     moveNode,
+    autoLayout,
+    undo,
+    redo,
     startConnect,
     cancelConnect,
     completeConnect,
@@ -935,10 +1304,17 @@ export function useWorkflowBuilder(
     removePersonaFromStage,
     updateNodeLabel,
     updateNode,
+    selectSubworkflowTemplate,
+    addSubworkflowTemplate,
+    renameSubworkflowTemplate,
+    removeSubworkflowTemplate,
     addResourceBinding,
     updateResourceBinding,
     removeResourceBinding,
     updateWorkflowMeta,
     setWorkflow,
+    resetWorkflow,
+    discardChanges,
+    markSaved,
   };
 }

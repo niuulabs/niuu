@@ -26,6 +26,7 @@ describe('generic workflow execution HTTP adapter', () => {
     expect(client.get).toHaveBeenLastCalledWith('/workflow-executions/id%2Fa');
     const request = {
       workflowId: 'workflow',
+      workflowVersion: '1.4.0',
       parentNodeId: 'expand',
       prompt: 'Fix it',
       input: { key: 'value' },
@@ -61,6 +62,7 @@ describe('delivery execution HTTP adapter', () => {
     expect(client.get).toHaveBeenLastCalledWith('/delivery-executions/id%2Fa');
     const request = {
       workflowId: 'workflow',
+      workflowVersion: '2.0.0',
       parentNodeId: 'expand',
       prompt: 'Fix it',
       repo: 'repo',

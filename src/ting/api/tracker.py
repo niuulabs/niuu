@@ -66,8 +66,14 @@ async def _resolve_import_workflow(
     request: Request,
     principal: Principal,
     workflow_id_value: str | None,
+    workflow_version_value: str | None = None,
 ) -> tuple[UUID | None, str | None, dict | None]:
     if workflow_id_value is None:
+        if workflow_version_value:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="workflowVersion requires workflow_id",
+            )
         return None, None, None
 
     workflow_repo: WorkflowRepository | None = getattr(request.app.state, "workflow_repo", None)
@@ -92,7 +98,14 @@ async def _resolve_import_workflow(
             detail=f"Invalid workflow_id: {workflow_id_value!r}",
         )
 
-    workflow = await workflow_repo.get_workflow(workflow_id)
+    workflow = (
+        await workflow_repo.get_workflow_version(
+            workflow_id,
+            version=workflow_version_value,
+        )
+        if workflow_version_value
+        else await workflow_repo.get_workflow(workflow_id)
+    )
     if workflow is None or not _can_use_workflow(workflow, principal):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -136,6 +149,11 @@ class ImportRequest(BaseModel):
         default=None,
         description="Optional saved workflow UUID to assign on import",
     )
+    workflow_version: str | None = Field(
+        default=None,
+        alias="workflowVersion",
+        description="Optional immutable workflow version to assign on import",
+    )
     instance_id: str | None = Field(
         default=None,
         description="Optional Volundr target UUID to assign on import",
@@ -152,6 +170,8 @@ class ImportRequest(BaseModel):
         default=False,
         description="When true, assign a workflow and immediately dispatch ready work",
     )
+
+    model_config = {"populate_by_name": True}
 
 
 class SagaResponse(BaseModel):
@@ -441,6 +461,7 @@ def _build_tracker_router(
             request=request,
             principal=principal,
             workflow_id_value=body.workflow_id,
+            workflow_version_value=body.workflow_version,
         )
         repo_branches = {
             str(ref.get("repo") or "").strip(): str(ref.get("branch") or "").strip()

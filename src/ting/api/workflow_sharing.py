@@ -20,7 +20,11 @@ from ting.api.workflow_bindings import binding_errors
 from ting.api.workflow_personas import authoring_persona_source
 from ting.domain.models import WorkflowScope
 from ting.domain.services.workflow_sharing import export_workflow, plan_workflow_import
-from ting.domain.workflow_document import document_from_workflow, load_workflow_document
+from ting.domain.workflow_document import (
+    document_from_workflow,
+    load_workflow_document,
+    workflow_document_revision,
+)
 from ting.domain.workflow_snapshot import workflow_personas_from_snapshot
 from ting.ports.workflow_repository import WorkflowRepository
 
@@ -33,6 +37,7 @@ class WorkflowImportBody(BaseModel):
     mode: Literal["copy", "update"] = "copy"
     workflow_id: UUID | None = None
     expected_revision: str | None = None
+    base_revision: str | None = None
     preview_digest: str | None = None
 
 
@@ -164,7 +169,18 @@ def create_workflow_sharing_router() -> APIRouter:
             raise HTTPException(status_code=422, detail=preview["errors"])
         if not body.preview_digest or body.preview_digest != preview["preview_digest"]:
             raise HTTPException(status_code=409, detail="Import preview changed; preview again")
-        document = replace(plan.document, id=existing.id if existing else uuid4())
+        base_revision = None
+        if existing is not None:
+            base_revision = (
+                body.base_revision
+                or existing.document_revision
+                or workflow_document_revision(existing)
+            )
+        document = replace(
+            plan.document,
+            id=existing.id if existing else uuid4(),
+            version=existing.version if existing else plan.document.version,
+        )
         workflow = document.to_workflow(
             scope=existing.scope if existing else WorkflowScope.USER,
             owner_id=existing.owner_id if existing else principal.user_id,
@@ -175,19 +191,35 @@ def create_workflow_sharing_router() -> APIRouter:
             persona_definitions=plan.persona_definitions,
             workflow_definitions=plan.workflow_definitions,
         )
-        workflow = replace(workflow, requirements=plan.requirements)
-        saved = await _save_workflow(repo, workflow)
-        return _to_response(saved)
+        workflow = replace(
+            workflow,
+            requirements=plan.requirements,
+            origin="authored",
+            based_on_revision=base_revision,
+        )
+        saved = await _save_workflow(
+            repo,
+            workflow,
+            versioned=existing is not None,
+            expected_revision=body.expected_revision,
+            base_revision=base_revision,
+        )
+        return _to_response(saved, principal=principal)
 
     @router.get("/{workflow_id}/export")
     async def download_workflow(
         workflow_id: UUID,
         request: Request,
         format: Literal["yaml", "bundle"] = Query(default="yaml"),
+        version: str | None = Query(default=None, max_length=64),
         principal: Principal = Depends(extract_principal),
         repo: WorkflowRepository = Depends(resolve_workflow_repo),
     ) -> Response:
-        workflow = await repo.get_workflow(workflow_id)
+        workflow = (
+            await repo.get_workflow_version(workflow_id, version=version)
+            if version
+            else await repo.get_workflow(workflow_id)
+        )
         if workflow is None or not _can_view_workflow(workflow, principal):
             raise HTTPException(status_code=404, detail="Workflow not found")
         try:

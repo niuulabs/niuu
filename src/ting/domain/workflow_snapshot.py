@@ -107,11 +107,14 @@ def build_workflow_snapshot(
         persona_source,
     )
     resolved_workflows = validate_workflow_dependency_closure(workflow)
+    document_revision = workflow.document_revision or workflow_document_revision(workflow)
     snapshot = {
         "schema_version": workflow.schema_version,
         "workflow_id": str(workflow.id),
         "name": workflow.name,
         "version": workflow.version,
+        "workflow_revision": document_revision,
+        "workflow_digest": document_revision,
         "scope": workflow.scope.value,
         "graph": graph,
         "personas": copy.deepcopy(personas),

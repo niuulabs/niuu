@@ -171,6 +171,28 @@
   min-height: 18rem;
 }
 
+.settings-interface {
+  max-width: 42rem;
+}
+
+.settings-interface .settings-shell__panel-heading {
+  margin-top: 0.65rem;
+}
+
+.settings-interface__control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  margin-top: 1.5rem;
+  padding: 1rem 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(240, 243, 248, 0.94);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
 .settings-shell__panel-topline {
   display: flex;
   align-items: center;

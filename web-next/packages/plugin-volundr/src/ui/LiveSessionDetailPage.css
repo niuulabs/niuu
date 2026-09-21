@@ -157,6 +157,29 @@
   overflow: hidden;
 }
 
+.niuu-live-session__return-link {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.niuu-live-session__return-link:hover {
+  color: var(--color-text-primary);
+}
+
+.niuu-live-session__return-link svg {
+  width: 14px;
+  height: 14px;
+}
+
 .niuu-live-session__identity {
   display: inline-flex;
   align-items: center;

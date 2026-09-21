@@ -90,9 +90,9 @@ def _sanitize_log(value: object) -> str:
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
 
-def _supports_principal_kwarg(method: object) -> bool:
+def _supports_keyword_arg(method: object, keyword: str) -> bool:
     try:
-        return "principal" in inspect.signature(method).parameters
+        return keyword in inspect.signature(method).parameters
     except (TypeError, ValueError):
         return False
 
@@ -1300,7 +1300,9 @@ class DispatchService:
         """Fetch integration IDs from Volundr, returning empty on failure."""
         try:
             kwargs: dict[str, Any] = {"auth_token": auth_token}
-            if principal is not None and _supports_principal_kwarg(volundr.list_integration_ids):
+            if principal is not None and _supports_keyword_arg(
+                volundr.list_integration_ids, "principal"
+            ):
                 kwargs["principal"] = principal
             ids = await volundr.list_integration_ids(**kwargs)
             logger.info("Fetched %d Volundr integration IDs: %s", len(ids), ids)
@@ -1549,17 +1551,24 @@ class DispatchService:
                 "request": request,
                 "auth_token": auth_token,
             }
-            if principal is not None and _supports_principal_kwarg(target_volundr.spawn_session):
+            if principal is not None and _supports_keyword_arg(
+                target_volundr.spawn_session, "principal"
+            ):
                 spawn_kwargs["principal"] = principal
             session = await target_volundr.spawn_session(**spawn_kwargs)
 
             # Record run progress and set tracker issue to In Progress
             adapter_name = type(adapter).__name__
+            # Older external adapters may not yet accept tenant attribution.
+            progress_scope = {}
+            if _supports_keyword_arg(adapter.update_run_progress, "tenant_id"):
+                progress_scope["tenant_id"] = principal.tenant_id if principal is not None else ""
             await adapter.update_run_progress(
                 issue.id,
                 status=RunStatus.RUNNING,
                 session_id=session.id,
                 owner_id=owner_id,
+                **progress_scope,
                 phase_tracker_id=issue.milestone_id,
                 saga_tracker_id=saga.tracker_id,
             )

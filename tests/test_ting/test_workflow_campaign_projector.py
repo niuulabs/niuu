@@ -191,7 +191,13 @@ async def test_stream_events_cover_missing_pending_and_failure_states() -> None:
             session_status="failed",
         ),
         "user-1",
+        connection_id="volundr-west",
     )
+    assert repo.get_active_campaign_by_session.await_args.kwargs == {
+        "owner_id": "user-1",
+        "session_id": "session-123",
+        "connection_id": "volundr-west",
+    }
     failed = repo.save_campaign.await_args_list[1].args[0]
     assert failed.status == WorkflowCampaignStatus.FAILED
     assert failed.metadata["failure_error"] == "Session failed"

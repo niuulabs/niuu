@@ -12,6 +12,7 @@ const mockNavigate = vi.fn();
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
+  useSearch: () => ({}),
 }));
 
 const repoCatalog = {

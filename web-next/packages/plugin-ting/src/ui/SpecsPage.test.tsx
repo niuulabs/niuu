@@ -25,6 +25,7 @@ let mockSlug = 'sdcp-operator';
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
   useParams: () => ({ slug: mockSlug }),
+  useSearch: () => ({}),
 }));
 
 vi.mock('@niuulabs/query', () => ({

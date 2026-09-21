@@ -16,6 +16,7 @@ export {
   uiModeFromPreferences,
   useSetUiMode,
   useUiMode,
+  useUiModePreferenceSync,
   type PluginFace,
   type UiMode,
 } from './uiMode';

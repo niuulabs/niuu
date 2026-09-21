@@ -290,6 +290,26 @@ class WorkflowDefinition:
     schema_version: int = 1
     workflow_dependencies: dict[str, WorkflowDependency] = field(default_factory=dict)
     workflow_definitions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # ``revision`` is the latest-head compare-and-swap token, even when this
+    # value represents a historical version. ``document_revision`` identifies
+    # the selected immutable canonical document.
+    document_revision: str | None = None
+    is_head: bool = True
+    origin: str = "authored"
+    based_on_revision: str | None = None
+
+
+@dataclass(frozen=True)
+class WorkflowVersionSummary:
+    """Small immutable catalog projection for a workflow's version picker."""
+
+    workflow_id: UUID
+    version: str
+    document_revision: str
+    created_at: datetime
+    is_head: bool
+    based_on_revision: str | None = None
+    origin: str = "authored"
 
 
 @dataclass(frozen=True)

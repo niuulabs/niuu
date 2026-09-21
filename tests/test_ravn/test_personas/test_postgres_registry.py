@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ravn.adapters.personas.loader import PersonaConfig
+from ravn.adapters.personas.loader import PersonaConfig, PersonaProduces
 from ravn.adapters.personas.postgres_registry import (
     PostgresPersonaRegistry,
     _config_to_payload,
@@ -491,3 +491,21 @@ class TestHelperNormalization:
     def test_normalize_payload_requires_name(self):
         with pytest.raises(ValueError, match="Persona name is required"):
             _normalize_payload({})
+
+    def test_outcome_event_map_survives_storage_payload_round_trip(self):
+        config = PersonaConfig(
+            name="reviewer",
+            produces=PersonaProduces(
+                event_type="review.completed",
+                event_type_map={
+                    "pass": "review.passed",
+                    "needs_changes": "review.changes_requested",
+                },
+            ),
+        )
+
+        payload = _normalize_payload(_config_to_payload(config))
+        restored = _payload_to_config(payload)
+
+        assert payload["produces_event_map"] == config.produces.event_type_map
+        assert restored.produces.event_type_map == config.produces.event_type_map

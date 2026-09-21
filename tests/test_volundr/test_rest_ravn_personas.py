@@ -173,6 +173,26 @@ def _make_payload(name: str) -> dict:
 
 
 class TestRavnPersonaRoutes:
+    def test_builtin_summaries_expose_all_outcome_events(self) -> None:
+        client, _ = _make_client()
+        response = client.get(
+            "/api/v1/personas?source=builtin",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert response.status_code == 200
+        reviewer = next(item for item in response.json() if item["name"] == "reviewer")
+        assert reviewer["outcome_events"] == {
+            "pass": "review.passed",
+            "needs_changes": "review.changes_requested",
+            "fail": "review.changes_requested",
+        }
+
+        detail = client.get(
+            "/api/v1/personas/reviewer",
+            headers={"Authorization": "Bearer token"},
+        ).json()
+        assert detail["produces"]["event_type_map"] == reviewer["outcome_events"]
+
     def test_portable_source_is_owner_scoped_and_exactly_addressable(self) -> None:
         client, _ = _make_client()
         client.post(
