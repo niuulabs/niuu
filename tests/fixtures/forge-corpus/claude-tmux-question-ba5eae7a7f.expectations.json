@@ -261,7 +261,8 @@
         },
         "cost": null,
         "model": "claude-opus-5",
-        "stop_reason": "stop"
+        "stop_reason": "stop",
+        "final_output": true
       },
       "visibility": "public"
     }
@@ -351,24 +352,39 @@
   },
   "projection_review": {
     "status": "accepted",
-    "reviewer": "Codex transport/corpus review agent, 2026-09-08",
-    "source_frames_sha256": "ba5eae7a7f19d70ec01fc92b20fba03f95d3f7555b6fdc2952a21625a2da50ea",
-    "previous_projection_sha256": "cd03d0fcde92201a499a04e25d055173d75c362d9152b6937842a3ca526c00e2",
-    "projection_sha256": "9af7d3232ea142a4af9316211ff25eecd2fa8a0dfc214aa33278f8bfd656440c",
-    "reason": "Remove only verified idle terminal scrollback after a completed result. These paints created phantom assistant turns at EOF or the next human boundary; genuine terminal-only work remains supported.",
-    "all_real_turns_byte_identical": true,
-    "removed_phantom_turns": [
-      {
-        "turn_id": "87b2b51b-db12-5971-90af-f53d9949ece6",
-        "prior_result_seq": 1023,
-        "idle_terminal_seq": 1027,
-        "old_metadata": {
-          "provenance": "terminal_scrape",
-          "status": "interrupted"
-        },
-        "old_text_sha256": "4ce4988527f48aeb2ac2fab36b87406d67ed0537069d4eb5c84fcfcba5a266e0"
-      }
+    "reviewer": "internal-worker thor:c8103dc7-a834-5e32-a06d-1a98d7a8e2b5",
+    "notes": [
+      "Code-contract review, not new user or live-provider acceptance. Only successful-completion metadata.final_output=true was added; removing exactly that new field reproduces every original turn byte-for-value. Original source frames, IDs, text, parts, order, timestamps, partial state and initial review remain unchanged."
     ],
-    "reducer_source_sha256": "33f1782405903e2e6b152a3435d36db95c6b2696e3675d67c72e15ed9083317d"
-  }
+    "source_frames_sha256": "ba5eae7a7f19d70ec01fc92b20fba03f95d3f7555b6fdc2952a21625a2da50ea",
+    "projection_sha256": "07603107fafee25be521d297ef2bb104d8fc7805c753d7540d00c413337b6dac",
+    "reviewed_at": "2026-09-21",
+    "additive_marker_turn_indices": [
+      1
+    ]
+  },
+  "projection_review_history": [
+    {
+      "status": "accepted",
+      "reviewer": "Codex transport/corpus review agent, 2026-09-08",
+      "source_frames_sha256": "ba5eae7a7f19d70ec01fc92b20fba03f95d3f7555b6fdc2952a21625a2da50ea",
+      "previous_projection_sha256": "cd03d0fcde92201a499a04e25d055173d75c362d9152b6937842a3ca526c00e2",
+      "projection_sha256": "9af7d3232ea142a4af9316211ff25eecd2fa8a0dfc214aa33278f8bfd656440c",
+      "reason": "Remove only verified idle terminal scrollback after a completed result. These paints created phantom assistant turns at EOF or the next human boundary; genuine terminal-only work remains supported.",
+      "all_real_turns_byte_identical": true,
+      "removed_phantom_turns": [
+        {
+          "turn_id": "87b2b51b-db12-5971-90af-f53d9949ece6",
+          "prior_result_seq": 1023,
+          "idle_terminal_seq": 1027,
+          "old_metadata": {
+            "provenance": "terminal_scrape",
+            "status": "interrupted"
+          },
+          "old_text_sha256": "4ce4988527f48aeb2ac2fab36b87406d67ed0537069d4eb5c84fcfcba5a266e0"
+        }
+      ],
+      "reducer_source_sha256": "33f1782405903e2e6b152a3435d36db95c6b2696e3675d67c72e15ed9083317d"
+    }
+  ]
 }

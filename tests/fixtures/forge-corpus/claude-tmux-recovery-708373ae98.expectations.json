@@ -166,7 +166,8 @@
         },
         "cost": null,
         "model": "claude-opus-5",
-        "stop_reason": "stop"
+        "stop_reason": "stop",
+        "final_output": true
       },
       "visibility": "public"
     },
@@ -241,7 +242,8 @@
         },
         "cost": null,
         "model": "claude-opus-5",
-        "stop_reason": "stop"
+        "stop_reason": "stop",
+        "final_output": true
       },
       "visibility": "public"
     }
@@ -313,33 +315,49 @@
   },
   "projection_review": {
     "status": "accepted",
-    "reviewer": "Codex transport/corpus review agent, 2026-09-08",
-    "source_frames_sha256": "708373ae9812297aa203651e770a16f80d7eda5fa839f346c49e39864e3074bc",
-    "previous_projection_sha256": "483542c212b214433c8770dea1003a9f0e338a058aca939cbf5e0e2bf3f00f2b",
-    "projection_sha256": "754ea0a267d1c7e5c762342ea741f90c935bc754373cd6389375fc0ae1acea5d",
-    "reason": "Remove only verified idle terminal scrollback after a completed result. These paints created phantom assistant turns at EOF or the next human boundary; genuine terminal-only work remains supported.",
-    "all_real_turns_byte_identical": true,
-    "removed_phantom_turns": [
-      {
-        "turn_id": "719dad7f-d4a4-54ab-b8bc-4b55980fd40c",
-        "prior_result_seq": 667,
-        "idle_terminal_seq": 669,
-        "old_metadata": {
-          "provenance": "terminal_scrape"
-        },
-        "old_text_sha256": "56b8338869fbc3bc01843e2b316fadddaa4b9e5895ad43f6ed937c0e7b1d6c75"
-      },
-      {
-        "turn_id": "91e27f60-ee7e-5b8a-805d-bb4385c0a96f",
-        "prior_result_seq": 731,
-        "idle_terminal_seq": 736,
-        "old_metadata": {
-          "provenance": "terminal_scrape",
-          "status": "interrupted"
-        },
-        "old_text_sha256": "239c9be93e687f1e1dea3f280966702f2e372acb2685139b1148ee04bf681e96"
-      }
+    "reviewer": "internal-worker thor:c8103dc7-a834-5e32-a06d-1a98d7a8e2b5",
+    "notes": [
+      "Code-contract review, not new user or live-provider acceptance. Only successful-completion metadata.final_output=true was added; removing exactly that new field reproduces every original turn byte-for-value. Original source frames, IDs, text, parts, order, timestamps, partial state and initial review remain unchanged."
     ],
-    "reducer_source_sha256": "33f1782405903e2e6b152a3435d36db95c6b2696e3675d67c72e15ed9083317d"
-  }
+    "source_frames_sha256": "708373ae9812297aa203651e770a16f80d7eda5fa839f346c49e39864e3074bc",
+    "projection_sha256": "6f0b3b7eb81f279a07a0c7554587aa6a4fa10aee17be4e4d54982612a535064d",
+    "reviewed_at": "2026-09-21",
+    "additive_marker_turn_indices": [
+      0,
+      2
+    ]
+  },
+  "projection_review_history": [
+    {
+      "status": "accepted",
+      "reviewer": "Codex transport/corpus review agent, 2026-09-08",
+      "source_frames_sha256": "708373ae9812297aa203651e770a16f80d7eda5fa839f346c49e39864e3074bc",
+      "previous_projection_sha256": "483542c212b214433c8770dea1003a9f0e338a058aca939cbf5e0e2bf3f00f2b",
+      "projection_sha256": "754ea0a267d1c7e5c762342ea741f90c935bc754373cd6389375fc0ae1acea5d",
+      "reason": "Remove only verified idle terminal scrollback after a completed result. These paints created phantom assistant turns at EOF or the next human boundary; genuine terminal-only work remains supported.",
+      "all_real_turns_byte_identical": true,
+      "removed_phantom_turns": [
+        {
+          "turn_id": "719dad7f-d4a4-54ab-b8bc-4b55980fd40c",
+          "prior_result_seq": 667,
+          "idle_terminal_seq": 669,
+          "old_metadata": {
+            "provenance": "terminal_scrape"
+          },
+          "old_text_sha256": "56b8338869fbc3bc01843e2b316fadddaa4b9e5895ad43f6ed937c0e7b1d6c75"
+        },
+        {
+          "turn_id": "91e27f60-ee7e-5b8a-805d-bb4385c0a96f",
+          "prior_result_seq": 731,
+          "idle_terminal_seq": 736,
+          "old_metadata": {
+            "provenance": "terminal_scrape",
+            "status": "interrupted"
+          },
+          "old_text_sha256": "239c9be93e687f1e1dea3f280966702f2e372acb2685139b1148ee04bf681e96"
+        }
+      ],
+      "reducer_source_sha256": "33f1782405903e2e6b152a3435d36db95c6b2696e3675d67c72e15ed9083317d"
+    }
+  ]
 }

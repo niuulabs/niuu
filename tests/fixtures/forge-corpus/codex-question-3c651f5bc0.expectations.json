@@ -184,7 +184,8 @@
         },
         "cost": null,
         "model": "gpt-6-astra",
-        "stop_reason": "end_turn"
+        "stop_reason": "end_turn",
+        "final_output": true
       },
       "visibility": "public"
     }
@@ -241,16 +242,31 @@
     }
   },
   "projection_review": {
-    "schema_version": 1,
     "status": "accepted",
-    "reviewer": "Codex integration review, 2026-09-08",
-    "source_frames_sha256": "3c651f5bc0bf622fd2393fba611e4d9edea46c9b97ca58e70ea3833d1db980ee",
-    "previous_projection_sha256": "f23491f4a17008d3457cd466e9665a787241298335ebb4078e8af93c6062f3f9",
-    "projection_sha256": "30b3c42d82381118c35e5c5e4fd35df230a4146c0eea659ed7553a0623ca0550",
+    "reviewer": "internal-worker thor:c8103dc7-a834-5e32-a06d-1a98d7a8e2b5",
     "notes": [
-      "Captured final text deltas now produce one ordered text part after the tool burst.",
-      "Exact final prose, every nontext part, turn identity and accounting unchanged.",
-      "Original raw frames and original capture review remain unchanged."
+      "Code-contract review, not new user or live-provider acceptance. Only successful-completion metadata.final_output=true was added; removing exactly that new field reproduces every original turn byte-for-value. Original source frames, IDs, text, parts, order, timestamps, partial state and initial review remain unchanged."
+    ],
+    "source_frames_sha256": "3c651f5bc0bf622fd2393fba611e4d9edea46c9b97ca58e70ea3833d1db980ee",
+    "projection_sha256": "15377e95b66b570e810eb5b61506b5347faac456391486090f84cd16c05c4cd1",
+    "reviewed_at": "2026-09-21",
+    "additive_marker_turn_indices": [
+      1
     ]
-  }
+  },
+  "projection_review_history": [
+    {
+      "schema_version": 1,
+      "status": "accepted",
+      "reviewer": "Codex integration review, 2026-09-08",
+      "source_frames_sha256": "3c651f5bc0bf622fd2393fba611e4d9edea46c9b97ca58e70ea3833d1db980ee",
+      "previous_projection_sha256": "f23491f4a17008d3457cd466e9665a787241298335ebb4078e8af93c6062f3f9",
+      "projection_sha256": "30b3c42d82381118c35e5c5e4fd35df230a4146c0eea659ed7553a0623ca0550",
+      "notes": [
+        "Captured final text deltas now produce one ordered text part after the tool burst.",
+        "Exact final prose, every nontext part, turn identity and accounting unchanged.",
+        "Original raw frames and original capture review remain unchanged."
+      ]
+    }
+  ]
 }
