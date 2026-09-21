@@ -388,7 +388,7 @@ def test_include_requires_schema_version_2():
         include_nodes={"child-stage": "local-stage"},
         schema_version=1,
     )
-    del payload["workflow_dependencies"]
+    payload.pop("workflow_dependencies", None)
     with pytest.raises(WorkflowDocumentError, match="requires workflow schema_version 2"):
         load_workflow_document(yaml.safe_dump(payload, sort_keys=False))
 

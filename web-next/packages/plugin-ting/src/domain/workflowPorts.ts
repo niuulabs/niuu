@@ -204,6 +204,48 @@ export function nodeMatchIds(node: WorkflowNode): ReadonlySet<string> {
   return new Set([node.id]);
 }
 
+/** Asked only when an event could belong to several included nodes. */
+export type IncludedNodeChooser = (
+  eventType: string,
+  providedIds: readonly string[],
+) => string | null;
+
+/**
+ * The node id an edge should use when it connects `eventType` to `node`.
+ *
+ * Any other kind of node is its own endpoint. An include node is never an
+ * endpoint itself: the edge attaches to one of the local ids it provides. The
+ * id an existing edge already uses for that event is kept, a sole provided id
+ * needs no question, and otherwise the author chooses.
+ */
+export function resolveIncludeEndpoint(
+  node: WorkflowNode,
+  eventType: string,
+  direction: 'source' | 'target',
+  edges: readonly WorkflowEdge[],
+  choose: IncludedNodeChooser,
+): string | null {
+  if (node.kind !== 'include') return node.id;
+  const providedIds = Object.values(node.nodes ?? {});
+  if (providedIds.length === 0) return null;
+
+  const reused = providedIds.find((candidate) =>
+    edges.some((edge) => {
+      const endpoint = direction === 'source' ? edge.source : edge.target;
+      if (endpoint !== candidate) return false;
+      const parsed = parseWorkflowEdgeLabel(edge.label);
+      if (!parsed) return false;
+      const edgeEvent = direction === 'source' ? parsed.sourceEventType : parsed.targetEventType;
+      return edgeEvent === eventType;
+    }),
+  );
+  if (reused) return reused;
+  if (providedIds.length === 1) return providedIds[0]!;
+
+  const choice = choose(eventType, providedIds)?.trim();
+  return choice && providedIds.includes(choice) ? choice : null;
+}
+
 function addEdgePorts(
   node: WorkflowNode,
   edges: readonly WorkflowEdge[],

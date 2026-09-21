@@ -38,6 +38,7 @@ import { isReentryEdge, parseWorkflowEdgeLabel } from '../../domain/workflowSema
 import {
   nodeMatchIds,
   nodePortCatalog,
+  resolveIncludeEndpoint,
   resolveWorkflowEdgePorts,
   type WorkflowNodePort,
   type WorkflowNodePortCatalog,
@@ -835,32 +836,12 @@ function resolveIncludeConnectionId(
   direction: 'source' | 'target',
   edges: readonly WorkflowEdge[],
 ): string | null {
-  if (node.kind !== 'include') return node.id;
-  const providedIds = Object.values(node.nodes ?? {});
-  if (providedIds.length === 0) return null;
-
-  const reused = providedIds.find((candidate) =>
-    edges.some((edge) => {
-      if (direction === 'source' ? edge.source !== candidate : edge.target !== candidate) {
-        return false;
-      }
-      const parsed = parseWorkflowEdgeLabel(edge.label);
-      if (!parsed) return false;
-      return direction === 'source'
-        ? parsed.sourceEventType === eventType
-        : parsed.targetEventType === eventType;
-    }),
-  );
-  if (reused) return reused;
-  if (providedIds.length === 1) return providedIds[0]!;
-
-  const choice = window
-    .prompt(
-      `Which included node does "${eventType}" belong to? (${providedIds.join(', ')})`,
+  return resolveIncludeEndpoint(node, eventType, direction, edges, (event, providedIds) =>
+    window.prompt(
+      `Which included node does "${event}" belong to? (${providedIds.join(', ')})`,
       providedIds[0],
-    )
-    ?.trim();
-  return choice && providedIds.includes(choice) ? choice : null;
+    ),
+  );
 }
 
 /** WaitNode — same recipe as StageNode's port footer (bottom-anchored,

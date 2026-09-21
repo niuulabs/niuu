@@ -17,6 +17,10 @@ import {
   END_RADIUS,
   RESOURCE_WIDTH,
   RESOURCE_HEIGHT,
+  INCLUDE_WIDTH,
+  INCLUDE_HEIGHT,
+  WAIT_WIDTH,
+  WAIT_HEIGHT,
 } from './graphUtils';
 import type { WorkflowNode, WorkflowEdge } from '../../domain/workflow';
 
@@ -163,6 +167,29 @@ describe('nodeCentre', () => {
         position: { x: 50, y: 60 },
       }),
     ).toEqual({ x: 50 + RESOURCE_WIDTH / 2, y: 60 + RESOURCE_HEIGHT / 2 });
+  });
+  it('returns centre of an include node', () => {
+    const node: WorkflowNode = {
+      id: 'plan',
+      kind: 'include',
+      label: 'Plan',
+      workflow: 'planning',
+      nodes: { 'planning-analysis': 'plan-author' },
+      position: { x: 10, y: 20 },
+    };
+
+    expect(nodeCentre(node)).toEqual({ x: 10 + INCLUDE_WIDTH / 2, y: 20 + INCLUDE_HEIGHT / 2 });
+  });
+
+  it('returns centre of a wait node', () => {
+    const node: WorkflowNode = {
+      id: 'retry',
+      kind: 'wait',
+      label: 'Retry',
+      position: { x: 30, y: 40 },
+    };
+
+    expect(nodeCentre(node)).toEqual({ x: 30 + WAIT_WIDTH / 2, y: 40 + WAIT_HEIGHT / 2 });
   });
 });
 

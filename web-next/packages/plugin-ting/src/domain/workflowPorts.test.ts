@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { WorkflowEdge, WorkflowNode } from './workflow';
-import { nodePortCatalog, resolveWorkflowEdgePorts } from './workflowPorts';
+import { nodePortCatalog, resolveIncludeEndpoint, resolveWorkflowEdgePorts } from './workflowPorts';
 
 const pos = { x: 0, y: 0 };
 
@@ -344,6 +344,99 @@ describe('workflow port contracts', () => {
       const resolved = resolveWorkflowEdgePorts(saved, nodes, { edges: [saved] });
       expect(resolved.resolved).toBe(true);
       expect(resolved.targetPort).toMatchObject({ eventType: 'plan.requested', resolved: true });
+    });
+  });
+
+  describe('the endpoint an edge uses on an include node', () => {
+    const planning: WorkflowNode = {
+      id: 'delivery-planning',
+      kind: 'include',
+      label: 'Plan the delivery',
+      workflow: 'planning',
+      nodes: {
+        'planning-analysis': 'delivery-plan-author',
+        'planning-reviews': 'delivery-plan-reviews',
+      },
+      position: pos,
+    };
+    const single: WorkflowNode = { ...planning, nodes: { 'planning-analysis': 'only-stage' } };
+    const never = vi.fn(() => null);
+
+    it('is the node itself for every other kind', () => {
+      const wait: WorkflowNode = { id: 'retry', kind: 'wait', label: 'Retry', position: pos };
+
+      expect(resolveIncludeEndpoint(wait, 'plan.ready', 'source', [], never)).toBe('retry');
+      expect(never).not.toHaveBeenCalled();
+    });
+
+    it('is nothing when the include provides no nodes', () => {
+      const empty = { ...planning, nodes: {} } as WorkflowNode;
+
+      expect(resolveIncludeEndpoint(empty, 'plan.ready', 'source', [], never)).toBeNull();
+    });
+
+    it('keeps the provided id an outgoing edge already uses for that event', () => {
+      const edges = [edge('e1', 'delivery-plan-reviews', 'gate', 'plan.ready -> plan.ready')];
+
+      expect(resolveIncludeEndpoint(planning, 'plan.ready', 'source', edges, never)).toBe(
+        'delivery-plan-reviews',
+      );
+    });
+
+    it('keeps the provided id an incoming edge already uses for that event', () => {
+      const edges = [edge('e1', 'start', 'delivery-plan-author', 'plan.asked -> plan.requested')];
+
+      expect(resolveIncludeEndpoint(planning, 'plan.requested', 'target', edges, never)).toBe(
+        'delivery-plan-author',
+      );
+    });
+
+    it('ignores edges for another event, the other direction, or without a label', () => {
+      const edges = [
+        edge('other-event', 'delivery-plan-reviews', 'gate', 'plan.rejected -> plan.rejected'),
+        edge('other-direction', 'start', 'delivery-plan-reviews', 'plan.ready -> plan.ready'),
+        edge('unlabelled', 'delivery-plan-reviews', 'gate'),
+      ];
+      const choose = vi.fn(() => 'delivery-plan-author');
+
+      expect(resolveIncludeEndpoint(planning, 'plan.ready', 'source', edges, choose)).toBe(
+        'delivery-plan-author',
+      );
+      expect(choose).toHaveBeenCalledWith('plan.ready', [
+        'delivery-plan-author',
+        'delivery-plan-reviews',
+      ]);
+    });
+
+    it('needs no question when only one node is provided', () => {
+      expect(resolveIncludeEndpoint(single, 'plan.ready', 'source', [], never)).toBe('only-stage');
+    });
+
+    it('accepts the chosen node, ignoring surrounding whitespace', () => {
+      const choose = vi.fn(() => '  delivery-plan-reviews ');
+
+      expect(resolveIncludeEndpoint(planning, 'plan.ready', 'source', [], choose)).toBe(
+        'delivery-plan-reviews',
+      );
+    });
+
+    it('is nothing when the choice is declined or is not a provided node', () => {
+      expect(resolveIncludeEndpoint(planning, 'plan.ready', 'source', [], () => null)).toBeNull();
+      expect(resolveIncludeEndpoint(planning, 'plan.ready', 'source', [], () => '')).toBeNull();
+      expect(
+        resolveIncludeEndpoint(planning, 'plan.ready', 'source', [], () => 'somewhere-else'),
+      ).toBeNull();
+    });
+  });
+
+  it('does not resolve an edge whose endpoints are not in the graph', () => {
+    const resolved = resolveWorkflowEdgePorts(edge('dangling', 'gone', 'also-gone'), new Map());
+
+    expect(resolved).toMatchObject({
+      edgeId: 'dangling',
+      sourcePort: null,
+      targetPort: null,
+      resolved: false,
     });
   });
 });

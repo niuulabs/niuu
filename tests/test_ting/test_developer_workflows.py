@@ -304,7 +304,7 @@ def test_delivery_pins_current_workstream_content() -> None:
 
 
 def test_integration_and_ci_failures_compile_to_durable_generation_repair() -> None:
-    graph = _developer_workflows()["Developer Delivery"].graph
+    graph = build_workflow_snapshot(_developer_workflows()["Developer Delivery"])["graph"]
     edges = {edge["id"]: edge for edge in graph["edges"]}
 
     assert edges["delivery-integrate-repair"] == {
