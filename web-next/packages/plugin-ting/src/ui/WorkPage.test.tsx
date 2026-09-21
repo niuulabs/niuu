@@ -401,4 +401,38 @@ describe('WorkPage', () => {
     expect(await screen.findByTestId('work-detail')).toHaveTextContent('Niuu Platform');
     expect(screen.getByRole('button', { name: 'Back to work' })).toBeInTheDocument();
   });
+
+  it('shows a loading state until the first page of work arrives', () => {
+    renderPage(makeWorkService({ list: vi.fn().mockReturnValue(new Promise(() => {})) }));
+
+    expect(screen.getByText('Loading work…')).toBeInTheDocument();
+  });
+
+  it('reports why the work list could not be loaded', async () => {
+    renderPage(makeWorkService({ list: vi.fn().mockRejectedValue(new Error('ting is offline')) }));
+
+    expect(await screen.findByText('Work could not be loaded')).toBeInTheDocument();
+    expect(screen.getByText('ting is offline')).toBeInTheDocument();
+  });
+
+  it('does not invent a reason when the failure carries none', async () => {
+    renderPage(makeWorkService({ list: vi.fn().mockRejectedValue('nope') }));
+
+    expect(await screen.findByText('Work could not be loaded')).toBeInTheDocument();
+    expect(screen.getByText('Unknown error')).toBeInTheDocument();
+  });
+
+  it('invites the first piece of work when nothing exists yet', async () => {
+    const empty: WorkCollection = {
+      projects: [],
+      campaigns: [],
+      executions: [],
+      executionNextCursor: null,
+      coverage: [],
+    };
+    renderPage(makeWorkService({ list: vi.fn().mockResolvedValue(empty) }));
+
+    expect(await screen.findByText('No work yet')).toBeInTheDocument();
+    expect(screen.getByText('Start work from a tracker or brief.')).toBeInTheDocument();
+  });
 });

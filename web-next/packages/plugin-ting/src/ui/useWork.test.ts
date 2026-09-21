@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { act, renderHook, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { createElement, type ReactNode } from 'react';
 import type { WorkCollection, WorkSummary } from '../domain/work';
-import { mergeWorkPages } from './useWork';
+import { mergeWorkPages, useWorkCollection, useWorkDetail } from './useWork';
 
 const execution = (id: string, title = id): WorkSummary =>
   ({
@@ -18,9 +22,7 @@ const page = (
   campaigns: [execution(`${source}-campaign`)],
   executions,
   executionNextCursor,
-  coverage: [
-    { source, connectionId: null, status: 'complete', error: null },
-  ],
+  coverage: [{ source, connectionId: null, status: 'complete', error: null }],
 });
 
 describe('mergeWorkPages', () => {
@@ -43,5 +45,65 @@ describe('mergeWorkPages', () => {
       ['execution:shared', 'newer'],
       ['execution:two', 'two'],
     ]);
+  });
+});
+
+function wrapperFor(work: Record<string, unknown>) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return function Wrapper({ children }: { children: ReactNode }) {
+    return createElement(
+      QueryClientProvider,
+      { client },
+      createElement(ServicesProvider, { services: { 'ting.work': work } }, children),
+    );
+  };
+}
+
+describe('useWorkCollection', () => {
+  it('asks for the first page without a cursor and the next page with it', async () => {
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce(page([execution('one')], 'cursor-2'))
+      .mockResolvedValueOnce(page([execution('two')], null));
+    const { result } = renderHook(() => useWorkCollection(), { wrapper: wrapperFor({ list }) });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(list).toHaveBeenNthCalledWith(1, { executionLimit: 50 });
+    expect(result.current.hasNextPage).toBe(true);
+
+    await act(async () => {
+      await result.current.fetchNextPage();
+    });
+
+    expect(list).toHaveBeenNthCalledWith(2, { executionLimit: 50, executionCursor: 'cursor-2' });
+    await waitFor(() => expect(result.current.hasNextPage).toBe(false));
+    expect(mergeWorkPages(result.current.data?.pages)?.executions.map((item) => item.id)).toEqual([
+      'execution:one',
+      'execution:two',
+    ]);
+  });
+});
+
+describe('useWorkDetail', () => {
+  it('does not fetch until both the kind and the id are known', () => {
+    const get = vi.fn();
+    const { result } = renderHook(() => useWorkDetail('project', null), {
+      wrapper: wrapperFor({ get }),
+    });
+
+    expect(result.current.fetchStatus).toBe('idle');
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it('fetches the detail of the selected item', async () => {
+    const detail = { item: execution('one'), tasks: [], coverage: [] };
+    const get = vi.fn().mockResolvedValue(detail);
+    const { result } = renderHook(() => useWorkDetail('execution', 'one'), {
+      wrapper: wrapperFor({ get }),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(get).toHaveBeenCalledWith('execution', 'one');
+    expect(result.current.data).toEqual(detail);
   });
 });

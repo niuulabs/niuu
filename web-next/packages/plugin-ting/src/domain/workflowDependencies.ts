@@ -34,7 +34,7 @@ function aliasBase(child: Workflow): string {
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+    .replace(/^-|-$/g, '');
   return alias || `workflow-${child.id.slice(0, 8)}`;
 }
 
@@ -272,9 +272,7 @@ export function removeSubworkflowTemplate(
   const templates = node.templates ?? {};
   const trimmedName = name.trim();
   if (!(trimmedName in templates)) {
-    throw new WorkflowTemplateError(
-      `Subworkflow node ${nodeId} does not offer template ${name}`,
-    );
+    throw new WorkflowTemplateError(`Subworkflow node ${nodeId} does not offer template ${name}`);
   }
   if (Object.keys(templates).length <= 1) {
     throw new WorkflowTemplateError(

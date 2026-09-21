@@ -877,7 +877,9 @@ function SagasPageContent() {
                         >
                           <option value="">Use project default</option>
                           {workflows.map((workflow) => (
-                            <option key={workflow.id} value={workflow.id}>{workflow.name}</option>
+                            <option key={workflow.id} value={workflow.id}>
+                              {workflow.name}
+                            </option>
                           ))}
                         </select>
                       </label>
@@ -892,12 +894,17 @@ function SagasPageContent() {
                           className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:disabled:opacity-50"
                         >
                           {!selectedWorkflowId ? <option value="">Default</option> : null}
-                          {selectedWorkflowId && workflowVersions.length === 0 && selectedWorkflow ? (
-                            <option value={selectedWorkflow.version}>{selectedWorkflow.version}</option>
+                          {selectedWorkflowId &&
+                          workflowVersions.length === 0 &&
+                          selectedWorkflow ? (
+                            <option value={selectedWorkflow.version}>
+                              {selectedWorkflow.version}
+                            </option>
                           ) : null}
                           {workflowVersions.map((entry) => (
                             <option key={entry.documentRevision} value={entry.version}>
-                              {entry.version}{entry.isHead ? ' · current' : ''}
+                              {entry.version}
+                              {entry.isHead ? ' · current' : ''}
                             </option>
                           ))}
                         </select>

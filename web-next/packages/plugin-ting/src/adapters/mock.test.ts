@@ -8,6 +8,7 @@ import {
   createMockAuditLogService,
   createMockDispatchBus,
   createMockWorkflowService,
+  createMockWorkService,
   createMockResearchService,
   createMockSpecsService,
 } from './mock';
@@ -880,5 +881,30 @@ describe('createMockAuditLogService', () => {
     });
     expect(entries.every((e) => e.actor === 'system')).toBe(true);
     expect(entries.every((e) => e.kind.startsWith('dispatcher.'))).toBe(true);
+  });
+});
+
+describe('createMockWorkService', () => {
+  it('lists projects and campaigns separately with no executions', async () => {
+    const work = await createMockWorkService().list();
+
+    expect(work.projects.map((item) => item.kind)).toEqual(['project']);
+    expect(work.campaigns.map((item) => item.kind)).toEqual(['research']);
+    expect(work.executions).toEqual([]);
+    expect(work.executionNextCursor).toBeNull();
+  });
+
+  it('returns the detail of a listed item', async () => {
+    const detail = await createMockWorkService().get('campaign', 'demo-research');
+
+    expect(detail.item.title).toBe('Queue latency study');
+    expect(detail.item.attention?.kind).toBe('input');
+    expect(detail.tasks).toEqual([]);
+  });
+
+  it('rejects an item that is not listed', async () => {
+    await expect(createMockWorkService().get('project', 'missing')).rejects.toThrow(
+      'Work project:missing not found',
+    );
   });
 });

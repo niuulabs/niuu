@@ -28,9 +28,7 @@ export function mergeWorkPages(pages: WorkCollection[] | undefined): WorkCollect
     projects: first.projects,
     campaigns: first.campaigns,
     executions: [
-      ...new Map(
-        pages.flatMap((page) => page.executions).map((item) => [item.id, item]),
-      ).values(),
+      ...new Map(pages.flatMap((page) => page.executions).map((item) => [item.id, item])).values(),
     ],
     executionNextCursor: latest.executionNextCursor,
     coverage: latest.coverage,

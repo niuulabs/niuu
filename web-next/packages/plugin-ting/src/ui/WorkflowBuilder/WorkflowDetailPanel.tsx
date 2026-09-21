@@ -249,7 +249,9 @@ function resolveTemplateCatalogChild(
       ? workflows.find((candidate) => candidate.id === dependency.id)
       : workflows.find((candidate) => candidate.id === alias || candidate.name === alias)) ?? null;
   const childWorkflowExact = Boolean(
-    catalogChildWorkflow && dependency && catalogChildWorkflow.documentRevision === dependency.digest,
+    catalogChildWorkflow &&
+    dependency &&
+    catalogChildWorkflow.documentRevision === dependency.digest,
   );
   return { catalogChildWorkflow, childWorkflowExact };
 }
@@ -338,7 +340,9 @@ function SubworkflowInspector({
       <>
         <select
           id={selectId}
-          data-testid={hasSeveralTemplates ? `child-workflow-select-${templateName}` : 'child-workflow-select'}
+          data-testid={
+            hasSeveralTemplates ? `child-workflow-select-${templateName}` : 'child-workflow-select'
+          }
           className={INPUT}
           value={selectedValue}
           onChange={(event) => selectChildFor(templateName, event.target.value)}
@@ -415,7 +419,11 @@ function SubworkflowInspector({
               + Offer another child
             </button>
           </div>
-          {renderChildSelect(templateEntries[0]?.[0] ?? 'default', templateEntries[0]?.[1] ?? '', `subworkflow-${node.id}-child`)}
+          {renderChildSelect(
+            templateEntries[0]?.[0] ?? 'default',
+            templateEntries[0]?.[1] ?? '',
+            `subworkflow-${node.id}-child`,
+          )}
         </div>
       ) : (
         <div className="niuu:space-y-3">

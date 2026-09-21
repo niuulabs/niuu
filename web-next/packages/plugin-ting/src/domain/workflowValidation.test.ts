@@ -57,7 +57,10 @@ function makeWait(id: string): WorkflowNode {
   };
 }
 
-function makeSubworkflow(id: string, templates: Record<string, string> = { default: 'worker' }): WorkflowNode {
+function makeSubworkflow(
+  id: string,
+  templates: Record<string, string> = { default: 'worker' },
+): WorkflowNode {
   return {
     id,
     kind: 'subworkflow',
@@ -548,10 +551,7 @@ describe('validateWorkflowFull — child workflow templates', () => {
   function multiTemplateWorkflow(): Workflow {
     return {
       ...makeWorkflow(
-        [
-          makeSubworkflow('children', { breadth: 'worker', depth: 'thread' }),
-          makeGate('next'),
-        ],
+        [makeSubworkflow('children', { breadth: 'worker', depth: 'thread' }), makeGate('next')],
         [makeEdge('joined', 'children', 'next', 'children.completed -> children.completed')],
       ),
       workflowDependencies: {

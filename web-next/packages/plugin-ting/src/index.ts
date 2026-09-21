@@ -201,6 +201,7 @@ export {
   createMockTingSessionService,
   createMockTrackerService,
   createMockWorkflowService,
+  createMockWorkService,
   createMockResearchService,
   createMockSpecsService,
   createMockDispatchBus,

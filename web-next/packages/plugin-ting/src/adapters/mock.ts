@@ -38,12 +38,14 @@ import type {
   ResearchCampaignDetail,
   CampaignArtifactDetail,
   ImportProjectOptions,
+  IWorkService,
 } from '../ports';
 import type { Saga, Phase, Run } from '../domain/saga';
 import type { DispatcherState } from '../domain/dispatcher';
 import type { SessionInfo } from '../domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from '../domain/tracker';
 import type { Workflow } from '../domain/workflow';
+import type { WorkCollection, WorkDetail, WorkSummary } from '../domain/work';
 import { serializePortableWorkflow } from '../domain/workflowPortable';
 
 // ---------------------------------------------------------------------------
@@ -2073,6 +2075,65 @@ export function createMockSpecsService(): ISpecsService {
       };
       campaigns.set(slug, updated);
       return updated;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Work — read projections over projects, campaigns and executions
+// ---------------------------------------------------------------------------
+
+const MOCK_WORK: WorkSummary[] = [
+  {
+    id: 'project:demo-platform',
+    kind: 'project',
+    title: 'Platform reliability',
+    condition: 'active',
+    rawState: { source: 'saga', status: 'active' },
+    currentStep: 'Implement retry budget',
+    attention: null,
+    createdAt: '2026-01-05T09:00:00Z',
+    updatedAt: '2026-01-06T14:30:00Z',
+    source: null,
+    workflow: null,
+    session: null,
+    links: { self: '/ting/work/project:demo-platform', specialist: '/ting/sagas' },
+    actions: [],
+  },
+  {
+    id: 'campaign:demo-research',
+    kind: 'research',
+    title: 'Queue latency study',
+    campaignSlug: 'queue-latency-study',
+    condition: 'waiting',
+    rawState: { source: 'campaign', status: 'waiting' },
+    currentStep: 'Awaiting review',
+    attention: { kind: 'input', message: 'This work is waiting for input.' },
+    createdAt: '2026-01-04T10:00:00Z',
+    updatedAt: '2026-01-06T11:00:00Z',
+    source: null,
+    workflow: null,
+    session: null,
+    links: { self: '/ting/work/campaign:demo-research', specialist: '/ting/research' },
+    actions: [],
+  },
+];
+
+export function createMockWorkService(): IWorkService {
+  return {
+    async list(): Promise<WorkCollection> {
+      return {
+        projects: MOCK_WORK.filter((item) => item.kind === 'project'),
+        campaigns: MOCK_WORK.filter((item) => item.kind !== 'project'),
+        executions: [],
+        executionNextCursor: null,
+        coverage: [],
+      };
+    },
+    async get(kind, id): Promise<WorkDetail> {
+      const item = MOCK_WORK.find((entry) => entry.id === `${kind}:${id}`);
+      if (!item) throw new Error(`Work ${kind}:${id} not found`);
+      return { item, tasks: [], coverage: [] };
     },
   };
 }

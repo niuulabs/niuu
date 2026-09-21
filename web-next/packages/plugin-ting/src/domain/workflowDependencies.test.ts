@@ -218,12 +218,12 @@ describe('bindSubworkflowTemplate', () => {
     expect(() =>
       bindSubworkflowTemplate(parent(), 'child-node', 'default', child({ documentRevision: null })),
     ).toThrow(/immutable document revision/);
-    expect(() =>
-      bindSubworkflowTemplate(parent(), 'missing', 'default', child()),
-    ).toThrow(/was not found/);
-    expect(() =>
-      bindSubworkflowTemplate(parent(), 'child-node', 'unknown', child()),
-    ).toThrow(/does not offer template/);
+    expect(() => bindSubworkflowTemplate(parent(), 'missing', 'default', child())).toThrow(
+      /was not found/,
+    );
+    expect(() => bindSubworkflowTemplate(parent(), 'child-node', 'unknown', child())).toThrow(
+      /does not offer template/,
+    );
   });
 });
 
@@ -297,12 +297,12 @@ describe('renameSubworkflowTemplate', () => {
     expect(() => renameSubworkflowTemplate(workflow, 'child-node', 'default', '  ')).toThrow(
       /must not be blank/,
     );
-    expect(() =>
-      renameSubworkflowTemplate(workflow, 'child-node', 'default', 'breadth'),
-    ).toThrow(WorkflowTemplateError);
-    expect(() =>
-      renameSubworkflowTemplate(workflow, 'child-node', 'unknown', 'general'),
-    ).toThrow(/does not offer template/);
+    expect(() => renameSubworkflowTemplate(workflow, 'child-node', 'default', 'breadth')).toThrow(
+      WorkflowTemplateError,
+    );
+    expect(() => renameSubworkflowTemplate(workflow, 'child-node', 'unknown', 'general')).toThrow(
+      /does not offer template/,
+    );
     expect(() => renameSubworkflowTemplate(workflow, 'missing', 'default', 'general')).toThrow(
       /was not found/,
     );

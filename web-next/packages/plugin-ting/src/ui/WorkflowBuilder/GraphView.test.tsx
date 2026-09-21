@@ -653,15 +653,7 @@ describe('GraphView', () => {
     const { container } = render(
       <GraphView
         {...defaultProps()}
-        nodes={[
-          triggerNode,
-          stageNode,
-          gateNode,
-          condNode,
-          waitNode,
-          endNode,
-          resourceNode,
-        ]}
+        nodes={[triggerNode, stageNode, gateNode, condNode, waitNode, endNode, resourceNode]}
         edges={[]}
       />,
     );

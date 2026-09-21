@@ -4,7 +4,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createElement } from 'react';
 import type { ReactNode } from 'react';
-import { useWorkflows, useWorkflow, useCreateWorkflow, useDeleteWorkflow } from './useWorkflows';
+import {
+  useWorkflows,
+  useWorkflow,
+  useCreateWorkflow,
+  useDeleteWorkflow,
+  useExportWorkflow,
+  useSaveWorkflow,
+} from './useWorkflows';
 import type { Workflow } from '../domain/workflow';
 
 // ---------------------------------------------------------------------------
@@ -186,5 +193,55 @@ describe('useDeleteWorkflow', () => {
       result.current.mutate(wf1.id);
     });
     await waitFor(() => expect(result.current.isError).toBe(true));
+  });
+});
+
+describe('useSaveWorkflow', () => {
+  it('saves the workflow and returns what the service persisted', async () => {
+    const saved = { ...wf1, name: 'Renamed', version: '1.1.0' };
+    const svc = { saveWorkflow: vi.fn().mockResolvedValue(saved) };
+    const { result } = renderHook(() => useSaveWorkflow(), {
+      wrapper: makeWrapper({ 'ting.workflows': svc }),
+    });
+
+    let returned: Workflow | undefined;
+    await act(async () => {
+      returned = await result.current.mutateAsync(wf1);
+    });
+
+    expect(svc.saveWorkflow).toHaveBeenCalledWith(wf1);
+    expect(returned).toEqual(saved);
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+  });
+
+  it('enters error state when the save is rejected', async () => {
+    const svc = { saveWorkflow: vi.fn().mockRejectedValue(new Error('conflict')) };
+    const { result } = renderHook(() => useSaveWorkflow(), {
+      wrapper: makeWrapper({ 'ting.workflows': svc }),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync(wf1).catch(() => undefined);
+    });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error?.message).toBe('conflict');
+  });
+});
+
+describe('useExportWorkflow', () => {
+  it('exports a pinned version in the requested format', async () => {
+    const exported = { filename: 'workflow-1.yaml', content: 'name: Workflow 1' };
+    const svc = { exportWorkflow: vi.fn().mockResolvedValue(exported) };
+    const { result } = renderHook(() => useExportWorkflow(), {
+      wrapper: makeWrapper({ 'ting.workflows': svc }),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({ id: wf1.id, format: 'yaml', version: '1.0.0' });
+    });
+
+    expect(svc.exportWorkflow).toHaveBeenCalledWith(wf1.id, 'yaml', '1.0.0');
+    await waitFor(() => expect(result.current.data).toEqual(exported));
   });
 });
