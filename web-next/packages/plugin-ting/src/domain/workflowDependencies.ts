@@ -1,4 +1,9 @@
-import type { Workflow, WorkflowPersonaDependency, WorkflowSubworkflowNode } from './workflow';
+import type {
+  Workflow,
+  WorkflowIncludeNode,
+  WorkflowPersonaDependency,
+  WorkflowSubworkflowNode,
+} from './workflow';
 
 /** Raised when pinning a child workflow document to a template fails. */
 export class WorkflowDependencySelectionError extends Error {
@@ -45,22 +50,35 @@ function uniqueAlias(base: string, dependencies: Workflow['workflowDependencies'
   return `${base}-${suffix}`;
 }
 
-/** Every (node, template) pair across the whole workflow whose template
- *  points at `alias`, optionally excluding one pair — the one currently
- *  being repinned or removed. */
+/**
+ * Every subworkflow (node, template) pair, and every include node, whose
+ * alias points at `alias` — shared by both kinds so an alias's use count is
+ * counted consistently before it's dropped from `workflowDependencies`, no
+ * matter which kind of node is being repinned or removed. `exceptNodeId` +
+ * `exceptTemplateName` excludes one subworkflow (node, template) pair;
+ * `exceptNodeId` alone (with `exceptTemplateName` omitted) excludes one
+ * include node's own reference.
+ */
 function referencesAlias(
   workflow: Workflow,
   alias: string,
   exceptNodeId?: string,
   exceptTemplateName?: string,
-): Array<{ nodeId: string; templateName: string }> {
-  const matches: Array<{ nodeId: string; templateName: string }> = [];
+): Array<{ nodeId: string; templateName: string | null }> {
+  const matches: Array<{ nodeId: string; templateName: string | null }> = [];
   for (const node of workflow.nodes) {
-    if (node.kind !== 'subworkflow') continue;
-    for (const [templateName, templateAlias] of Object.entries(node.templates ?? {})) {
-      if (templateAlias !== alias) continue;
-      if (node.id === exceptNodeId && templateName === exceptTemplateName) continue;
-      matches.push({ nodeId: node.id, templateName });
+    if (node.kind === 'subworkflow') {
+      for (const [templateName, templateAlias] of Object.entries(node.templates ?? {})) {
+        if (templateAlias !== alias) continue;
+        if (node.id === exceptNodeId && templateName === exceptTemplateName) continue;
+        matches.push({ nodeId: node.id, templateName });
+      }
+      continue;
+    }
+    if (node.kind === 'include') {
+      if (node.workflow !== alias) continue;
+      if (node.id === exceptNodeId && exceptTemplateName === undefined) continue;
+      matches.push({ nodeId: node.id, templateName: null });
     }
   }
   return matches;
@@ -73,6 +91,13 @@ function findSubworkflowNode(
   return workflow.nodes.find(
     (candidate): candidate is WorkflowSubworkflowNode =>
       candidate.id === nodeId && candidate.kind === 'subworkflow',
+  );
+}
+
+function findIncludeNode(workflow: Workflow, nodeId: string): WorkflowIncludeNode | undefined {
+  return workflow.nodes.find(
+    (candidate): candidate is WorkflowIncludeNode =>
+      candidate.id === nodeId && candidate.kind === 'include',
   );
 }
 
@@ -305,4 +330,70 @@ export function removeSubworkflowTemplate(
   }
 
   return { ...workflow, nodes, workflowDependencies: dependencies };
+}
+
+/**
+ * Pin an include node's `workflow` alias to an exact catalog document, using
+ * the same alias-reuse/split rules as `bindSubworkflowTemplate` — a private
+ * alias stays stable when repinned; one shared with another node (a
+ * subworkflow template or another include) is split before its target
+ * changes.
+ */
+export function bindIncludeWorkflow(workflow: Workflow, nodeId: string, child: Workflow): Workflow {
+  const node = findIncludeNode(workflow, nodeId);
+  if (!node) {
+    throw new WorkflowDependencySelectionError(`Include node ${nodeId} was not found`);
+  }
+  if (workflow.id === child.id) {
+    throw new WorkflowDependencySelectionError('A workflow cannot include itself');
+  }
+
+  const documentRevision = child.documentRevision?.trim();
+  if (!documentRevision) {
+    throw new WorkflowDependencySelectionError(
+      `Workflow ${child.name} does not expose an immutable document revision`,
+    );
+  }
+
+  const dependencies = { ...(workflow.workflowDependencies ?? {}) };
+  const previousAlias = (node.workflow ?? '').trim();
+  const previousDependency = previousAlias ? dependencies[previousAlias] : undefined;
+  const previousAliasIsShared =
+    previousAlias.length > 0 && referencesAlias(workflow, previousAlias, nodeId).length > 0;
+
+  let alias = previousAlias;
+  if (
+    !alias ||
+    (previousAliasIsShared && !dependencyMatches(previousDependency, child, documentRevision))
+  ) {
+    alias =
+      Object.entries(dependencies).find(([, dependency]) =>
+        dependencyMatches(dependency, child, documentRevision),
+      )?.[0] ?? uniqueAlias(aliasBase(child), dependencies);
+  }
+
+  const existing = dependencies[alias];
+  if (!dependencyMatches(existing, child, documentRevision)) {
+    dependencies[alias] = {
+      id: child.id,
+      revision: documentRevision,
+      digest: documentRevision,
+    };
+  }
+
+  const nodeChanged = node.workflow !== alias;
+  const dependenciesChanged =
+    JSON.stringify(dependencies) !== JSON.stringify(workflow.workflowDependencies ?? {});
+  if (!nodeChanged && !dependenciesChanged && workflow.schemaVersion === 2) return workflow;
+
+  return {
+    ...workflow,
+    schemaVersion: 2,
+    workflowDependencies: dependencies,
+    nodes: workflow.nodes.map((candidate) =>
+      candidate.id === nodeId && candidate.kind === 'include'
+        ? { ...candidate, workflow: alias }
+        : candidate,
+    ),
+  };
 }

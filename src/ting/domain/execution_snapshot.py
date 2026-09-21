@@ -1,6 +1,7 @@
 """Resolve child definitions exclusively from the parent's frozen closure."""
 
 import json
+from dataclasses import replace
 
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_document import load_workflow_document, workflow_document_revision
@@ -48,6 +49,8 @@ def pinned_child_workflow(
         persona_definitions=aggregate.get("persona_definitions") or {},
         workflow_definitions=aggregate.get("workflow_definitions") or {},
     )
-    # This validates every persona and nested workflow against its exact pin.
-    build_workflow_snapshot(workflow)
-    return workflow
+    # This validates every persona and nested workflow against its exact pin,
+    # and resolves any include node the child itself declares — a launched
+    # child's graph must be as free of them as the parent's own.
+    snapshot = build_workflow_snapshot(workflow)
+    return replace(workflow, graph=snapshot["graph"])

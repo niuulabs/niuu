@@ -19,6 +19,11 @@ from ravn.domain.persona_document import (
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition
 from ting.domain.workflow_document import load_workflow_document, workflow_document_revision
+from ting.domain.workflow_includes import (
+    graph_has_include_nodes,
+    include_resolver_from_workflow_definitions,
+    resolve_workflow_includes,
+)
 
 
 def pin_workflow_personas(
@@ -29,13 +34,20 @@ def pin_workflow_personas(
 
     Existing scoped definitions are reused exactly. New aliases resolve their
     current content revision by stable persona id (the alias). Definitions for
-    aliases removed from the graph are removed from the aggregate.
+    aliases removed from the graph are removed from the aggregate — unless an
+    ``include`` node is present, in which case every already-declared alias is
+    kept: an included stage's persona references live in another document,
+    invisible to a scan of this graph, so an incomplete scan must never read
+    as "no longer referenced" and silently drop a pin the include still needs.
     """
-    referenced = workflow_personas_from_snapshot({"graph": workflow.graph})
-    aliases = [str(persona.get("name") or "").strip() for persona in referenced]
-    aliases = [alias for alias in aliases if alias]
     existing_dependencies = getattr(workflow, "persona_dependencies", {}) or {}
     scoped_definitions = getattr(workflow, "persona_definitions", {}) or {}
+    referenced = workflow_personas_from_snapshot({"graph": workflow.graph})
+    aliases = {str(persona.get("name") or "").strip() for persona in referenced}
+    aliases.discard("")
+    if graph_has_include_nodes(workflow.graph):
+        aliases |= set(existing_dependencies)
+    aliases = sorted(aliases)
 
     dependencies: dict[str, PersonaDependency] = {}
     definitions: dict[str, dict[str, Any]] = {}
@@ -93,7 +105,16 @@ def build_workflow_snapshot(
     if unresolved_requirements:
         raise ValueError("Resolve imported workflow bindings before creating an execution snapshot")
 
-    graph = copy.deepcopy(workflow.graph)
+    # The pinned closure is validated first so its exact content — proven to
+    # match every workflow_dependencies pin — is what an include resolves
+    # against, rather than a second, independent lookup of the same aliases.
+    resolved_workflows = validate_workflow_dependency_closure(workflow)
+    graph = resolve_workflow_includes(
+        workflow.graph,
+        persona_dependencies=workflow.persona_dependencies,
+        workflow_dependencies=workflow.workflow_dependencies,
+        resolve_alias=include_resolver_from_workflow_definitions(resolved_workflows),
+    )
     graph_snapshot = {"graph": graph}
     personas = workflow_personas_from_snapshot(graph_snapshot)
     resource_nodes = workflow_resource_nodes_from_snapshot(graph_snapshot)
@@ -106,7 +127,6 @@ def build_workflow_snapshot(
         scoped_definitions,
         persona_source,
     )
-    resolved_workflows = validate_workflow_dependency_closure(workflow)
     document_revision = workflow.document_revision or workflow_document_revision(workflow)
     snapshot = {
         "schema_version": workflow.schema_version,

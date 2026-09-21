@@ -8,7 +8,7 @@
  * Owner: plugin-ting.
  */
 
-import type { Workflow } from './workflow';
+import type { Workflow, WorkflowNode } from './workflow';
 import { detectCycle } from './topologicalSort';
 import {
   parseWorkflowEdgeLabel,
@@ -38,7 +38,8 @@ export type WorkflowIssueKind =
   | 'subworkflow_coordinator'
   | 'subworkflow_blocked_event'
   | 'subworkflow_joined_event'
-  | 'subworkflow_limits';
+  | 'subworkflow_limits'
+  | 'include';
 
 export interface WorkflowIssue {
   kind: WorkflowIssueKind;
@@ -66,15 +67,26 @@ export interface WorkflowIssue {
  * 5. **missing_persona** — `stage` node has no stage members or persona IDs.
  * 6. **subworkflow contract** — child dependency, coordinator, events, and
  *    runtime expansion limits are complete and internally consistent.
- * 7. **no_producer** — `gate`/`cond` node has no incoming edges.
+ * 6a. **include contract** — `include` node pins a declared workflow
+ *    dependency, maps at least one node, and its local ids don't collide
+ *    with another node or another include; when the pinned workflow is in
+ *    `workflowCatalog`, every mapped source id must also be one of its
+ *    `stage`/`gate` nodes.
+ * 7. **no_producer** — `gate`/`cond`/`include` node has no incoming edges.
  * 8. **no_consumer** — `stage`/`wait` node has no outgoing edges
  *    (non-singleton workflow).
+ *
+ * An `include` node's own id never carries edges directly — real edges
+ * target the local ids it provides (see `providedNodeIds`) — so orphan and
+ * no-producer connectivity checks treat those provided ids as though they
+ * belonged to the include node itself.
  *
  * Returns an empty array when the workflow is valid.
  */
 export function validateWorkflowFull(
   workflow: Workflow,
   _modelCatalog?: Record<string, WorkflowModelCatalogEntry>,
+  workflowCatalog?: readonly Workflow[],
 ): WorkflowIssue[] {
   const issues: WorkflowIssue[] = [];
   const { nodes, edges } = workflow;
@@ -96,8 +108,21 @@ export function validateWorkflowFull(
         return 'Resource';
       case 'wait':
         return 'Wait';
+      case 'include':
+        return 'Include';
     }
   };
+
+  /**
+   * Ids that count as "this node" for connectivity purposes — a node's own
+   * id for every kind except `include`, whose provided local ids (the ids a
+   * pinned workflow's stages/gates take in this graph) are the ones a real
+   * edge actually names. Without this, every correctly authored include node
+   * would read as orphaned: nothing in `edges` ever targets its own id.
+   */
+  function connectionIds(node: WorkflowNode): string[] {
+    return node.kind === 'include' ? [node.id, ...Object.values(node.nodes ?? {})] : [node.id];
+  }
 
   // ── 1. Cycle detection ────────────────────────────────────────────────────
   const cycleNodeIds = detectCycle(
@@ -117,8 +142,9 @@ export function validateWorkflowFull(
   if (nodes.length > 1) {
     for (const node of nodes) {
       if (node.kind === 'resource') continue;
-      const hasIn = edges.some((e) => e.target === node.id);
-      const hasOut = edges.some((e) => e.source === node.id);
+      const ids = connectionIds(node);
+      const hasIn = edges.some((e) => ids.includes(e.target));
+      const hasOut = edges.some((e) => ids.includes(e.source));
       if (!hasIn && !hasOut) {
         issues.push({
           kind: 'orphan',
@@ -314,12 +340,107 @@ export function validateWorkflowFull(
     }
   }
 
+  // An include inlines another workflow's stage/gate nodes verbatim at
+  // freeze time, under locally chosen ids. It must pin a real workflow
+  // dependency, map at least one node, and use local ids that don't collide
+  // with anything else in this document — a collision would silently
+  // rebind an edge meant for one node onto another once the include is
+  // expanded.
+  const includeLocalIdOwners = new Map<string, string[]>();
+  for (const node of nodes) {
+    if (node.kind !== 'include') continue;
+
+    const alias = node.workflow?.trim() ?? '';
+    if (!alias || !workflow.workflowDependencies?.[alias]) {
+      issues.push({
+        kind: 'include',
+        nodeId: node.id,
+        message: 'Include must reference a declared workflow dependency',
+        severity: 'error',
+      });
+    }
+
+    const mappings = Object.entries(node.nodes ?? {});
+    if (mappings.length === 0) {
+      issues.push({
+        kind: 'include',
+        nodeId: node.id,
+        message: 'Include must map at least one node from the included workflow',
+        severity: 'error',
+      });
+    }
+
+    const seenLocalIds = new Set<string>();
+    for (const [, localId] of mappings) {
+      if (seenLocalIds.has(localId)) {
+        issues.push({
+          kind: 'include',
+          nodeId: node.id,
+          message: `Local id '${localId}' is mapped more than once`,
+          severity: 'error',
+        });
+      }
+      seenLocalIds.add(localId);
+      includeLocalIdOwners.set(localId, [...(includeLocalIdOwners.get(localId) ?? []), node.id]);
+    }
+
+    // Cross-check against the pinned workflow's own graph only when it's
+    // actually loaded in the editor's catalog — an unloaded dependency is a
+    // fact about the environment, not a defect in this document, so it must
+    // never raise this issue on its own.
+    const dependency = alias ? workflow.workflowDependencies?.[alias] : undefined;
+    const catalogChild = dependency
+      ? workflowCatalog?.find((candidate) => candidate.id === dependency.id)
+      : undefined;
+    if (catalogChild) {
+      const catalogNodeKinds = new Map(
+        catalogChild.nodes.map((candidate) => [candidate.id, candidate.kind]),
+      );
+      for (const [sourceId] of mappings) {
+        const sourceKind = catalogNodeKinds.get(sourceId);
+        if (sourceKind !== 'stage' && sourceKind !== 'gate') {
+          issues.push({
+            kind: 'include',
+            nodeId: node.id,
+            message: `Included node '${sourceId}' is not a stage or gate in the pinned workflow`,
+            severity: 'error',
+          });
+        }
+      }
+    }
+  }
+
+  const realNodeIds = new Set(nodes.map((node) => node.id));
+  for (const [localId, owners] of includeLocalIdOwners) {
+    const uniqueOwners = [...new Set(owners)];
+    if (realNodeIds.has(localId)) {
+      for (const ownerId of uniqueOwners) {
+        issues.push({
+          kind: 'include',
+          nodeId: ownerId,
+          message: `Local id '${localId}' collides with an existing node id`,
+          severity: 'error',
+        });
+      }
+    }
+    if (uniqueOwners.length > 1) {
+      for (const ownerId of uniqueOwners) {
+        issues.push({
+          kind: 'include',
+          nodeId: ownerId,
+          message: `Local id '${localId}' is used by more than one include`,
+          severity: 'error',
+        });
+      }
+    }
+  }
+
   // ── 7. No-producer ────────────────────────────────────────────────────────
   // Gates, conditions, and terminal nodes should have at least one inbound connection.
   if (nodes.length > 1) {
     for (const node of nodes) {
       if (node.kind === 'trigger' || node.kind === 'stage' || node.kind === 'resource') continue;
-      const hasIn = edges.some((e) => e.target === node.id);
+      const hasIn = edges.some((e) => connectionIds(node).includes(e.target));
       if (!hasIn) {
         issues.push({
           kind: 'no_producer',

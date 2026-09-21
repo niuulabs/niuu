@@ -34,6 +34,7 @@ const DEFAULT_SIZES: Record<WorkflowNode['kind'], WorkflowSize> = {
   resource: { width: 168, height: 58 },
   subworkflow: { width: 168, height: 58 },
   wait: { width: 168, height: 58 },
+  include: { width: 200, height: 66 },
 };
 
 /**
@@ -61,7 +62,7 @@ export function estimateWorkflowNodeSize(
       portTop: rows > 0 ? headerHeight + 22 : undefined,
     };
   }
-  if (node.kind === 'wait') {
+  if (node.kind === 'wait' || node.kind === 'include') {
     return {
       width: base.width,
       height: base.height + (rows > 0 ? 16 + rows * 14 : 0),

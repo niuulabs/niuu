@@ -17,6 +17,7 @@ import type {
   WorkflowResourceBinding,
   WorkflowStageNode,
 } from '../../domain/workflow';
+import { resolveWorkflowNode } from '../../domain/workflow';
 import type { PersonaEntry } from './LibraryPanel';
 import { makeNodeId, makeEdgeId, defaultBezierCPs } from './graphUtils';
 import { EPHEMERAL_LOCAL_MOUNT_ID, type WorkflowRegistryMount } from './mimirRegistry';
@@ -25,6 +26,7 @@ import { layoutWorkflow } from '../../domain/workflowLayout';
 import { estimateWorkflowNodeSize } from '../../domain/workflowGeometry';
 import {
   addSubworkflowTemplate as addSubworkflowTemplateToWorkflow,
+  bindIncludeWorkflow,
   bindSubworkflowTemplate,
   removeSubworkflowTemplate as removeSubworkflowTemplateFromWorkflow,
   renameSubworkflowTemplate as renameSubworkflowTemplateOnWorkflow,
@@ -107,6 +109,9 @@ export interface WorkflowBuilderActions {
    *  name (auto-generated when omitted); repoint it with
    *  `selectSubworkflowTemplate`. */
   addSubworkflowTemplate(nodeId: string, name?: string): void;
+  /** Pin an include node's workflow alias to an exact catalog document, as
+   *  one undoable mutation. */
+  selectIncludeWorkflow(nodeId: string, child: Workflow): void;
   /** Rename one of a subworkflow node's templates, keeping any static
    *  `children[].template` reference to it consistent. */
   renameSubworkflowTemplate(nodeId: string, previousName: string, nextName: string): void;
@@ -204,6 +209,8 @@ function makeNewNode(kind: WorkflowNodeKind, position: { x: number; y: number })
       return { id, kind: 'end', label: 'Complete', position };
     case 'wait':
       return { id, kind: 'wait', label: 'Wait for observation', position };
+    case 'include':
+      return { id, kind: 'include', label: 'Include', workflow: '', nodes: {}, position };
     case 'resource':
       return {
         id,
@@ -338,6 +345,10 @@ function defaultInputLabelForNode(node: WorkflowNode): string | null {
     case 'stage':
     case 'resource':
     case 'wait':
+    case 'include':
+      // Include ports are entirely edge-derived — there's no single default
+      // event, so a connection completed without an explicit label is a
+      // no-op rather than a guess at which provided id it belongs to.
       return null;
   }
 }
@@ -813,13 +824,21 @@ export function useWorkflowBuilder(
         if (!deletedNode) return prev;
         const nodes = prev.nodes.filter((node) => node.id !== id);
         const workflowDependencies = { ...(prev.workflowDependencies ?? {}) };
-        if (deletedNode.kind === 'subworkflow') {
+        const deletedAliases =
+          deletedNode.kind === 'subworkflow'
+            ? Object.values(deletedNode.templates ?? {})
+            : deletedNode.kind === 'include' && deletedNode.workflow
+              ? [deletedNode.workflow]
+              : [];
+        if (deletedAliases.length > 0) {
           const remainingAliases = new Set(
-            nodes.flatMap((node) =>
-              node.kind === 'subworkflow' ? Object.values(node.templates ?? {}) : [],
-            ),
+            nodes.flatMap((node) => {
+              if (node.kind === 'subworkflow') return Object.values(node.templates ?? {});
+              if (node.kind === 'include') return node.workflow ? [node.workflow] : [];
+              return [];
+            }),
           );
-          for (const alias of Object.values(deletedNode.templates ?? {})) {
+          for (const alias of deletedAliases) {
             if (alias && !remainingAliases.has(alias)) {
               delete workflowDependencies[alias];
             }
@@ -940,8 +959,11 @@ export function useWorkflowBuilder(
       setConnectingFromLabel(null);
       if (!fromId || !fromLabel || fromId === targetId) return;
       commit((prev) => {
-        const srcNode = prev.nodes.find((n) => n.id === fromId);
-        const tgtNode = prev.nodes.find((n) => n.id === targetId);
+        // `fromId`/`targetId` may be a local id an `include` node provides
+        // rather than a literal node id — resolve through it so the new
+        // edge still validates against the include's own kind/position.
+        const srcNode = resolveWorkflowNode(prev, fromId);
+        const tgtNode = resolveWorkflowNode(prev, targetId);
         if (!srcNode || !tgtNode) return prev;
         const resolvedInputLabel = inputLabel ?? defaultInputLabelForNode(tgtNode);
         if (!resolvedInputLabel) return prev;
@@ -1187,6 +1209,13 @@ export function useWorkflowBuilder(
     [commit],
   );
 
+  const selectIncludeWorkflow = useCallback(
+    (nodeId: string, child: Workflow) => {
+      commit((prev) => bindIncludeWorkflow(prev, nodeId, child));
+    },
+    [commit],
+  );
+
   const addSubworkflowTemplate = useCallback(
     (nodeId: string, name?: string) => {
       commit((prev) => addSubworkflowTemplateToWorkflow(prev, nodeId, name));
@@ -1308,6 +1337,7 @@ export function useWorkflowBuilder(
     addSubworkflowTemplate,
     renameSubworkflowTemplate,
     removeSubworkflowTemplate,
+    selectIncludeWorkflow,
     addResourceBinding,
     updateResourceBinding,
     removeResourceBinding,

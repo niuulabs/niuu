@@ -264,4 +264,86 @@ describe('workflow port contracts', () => {
     };
     expect(nodePortCatalog(resource)).toEqual({ inputs: [], outputs: [] });
   });
+
+  describe('include nodes', () => {
+    const includeNode: WorkflowNode = {
+      id: 'delivery-planning',
+      kind: 'include',
+      label: 'Plan the delivery',
+      workflow: 'planning',
+      nodes: {
+        'planning-analysis': 'delivery-plan-author',
+        'planning-reviews': 'delivery-plan-reviews',
+      },
+      position: pos,
+    };
+
+    it('has no fixed ports before any edge touches a provided id', () => {
+      expect(nodePortCatalog(includeNode)).toEqual({ inputs: [], outputs: [] });
+    });
+
+    it('derives a port from an edge whose source is a provided local id', () => {
+      const edges = [edge('e1', 'delivery-plan-author', 'gate-1', 'plan.ready -> plan.ready')];
+      const catalog = nodePortCatalog(includeNode, { edges });
+      expect(catalog.outputs).toEqual([
+        expect.objectContaining({ eventType: 'plan.ready', resolved: true, origin: 'edge' }),
+      ]);
+      expect(catalog.inputs).toEqual([]);
+    });
+
+    it('derives a port from an edge whose target is a provided local id', () => {
+      const edges = [
+        edge('e1', 'trigger-1', 'delivery-plan-reviews', 'plan.requested -> plan.requested'),
+      ];
+      const catalog = nodePortCatalog(includeNode, { edges });
+      expect(catalog.inputs).toEqual([
+        expect.objectContaining({ eventType: 'plan.requested', resolved: true, origin: 'edge' }),
+      ]);
+      expect(catalog.outputs).toEqual([]);
+    });
+
+    it('combines ports contributed by different provided ids into one catalog', () => {
+      const edges = [
+        edge('e1', 'trigger-1', 'delivery-plan-author', 'plan.requested -> plan.requested'),
+        edge('e2', 'delivery-plan-reviews', 'gate-1', 'plan.reviewed -> plan.reviewed'),
+      ];
+      const catalog = nodePortCatalog(includeNode, { edges });
+      expect(catalog.inputs.map((port) => port.eventType)).toEqual(['plan.requested']);
+      expect(catalog.outputs.map((port) => port.eventType)).toEqual(['plan.reviewed']);
+    });
+
+    it('ignores edges that reference neither the include nor any of its provided ids', () => {
+      const edges = [edge('e1', 'unrelated-a', 'unrelated-b', 'x -> x')];
+      expect(nodePortCatalog(includeNode, { edges })).toEqual({ inputs: [], outputs: [] });
+    });
+
+    it('resolves edge ports through an extended node map keyed by provided id', () => {
+      // A `cond` node's outputs are always "open", so this edge's source
+      // side resolves regardless of contract details unrelated to the
+      // include target this test actually exercises.
+      const upstream: WorkflowNode = {
+        id: 'trigger-1',
+        kind: 'cond',
+        label: 'Decision',
+        predicate: '',
+        position: pos,
+      };
+      const saved = edge(
+        'plan-edge',
+        'trigger-1',
+        'delivery-plan-reviews',
+        'plan.requested -> plan.requested',
+      );
+      const nodes = new Map<string, WorkflowNode>([
+        ['trigger-1', upstream],
+        ['delivery-planning', includeNode],
+        // The canvas aliases every provided id to the owning include node so
+        // an edge's target resolves to a real WorkflowNode.
+        ['delivery-plan-reviews', includeNode],
+      ]);
+      const resolved = resolveWorkflowEdgePorts(saved, nodes, { edges: [saved] });
+      expect(resolved.resolved).toBe(true);
+      expect(resolved.targetPort).toMatchObject({ eventType: 'plan.requested', resolved: true });
+    });
+  });
 });

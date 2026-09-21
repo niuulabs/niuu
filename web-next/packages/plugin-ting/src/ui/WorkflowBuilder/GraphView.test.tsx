@@ -83,6 +83,18 @@ const waitNode: WorkflowNode = {
   position: { x: 600, y: 220 },
 };
 
+const includeNode: WorkflowNode = {
+  id: 'include-1',
+  kind: 'include',
+  label: 'Plan the delivery',
+  workflow: 'planning',
+  nodes: {
+    'planning-analysis': 'delivery-plan-author',
+    'planning-reviews': 'delivery-plan-reviews',
+  },
+  position: { x: 400, y: 320 },
+};
+
 const edge: WorkflowEdge = {
   id: 'e1',
   source: 'stage-1',
@@ -149,7 +161,7 @@ describe('GraphView', () => {
     vi.spyOn(screen.getByTestId('graph-canvas'), 'getBoundingClientRect').mockReturnValue(bounds);
   }
 
-  it('opens all eight node kinds on background right-click and inserts at the transformed point', () => {
+  it('opens all nine node kinds on background right-click and inserts at the transformed point', () => {
     const props = defaultProps();
     render(<GraphView {...props} />);
     pickerBounds();
@@ -169,6 +181,7 @@ describe('GraphView', () => {
       'cond',
       'wait',
       'subworkflow',
+      'include',
       'resource',
       'end',
     ]) {
@@ -647,6 +660,84 @@ describe('GraphView', () => {
     render(<GraphView {...props} />);
     fireEvent.click(screen.getByTestId('workflow-socket-end-1-input-0'));
     expect(props.onCompleteConnect).toHaveBeenCalledWith('end-1', 'complete');
+  });
+
+  describe('include node', () => {
+    it('renders its label, pinned workflow alias, and mapped node count', () => {
+      render(<GraphView {...defaultProps()} nodes={[includeNode]} edges={[]} />);
+      const card = screen.getByTestId('workflow-node-include-1');
+      expect(card).toHaveAttribute('data-kind', 'include');
+      expect(card).toHaveTextContent('Plan the delivery');
+      expect(card).toHaveTextContent('planning · 2 nodes');
+    });
+
+    it('shows a fallback subtitle before a workflow is chosen', () => {
+      const unconfigured: WorkflowNode = {
+        ...includeNode,
+        id: 'include-2',
+        workflow: '',
+        nodes: {},
+      } as WorkflowNode;
+      render(<GraphView {...defaultProps()} nodes={[unconfigured]} edges={[]} />);
+      expect(screen.getByTestId('workflow-node-include-2')).toHaveTextContent(
+        'choose a workflow · 0 nodes',
+      );
+    });
+
+    it('derives an output socket from an edge whose source is a provided local id', () => {
+      const edges: WorkflowEdge[] = [
+        {
+          id: 'e1',
+          source: 'delivery-plan-author',
+          target: 'gate-1',
+          label: 'plan.ready -> plan.ready',
+          cp1: { x: 80, y: 0 },
+          cp2: { x: -80, y: 0 },
+        },
+      ];
+      render(<GraphView {...defaultProps()} nodes={[includeNode, gateNode]} edges={edges} />);
+      const socket = screen.getByTestId('workflow-socket-include-1-output-0');
+      expect(socket).toHaveAttribute('data-event-type', 'plan.ready');
+    });
+
+    it('completes a connection onto the provided id an existing edge already uses', () => {
+      const edges: WorkflowEdge[] = [
+        {
+          id: 'e1',
+          source: 'stage-1',
+          target: 'delivery-plan-author',
+          label: 'plan.requested -> plan.requested',
+          cp1: { x: 80, y: 0 },
+          cp2: { x: -80, y: 0 },
+        },
+      ];
+      const props = {
+        ...defaultProps(),
+        nodes: [stageNode, includeNode],
+        edges,
+        connectingFromId: 'stage-1',
+        connectingFromLabel: 'plan.requested',
+        selectedNodeId: 'stage-1',
+      };
+      render(<GraphView {...props} />);
+      fireEvent.click(screen.getByTestId('workflow-socket-include-1-input-0'));
+      expect(props.onCompleteConnect).toHaveBeenCalledWith(
+        'delivery-plan-author',
+        'plan.requested',
+      );
+    });
+
+    it('deletes an include node like any other node', () => {
+      const props = {
+        ...defaultProps(),
+        nodes: [includeNode],
+        edges: [],
+        selectedNodeId: 'include-1',
+      };
+      render(<GraphView {...props} />);
+      fireEvent.click(screen.getByTestId('delete-btn-include-1'));
+      expect(props.onDeleteNode).toHaveBeenCalledWith('include-1');
+    });
   });
 
   it('keeps foreignObject card roots non-positioned for WebKit SVG transforms', () => {

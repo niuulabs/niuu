@@ -83,4 +83,42 @@ describe('workflow geometry', () => {
       portTop: 158,
     });
   });
+
+  it('sizes an include card at its base size with no connected ports', () => {
+    const node: WorkflowNode = {
+      id: 'delivery-planning',
+      kind: 'include',
+      label: 'Plan the delivery',
+      workflow: 'planning',
+      nodes: { 'planning-analysis': 'delivery-plan-author' },
+      position: { x: 0, y: 0 },
+    };
+    expect(estimateWorkflowNodeSize(node)).toEqual({ width: 200, height: 66, portTop: undefined });
+  });
+
+  it('grows an include card to fit ports derived from its provided ids', () => {
+    const node: WorkflowNode = {
+      id: 'delivery-planning',
+      kind: 'include',
+      label: 'Plan the delivery',
+      workflow: 'planning',
+      nodes: { 'planning-analysis': 'delivery-plan-author' },
+      position: { x: 0, y: 0 },
+    };
+    const edges: WorkflowEdge[] = [
+      {
+        id: 'in',
+        source: 'trigger',
+        target: 'delivery-plan-author',
+        label: 'plan.requested -> plan.requested',
+        cp1: { x: 0, y: 0 },
+        cp2: { x: 0, y: 0 },
+      },
+    ];
+    expect(estimateWorkflowNodeSize(node, { edges })).toEqual({
+      width: 200,
+      height: 96,
+      portTop: 82,
+    });
+  });
 });

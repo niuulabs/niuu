@@ -177,10 +177,31 @@ function nodeContract(
   if (node.kind === 'wait') {
     return { inputs, outputs, openInputs: true, openOutputs: true, incomplete: false };
   }
+  if (node.kind === 'include') {
+    // Every port comes from the parent edges that touch a provided local
+    // id — there is no fixed contract to seed, unlike gate/cond's one known
+    // input.
+    return { inputs, outputs, openInputs: true, openOutputs: true, incomplete: false };
+  }
   if (node.kind === 'end') {
     return { inputs, outputs, openInputs: true, openOutputs: false, incomplete: false };
   }
   return { inputs, outputs, openInputs: false, openOutputs: false, incomplete: false };
+}
+
+/**
+ * Ids an edge may reference to mean "this node" — a node's own id for every
+ * kind except `include`, whose provided local ids (the ids a pinned
+ * workflow's stages/gates take in this graph) are equally valid endpoints
+ * even though they never appear in `nodes` themselves. Exported so canvas
+ * code filtering edges "connected to this node" (e.g. which ports to show
+ * collapsed) stays consistent with how ports are actually derived here.
+ */
+export function nodeMatchIds(node: WorkflowNode): ReadonlySet<string> {
+  if (node.kind === 'include') {
+    return new Set([node.id, ...Object.values(node.nodes ?? {})]);
+  }
+  return new Set([node.id]);
 }
 
 function addEdgePorts(
@@ -190,8 +211,11 @@ function addEdgePorts(
   outputs: Map<string, PortSeed>,
   contract: { openInputs: boolean; openOutputs: boolean; incomplete: boolean },
 ): void {
+  const matchIds = nodeMatchIds(node);
   for (const edge of edges) {
-    if (edge.source !== node.id && edge.target !== node.id) continue;
+    const isSource = matchIds.has(edge.source);
+    const isTarget = matchIds.has(edge.target);
+    if (!isSource && !isTarget) continue;
     const parsed = parseWorkflowEdgeLabel(edge.label);
     if (!parsed) {
       const eventType = `unresolved-edge:${edge.id}`;
@@ -202,12 +226,12 @@ function addEdgePorts(
         resolved: false,
         unresolvedReason: 'The saved edge has no valid source → target event contract.',
       };
-      if (edge.source === node.id) appendSeed(outputs, seed);
-      if (edge.target === node.id) appendSeed(inputs, seed);
+      if (isSource) appendSeed(outputs, seed);
+      if (isTarget) appendSeed(inputs, seed);
       continue;
     }
 
-    if (edge.source === node.id && !outputs.has(parsed.sourceEventType)) {
+    if (isSource && !outputs.has(parsed.sourceEventType)) {
       const resolved = contract.openOutputs;
       appendSeed(outputs, {
         eventType: parsed.sourceEventType,
@@ -220,7 +244,7 @@ function addEdgePorts(
             : 'The source event is no longer declared by this node.',
       });
     }
-    if (edge.target === node.id && !inputs.has(parsed.targetEventType)) {
+    if (isTarget && !inputs.has(parsed.targetEventType)) {
       const resolved = contract.openInputs;
       appendSeed(inputs, {
         eventType: parsed.targetEventType,

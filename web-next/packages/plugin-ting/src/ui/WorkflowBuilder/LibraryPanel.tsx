@@ -98,6 +98,12 @@ const FLOW_CONTROL_BLOCKS: ReadonlyArray<{
     glyph: '↳',
     summary: 'Run a pinned child definition',
   },
+  {
+    id: 'include',
+    label: 'Include',
+    glyph: '⧉',
+    summary: 'Inline stages from a pinned workflow',
+  },
   { id: 'end', label: 'End', glyph: '●', summary: 'Handle an outcome explicitly' },
   { id: 'resource', label: 'Resource', glyph: '▤', summary: 'Bind a workflow resource' },
 ];

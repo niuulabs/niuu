@@ -231,7 +231,11 @@ def load_workflow_document(text: str) -> WorkflowDocument:
             "Workflow graph references undeclared persona alias(es): "
             + ", ".join(sorted(missing_aliases))
         )
-    workflow_review_attestation(graph, persona_dependencies=dependencies)
+    workflow_review_attestation(
+        graph,
+        persona_dependencies=dependencies,
+        enforce_join_membership=not graph_has_include_nodes(graph),
+    )
 
     workflow_dependencies = _load_workflow_dependencies(
         raw.get("workflow_dependencies", {}),
@@ -242,6 +246,9 @@ def load_workflow_document(text: str) -> WorkflowDocument:
         schema_version=schema_version,
         dependencies=workflow_dependencies,
         persona_dependencies=dependencies,
+    )
+    _validate_include_nodes(
+        graph, schema_version=schema_version, dependencies=workflow_dependencies
     )
 
     return WorkflowDocument(
@@ -441,6 +448,19 @@ def _validate_workflow_bundle_path(alias: str, value: object) -> str:
     return path
 
 
+def graph_has_include_nodes(graph: dict[str, Any]) -> bool:
+    """Return whether a graph declares any ``kind: include`` node.
+
+    Shared by the loader (to relax raw-graph checks that need a copied
+    stage's real content) and ``ting.domain.workflow_includes`` (to decide
+    whether there is anything to resolve).
+    """
+    return any(
+        isinstance(node, dict) and node.get("kind") == "include"
+        for node in graph.get("nodes") or []
+    )
+
+
 def referenced_persona_aliases(graph: dict[str, Any]) -> set[str]:
     """Return stage persona aliases using the runtime's legacy precedence."""
     aliases: set[str] = set()
@@ -484,8 +504,17 @@ def workflow_review_attestation(
     graph: dict[str, Any],
     *,
     persona_dependencies: dict[str, PersonaDependency] | None = None,
+    enforce_join_membership: bool = True,
 ) -> ReviewAttestationBinding | None:
-    """Parse a workflow-pinned reviewer binding declared directly on the graph."""
+    """Parse a workflow-pinned reviewer binding declared directly on the graph.
+
+    ``enforce_join_membership`` checks that every bound persona belongs to a
+    ``joinMode: all`` stage actually present in ``graph``. An ``include``
+    node can stand in for that stage, invisible to a raw scan, so callers
+    validating a graph that still has unresolved includes pass ``False`` and
+    leave this check to ``validate_resolved_workflow_graph`` once the stage
+    it names is really there.
+    """
     raw = graph.get("reviewAttestation")
     if raw is None:
         if _requires_review_attestation(graph):
@@ -539,20 +568,21 @@ def workflow_review_attestation(
                 "Workflow graph reviewAttestation references undeclared persona alias(es): "
                 + ", ".join(sorted(undeclared))
             )
-        joined_personas = {
-            alias
-            for node in graph.get("nodes", [])
-            if isinstance(node, dict)
-            and node.get("kind") == "stage"
-            and node.get("joinMode") == "all"
-            for alias in referenced_persona_aliases({"nodes": [node], "edges": []})
-        }
-        unjoined = set(roles.values()) - joined_personas
-        if unjoined:
-            raise WorkflowDocumentError(
-                "Workflow graph reviewAttestation persona alias(es) must belong to a "
-                "joinMode all stage: " + ", ".join(sorted(unjoined))
-            )
+        if enforce_join_membership:
+            joined_personas = {
+                alias
+                for node in graph.get("nodes", [])
+                if isinstance(node, dict)
+                and node.get("kind") == "stage"
+                and node.get("joinMode") == "all"
+                for alias in referenced_persona_aliases({"nodes": [node], "edges": []})
+            }
+            unjoined = set(roles.values()) - joined_personas
+            if unjoined:
+                raise WorkflowDocumentError(
+                    "Workflow graph reviewAttestation persona alias(es) must belong to a "
+                    "joinMode all stage: " + ", ".join(sorted(unjoined))
+                )
     return ReviewAttestationBinding(
         version=1,
         scope=scope,
@@ -1091,6 +1121,152 @@ def _validate_bounded_integer(
         raise WorkflowDocumentError(
             f"Subworkflow node {node_id!r} {field} must be an integer from {minimum} to {maximum}"
         )
+
+
+_INCLUDE_OVERRIDE_KEYS = frozenset({"position", "label"})
+
+
+def _validate_include_nodes(
+    graph: dict[str, Any],
+    *,
+    schema_version: int,
+    dependencies: dict[str, WorkflowDependency],
+) -> None:
+    """Validate an ``include`` node's own shape without resolving its target.
+
+    An include stands in for a set of stage/gate nodes copied in from another
+    pinned workflow at resolution time (``ting.domain.workflow_includes``).
+    Everything checkable without loading that workflow is checked here —
+    whether the named alias is even declared, and whether the local ids this
+    node claims collide with another node already in this graph. Whether the
+    named source ids actually exist in the included graph, whether they are
+    includable kinds, and whether their personas are pinned identically all
+    require the included document, so they are validated wherever a resolver
+    is available instead (at minimum, loading the bundled workflow set).
+    """
+    nodes = graph.get("nodes", [])
+    all_node_ids = {str(node.get("id") or "").strip() for node in nodes if isinstance(node, dict)}
+    include_nodes = [
+        node for node in nodes if isinstance(node, dict) and node.get("kind") == "include"
+    ]
+    if not include_nodes:
+        return
+    claimed_local_ids: set[str] = set()
+    for node in include_nodes:
+        node_id = _required_string(node.get("id"), "include node id")
+        if schema_version < 2:
+            raise WorkflowDocumentError(
+                f"Include node {node_id!r} requires workflow schema_version 2"
+            )
+        alias = _required_string(node.get("workflow"), f"include node {node_id!r} workflow alias")
+        if alias not in dependencies:
+            raise WorkflowDocumentError(
+                f"Include node {node_id!r} references undeclared workflow dependency {alias!r}"
+            )
+        raw_nodes = node.get("nodes")
+        if not isinstance(raw_nodes, dict) or not raw_nodes:
+            raise WorkflowDocumentError(
+                f"Include node {node_id!r} nodes must be a non-empty mapping of source node id "
+                "to local node id"
+            )
+        local_ids_for_node: set[str] = set()
+        for raw_source_id, raw_local_id in raw_nodes.items():
+            _required_string(raw_source_id, f"include node {node_id!r} source node id")
+            local_id = _required_string(
+                raw_local_id, f"include node {node_id!r} local node id for {raw_source_id!r}"
+            )
+            if local_id in all_node_ids:
+                raise WorkflowDocumentError(
+                    f"Include node {node_id!r} local id {local_id!r} collides with an existing "
+                    "node id"
+                )
+            if local_id in claimed_local_ids:
+                raise WorkflowDocumentError(
+                    f"Include node {node_id!r} declares duplicate local id {local_id!r}"
+                )
+            claimed_local_ids.add(local_id)
+            local_ids_for_node.add(local_id)
+        _validate_include_overrides(node_id, node.get("overrides"), local_ids_for_node)
+
+
+def _validate_include_overrides(
+    node_id: str,
+    overrides: object,
+    local_ids: set[str],
+) -> None:
+    if overrides is None:
+        return
+    if not isinstance(overrides, dict):
+        raise WorkflowDocumentError(f"Include node {node_id!r} overrides must be a mapping")
+    unknown_targets = set(overrides) - local_ids
+    if unknown_targets:
+        raise WorkflowDocumentError(
+            f"Include node {node_id!r} overrides name node(s) it does not include: "
+            + ", ".join(sorted(unknown_targets))
+        )
+    for local_id, override in overrides.items():
+        if not isinstance(override, dict) or not override or set(override) - _INCLUDE_OVERRIDE_KEYS:
+            raise WorkflowDocumentError(
+                f"Include node {node_id!r} override for {local_id!r} must be a mapping with "
+                "only 'position' and/or 'label'"
+            )
+        if "label" in override and (
+            not isinstance(override["label"], str) or not override["label"].strip()
+        ):
+            raise WorkflowDocumentError(
+                f"Include node {node_id!r} override for {local_id!r} label must be a "
+                "non-empty string"
+            )
+        if "position" in override and not isinstance(override["position"], dict):
+            raise WorkflowDocumentError(
+                f"Include node {node_id!r} override for {local_id!r} position must be a mapping"
+            )
+
+
+def validate_resolved_workflow_graph(
+    graph: dict[str, Any],
+    *,
+    schema_version: int,
+    persona_dependencies: dict[str, PersonaDependency],
+    workflow_dependencies: dict[str, WorkflowDependency],
+) -> None:
+    """Re-run whole-graph validation against a graph with includes resolved.
+
+    ``load_workflow_document`` validates the raw authored graph, where a
+    ``kind: include`` node stands in for the stage(s) or gate(s) it names.
+    Once ``ting.domain.workflow_includes`` copies those nodes in, everything
+    that depends on their exact content — edges naming their ids, review
+    verdict policy quorum membership, ``reviewAttestation``'s joinMode-all
+    binding, and referenced persona aliases — must be checked again against
+    what actually runs, not the placeholder that stood in for it. Callers
+    with access to a resolver (at minimum, loading the bundled workflow set)
+    run this after resolution; it raises exactly like ``load_workflow_document``
+    on the same defects.
+    """
+    _validate_graph_structure(graph)
+    try:
+        validate_evidence_gate_nodes(graph)
+    except ValueError as exc:
+        raise WorkflowDocumentError(f"Invalid workflow evidence gate: {exc}") from exc
+    _validate_review_verdict_policies(graph)
+    _validate_wait_nodes(graph, schema_version=schema_version)
+    referenced_aliases = referenced_persona_aliases(graph)
+    missing_aliases = referenced_aliases - set(persona_dependencies)
+    if missing_aliases:
+        raise WorkflowDocumentError(
+            "Workflow graph references undeclared persona alias(es): "
+            + ", ".join(sorted(missing_aliases))
+        )
+    workflow_review_attestation(graph, persona_dependencies=persona_dependencies)
+    _validate_subworkflow_nodes(
+        graph,
+        schema_version=schema_version,
+        dependencies=workflow_dependencies,
+        persona_dependencies=persona_dependencies,
+    )
+    _validate_include_nodes(
+        graph, schema_version=schema_version, dependencies=workflow_dependencies
+    )
 
 
 def _dependency_to_dict(dependency: PersonaDependency) -> dict[str, str]:

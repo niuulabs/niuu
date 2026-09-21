@@ -355,6 +355,17 @@ describe('useWorkflowBuilder — addNode', () => {
     expect(result.current.workflow.schemaVersion).toBe(2);
   });
 
+  it('adds an include node with no workflow chosen yet', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.addNode('include'));
+    const added = result.current.workflow.nodes[2]!;
+    expect(added.kind).toBe('include');
+    if (added.kind === 'include') {
+      expect(added.workflow).toBe('');
+      expect(added.nodes).toEqual({});
+    }
+  });
+
   it('adds a resource node with registry defaults', () => {
     const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
     act(() => result.current.addNode('resource'));
@@ -695,6 +706,81 @@ describe('useWorkflowBuilder — deleteNode', () => {
     expect(result.current.workflow.workflowDependencies).toEqual({
       thread: { id: '00000000-0000-4000-8000-000000000003', revision: 'r2', digest: 'r2' },
     });
+  });
+
+  it('prunes an orphaned include pin in the same undo step and restores it on undo', () => {
+    const includeNode: Workflow['nodes'][number] = {
+      id: 'delivery-planning',
+      kind: 'include',
+      label: 'Plan the delivery',
+      workflow: 'planning',
+      nodes: { 'planning-analysis': 'delivery-plan-author' },
+      position: { x: 500, y: 100 },
+    };
+    const dependency = {
+      id: '00000000-0000-4000-8000-000000000002',
+      revision: 'sha256:planning',
+      digest: 'sha256:planning',
+    };
+    const workflow: Workflow = {
+      ...makeWorkflow(),
+      schemaVersion: 2,
+      nodes: [...makeWorkflow().nodes, includeNode],
+      workflowDependencies: { planning: dependency },
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(workflow));
+
+    act(() => result.current.deleteNode(includeNode.id));
+
+    expect(result.current.workflow.nodes).not.toContainEqual(includeNode);
+    expect(result.current.workflow.workflowDependencies).toEqual({});
+
+    act(() => result.current.undo());
+
+    expect(result.current.workflow.nodes).toContainEqual(includeNode);
+    expect(result.current.workflow.workflowDependencies).toEqual({ planning: dependency });
+  });
+
+  it('retains an include pin still referenced by a subworkflow template sharing its alias', () => {
+    const subworkflowNode: Workflow['nodes'][number] = {
+      id: 'children',
+      kind: 'subworkflow',
+      label: 'Child work',
+      position: { x: 500, y: 100 },
+      templates: { default: 'planning' },
+      allowedCoordinator: 'coordinator',
+      inputSchema: { type: 'object', properties: {} },
+      resultSchema: { type: 'object', properties: {} },
+      maxChildren: 10,
+      maxAttempts: 3,
+      maxActiveChildren: 4,
+      joinMode: 'all',
+      blockedEvent: 'children.blocked',
+    };
+    const includeNode: Workflow['nodes'][number] = {
+      id: 'delivery-planning',
+      kind: 'include',
+      label: 'Plan the delivery',
+      workflow: 'planning',
+      nodes: { 'planning-analysis': 'delivery-plan-author' },
+      position: { x: 700, y: 100 },
+    };
+    const dependency = {
+      id: '00000000-0000-4000-8000-000000000002',
+      revision: 'sha256:planning',
+      digest: 'sha256:planning',
+    };
+    const workflow: Workflow = {
+      ...makeWorkflow(),
+      schemaVersion: 2,
+      nodes: [...makeWorkflow().nodes, subworkflowNode, includeNode],
+      workflowDependencies: { planning: dependency },
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(workflow));
+
+    act(() => result.current.deleteNode(includeNode.id));
+
+    expect(result.current.workflow.workflowDependencies).toEqual({ planning: dependency });
   });
 });
 
@@ -1852,6 +1938,54 @@ describe('useWorkflowBuilder — child workflow selection', () => {
 
     act(() => result.current.undo());
     expect(result.current.workflow.nodes.at(-1)).toMatchObject({ templates: { default: '' } });
+  });
+});
+
+describe('useWorkflowBuilder — include workflow selection', () => {
+  function workflowWithIncludeNode(): Workflow {
+    return {
+      ...makeWorkflow(),
+      nodes: [
+        ...makeWorkflow().nodes,
+        {
+          id: 'delivery-planning',
+          kind: 'include',
+          label: 'Plan the delivery',
+          workflow: '',
+          nodes: {},
+          position: { x: 500, y: 100 },
+        },
+      ],
+    };
+  }
+
+  it('pins the included workflow and node together as one undo step', () => {
+    const workflow = workflowWithIncludeNode();
+    const child: Workflow = {
+      id: '00000000-0000-4000-8000-000000000002',
+      name: 'Planning',
+      documentRevision: 'sha256:planning',
+      nodes: [],
+      edges: [],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(workflow));
+
+    act(() => result.current.selectIncludeWorkflow('delivery-planning', child));
+
+    expect(result.current.workflow.schemaVersion).toBe(2);
+    expect(result.current.workflow.workflowDependencies).toEqual({
+      planning: {
+        id: child.id,
+        revision: 'sha256:planning',
+        digest: 'sha256:planning',
+      },
+    });
+    expect(result.current.workflow.nodes.at(-1)).toMatchObject({ workflow: 'planning' });
+
+    act(() => result.current.undo());
+
+    expect(result.current.workflow.workflowDependencies ?? {}).toEqual({});
+    expect(result.current.workflow.nodes.at(-1)).toMatchObject({ workflow: '' });
   });
 });
 

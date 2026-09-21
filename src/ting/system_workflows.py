@@ -14,8 +14,13 @@ from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_document import (
     WorkflowDocument,
     load_workflow_document,
+    validate_resolved_workflow_graph,
     workflow_document_payload,
     workflow_document_revision,
+)
+from ting.domain.workflow_includes import (
+    include_resolver_from_workflow_definitions,
+    resolve_workflow_includes,
 )
 from ting.ports.workflow_repository import WorkflowRepository
 
@@ -74,6 +79,25 @@ def load_bundled_workflow(
         bundle_root=root,
         persona_source=source,
         lineage=(),
+    )
+    # Whole-graph validation that needs a copied stage's exact content — edge
+    # endpoints, review-verdict-policy quorum membership, reviewAttestation's
+    # joinMode-all binding, referenced persona aliases — is only meaningful
+    # once every ``include`` node is resolved. The bundled set always has a
+    # resolver (its own transitive closure, loaded above), so it always runs
+    # this check; an include that cannot be resolved fails loudly here rather
+    # than loading as a silently smaller graph.
+    resolved_graph = resolve_workflow_includes(
+        document.graph,
+        persona_dependencies=document.persona_dependencies,
+        workflow_dependencies=document.workflow_dependencies,
+        resolve_alias=include_resolver_from_workflow_definitions(workflow_definitions),
+    )
+    validate_resolved_workflow_graph(
+        resolved_graph,
+        schema_version=document.schema_version,
+        persona_dependencies=document.persona_dependencies,
+        workflow_dependencies=document.workflow_dependencies,
     )
     timestamp = datetime.fromtimestamp(document_path.stat().st_mtime, tz=UTC)
     revision = workflow_document_revision(document)

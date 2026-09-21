@@ -41,3 +41,7 @@
 .workflow-wait-card {
   --node-accent: var(--color-accent-amber);
 }
+
+.workflow-include-card {
+  --node-accent: var(--color-accent-violet);
+}

@@ -27,6 +27,7 @@ export const workflowNodeKindSchema = z.enum([
   'resource',
   'subworkflow',
   'wait',
+  'include',
 ]);
 export type WorkflowNodeKind = z.input<typeof workflowNodeKindSchema>;
 
@@ -218,9 +219,44 @@ export const workflowWaitNodeSchema = z.object({
 });
 export type WorkflowWaitNode = z.input<typeof workflowWaitNodeSchema>;
 
+/** Presentational-only per-local-id tweak on an `include` node; never
+ *  changes execution semantics, only how the inlined node is labeled or
+ *  placed in this graph's own layout. */
+const workflowIncludeOverrideSchema = z.object({
+  label: z.string().optional(),
+  position: positionSchema.optional(),
+});
+export type WorkflowIncludeOverride = z.input<typeof workflowIncludeOverrideSchema>;
+
+/**
+ * `kind: include` inlines a pinned workflow's `stage`/`gate` nodes (and the
+ * edges between them) directly into this graph, under locally chosen ids —
+ * unlike `subworkflow`, which fans children out into separate child
+ * sessions. When Ting freezes a workflow for a run, it replaces the include
+ * node with the listed nodes copied verbatim from the pinned workflow, and
+ * the parent graph's own edges may reference those local ids as a source or
+ * target even though no node with that id appears in `nodes` — see
+ * `providedNodeIds`. Nested includes and non-stage/gate sources are invalid.
+ */
+export const workflowIncludeNodeSchema = z.object({
+  id: z.string().min(1),
+  kind: z.literal('include'),
+  label: z.string().min(1),
+  /** Alias into the document's `workflowDependencies`, pinning the included workflow. */
+  workflow: z.string(),
+  /** Included node id (in the pinned workflow) -> the id it takes in this graph. */
+  nodes: z.record(z.string(), z.string().min(1)).refine((value) => Object.keys(value).length > 0, {
+    message: 'nodes must map at least one included node',
+  }),
+  overrides: z.record(z.string(), workflowIncludeOverrideSchema).optional(),
+  position: positionSchema,
+});
+export type WorkflowIncludeNode = z.input<typeof workflowIncludeNodeSchema>;
+
 export const workflowNodeSchema = z.discriminatedUnion('kind', [
   workflowSubworkflowNodeSchema,
   workflowWaitNodeSchema,
+  workflowIncludeNodeSchema,
   workflowStageNodeSchema,
   workflowGateNodeSchema,
   workflowCondNodeSchema,
@@ -351,10 +387,52 @@ export const workflowSchema = z
   });
 export type Workflow = z.input<typeof workflowSchema>;
 
+// ---------------------------------------------------------------------------
+// Include nodes
+// ---------------------------------------------------------------------------
+
+/** Every `kind: include` node in the workflow's graph. */
+export function includeNodes(workflow: Pick<Workflow, 'nodes'>): WorkflowIncludeNode[] {
+  return workflow.nodes.filter((node): node is WorkflowIncludeNode => node.kind === 'include');
+}
+
+/**
+ * Local ids that `include` nodes provide — ids an edge may reference as its
+ * source or target even though no node with that id appears in `nodes`: the
+ * frozen graph fills them in with the pinned workflow's stages/gates
+ * verbatim at run time. Maps a provided id to the include node providing it.
+ */
+export function providedNodeIds(
+  workflow: Pick<Workflow, 'nodes'>,
+): Map<string, WorkflowIncludeNode> {
+  const map = new Map<string, WorkflowIncludeNode>();
+  for (const node of includeNodes(workflow)) {
+    for (const localId of Object.values(node.nodes ?? {})) {
+      map.set(localId, node);
+    }
+  }
+  return map;
+}
+
+/**
+ * Resolve a node by its own id, or by a local id an `include` node provides
+ * — such an id is a valid connection point even though it never appears in
+ * `nodes` directly.
+ */
+export function resolveWorkflowNode(
+  workflow: Pick<Workflow, 'nodes'>,
+  id: string,
+): WorkflowNode | undefined {
+  const direct = workflow.nodes.find((node) => node.id === id);
+  if (direct) return direct;
+  return providedNodeIds(workflow).get(id);
+}
+
 /**
  * Validate DAG structural invariants beyond Zod schema:
  *  1. Node IDs are unique.
- *  2. Every edge source and target references an existing node.
+ *  2. Every edge source and target references an existing node, or a local
+ *     id provided by an `include` node.
  *  3. No self-loops.
  *  4. No duplicate edges (same source + target + label tuple).
  *
@@ -374,15 +452,16 @@ export function validateWorkflow(workflow: Workflow): void {
     }
   }
 
+  const providedIds = providedNodeIds(workflow);
   const edgeKeys = new Set<string>();
 
   for (const edge of workflow.edges) {
-    if (!nodeIds.has(edge.source)) {
+    if (!nodeIds.has(edge.source) && !providedIds.has(edge.source)) {
       throw new WorkflowValidationError(
         `Edge ${edge.id} references unknown source node: ${edge.source}`,
       );
     }
-    if (!nodeIds.has(edge.target)) {
+    if (!nodeIds.has(edge.target) && !providedIds.has(edge.target)) {
       throw new WorkflowValidationError(
         `Edge ${edge.id} references unknown target node: ${edge.target}`,
       );

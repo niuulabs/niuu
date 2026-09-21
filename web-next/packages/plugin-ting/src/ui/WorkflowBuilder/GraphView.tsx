@@ -30,10 +30,13 @@ import type {
   WorkflowEndNode,
   WorkflowResourceNode,
   WorkflowWaitNode,
+  WorkflowIncludeNode,
 } from '../../domain/workflow';
+import { providedNodeIds } from '../../domain/workflow';
 import type { WorkflowIssue } from '../../domain/workflowValidation';
 import { isReentryEdge, parseWorkflowEdgeLabel } from '../../domain/workflowSemantics';
 import {
+  nodeMatchIds,
   nodePortCatalog,
   resolveWorkflowEdgePorts,
   type WorkflowNodePort,
@@ -63,6 +66,8 @@ import {
   END_RADIUS,
   RESOURCE_WIDTH,
   RESOURCE_HEIGHT,
+  INCLUDE_WIDTH,
+  INCLUDE_HEIGHT,
   stageNodeHeight,
   normalizedStageMembers,
 } from './graphUtils';
@@ -816,6 +821,48 @@ function requestWaitEventType(direction: 'incoming' | 'continuation', suggested 
     ?.trim();
 }
 
+/**
+ * An `include` card has no single id an edge can use — real edges name one
+ * of its provided local ids instead (see `providedNodeIds`). Resolve which
+ * one a connect gesture on the card means: reuse the provided id that
+ * already carries this exact event on this side, fall back to the sole
+ * provided id when there's only one, or ask when several are equally
+ * plausible. Returns the node's own id unchanged for every other kind.
+ */
+function resolveIncludeConnectionId(
+  node: WorkflowNode,
+  eventType: string,
+  direction: 'source' | 'target',
+  edges: readonly WorkflowEdge[],
+): string | null {
+  if (node.kind !== 'include') return node.id;
+  const providedIds = Object.values(node.nodes ?? {});
+  if (providedIds.length === 0) return null;
+
+  const reused = providedIds.find((candidate) =>
+    edges.some((edge) => {
+      if (direction === 'source' ? edge.source !== candidate : edge.target !== candidate) {
+        return false;
+      }
+      const parsed = parseWorkflowEdgeLabel(edge.label);
+      if (!parsed) return false;
+      return direction === 'source'
+        ? parsed.sourceEventType === eventType
+        : parsed.targetEventType === eventType;
+    }),
+  );
+  if (reused) return reused;
+  if (providedIds.length === 1) return providedIds[0]!;
+
+  const choice = window
+    .prompt(
+      `Which included node does "${eventType}" belong to? (${providedIds.join(', ')})`,
+      providedIds[0],
+    )
+    ?.trim();
+  return choice && providedIds.includes(choice) ? choice : null;
+}
+
 /** WaitNode — same recipe as StageNode's port footer (bottom-anchored,
  *  index * 14px rows) but ports run the full card height since a wait node
  *  has no members block above them. Every testid, `data-event-type`, and the
@@ -1282,6 +1329,122 @@ function ResourceNode({
   );
 }
 
+/** IncludeNode — same card recipe as ResourceNode; shows the pinned
+ *  workflow alias and how many of its nodes this one inlines. Like
+ *  Gate/Cond/Subworkflow, the card carries no inline port markup of its
+ *  own — every socket is edge-derived (see `workflowPorts.ts`) and drawn
+ *  generically by `NodeSocketLayer`, which grows the card's measured height
+ *  with `portRows` the same way a Wait card does. */
+function IncludeNode({
+  node,
+  selected,
+  issueLevel,
+  onSelect,
+  onInspect,
+  onStartConnect: _onStartConnect,
+  onCompleteConnect,
+  onDelete,
+  onDragPreview,
+  onDragEnd,
+  isConnectingMode,
+  canvasScale,
+  readOnly,
+  portRows,
+}: BaseNodeProps<WorkflowIncludeNode> & { portRows: number }) {
+  const { x, y } = node.position;
+  const height = INCLUDE_HEIGHT + (portRows > 0 ? 16 + portRows * 14 : 0);
+  const { handleMouseDown, handleMouseMove, handleMouseUp } = useDragNode({
+    x,
+    y,
+    isConnectingMode,
+    onSelect,
+    onCompleteConnect,
+    onDragPreview,
+    onDragEnd,
+    canvasScale,
+    readOnly,
+  });
+  const background = selected
+    ? 'var(--color-bg-elevated)'
+    : issueLevel === 'error'
+      ? C.errorFill
+      : issueLevel === 'warning'
+        ? C.warnFill
+        : 'color-mix(in srgb, var(--color-accent-violet) 16%, var(--color-bg-secondary))';
+  const borderColor = selected
+    ? C.nodeStrokeSelected
+    : issueLevel === 'error'
+      ? C.errorStroke
+      : issueLevel === 'warning'
+        ? C.warnStroke
+        : 'var(--color-accent-violet)';
+  const title = node.label.length > 20 ? `${node.label.slice(0, 18)}…` : node.label;
+  const nodeCount = Object.keys(node.nodes ?? {}).length;
+  const subtitle = `${node.workflow || 'choose a workflow'} · ${nodeCount} node${nodeCount === 1 ? '' : 's'}`;
+
+  return (
+    <g
+      data-testid={`workflow-node-${node.id}`}
+      data-kind="include"
+      data-selected={selected ? 'true' : undefined}
+      role="button"
+      tabIndex={0}
+      aria-label={`Include step: ${node.label}`}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') onInspect();
+        if (event.key === ' ') {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onInspect();
+      }}
+      style={{ cursor: isConnectingMode ? 'crosshair' : 'grab' }}
+    >
+      <foreignObject x={x} y={y} width={INCLUDE_WIDTH} height={height}>
+        <div
+          className="workflow-include-card niuu:h-full niuu:w-full niuu:select-none niuu:overflow-hidden niuu:rounded-lg niuu:border niuu:font-sans niuu:shadow-md"
+          style={{
+            background,
+            borderColor,
+            borderWidth: selected || issueLevel ? 2 : 1,
+            borderLeftColor: 'var(--node-accent)',
+            borderLeftWidth: 3,
+          }}
+        >
+          <div
+            className="niuu:flex niuu:flex-col niuu:justify-center niuu:gap-[3px] niuu:overflow-hidden niuu:pl-[13px] niuu:pr-[10px]"
+            style={{ height: INCLUDE_HEIGHT }}
+          >
+            <div
+              className="niuu:truncate niuu:text-[13px] niuu:font-semibold niuu:leading-tight"
+              style={{ color: C.text }}
+              title={node.label}
+            >
+              {title}
+            </div>
+            <div
+              className="niuu:truncate niuu:font-mono niuu:text-[10px]"
+              style={{ color: C.textMuted }}
+              title={subtitle}
+            >
+              {subtitle}
+            </div>
+          </div>
+        </div>
+      </foreignObject>
+      {selected && !isConnectingMode && !readOnly && (
+        <DeleteButton nodeId={node.id} cx={x + INCLUDE_WIDTH / 2} cy={y - 10} onClick={onDelete} />
+      )}
+    </g>
+  );
+}
+
 export function stagePortLists(node: WorkflowStageNode, personas: PersonaEntry[]) {
   const stageMembers = normalizedStageMembers(node);
   const personaMap = new Map(personas.map((persona) => [persona.id, persona]));
@@ -1334,13 +1497,16 @@ export function visibleNodePortCatalog(
   if (expanded) return catalog;
   const connectedInputs = new Set<string>();
   const connectedOutputs = new Set<string>();
+  const matchIds = nodeMatchIds(node);
   for (const edge of edges) {
-    if (edge.source !== node.id && edge.target !== node.id) continue;
+    const isSource = matchIds.has(edge.source);
+    const isTarget = matchIds.has(edge.target);
+    if (!isSource && !isTarget) continue;
     const parsed = parseWorkflowEdgeLabel(edge.label);
-    if (edge.source === node.id) {
+    if (isSource) {
       connectedOutputs.add(parsed?.sourceEventType ?? `unresolved-edge:${edge.id}`);
     }
-    if (edge.target === node.id) {
+    if (isTarget) {
       connectedInputs.add(parsed?.targetEventType ?? `unresolved-edge:${edge.id}`);
     }
   }
@@ -1373,6 +1539,7 @@ export function isGraphNodeKind(nodeKind: string): nodeKind is WorkflowNode['kin
     nodeKind === 'cond' ||
     nodeKind === 'wait' ||
     nodeKind === 'subworkflow' ||
+    nodeKind === 'include' ||
     nodeKind === 'end'
   );
 }
@@ -1554,7 +1721,8 @@ function NodeSocketLayer({
         const active =
           port.direction === 'output' && connectingFromLabel === port.eventType && connecting;
         const interactive = !readOnly && (port.direction === 'output' || connecting);
-        const showsTypedRows = node.kind === 'stage' || node.kind === 'wait';
+        const showsTypedRows =
+          node.kind === 'stage' || node.kind === 'wait' || node.kind === 'include';
         return (
           <g key={port.id}>
             <circle
@@ -1854,10 +2022,17 @@ export function GraphView({
       ),
     [dragPreview, nodes],
   );
-  const nodeMap = useMemo(
-    () => new Map<string, WorkflowNode>(displayNodes.map((n) => [n.id, n])),
-    [displayNodes],
-  );
+  // Provided ids (an include node's inlined local ids) aliased to their
+  // owning include node — an edge whose source/target is such an id resolves
+  // through this map to the include card itself, so edge rendering and
+  // connect-completion both anchor on the one card that represents it.
+  const nodeMap = useMemo(() => {
+    const map = new Map<string, WorkflowNode>(displayNodes.map((n) => [n.id, n]));
+    for (const [localId, includeNode] of providedNodeIds({ nodes: displayNodes })) {
+      if (!map.has(localId)) map.set(localId, includeNode);
+    }
+    return map;
+  }, [displayNodes]);
   const fullPortCatalogs = useMemo(
     () =>
       new Map(displayNodes.map((node) => [node.id, nodePortCatalog(node, { personas, edges })])),
@@ -1907,6 +2082,16 @@ export function GraphView({
             width: WAIT_WIDTH,
             height: WAIT_HEIGHT + (rows > 0 ? 16 + rows * 14 : 0),
             portTop: rows > 0 ? WAIT_HEIGHT + 16 : 0,
+          });
+          break;
+        }
+        case 'include': {
+          const ports = visiblePortCatalogs.get(node.id) ?? { inputs: [], outputs: [] };
+          const rows = Math.max(ports.inputs.length, ports.outputs.length);
+          sizes.set(node.id, {
+            width: INCLUDE_WIDTH,
+            height: INCLUDE_HEIGHT + (rows > 0 ? 16 + rows * 14 : 0),
+            portTop: rows > 0 ? INCLUDE_HEIGHT + 16 : 0,
           });
           break;
         }
@@ -2219,18 +2404,22 @@ export function GraphView({
     onStartConnect: (label?: string) => {
       if (readOnly) return;
       if (label === undefined) {
-        onStartConnect(node.id);
+        // A plain body-click continuation has nothing to disambiguate an
+        // include's provided ids with — require an explicit port instead.
+        if (node.kind !== 'include') onStartConnect(node.id);
         return;
       }
-      onStartConnect(node.id, label);
+      const sourceId = resolveIncludeConnectionId(node, label, 'source', edges);
+      if (sourceId) onStartConnect(sourceId, label);
     },
     onCompleteConnect: (inputLabel?: string) => {
       if (readOnly) return;
       if (inputLabel === undefined) {
-        onCompleteConnect(node.id);
+        if (node.kind !== 'include') onCompleteConnect(node.id);
         return;
       }
-      onCompleteConnect(node.id, inputLabel);
+      const targetId = resolveIncludeConnectionId(node, inputLabel, 'target', edges);
+      if (targetId) onCompleteConnect(targetId, inputLabel);
     },
     onDelete: () => {
       if (!readOnly) onDeleteNode(node.id);
@@ -2578,6 +2767,20 @@ export function GraphView({
                 return <EndNode key={node.id} node={node} {...props} />;
               case 'resource':
                 return <ResourceNode key={node.id} node={node} {...props} />;
+              case 'include': {
+                const includePorts = visiblePortCatalogs.get(node.id) ?? {
+                  inputs: [],
+                  outputs: [],
+                };
+                return (
+                  <IncludeNode
+                    key={node.id}
+                    node={node}
+                    portRows={Math.max(includePorts.inputs.length, includePorts.outputs.length)}
+                    {...props}
+                  />
+                );
+              }
             }
           })}
           {displayNodes.map((node) => (
@@ -2595,8 +2798,14 @@ export function GraphView({
               connecting={isConnectingMode}
               readOnly={readOnly}
               connectingFromLabel={connectingFromLabel}
-              onStartConnect={(eventType) => onStartConnect(node.id, eventType)}
-              onCompleteConnect={(eventType) => onCompleteConnect(node.id, eventType)}
+              onStartConnect={(eventType) => {
+                const sourceId = resolveIncludeConnectionId(node, eventType, 'source', edges);
+                if (sourceId) onStartConnect(sourceId, eventType);
+              }}
+              onCompleteConnect={(eventType) => {
+                const targetId = resolveIncludeConnectionId(node, eventType, 'target', edges);
+                if (targetId) onCompleteConnect(targetId, eventType);
+              }}
               onReveal={() => onSelectNode(node.id)}
             />
           ))}

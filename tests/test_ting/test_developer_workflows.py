@@ -54,7 +54,7 @@ def test_developer_workflow_package_has_exact_transitive_closure() -> None:
     root = workflows["Developer Delivery"]
     assert root.schema_version == 2
     assert root.graph["executionContract"] == "developer-delivery/v1"
-    assert set(root.workflow_dependencies) == {"workstream"}
+    assert set(root.workflow_dependencies) == {"workstream", "planning", "integration"}
     snapshot = build_workflow_snapshot(root)
     assert set(snapshot["workflow_definitions"]) == set(root.workflow_dependencies)
     for alias, pin in root.workflow_dependencies.items():

@@ -95,6 +95,37 @@ describe('portable workflow documents', () => {
     expect(load(serializePortableWorkflow(nested))).toEqual(document);
     expect(document.graph.nodes).toEqual(nested.nodes);
   });
+  it('preserves an include node and its overrides in schema two', () => {
+    const included: Workflow = {
+      ...workflow,
+      schemaVersion: 2,
+      workflowDependencies: {
+        planning: { id: workflow.id, revision: 'sha256:planning', digest: 'sha256:planning' },
+      },
+      nodes: [
+        {
+          id: 'delivery-planning',
+          kind: 'include',
+          label: 'Plan the delivery',
+          workflow: 'planning',
+          nodes: {
+            'planning-analysis': 'delivery-plan-author',
+            'planning-reviews': 'delivery-plan-reviews',
+          },
+          overrides: {
+            'delivery-plan-author': { label: 'Author the plan', position: { x: 0, y: 0 } },
+          },
+          position: { x: 3, y: 4 },
+        },
+      ],
+    };
+    const document = toPortableWorkflowDocument(included);
+    expect(document.schema_version).toBe(2);
+    expect(document.workflow_dependencies).toEqual(included.workflowDependencies);
+    expect(load(serializePortableWorkflow(included))).toEqual(document);
+    expect(document.graph.nodes).toEqual(included.nodes);
+  });
+
   it('overlays editor fields while retaining unknown graph semantics', () => {
     expect(toPortableWorkflowDocument(workflow)).toEqual({
       schema_version: 1,

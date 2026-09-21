@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import type { Workflow, WorkflowDeclaredChild, WorkflowSubworkflowNode } from './workflow';
+import type {
+  Workflow,
+  WorkflowDeclaredChild,
+  WorkflowIncludeNode,
+  WorkflowSubworkflowNode,
+} from './workflow';
 import {
   addSubworkflowTemplate,
+  bindIncludeWorkflow,
   bindSubworkflowTemplate,
   removeSubworkflowTemplate,
   renameSubworkflowTemplate,
@@ -53,6 +59,17 @@ function child(overrides: Partial<Workflow> = {}): Workflow {
     nodes: [],
     edges: [],
     ...overrides,
+  };
+}
+
+function include(id: string, workflowAlias: string): WorkflowIncludeNode {
+  return {
+    id,
+    kind: 'include',
+    label: 'Plan the delivery',
+    workflow: workflowAlias,
+    nodes: { 'planning-analysis': 'delivery-plan-author' },
+    position: { x: 0, y: 0 },
   };
 }
 
@@ -372,5 +389,85 @@ describe('removeSubworkflowTemplate', () => {
     expect(() => removeSubworkflowTemplate(workflow, 'missing', 'default')).toThrow(
       /was not found/,
     );
+  });
+});
+
+describe('bindIncludeWorkflow', () => {
+  it('pins the exact immutable document and upgrades the parent to schema v2', () => {
+    const workflow: Workflow = { ...parent([include('inc1', '')]), workflowDependencies: {} };
+
+    const result = bindIncludeWorkflow(workflow, 'inc1', child());
+
+    expect(result.schemaVersion).toBe(2);
+    expect(result.workflowDependencies).toEqual({
+      'research-thread': {
+        id: childId,
+        revision: 'sha256:child-document',
+        digest: 'sha256:child-document',
+      },
+    });
+    expect(result.nodes[0]).toMatchObject({ workflow: 'research-thread' });
+  });
+
+  it('preserves a private alias and returns the same value for the same exact pin', () => {
+    const workflow: Workflow = {
+      ...parent([include('inc1', 'worker')]),
+      schemaVersion: 2,
+      workflowDependencies: {
+        worker: { id: childId, revision: 'sha256:child-document', digest: 'sha256:child-document' },
+      },
+    };
+
+    expect(bindIncludeWorkflow(workflow, 'inc1', child())).toBe(workflow);
+  });
+
+  it('splits an alias shared with a subworkflow template before repointing it', () => {
+    const workflow: Workflow = {
+      ...parent([subworkflow('sub1', { default: 'worker' }), include('inc1', 'worker')]),
+      schemaVersion: 2,
+      workflowDependencies: {
+        worker: { id: childId, revision: 'sha256:old', digest: 'sha256:old' },
+      },
+    };
+    const selected = child({
+      id: '00000000-0000-4000-8000-000000000003',
+      name: 'New Child',
+      documentRevision: 'sha256:new',
+    });
+
+    const result = bindIncludeWorkflow(workflow, 'inc1', selected);
+
+    expect(result.nodes).toEqual([
+      expect.objectContaining({ id: 'sub1', templates: { default: 'worker' } }),
+      expect.objectContaining({ id: 'inc1', workflow: 'new-child' }),
+    ]);
+    expect(result.workflowDependencies?.worker?.digest).toBe('sha256:old');
+  });
+
+  it('keeps a shared alias when the subworkflow template already references the exact child', () => {
+    const workflow: Workflow = {
+      ...parent([subworkflow('sub1', { default: 'worker' }), include('inc1', 'worker')]),
+      schemaVersion: 2,
+      workflowDependencies: {
+        worker: {
+          id: childId,
+          revision: 'sha256:child-document',
+          digest: 'sha256:child-document',
+        },
+      },
+    };
+
+    expect(bindIncludeWorkflow(workflow, 'inc1', child())).toBe(workflow);
+  });
+
+  it('rejects self references, missing revisions, and an unknown node', () => {
+    const workflow: Workflow = parent([include('inc1', '')]);
+    expect(() => bindIncludeWorkflow(workflow, 'inc1', child({ id: parentId }))).toThrow(
+      WorkflowDependencySelectionError,
+    );
+    expect(() => bindIncludeWorkflow(workflow, 'inc1', child({ documentRevision: null }))).toThrow(
+      /immutable document revision/,
+    );
+    expect(() => bindIncludeWorkflow(workflow, 'missing', child())).toThrow(/was not found/);
   });
 });

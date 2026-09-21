@@ -42,10 +42,16 @@ from ting.domain.workflow_document import (
     document_from_workflow,
     dump_workflow_document,
     load_workflow_document,
+    validate_resolved_workflow_graph,
     workflow_document_payload,
     workflow_document_revision,
 )
 from ting.domain.workflow_execution import validate_json_schema
+from ting.domain.workflow_includes import (
+    graph_has_include_nodes,
+    include_resolver_from_workflow_definitions,
+    resolve_workflow_includes,
+)
 from ting.domain.workflow_snapshot import (
     build_workflow_snapshot,
     pin_workflow_personas,
@@ -1147,7 +1153,26 @@ async def _save_workflow(
                 workflow = _refresh_persona_pins(workflow, refresh_personas, source)
             workflow = pin_workflow_personas(workflow, source)
             workflow = await _resolve_workflow_dependencies(workflow, repo, principal)
-        load_workflow_document(dump_workflow_document(workflow))
+        document = load_workflow_document(dump_workflow_document(workflow))
+        if graph_has_include_nodes(document.graph):
+            # workflow.workflow_definitions is already the validated pinned
+            # closure by this point — populated above for an authored save,
+            # or supplied by the import plan for a bundle apply — so an
+            # include resolves against it instead of a second catalog call.
+            resolved_graph = resolve_workflow_includes(
+                document.graph,
+                persona_dependencies=document.persona_dependencies,
+                workflow_dependencies=document.workflow_dependencies,
+                resolve_alias=include_resolver_from_workflow_definitions(
+                    workflow.workflow_definitions
+                ),
+            )
+            validate_resolved_workflow_graph(
+                resolved_graph,
+                schema_version=document.schema_version,
+                persona_dependencies=document.persona_dependencies,
+                workflow_dependencies=document.workflow_dependencies,
+            )
         if versioned:
             if base_revision is None:
                 raise ValueError("base_revision is required for a workflow successor")

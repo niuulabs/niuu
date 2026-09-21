@@ -11,6 +11,8 @@ export interface ValidationPanelProps {
   onSelectNode: (id: string) => void;
   errorCount: number;
   warnCount: number;
+  /** Loaded workflow catalog, used to cross-check `include` node mappings. */
+  workflows?: Workflow[];
 }
 
 const KIND_ICON: Record<WorkflowIssue['kind'], string> = {
@@ -30,6 +32,7 @@ const KIND_ICON: Record<WorkflowIssue['kind'], string> = {
   subworkflow_blocked_event: 'Ⅱ',
   subworkflow_joined_event: '▶',
   subworkflow_limits: '≡',
+  include: '⧉',
 };
 
 export function ValidationPanel({
@@ -37,9 +40,13 @@ export function ValidationPanel({
   onSelectNode,
   errorCount,
   warnCount,
+  workflows,
 }: ValidationPanelProps) {
   const [expanded, setExpanded] = useState(false);
-  const issues = useMemo(() => validateWorkflowFull(workflow), [workflow]);
+  const issues = useMemo(
+    () => validateWorkflowFull(workflow, undefined, workflows),
+    [workflow, workflows],
+  );
   const reviewCount = issues.filter((issue) => issue.kind === 'missing_persona').length;
 
   return (

@@ -35,6 +35,8 @@ export const WAIT_HEIGHT = 58;
 export const END_RADIUS = 26;
 export const RESOURCE_WIDTH = 168;
 export const RESOURCE_HEIGHT = 58;
+export const INCLUDE_WIDTH = 200;
+export const INCLUDE_HEIGHT = 66;
 
 /** Default bezier control-point offset (pixels). */
 const CP_OFFSET = 92;
@@ -138,6 +140,11 @@ export function nodeCentre(node: WorkflowNode): { x: number; y: number } {
       return {
         x: node.position.x + RESOURCE_WIDTH / 2,
         y: node.position.y + RESOURCE_HEIGHT / 2,
+      };
+    case 'include':
+      return {
+        x: node.position.x + INCLUDE_WIDTH / 2,
+        y: node.position.y + INCLUDE_HEIGHT / 2,
       };
   }
 }

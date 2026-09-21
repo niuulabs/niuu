@@ -3,6 +3,8 @@ import { cn, SegmentedFilter } from '@niuulabs/ui';
 import type {
   Workflow,
   WorkflowGateMode,
+  WorkflowGateNode,
+  WorkflowIncludeNode,
   WorkflowNode,
   WorkflowResourceBinding,
   WorkflowResourceNode,
@@ -34,6 +36,7 @@ export interface WorkflowDetailPanelProps {
   onAddSubworkflowTemplate: WorkflowBuilderActions['addSubworkflowTemplate'];
   onRenameSubworkflowTemplate: WorkflowBuilderActions['renameSubworkflowTemplate'];
   onRemoveSubworkflowTemplate: WorkflowBuilderActions['removeSubworkflowTemplate'];
+  onSelectIncludeWorkflow: WorkflowBuilderActions['selectIncludeWorkflow'];
   onUpdateLabel: WorkflowBuilderActions['updateNodeLabel'];
   onUpdateWorkflowMeta: WorkflowBuilderActions['updateWorkflowMeta'];
   onAddPersona: WorkflowBuilderActions['addPersonaToStage'];
@@ -627,6 +630,205 @@ function SubworkflowInspector({
         <summary>Result contract</summary>
         <pre className="niuu:overflow-auto">{JSON.stringify(node.resultSchema, null, 2)}</pre>
       </details>
+
+      <div className="niuu:border-t niuu:border-border niuu:pt-4">
+        <button type="button" className={DELETE_BTN} onClick={() => onDeleteNode(node.id)}>
+          Delete node
+        </button>
+      </div>
+    </section>
+  );
+}
+
+/** IncludeInspector — reuses `SubworkflowInspector`'s catalog-select and
+ *  pinning pattern (`resolveTemplateCatalogChild`, `catalogSelectionValue`)
+ *  for the single workflow an include pins, then lists that workflow's
+ *  stage/gate nodes with a checkbox and an editable local id for each. */
+function IncludeInspector({
+  node,
+  workflow,
+  workflows,
+  onSelectIncludeWorkflow,
+  onUpdateNode,
+  onUpdateLabel,
+  onDeleteNode,
+}: {
+  node: WorkflowIncludeNode;
+  workflow: Workflow;
+  workflows: Workflow[];
+  onSelectIncludeWorkflow: WorkflowBuilderActions['selectIncludeWorkflow'];
+  onUpdateNode: WorkflowBuilderActions['updateNode'];
+  onUpdateLabel: WorkflowBuilderActions['updateNodeLabel'];
+  onDeleteNode: WorkflowBuilderActions['deleteNode'];
+}) {
+  const candidates = workflows.filter((candidate) => candidate.id !== workflow.id);
+  const alias = node.workflow ?? '';
+  const dependency = alias ? workflow.workflowDependencies?.[alias] : undefined;
+  const { catalogChildWorkflow, childWorkflowExact } = resolveTemplateCatalogChild(
+    workflow,
+    workflows,
+    alias,
+  );
+  const exactCatalogValue =
+    catalogChildWorkflow && childWorkflowExact ? catalogSelectionValue(catalogChildWorkflow) : null;
+  const selectedValue = exactCatalogValue ?? (dependency ? `pinned:${dependency.digest}` : '');
+  const mappings = node.nodes ?? {};
+  const includableNodes = (catalogChildWorkflow?.nodes ?? []).filter(
+    (candidate): candidate is WorkflowStageNode | WorkflowGateNode =>
+      candidate.kind === 'stage' || candidate.kind === 'gate',
+  );
+  const usedLocalIds = new Set(Object.values(mappings));
+
+  function selectChild(value: string) {
+    const selected = candidates.find((candidate) => catalogSelectionValue(candidate) === value);
+    if (selected?.documentRevision) {
+      onSelectIncludeWorkflow(node.id, selected);
+    }
+  }
+
+  function defaultLocalId(sourceId: string): string {
+    const collides = (candidate: string) =>
+      usedLocalIds.has(candidate) || workflow.nodes.some((other) => other.id === candidate);
+    if (!collides(sourceId)) return sourceId;
+    let suffix = 2;
+    while (collides(`${sourceId}-${suffix}`)) suffix += 1;
+    return `${sourceId}-${suffix}`;
+  }
+
+  function toggleIncluded(sourceId: string, included: boolean) {
+    const nextMappings = { ...mappings };
+    if (included) {
+      nextMappings[sourceId] = defaultLocalId(sourceId);
+    } else {
+      delete nextMappings[sourceId];
+    }
+    onUpdateNode(node.id, { nodes: nextMappings });
+  }
+
+  function renameLocalId(sourceId: string, nextLocalId: string) {
+    const trimmed = nextLocalId.trim();
+    if (!trimmed || trimmed === mappings[sourceId]) return;
+    onUpdateNode(node.id, { nodes: { ...mappings, [sourceId]: trimmed } });
+  }
+
+  return (
+    <section className="niuu:space-y-4 niuu:px-4 niuu:py-3 niuu:text-xs niuu:text-text-secondary">
+      <div>
+        <label className={SECTION_LABEL} htmlFor={`include-${node.id}-name`}>
+          Name
+        </label>
+        <input
+          id={`include-${node.id}-name`}
+          className={INPUT}
+          value={node.label}
+          onChange={(event) => onUpdateLabel(node.id, event.target.value)}
+        />
+      </div>
+
+      <div>
+        <label className={SECTION_LABEL} htmlFor={`include-${node.id}-workflow`}>
+          Included workflow
+        </label>
+        <select
+          id={`include-${node.id}-workflow`}
+          data-testid="include-workflow-select"
+          className={INPUT}
+          value={selectedValue}
+          onChange={(event) => selectChild(event.target.value)}
+        >
+          {!dependency ? <option value="">Choose a workflow…</option> : null}
+          {dependency && !exactCatalogValue ? (
+            <option value={`pinned:${dependency.digest}`}>Current saved child</option>
+          ) : null}
+          {candidates.map((candidate) => {
+            const revision = candidate.documentRevision?.trim();
+            return (
+              <option
+                key={`${candidate.id}:${revision ?? 'unavailable'}`}
+                value={catalogSelectionValue(candidate)}
+                disabled={!revision}
+              >
+                {candidate.name} · {candidate.version ?? 'unversioned'}
+                {!revision ? ' · not ready to use' : ''}
+              </option>
+            );
+          })}
+        </select>
+        {!dependency ? (
+          <p className="niuu:mt-2 niuu:text-[11px] niuu:text-critical">
+            Choose a workflow to include nodes from before saving.
+          </p>
+        ) : null}
+        {dependency && !childWorkflowExact ? (
+          <p className="niuu:mt-2 niuu:text-[11px] niuu:text-text-faint">
+            This exact pinned revision is not in the loaded catalog. Selecting the current catalog
+            version will explicitly repin it.
+          </p>
+        ) : null}
+      </div>
+
+      <div>
+        <div className="niuu:flex niuu:items-center niuu:justify-between">
+          <span className={SECTION_LABEL}>Included nodes</span>
+          <span className="niuu:text-[9px] niuu:text-text-faint niuu:font-mono">
+            {Object.keys(mappings).length}
+          </span>
+        </div>
+        {!catalogChildWorkflow ? (
+          <p className="niuu:mt-2 niuu:text-[11px] niuu:text-text-faint">
+            Choose a workflow to see its stage and gate nodes.
+          </p>
+        ) : includableNodes.length === 0 ? (
+          <p className="niuu:mt-2 niuu:text-[11px] niuu:text-text-faint">
+            This workflow has no stage or gate nodes to include.
+          </p>
+        ) : (
+          <div className="niuu:mt-2 niuu:space-y-2">
+            {includableNodes.map((candidate) => {
+              const included = candidate.id in mappings;
+              return (
+                <div
+                  key={candidate.id}
+                  className="niuu:flex niuu:items-center niuu:gap-2 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-2"
+                >
+                  <input
+                    type="checkbox"
+                    id={`include-${node.id}-node-${candidate.id}`}
+                    data-testid={`include-node-toggle-${candidate.id}`}
+                    checked={included}
+                    onChange={(event) => toggleIncluded(candidate.id, event.target.checked)}
+                  />
+                  <label
+                    htmlFor={`include-${node.id}-node-${candidate.id}`}
+                    className="niuu:flex-1 niuu:truncate"
+                    title={candidate.label}
+                  >
+                    {candidate.label}
+                    <span className="niuu:ml-1 niuu:font-mono niuu:text-[9px] niuu:text-text-faint">
+                      {candidate.kind}
+                    </span>
+                  </label>
+                  {included ? (
+                    <input
+                      defaultValue={mappings[candidate.id]}
+                      aria-label={`Local id for ${candidate.label}`}
+                      data-testid={`include-node-local-id-${candidate.id}`}
+                      className={cn(INPUT, 'niuu:w-28')}
+                      onBlur={(event) => renameLocalId(candidate.id, event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          event.currentTarget.blur();
+                        }
+                      }}
+                    />
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       <div className="niuu:border-t niuu:border-border niuu:pt-4">
         <button type="button" className={DELETE_BTN} onClick={() => onDeleteNode(node.id)}>
@@ -1402,6 +1604,7 @@ export function WorkflowDetailPanel({
   onAddSubworkflowTemplate,
   onRenameSubworkflowTemplate,
   onRemoveSubworkflowTemplate,
+  onSelectIncludeWorkflow,
   onUpdateLabel,
   onUpdateWorkflowMeta,
   onAddPersona,
@@ -1427,7 +1630,9 @@ export function WorkflowDetailPanel({
   const soleTemplateAlias =
     selectedNode?.kind === 'subworkflow' && Object.keys(selectedNode.templates ?? {}).length === 1
       ? Object.values(selectedNode.templates ?? {})[0]!
-      : null;
+      : selectedNode?.kind === 'include'
+        ? (selectedNode.workflow ?? '')
+        : null;
   const { catalogChildWorkflow, childWorkflowExact } =
     soleTemplateAlias !== null
       ? resolveTemplateCatalogChild(workflow, workflows, soleTemplateAlias)
@@ -1764,6 +1969,16 @@ export function WorkflowDetailPanel({
             onAddResourceBinding={onAddResourceBinding}
             onUpdateResourceBinding={onUpdateResourceBinding}
             onRemoveResourceBinding={onRemoveResourceBinding}
+          />
+        ) : selectedNode?.kind === 'include' ? (
+          <IncludeInspector
+            node={selectedNode}
+            workflow={workflow}
+            workflows={workflows}
+            onSelectIncludeWorkflow={onSelectIncludeWorkflow}
+            onUpdateNode={onUpdateNode}
+            onUpdateLabel={onUpdateLabel}
+            onDeleteNode={onDeleteNode}
           />
         ) : (
           <WorkflowSummary

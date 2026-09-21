@@ -40,6 +40,16 @@ workflow_dependencies:
     revision: sha256:102f10a88e502a59dcb3c9a21efffc61a9c302238ebc5197387d16f602adaa7f
     digest: sha256:102f10a88e502a59dcb3c9a21efffc61a9c302238ebc5197387d16f602adaa7f
     path: workflows/developer-workstream.yaml
+  planning:
+    id: 195d5026-7adb-4ce7-97ee-fb1e18ea4c3a
+    revision: sha256:db7c22baab671ccf5dec3195ecaf7a2d939c71b13f4bd31a2faf1cd053cc5b41
+    digest: sha256:db7c22baab671ccf5dec3195ecaf7a2d939c71b13f4bd31a2faf1cd053cc5b41
+    path: workflows/developer-planning.yaml
+  integration:
+    id: f776d181-ed63-4e3a-b5c4-7b128e4d2094
+    revision: sha256:16d1685c09cc93e247d69cc1a0b875bc81f747f30b50c5fa61d3d1c4cbf83f75
+    digest: sha256:16d1685c09cc93e247d69cc1a0b875bc81f747f30b50c5fa61d3d1c4cbf83f75
+    path: workflows/developer-integration.yaml
 graph:
   executionContract: developer-delivery/v1
   reviewAttestation:
@@ -54,39 +64,13 @@ graph:
       label: Begin developer delivery
       source: user or tracker
       dispatchEvent: delivery.requested
-    - id: delivery-plan-author
-      kind: stage
-      label: Investigate and maintain the canonical plan
-      executionMode: sequential
-      joinMode: any
-      reviewVerdictPolicy:
-        eventType: plan.review.completed
-        passOutcomes: [developer.plan.approved]
-        failOutcomes: [developer.plan.revised]
-        bindingFields: [plan_revision]
-      stageMembers:
-        - personaId: developer-analyst
-          model: gpt-5.5
-          budget: 32
-          consumesEventTypes: [delivery.requested, plan.review.completed]
-    - id: delivery-plan-reviews
-      kind: stage
-      label: Independently review the current plan revision
-      executionMode: parallel
-      joinMode: all
-      stageMembers:
-        - personaId: developer-architecture-reviewer
-          model: gpt-5.5
-          budget: 20
-          consumesEventTypes: [developer.plan.revised]
-        - personaId: developer-correctness-reviewer
-          model: gpt-5.5
-          budget: 20
-          consumesEventTypes: [developer.plan.revised]
-        - personaId: developer-security-plan-reviewer
-          model: gpt-5.5
-          budget: 20
-          consumesEventTypes: [developer.plan.revised]
+    - id: delivery-planning
+      kind: include
+      label: Investigate and review the canonical plan
+      workflow: planning
+      nodes:
+        planning-analysis: delivery-plan-author
+        planning-reviews: delivery-plan-reviews
     - id: delivery-coordinate
       kind: stage
       label: Define and dispatch workstreams
@@ -203,26 +187,13 @@ graph:
           model: gpt-5.5
           budget: 24
           consumesEventTypes: [developer.children.verified]
-    - id: delivery-integration-tests
-      kind: stage
-      label: Request trusted verification of the integration candidate
-      executionMode: sequential
-      joinMode: all
-      stageMembers:
-        - personaId: developer-coordinator
-          model: gpt-5.5
-          budget: 12
-          consumesEventTypes: [developer.integration.requested]
-    - id: delivery-integration-review
-      kind: stage
-      label: Review the complete verified change
-      executionMode: sequential
-      joinMode: all
-      stageMembers:
-        - personaId: developer-integration-verifier
-          model: gpt-5.5
-          budget: 28
-          consumesEventTypes: [developer.integration.verified]
+    - id: delivery-integration-verification
+      kind: include
+      label: Verify and review the integration candidate
+      workflow: integration
+      nodes:
+        integration-tests: delivery-integration-tests
+        integration-review: delivery-integration-review
     - id: delivery-publish
       kind: stage
       label: Validate remote candidate and conditionally merge
@@ -260,14 +231,11 @@ graph:
       completionEvent: developer.delivery.completed
   edges:
     - {id: delivery-request-plan, source: delivery-request, target: delivery-plan-author, label: delivery.requested -> delivery.requested}
-    - {id: delivery-plan-review, source: delivery-plan-author, target: delivery-plan-reviews, label: developer.plan.revised -> developer.plan.revised}
-    - {id: delivery-plan-revise, source: delivery-plan-reviews, target: delivery-plan-author, label: plan.review.completed -> plan.review.completed}
     - {id: delivery-plan-coordinate, source: delivery-plan-author, target: delivery-coordinate, label: developer.plan.approved -> developer.plan.approved}
     - {id: delivery-coordinate-workstreams, source: delivery-coordinate, target: delivery-workstreams, label: developer.children.waiting -> developer.children.waiting}
     - {id: delivery-workstreams-integrate, source: delivery-workstreams, target: delivery-integrate, label: developer.children.verified -> developer.children.verified}
     - {id: delivery-integrate-tests, source: delivery-integrate, target: delivery-integration-tests, label: developer.integration.requested -> developer.integration.requested}
     - {id: delivery-integrate-repair, source: delivery-integrate, target: delivery-repair, label: developer.workstream.repair_requested -> developer.workstream.repair_requested}
-    - {id: delivery-tests-review, source: delivery-integration-tests, target: delivery-integration-review, label: developer.integration.verified -> developer.integration.verified}
     - {id: delivery-tests-repair, source: delivery-integration-tests, target: delivery-repair, label: developer.workstream.repair_requested -> developer.workstream.repair_requested}
     - {id: delivery-integration-publish, source: delivery-integration-review, target: delivery-publish, label: developer.integration.approved -> developer.integration.approved}
     - {id: delivery-publish-wait, source: delivery-publish, target: delivery-publication-wait, label: developer.delivery.waiting -> developer.delivery.waiting}

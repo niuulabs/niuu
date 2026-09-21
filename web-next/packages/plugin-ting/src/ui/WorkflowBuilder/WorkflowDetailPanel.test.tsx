@@ -267,6 +267,7 @@ function renderPanel(
     onAddSubworkflowTemplate: (nodeId: string, name?: string) => void;
     onRenameSubworkflowTemplate: (nodeId: string, previousName: string, nextName: string) => void;
     onRemoveSubworkflowTemplate: (nodeId: string, name: string) => void;
+    onSelectIncludeWorkflow: (nodeId: string, workflow: Workflow) => void;
     readOnly: boolean;
   }> = {},
 ) {
@@ -286,6 +287,7 @@ function renderPanel(
     onAddSubworkflowTemplate: overrides.onAddSubworkflowTemplate ?? vi.fn(),
     onRenameSubworkflowTemplate: overrides.onRenameSubworkflowTemplate ?? vi.fn(),
     onRemoveSubworkflowTemplate: overrides.onRemoveSubworkflowTemplate ?? vi.fn(),
+    onSelectIncludeWorkflow: overrides.onSelectIncludeWorkflow ?? vi.fn(),
     onDeleteNode: vi.fn(),
     onUpdateNode: vi.fn(),
     onUpdateLabel: vi.fn(),
@@ -1220,5 +1222,167 @@ describe('WorkflowDetailPanel', () => {
 
     expect(defaultTargetIdForType(emptyWorkflow, 'stage')).toBe('');
     expect(defaultTargetIdForType(emptyWorkflow, 'persona')).toBe('');
+  });
+
+  describe('IncludeInspector', () => {
+    const pinnedChild: Workflow = {
+      ...BASE_WORKFLOW,
+      id: 'bca8d32b-12fc-402e-b632-c1c13db19b47',
+      name: 'Planning',
+      documentRevision: 'sha256:planning',
+      nodes: [
+        { ...STAGE_NODE, id: 'planning-analysis', label: 'Draft the plan' },
+        { ...GATE_NODE, id: 'planning-review', label: 'Review the plan' },
+        COND_NODE,
+      ],
+    };
+
+    function includeNode(overrides: Partial<WorkflowNode> = {}): WorkflowNode {
+      return {
+        id: 'include-1',
+        kind: 'include',
+        label: 'Plan the delivery',
+        workflow: '',
+        nodes: {},
+        position: { x: 300, y: 120 },
+        ...overrides,
+      } as WorkflowNode;
+    }
+
+    it('prompts to choose a workflow before any node is pinned', () => {
+      renderPanel(includeNode(), { workflow: BASE_WORKFLOW, workflows: [pinnedChild] });
+
+      expect(screen.getByTestId('include-workflow-select')).toHaveValue('');
+      expect(
+        screen.getByText('Choose a workflow to include nodes from before saving.'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText('Choose a workflow to see its stage and gate nodes.'),
+      ).toBeInTheDocument();
+    });
+
+    it('pins the selected catalog workflow', () => {
+      const onSelectIncludeWorkflow = vi.fn();
+      renderPanel(includeNode(), {
+        workflow: BASE_WORKFLOW,
+        workflows: [pinnedChild],
+        onSelectIncludeWorkflow,
+      });
+
+      fireEvent.change(screen.getByTestId('include-workflow-select'), {
+        target: { value: `catalog:${pinnedChild.id}:sha256:planning` },
+      });
+
+      expect(onSelectIncludeWorkflow).toHaveBeenCalledWith('include-1', pinnedChild);
+    });
+
+    it('lists only the pinned workflow stage and gate nodes, excluding other kinds', () => {
+      const node = includeNode({ workflow: 'planning' });
+      const workflow: Workflow = {
+        ...BASE_WORKFLOW,
+        nodes: [node],
+        workflowDependencies: {
+          planning: { id: pinnedChild.id, revision: 'sha256:planning', digest: 'sha256:planning' },
+        },
+      };
+      renderPanel(node, { workflow, workflows: [pinnedChild] });
+
+      expect(screen.getByTestId('include-node-toggle-planning-analysis')).toBeInTheDocument();
+      expect(screen.getByTestId('include-node-toggle-planning-review')).toBeInTheDocument();
+      expect(screen.queryByTestId(`include-node-toggle-${COND_NODE.id}`)).not.toBeInTheDocument();
+    });
+
+    it('toggles a node on with a default local id, and off again removing its mapping', () => {
+      const node = includeNode({ workflow: 'planning' });
+      const workflow: Workflow = {
+        ...BASE_WORKFLOW,
+        nodes: [node],
+        workflowDependencies: {
+          planning: { id: pinnedChild.id, revision: 'sha256:planning', digest: 'sha256:planning' },
+        },
+      };
+      const { props } = renderPanel(node, { workflow, workflows: [pinnedChild] });
+
+      fireEvent.click(screen.getByTestId('include-node-toggle-planning-analysis'));
+      expect(props.onUpdateNode).toHaveBeenCalledWith('include-1', {
+        nodes: { 'planning-analysis': 'planning-analysis' },
+      });
+    });
+
+    it('removes a mapped node when its checkbox is unchecked', () => {
+      const node = includeNode({
+        workflow: 'planning',
+        nodes: { 'planning-analysis': 'delivery-plan-author' },
+      });
+      const workflow: Workflow = {
+        ...BASE_WORKFLOW,
+        nodes: [node],
+        workflowDependencies: {
+          planning: { id: pinnedChild.id, revision: 'sha256:planning', digest: 'sha256:planning' },
+        },
+      };
+      const { props } = renderPanel(node, { workflow, workflows: [pinnedChild] });
+
+      expect(screen.getByTestId('include-node-toggle-planning-analysis')).toBeChecked();
+      fireEvent.click(screen.getByTestId('include-node-toggle-planning-analysis'));
+      expect(props.onUpdateNode).toHaveBeenCalledWith('include-1', { nodes: {} });
+    });
+
+    it('edits the local id of a mapped node on blur', () => {
+      const node = includeNode({
+        workflow: 'planning',
+        nodes: { 'planning-analysis': 'delivery-plan-author' },
+      });
+      const workflow: Workflow = {
+        ...BASE_WORKFLOW,
+        nodes: [node],
+        workflowDependencies: {
+          planning: { id: pinnedChild.id, revision: 'sha256:planning', digest: 'sha256:planning' },
+        },
+      };
+      const { props } = renderPanel(node, { workflow, workflows: [pinnedChild] });
+
+      const localIdInput = screen.getByTestId('include-node-local-id-planning-analysis');
+      fireEvent.change(localIdInput, { target: { value: 'renamed-local-id' } });
+      fireEvent.blur(localIdInput);
+
+      expect(props.onUpdateNode).toHaveBeenCalledWith('include-1', {
+        nodes: { 'planning-analysis': 'renamed-local-id' },
+      });
+    });
+
+    it('ignores a blank local id edit', () => {
+      const node = includeNode({
+        workflow: 'planning',
+        nodes: { 'planning-analysis': 'delivery-plan-author' },
+      });
+      const workflow: Workflow = {
+        ...BASE_WORKFLOW,
+        nodes: [node],
+        workflowDependencies: {
+          planning: { id: pinnedChild.id, revision: 'sha256:planning', digest: 'sha256:planning' },
+        },
+      };
+      const { props } = renderPanel(node, { workflow, workflows: [pinnedChild] });
+
+      const localIdInput = screen.getByTestId('include-node-local-id-planning-analysis');
+      fireEvent.change(localIdInput, { target: { value: '   ' } });
+      fireEvent.blur(localIdInput);
+
+      expect(props.onUpdateNode).not.toHaveBeenCalled();
+    });
+
+    it('renames the include node label and deletes it', () => {
+      const node = includeNode();
+      const { props } = renderPanel(node, { workflow: BASE_WORKFLOW, workflows: [pinnedChild] });
+
+      fireEvent.change(screen.getByDisplayValue('Plan the delivery'), {
+        target: { value: 'Renamed include' },
+      });
+      expect(props.onUpdateLabel).toHaveBeenCalledWith('include-1', 'Renamed include');
+
+      fireEvent.click(screen.getByText('Delete node'));
+      expect(props.onDeleteNode).toHaveBeenCalledWith('include-1');
+    });
   });
 });

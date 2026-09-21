@@ -163,6 +163,7 @@ export function WorkflowBuilder({
     addSubworkflowTemplate,
     renameSubworkflowTemplate,
     removeSubworkflowTemplate,
+    selectIncludeWorkflow,
     addResourceBinding,
     updateResourceBinding,
     removeResourceBinding,
@@ -179,8 +180,8 @@ export function WorkflowBuilder({
     [models],
   );
   const issues = useMemo(
-    () => validateWorkflowFull(workflow, modelCatalog),
-    [modelCatalog, workflow],
+    () => validateWorkflowFull(workflow, modelCatalog, workflowCatalog),
+    [modelCatalog, workflow, workflowCatalog],
   );
   const errorCount = issues.filter((i) => i.severity === 'error').length;
   const warnCount = issues.filter((i) => i.severity === 'warning').length;
@@ -752,6 +753,7 @@ export function WorkflowBuilder({
             onSelectNode={selectNodeAndCloseMeta}
             errorCount={errorCount}
             warnCount={warnCount}
+            workflows={workflowCatalog}
           />
 
           {/* Detail panel — floats over the canvas; open on selection or
@@ -773,6 +775,7 @@ export function WorkflowBuilder({
               onAddSubworkflowTemplate={addSubworkflowTemplate}
               onRenameSubworkflowTemplate={renameSubworkflowTemplate}
               onRemoveSubworkflowTemplate={removeSubworkflowTemplate}
+              onSelectIncludeWorkflow={selectIncludeWorkflow}
               onUpdateLabel={updateNodeLabel}
               onUpdateWorkflowMeta={updateWorkflowMeta}
               onAddPersona={addPersonaToStage}

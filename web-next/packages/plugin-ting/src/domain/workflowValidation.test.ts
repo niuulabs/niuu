@@ -78,6 +78,28 @@ function makeSubworkflow(
   };
 }
 
+function makeInclude(
+  id: string,
+  opts: { workflow?: string; nodes?: Record<string, string> } = {},
+): WorkflowNode {
+  return {
+    id,
+    kind: 'include',
+    label: `Include ${id}`,
+    workflow: opts.workflow ?? 'planning',
+    nodes: opts.nodes ?? { 'planning-analysis': 'local-analysis' },
+    position: { x: 0, y: 0 },
+  };
+}
+
+const PLANNING_DEPENDENCY = {
+  planning: {
+    id: '20000000-0000-0000-0000-000000000001',
+    revision: 'planning-revision',
+    digest: `sha256:${'d'.repeat(64)}`,
+  },
+};
+
 function makeEdge(id: string, source: string, target: string, label?: string): WorkflowEdge {
   return {
     id,
@@ -663,6 +685,164 @@ describe('validateWorkflowFull — child workflow templates', () => {
       },
     };
   }
+});
+
+// ---------------------------------------------------------------------------
+// include contract
+// ---------------------------------------------------------------------------
+
+describe('validateWorkflowFull — include contract', () => {
+  it('accepts an include that pins a declared dependency and maps a node', () => {
+    const nodes = [makeStage('s1', { personaIds: ['p1'] }), makeInclude('inc1'), makeGate('g1')];
+    const edges = [makeEdge('e1', 's1', 'local-analysis'), makeEdge('e2', 'local-analysis', 'g1')];
+    const workflow = {
+      ...makeWorkflow(nodes, edges),
+      workflowDependencies: PLANNING_DEPENDENCY,
+    };
+    const issues = validateWorkflowFull(workflow);
+    expect(issues.filter((issue) => issue.kind === 'include')).toEqual([]);
+  });
+
+  it('reports include when the workflow alias is blank', () => {
+    const nodes = [makeInclude('inc1', { workflow: '' })];
+    const issues = validateWorkflowFull(makeWorkflow(nodes, []));
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        kind: 'include',
+        nodeId: 'inc1',
+        severity: 'error',
+        message: expect.stringContaining('declared workflow dependency'),
+      }),
+    );
+  });
+
+  it('reports include when the alias is not a declared dependency', () => {
+    const nodes = [makeInclude('inc1', { workflow: 'missing-alias' })];
+    const issues = validateWorkflowFull(makeWorkflow(nodes, []));
+    expect(issues).toContainEqual(
+      expect.objectContaining({ kind: 'include', nodeId: 'inc1', severity: 'error' }),
+    );
+  });
+
+  it('reports include when nodes is empty', () => {
+    const nodes = [makeInclude('inc1', { nodes: {} })];
+    const workflow = { ...makeWorkflow(nodes, []), workflowDependencies: PLANNING_DEPENDENCY };
+    const issues = validateWorkflowFull(workflow);
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        kind: 'include',
+        nodeId: 'inc1',
+        severity: 'error',
+        message: expect.stringContaining('at least one node'),
+      }),
+    );
+  });
+
+  it('reports include when a local id collides with an existing node id', () => {
+    const nodes = [
+      makeStage('shared-id', { personaIds: ['p1'] }),
+      makeInclude('inc1', { nodes: { 'planning-analysis': 'shared-id' } }),
+    ];
+    const workflow = { ...makeWorkflow(nodes, []), workflowDependencies: PLANNING_DEPENDENCY };
+    const issues = validateWorkflowFull(workflow);
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        kind: 'include',
+        nodeId: 'inc1',
+        severity: 'error',
+        message: expect.stringContaining("'shared-id' collides"),
+      }),
+    );
+  });
+
+  it('reports include when two includes share a local id', () => {
+    const nodes = [
+      makeInclude('inc1', { nodes: { 'planning-analysis': 'shared-local' } }),
+      makeInclude('inc2', { nodes: { 'planning-reviews': 'shared-local' } }),
+    ];
+    const workflow = { ...makeWorkflow(nodes, []), workflowDependencies: PLANNING_DEPENDENCY };
+    const issues = validateWorkflowFull(workflow);
+    const collisions = issues.filter(
+      (issue) => issue.kind === 'include' && issue.message.includes('more than one include'),
+    );
+    expect(collisions.map((issue) => issue.nodeId).sort()).toEqual(['inc1', 'inc2']);
+  });
+
+  it('reports include when the same included node id is mapped twice on one node', () => {
+    const nodes = [
+      {
+        ...makeInclude('inc1', { nodes: {} }),
+        nodes: { a: 'dup', b: 'dup' },
+      } as WorkflowNode,
+    ];
+    const workflow = { ...makeWorkflow(nodes, []), workflowDependencies: PLANNING_DEPENDENCY };
+    const issues = validateWorkflowFull(workflow);
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        kind: 'include',
+        nodeId: 'inc1',
+        message: expect.stringContaining('mapped more than once'),
+      }),
+    );
+  });
+
+  it('does not cross-check mapped source ids when the pinned workflow is not in the catalog', () => {
+    const nodes = [makeInclude('inc1')];
+    const workflow = { ...makeWorkflow(nodes, []), workflowDependencies: PLANNING_DEPENDENCY };
+    const issues = validateWorkflowFull(workflow, undefined, []);
+    expect(issues.filter((issue) => issue.message.includes('is not a stage or gate'))).toEqual([]);
+  });
+
+  it('flags a mapped source id that is not a stage or gate in the loaded catalog', () => {
+    const nodes = [makeInclude('inc1', { nodes: { 'planning-branch': 'local-branch' } })];
+    const workflow = { ...makeWorkflow(nodes, []), workflowDependencies: PLANNING_DEPENDENCY };
+    const pinnedWorkflow: Workflow = {
+      ...makeWorkflow([makeCond('planning-branch')], []),
+      id: PLANNING_DEPENDENCY.planning.id,
+      name: 'Planning',
+    };
+    const issues = validateWorkflowFull(workflow, undefined, [pinnedWorkflow]);
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        kind: 'include',
+        nodeId: 'inc1',
+        message: expect.stringContaining("'planning-branch' is not a stage or gate"),
+      }),
+    );
+  });
+
+  it('accepts a mapped source id that is a stage or gate in the loaded catalog', () => {
+    const nodes = [makeInclude('inc1', { nodes: { 'planning-analysis': 'local-analysis' } })];
+    const workflow = { ...makeWorkflow(nodes, []), workflowDependencies: PLANNING_DEPENDENCY };
+    const pinnedWorkflow: Workflow = {
+      ...makeWorkflow([makeStage('planning-analysis', { personaIds: ['p'] })], []),
+      id: PLANNING_DEPENDENCY.planning.id,
+      name: 'Planning',
+    };
+    const issues = validateWorkflowFull(workflow, undefined, [pinnedWorkflow]);
+    expect(issues.filter((issue) => issue.message.includes('is not a stage or gate'))).toEqual([]);
+  });
+
+  it('does NOT report orphan or no_producer for an include whose provided id carries the edges', () => {
+    const nodes = [makeStage('s1', { personaIds: ['p1'] }), makeInclude('inc1'), makeGate('g1')];
+    const edges = [makeEdge('e1', 's1', 'local-analysis'), makeEdge('e2', 'local-analysis', 'g1')];
+    const workflow = { ...makeWorkflow(nodes, edges), workflowDependencies: PLANNING_DEPENDENCY };
+    const issues = validateWorkflowFull(workflow);
+    expect(
+      issues.filter(
+        (issue) =>
+          issue.nodeId === 'inc1' && (issue.kind === 'orphan' || issue.kind === 'no_producer'),
+      ),
+    ).toEqual([]);
+  });
+
+  it('still reports no_producer for an include with nothing feeding any of its provided ids', () => {
+    const nodes = [makeInclude('inc1'), makeGate('g1')];
+    const edges = [makeEdge('e1', 'local-analysis', 'g1')];
+    const workflow = { ...makeWorkflow(nodes, edges), workflowDependencies: PLANNING_DEPENDENCY };
+    const issues = validateWorkflowFull(workflow);
+    expect(issues).toContainEqual(expect.objectContaining({ kind: 'no_producer', nodeId: 'inc1' }));
+  });
 });
 
 // ---------------------------------------------------------------------------
