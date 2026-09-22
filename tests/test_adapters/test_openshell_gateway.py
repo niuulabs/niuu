@@ -2833,6 +2833,18 @@ def test_claude_subscription_uses_bearer_provider_route():
     assert api_key["header_name"] == "x-api-key"
 
 
+def test_gitlab_token_uses_bearer_provider_route():
+    from volundr.adapters.outbound.openshell_gateway import _provider_target
+
+    target = _provider_target("GITLAB_TOKEN")
+
+    assert target["hosts"] == ("gitlab.com",)
+    assert target["auth_style"] == "bearer"
+    assert target["header_name"] == "Authorization"
+    assert "/usr/bin/glab" in target["binaries"]
+    assert "/usr/bin/git" in target["binaries"]
+
+
 def test_linear_api_key_uses_scoped_inspected_header_route():
     from volundr.adapters.outbound.openshell_gateway import _provider_profile
 

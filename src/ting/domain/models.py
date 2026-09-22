@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
+from ravn.domain.persona_document import PersonaDependency
 from ting.domain.exceptions import InvalidStateTransitionError
 
 # ---------------------------------------------------------------------------
@@ -238,6 +239,36 @@ class SessionInfo:
 
 
 @dataclass(frozen=True)
+class WorkflowDependency:
+    """Exact immutable dependency on another workflow template."""
+
+    id: UUID
+    revision: str
+    digest: str
+    path: str | None = None
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> WorkflowDependency:
+        """Deserialize a persisted dependency; portable parsing performs stricter validation."""
+        return cls(
+            id=UUID(str(value["id"])),
+            revision=str(value["revision"]),
+            digest=str(value["digest"]),
+            path=str(value["path"]) if value.get("path") is not None else None,
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        value = {
+            "id": str(self.id),
+            "revision": self.revision,
+            "digest": self.digest,
+        }
+        if self.path is not None:
+            value["path"] = self.path
+        return value
+
+
+@dataclass(frozen=True)
 class WorkflowDefinition:
     id: UUID
     name: str
@@ -250,6 +281,35 @@ class WorkflowDefinition:
     updated_at: datetime
 
     tenant_id: str = ""
+    persona_dependencies: dict[str, PersonaDependency] = field(default_factory=dict)
+    revision: str | None = None
+    read_only: bool = False
+    source: str | None = None
+    persona_definitions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    requirements: list[dict[str, Any]] = field(default_factory=list)
+    schema_version: int = 1
+    workflow_dependencies: dict[str, WorkflowDependency] = field(default_factory=dict)
+    workflow_definitions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # ``revision`` is the latest-head compare-and-swap token, even when this
+    # value represents a historical version. ``document_revision`` identifies
+    # the selected immutable canonical document.
+    document_revision: str | None = None
+    is_head: bool = True
+    origin: str = "authored"
+    based_on_revision: str | None = None
+
+
+@dataclass(frozen=True)
+class WorkflowVersionSummary:
+    """Small immutable catalog projection for a workflow's version picker."""
+
+    workflow_id: UUID
+    version: str
+    document_revision: str
+    created_at: datetime
+    is_head: bool
+    based_on_revision: str | None = None
+    origin: str = "authored"
 
 
 @dataclass(frozen=True)

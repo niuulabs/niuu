@@ -19,7 +19,10 @@ from niuu.adapters.cli.runtime import (
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.slash_commands import build_slash_command_catalog, compose_slash_command_text
 from skuld.transports.claude_env import claude_spawn_env
-from skuld.transports.mcp_config import build_claude_mcp_config
+from skuld.transports.mcp_config import (
+    build_claude_mcp_config,
+    require_connected_mcp_servers,
+)
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
@@ -50,6 +53,8 @@ class _RetryableClaudeError(RuntimeError):
 class SubprocessTransport(CLITransport):
     """Spawn Claude per turn, resuming the logical session between invocations."""
 
+    supports_read_only_mcp_boundary = True
+
     def __init__(
         self,
         workspace_dir: str,
@@ -59,12 +64,16 @@ class SubprocessTransport(CLITransport):
         system_prompt: str = "",
         initial_prompt: str = "",
         mcp_servers: list[dict] | None = None,
+        read_only_mcp_only: bool = False,
+        allowed_mcp_tools: list[str] | None = None,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
         self._model = model
-        self._skip_permissions = skip_permissions
-        self._agent_teams = agent_teams
+        self._read_only_mcp_only = read_only_mcp_only
+        self._allowed_mcp_tools = list(allowed_mcp_tools or [])
+        self._skip_permissions = skip_permissions and not read_only_mcp_only
+        self._agent_teams = agent_teams and not read_only_mcp_only
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
         self._raw_mcp_servers = list(mcp_servers or [])
@@ -152,7 +161,19 @@ class SubprocessTransport(CLITransport):
         ]
         if self._model:
             cmd.extend(["--model", self._model])
-        if self._skip_permissions:
+        if self._read_only_mcp_only:
+            cmd.extend(
+                [
+                    "--tools",
+                    "",
+                    "--strict-mcp-config",
+                    "--permission-mode",
+                    "dontAsk",
+                ]
+            )
+            if self._allowed_mcp_tools:
+                cmd.extend(["--allowedTools", ",".join(self._allowed_mcp_tools)])
+        elif self._skip_permissions:
             cmd.extend(["--permission-mode", _DEFAULT_PERMISSION_MODE])
         if self._session_id:
             cmd.extend(["--resume", self._session_id])
@@ -196,6 +217,7 @@ class SubprocessTransport(CLITransport):
             await self._write_user_message(process.stdin, content)
             saw_result = False
             saw_meaningful_output = False
+            required_mcp_ready = not self._read_only_mcp_only
 
             while True:
                 line = await process.stdout.readline()
@@ -218,6 +240,20 @@ class SubprocessTransport(CLITransport):
 
                 if data.get("type") == "system" and data.get("subtype") == "init":
                     self._capture_init_commands(data)
+                    if self._read_only_mcp_only:
+                        try:
+                            require_connected_mcp_servers(
+                                data.get("mcp_servers"),
+                                {
+                                    str(server.get("name") or "")
+                                    for server in self._raw_mcp_servers
+                                    if server.get("name")
+                                },
+                            )
+                        except RuntimeError:
+                            await _stop_process(process)
+                            raise
+                        required_mcp_ready = True
 
                 event_type = data.get("type", "unknown")
                 if event_type == "result":
@@ -243,6 +279,8 @@ class SubprocessTransport(CLITransport):
                 raise RuntimeError(f"Claude Code CLI exited with code {exit_code}")
             if not saw_result:
                 raise RuntimeError("Claude Code CLI completed without a result event")
+            if not required_mcp_ready:
+                raise RuntimeError("Claude did not report required MCP server startup status")
         except _RetryableClaudeError:
             await _stop_process(process)
             raise

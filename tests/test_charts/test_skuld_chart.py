@@ -14,6 +14,39 @@ CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "skuld"
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
 @pytest.mark.parametrize("chart", ["skuld", "skuld-planner"])
+def test_evidence_gate_adapters_reach_runtime_configuration(chart):
+    from skuld.config import SkuldSettings
+
+    verifier = {
+        "adapter": "niuu.adapters.evidence_gate.ConfiguredEvidenceGateVerifier",
+        "kwargs": {"trusted_producers": ["document-checker"]},
+    }
+    artifacts = {
+        "adapter": "niuu.adapters.artifact_digest.FilesystemArtifactDigestResolver",
+        "kwargs": {"root": "/workspace"},
+    }
+    command = [
+        "helm",
+        "template",
+        "evidence-test",
+        str(CHART_DIR.parent / chart),
+        "--set-json",
+        "workflow.evidenceVerifier=" + json.dumps(verifier),
+        "--set-json",
+        "workflow.evidenceArtifacts=" + json.dumps(artifacts),
+    ]
+    config = next(
+        yaml.safe_load(doc["data"]["config.yaml"])
+        for doc in yaml.safe_load_all(subprocess.check_output(command))
+        if doc and doc.get("kind") == "ConfigMap" and "config.yaml" in doc.get("data", {})
+    )
+    settings = SkuldSettings(**config)
+    assert settings.workflow.evidence_verifier.model_dump(exclude_defaults=True) == verifier
+    assert settings.workflow.evidence_artifacts.model_dump(exclude_defaults=True) == artifacts
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+@pytest.mark.parametrize("chart", ["skuld", "skuld-planner"])
 @pytest.mark.parametrize("configured", [False, True])
 def test_mcp_connections_reach_runtime_configuration(chart, configured):
     from skuld.config import SkuldSettings

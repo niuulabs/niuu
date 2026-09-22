@@ -442,6 +442,27 @@ launchSpecs:
       memory: "2Gi"
 
 # Git provider configuration
+# Provider-neutral delivery uses deployment-pinned adapters, identities and policy.
+# Configure signing material through secret_kwargs_env, never inline Helm values.
+delivery:
+  enabled: false
+  authenticator:
+    adapter: ""
+    kwargs: {}
+    secret_kwargs_env: {}
+  workstreams:
+    adapter: ""
+    kwargs: {}
+  authorizer:
+    adapter: ""
+    kwargs: {}
+  forge:
+    adapter: volundr.adapters.outbound.user_delivery_forge.UserDeliveryForgeProvider
+    kwargs: {}
+  producer_id: forge-service
+  trusted_producers: []
+  policies: {}
+
 git:
   # -- Validate repositories on session creation
   validateOnCreate: true
@@ -654,6 +675,21 @@ workloadIdentity:
     key: private-key.pem
   verifiers: []
   mappings: []
+
+workflowExecutionCredentials:
+  enabled: false
+  projectionAdapter: "volundr.adapters.outbound.execution_credential_k8s.KubernetesExecutionCredentialProjection"
+  # Merged over the default `namespace: <release namespace>`. The chart's RBAC
+  # only grants Secret create/patch/delete in the release namespace. If you set
+  # `projectionKwargs.namespace` to another namespace you must create a Role
+  # (secrets: get, create, patch, delete) and RoleBinding for the Volundr
+  # ServiceAccount in that namespace yourself; the chart never grants this
+  # cluster-wide.
+  projectionKwargs: {}
+  projectionSecretKwargsEnv: {}
+  refreshIntervalSeconds: 300
+  admissionRoles:
+    - volundr:developer
 
 # Identity adapter (dynamic adapter pattern)
 # Switch between identity/authentication backends by changing the adapter class.
@@ -1915,6 +1951,9 @@ sidecars: []
 # Anthropic, OpenAI). Override here only to customise the catalog.
 integrations: {}
   # databaseName: niuu_shared  # Same records used by the shared Connections API.
+  # definitionFiles: []  # Absolute paths supplied through extraVolumes/extraVolumeMounts.
+  # moduleManifestFiles: []  # Trusted external component manifests supplied through mounts.
+  # allowDefinitionOverrides: false
   # definitions:
     # - slug: linear
     #   name: Linear

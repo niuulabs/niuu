@@ -159,6 +159,8 @@ a2a:
   agentDescription: ""
   # -- Cache-Control max-age for the served agent card. Leave empty for built-in default.
   cardMaxAgeSeconds: ""
+  # -- Lease duration for idempotent A2A workflow launch reservations.
+  launchLeaseSeconds: 60
   # -- Artifacts at or under this size (chars) inline on A2A tasks. Leave empty for built-in default.
   inlineArtifactMaxChars: ""
   # -- Extra artifact filenames probed beyond the .md page listing. Leave empty for built-in default.
@@ -169,6 +171,59 @@ a2a:
   pushAuth:
     adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
     kwargs: {}
+
+workflowExecution:
+  # Domain-neutral fan-out/join, durable waits, and the Ravn A2A gateway.
+  enabled: false
+  gatewayAdapter: ravn.adapters.child_task_a2a.ConfiguredRavnChildTaskA2AGateway
+  gatewayKwargs: {}
+  # Gateway admission roles on Ting-issued exact-scope workload credentials.
+  admissionRoles:
+    - volundr:developer
+  waitRepositoryAdapter: ting.adapters.postgres_workflow_waits.PostgresWorkflowWaitRepository
+  waitRepositoryKwargs: {}
+  # Generic wait condition observers, each `{condition_type, adapter, ...kwargs}`; see
+  # WorkflowExecutionConfig.wait_observers for the constructor-injection rules. The
+  # code delivery specialization's own forge.* observers live under delivery.waitObservers
+  # below and are only registered when delivery.enabled.
+  waitObservers:
+    - condition_type: timer
+      adapter: ting.adapters.timer_wait_observer.TimerWaitObserver
+  workerId: ting-workflow-execution
+  launchClaimLimit: 4
+  reconcileLimit: 100
+  leaseSeconds: 60
+  reconcileIntervalSeconds: 5
+  defaultBudgetUnits: 100
+  defaultDeadlineSeconds: 86400
+  listPageSize: 50
+  maxChildReconcileFailures: 5
+  maxWaitFailures: 5
+  maxParentStopFailures: 5
+  # Code delivery specialization: its own repository, router, and Forge/review
+  # wiring, layered over the generic execution ledger above. Requires enabled.
+  delivery:
+    # Code delivery on top of the generic blocks. Requires
+    # workflowExecution.enabled, workload identity, and configured Ravn A2A and
+    # Forge delivery/evidence adapters, including reviewAuthenticatorAdapter.
+    enabled: false
+    # forge.* wait condition observers, registered only when delivery is enabled.
+    waitObservers:
+      - condition_type: forge.checks
+        adapter: ting.delivery.wait_observers.ForgeChecksWaitObserver
+      - condition_type: forge.merge
+        adapter: ting.delivery.wait_observers.ForgeMergeWaitObserver
+    # Dynamic `EvidenceAuthenticator` used to sign server-derived reviewer receipts.
+    reviewAuthenticatorAdapter: ""
+    reviewAuthenticatorKwargs: {}
+    reviewAuthenticatorSecretKwargsEnv: {}
+    reviewProducers:
+      code: developer-code-reviewer
+      security: developer-security-reviewer
+      adversarial: developer-adversarial-reviewer
+    integrationReviewProducer: developer-integration-verifier
+    evidencePolicyId: developer-workstream
+    integrationPolicyId: developer-integration
 
 database:
   name: ting
@@ -185,6 +240,31 @@ database:
     enabled: false
     host: ""
     port: 5432
+
+# Workflow definition storage. PostgreSQL remains the explicit rollback mode.
+# File-backed storage and persistence are enabled by default. Existing installations
+# must run the workflow migration command before cutover.
+workflowRepository:
+  adapter: "ting.adapters.filesystem_workflows.FilesystemWorkflowRepository"
+  seedBundled: false
+  # Extra adapter constructor kwargs. The filesystem adapter defaults to
+  # catalog_path=/data/ting/workflows and create_directory=true; other
+  # adapters receive exactly what is set here.
+  kwargs: {}
+
+workflowImport:
+  maxUploadBytes: 4194304
+  maxExpandedBytes: 16777216
+  maxEntries: 128
+
+workflowPersistence:
+  enabled: true
+  existingClaim: ""
+  storageClass: ""
+  accessModes:
+    - ReadWriteMany
+  size: 1Gi
+  annotations: {}
 
 # Envoy sidecar proxy (JWT validation, header extraction)
 envoy:
@@ -382,6 +462,7 @@ auth:
   # -- Allow requests without identity only in explicitly trusted deployments
   allowAnonymousDev: false
   defaultUserId: dev-user
+  defaultTenantId: ""
   # -- Symmetric signing key for PAT JWTs (same key Envoy uses for validation)
   patSigningKey: ""
   # -- Default PAT lifetime in days

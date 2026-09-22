@@ -38,12 +38,15 @@ import type {
   ResearchCampaignDetail,
   CampaignArtifactDetail,
   ImportProjectOptions,
+  IWorkService,
 } from '../ports';
 import type { Saga, Phase, Run } from '../domain/saga';
 import type { DispatcherState } from '../domain/dispatcher';
 import type { SessionInfo } from '../domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from '../domain/tracker';
 import type { Workflow } from '../domain/workflow';
+import type { WorkCollection, WorkDetail, WorkSummary } from '../domain/work';
+import { serializePortableWorkflow } from '../domain/workflowPortable';
 
 // ---------------------------------------------------------------------------
 // Seed helpers
@@ -1483,6 +1486,8 @@ export function createMockTrackerService(): ITrackerBrowserService {
         instanceId: target?.mode === 'instance' ? target.instanceId : (instanceId ?? undefined),
         targetTags: target?.mode === 'tags' ? target.tags : undefined,
         targetMatch: target?.mode === 'tags' ? (target.match ?? 'all') : undefined,
+        workflowId: options?.workflowId,
+        workflowVersion: options?.workflowVersion,
       };
       return saga;
     },
@@ -1624,6 +1629,25 @@ export function createMockWorkflowService(): IWorkflowService {
       return workflows.get(id) ?? null;
     },
 
+    async listWorkflowVersions(id: string) {
+      const workflow = workflows.get(id);
+      if (!workflow) return [];
+      return [
+        {
+          version: workflow.version ?? 'draft',
+          documentRevision: workflow.documentRevision ?? workflow.revision ?? id,
+          createdAt: '2026-01-01T00:00:00Z',
+          isHead: true,
+          basedOnRevision: null,
+        },
+      ];
+    },
+
+    async getWorkflowVersion(id: string, version: string) {
+      const workflow = workflows.get(id);
+      return workflow?.version === version ? workflow : null;
+    },
+
     async saveWorkflow(workflow: Workflow) {
       workflows.set(workflow.id, workflow);
       return workflow;
@@ -1631,6 +1655,27 @@ export function createMockWorkflowService(): IWorkflowService {
 
     async deleteWorkflow(id: string) {
       workflows.delete(id);
+    },
+
+    async exportWorkflow(id, format) {
+      const workflow = workflows.get(id);
+      if (!workflow) throw new Error(`Workflow ${id} not found`);
+      if (format === 'bundle') {
+        throw new Error('Workflow bundle export is unavailable in the in-memory adapter.');
+      }
+      return {
+        data: new Blob([serializePortableWorkflow(workflow)], { type: 'application/yaml' }),
+        filename: `${id}.yaml`,
+        mediaType: 'application/yaml',
+      };
+    },
+
+    async previewWorkflowImport() {
+      throw new Error('Workflow import is unavailable in the in-memory adapter.');
+    },
+
+    async applyWorkflowImport() {
+      throw new Error('Workflow import is unavailable in the in-memory adapter.');
     },
 
     async launchWorkflow(workflowId: string, request: WorkflowLaunchRequest) {
@@ -1648,6 +1693,9 @@ export function createMockWorkflowService(): IWorkflowService {
         sessionName: request.sessionName || `${workflow.name}-${slug || 'workflow'}`,
         status: 'starting',
         clusterName: 'mock',
+        chatEndpoint: null,
+        workflowVersion: request.workflowVersion ?? workflow.version ?? '',
+        documentRevision: workflow.documentRevision ?? workflow.revision ?? workflow.id,
       };
     },
   };
@@ -1772,7 +1820,7 @@ export function createMockResearchService(): IResearchService {
         name: request.name || request.question.slice(0, 80),
         ownerId: 'dev-user',
         workflowId: workflow?.id ?? '00000000-0000-4000-8000-000000000001',
-        workflowVersion: workflow?.version ?? '1.0.0',
+        workflowVersion: request.workflowVersion ?? workflow?.version ?? '1.0.0',
         workflowName: workflow?.name ?? 'Research Campaign',
         sessionId: `mock-session-${slug}`,
         sessionName: request.name || slug,
@@ -1958,7 +2006,7 @@ export function createMockSpecsService(): ISpecsService {
         name: request.name || request.prompt.slice(0, 80),
         ownerId: 'dev-user',
         workflowId: request.workflowId ?? '96ecf5df-18a0-542b-9df6-aef6aef6a5db',
-        workflowVersion: '1.0.0',
+        workflowVersion: request.workflowVersion ?? '1.0.0',
         workflowName: 'Specification Stack',
         sessionId: `mock-session-${slug}`,
         sessionName: request.name || slug,
@@ -2027,6 +2075,65 @@ export function createMockSpecsService(): ISpecsService {
       };
       campaigns.set(slug, updated);
       return updated;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Work — read projections over projects, campaigns and executions
+// ---------------------------------------------------------------------------
+
+const MOCK_WORK: WorkSummary[] = [
+  {
+    id: 'project:demo-platform',
+    kind: 'project',
+    title: 'Platform reliability',
+    condition: 'active',
+    rawState: { source: 'saga', status: 'active' },
+    currentStep: 'Implement retry budget',
+    attention: null,
+    createdAt: '2026-01-05T09:00:00Z',
+    updatedAt: '2026-01-06T14:30:00Z',
+    source: null,
+    workflow: null,
+    session: null,
+    links: { self: '/ting/work/project:demo-platform', specialist: '/ting/sagas' },
+    actions: [],
+  },
+  {
+    id: 'campaign:demo-research',
+    kind: 'research',
+    title: 'Queue latency study',
+    campaignSlug: 'queue-latency-study',
+    condition: 'waiting',
+    rawState: { source: 'campaign', status: 'waiting' },
+    currentStep: 'Awaiting review',
+    attention: { kind: 'input', message: 'This work is waiting for input.' },
+    createdAt: '2026-01-04T10:00:00Z',
+    updatedAt: '2026-01-06T11:00:00Z',
+    source: null,
+    workflow: null,
+    session: null,
+    links: { self: '/ting/work/campaign:demo-research', specialist: '/ting/research' },
+    actions: [],
+  },
+];
+
+export function createMockWorkService(): IWorkService {
+  return {
+    async list(): Promise<WorkCollection> {
+      return {
+        projects: MOCK_WORK.filter((item) => item.kind === 'project'),
+        campaigns: MOCK_WORK.filter((item) => item.kind !== 'project'),
+        executions: [],
+        executionNextCursor: null,
+        coverage: [],
+      };
+    },
+    async get(kind, id): Promise<WorkDetail> {
+      const item = MOCK_WORK.find((entry) => entry.id === `${kind}:${id}`);
+      if (!item) throw new Error(`Work ${kind}:${id} not found`);
+      return { item, tasks: [], coverage: [] };
     },
   };
 }

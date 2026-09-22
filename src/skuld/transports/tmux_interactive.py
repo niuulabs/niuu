@@ -18,6 +18,7 @@ import re
 import shlex
 import shutil
 import signal
+import tempfile
 import time
 import uuid
 from collections import deque
@@ -147,6 +148,29 @@ _MENU_ROW_RE = re.compile(r"^\s*[❯>\s]*([1-9])[.)]\s+(.+?)\s*$")
 _WORKSPACE_TRUST_ROW_RE = re.compile(
     r"^\s*([❯>])?\s*(?:[1-9][.)]\s+)?(No, exit|Yes, I trust this folder)\s*$"
 )
+
+
+def _replace_text_atomically(path: Path, text: str) -> None:
+    """Replace a file so that a concurrent reader sees the old or the new content.
+
+    Writing in place truncates first, and another session reading the same
+    file at that moment parses an empty document. The new content is written
+    beside the file and renamed over it, which is atomic on one filesystem. A
+    symlinked file is replaced at its target so the link survives.
+    """
+    target = path.resolve()
+    descriptor, temporary = tempfile.mkstemp(
+        dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        if target.exists():
+            shutil.copymode(target, temporary)
+        os.replace(temporary, target)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
 
 
 @dataclass
@@ -2880,7 +2904,7 @@ class TmuxInteractiveTransport(CLITransport):
         project["hasTrustDialogAccepted"] = True
         if json.dumps(config, sort_keys=True) != before:
             config_path.parent.mkdir(parents=True, exist_ok=True)
-            config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+            _replace_text_atomically(config_path, json.dumps(config, indent=2))
             logger.info("tmux: prepared Claude CLI config at %s (onboarding, trust)", config_path)
 
     async def _emit_system_init(self) -> None:

@@ -537,3 +537,21 @@ class TestFlockRoomMembership:
 
         config = (tmp_path / "flock" / "node-coordinator.yaml").read_text()
         assert "dream_cycle" not in config
+
+    def test_roomless_flock_can_be_explicitly_responsive(self, tmp_path: Path) -> None:
+        """Contained workflow flocks can disable autonomous resident triggers."""
+        result = runner.invoke(
+            flock_app,
+            [
+                "init",
+                "coordinator",
+                "--flock-dir",
+                str(tmp_path / "flock"),
+                "--responsive",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        config = (tmp_path / "flock" / "node-coordinator.yaml").read_text()
+        assert "resident_inbox:\n  enabled: false" in config
+        assert "initiative:\n  enabled: true" in config

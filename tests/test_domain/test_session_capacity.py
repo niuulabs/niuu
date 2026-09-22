@@ -28,6 +28,15 @@ class FullPodManager(MockPodManager):
         return self._capacity
 
 
+class ReservedPodManager(FullPodManager):
+    async def capacity_for(self, session) -> SessionCapacity:
+        return SessionCapacity(
+            limit=self._capacity.limit,
+            active=self._capacity.active - 1,
+            remedy=self._capacity.remedy,
+        )
+
+
 def _source() -> GitSource:
     return GitSource(repo="https://github.com/org/repo", branch="main")
 
@@ -66,6 +75,16 @@ async def test_start_refuses_before_the_session_flips_to_starting() -> None:
     assert unchanged.status == created.status
     assert unchanged.status != SessionStatus.STARTING
     assert pod_manager.start_calls == []
+
+
+async def test_restart_reuses_capacity_reserved_for_the_same_session() -> None:
+    pod_manager = ReservedPodManager(active=1, limit=1)
+    service = SessionService(InMemorySessionRepository(), pod_manager)
+    created = await service.create_session(name="t", model="claude", source=_source())
+
+    restarted = await service.start_session(created.id)
+
+    assert restarted.status == SessionStatus.STARTING
 
 
 async def test_create_and_start_checks_capacity_before_creating_a_record() -> None:

@@ -1,0 +1,32 @@
+name: reviewer
+system_prompt_template: Independently review the supplied artifact against the original
+  task. Check correctness, completeness, unsupported claims, and clarity. Return pass
+  only when requirements are met; otherwise return changes_required with concrete
+  findings. Copy the reviewed artifact unchanged into the artifact field so the final
+  result is self-contained. Never invent tests or evidence.
+permission_mode: read_only
+iteration_budget: 16
+consumes:
+  event_types:
+  - artifact.drafted
+produces:
+  event_type: artifact.reviewed
+  event_type_map:
+    pass: artifact.approved
+    changes_required: artifact.changes_requested
+  schema:
+    verdict:
+      type: enum
+      values:
+      - pass
+      - changes_required
+      description: Review decision
+    artifact:
+      type: string
+      description: Exact reviewed artifact
+    findings:
+      type: array
+      description: Actionable review findings
+    summary:
+      type: string
+      description: Review rationale

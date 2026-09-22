@@ -21,6 +21,30 @@ from ravn.domain.models import Session, ToolCall, ToolResult
 logger = logging.getLogger(__name__)
 
 
+def _disabled_tool_names(workflow_graph: dict[str, Any] | None) -> frozenset[str]:
+    """Tool names a workflow graph strips entirely from every persona running it.
+
+    The workflow schema's `toolActions` narrows a tool's *actions* and
+    requires each entry to be a non-empty list, so it cannot express "grant
+    this persona none of this tool" for a tool with no actions of its own
+    (see `_validate_tool_actions` in `ting.domain.workflow_document`). A
+    workflow graph declares that under `disabledTools` instead — a flat list
+    of tool names — which Ravn owns and validates here rather than the
+    workflow schema. A malformed value fails closed rather than being
+    silently ignored.
+    """
+    if not isinstance(workflow_graph, dict) or "disabledTools" not in workflow_graph:
+        return frozenset()
+    disabled = workflow_graph["disabledTools"]
+    if not isinstance(disabled, list) or any(
+        not isinstance(name, str) or not name.strip() for name in disabled
+    ):
+        raise RuntimeError(
+            "Workflow graph disabledTools must be a list of non-empty tool name strings"
+        )
+    return frozenset(disabled)
+
+
 def _build_tools(
     settings: Settings,
     workspace: Path,
@@ -129,23 +153,43 @@ def _build_tools(
         if workflow_sources:
             runtime_ctx["workflow_sources"] = workflow_sources
 
-    if settings.gateway.platform.enabled and include_groups & {"ravn", "a2a"}:
+    if settings.gateway.platform.enabled and include_groups & {
+        "ravn",
+        "a2a",
+        "delivery",
+        "workflow_execution",
+    }:
         from ravn.adapters.agent_directory import (  # noqa: PLC0415
             GuildAgentDirectoryAdapter,
         )
         from ravn.adapters.tool_build.http import (  # noqa: PLC0415
+            HttpxJsonClient,
             client_from_workload_identity,
         )
 
         platform = settings.gateway.platform
-        peer_client = client_from_workload_identity(
-            base_url=platform.base_url,
-            external_token=platform.pat_token,
-            workload_token_file=platform.workload_token_file,
-            workload_exchange_url=platform.workload_exchange_url,
-            workload_audiences=platform.workload_audiences,
-            timeout_seconds=platform.timeout,
-            allowed_origins=[platform.base_url, *platform.a2a_trusted_origins],
+        workflow_execution_url = settings.workflow_execution.base_url
+        allowed_origins = [
+            platform.base_url,
+            *platform.a2a_trusted_origins,
+            *([workflow_execution_url] if workflow_execution_url else []),
+        ]
+        peer_client = (
+            HttpxJsonClient(
+                auth=None,
+                timeout_seconds=platform.timeout,
+                allowed_origins=allowed_origins,
+            )
+            if platform.anonymous_dev_mode
+            else client_from_workload_identity(
+                base_url=platform.base_url,
+                external_token=platform.pat_token,
+                workload_token_file=platform.workload_token_file,
+                workload_exchange_url=platform.workload_exchange_url,
+                workload_audiences=platform.workload_audiences,
+                timeout_seconds=platform.timeout,
+                allowed_origins=allowed_origins,
+            )
         )
         runtime_ctx["agent_directory"] = GuildAgentDirectoryAdapter(
             base_url=platform.base_url,
@@ -157,12 +201,104 @@ def _build_tools(
             platform.base_url,
             *platform.a2a_trusted_origins,
         ]
+        # The domain-neutral execution lifecycle (workflow_execution_*) and the
+        # code-delivery specialization (delivery_expand_workstreams,
+        # delivery_complete/record_integration, delivery_workspace/
+        # forge/evidence) both need an owner-bound execution client whenever
+        # either group is requested; a persona gets only the tools its own
+        # group actually needs.
+        if include_groups & {"workflow_execution", "delivery"}:
+            workflow_execution = settings.workflow_execution
+            delivery_client = peer_client
+            if workflow_execution.execution_id:
+                from ravn.adapters.workflow_execution_http import (  # noqa: PLC0415
+                    HttpWorkflowExecutionClient,
+                )
+
+                execution_base_url = workflow_execution.base_url or platform.base_url
+                execution_origins = list(dict.fromkeys([execution_base_url, platform.base_url]))
+                if platform.anonymous_dev_mode:
+                    execution_client = HttpxJsonClient(
+                        auth=None,
+                        timeout_seconds=platform.timeout,
+                        allowed_origins=execution_origins,
+                    )
+                elif workflow_execution.auth_token_file:
+                    from niuu.adapters.outbound.http_auth import (  # noqa: PLC0415
+                        FileBearerTokenAuthAdapter,
+                    )
+
+                    execution_client = HttpxJsonClient(
+                        auth=FileBearerTokenAuthAdapter(
+                            token_file=workflow_execution.auth_token_file
+                        ),
+                        timeout_seconds=platform.timeout,
+                        allowed_origins=execution_origins,
+                    )
+                else:
+                    raise RuntimeError(
+                        "workflow_execution.auth_token_file is required for an owner-bound "
+                        "coordinator session; static bearer tokens are not supported"
+                    )
+                delivery_client = execution_client
+                runtime_ctx["workflow_execution"] = HttpWorkflowExecutionClient(
+                    base_url=execution_base_url,
+                    execution_id=workflow_execution.execution_id,
+                    client=execution_client,
+                )
+                if "delivery" in include_groups:
+                    from ravn.adapters.delivery_http import (  # noqa: PLC0415
+                        HttpDeliveryExecutionClient,
+                    )
+
+                    runtime_ctx["delivery_execution"] = HttpDeliveryExecutionClient(
+                        base_url=execution_base_url,
+                        execution_id=workflow_execution.execution_id,
+                        client=execution_client,
+                    )
+            if "delivery" in include_groups:
+                from ravn.adapters.delivery_http import (  # noqa: PLC0415
+                    HttpDeliveryServiceClient,
+                )
+
+                runtime_ctx["delivery_service"] = HttpDeliveryServiceClient(
+                    base_url=platform.base_url,
+                    client=delivery_client,
+                )
 
     # The session_join tool only makes sense for a resident daemon, which owns
     # the manager and injects it here; when absent (CLI single-shot) the tool
     # is filtered out via its required_context.
     if session_join_manager is not None:
         runtime_ctx["session_join_manager"] = session_join_manager
+
+    persona_allowed = set(getattr(persona_config, "allowed_tools", None) or [])
+    needs_workflow_execution = any(
+        name == "workflow_execution" or name.startswith("workflow_execution_")
+        for name in persona_allowed
+    )
+    needs_delivery_execution = "delivery_expand_workstreams" in persona_allowed or any(
+        name in {"delivery_complete", "delivery_record_integration"} for name in persona_allowed
+    )
+    needs_delivery_service = any(
+        name in {"delivery_workspace", "delivery_forge", "delivery_evidence"}
+        for name in persona_allowed
+    )
+    if needs_workflow_execution and runtime_ctx.get("workflow_execution") is None:
+        raise RuntimeError(
+            "Persona requires durable workflow execution tools, but an owner-bound "
+            "workflow_execution runtime context is not configured"
+        )
+    if needs_delivery_execution and runtime_ctx.get("delivery_execution") is None:
+        raise RuntimeError(
+            "Persona requires the code-delivery execution specialization, but an owner-bound "
+            "delivery_execution runtime context is not configured"
+        )
+    if needs_delivery_service and runtime_ctx.get("delivery_service") is None:
+        raise RuntimeError(
+            "Persona requires typed delivery tools, but the authenticated platform "
+            "delivery service is not configured"
+        )
 
     tools: list[ToolPort] = []
     state_tool: Any = None
@@ -227,6 +363,48 @@ def _build_tools(
 
     # -- Apply enabled/disabled filters --
     tools = _filter_tools(tools, settings, persona_config)
+
+    # A workflow graph may narrow or remove tools for every persona that runs
+    # it, declared entirely in the graph and in the persona's own document —
+    # never keyed off a tool name, a persona name, or `executionContract`.
+    # InlinePersonaAdapter.load only ever overwrites `name` when a workflow
+    # maps a dependency to a persona under a local alias, so a name- or
+    # contract-keyed check would silently widen or narrow with the alias
+    # while the persona's declared fields survive it unchanged.
+    #
+    # A tool whose persona document declares `<tool.name>_actions` (currently
+    # only `delivery_workspace_actions`) is narrowed to exactly that allowlist,
+    # further narrowed — never widened — by `toolActions[tool.name]` when the
+    # graph declares one. A tool the persona document says nothing about is
+    # left with its full built-in operations; the attribute's mere presence
+    # (even as an empty list) is what opts a tool into this scheme, so a
+    # persona granted the tool with an empty allowlist gets none of it.
+    # The workflow schema requires `toolActions` values to be a non-empty
+    # list, so it cannot express "grant none of this tool" for an atomic tool
+    # with no actions of its own; a workflow that needs that declares the
+    # tool name under `disabledTools` instead, and it is dropped regardless
+    # of what the persona's `allowed_tools` grants.
+    workflow_graph = getattr(getattr(settings, "workflow", None), "graph", None) or {}
+    disabled_tool_names = _disabled_tool_names(workflow_graph)
+    tool_actions = workflow_graph.get("toolActions") if isinstance(workflow_graph, dict) else None
+
+    narrowed_tools: list[Any] = []
+    for tool in tools:
+        if tool.name in disabled_tool_names:
+            continue
+        declared_actions = getattr(persona_config, f"{tool.name}_actions", None)
+        if declared_actions is not None and hasattr(tool, "operations"):
+            allowed_actions = set(declared_actions)
+            narrowed = tool_actions.get(tool.name) if isinstance(tool_actions, dict) else None
+            if isinstance(narrowed, list):
+                allowed_actions &= {action for action in narrowed if isinstance(action, str)}
+            tool.operations = {
+                action: method
+                for action, method in tool.operations.items()
+                if action in allowed_actions
+            }
+        narrowed_tools.append(tool)
+    tools = narrowed_tools
 
     # Update state tool with final tool names after filtering
     # Keep the provider on the returned list itself. CLI transports expose it

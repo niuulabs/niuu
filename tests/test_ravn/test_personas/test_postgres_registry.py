@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ravn.adapters.personas.loader import PersonaConfig
+from ravn.adapters.personas.loader import PersonaConfig, PersonaProduces
 from ravn.adapters.personas.postgres_registry import (
     PostgresPersonaRegistry,
     _config_to_payload,
@@ -25,6 +25,10 @@ from ravn.adapters.personas.postgres_registry import (
     _normalize_schema,
     _parse_payload,
     _payload_to_config,
+)
+from ravn.domain.persona_document import (
+    PersonaNonPortableError,
+    portable_persona_from_config,
 )
 
 
@@ -98,6 +102,10 @@ class _BuiltinLoader:
     def load(self, name: str) -> PersonaConfig | None:
         return self._personas.get(name) or self._archived.get(name)
 
+    def load_current_portable(self, name: str):  # noqa: ANN201
+        config = self._personas.get(name) or self._archived.get(name)
+        return portable_persona_from_config(config) if config is not None else None
+
     def is_builtin(self, name: str) -> bool:
         return name in self._personas or name in self._archived
 
@@ -106,6 +114,48 @@ def _make_registry():
     pool = AsyncMock()
     loader = _BuiltinLoader()
     return PostgresPersonaRegistry(pool, builtin_loader=loader), pool
+
+
+class TestPortablePersonas:
+    async def test_builtin_uses_raw_source_document(self):
+        registry, pool = _make_registry()
+        pool.fetch.return_value = []
+
+        document = await registry.get_current_portable_persona("user-1", "coding-agent")
+
+        assert document is not None
+        assert document.id == "coding-agent"
+        assert document.revision.startswith("content-")
+        assert document.definition["system_prompt_template"] == "Builtin coding agent."
+
+    async def test_custom_persona_is_owner_scoped_and_exactly_addressable(self):
+        registry, pool = _make_registry()
+        row = _mock_row()
+        row["config_json"]["executor"] = None
+        pool.fetch.return_value = [row]
+
+        document = await registry.get_current_portable_persona("user-1", "custom-agent")
+
+        assert document is not None
+        assert document.definition["system_prompt_template"] == "You are custom."
+        exact = await registry.get_portable_persona_revision(
+            "user-1", "custom-agent", document.revision
+        )
+        assert exact == document
+        assert (
+            await registry.get_portable_persona_revision(
+                "user-1", "custom-agent", "content-0000000000000000"
+            )
+            is None
+        )
+        assert pool.fetch.await_args.args[1:] == ("user-1", "custom-agent")
+
+    async def test_custom_persona_with_local_executor_is_not_portable(self):
+        registry, pool = _make_registry()
+        pool.fetch.return_value = [_mock_row()]
+
+        with pytest.raises(PersonaNonPortableError, match="local executor binding"):
+            await registry.get_current_portable_persona("user-1", "custom-agent")
 
 
 class TestListPersonas:
@@ -441,3 +491,21 @@ class TestHelperNormalization:
     def test_normalize_payload_requires_name(self):
         with pytest.raises(ValueError, match="Persona name is required"):
             _normalize_payload({})
+
+    def test_outcome_event_map_survives_storage_payload_round_trip(self):
+        config = PersonaConfig(
+            name="reviewer",
+            produces=PersonaProduces(
+                event_type="review.completed",
+                event_type_map={
+                    "pass": "review.passed",
+                    "needs_changes": "review.changes_requested",
+                },
+            ),
+        )
+
+        payload = _normalize_payload(_config_to_payload(config))
+        restored = _payload_to_config(payload)
+
+        assert payload["produces_event_map"] == config.produces.event_type_map
+        assert restored.produces.event_type_map == config.produces.event_type_map

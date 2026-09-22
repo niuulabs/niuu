@@ -16,6 +16,9 @@ from niuu.domain.models import Principal
 from niuu.domain.services.setup import SetupService
 from niuu.domain.stack import (
     ApplyStatus,
+    ExternalIntegrationDefinition,
+    ExternalIntegrationSettings,
+    ExternalIntegrationValidation,
     ModelOption,
     ModelServerSettings,
     ModelTestResult,
@@ -73,6 +76,18 @@ class _FakeStack(StackControlPort):
                     base_url=server.get("base_url", ""),
                     models=tuple(server.get("models", ())),
                     has_api_key=bool(server.get("api_key")),
+                ),
+            )
+        if "external_integrations" in docker:
+            effective = replace(
+                effective,
+                external_integrations=tuple(
+                    ExternalIntegrationSettings(
+                        source_dir=item["source_dir"],
+                        definition_files=tuple(item["definition_files"]),
+                        manifest_file=item.get("manifest_file", ""),
+                    )
+                    for item in docker["external_integrations"]
                 ),
             )
         return StackView(
@@ -137,6 +152,55 @@ class _FakeStack(StackControlPort):
         if self.fail_with is not None:
             raise self.fail_with
         return ModelTestResult(ok=True, model="org/m", reply="OK", latency_ms=1200)
+
+    async def external_integrations_root(self) -> str:
+        return "/var/lib/niuu/private-integrations"
+
+    async def validate_external_integration(
+        self,
+        source_dir: str,
+        definition_files: list[str],
+        manifest_file: str = "",
+    ) -> ExternalIntegrationValidation:
+        return self._validation(source_dir, definition_files, manifest_file)
+
+    async def describe_external_integration(
+        self,
+        source_dir: str,
+        definition_files: list[str],
+        manifest_file: str = "",
+    ) -> ExternalIntegrationValidation:
+        return self._validation(source_dir, definition_files, manifest_file)
+
+    def _validation(
+        self,
+        source_dir: str,
+        definition_files: list[str],
+        manifest_file: str,
+    ) -> ExternalIntegrationValidation:
+        if "invalid" in source_dir:
+            return ExternalIntegrationValidation(
+                ok=False,
+                source_dir=source_dir,
+                definition_files=tuple(definition_files),
+                manifest_file=manifest_file,
+                errors=("adapter could not be imported",),
+            )
+        slug = Path(source_dir).name
+        return ExternalIntegrationValidation(
+            ok=True,
+            source_dir=source_dir,
+            definition_files=tuple(definition_files),
+            manifest_file=manifest_file,
+            definitions=(
+                ExternalIntegrationDefinition(
+                    slug=slug,
+                    name=slug.title(),
+                    integration_type="issue_tracker",
+                    adapter=f"{slug}.Adapter",
+                ),
+            ),
+        )
 
 
 def _client(
@@ -495,3 +559,107 @@ class TestModelServerSettings:
         assert refused.status_code == 503
         schema = admin.get("/api/v1/niuu/setup/settings", headers=HEADERS).json()
         assert all(f["readOnly"] is True for f in schema["sections"][1]["fields"])
+
+
+class TestExternalIntegrationSettings:
+    def test_schema_exposes_package_management_as_a_separate_resource(self, tmp_path: Path) -> None:
+        client = _client(tmp_path, roles=["volundr:admin"], stack=_FakeStack())
+        schema = client.get("/api/v1/niuu/setup/settings", headers=HEADERS).json()
+        section = schema["sections"][2]
+        assert section["id"] == "external-integrations"
+        assert section["fields"] == []
+        resource = section["resources"][0]
+        assert resource == {
+            "id": "external-integration-packages",
+            "type": "external_integrations",
+            "label": "Integration packages",
+            "description": (
+                "Package files stay on this machine. Adding or removing a package updates "
+                "the persisted stack configuration and restarts the platform."
+            ),
+            "writable": True,
+            "listPath": "/api/v1/niuu/setup/settings/external-integrations",
+            "createPath": "/api/v1/niuu/setup/settings/external-integrations",
+            "deletePath": "/api/v1/niuu/setup/settings/external-integrations/{id}",
+            "validatePath": "/api/v1/niuu/setup/settings/external-integrations/validate",
+        }
+
+    def test_validate_add_list_and_remove_package(self, tmp_path: Path) -> None:
+        stack = _FakeStack()
+        client = _client(tmp_path, roles=["volundr:admin"], stack=stack)
+        body = {
+            "sourceDir": "/var/lib/niuu/private-integrations/acmebugs",
+            "definitionFiles": ["integration.yaml"],
+        }
+
+        empty = client.get("/api/v1/niuu/setup/settings/external-integrations", headers=HEADERS)
+        assert empty.json() == {
+            "managedRoot": "/var/lib/niuu/private-integrations",
+            "items": [],
+        }
+
+        validated = client.post(
+            "/api/v1/niuu/setup/settings/external-integrations/validate",
+            json=body,
+            headers=HEADERS,
+        )
+        assert validated.status_code == 200
+        assert validated.json()["definitions"][0] == {
+            "slug": "acmebugs",
+            "name": "Acmebugs",
+            "integrationType": "issue_tracker",
+            "adapter": "acmebugs.Adapter",
+        }
+
+        added = client.post(
+            "/api/v1/niuu/setup/settings/external-integrations",
+            json=body,
+            headers=HEADERS,
+        )
+        assert added.status_code == 201, added.text
+        assert added.json()["applyState"] == "applying"
+        assert stack.applied == 1
+
+        listed = client.get(
+            "/api/v1/niuu/setup/settings/external-integrations", headers=HEADERS
+        ).json()
+        assert listed["items"][0]["sourceDir"] == body["sourceDir"]
+        assert listed["items"][0]["ok"] is True
+
+        removed = client.delete(
+            "/api/v1/niuu/setup/settings/external-integrations/0", headers=HEADERS
+        )
+        assert removed.status_code == 200
+        assert removed.json()["state"] == "applying"
+        assert stack.applied == 2
+        assert stack._view().effective.external_integrations == ()
+
+    def test_invalid_packages_and_non_admin_access_are_rejected(self, tmp_path: Path) -> None:
+        body = {
+            "sourceDir": "/var/lib/niuu/private-integrations/invalid",
+            "definitionFiles": ["integration.yaml"],
+        }
+        admin = _client(tmp_path, roles=["volundr:admin"], stack=_FakeStack())
+        invalid = admin.post(
+            "/api/v1/niuu/setup/settings/external-integrations",
+            json=body,
+            headers=HEADERS,
+        )
+        assert invalid.status_code == 422
+        assert "adapter could not be imported" in invalid.json()["detail"]
+
+        viewer = _client(tmp_path, roles=["volundr:developer"], stack=_FakeStack())
+        assert (
+            viewer.get(
+                "/api/v1/niuu/setup/settings/external-integrations", headers=HEADERS
+            ).status_code
+            == 403
+        )
+        assert (
+            viewer.post(
+                "/api/v1/niuu/setup/settings/external-integrations/validate",
+                json=body,
+                headers=HEADERS,
+            ).status_code
+            == 403
+        )

@@ -6,6 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from volundr.domain.execution_catalog import ExecutionSelectionError
 from volundr.domain.project_ports import ProjectConflictError
 from volundr.domain.projects import ForgeProject, ProjectReceipt
 from volundr.domain.services.projects import ProjectNotFoundError, ProjectService
@@ -72,6 +73,8 @@ async def project_result(operation):
         raise HTTPException(409, str(exc)) from exc
     except SessionAccessDeniedError as exc:
         raise HTTPException(403, str(exc)) from exc
+    except ExecutionSelectionError:
+        raise
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except OSError as exc:

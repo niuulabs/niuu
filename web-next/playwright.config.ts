@@ -28,6 +28,15 @@ export default defineConfig({
   },
   projects: [
     {
+      name: 'webkit-workflow-editor',
+      testMatch: ['workflow-editor.spec.ts', 'ting-work.spec.ts'],
+      use: {
+        ...devices['Desktop Safari'],
+        viewport: { width: 1440, height: 900 },
+        colorScheme: 'dark',
+      },
+    },
+    {
       name: 'chromium',
       use: {
         ...devices['Desktop Chrome'],

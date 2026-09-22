@@ -8,42 +8,9 @@ echo "==== Skuld Entrypoint ===="
 echo "Session ID: ${SESSION_ID:-unknown}"
 echo "Workspace: ${WORKSPACE_DIR:-/volundr/sessions/${SESSION_ID}/workspace}"
 
-if [ "$#" -gt 0 ]; then
-    exec "$@"
-fi
-
 # Set defaults
 export SESSION_ID="${SESSION_ID:-unknown}"
 export WORKSPACE_DIR="${WORKSPACE_DIR:-/volundr/sessions/${SESSION_ID}/workspace}"
-
-# Create workspace directory if it doesn't exist
-mkdir -p "$WORKSPACE_DIR"
-
-# Configure Claude Code CLI based on provider
-# Anthropic API (default)
-if [ -n "$ANTHROPIC_API_KEY" ]; then
-    echo "Using Anthropic API"
-    export ANTHROPIC_API_KEY
-fi
-
-# OpenAI API key (for Codex CLI)
-if [ -n "$OPENAI_API_KEY" ]; then
-    echo "Using OpenAI API"
-    export OPENAI_API_KEY
-fi
-
-# Ollama or compatible API
-if [ -n "$ANTHROPIC_BASE_URL" ]; then
-    echo "Using custom API endpoint: $ANTHROPIC_BASE_URL"
-    export ANTHROPIC_BASE_URL
-    export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-}"
-fi
-
-# Set up Claude Code configuration directory.
-# Default to $HOME/.claude where OAuth credentials live (Claude Max subscription).
-# The Helm chart sets CLAUDE_CONFIG_DIR explicitly; this fallback covers direct runs.
-export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-mkdir -p "$CLAUDE_CONFIG_DIR"
 
 # Source secrets from manifest (no-op if manifest doesn't exist)
 MANIFEST="/run/secrets/manifest.json"
@@ -76,6 +43,33 @@ if [ -f /run/secrets/env.sh ]; then
     echo "Sourcing injected session secrets"
     . /run/secrets/env.sh
 fi
+
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+fi
+
+# Broker-only filesystem and CLI setup. Explicit commands (including sealed
+# credential enrollment and contained Ravn processes) must remain read-only safe.
+mkdir -p "$WORKSPACE_DIR"
+
+if [ -n "$ANTHROPIC_API_KEY" ]; then
+    echo "Using Anthropic API"
+    export ANTHROPIC_API_KEY
+fi
+
+if [ -n "$OPENAI_API_KEY" ]; then
+    echo "Using OpenAI API"
+    export OPENAI_API_KEY
+fi
+
+if [ -n "$ANTHROPIC_BASE_URL" ]; then
+    echo "Using custom API endpoint: $ANTHROPIC_BASE_URL"
+    export ANTHROPIC_BASE_URL
+    export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-}"
+fi
+
+export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+mkdir -p "$CLAUDE_CONFIG_DIR"
 
 # Remove leftover Infisical agent access token (no longer needed after init)
 rm -f /home/.infisical-workdir/identity-access-token

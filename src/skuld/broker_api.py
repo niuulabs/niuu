@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
+from fastapi import FastAPI, HTTPException, Query, Request, Response, WebSocket, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -139,14 +139,22 @@ app.add_middleware(
 @app.get("/health")
 async def health() -> dict:
     """Health check endpoint."""
-    return {"status": "healthy", "session_id": broker.session_id, **_BUILD_IDENTITY}
+    startup = broker.startup_status()
+    return {
+        "status": "unhealthy" if startup["startup_state"] == "failed" else "healthy",
+        "session_id": broker.session_id,
+        **startup,
+        **_BUILD_IDENTITY,
+    }
 
 
 @app.get("/ready")
-async def ready() -> dict:
+async def ready(response: Response) -> dict:
     """Readiness check endpoint."""
-    is_ready = broker._transport is not None
-    return {"ready": is_ready, "session_id": broker.session_id}
+    startup = broker.startup_status()
+    if not startup["ready"]:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return {"session_id": broker.session_id, **startup}
 
 
 @app.websocket("/session")
@@ -910,6 +918,16 @@ class _ResendPromptRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class _RoomWorkflowEventRequest(BaseModel):
+    """A deterministic event injected into the active workflow mesh."""
+
+    event_type: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    request_id: str = Field(min_length=1, max_length=200)
+    source: str = "ting"
+
+
 class _RoomJoinRequest(BaseModel):
     """Request body for joining a live Environment room."""
 
@@ -1042,6 +1060,26 @@ async def resend_room_initial_prompt(body: _ResendPromptRequest) -> dict:
         raise HTTPException(503, str(exc))
 
     return {"status": "sent", "message_id": message_id}
+
+
+@app.post("/api/room/workflow-events")
+async def publish_room_workflow_event(body: _RoomWorkflowEventRequest) -> dict:
+    """Publish a typed continuation into the mesh with a stable event identity."""
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", body.request_id):
+        raise HTTPException(400, "Invalid request_id")
+    try:
+        event_id = await broker.handle_publish_mesh_event(
+            body.event_type,
+            body.content,
+            source=body.source,
+            payload=body.payload,
+            request_id=body.request_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"status": "published", "event_id": event_id, "event_type": body.event_type}
 
 
 @app.post("/api/room/join")

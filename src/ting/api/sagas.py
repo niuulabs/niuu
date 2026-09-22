@@ -313,8 +313,14 @@ async def _resolve_selected_workflow(
     request: Request,
     principal: Principal,
     workflow_id_value: str | None,
+    workflow_version_value: str | None = None,
     use_default_when_missing: bool = False,
 ) -> tuple[UUID | None, str | None, dict | None]:
+    if workflow_version_value and workflow_id_value is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="workflowVersion requires workflow_id",
+        )
     workflow_repo: WorkflowRepository | None = getattr(request.app.state, "workflow_repo", None)
     if workflow_repo is not None:
         from ting.domain.services.resource_authorization import AuthorizedWorkflowRepository
@@ -340,13 +346,20 @@ async def _resolve_selected_workflow(
                 detail=f"Invalid workflow_id: {workflow_id_value!r}",
             )
 
-        workflow = await workflow_repo.get_workflow(workflow_id)
+        workflow = (
+            await workflow_repo.get_workflow_version(
+                workflow_id,
+                version=workflow_version_value,
+            )
+            if workflow_version_value
+            else await workflow_repo.get_workflow(workflow_id)
+        )
         if workflow is None or not _can_use_workflow(workflow, principal):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Workflow not found: {workflow_id_value}",
             )
-        return workflow.id, workflow.version, build_workflow_snapshot(workflow)
+        return workflow.id, workflow.version, _build_resolved_workflow_snapshot(request, workflow)
 
     if not use_default_when_missing:
         return None, None, None
@@ -368,16 +381,39 @@ async def _resolve_selected_workflow(
     )
     if workflow is None:
         return None, None, None
-    return workflow.id, workflow.version, build_workflow_snapshot(workflow)
+    return workflow.id, workflow.version, _build_resolved_workflow_snapshot(request, workflow)
+
+
+def _build_resolved_workflow_snapshot(
+    request: Request,
+    workflow: WorkflowDefinition,
+) -> dict:
+    try:
+        return build_workflow_snapshot(
+            workflow,
+            persona_source=getattr(request.app.state, "persona_source", None),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
 
 
 async def _resolve_planning_workflow(
     repo: WorkflowRepository,
     principal: Principal,
     workflow_id: UUID | None = None,
+    workflow_version: str | None = None,
 ) -> WorkflowDefinition:
+    if workflow_version and workflow_id is None:
+        raise HTTPException(status_code=422, detail="workflowVersion requires workflowId")
     if workflow_id is not None:
-        workflow = await repo.get_workflow(workflow_id)
+        workflow = (
+            await repo.get_workflow_version(workflow_id, version=workflow_version)
+            if workflow_version
+            else await repo.get_workflow(workflow_id)
+        )
         if workflow is None or not _can_use_workflow(workflow, principal):
             raise HTTPException(status_code=404, detail=f"Workflow not found: {workflow_id}")
         return workflow
@@ -749,6 +785,9 @@ class UpdateSagaRequest(BaseModel):
 
 class SagaWorkflowAssignmentRequest(BaseModel):
     workflow_id: str | None = None
+    workflow_version: str | None = Field(default=None, alias="workflowVersion")
+
+    model_config = {"populate_by_name": True}
 
 
 class SagaTargetAssignmentRequest(BaseModel):
@@ -816,6 +855,7 @@ class PlanRequest(BaseModel):
 
     spec: str = Field(min_length=1)
     workflow_id: UUID | None = Field(default=None, alias="workflowId")
+    workflow_version: str | None = Field(default=None, alias="workflowVersion")
     repo: str = ""
     base_branch: str = Field(default="main", description="Base branch for the planning session")
     model: str = Field(default="")
@@ -887,7 +927,10 @@ class CommitRequest(BaseModel):
     phases: list[PhaseSpecRequest]
     transcript: str | None = None
     workflow_id: str | None = None
+    workflow_version: str | None = Field(default=None, alias="workflowVersion")
     tracker_connection_id: str | None = None
+
+    model_config = {"populate_by_name": True}
 
 
 class CommittedRunResponse(BaseModel):
@@ -1561,6 +1604,7 @@ def create_sagas_router() -> APIRouter:
                 workflow_repo,
                 principal,
                 body.workflow_id,
+                body.workflow_version,
             )
             plan_name = _plan_name(body.spec)
             provenance = {
@@ -1733,6 +1777,7 @@ def create_sagas_router() -> APIRouter:
             request=request,
             principal=principal,
             workflow_id_value=body.workflow_id,
+            workflow_version_value=body.workflow_version,
             use_default_when_missing=False,
         )
 
@@ -2027,6 +2072,7 @@ def create_sagas_router() -> APIRouter:
             request=request,
             principal=principal,
             workflow_id_value=body.workflow_id,
+            workflow_version_value=body.workflow_version,
             use_default_when_missing=True,
         )
 

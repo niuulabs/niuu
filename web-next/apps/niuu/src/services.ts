@@ -33,6 +33,12 @@ import {
   buildTingSessionHttpAdapter,
   buildTrackerHttpAdapter,
   buildWorkflowHttpAdapter,
+  buildWorkHttpAdapter,
+  type IWorkService,
+  buildWorkflowExecutionHttpAdapter,
+  buildDeliveryExecutionHttpAdapter,
+  type IWorkflowExecutionService,
+  type IDeliveryExecutionService,
   buildResearchHttpAdapter,
   buildSpecsHttpAdapter,
   buildDispatchBusHttpAdapter,
@@ -146,8 +152,10 @@ export function isUnavailableService(
   );
 }
 
-function unavailableService<T>(serviceName: string): T {
-  const reason = 'No live backend is configured. Enable demoMode for synthetic data.';
+function unavailableService<T>(
+  serviceName: string,
+  reason = 'No live backend is configured. Enable demoMode for synthetic data.',
+): T {
   const status: UnavailableServiceStatus = { available: false, serviceName, reason };
   return new Proxy(
     { [UNAVAILABLE_SERVICE]: status } as unknown as T & Record<PropertyKey, unknown>,
@@ -437,6 +445,7 @@ function resolveTingServiceBase(
     | 'ting.dispatch'
     | 'ting.settings'
     | 'ting.workflows'
+    | 'ting.work'
     | 'ting.research'
     | 'ting.specs',
 ): string | null {
@@ -454,6 +463,8 @@ function resolveTingServiceBase(
       return explicitBase.replace(/\/settings\/?$/, '');
     case 'ting.workflows':
       return explicitBase.replace(/\/workflows\/?$/, '');
+    case 'ting.work':
+      return explicitBase.replace(/\/work\/?$/, '');
     case 'ting.research':
       return explicitBase.replace(/\/research\/?$/, '');
     case 'ting.specs':
@@ -796,6 +807,7 @@ export function buildServiceBackendStatus(
     'ting.tracker': resolveCanonicalServiceStatus(config, 'tracker'),
     'ting.audit': resolveCanonicalServiceStatus(config, 'audit'),
     'ting.workflows': resolveDirectServiceStatus(config, 'http', 'ting.workflows', 'ting'),
+    'ting.work': resolveDirectServiceStatus(config, 'http', 'ting.work', 'ting'),
     'ting.research': resolveDirectServiceStatus(config, 'http', 'ting.research', 'ting'),
     'ting.specs': resolveDirectServiceStatus(config, 'http', 'ting.specs', 'ting'),
     filesystem: resolveFilesystemStatus(config),
@@ -805,7 +817,7 @@ export function buildServiceBackendStatus(
   return Object.fromEntries(
     Object.entries(resolved).map(([serviceName, status]) => [
       serviceName,
-      status.mode === 'unavailable'
+      status.mode === 'unavailable' && serviceName !== 'ting.work'
         ? {
             ...status,
             mode: 'demo',
@@ -953,7 +965,7 @@ function buildSplitVolundrService(
     ...catalog,
     getFeatures: (instanceId) => forge.getFeatures(instanceId),
     getSessions: (options) => forge.getSessions(options),
-    getSession: (id) => forge.getSession(id),
+    getSession: (id, options) => forge.getSession(id, options),
     getActiveSessions: () => forge.getActiveSessions(),
     getStats: (options) => forge.getStats(options),
     getRepos: () => forge.getRepos(),
@@ -1029,10 +1041,10 @@ function buildVolundrSessionStore(
   listRequestTimeoutMs: number,
 ): ISessionStore {
   return {
-    async getSession(id: string) {
-      const session = await volundr.getSession(id);
+    async getSession(id: string, options) {
+      const session = await volundr.getSession(id, options);
       if (session) return toDomainSession(session);
-      const archived = await volundr.listArchivedSessions().catch(() => []);
+      const archived = await volundr.listArchivedSessions(options).catch(() => []);
       const archivedSession = archived.find((candidate: VolundrSession) => candidate.id === id);
       return archivedSession ? toDomainSession(archivedSession) : null;
     },
@@ -1553,6 +1565,8 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const auditClient = auditBase ? createApiClient(auditBase) : null;
   const workflowBase = resolveTingServiceBase(config, 'ting.workflows');
   const workflowClient = workflowBase ? createApiClient(workflowBase) : null;
+  const workBase = resolveTingServiceBase(config, 'ting.work');
+  const workClient = workBase ? createApiClient(workBase) : null;
   const researchBase = resolveTingServiceBase(config, 'ting.research');
   const researchClient = researchBase ? createApiClient(researchBase) : null;
   const specsBase = resolveTingServiceBase(config, 'ting.specs');
@@ -1590,6 +1604,18 @@ export function buildServices(config: NiuuConfig): ServicesMap {
 
   return {
     ting: tingService,
+    'ting.work': workClient
+      ? buildWorkHttpAdapter(workClient)
+      : unavailableService<IWorkService>(
+          'ting.work',
+          'Configure a live Ting backend to view work.',
+        ),
+    'ting.workflowExecutions': tingClient
+      ? buildWorkflowExecutionHttpAdapter(tingClient)
+      : unavailableService<IWorkflowExecutionService>('ting.workflowExecutions'),
+    'ting.deliveryExecutions': tingClient
+      ? buildDeliveryExecutionHttpAdapter(tingClient)
+      : unavailableService<IDeliveryExecutionService>('ting.deliveryExecutions'),
     'ting.dispatcher': dispatcherService,
     'ting.sessions': tingSessionService,
     'ting.tracker': trackerService,

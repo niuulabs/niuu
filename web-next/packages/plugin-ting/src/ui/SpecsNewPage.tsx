@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from 'react';
-import { useNavigate } from '@tanstack/react-router';
+import { useNavigate, useSearch } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import { BranchSelect, RepoSelect, type RepoRecord } from '@niuulabs/ui';
@@ -22,6 +22,7 @@ function isSpecWorkflow(name: string, tags?: string[]): boolean {
 
 export function SpecsNewPage() {
   const navigate = useNavigate();
+  const routeSearch = useSearch({ strict: false }) as { returnTo?: string };
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const dispatchBus = useService<IDispatchBus>('ting.dispatch');
   const createCampaign = useCreateSpecCampaign();
@@ -91,6 +92,13 @@ export function SpecsNewPage() {
       context,
       connectionId: effectiveConnectionId || undefined,
     });
+    if (routeSearch.returnTo === '/ting/work') {
+      void navigate({
+        to: '/ting/work/$workId' as never,
+        params: { workId: `campaign:${campaign.id}` } as never,
+      });
+      return;
+    }
     void navigate({ to: '/ting/specs/$slug', params: { slug: campaign.slug } });
   }
 

@@ -1,22 +1,34 @@
 """Tests for Ting health endpoint."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
-from ting.config import AuthConfig, Settings
+from ting.config import AuthConfig, Settings, WorkflowRepositoryConfig
 from ting.main import create_app
 
 
 @pytest.fixture
 def client() -> TestClient:
     """Create a test client with mocked database pool."""
-    settings = Settings(auth=AuthConfig(allow_anonymous_dev=True))
+    settings = Settings(
+        auth=AuthConfig(allow_anonymous_dev=True),
+        workflow_repository=WorkflowRepositoryConfig(
+            adapter="ting.adapters.postgres_workflows.PostgresWorkflowRepository",
+            kwargs={},
+            seed_bundled=True,
+        ),
+    )
     app = create_app(settings)
 
-    mock_pool = AsyncMock()
+    mock_pool = MagicMock()
+    mock_pool.fetch = AsyncMock(return_value=[])
+    mock_pool.fetchrow = AsyncMock(return_value=None)
+    mock_pool.execute = AsyncMock(return_value="INSERT 0 1")
     mock_pool.close = AsyncMock()
+    mock_pool.acquire.return_value.__aenter__.return_value = mock_pool
+    mock_pool.transaction.return_value.__aenter__.return_value = None
 
     with patch("ting.main.database_pool") as mock_db:
         mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_pool)

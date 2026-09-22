@@ -57,6 +57,7 @@ from ravn.ports.warden_deployer import WardenDeploymentError, WardenDeploymentRe
 from ravn.warden import WardenSpec, WardenStore
 from ravn.warden.artifacts import service_label, start_command, write_runtime_config
 from ravn.warden.models import WardenSupervisor
+from ravn.workflow_runtime import _workflow_result_schema_for_event
 
 runner = CliRunner()
 
@@ -1172,6 +1173,62 @@ class TestWorkflowRuntimeForPersona:
             },
         ]
 
+    def test_strict_review_policy_binds_declared_reviewers_and_outcomes(self) -> None:
+        settings = Settings.model_validate(
+            {
+                "workflow": {
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "reviews",
+                                "kind": "stage",
+                                "joinMode": "all",
+                                "stageMembers": [
+                                    {"personaId": "reviewer-a"},
+                                    {"personaId": "reviewer-b"},
+                                ],
+                            },
+                            {
+                                "id": "author",
+                                "kind": "stage",
+                                "joinMode": "any",
+                                "reviewVerdictPolicy": {
+                                    "eventType": "review.completed",
+                                    "passOutcomes": ["plan.approved"],
+                                    "failOutcomes": ["plan.revised"],
+                                    "bindingFields": ["plan_revision"],
+                                },
+                                "stageMembers": [
+                                    {
+                                        "personaId": "analyst",
+                                        "consumesEventTypes": ["review.completed"],
+                                    }
+                                ],
+                            },
+                        ],
+                        "edges": [
+                            {
+                                "source": "reviews",
+                                "target": "author",
+                                "label": "review.completed -> review.completed",
+                            }
+                        ],
+                    }
+                }
+            }
+        )
+
+        runtime = _workflow_runtime_for_persona(settings, "analyst")
+
+        assert runtime is not None
+        assert runtime["consumer_groups"][0]["review_verdict_policy"] == {
+            "event_type": "review.completed",
+            "required_personas": ["reviewer-a", "reviewer-b"],
+            "pass_outcomes": ["plan.approved"],
+            "fail_outcomes": ["plan.revised"],
+            "binding_fields": ["plan_revision"],
+        }
+
     def test_workflow_allowed_task_targets_returns_downstream_stage_personas(self) -> None:
         settings = Settings.model_validate(
             {
@@ -1348,6 +1405,94 @@ class TestWorkflowRuntimeForPersona:
         )
         assert _workflow_stage_context(settings, node_id="missing") == ""
 
+    def test_workflow_stage_context_retains_launch_identity_across_stages(self) -> None:
+        launch_context = (
+            "# Workflow Launch\nTicket: implement the requested utilities\n"
+            '{"repository":"https://example.com/team/repo",'
+            '"campaign_id":"execution-123","base_sha":"frozen-base"}'
+        )
+        settings = Settings.model_validate(
+            {
+                "workflow": {
+                    "initial_context": launch_context,
+                    "graph": {
+                        "nodes": [
+                            {"id": name, "kind": "stage", "label": name}
+                            for name in ("author", "coordinator", "publish")
+                        ],
+                        "edges": [],
+                    },
+                }
+            }
+        )
+        for stage in ("author", "coordinator", "publish"):
+            context = _workflow_stage_context(settings, node_id=stage)
+            assert context == (
+                f"Workflow stage: {stage}\n\nWorkflow launch context:\n{launch_context}"
+            )
+        assert _workflow_stage_context(settings, node_id="missing") == ""
+
+    def test_workflow_result_contract_applies_only_to_terminal_handoff(self) -> None:
+        result_schema = {
+            "type": "object",
+            "properties": {"evidence": {"type": "array", "items": {"type": "string"}}},
+            "required": ["evidence"],
+            "additionalProperties": False,
+        }
+        settings = Settings.model_validate(
+            {
+                "workflow": {
+                    "result_schema": result_schema,
+                    "graph": {
+                        "nodes": [
+                            {"id": "verify", "kind": "stage"},
+                            {"id": "accept", "kind": "stage"},
+                            {
+                                "id": "complete",
+                                "kind": "end",
+                                "completionEvent": "work.completed",
+                            },
+                        ],
+                        "edges": [
+                            {
+                                "source": "verify",
+                                "target": "accept",
+                                "label": "candidate.verified -> candidate.verified",
+                            },
+                            {
+                                "source": "accept",
+                                "target": "complete",
+                                "label": "coordination.accepted -> work.completed",
+                            },
+                        ],
+                    },
+                }
+            }
+        )
+
+        assert (
+            _workflow_result_schema_for_event(
+                settings,
+                node_id="verify",
+                event_type="candidate.verified",
+            )
+            is None
+        )
+        assert (
+            _workflow_result_schema_for_event(
+                settings,
+                node_id="accept",
+                event_type="coordination.accepted",
+            )
+            == result_schema
+        )
+        assert "Inherited terminal result schema" not in _workflow_stage_context(
+            settings, node_id="verify"
+        )
+        assert "Inherited terminal result schema" in _workflow_stage_context(
+            settings, node_id="accept"
+        )
+
     def test_derive_capabilities_prefers_persona_allowed_tools(self) -> None:
         settings = Settings()
         persona = PersonaConfig(
@@ -1442,7 +1587,7 @@ class TestDaemonAgentFactory:
             async def run(self) -> None:
                 return None
 
-        persona = PersonaConfig(name="claude-mimir-researcher")
+        persona = PersonaConfig(name="claude-mimir-researcher", permission_mode="read-only")
 
         with (
             patch("ravn.cli.commands._resolve_workspace", return_value=Path("/tmp/workspace")),
@@ -1485,6 +1630,7 @@ class TestDaemonAgentFactory:
         ]
         publish_inventory.assert_called_once_with(settings, Path("/tmp/workspace"))
         assert recorded[0]["prompt_builder"] is not recorded[1]["prompt_builder"]
+        assert [call["permission_mode"] for call in recorded] == ["read-only", "read-only"]
         assert recorded[0]["mcp_servers"] == [
             {
                 "name": "mimir-local",

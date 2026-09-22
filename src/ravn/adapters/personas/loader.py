@@ -50,6 +50,11 @@ import yaml as _yaml
 
 from niuu.domain.outcome import OutcomeField, OutcomeSchema, generate_outcome_instruction
 from ravn.config import ProjectConfig, _safe_int
+from ravn.domain.persona_document import (
+    PortablePersonaDefinition,
+    portable_persona_from_config,
+    validate_persona_identifier,
+)
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_RUNTIME_OWNED_FIELDS,
     is_valkyrie_outcome_event,
@@ -137,6 +142,15 @@ class PersonaConfig:
     fan_in: PersonaFanIn = field(default_factory=PersonaFanIn)
     # Legacy compatibility field. Outcomes never suppress requested tool calls.
     stop_on_outcome: bool = False
+    # Explicit allowlist of delivery_workspace operations ("allocate", "verify",
+    # "integrate", "inspect") this persona's own document grants. Read directly
+    # off the loaded persona document rather than off `name` or a workflow's
+    # executionContract, so a workflow that maps a dependency to this persona
+    # under a different alias (InlinePersonaAdapter.load only overwrites
+    # `name`) cannot silently widen it. Empty means the persona was never
+    # granted any delivery_workspace action; a persona that has the
+    # delivery_workspace tool but declares no actions here gets none.
+    delivery_workspace_actions: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Serialize to a dict compatible with :meth:`FilesystemPersonaAdapter.parse`.
@@ -220,6 +234,9 @@ class PersonaConfig:
 
         if self.stop_on_outcome:
             d["stop_on_outcome"] = True
+
+        if self.delivery_workspace_actions:
+            d["delivery_workspace_actions"] = list(self.delivery_workspace_actions)
 
         return d
 
@@ -976,6 +993,38 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
 
         return None
 
+    def load_portable(
+        self,
+        persona_id: str,
+        revision: str,
+    ) -> PortablePersonaDefinition | None:
+        """Load exact source-authored content without outcome prompt injection."""
+        validate_persona_identifier(persona_id)
+        validate_persona_identifier(revision, field="Persona revision")
+        document = self.load_current_portable(persona_id)
+        if document is None or document.revision != revision:
+            return None
+        return document
+
+    def load_current_portable(
+        self,
+        persona_id: str,
+    ) -> PortablePersonaDefinition | None:
+        """Load current source-authored content with a content-derived revision."""
+        validate_persona_identifier(persona_id)
+        for directory in self._resolve_lookup_dirs():
+            file_path = directory / f"{persona_id}.yaml"
+            if not file_path.is_file():
+                continue
+            config = self.load_from_file(file_path)
+            if config is None:
+                return None
+            return portable_persona_from_config(
+                config,
+                persona_id=persona_id,
+            )
+        return None
+
     def load_path(self, path: Path) -> PersonaConfig | None:
         """Load a persona from a path the operator named directly.
 
@@ -1205,6 +1254,7 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
 
         allowed = raw.get("allowed_tools", [])
         forbidden = raw.get("forbidden_tools", [])
+        delivery_workspace_actions = raw.get("delivery_workspace_actions", [])
 
         return PersonaConfig(
             name=name,
@@ -1219,6 +1269,11 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
             consumes=_parse_consumes(raw.get("consumes")),
             fan_in=_parse_fan_in(raw.get("fan_in")),
             stop_on_outcome=_safe_bool(raw.get("stop_on_outcome", False)),
+            delivery_workspace_actions=(
+                list(delivery_workspace_actions)
+                if isinstance(delivery_workspace_actions, list)
+                else []
+            ),
         )
 
     @staticmethod
@@ -1248,4 +1303,6 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
             produces=persona.produces,
             consumes=persona.consumes,
             fan_in=persona.fan_in,
+            stop_on_outcome=persona.stop_on_outcome,
+            delivery_workspace_actions=persona.delivery_workspace_actions,
         )

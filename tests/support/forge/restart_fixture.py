@@ -12,6 +12,8 @@ import asyncio
 import json
 import subprocess
 import sys
+import time
+import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -96,6 +98,23 @@ class HoldingTransport(CLITransport):
         return self.task is not None and not self.task.done()
 
 
+def _wait_gateway_ready(port: int, gateway: subprocess.Popen, timeout: float = 30.0) -> None:
+    """Block until the spawned gateway reports ready, or raise."""
+    url = f"http://127.0.0.1:{port}/ready"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if gateway.poll() is not None:
+            raise RuntimeError(f"gateway exited with {gateway.returncode} before becoming ready")
+        try:
+            with urllib.request.urlopen(url, timeout=1) as response:
+                if json.loads(response.read()).get("ready") is True:
+                    return
+        except (OSError, ValueError):
+            pass
+        time.sleep(0.1)
+    raise TimeoutError(f"gateway did not become ready within {timeout}s")
+
+
 def serve(config_path: Path):
     """Start the real API, using test-only database infrastructure."""
     import uvicorn
@@ -131,6 +150,9 @@ def serve(config_path: Path):
         Path(config["workspace"]).joinpath("gateway.identity.json").write_text(
             json.dumps(process_identity(gateway.pid))
         )
+        # The seeded session is RUNNING, which means its broker was observed
+        # ready. Reach that state before the API starts reconciling against it.
+        _wait_gateway_ready(config["gateway_port"], gateway)
         state_file.write_text(
             json.dumps(
                 {

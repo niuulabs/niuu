@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
+import yaml
 
 from niuu.domain.outcome import OutcomeField
 from ravn.adapters.personas.loader import (
@@ -19,6 +20,10 @@ from ravn.adapters.personas.loader import (
     PersonaLLMConfig,
     PersonaProduces,
     _sanitize_executor_kwargs,
+)
+from ravn.domain.persona_document import (
+    PortablePersonaDefinition,
+    portable_persona_from_config,
 )
 
 _ROLE_DEFAULT = "build"
@@ -320,6 +325,41 @@ class PostgresPersonaRegistry:
             return None
         return FilesystemPersonaAdapter.to_yaml(view.config)
 
+    async def get_current_portable_persona(
+        self,
+        owner_id: str,
+        persona_id: str,
+    ) -> PortablePersonaDefinition | None:
+        """Return owner-scoped raw source content with a content revision."""
+        overrides = await self._load_overrides(owner_id, name=persona_id)
+        override_payload = overrides.get(persona_id)
+        builtin_document = self._builtin_loader.load_current_portable(persona_id)
+        if override_payload is None:
+            return builtin_document
+
+        builtin_config: PersonaConfig | None = None
+        if builtin_document is not None:
+            builtin_config = FilesystemPersonaAdapter.parse(
+                yaml.safe_dump(builtin_document.definition, allow_unicode=True, sort_keys=False)
+            )
+        payload = _normalize_payload(override_payload, fallback=builtin_config)
+        return portable_persona_from_config(
+            _payload_to_config(payload),
+            persona_id=persona_id,
+        )
+
+    async def get_portable_persona_revision(
+        self,
+        owner_id: str,
+        persona_id: str,
+        revision: str,
+    ) -> PortablePersonaDefinition | None:
+        """Return the current owner-scoped source only when its revision matches."""
+        document = await self.get_current_portable_persona(owner_id, persona_id)
+        if document is None or document.revision != revision:
+            return None
+        return document
+
     def is_builtin(self, name: str) -> bool:
         return self._builtin_loader.is_builtin(name)
 
@@ -445,6 +485,9 @@ def _normalize_payload(
     normalized["produces_event_type"] = str(
         payload.get("produces_event_type") or base["produces_event_type"]
     )
+    normalized["produces_event_map"] = _normalize_str_map(
+        payload.get("produces_event_map", base.get("produces_event_map"))
+    )
     normalized["produces_schema"] = _normalize_schema(payload.get("produces_schema"))
     normalized["consumes_events"] = _normalize_consumes_events(payload.get("consumes_events"))
     normalized["consumes_schema"] = _normalize_schema(payload.get("consumes_schema"))
@@ -485,6 +528,7 @@ def _config_to_payload(config: PersonaConfig | None) -> dict[str, Any]:
         "llm_max_tokens": config.llm.max_tokens,
         "llm_temperature": None,
         "produces_event_type": config.produces.event_type,
+        "produces_event_map": dict(config.produces.event_type_map),
         "produces_schema": {key: field.type for key, field in config.produces.schema.items()},
         "consumes_events": [{"name": name} for name in config.consumes.event_types],
         "consumes_schema": {key: field.type for key, field in config.consumes.schema.items()},
@@ -544,6 +588,7 @@ def _payload_to_config(payload: dict[str, Any]) -> PersonaConfig:
         iteration_budget=int(payload["iteration_budget"]),
         produces=PersonaProduces(
             event_type=str(payload["produces_event_type"]),
+            event_type_map=dict(payload.get("produces_event_map") or {}),
             schema=produces_schema,
         ),
         consumes=PersonaConsumes(
@@ -584,6 +629,7 @@ def _default_payload(name: str) -> dict[str, Any]:
         "llm_max_tokens": 0,
         "llm_temperature": None,
         "produces_event_type": "",
+        "produces_event_map": {},
         "produces_schema": {},
         "consumes_events": [],
         "consumes_schema": {},
@@ -607,6 +653,16 @@ def _normalize_str_list(raw: object) -> list[str]:
     if not isinstance(raw, list):
         return []
     return [str(item) for item in raw if str(item)]
+
+
+def _normalize_str_map(raw: object) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in raw.items()
+        if str(key).strip() and str(value).strip()
+    }
 
 
 def _normalize_permission_mode(raw: object) -> str:

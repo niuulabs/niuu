@@ -126,6 +126,101 @@ class TestActivityStateReporting:
         assert metadata["turn_count"] == 5
         assert "duration_seconds" in metadata
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", [Exception("connection lost"), 500])
+    async def test_terminal_activity_remains_pending_and_retries_exact_payload(
+        self, test_broker, failure
+    ):
+        first = (
+            failure
+            if isinstance(failure, Exception)
+            else MagicMock(status_code=failure, url="http://volundr/activity")
+        )
+        accepted = MagicMock(status_code=204, url="http://volundr/activity")
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(
+            side_effect=[first, accepted] if not isinstance(first, Exception) else [first, accepted]
+        )
+        test_broker._http_client = mock_client
+        test_broker._http_client_jwt = None
+        terminal = {
+            "completion_source": "ravn_flock",
+            "completion_event_type": "developer.workstream.completed",
+            "completion_peer_id": "workflow-stop:workstream-complete",
+            "structured_outcome": {"result": {"candidateSha": "a" * 40}},
+            "delivery": {
+                "schemaVersion": 1,
+                "result": {"candidateSha": "a" * 40},
+                "reviews": [{"role": "security", "eventId": "review-1"}],
+            },
+        }
+
+        delivered = await test_broker._report_activity_state("idle", extra_metadata=terminal)
+
+        assert delivered is False
+        assert test_broker._pending_terminal_activity is not None
+        first_payload = mock_client.post.await_args_list[0].kwargs["json"]
+        assert first_payload["metadata"]["delivery"] == terminal["delivery"]
+        assert test_broker._flock_completion_reported is False
+
+        assert await test_broker._retry_pending_terminal_activity() is True
+        assert mock_client.post.await_args_list[1].kwargs["json"] == first_payload
+        assert test_broker._pending_terminal_activity is None
+        assert test_broker._flock_completion_reported is True
+
+    @pytest.mark.asyncio
+    async def test_older_terminal_ack_cannot_clear_newer_pending_report(self, test_broker):
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+
+        async def post(_path, *, json):
+            if json["metadata"].get("completion_event_type") == "first.completed":
+                first_started.set()
+                await release_first.wait()
+                return MagicMock(status_code=204, url="http://volundr/activity")
+            return MagicMock(status_code=500, url="http://volundr/activity")
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=post)
+        test_broker._http_client = mock_client
+        test_broker._http_client_jwt = None
+        first = asyncio.create_task(
+            test_broker._report_activity_state(
+                "idle",
+                extra_metadata={
+                    "completion_source": "ravn_flock",
+                    "completion_event_type": "first.completed",
+                },
+            )
+        )
+        await first_started.wait()
+        # Posts are serialised, so the newer report registers itself as the
+        # pending terminal payload and then queues behind the in-flight one.
+        second = asyncio.create_task(
+            test_broker._report_activity_state(
+                "idle",
+                extra_metadata={
+                    "completion_source": "ravn_flock",
+                    "completion_event_type": "newer.completed",
+                },
+            )
+        )
+        async with asyncio.timeout(1):
+            while (test_broker._pending_terminal_activity or {}).get("payload", {}).get(
+                "metadata", {}
+            ).get("completion_event_type") != ("newer.completed"):
+                await asyncio.sleep(0)
+        newer = test_broker._pending_terminal_activity
+        release_first.set()
+        assert await first is True
+
+        assert test_broker._pending_terminal_activity is newer
+        assert newer["payload"]["metadata"]["completion_event_type"] == "newer.completed"
+        assert test_broker._flock_completion_reported is False
+
+        assert await second is False
+        assert test_broker._pending_terminal_activity is newer
+
 
 class TestCliEventActivityIntegration:
     """Tests for activity state changes triggered by CLI events."""
@@ -431,6 +526,33 @@ class TestAttentionAndHeartbeat:
             await asyncio.gather(task, return_exceptions=True)
 
         mock_report.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_loop_retries_pending_terminal_report_while_idle(self, test_broker):
+        test_broker._settings.activity_heartbeat.interval_seconds = 0.01
+        test_broker._activity_state = "idle"
+        test_broker._pending_terminal_activity = {
+            "kind": "completion",
+            "payload": {
+                "state": "idle",
+                "state_since": "2026-09-19T18:48:16+00:00",
+                "turn_started_at": None,
+                "metadata": {
+                    "completion_source": "ravn_flock",
+                    "completion_event_type": "developer.workstream.completed",
+                },
+            },
+        }
+
+        with patch.object(
+            test_broker, "_retry_pending_terminal_activity", new_callable=AsyncMock
+        ) as retry:
+            task = asyncio.create_task(test_broker._activity_heartbeat_loop())
+            await asyncio.sleep(0.03)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        assert retry.await_count >= 1
 
     @pytest.mark.asyncio
     async def test_failed_idle_report_is_retried_with_its_original_anchor(self, test_broker):

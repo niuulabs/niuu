@@ -1,0 +1,47 @@
+/**
+ * Node-kind accent hues for the redesigned GraphView cards.
+ *
+ * `--color-accent-spring/teal/amber/violet` already exist in
+ * `@niuulabs/design-tokens` (they encode "what kind of thing is this" for
+ * Observatory's topology view) but aren't in the shared Tailwind preset, so
+ * `plugin-observatory` sets them as local CSS custom properties per kind
+ * instead of stretching Tailwind's theme
+ * (see ObservatoryRailSections.css's `--obs-tone`). This file follows that
+ * exact pattern for workflow node kinds.
+ *
+ * `--color-gate` and `--color-brand` are already Tailwind-native utilities
+ * (`gate`, `brand`) — kept here too, as CSS custom properties, only so every
+ * card uses the same one `var(--node-accent)` mechanism rather than two.
+ *
+ * `end`'s emerald "complete" colour is not part of this — it's a status
+ * (done), not a kind identity, and is set inline in EndNode like the
+ * existing error/warning/selected states are for every kind.
+ *
+ * Owner: plugin-ting (WorkflowBuilder).
+ */
+
+.workflow-stage-card {
+  --node-accent: var(--color-accent-spring);
+}
+
+.workflow-gate-card {
+  --node-accent: var(--color-gate);
+}
+
+.workflow-cond-card {
+  --node-accent: var(--color-accent-teal);
+}
+
+.workflow-trigger-card,
+.workflow-subworkflow-card,
+.workflow-resource-card {
+  --node-accent: var(--color-brand);
+}
+
+.workflow-wait-card {
+  --node-accent: var(--color-accent-amber);
+}
+
+.workflow-include-card {
+  --node-accent: var(--color-accent-violet);
+}

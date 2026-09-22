@@ -10,10 +10,16 @@ from niuu.adapters.memory_credential_store import MemoryCredentialStore
 from niuu.ports.session_proxy import SessionProxyTarget
 from tests.compute_fakes import LeaseRepository, Provider
 from volundr.adapters.outbound.vm_pod_manager import VmPodManager
-from volundr.domain.compute import ComputeLeaseBusyError, LeaseState, MachineBootstrap, MachineState
+from volundr.domain.compute import (
+    ComputeLeaseBusyError,
+    LeaseState,
+    MachineBootstrap,
+    MachineProviderError,
+    MachineState,
+)
 from volundr.domain.models import PodSpecAdditions, Session, SessionSpec, SessionStatus
 from volundr.domain.services.compute_leases import ComputeLeaseService
-from volundr.domain.vm_runtime import VmRuntimeUnavailableError
+from volundr.domain.vm_runtime import VmRuntimeStageError, VmRuntimeUnavailableError
 
 
 class Repository(LeaseRepository):
@@ -103,6 +109,91 @@ async def test_start_proxy_stop_preserves_before_disposal_and_resumes(setup):
     runtime.close.assert_awaited_once()
 
 
+async def test_start_retries_transient_reconcile_contention_without_duplicate(setup):
+    manager, service, repository, provider, _, _, session = setup
+    reconcile = service.reconcile
+    attempts = 0
+
+    async def contested(lease_id):
+        nonlocal attempts
+        attempts += 1
+        # acquire() performs the first reconciliation. Contend when start()
+        # enters its own readiness loop, matching concurrent pool maintenance.
+        if attempts == 2:
+            raise ComputeLeaseBusyError("pool maintenance")
+        return await reconcile(lease_id)
+
+    service.reconcile = contested
+
+    result = await manager.start(
+        session,
+        SessionSpec(values={}, pod_spec=PodSpecAdditions()),
+    )
+
+    assert attempts >= 3
+    assert result.pod_name == str(next(iter(repository.leases)))
+    assert len(repository.leases) == 1
+    assert len(provider.created) == 1
+    assert provider.created[0] == next(iter(repository.leases))
+
+
+async def test_start_retries_failed_runtime_on_same_running_machine(setup):
+    manager, _, repository, provider, runtime, _, session = setup
+    spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+    runtime.prepare.side_effect = RuntimeError("guest package conflict")
+
+    with pytest.raises(RuntimeError, match="guest package conflict"):
+        await manager.start(session, spec)
+
+    lease = next(iter(repository.leases.values()))
+    assert lease.state == LeaseState.FAILED
+    assert lease.error == "Runtime startup failed; inspect guest and stop session"
+
+    runtime.prepare.side_effect = None
+    result = await manager.start(session, spec)
+
+    assert result.pod_name == str(lease.id)
+    assert len(repository.leases) == 1
+    assert len(provider.created) == 1
+    assert repository.leases[lease.id].state == LeaseState.READY
+
+
+async def test_capacity_for_existing_session_reuses_its_allocation(setup):
+    manager, _, repository, _, _, _, session = setup
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    assert (await manager.capacity()).available == 0
+    assert (await manager.capacity_for(session)).available == 1
+    assert len(repository.leases) == 1
+
+
+async def test_session_can_select_another_configured_compute_profile(setup):
+    from volundr.domain.compute import MachineProfile
+
+    manager, _, repository, provider, _, _, session = setup
+    provider.profiles = AsyncMock(
+        return_value=(
+            MachineProfile(name="small", revision="revision-1", details={}),
+            MachineProfile(name="openshell", revision="revision-2", details={}),
+        )
+    )
+    selected = session.model_copy(update={"workload_config": {"compute_profile": "openshell"}})
+
+    await manager.start(selected, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    assert next(iter(repository.leases.values())).profile == "openshell"
+
+
+async def test_session_rejects_unknown_compute_profile(setup):
+    manager, _, repository, _, _, _, session = setup
+    selected = session.model_copy(update={"workload_config": {"compute_profile": "missing"}})
+
+    with pytest.raises(ValueError, match="not configured"):
+        await manager.start(selected, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    assert not repository.leases
+
+
 async def test_archive_failure_keeps_vm_and_capacity(setup):
     manager, _, repository, provider, runtime, _, session = setup
     await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
@@ -145,11 +236,50 @@ async def test_readiness_and_failure_states(setup):
     assert await manager.wait_for_ready(session, 0.01) == SessionStatus.FAILED
     lease = next(iter(repository.leases.values()))
     provider.machines[lease.id] = provider.machines[lease.id].model_copy(
-        update={"state": MachineState.FAILED}
+        update={
+            "state": MachineState.FAILED,
+            "status_detail": "Provider rejected the machine request",
+        }
     )
     assert await manager.status(session) == SessionStatus.FAILED
-    with pytest.raises(RuntimeError, match="cannot start"):
+    with pytest.raises(RuntimeError, match="Provider rejected"):
         await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+
+async def test_liveness_does_not_reap_session_before_lease_reservation(setup):
+    manager, _, _, _, _, _, session = setup
+
+    assert (
+        await manager.status(session.model_copy(update={"status": SessionStatus.STARTING}))
+        == SessionStatus.PROVISIONING
+    )
+    assert (
+        await manager.status(session.model_copy(update={"status": SessionStatus.PROVISIONING}))
+        == SessionStatus.PROVISIONING
+    )
+    assert await manager.status(session) == SessionStatus.STOPPED
+
+
+async def test_status_detail_exposes_non_terminal_provider_wait(setup):
+    manager, service, repository, provider, _, _, session = setup
+
+    async def waiting(request):
+        machine = await Provider.create(provider, request)
+        machine = machine.model_copy(update={"status_detail": "No CPU hosts available"})
+        provider.machines[request.allocation_id] = machine
+        return machine
+
+    provider.create = waiting
+    lease = await service.acquire(
+        session_id=session.id,
+        owner_id=session.owner_id,
+        tenant_id=session.tenant_id,
+        profile="small",
+        bootstrap=MachineBootstrap(),
+    )
+
+    assert repository.leases[lease.id].state == LeaseState.PROVISIONING
+    assert await manager.status_detail(session) == "No CPU hosts available"
 
 
 def test_config_validation():
@@ -231,6 +361,26 @@ async def test_background_recovery_failure_is_visible_and_retains_capacity(setup
     assert (await manager.capacity()).available == 0
     assert "sensitive" not in repository.leases[lease.id].error
     assert len(provider.machines) == 1
+
+
+async def test_background_recovery_preserves_only_explicit_safe_runtime_stage(setup):
+    manager, service, repository, provider, runtime, store, session = setup
+    lease = await service.acquire(
+        session_id=session.id,
+        owner_id=session.owner_id,
+        tenant_id=session.tenant_id,
+        profile="small",
+        bootstrap=MachineBootstrap(),
+    )
+    runtime.start.side_effect = VmRuntimeStageError("sandbox-create")
+
+    assert await manager.status(session) == SessionStatus.PROVISIONING
+    await manager._recoveries[lease.id]
+
+    assert await manager.status(session) == SessionStatus.FAILED
+    assert repository.leases[lease.id].error == (
+        "Runtime startup failed at stage sandbox-create; inspect guest and stop session"
+    )
 
 
 async def test_stop_cancels_recovery_before_guest_data_is_touched(setup):
@@ -335,4 +485,100 @@ async def test_cold_machine_bootstrap_never_contains_session_content(setup):
 async def test_pending_background_start_is_not_reconciled_to_stopped(setup):
     manager, _, _, _, _, _, session = setup
     pending = session.model_copy(update={"status": SessionStatus.STARTING})
-    assert await manager.status(pending) == SessionStatus.STARTING
+    assert await manager.status(pending) == SessionStatus.PROVISIONING
+
+
+async def test_stop_retries_transient_provider_deletion_failure(setup):
+    manager, _, repository, provider, runtime, store, session = setup
+    service = ComputeLeaseService(
+        repository,
+        provider,
+        pool_id="pool",
+        max_machines=1,
+        bootstrap=MachineBootstrap(),
+        bootstrap_store=store,
+        retry_interval_seconds=0.001,
+        retry_max_seconds=0.001,
+    )
+    manager.configure_compute(
+        service, repository, runtime, MachineBootstrap(), pool_id="pool", max_machines=1
+    )
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    delete = provider.delete
+    attempts = 0
+
+    async def transient_failure(allocation_id):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise MachineProviderError("provider delete conflict")
+        return await delete(allocation_id)
+
+    provider.delete = transient_failure
+
+    assert await manager.stop(session)
+    assert attempts == 2
+    runtime.stop.assert_awaited_once()
+    assert next(iter(repository.leases.values())).state == LeaseState.RELEASED
+
+
+async def test_stop_keeps_capacity_until_provider_deletion_retry_deadline(setup):
+    manager, _, repository, provider, runtime, store, session = setup
+    service = ComputeLeaseService(
+        repository,
+        provider,
+        pool_id="pool",
+        max_machines=1,
+        bootstrap=MachineBootstrap(),
+        bootstrap_store=store,
+        retry_interval_seconds=0.001,
+        retry_max_seconds=0.001,
+    )
+    manager.configure_compute(
+        service, repository, runtime, MachineBootstrap(), pool_id="pool", max_machines=1
+    )
+    manager._cleanup_timeout = 0.01
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    attempts = 0
+
+    async def persistent_failure(allocation_id):
+        nonlocal attempts
+        attempts += 1
+        raise MachineProviderError("provider delete conflict")
+
+    provider.delete = persistent_failure
+
+    with pytest.raises(TimeoutError):
+        await manager.stop(session)
+
+    lease = next(iter(repository.leases.values()))
+    assert attempts > 1
+    assert lease.state == LeaseState.DRAINING
+    assert lease.id in provider.machines
+    assert (await manager.capacity()).available == 0
+    runtime.stop.assert_awaited_once()
+
+
+async def test_stop_does_not_retry_runtime_machine_provider_error(setup):
+    manager, _, repository, _, runtime, _, session = setup
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    runtime.stop.side_effect = MachineProviderError("guest bootstrap unavailable")
+
+    with pytest.raises(MachineProviderError, match="guest bootstrap unavailable"):
+        await manager.stop(session)
+
+    runtime.stop.assert_awaited_once()
+    assert next(iter(repository.leases.values())).state == LeaseState.READY
+
+
+async def test_unconfirmed_sandbox_deletion_keeps_vm_and_capacity(setup):
+    from volundr.domain.vm_runtime import VmRuntimeStageError
+
+    manager, _, repository, provider, runtime, _, session = setup
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    runtime.stop.side_effect = VmRuntimeStageError("sandbox-delete-verify", "deletion-unconfirmed")
+    with pytest.raises(VmRuntimeStageError):
+        await manager.stop(session)
+    assert len(provider.machines) == 1
+    assert (await manager.capacity()).available == 0
+    assert next(iter(repository.leases.values())).state == LeaseState.READY

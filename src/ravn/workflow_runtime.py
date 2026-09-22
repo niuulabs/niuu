@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ravn.config import Settings
@@ -168,15 +169,68 @@ def _workflow_runtime_for_persona(settings: Settings, persona_name: str) -> dict
         if len(resolved_event_types) > 1:
             fan_in_strategy = _join_mode_to_fan_in(str(node.get("joinMode") or "all"))
 
-        consumer_groups.append(
-            {
-                "id": node_id,
-                "label": str(node.get("label") or node_id),
-                "event_types": resolved_event_types,
-                "fan_in_strategy": fan_in_strategy,
-                **({"event_filters": member_event_filters} if member_event_filters else {}),
+        group: dict[str, Any] = {
+            "id": node_id,
+            "label": str(node.get("label") or node_id),
+            "event_types": resolved_event_types,
+            "fan_in_strategy": fan_in_strategy,
+            **({"event_filters": member_event_filters} if member_event_filters else {}),
+        }
+        review_policy = node.get("reviewVerdictPolicy")
+        if isinstance(review_policy, dict):
+            policy_event = str(review_policy.get("eventType") or "").strip()
+            source_personas: set[str] = set()
+            review_stage_ids: set[str] = set()
+            for edge in edges:
+                _source_event, target_event = _split_workflow_edge_label(edge.get("label"))
+                if str(edge.get("target")) != node_id or target_event != policy_event:
+                    continue
+                source_id = str(edge.get("source") or "")
+                if source_id:
+                    review_stage_ids.add(source_id)
+                source_node = next(
+                    (candidate for candidate in nodes if str(candidate.get("id")) == source_id),
+                    None,
+                )
+                if source_node is not None and str(source_node.get("joinMode") or "") == "all":
+                    source_personas.update(_stage_personas(source_node))
+            reviewed_sources = {
+                (
+                    str(edge.get("source") or ""),
+                    _split_workflow_edge_label(edge.get("label"))[0],
+                )
+                for edge in edges
+                if str(edge.get("target") or "") in review_stage_ids
+                and str(edge.get("source") or "")
+                and _split_workflow_edge_label(edge.get("label"))[0]
             }
-        )
+            runtime_policy: dict[str, Any] = {
+                "event_type": policy_event,
+                "required_personas": sorted(source_personas),
+                "pass_outcomes": list(review_policy.get("passOutcomes") or []),
+                "fail_outcomes": list(review_policy.get("failOutcomes") or []),
+                "binding_fields": list(review_policy.get("bindingFields") or []),
+            }
+            # An unambiguous predecessor is the authoritative artifact cycle
+            # reviewed by this join.  Older schemas without that graph edge
+            # keep their existing cross-review binding behaviour.
+            if len(reviewed_sources) == 1:
+                reviewed_node_id, reviewed_event_type = next(iter(reviewed_sources))
+                runtime_policy["reviewed_node_id"] = reviewed_node_id
+                runtime_policy["reviewed_event_type"] = reviewed_event_type
+                reviewed_node = next(
+                    (
+                        candidate
+                        for candidate in nodes
+                        if str(candidate.get("id") or "") == reviewed_node_id
+                    ),
+                    None,
+                )
+                runtime_policy["reviewed_personas"] = sorted(
+                    _stage_personas(reviewed_node) if reviewed_node is not None else set()
+                )
+            group["review_verdict_policy"] = runtime_policy
+        consumer_groups.append(group)
         aggregated_event_types.extend(resolved_event_types)
 
     if not consumer_groups:
@@ -252,15 +306,47 @@ def _workflow_allowed_outcome_topics(
     return topics if topics else None
 
 
+def _workflow_result_schema_for_event(
+    settings: Settings,
+    *,
+    node_id: str,
+    event_type: str,
+) -> dict[str, Any] | None:
+    """Return the inherited result contract for a terminal graph handoff."""
+    if not node_id or not event_type:
+        return None
+    workflow = getattr(settings, "workflow", None)
+    result_schema = getattr(workflow, "result_schema", None)
+    if not isinstance(result_schema, dict) or not result_schema:
+        return None
+
+    nodes, edges = _workflow_graph(settings)
+    end_events = {
+        str(node.get("id") or ""): str(node.get("completionEvent") or "").strip()
+        for node in nodes
+        if node.get("kind") == "end" and str(node.get("completionEvent") or "").strip()
+    }
+    for edge in edges:
+        if str(edge.get("source") or "") != node_id:
+            continue
+        completion_event = end_events.get(str(edge.get("target") or ""))
+        if not completion_event:
+            continue
+        source_event, target_event = _split_workflow_edge_label(edge.get("label"))
+        if event_type == source_event and target_event == completion_event:
+            return result_schema
+    return None
+
+
 def _workflow_stage_context(
     settings: Settings,
     *,
     node_id: str,
 ) -> str:
-    """Render configured guidance for one workflow stage."""
+    """Render stage guidance and the retained launch context for every handoff."""
     if not node_id:
         return ""
-    nodes, _edges = _workflow_graph(settings)
+    nodes, edges = _workflow_graph(settings)
     for node in nodes:
         if str(node.get("id") or "") != node_id or node.get("kind") != "stage":
             continue
@@ -269,5 +355,32 @@ def _workflow_stage_context(
         lines = [f"Workflow stage: {label or node_id}"]
         if description:
             lines.extend(["Stage instructions:", description])
+        initial_context = settings.workflow.initial_context.strip()
+        if initial_context:
+            lines.extend(["", "Workflow launch context:", initial_context])
+        terminal_result_schema = next(
+            (
+                schema
+                for edge in edges
+                if str(edge.get("source") or "") == node_id
+                for event_type in [_split_workflow_edge_label(edge.get("label"))[0]]
+                if (
+                    schema := _workflow_result_schema_for_event(
+                        settings,
+                        node_id=node_id,
+                        event_type=event_type,
+                    )
+                )
+            ),
+            None,
+        )
+        if terminal_result_schema:
+            lines.extend(
+                [
+                    "",
+                    "Inherited terminal result schema:",
+                    json.dumps(terminal_result_schema, indent=2, sort_keys=True),
+                ]
+            )
         return "\n".join(lines)
     return ""

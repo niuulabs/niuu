@@ -148,6 +148,10 @@ spec:
             - name: config
               mountPath: /etc/ting
               readOnly: true
+            {{- if .Values.workflowPersistence.enabled }}
+            - name: workflow-catalog
+              mountPath: /data/ting/workflows
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -262,6 +266,11 @@ spec:
         - name: config
           configMap:
             name: {{ include "ting.fullname" . }}
+        {{- if .Values.workflowPersistence.enabled }}
+        - name: workflow-catalog
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-workflows" (include "ting.fullname" .)) .Values.workflowPersistence.existingClaim }}
+        {{- end }}
         {{- if .Values.envoy.enabled }}
         - name: envoy-config
           configMap:

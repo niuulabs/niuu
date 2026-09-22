@@ -1,3 +1,10 @@
+{{- $filesystemWorkflowAdapter := "ting.adapters.filesystem_workflows.FilesystemWorkflowRepository" -}}
+{{- if and (eq .Values.workflowRepository.adapter $filesystemWorkflowAdapter) (not .Values.workflowPersistence.enabled) -}}
+{{- fail "workflowPersistence.enabled must be true when the filesystem workflow repository is selected" -}}
+{{- end -}}
+{{- if and (eq .Values.workflowRepository.adapter $filesystemWorkflowAdapter) .Values.workflowRepository.seedBundled -}}
+{{- fail "workflowRepository.seedBundled must be false for the filesystem workflow repository" -}}
+{{- end -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -42,6 +49,20 @@ data:
     database:
       min_pool_size: {{ .Values.database.minPoolSize | default 2 }}
       max_pool_size: {{ .Values.database.maxPoolSize | default 10 }}
+
+    workflow_repository:
+      adapter: {{ .Values.workflowRepository.adapter | quote }}
+      seed_bundled: {{ .Values.workflowRepository.seedBundled }}
+      {{- if eq .Values.workflowRepository.adapter $filesystemWorkflowAdapter }}
+      kwargs: {{ mergeOverwrite (dict "catalog_path" "/data/ting/workflows" "create_directory" true) (.Values.workflowRepository.kwargs | default dict) | toJson }}
+      {{- else }}
+      kwargs: {{ .Values.workflowRepository.kwargs | default dict | toJson }}
+      {{- end }}
+
+    workflow_import:
+      max_upload_bytes: {{ printf "%.0f" (.Values.workflowImport.maxUploadBytes | float64) }}
+      max_expanded_bytes: {{ printf "%.0f" (.Values.workflowImport.maxExpandedBytes | float64) }}
+      max_entries: {{ printf "%.0f" (.Values.workflowImport.maxEntries | float64) }}
 
     volundr:
       url: {{ .Values.volundr.url | quote }}
@@ -118,7 +139,7 @@ data:
       {{- end }}
     {{- end }}
 
-    {{- if or .Values.a2a.agentName .Values.a2a.agentDescription .Values.a2a.cardMaxAgeSeconds .Values.a2a.inlineArtifactMaxChars .Values.a2a.extraArtifactFiles .Values.a2a.publicBaseUrl .Values.a2a.pushAuth.adapter }}
+    {{- if or .Values.a2a.agentName .Values.a2a.agentDescription .Values.a2a.cardMaxAgeSeconds .Values.a2a.launchLeaseSeconds .Values.a2a.inlineArtifactMaxChars .Values.a2a.extraArtifactFiles .Values.a2a.publicBaseUrl .Values.a2a.pushAuth.adapter }}
     a2a:
       {{- if .Values.a2a.agentName }}
       agent_name: {{ .Values.a2a.agentName | quote }}
@@ -129,6 +150,7 @@ data:
       {{- if .Values.a2a.cardMaxAgeSeconds }}
       card_max_age_seconds: {{ .Values.a2a.cardMaxAgeSeconds }}
       {{- end }}
+      launch_lease_seconds: {{ .Values.a2a.launchLeaseSeconds }}
       {{- if .Values.a2a.inlineArtifactMaxChars }}
       inline_artifact_max_chars: {{ .Values.a2a.inlineArtifactMaxChars }}
       {{- end }}
@@ -144,6 +166,37 @@ data:
           {{- toYaml .Values.a2a.pushAuth.kwargs | nindent 10 }}
     {{- end }}
 
+    workflow_execution:
+      enabled: {{ .Values.workflowExecution.enabled }}
+      gateway_adapter: {{ .Values.workflowExecution.gatewayAdapter | quote }}
+      gateway_kwargs: {{ .Values.workflowExecution.gatewayKwargs | default dict | toJson }}
+      admission_roles: {{ .Values.workflowExecution.admissionRoles | toJson }}
+      wait_repository_adapter: {{ .Values.workflowExecution.waitRepositoryAdapter | quote }}
+      wait_repository_kwargs: {{ .Values.workflowExecution.waitRepositoryKwargs | default dict | toJson }}
+      {{- $genericWaitObservers := .Values.workflowExecution.waitObservers | default list }}
+      {{- $deliveryWaitObservers := .Values.workflowExecution.delivery.waitObservers | default list }}
+      wait_observers: {{ concat $genericWaitObservers (ternary $deliveryWaitObservers list (.Values.workflowExecution.delivery.enabled | default false)) | toJson }}
+      worker_id: {{ .Values.workflowExecution.workerId | quote }}
+      launch_claim_limit: {{ .Values.workflowExecution.launchClaimLimit }}
+      reconcile_limit: {{ .Values.workflowExecution.reconcileLimit }}
+      lease_seconds: {{ .Values.workflowExecution.leaseSeconds }}
+      reconcile_interval_seconds: {{ .Values.workflowExecution.reconcileIntervalSeconds }}
+      default_budget_units: {{ .Values.workflowExecution.defaultBudgetUnits }}
+      default_deadline_seconds: {{ .Values.workflowExecution.defaultDeadlineSeconds }}
+      list_page_size: {{ .Values.workflowExecution.listPageSize }}
+      max_child_reconcile_failures: {{ .Values.workflowExecution.maxChildReconcileFailures }}
+      max_wait_failures: {{ .Values.workflowExecution.maxWaitFailures }}
+      max_parent_stop_failures: {{ .Values.workflowExecution.maxParentStopFailures }}
+      delivery:
+        enabled: {{ .Values.workflowExecution.delivery.enabled | default false }}
+        review_authenticator_adapter: {{ .Values.workflowExecution.delivery.reviewAuthenticatorAdapter | default "" | quote }}
+        review_authenticator_kwargs: {{ .Values.workflowExecution.delivery.reviewAuthenticatorKwargs | default dict | toJson }}
+        review_authenticator_secret_kwargs_env: {{ .Values.workflowExecution.delivery.reviewAuthenticatorSecretKwargsEnv | default dict | toJson }}
+        review_producers: {{ .Values.workflowExecution.delivery.reviewProducers | default dict | toJson }}
+        integration_review_producer: {{ .Values.workflowExecution.delivery.integrationReviewProducer | default "" | quote }}
+        evidence_policy_id: {{ .Values.workflowExecution.delivery.evidencePolicyId | default "" | quote }}
+        integration_policy_id: {{ .Values.workflowExecution.delivery.integrationPolicyId | default "" | quote }}
+
     cerbos:
       url: {{ .Values.cerbos.url | default "http://localhost:3592" | quote }}
 
@@ -158,6 +211,7 @@ data:
       {{- end }}
       allow_anonymous_dev: {{ .Values.auth.allowAnonymousDev }}
       default_user_id: {{ .Values.auth.defaultUserId | quote }}
+      default_tenant_id: {{ .Values.auth.defaultTenantId | quote }}
       pat_ttl_days: {{ .Values.auth.patTtlDays | default 365 }}
 
     workload_identity:

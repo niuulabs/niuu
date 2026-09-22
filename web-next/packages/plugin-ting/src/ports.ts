@@ -12,6 +12,58 @@ import type { DispatcherState } from './domain/dispatcher';
 import type { SessionInfo } from './domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from './domain/tracker';
 import type { Workflow } from './domain/workflow';
+import type { WorkCollection, WorkDetail, WorkResourceKind } from './domain/work';
+
+export interface IWorkService {
+  list(options?: { executionLimit?: number; executionCursor?: string }): Promise<WorkCollection>;
+  get(kind: WorkResourceKind, id: string): Promise<WorkDetail>;
+}
+import type {
+  WorkflowExecutionTrace,
+  ExecutionTraceOptions,
+} from './domain/workflowExecutionTrace';
+import type {
+  WorkflowExecution,
+  DeliveryExecution,
+  WorkflowWait,
+  WorkflowExecutionLaunch,
+  DeliveryExecutionLaunch,
+  WorkflowExecutionState,
+} from './domain/workflowExecution';
+
+/**
+ * Generic durable workflow execution service — `/api/v1/ting/workflow-executions`.
+ * Serves any workflow that expands into a bounded child DAG, whatever pack (if
+ * any) layers additional vocabulary over it. A code-delivery execution is also
+ * a row here: its generic fields (state, budget, children, waits, trace) are
+ * always readable through this service, even though its git identity and
+ * integration state are only visible through `IDeliveryExecutionService`.
+ */
+export interface IWorkflowExecutionService {
+  list(filter?: {
+    state?: WorkflowExecutionState;
+    cursor?: string;
+  }): Promise<{ executions: WorkflowExecution[]; nextCursor: string | null }>;
+  get(id: string): Promise<WorkflowExecution>;
+  launch(request: WorkflowExecutionLaunch, idempotencyKey: string): Promise<WorkflowExecution>;
+  cancel(id: string): Promise<WorkflowExecution>;
+  reconcile(id: string): Promise<WorkflowExecution>;
+  retry(id: string, childKey: string, attemptId: string): Promise<WorkflowExecution>;
+  waits(id: string): Promise<WorkflowWait[]>;
+  trace(id: string, options?: ExecutionTraceOptions): Promise<WorkflowExecutionTrace>;
+}
+
+/**
+ * Code-delivery specialization service — `/api/v1/ting/delivery-executions`.
+ * Only the operations that need git identity or delivery evidence live here;
+ * everything else (list, cancel, reconcile, retry, waits, trace) is served by
+ * `IWorkflowExecutionService` against the same execution id.
+ */
+export interface IDeliveryExecutionService {
+  get(id: string): Promise<DeliveryExecution>;
+  launch(request: DeliveryExecutionLaunch, idempotencyKey: string): Promise<DeliveryExecution>;
+  evidence(id: string): Promise<Record<string, unknown>>;
+}
 import type {
   ResearchCampaign,
   ResearchCampaignDetail,
@@ -262,6 +314,10 @@ export interface ImportProjectOptions {
   repoRefs?: { repo: string; branch: string }[];
   target?: SagaTargetSelection;
   trackerConnectionId?: string;
+  /** Saved workflow to assign to the imported project. */
+  workflowId?: string;
+  /** Exact immutable workflow version to assign. */
+  workflowVersion?: string;
 }
 
 export type SagaTargetSelection =
@@ -282,6 +338,8 @@ export interface WorkflowLaunchRequest {
   repo?: string;
   branch?: string;
   connectionId?: string;
+  /** Exact immutable workflow version to run; omission resolves the current head. */
+  workflowVersion?: string;
 }
 
 export interface WorkflowLaunchResult {
@@ -292,20 +350,104 @@ export interface WorkflowLaunchResult {
   sessionName: string;
   status: string;
   clusterName: string;
+  chatEndpoint: string | null;
+  workflowVersion: string;
+  documentRevision: string;
+}
+
+export type WorkflowExportFormat = 'yaml' | 'bundle';
+
+export interface WorkflowExport {
+  data: Blob;
+  filename: string;
+  mediaType: string;
+}
+
+export interface WorkflowVersionSummary {
+  version: string;
+  documentRevision: string;
+  createdAt: string;
+  isHead: boolean;
+  basedOnRevision?: string | null;
+  origin?: 'bundled' | 'authored';
+}
+
+export type WorkflowPersonaImportStatus = 'reuse' | 'bundled' | 'missing' | 'conflict' | 'mapped';
+
+export interface WorkflowPersonaImportPreview {
+  alias: string;
+  id: string;
+  revision: string;
+  digest: string;
+  status: WorkflowPersonaImportStatus;
+  message: string;
+  definition?: Record<string, unknown>;
+  available?: Array<{
+    id: string;
+    name?: string;
+    revision?: string;
+    digest?: string;
+  }>;
+}
+
+export interface WorkflowImportRequirement {
+  id: string;
+  kind: string;
+  message: string;
+  resolved?: boolean;
+  binding?: string | null;
+}
+
+export interface WorkflowImportSource {
+  content: string;
+  filename: string;
+  mappings?: Record<string, string>;
+  bindings?: Record<string, string>;
+  mode?: 'copy' | 'update';
+  workflowId?: string;
+  expectedRevision?: string;
+  previewDigest?: string;
+}
+
+export interface WorkflowImportPreview {
+  workflows?: Array<{ alias: string; id: string; revision?: string; status: string }>;
+  workflow: Pick<Workflow, 'id' | 'name' | 'description' | 'version'>;
+  personas: WorkflowPersonaImportPreview[];
+  requirements: WorkflowImportRequirement[];
+  errors: string[];
+  canApply: boolean;
+  previewDigest: string;
 }
 
 export interface IWorkflowService {
   listWorkflows(): Promise<Workflow[]>;
   getWorkflow(id: string): Promise<Workflow | null>;
+  listWorkflowVersions(id: string): Promise<WorkflowVersionSummary[]>;
+  getWorkflowVersion(id: string, version: string): Promise<Workflow | null>;
   saveWorkflow(workflow: Workflow): Promise<Workflow>;
   deleteWorkflow(id: string): Promise<void>;
+  exportWorkflow(
+    id: string,
+    format: WorkflowExportFormat,
+    version?: string,
+  ): Promise<WorkflowExport>;
+  previewWorkflowImport(request: WorkflowImportSource): Promise<WorkflowImportPreview>;
+  applyWorkflowImport(request: WorkflowImportSource): Promise<Workflow>;
   launchWorkflow(workflowId: string, request: WorkflowLaunchRequest): Promise<WorkflowLaunchResult>;
+}
+
+export class WorkflowRevisionConflictError extends Error {
+  constructor(message = 'This workflow changed after you opened it. Reload before saving again.') {
+    super(message);
+    this.name = 'WorkflowRevisionConflictError';
+  }
 }
 
 export interface CreateResearchCampaignRequest {
   question: string;
   name?: string;
   workflowId?: string;
+  workflowVersion?: string;
   repo?: string;
   branch?: string;
   mode?: string;
@@ -336,6 +478,7 @@ export interface CreateSpecCampaignRequest {
   prompt: string;
   name?: string;
   workflowId?: string;
+  workflowVersion?: string;
   repo?: string;
   repos?: string[];
   branch?: string;
@@ -466,6 +609,8 @@ export interface TingPersonaSummary {
   isBuiltin: boolean;
   hasOverride: boolean;
   producesEvent: string;
+  /** Outcome value → emitted event type for personas with branched completion contracts. */
+  outcomeEvents?: Readonly<Record<string, string>>;
   consumesEvents: string[];
   /** Functional role — drives the avatar shape (plan, build, verify, …). */
   role?: string;

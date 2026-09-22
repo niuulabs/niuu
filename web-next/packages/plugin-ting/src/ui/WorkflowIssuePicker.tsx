@@ -12,7 +12,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import { EmptyState, LoadingState, Modal, cn } from '@niuulabs/ui';
-import type { ITrackerBrowserService, TrackerIssue } from '../ports';
+import type { ITrackerBrowserService, TrackerIssue, TrackerProject } from '../ports';
 
 export interface WorkflowIssuePickerProps {
   open: boolean;
@@ -25,30 +25,41 @@ export function issueLaunchPrompt(issue: TrackerIssue): string {
   return `${issue.identifier} · ${issue.title}\n${issue.url}`;
 }
 
+function projectIdentity(project: Pick<TrackerProject, 'id' | 'trackerConnectionId'>): string {
+  return JSON.stringify([project.trackerConnectionId ?? '', project.id]);
+}
+
 export function WorkflowIssuePicker({ open, onOpenChange, onPick }: WorkflowIssuePickerProps) {
   const tracker = useService<ITrackerBrowserService>('ting.tracker');
-  const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null);
+  const [selectedProjectIdentity, setSelectedProjectIdentity] = useState<string | null>(null);
 
-  const boards = useQuery({
+  const projects = useQuery({
     queryKey: ['ting', 'tracker', 'projects'],
     queryFn: () => tracker.listProjects(),
     enabled: open,
   });
 
-  const boardId = selectedBoardId ?? boards.data?.[0]?.id ?? null;
+  const project =
+    projects.data?.find((candidate) => projectIdentity(candidate) === selectedProjectIdentity) ??
+    projects.data?.[0] ??
+    null;
+  const projectId = project?.id ?? null;
+  const trackerConnectionId = project?.trackerConnectionId || null;
+  const activeProjectIdentity = project ? projectIdentity(project) : null;
 
   const issues = useQuery({
-    queryKey: ['ting', 'tracker', 'issues', boardId],
-    queryFn: () => tracker.listIssues(boardId as string),
-    enabled: open && !!boardId,
+    queryKey: ['ting', 'tracker', 'issues', trackerConnectionId, projectId],
+    queryFn: () =>
+      tracker.listIssues(projectId as string, undefined, trackerConnectionId ?? undefined),
+    enabled: open && !!projectId,
   });
 
   return (
     <Modal
       open={open}
       onOpenChange={onOpenChange}
-      title="Start from a Linear issue"
-      description="Pick the issue this run is about. Its identifier, title, and link become the prompt."
+      title="Use a tracker issue"
+      description="Choose an issue to use as launch context. Its identifier, title, and link become the prompt."
       actions={[{ label: 'Cancel', variant: 'secondary' }]}
     >
       <div
@@ -57,33 +68,38 @@ export function WorkflowIssuePicker({ open, onOpenChange, onPick }: WorkflowIssu
       >
         <div className="niuu:flex niuu:flex-col niuu:gap-1 niuu:max-h-[320px] niuu:overflow-y-auto">
           <span className="niuu:text-[10px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.24em] niuu:text-text-muted">
-            Boards
+            Projects
           </span>
-          {boards.isLoading ? <LoadingState label="Loading boards…" /> : null}
-          {boards.isError ? (
+          {projects.isLoading ? <LoadingState label="Loading tracker projects…" /> : null}
+          {projects.isError ? (
             <p className="niuu:m-0 niuu:text-[12px] niuu:text-critical" role="alert">
-              {boards.error instanceof Error ? boards.error.message : 'Failed to load boards.'}
+              {projects.error instanceof Error
+                ? projects.error.message
+                : 'Failed to load tracker projects.'}
             </p>
           ) : null}
-          {boards.data?.map((board) => (
-            <button
-              key={board.id}
-              type="button"
-              data-testid={`workflow-issue-board-${board.id}`}
-              onClick={() => setSelectedBoardId(board.id)}
-              className={cn(
-                'niuu:rounded-md niuu:px-2.5 niuu:py-1.5 niuu:text-left niuu:text-[12px] niuu:cursor-pointer niuu:border',
-                board.id === boardId
-                  ? 'niuu:border-border niuu:bg-bg-elevated niuu:text-text-primary'
-                  : 'niuu:border-transparent niuu:bg-transparent niuu:text-text-secondary niuu:hover:bg-bg-tertiary',
-              )}
-            >
-              {board.name}
-            </button>
-          ))}
-          {!boards.isLoading && !boards.isError && (boards.data?.length ?? 0) === 0 ? (
+          {projects.data?.map((candidate) => {
+            const identity = projectIdentity(candidate);
+            return (
+              <button
+                key={identity}
+                type="button"
+                data-testid={`workflow-issue-project-${candidate.trackerConnectionId || 'default'}-${candidate.id}`}
+                onClick={() => setSelectedProjectIdentity(identity)}
+                className={cn(
+                  'niuu:rounded-md niuu:px-2.5 niuu:py-1.5 niuu:text-left niuu:text-[12px] niuu:cursor-pointer niuu:border',
+                  identity === activeProjectIdentity
+                    ? 'niuu:border-border niuu:bg-bg-elevated niuu:text-text-primary'
+                    : 'niuu:border-transparent niuu:bg-transparent niuu:text-text-secondary niuu:hover:bg-bg-tertiary',
+                )}
+              >
+                {candidate.name}
+              </button>
+            );
+          })}
+          {!projects.isLoading && !projects.isError && (projects.data?.length ?? 0) === 0 ? (
             <EmptyState
-              title="No boards"
+              title="No tracker projects"
               description="Connect a tracker in Ting settings, then try again."
             />
           ) : null}
@@ -93,7 +109,7 @@ export function WorkflowIssuePicker({ open, onOpenChange, onPick }: WorkflowIssu
           <span className="niuu:text-[10px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.24em] niuu:text-text-muted">
             Issues
           </span>
-          {issues.isLoading && boardId ? <LoadingState label="Loading issues…" /> : null}
+          {issues.isLoading && projectId ? <LoadingState label="Loading issues…" /> : null}
           {issues.isError ? (
             <p className="niuu:m-0 niuu:text-[12px] niuu:text-critical" role="alert">
               {issues.error instanceof Error ? issues.error.message : 'Failed to load issues.'}
@@ -121,8 +137,8 @@ export function WorkflowIssuePicker({ open, onOpenChange, onPick }: WorkflowIssu
               </span>
             </button>
           ))}
-          {!issues.isLoading && !issues.isError && boardId && (issues.data?.length ?? 0) === 0 ? (
-            <EmptyState title="No issues on this board" />
+          {!issues.isLoading && !issues.isError && projectId && (issues.data?.length ?? 0) === 0 ? (
+            <EmptyState title="No issues in this project" />
           ) : null}
         </div>
       </div>

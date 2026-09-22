@@ -454,6 +454,46 @@ async def test_http_client_refreshes_rejected_workload_identity_once(
     assert created[0].authorizations == ["Bearer expired", "Bearer fresh"]
 
 
+async def test_http_client_per_call_bearer_bypasses_base_auth_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingBaseAuth:
+        def headers(self) -> dict[str, str]:
+            raise AssertionError("base workload identity must not be resolved")
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def post(
+            self,
+            _url: str,
+            *,
+            headers: dict[str, str],
+            json: dict,
+        ) -> httpx.Response:
+            assert headers["Authorization"] == "Bearer owner-operation-token"
+            assert json == {"jsonrpc": "2.0"}
+            return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeAsyncClient())
+    client = HttpxJsonClient(
+        auth=FailingBaseAuth(),  # type: ignore[arg-type]
+        allowed_origins=["http://ravn-child:8080"],
+    )
+
+    response = await client.post(
+        "http://ravn-child:8080/a2a",
+        {"jsonrpc": "2.0"},
+        headers={"Authorization": "Bearer owner-operation-token"},
+    )
+
+    assert response.status_code == 200
+
+
 def test_client_external_token_env_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EXTERNAL_TOOL_BUILD_TOKEN", "external-123")
 

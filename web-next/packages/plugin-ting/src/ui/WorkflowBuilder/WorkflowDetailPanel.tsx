@@ -2,19 +2,27 @@ import { useState } from 'react';
 import { cn, SegmentedFilter } from '@niuulabs/ui';
 import type {
   Workflow,
+  WorkflowGateMode,
+  WorkflowGateNode,
+  WorkflowIncludeNode,
   WorkflowNode,
   WorkflowResourceBinding,
   WorkflowResourceNode,
   WorkflowStageNode,
+  WorkflowSubworkflowNode,
 } from '../../domain/workflow';
 import type { WorkflowIssue } from '../../domain/workflowValidation';
+import { parseWorkflowEdgeLabel } from '../../domain/workflowSemantics';
 import type { WorkflowBuilderActions, WorkflowStageModelOption } from './useWorkflowBuilder';
 import type { PersonaEntry } from './LibraryPanel';
 import { normalizedStageMembers } from './graphUtils';
 import { EPHEMERAL_LOCAL_MOUNT_ID, type WorkflowRegistryMount } from './mimirRegistry';
+import { EvidencePolicyEditor, emptyEvidencePolicy } from './EvidencePolicyEditor';
 
 export interface WorkflowDetailPanelProps {
   workflow: Workflow;
+  /** View mode keeps inspection available while disabling mutations. */
+  readOnly?: boolean;
   selectedNode: WorkflowNode | null;
   errorCount: number;
   warnCount: number;
@@ -24,6 +32,11 @@ export interface WorkflowDetailPanelProps {
   registryMounts: WorkflowRegistryMount[];
   onDeleteNode: WorkflowBuilderActions['deleteNode'];
   onUpdateNode: WorkflowBuilderActions['updateNode'];
+  onSelectSubworkflowTemplate: WorkflowBuilderActions['selectSubworkflowTemplate'];
+  onAddSubworkflowTemplate: WorkflowBuilderActions['addSubworkflowTemplate'];
+  onRenameSubworkflowTemplate: WorkflowBuilderActions['renameSubworkflowTemplate'];
+  onRemoveSubworkflowTemplate: WorkflowBuilderActions['removeSubworkflowTemplate'];
+  onSelectIncludeWorkflow: WorkflowBuilderActions['selectIncludeWorkflow'];
   onUpdateLabel: WorkflowBuilderActions['updateNodeLabel'];
   onUpdateWorkflowMeta: WorkflowBuilderActions['updateWorkflowMeta'];
   onAddPersona: WorkflowBuilderActions['addPersonaToStage'];
@@ -34,6 +47,11 @@ export interface WorkflowDetailPanelProps {
   onAddResourceBinding: WorkflowBuilderActions['addResourceBinding'];
   onUpdateResourceBinding: WorkflowBuilderActions['updateResourceBinding'];
   onRemoveResourceBinding: WorkflowBuilderActions['removeResourceBinding'];
+  workflows?: Workflow[];
+  onOpenWorkflow?: (workflow: Workflow) => void;
+  /** Closes the panel. Omit to render without a close control (e.g. a fixed
+   *  embed that has nowhere else to put the panel). */
+  onClose?: () => void;
 }
 
 const SECTION_LABEL =
@@ -47,7 +65,7 @@ const TAG =
 const TAB_BTN =
   'niuu:px-0 niuu:py-2 niuu:bg-transparent niuu:border-none niuu:border-b-2 niuu:text-[11px] niuu:font-mono niuu:uppercase niuu:tracking-[0.18em]';
 const DELETE_BTN =
-  'niuu:inline-flex niuu:items-center niuu:rounded-lg niuu:border niuu:border-critical/60 niuu:bg-critical-bg/25 niuu:px-2.5 niuu:py-1.5 niuu:text-[12px] niuu:font-semibold niuu:text-[#ffb0b0]';
+  'niuu:inline-flex niuu:items-center niuu:rounded-lg niuu:border niuu:border-critical/60 niuu:bg-critical-bg/25 niuu:px-2.5 niuu:py-1.5 niuu:text-[12px] niuu:font-semibold niuu:text-critical';
 
 export function issueTone(severity: WorkflowIssue['severity']) {
   return severity === 'error'
@@ -130,6 +148,7 @@ function WorkflowSummary({
   const triggerCount = workflow.nodes.filter((n) => n.kind === 'trigger').length;
   const gateCount = workflow.nodes.filter((n) => n.kind === 'gate').length;
   const condCount = workflow.nodes.filter((n) => n.kind === 'cond').length;
+  const waitCount = workflow.nodes.filter((n) => n.kind === 'wait').length;
   const endCount = workflow.nodes.filter((n) => n.kind === 'end').length;
 
   return (
@@ -158,14 +177,16 @@ function WorkflowSummary({
           <input
             className={cn(INPUT, 'niuu:mt-1')}
             value={workflow.version ?? '0.1.0'}
-            onChange={(e) => onUpdateWorkflowMeta({ version: e.target.value })}
+            readOnly
+            title="The server assigns the next version when this workflow is saved."
           />
+          <div className="niuu:mt-1 niuu:text-[9px] niuu:text-text-faint">Assigned on save</div>
         </div>
         <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3">
           <div className={SECTION_LABEL}>Summary</div>
           <div className="niuu:mt-2 niuu:text-xs niuu:text-text-secondary niuu:leading-relaxed">
             {triggerCount} triggers · {stageCount} stages · {gateCount} gates · {condCount}{' '}
-            conditions · {endCount} end nodes · {workflow.edges.length} edges
+            conditions · {waitCount} waits · {endCount} end nodes · {workflow.edges.length} edges
           </div>
         </div>
       </div>
@@ -210,6 +231,611 @@ function WorkflowSummary({
         </span>
       </div>
     </div>
+  );
+}
+
+function catalogSelectionValue(workflow: Workflow): string {
+  return `catalog:${workflow.id}:${workflow.documentRevision ?? ''}`;
+}
+
+/** Resolve a template's alias to a catalog candidate and whether that
+ *  candidate is the exact pinned revision, the same lookup the panel used to
+ *  do once for a node's single dependency, now per template. */
+function resolveTemplateCatalogChild(
+  workflow: Workflow,
+  workflows: Workflow[],
+  alias: string,
+): { catalogChildWorkflow: Workflow | null; childWorkflowExact: boolean } {
+  const dependency = alias ? workflow.workflowDependencies?.[alias] : undefined;
+  const catalogChildWorkflow =
+    (dependency
+      ? workflows.find((candidate) => candidate.id === dependency.id)
+      : workflows.find((candidate) => candidate.id === alias || candidate.name === alias)) ?? null;
+  const childWorkflowExact = Boolean(
+    catalogChildWorkflow &&
+    dependency &&
+    catalogChildWorkflow.documentRevision === dependency.digest,
+  );
+  return { catalogChildWorkflow, childWorkflowExact };
+}
+
+function SubworkflowInspector({
+  node,
+  workflow,
+  workflows,
+  personas,
+  onSelectSubworkflowTemplate,
+  onAddSubworkflowTemplate,
+  onRenameSubworkflowTemplate,
+  onRemoveSubworkflowTemplate,
+  onUpdateNode,
+  onUpdateLabel,
+  onDeleteNode,
+}: {
+  node: WorkflowSubworkflowNode;
+  workflow: Workflow;
+  workflows: Workflow[];
+  personas: PersonaEntry[];
+  onSelectSubworkflowTemplate: WorkflowBuilderActions['selectSubworkflowTemplate'];
+  onAddSubworkflowTemplate: WorkflowBuilderActions['addSubworkflowTemplate'];
+  onRenameSubworkflowTemplate: WorkflowBuilderActions['renameSubworkflowTemplate'];
+  onRemoveSubworkflowTemplate: WorkflowBuilderActions['removeSubworkflowTemplate'];
+  onUpdateNode: WorkflowBuilderActions['updateNode'];
+  onUpdateLabel: WorkflowBuilderActions['updateNodeLabel'];
+  onDeleteNode: WorkflowBuilderActions['deleteNode'];
+}) {
+  const templateEntries = Object.entries(node.templates ?? {});
+  const templateNames = templateEntries.map(([templateName]) => templateName);
+  const hasSeveralTemplates = templateEntries.length > 1;
+  const candidates = workflows.filter((candidate) => candidate.id !== workflow.id);
+  const coordinatorAliases = Object.keys(workflow.personaDependencies ?? {}).sort();
+  const outgoing = workflow.edges.filter((edge) => edge.source === node.id);
+  const joinedEvents = [
+    ...new Set(
+      outgoing
+        .map((edge) => parseWorkflowEdgeLabel(edge.label)?.sourceEventType)
+        .filter((eventType): eventType is string => Boolean(eventType)),
+    ),
+  ];
+  const coordinatorName = (alias: string) =>
+    personas.find((persona) => persona.id === (workflow.personaDependencies?.[alias]?.id ?? alias))
+      ?.label ?? alias;
+
+  function selectChildFor(templateName: string, value: string) {
+    const selected = candidates.find((candidate) => catalogSelectionValue(candidate) === value);
+    if (selected?.documentRevision) {
+      onSelectSubworkflowTemplate(node.id, templateName, selected);
+    }
+  }
+
+  /** Why "Remove" is disabled for this template, or null when it may be
+   *  removed. Mirrors `removeSubworkflowTemplate`'s own refusals so the
+   *  control never offers an action the domain would reject. */
+  function templateRemovalBlockedReason(templateName: string): string | null {
+    if (!hasSeveralTemplates) return 'This node offers only one template.';
+    const usedBy = (node.children ?? []).filter(
+      (declaredChild) => declaredChild.template === templateName,
+    );
+    if (usedBy.length > 0) {
+      return `Used by declared child ${usedBy.map((declaredChild) => declaredChild.key).join(', ')}.`;
+    }
+    return null;
+  }
+
+  function boundedValue(value: string, minimum: number, maximum: number): number {
+    return Math.min(maximum, Math.max(minimum, Number(value) || minimum));
+  }
+
+  function renderChildSelect(templateName: string, alias: string, selectId: string) {
+    const dependency = alias ? workflow.workflowDependencies?.[alias] : undefined;
+    const { catalogChildWorkflow, childWorkflowExact } = resolveTemplateCatalogChild(
+      workflow,
+      workflows,
+      alias,
+    );
+    const exactCatalogValue =
+      catalogChildWorkflow && childWorkflowExact
+        ? catalogSelectionValue(catalogChildWorkflow)
+        : null;
+    const selectedValue = exactCatalogValue ?? (dependency ? `pinned:${dependency.digest}` : '');
+
+    return (
+      <>
+        <select
+          id={selectId}
+          data-testid={
+            hasSeveralTemplates ? `child-workflow-select-${templateName}` : 'child-workflow-select'
+          }
+          className={INPUT}
+          value={selectedValue}
+          onChange={(event) => selectChildFor(templateName, event.target.value)}
+        >
+          {!dependency ? <option value="">Choose a workflow…</option> : null}
+          {dependency && !exactCatalogValue ? (
+            <option value={`pinned:${dependency.digest}`}>Current saved child</option>
+          ) : null}
+          {candidates.map((candidate) => {
+            const revision = candidate.documentRevision?.trim();
+            return (
+              <option
+                key={`${candidate.id}:${revision ?? 'unavailable'}`}
+                value={catalogSelectionValue(candidate)}
+                disabled={!revision}
+              >
+                {candidate.name} · {candidate.version ?? 'unversioned'}
+                {!revision ? ' · not ready to use' : ''}
+              </option>
+            );
+          })}
+        </select>
+        {dependency ? (
+          <details className="niuu:mt-2 niuu:text-[10px] niuu:text-text-faint">
+            <summary className="niuu:cursor-pointer">Version details</summary>
+            <div
+              data-testid="child-workflow-pin"
+              className="niuu:mt-1 niuu:break-all niuu:font-mono"
+            >
+              {alias} · {dependency.digest}
+            </div>
+          </details>
+        ) : (
+          <p className="niuu:mt-2 niuu:text-[11px] niuu:text-critical">
+            Choose a child workflow before saving.
+          </p>
+        )}
+        {dependency && !childWorkflowExact ? (
+          <p className="niuu:mt-2 niuu:text-[11px] niuu:text-text-faint">
+            This exact pinned revision is not in the loaded catalog. Selecting the current catalog
+            version will explicitly repin it.
+          </p>
+        ) : null}
+      </>
+    );
+  }
+
+  return (
+    <section className="niuu:space-y-4 niuu:px-4 niuu:py-3 niuu:text-xs niuu:text-text-secondary">
+      <div>
+        <label className={SECTION_LABEL} htmlFor={`subworkflow-${node.id}-name`}>
+          Name
+        </label>
+        <input
+          id={`subworkflow-${node.id}-name`}
+          className={INPUT}
+          value={node.label}
+          onChange={(event) => onUpdateLabel(node.id, event.target.value)}
+        />
+      </div>
+
+      {!hasSeveralTemplates ? (
+        <div>
+          <div className="niuu:flex niuu:items-center niuu:justify-between">
+            <label className={SECTION_LABEL} htmlFor={`subworkflow-${node.id}-child`}>
+              Child workflow
+            </label>
+            <button
+              type="button"
+              data-testid={`subworkflow-${node.id}-add-template`}
+              className="niuu:font-mono niuu:text-[9px] niuu:uppercase niuu:tracking-[0.18em] niuu:text-text-faint niuu:hover:text-text-primary niuu:bg-transparent niuu:border-none"
+              onClick={() => onAddSubworkflowTemplate(node.id)}
+            >
+              + Offer another child
+            </button>
+          </div>
+          {renderChildSelect(
+            templateEntries[0]?.[0] ?? 'default',
+            templateEntries[0]?.[1] ?? '',
+            `subworkflow-${node.id}-child`,
+          )}
+        </div>
+      ) : (
+        <div className="niuu:space-y-3">
+          <div className="niuu:flex niuu:items-center niuu:justify-between">
+            <span className={SECTION_LABEL}>Child workflows</span>
+            <button
+              type="button"
+              data-testid={`subworkflow-${node.id}-add-template`}
+              className={CHIP_BTN}
+              onClick={() => onAddSubworkflowTemplate(node.id)}
+            >
+              + Add template
+            </button>
+          </div>
+          {templateEntries.map(([templateName, alias]) => {
+            const selectId = `subworkflow-${node.id}-child-${templateName}`;
+            const blockedReason = templateRemovalBlockedReason(templateName);
+            return (
+              <div
+                key={templateName}
+                className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3 niuu:space-y-2"
+              >
+                <div className="niuu:flex niuu:items-center niuu:gap-2">
+                  <input
+                    key={templateName}
+                    defaultValue={templateName}
+                    aria-label={`Template name for ${templateName}`}
+                    data-testid={`subworkflow-${node.id}-template-name-${templateName}`}
+                    className={cn(INPUT, 'niuu:flex-1')}
+                    onBlur={(event) => {
+                      const trimmed = event.target.value.trim();
+                      if (!trimmed || trimmed === templateName || templateNames.includes(trimmed)) {
+                        event.target.value = templateName;
+                        return;
+                      }
+                      onRenameSubworkflowTemplate(node.id, templateName, trimmed);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        event.currentTarget.blur();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    data-testid={`subworkflow-${node.id}-remove-template-${templateName}`}
+                    className="niuu:bg-transparent niuu:border-none niuu:text-text-faint niuu:text-xl niuu:leading-none niuu:disabled:opacity-40"
+                    disabled={Boolean(blockedReason)}
+                    title={blockedReason ?? `Remove template ${templateName}`}
+                    onClick={() => onRemoveSubworkflowTemplate(node.id, templateName)}
+                  >
+                    ×
+                  </button>
+                </div>
+                <label className="niuu:sr-only" htmlFor={selectId}>
+                  {`Child workflow for ${templateName}`}
+                </label>
+                {renderChildSelect(templateName, alias, selectId)}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div>
+        <label className={SECTION_LABEL} htmlFor={`subworkflow-${node.id}-coordinator`}>
+          Coordinator
+        </label>
+        <select
+          id={`subworkflow-${node.id}-coordinator`}
+          data-testid="subworkflow-coordinator"
+          className={INPUT}
+          value={node.allowedCoordinator}
+          disabled={coordinatorAliases.length === 0}
+          onChange={(event) => onUpdateNode(node.id, { allowedCoordinator: event.target.value })}
+        >
+          {!node.allowedCoordinator ? <option value="">Choose a coordinator…</option> : null}
+          {node.allowedCoordinator && !coordinatorAliases.includes(node.allowedCoordinator) ? (
+            <option value={node.allowedCoordinator} disabled>
+              {node.allowedCoordinator} · dependency missing
+            </option>
+          ) : null}
+          {coordinatorAliases.map((alias) => (
+            <option key={alias} value={alias}>
+              {coordinatorName(alias)} · {alias}
+            </option>
+          ))}
+        </select>
+        {coordinatorAliases.length === 0 ? (
+          <p className="niuu:mt-2 niuu:text-[11px] niuu:text-critical">
+            No coordinator personas are available in this workflow. Add and save a persona
+            dependency first.
+          </p>
+        ) : null}
+      </div>
+
+      <div className="niuu:grid niuu:grid-cols-3 niuu:gap-2">
+        <div>
+          <label className={SECTION_LABEL} htmlFor={`subworkflow-${node.id}-max-children`}>
+            Children
+          </label>
+          <input
+            id={`subworkflow-${node.id}-max-children`}
+            data-testid="subworkflow-max-children"
+            className={INPUT}
+            type="number"
+            min={1}
+            max={100}
+            value={node.maxChildren}
+            onChange={(event) => {
+              const maxChildren = boundedValue(event.target.value, 1, 100);
+              onUpdateNode(node.id, {
+                maxChildren,
+                maxActiveChildren: Math.min(node.maxActiveChildren ?? maxChildren, maxChildren),
+              });
+            }}
+          />
+        </div>
+        <div>
+          <label className={SECTION_LABEL} htmlFor={`subworkflow-${node.id}-max-active`}>
+            Active
+          </label>
+          <input
+            id={`subworkflow-${node.id}-max-active`}
+            data-testid="subworkflow-max-active"
+            className={INPUT}
+            type="number"
+            min={1}
+            max={node.maxChildren}
+            value={node.maxActiveChildren ?? node.maxChildren}
+            onChange={(event) =>
+              onUpdateNode(node.id, {
+                maxActiveChildren: boundedValue(event.target.value, 1, node.maxChildren),
+              })
+            }
+          />
+        </div>
+        <div>
+          <label className={SECTION_LABEL} htmlFor={`subworkflow-${node.id}-max-attempts`}>
+            Attempts
+          </label>
+          <input
+            id={`subworkflow-${node.id}-max-attempts`}
+            data-testid="subworkflow-max-attempts"
+            className={INPUT}
+            type="number"
+            min={1}
+            max={10}
+            value={node.maxAttempts}
+            onChange={(event) =>
+              onUpdateNode(node.id, {
+                maxAttempts: boundedValue(event.target.value, 1, 10),
+              })
+            }
+          />
+        </div>
+      </div>
+
+      <div>
+        <label className={SECTION_LABEL} htmlFor={`subworkflow-${node.id}-blocked-event`}>
+          Blocked event
+        </label>
+        <input
+          id={`subworkflow-${node.id}-blocked-event`}
+          data-testid="subworkflow-blocked-event"
+          className={INPUT}
+          value={node.blockedEvent ?? ''}
+          placeholder="children.blocked"
+          onChange={(event) => onUpdateNode(node.id, { blockedEvent: event.target.value })}
+        />
+        <p className="niuu:mt-2 niuu:text-[11px] niuu:text-text-faint">
+          Sent to the coordinator when a child cannot continue.
+        </p>
+      </div>
+
+      <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3">
+        <div className={SECTION_LABEL}>Joined continuation</div>
+        {outgoing.length > 0 && joinedEvents.length === 1 ? (
+          <p className="niuu:mt-2 niuu:font-mono niuu:text-[11px] niuu:text-text-secondary">
+            {joinedEvents[0]}
+          </p>
+        ) : (
+          <p className="niuu:mt-2 niuu:text-[11px] niuu:text-critical">
+            Connect this node to a next step and use one shared output event across every outgoing
+            edge. Use children.completed for a generic continuation.
+          </p>
+        )}
+        {joinedEvents.includes(node.blockedEvent ?? '') ? (
+          <p className="niuu:mt-2 niuu:text-[11px] niuu:text-critical">
+            The blocked event must differ from the joined continuation event.
+          </p>
+        ) : null}
+      </div>
+
+      <details>
+        <summary>Input contract</summary>
+        <pre className="niuu:overflow-auto">{JSON.stringify(node.inputSchema, null, 2)}</pre>
+      </details>
+      <details>
+        <summary>Result contract</summary>
+        <pre className="niuu:overflow-auto">{JSON.stringify(node.resultSchema, null, 2)}</pre>
+      </details>
+
+      <div className="niuu:border-t niuu:border-border niuu:pt-4">
+        <button type="button" className={DELETE_BTN} onClick={() => onDeleteNode(node.id)}>
+          Delete node
+        </button>
+      </div>
+    </section>
+  );
+}
+
+/** IncludeInspector — reuses `SubworkflowInspector`'s catalog-select and
+ *  pinning pattern (`resolveTemplateCatalogChild`, `catalogSelectionValue`)
+ *  for the single workflow an include pins, then lists that workflow's
+ *  stage/gate nodes with a checkbox and an editable local id for each. */
+function IncludeInspector({
+  node,
+  workflow,
+  workflows,
+  onSelectIncludeWorkflow,
+  onUpdateNode,
+  onUpdateLabel,
+  onDeleteNode,
+}: {
+  node: WorkflowIncludeNode;
+  workflow: Workflow;
+  workflows: Workflow[];
+  onSelectIncludeWorkflow: WorkflowBuilderActions['selectIncludeWorkflow'];
+  onUpdateNode: WorkflowBuilderActions['updateNode'];
+  onUpdateLabel: WorkflowBuilderActions['updateNodeLabel'];
+  onDeleteNode: WorkflowBuilderActions['deleteNode'];
+}) {
+  const candidates = workflows.filter((candidate) => candidate.id !== workflow.id);
+  const alias = node.workflow ?? '';
+  const dependency = alias ? workflow.workflowDependencies?.[alias] : undefined;
+  const { catalogChildWorkflow, childWorkflowExact } = resolveTemplateCatalogChild(
+    workflow,
+    workflows,
+    alias,
+  );
+  const exactCatalogValue =
+    catalogChildWorkflow && childWorkflowExact ? catalogSelectionValue(catalogChildWorkflow) : null;
+  const selectedValue = exactCatalogValue ?? (dependency ? `pinned:${dependency.digest}` : '');
+  const mappings = node.nodes ?? {};
+  const includableNodes = (catalogChildWorkflow?.nodes ?? []).filter(
+    (candidate): candidate is WorkflowStageNode | WorkflowGateNode =>
+      candidate.kind === 'stage' || candidate.kind === 'gate',
+  );
+  const usedLocalIds = new Set(Object.values(mappings));
+
+  function selectChild(value: string) {
+    const selected = candidates.find((candidate) => catalogSelectionValue(candidate) === value);
+    if (selected?.documentRevision) {
+      onSelectIncludeWorkflow(node.id, selected);
+    }
+  }
+
+  function defaultLocalId(sourceId: string): string {
+    const collides = (candidate: string) =>
+      usedLocalIds.has(candidate) || workflow.nodes.some((other) => other.id === candidate);
+    if (!collides(sourceId)) return sourceId;
+    let suffix = 2;
+    while (collides(`${sourceId}-${suffix}`)) suffix += 1;
+    return `${sourceId}-${suffix}`;
+  }
+
+  function toggleIncluded(sourceId: string, included: boolean) {
+    const nextMappings = { ...mappings };
+    if (included) {
+      nextMappings[sourceId] = defaultLocalId(sourceId);
+    } else {
+      delete nextMappings[sourceId];
+    }
+    onUpdateNode(node.id, { nodes: nextMappings });
+  }
+
+  function renameLocalId(sourceId: string, nextLocalId: string) {
+    const trimmed = nextLocalId.trim();
+    if (!trimmed || trimmed === mappings[sourceId]) return;
+    onUpdateNode(node.id, { nodes: { ...mappings, [sourceId]: trimmed } });
+  }
+
+  return (
+    <section className="niuu:space-y-4 niuu:px-4 niuu:py-3 niuu:text-xs niuu:text-text-secondary">
+      <div>
+        <label className={SECTION_LABEL} htmlFor={`include-${node.id}-name`}>
+          Name
+        </label>
+        <input
+          id={`include-${node.id}-name`}
+          className={INPUT}
+          value={node.label}
+          onChange={(event) => onUpdateLabel(node.id, event.target.value)}
+        />
+      </div>
+
+      <div>
+        <label className={SECTION_LABEL} htmlFor={`include-${node.id}-workflow`}>
+          Included workflow
+        </label>
+        <select
+          id={`include-${node.id}-workflow`}
+          data-testid="include-workflow-select"
+          className={INPUT}
+          value={selectedValue}
+          onChange={(event) => selectChild(event.target.value)}
+        >
+          {!dependency ? <option value="">Choose a workflow…</option> : null}
+          {dependency && !exactCatalogValue ? (
+            <option value={`pinned:${dependency.digest}`}>Current saved child</option>
+          ) : null}
+          {candidates.map((candidate) => {
+            const revision = candidate.documentRevision?.trim();
+            return (
+              <option
+                key={`${candidate.id}:${revision ?? 'unavailable'}`}
+                value={catalogSelectionValue(candidate)}
+                disabled={!revision}
+              >
+                {candidate.name} · {candidate.version ?? 'unversioned'}
+                {!revision ? ' · not ready to use' : ''}
+              </option>
+            );
+          })}
+        </select>
+        {!dependency ? (
+          <p className="niuu:mt-2 niuu:text-[11px] niuu:text-critical">
+            Choose a workflow to include nodes from before saving.
+          </p>
+        ) : null}
+        {dependency && !childWorkflowExact ? (
+          <p className="niuu:mt-2 niuu:text-[11px] niuu:text-text-faint">
+            This exact pinned revision is not in the loaded catalog. Selecting the current catalog
+            version will explicitly repin it.
+          </p>
+        ) : null}
+      </div>
+
+      <div>
+        <div className="niuu:flex niuu:items-center niuu:justify-between">
+          <span className={SECTION_LABEL}>Included nodes</span>
+          <span className="niuu:text-[9px] niuu:text-text-faint niuu:font-mono">
+            {Object.keys(mappings).length}
+          </span>
+        </div>
+        {!catalogChildWorkflow ? (
+          <p className="niuu:mt-2 niuu:text-[11px] niuu:text-text-faint">
+            Choose a workflow to see its stage and gate nodes.
+          </p>
+        ) : includableNodes.length === 0 ? (
+          <p className="niuu:mt-2 niuu:text-[11px] niuu:text-text-faint">
+            This workflow has no stage or gate nodes to include.
+          </p>
+        ) : (
+          <div className="niuu:mt-2 niuu:space-y-2">
+            {includableNodes.map((candidate) => {
+              const included = candidate.id in mappings;
+              return (
+                <div
+                  key={candidate.id}
+                  className="niuu:flex niuu:items-center niuu:gap-2 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-2"
+                >
+                  <input
+                    type="checkbox"
+                    id={`include-${node.id}-node-${candidate.id}`}
+                    data-testid={`include-node-toggle-${candidate.id}`}
+                    checked={included}
+                    onChange={(event) => toggleIncluded(candidate.id, event.target.checked)}
+                  />
+                  <label
+                    htmlFor={`include-${node.id}-node-${candidate.id}`}
+                    className="niuu:flex-1 niuu:truncate"
+                    title={candidate.label}
+                  >
+                    {candidate.label}
+                    <span className="niuu:ml-1 niuu:font-mono niuu:text-[9px] niuu:text-text-faint">
+                      {candidate.kind}
+                    </span>
+                  </label>
+                  {included ? (
+                    <input
+                      defaultValue={mappings[candidate.id]}
+                      aria-label={`Local id for ${candidate.label}`}
+                      data-testid={`include-node-local-id-${candidate.id}`}
+                      className={cn(INPUT, 'niuu:w-28')}
+                      onBlur={(event) => renameLocalId(candidate.id, event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          event.currentTarget.blur();
+                        }
+                      }}
+                    />
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="niuu:border-t niuu:border-border niuu:pt-4">
+        <button type="button" className={DELETE_BTN} onClick={() => onDeleteNode(node.id)}>
+          Delete node
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -373,7 +999,7 @@ function StageInspector({
                   className="niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3.5 niuu:flex niuu:flex-col niuu:gap-2.5"
                 >
                   <div className="niuu:flex niuu:items-start niuu:gap-2">
-                    <div className="niuu:flex niuu:h-8 niuu:w-8 niuu:items-center niuu:justify-center niuu:rounded-full niuu:border niuu:border-[#aeddff] niuu:text-[#d6efff] niuu:font-mono niuu:text-[18px]">
+                    <div className="niuu:flex niuu:h-8 niuu:w-8 niuu:items-center niuu:justify-center niuu:rounded-full niuu:border niuu:border-brand niuu:text-brand niuu:font-mono niuu:text-[18px]">
                       {personaGlyph(persona?.role)}
                     </div>
                     <div className="niuu:flex-1 niuu:min-w-0">
@@ -438,7 +1064,7 @@ function StageInspector({
                             key={event}
                             className={cn(
                               TAG,
-                              'niuu:border-transparent niuu:bg-[#4f6474] niuu:text-[#d6efff]',
+                              'niuu:border-transparent niuu:bg-brand/20 niuu:text-brand',
                             )}
                           >
                             {event}
@@ -447,27 +1073,52 @@ function StageInspector({
                       </div>
                     </div>
                     <div>
-                      <div className={SECTION_LABEL}>Produces</div>
-                      <div className="niuu:flex niuu:flex-wrap niuu:gap-1 niuu:mt-0.5">
-                        {(persona?.produces ?? []).map((event) => (
-                          <span
-                            key={event}
-                            className={cn(
-                              TAG,
-                              memberIssues.length > 0
-                                ? 'niuu:border-[#b75159] niuu:border-dashed niuu:bg-[#4b3136] niuu:text-[#ffb0b0]'
-                                : 'niuu:border-transparent niuu:bg-bg-primary niuu:text-text-primary',
-                            )}
-                          >
-                            {event}
-                          </span>
-                        ))}
-                      </div>
+                      <div className={SECTION_LABEL}>Outcomes</div>
+                      {Object.keys(persona?.outcomeEvents ?? {}).length > 0 ? (
+                        <div className="niuu:mt-1 niuu:flex niuu:flex-col niuu:gap-1">
+                          {Object.entries(persona?.outcomeEvents ?? {}).map(
+                            ([outcome, eventType]) => (
+                              <div
+                                key={outcome}
+                                className={cn(
+                                  'niuu:flex niuu:items-center niuu:justify-between niuu:gap-2 niuu:rounded-md niuu:border niuu:px-2 niuu:py-1.5',
+                                  memberIssues.length > 0
+                                    ? 'niuu:border-critical/60 niuu:bg-critical-bg niuu:text-critical'
+                                    : 'niuu:border-border-subtle niuu:bg-bg-primary niuu:text-text-secondary',
+                                )}
+                              >
+                                <span className="niuu:text-[10px] niuu:font-semibold">
+                                  {outcome.replaceAll('_', ' ')}
+                                </span>
+                                <span className="niuu:truncate niuu:font-mono niuu:text-[9px]">
+                                  {eventType}
+                                </span>
+                              </div>
+                            ),
+                          )}
+                        </div>
+                      ) : (
+                        <div className="niuu:flex niuu:flex-wrap niuu:gap-1 niuu:mt-0.5">
+                          {(persona?.produces ?? []).map((event) => (
+                            <span
+                              key={event}
+                              className={cn(
+                                TAG,
+                                memberIssues.length > 0
+                                  ? 'niuu:border-critical niuu:border-dashed niuu:bg-critical-bg niuu:text-critical'
+                                  : 'niuu:border-transparent niuu:bg-bg-primary niuu:text-text-primary',
+                              )}
+                            >
+                              {event}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
 
                   {memberIssues.length > 0 && (
-                    <div className="niuu:rounded-lg niuu:border niuu:border-[#b75159] niuu:bg-[#4b3136] niuu:p-3 niuu:text-[#ffb0b0]">
+                    <div className="niuu:rounded-lg niuu:border niuu:border-critical niuu:bg-critical-bg niuu:p-3 niuu:text-critical">
                       <div className="niuu:text-[12px] niuu:font-semibold niuu:leading-snug">
                         {memberIssues[0]?.message}
                       </div>
@@ -939,6 +1590,7 @@ function ResourceInspector({
 
 export function WorkflowDetailPanel({
   workflow,
+  readOnly,
   selectedNode,
   errorCount,
   warnCount,
@@ -948,6 +1600,11 @@ export function WorkflowDetailPanel({
   registryMounts,
   onDeleteNode,
   onUpdateNode,
+  onSelectSubworkflowTemplate,
+  onAddSubworkflowTemplate,
+  onRenameSubworkflowTemplate,
+  onRemoveSubworkflowTemplate,
+  onSelectIncludeWorkflow,
   onUpdateLabel,
   onUpdateWorkflowMeta,
   onAddPersona,
@@ -958,222 +1615,380 @@ export function WorkflowDetailPanel({
   onAddResourceBinding,
   onUpdateResourceBinding,
   onRemoveResourceBinding,
+  workflows = [],
+  onOpenWorkflow,
+  onClose,
 }: WorkflowDetailPanelProps) {
   const title = selectedNode ? selectedNode.label : 'Workflow';
   const subtitle = selectedNode
     ? `${selectedNode.kind} · ${selectedNode.id}`
     : 'Inspector and release summary';
+  // The header's "open child workflow" shortcut only makes sense when the
+  // node offers exactly one template — with several, which one it would
+  // navigate to is ambiguous, so the shortcut is omitted (each template's
+  // row still offers its own child-workflow picker in the inspector below).
+  const soleTemplateAlias =
+    selectedNode?.kind === 'subworkflow' && Object.keys(selectedNode.templates ?? {}).length === 1
+      ? Object.values(selectedNode.templates ?? {})[0]!
+      : selectedNode?.kind === 'include'
+        ? (selectedNode.workflow ?? '')
+        : null;
+  const { catalogChildWorkflow, childWorkflowExact } =
+    soleTemplateAlias !== null
+      ? resolveTemplateCatalogChild(workflow, workflows, soleTemplateAlias)
+      : { catalogChildWorkflow: null, childWorkflowExact: false };
 
   return (
     <div
       data-testid="workflow-detail-panel"
-      className="niuu:w-[300px] niuu:shrink-0 niuu:border-l niuu:border-border niuu:bg-bg-secondary niuu:flex niuu:flex-col niuu:overflow-y-auto"
+      className="niuu:absolute niuu:inset-y-3 niuu:right-3 niuu:z-10 niuu:flex niuu:w-[360px] niuu:flex-col niuu:overflow-hidden niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-secondary/95 niuu:shadow-2xl niuu:backdrop-blur-md"
     >
-      <div className="niuu:px-4 niuu:pt-3 niuu:pb-2 niuu:border-b niuu:border-border">
-        <div className="niuu:flex niuu:flex-col niuu:gap-0.5">
-          <span className="niuu:text-[13px] niuu:font-semibold niuu:text-text-primary niuu:font-sans">
+      <div className="niuu:flex niuu:items-start niuu:gap-2 niuu:border-b niuu:border-border niuu:px-4 niuu:pb-2 niuu:pt-3">
+        <div className="niuu:flex niuu:min-w-0 niuu:flex-col niuu:gap-0.5">
+          <span className="niuu:truncate niuu:text-[13px] niuu:font-semibold niuu:text-text-primary niuu:font-sans">
             {title}
           </span>
           <span className="niuu:text-[9px] niuu:font-mono niuu:text-text-faint">{subtitle}</span>
         </div>
+        {catalogChildWorkflow && onOpenWorkflow ? (
+          <button
+            type="button"
+            data-testid="open-child-workflow"
+            className="niuu:ml-auto niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-2 niuu:py-1 niuu:text-[10px] niuu:text-text-secondary niuu:hover:border-brand niuu:hover:text-text-primary"
+            onClick={() => onOpenWorkflow(catalogChildWorkflow)}
+          >
+            {childWorkflowExact ? 'Open pinned child' : 'Open latest child'}
+          </button>
+        ) : null}
+        {onClose && (
+          <button
+            type="button"
+            data-testid="workflow-detail-panel-close"
+            onClick={onClose}
+            aria-label="Close panel"
+            title="Close panel"
+            className="niuu:ml-auto niuu:rounded-md niuu:border-none niuu:bg-transparent niuu:p-1 niuu:text-[15px] niuu:leading-none niuu:text-text-muted niuu:hover:bg-bg-tertiary niuu:hover:text-text-primary"
+          >
+            ×
+          </button>
+        )}
       </div>
 
-      {selectedNode?.kind === 'stage' ? (
-        <StageInspector
-          node={selectedNode}
-          workflow={workflow}
-          personas={personas}
-          models={models}
-          issues={issues}
-          onDeleteNode={onDeleteNode}
-          onUpdateNode={onUpdateNode}
-          onUpdateLabel={onUpdateLabel}
-          onAddPersona={onAddPersona}
-          onReplacePersona={onReplacePersona}
-          onUpdatePersonaModel={onUpdatePersonaModel}
-          onUpdatePersonaBudget={onUpdatePersonaBudget}
-          onRemovePersona={onRemovePersona}
-        />
-      ) : selectedNode?.kind === 'gate' ? (
-        <div className="niuu:px-4 niuu:py-3 niuu:flex niuu:flex-col niuu:gap-4">
-          <div>
-            <label className={SECTION_LABEL}>Gate name</label>
-            <input
-              className={INPUT}
-              value={selectedNode.label}
-              onChange={(e) => onUpdateLabel(selectedNode.id, e.target.value)}
-            />
+      <fieldset
+        disabled={readOnly ?? workflow.readOnly === true}
+        className="niuu:m-0 niuu:flex-1 niuu:overflow-y-auto niuu:border-0 niuu:p-0 disabled:niuu:opacity-80"
+      >
+        {selectedNode?.kind === 'stage' ? (
+          <StageInspector
+            node={selectedNode}
+            workflow={workflow}
+            personas={personas}
+            models={models}
+            issues={issues}
+            onDeleteNode={onDeleteNode}
+            onUpdateNode={onUpdateNode}
+            onUpdateLabel={onUpdateLabel}
+            onAddPersona={onAddPersona}
+            onReplacePersona={onReplacePersona}
+            onUpdatePersonaModel={onUpdatePersonaModel}
+            onUpdatePersonaBudget={onUpdatePersonaBudget}
+            onRemovePersona={onRemovePersona}
+          />
+        ) : selectedNode?.kind === 'gate' ? (
+          <div className="niuu:px-4 niuu:py-3 niuu:flex niuu:flex-col niuu:gap-4">
+            <div>
+              <label className={SECTION_LABEL}>Gate name</label>
+              <input
+                className={INPUT}
+                value={selectedNode.label}
+                onChange={(e) => onUpdateLabel(selectedNode.id, e.target.value)}
+              />
+            </div>
+            <div>
+              <label className={SECTION_LABEL}>Condition</label>
+              <textarea
+                className={cn(INPUT, 'niuu:min-h-[84px]')}
+                value={selectedNode.condition}
+                onChange={(e) => onUpdateNode(selectedNode.id, { condition: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className={SECTION_LABEL}>Gate mode</label>
+              <select
+                className={cn(INPUT, 'niuu:mt-0.5')}
+                aria-label="Gate mode"
+                value={selectedNode.mode ?? 'human_approval'}
+                onChange={(e) => {
+                  const mode = e.target.value as WorkflowGateMode;
+                  onUpdateNode(
+                    selectedNode.id,
+                    mode === 'evidence'
+                      ? {
+                          mode,
+                          evidencePolicy: selectedNode.evidencePolicy ?? emptyEvidencePolicy(),
+                          artifact: selectedNode.artifact ?? { kind: 'document', id: '' },
+                        }
+                      : { mode, evidencePolicy: undefined, artifact: undefined },
+                  );
+                }}
+              >
+                <option value="human_approval">human approval</option>
+                <option value="human_review">human review</option>
+                <option value="automated_approval">automated approval</option>
+                <option value="evidence">verified evidence</option>
+              </select>
+            </div>
+            {selectedNode.mode === 'evidence' ? (
+              <>
+                <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
+                  <div>
+                    <label className={SECTION_LABEL}>Artifact kind</label>
+                    <input
+                      className={INPUT}
+                      aria-label="Artifact kind"
+                      value={selectedNode.artifact?.kind ?? 'document'}
+                      onChange={(e) =>
+                        onUpdateNode(selectedNode.id, {
+                          artifact: {
+                            kind: e.target.value.trimStart(),
+                            id: selectedNode.artifact?.id ?? '',
+                          },
+                        })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className={SECTION_LABEL}>Artifact path or identifier</label>
+                    <input
+                      className={INPUT}
+                      aria-label="Artifact path or identifier"
+                      value={selectedNode.artifact?.id ?? ''}
+                      placeholder="report.md"
+                      onChange={(e) =>
+                        onUpdateNode(selectedNode.id, {
+                          artifact: {
+                            kind: selectedNode.artifact?.kind ?? 'document',
+                            id: e.target.value.trimStart(),
+                          },
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+                <EvidencePolicyEditor
+                  policy={selectedNode.evidencePolicy}
+                  onChange={(evidencePolicy) => onUpdateNode(selectedNode.id, { evidencePolicy })}
+                />
+              </>
+            ) : (
+              <div>
+                <label className={SECTION_LABEL}>Pending behavior</label>
+                <select
+                  className={cn(INPUT, 'niuu:mt-0.5')}
+                  aria-label="Pending behavior"
+                  value={selectedNode.pendingBehavior ?? 'help_needed'}
+                  onChange={(e) =>
+                    onUpdateNode(selectedNode.id, {
+                      pendingBehavior: e.target.value as 'silent' | 'notify_only' | 'help_needed',
+                    })
+                  }
+                >
+                  <option value="help_needed">help_needed</option>
+                  <option value="notify_only">notify_only</option>
+                  <option value="silent">silent</option>
+                </select>
+              </div>
+            )}
+            <div>
+              <label className={SECTION_LABEL}>Approve event</label>
+              <input
+                className={INPUT}
+                value={selectedNode.approvalEvent ?? ''}
+                onChange={(e) =>
+                  onUpdateNode(selectedNode.id, { approvalEvent: e.target.value.trimStart() })
+                }
+              />
+            </div>
+            <div>
+              <label className={SECTION_LABEL}>Changes requested event</label>
+              <input
+                className={INPUT}
+                value={selectedNode.changesRequestedEvent ?? ''}
+                onChange={(e) =>
+                  onUpdateNode(selectedNode.id, {
+                    changesRequestedEvent: e.target.value.trimStart(),
+                  })
+                }
+              />
+            </div>
+            <div>
+              <label className={SECTION_LABEL}>Instructions</label>
+              <textarea
+                className={cn(INPUT, 'niuu:min-h-[72px]')}
+                value={selectedNode.instructions ?? ''}
+                onChange={(e) => onUpdateNode(selectedNode.id, { instructions: e.target.value })}
+              />
+            </div>
+            {selectedNode.mode !== 'evidence' ? (
+              <div>
+                <label className={SECTION_LABEL}>Auto-forward after</label>
+                <input
+                  className={INPUT}
+                  value={selectedNode.autoForwardAfter ?? '30m'}
+                  onChange={(e) =>
+                    onUpdateNode(selectedNode.id, { autoForwardAfter: e.target.value })
+                  }
+                />
+              </div>
+            ) : null}
           </div>
-          <div>
-            <label className={SECTION_LABEL}>Condition</label>
-            <textarea
-              className={cn(INPUT, 'niuu:min-h-[84px]')}
-              value={selectedNode.condition}
-              onChange={(e) => onUpdateNode(selectedNode.id, { condition: e.target.value })}
-            />
+        ) : selectedNode?.kind === 'cond' ? (
+          <div className="niuu:px-4 niuu:py-3 niuu:flex niuu:flex-col niuu:gap-4">
+            <div>
+              <label className={SECTION_LABEL}>Condition name</label>
+              <input
+                className={INPUT}
+                value={selectedNode.label}
+                onChange={(e) => onUpdateLabel(selectedNode.id, e.target.value)}
+              />
+            </div>
+            <div>
+              <label className={SECTION_LABEL}>Expression</label>
+              <textarea
+                className={cn(INPUT, 'niuu:min-h-[120px] niuu:font-mono')}
+                value={selectedNode.predicate}
+                onChange={(e) => onUpdateNode(selectedNode.id, { predicate: e.target.value })}
+              />
+            </div>
           </div>
-          <div>
-            <label className={SECTION_LABEL}>Gate mode</label>
-            <select
-              className={cn(INPUT, 'niuu:mt-0.5')}
-              aria-label="Gate mode"
-              value={selectedNode.mode ?? 'human_approval'}
-              onChange={(e) =>
-                onUpdateNode(selectedNode.id, {
-                  mode: e.target.value as 'human_approval' | 'human_review' | 'automated_approval',
-                })
-              }
-            >
-              <option value="human_approval">human approval</option>
-              <option value="human_review">human review</option>
-              <option value="automated_approval">automated approval</option>
-            </select>
+        ) : selectedNode?.kind === 'trigger' ? (
+          <div className="niuu:px-4 niuu:py-3 niuu:flex niuu:flex-col niuu:gap-4">
+            <div>
+              <label className={SECTION_LABEL}>Trigger label</label>
+              <input
+                className={INPUT}
+                value={selectedNode.label}
+                onChange={(e) => onUpdateLabel(selectedNode.id, e.target.value)}
+              />
+            </div>
+            <div>
+              <label className={SECTION_LABEL}>Dispatch event</label>
+              <select
+                className={cn(INPUT, 'niuu:font-mono')}
+                value={selectedNode.dispatchEvent ?? 'code.requested'}
+                onChange={(e) => onUpdateNode(selectedNode.id, { dispatchEvent: e.target.value })}
+              >
+                {triggerEventOptions(personas, selectedNode.dispatchEvent ?? 'code.requested').map(
+                  (eventType) => (
+                    <option key={eventType} value={eventType}>
+                      {eventType}
+                    </option>
+                  ),
+                )}
+              </select>
+            </div>
+            <div>
+              <label className={SECTION_LABEL}>Trigger source</label>
+              <input
+                className={cn(INPUT, 'niuu:font-mono')}
+                value={selectedNode.source ?? 'manual dispatch'}
+                onChange={(e) => onUpdateNode(selectedNode.id, { source: e.target.value })}
+              />
+            </div>
           </div>
-          <div>
-            <label className={SECTION_LABEL}>Pending behavior</label>
-            <select
-              className={cn(INPUT, 'niuu:mt-0.5')}
-              aria-label="Pending behavior"
-              value={selectedNode.pendingBehavior ?? 'help_needed'}
-              onChange={(e) =>
-                onUpdateNode(selectedNode.id, {
-                  pendingBehavior: e.target.value as 'silent' | 'notify_only' | 'help_needed',
-                })
-              }
-            >
-              <option value="help_needed">help_needed</option>
-              <option value="notify_only">notify_only</option>
-              <option value="silent">silent</option>
-            </select>
+        ) : selectedNode?.kind === 'end' ? (
+          <div className="niuu:px-4 niuu:py-3 niuu:flex niuu:flex-col niuu:gap-4">
+            <div>
+              <label className={SECTION_LABEL}>End label</label>
+              <input
+                className={INPUT}
+                value={selectedNode.label}
+                onChange={(e) => onUpdateLabel(selectedNode.id, e.target.value)}
+              />
+            </div>
+            <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3 niuu:text-xs niuu:text-text-secondary">
+              Terminal node. Use this to make completion paths explicit in the graph and pipeline
+              views.
+            </div>
           </div>
-          <div>
-            <label className={SECTION_LABEL}>Approve event</label>
-            <input
-              className={INPUT}
-              value={selectedNode.approvalEvent ?? ''}
-              onChange={(e) =>
-                onUpdateNode(selectedNode.id, { approvalEvent: e.target.value.trimStart() })
-              }
-            />
+        ) : selectedNode?.kind === 'wait' ? (
+          <div className="niuu:px-4 niuu:py-3 niuu:flex niuu:flex-col niuu:gap-4">
+            <div>
+              <label className={SECTION_LABEL}>Wait label</label>
+              <input
+                className={INPUT}
+                value={selectedNode.label}
+                onChange={(e) => onUpdateLabel(selectedNode.id, e.target.value)}
+              />
+            </div>
+            <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3 niuu:text-xs niuu:text-text-secondary">
+              Passive external wait. Its incoming and continuation event types are carried by the
+              connected edges.
+              <div className="niuu:mt-3 niuu:grid niuu:grid-cols-2 niuu:gap-2 niuu:text-[10px] niuu:font-mono">
+                <div>
+                  <div className={SECTION_LABEL}>Incoming</div>
+                  {workflow.edges
+                    .filter((edge) => edge.target === selectedNode.id)
+                    .map((edge) => parseWorkflowEdgeLabel(edge.label)?.targetEventType)
+                    .filter(Boolean)
+                    .join(', ') || 'Connect and configure'}
+                </div>
+                <div>
+                  <div className={SECTION_LABEL}>Continuation</div>
+                  {workflow.edges
+                    .filter((edge) => edge.source === selectedNode.id)
+                    .map((edge) => parseWorkflowEdgeLabel(edge.label)?.sourceEventType)
+                    .filter(Boolean)
+                    .join(', ') || 'Connect and configure'}
+                </div>
+              </div>
+            </div>
           </div>
-          <div>
-            <label className={SECTION_LABEL}>Changes requested event</label>
-            <input
-              className={INPUT}
-              value={selectedNode.changesRequestedEvent ?? ''}
-              onChange={(e) =>
-                onUpdateNode(selectedNode.id, {
-                  changesRequestedEvent: e.target.value.trimStart(),
-                })
-              }
-            />
-          </div>
-          <div>
-            <label className={SECTION_LABEL}>Instructions</label>
-            <textarea
-              className={cn(INPUT, 'niuu:min-h-[72px]')}
-              value={selectedNode.instructions ?? ''}
-              onChange={(e) => onUpdateNode(selectedNode.id, { instructions: e.target.value })}
-            />
-          </div>
-          <div>
-            <label className={SECTION_LABEL}>Auto-forward after</label>
-            <input
-              className={INPUT}
-              value={selectedNode.autoForwardAfter ?? '30m'}
-              onChange={(e) => onUpdateNode(selectedNode.id, { autoForwardAfter: e.target.value })}
-            />
-          </div>
-        </div>
-      ) : selectedNode?.kind === 'cond' ? (
-        <div className="niuu:px-4 niuu:py-3 niuu:flex niuu:flex-col niuu:gap-4">
-          <div>
-            <label className={SECTION_LABEL}>Condition name</label>
-            <input
-              className={INPUT}
-              value={selectedNode.label}
-              onChange={(e) => onUpdateLabel(selectedNode.id, e.target.value)}
-            />
-          </div>
-          <div>
-            <label className={SECTION_LABEL}>Expression</label>
-            <textarea
-              className={cn(INPUT, 'niuu:min-h-[120px] niuu:font-mono')}
-              value={selectedNode.predicate}
-              onChange={(e) => onUpdateNode(selectedNode.id, { predicate: e.target.value })}
-            />
-          </div>
-        </div>
-      ) : selectedNode?.kind === 'trigger' ? (
-        <div className="niuu:px-4 niuu:py-3 niuu:flex niuu:flex-col niuu:gap-4">
-          <div>
-            <label className={SECTION_LABEL}>Trigger label</label>
-            <input
-              className={INPUT}
-              value={selectedNode.label}
-              onChange={(e) => onUpdateLabel(selectedNode.id, e.target.value)}
-            />
-          </div>
-          <div>
-            <label className={SECTION_LABEL}>Dispatch event</label>
-            <select
-              className={cn(INPUT, 'niuu:font-mono')}
-              value={selectedNode.dispatchEvent ?? 'code.requested'}
-              onChange={(e) => onUpdateNode(selectedNode.id, { dispatchEvent: e.target.value })}
-            >
-              {triggerEventOptions(personas, selectedNode.dispatchEvent ?? 'code.requested').map(
-                (eventType) => (
-                  <option key={eventType} value={eventType}>
-                    {eventType}
-                  </option>
-                ),
-              )}
-            </select>
-          </div>
-          <div>
-            <label className={SECTION_LABEL}>Trigger source</label>
-            <input
-              className={cn(INPUT, 'niuu:font-mono')}
-              value={selectedNode.source ?? 'manual dispatch'}
-              onChange={(e) => onUpdateNode(selectedNode.id, { source: e.target.value })}
-            />
-          </div>
-        </div>
-      ) : selectedNode?.kind === 'end' ? (
-        <div className="niuu:px-4 niuu:py-3 niuu:flex niuu:flex-col niuu:gap-4">
-          <div>
-            <label className={SECTION_LABEL}>End label</label>
-            <input
-              className={INPUT}
-              value={selectedNode.label}
-              onChange={(e) => onUpdateLabel(selectedNode.id, e.target.value)}
-            />
-          </div>
-          <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3 niuu:text-xs niuu:text-text-secondary">
-            Terminal node. Use this to make completion paths explicit in the graph and pipeline
-            views.
-          </div>
-        </div>
-      ) : selectedNode?.kind === 'resource' ? (
-        <ResourceInspector
-          node={selectedNode}
-          workflow={workflow}
-          registryMounts={registryMounts}
-          onUpdateNode={onUpdateNode}
-          onUpdateLabel={onUpdateLabel}
-          onDeleteNode={onDeleteNode}
-          onAddResourceBinding={onAddResourceBinding}
-          onUpdateResourceBinding={onUpdateResourceBinding}
-          onRemoveResourceBinding={onRemoveResourceBinding}
-        />
-      ) : (
-        <WorkflowSummary
-          workflow={workflow}
-          errorCount={errorCount}
-          warnCount={warnCount}
-          onUpdateWorkflowMeta={onUpdateWorkflowMeta}
-        />
-      )}
+        ) : selectedNode?.kind === 'subworkflow' ? (
+          <SubworkflowInspector
+            node={selectedNode}
+            workflow={workflow}
+            workflows={workflows}
+            personas={personas}
+            onSelectSubworkflowTemplate={onSelectSubworkflowTemplate}
+            onAddSubworkflowTemplate={onAddSubworkflowTemplate}
+            onRenameSubworkflowTemplate={onRenameSubworkflowTemplate}
+            onRemoveSubworkflowTemplate={onRemoveSubworkflowTemplate}
+            onUpdateNode={onUpdateNode}
+            onUpdateLabel={onUpdateLabel}
+            onDeleteNode={onDeleteNode}
+          />
+        ) : selectedNode?.kind === 'resource' ? (
+          <ResourceInspector
+            node={selectedNode}
+            workflow={workflow}
+            registryMounts={registryMounts}
+            onUpdateNode={onUpdateNode}
+            onUpdateLabel={onUpdateLabel}
+            onDeleteNode={onDeleteNode}
+            onAddResourceBinding={onAddResourceBinding}
+            onUpdateResourceBinding={onUpdateResourceBinding}
+            onRemoveResourceBinding={onRemoveResourceBinding}
+          />
+        ) : selectedNode?.kind === 'include' ? (
+          <IncludeInspector
+            node={selectedNode}
+            workflow={workflow}
+            workflows={workflows}
+            onSelectIncludeWorkflow={onSelectIncludeWorkflow}
+            onUpdateNode={onUpdateNode}
+            onUpdateLabel={onUpdateLabel}
+            onDeleteNode={onDeleteNode}
+          />
+        ) : (
+          <WorkflowSummary
+            workflow={workflow}
+            errorCount={errorCount}
+            warnCount={warnCount}
+            onUpdateWorkflowMeta={onUpdateWorkflowMeta}
+          />
+        )}
+      </fieldset>
     </div>
   );
 }

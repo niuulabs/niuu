@@ -1,10 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { ToastProvider } from '@niuulabs/ui';
 import { SagasPage } from './SagasPage';
-import { createMockTingService, createMockTrackerService } from '../adapters/mock';
+import {
+  createMockTingService,
+  createMockTrackerService,
+  createMockWorkflowService,
+} from '../adapters/mock';
 import type { Saga } from '../domain/saga';
 import type { ITrackerBrowserService } from '../ports';
 
@@ -15,6 +19,7 @@ const mockDispatchBus = {
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
   useParams: () => ({}),
+  useSearch: () => ({}),
 }));
 
 function wrap(services: Record<string, unknown>) {
@@ -35,6 +40,7 @@ function withDefaults(services: Record<string, unknown>) {
   return {
     ting: volundrRepos,
     'ting.tracker': createMockTrackerService(),
+    'ting.workflows': createMockWorkflowService(),
     'niuu.repos': {
       getRepos: async () => [
         {
@@ -247,6 +253,70 @@ describe('SagasPage', () => {
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
   });
 
+  it('sends the operator to Plan from the new saga modal', async () => {
+    render(<SagasPage />, { wrapper: wrap(withDefaults({})) });
+    await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: /Create new saga/i }));
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Go to Plan →' }));
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/plan' });
+  });
+
+  it('adds repositories by typed reference when no repo catalog is available', async () => {
+    render(<SagasPage />, {
+      wrapper: wrap(withDefaults({ 'niuu.repos': { getRepos: async () => [] } })),
+    });
+    await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
+    await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Niuu Core').length).toBeGreaterThan(0));
+    const projectButton = screen
+      .getAllByRole('button')
+      .find((button) => button.textContent?.includes('Niuu Core'));
+    fireEvent.click(projectButton!);
+
+    const dialog = screen.getByRole('dialog');
+    const candidate = within(dialog).getByPlaceholderText('org/repo or https://host/org/repo.git');
+    fireEvent.change(candidate, { target: { value: 'niuulabs/typed-repo' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'add' }));
+
+    expect(within(dialog).getByText('niuulabs/typed-repo')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('branch-select-niuulabs/typed-repo'), {
+      target: { value: 'release/1.0' },
+    });
+    expect(screen.getByTestId('branch-select-niuulabs/typed-repo')).toHaveValue('release/1.0');
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove niuulabs/typed-repo' }));
+    expect(within(dialog).queryByText('niuulabs/typed-repo')).not.toBeInTheDocument();
+  });
+
+  it('adds a typed repository on Enter without duplicating an existing one', async () => {
+    render(<SagasPage />, {
+      wrapper: wrap(withDefaults({ 'niuu.repos': { getRepos: async () => [] } })),
+    });
+    await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
+    await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Niuu Core').length).toBeGreaterThan(0));
+    const projectButton = screen
+      .getAllByRole('button')
+      .find((button) => button.textContent?.includes('Niuu Core'));
+    fireEvent.click(projectButton!);
+
+    const dialog = screen.getByRole('dialog');
+    const candidate = within(dialog).getByPlaceholderText('org/repo or https://host/org/repo.git');
+    fireEvent.change(candidate, { target: { value: 'niuulabs/enter-repo' } });
+    fireEvent.keyDown(candidate, { key: 'Enter' });
+    expect(within(dialog).getAllByText('niuulabs/enter-repo')).toHaveLength(1);
+
+    fireEvent.change(candidate, { target: { value: '   ' } });
+    fireEvent.keyDown(candidate, { key: 'Enter' });
+    expect(within(dialog).getAllByText('niuulabs/enter-repo')).toHaveLength(1);
+  });
+
   it('opens tracker import modal', async () => {
     render(<SagasPage />, { wrapper: wrap(withDefaults({})) });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
@@ -416,6 +486,217 @@ describe('SagasPage', () => {
     await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
     await waitFor(() => expect(screen.getAllByText('Active Project').length).toBeGreaterThan(0));
     expect(screen.queryByText('Done Project')).not.toBeInTheDocument();
+  });
+
+  it('imports a tracker project with a selected workflow, version and instance target', async () => {
+    const tracker = createMockTrackerService();
+    const importProject = vi.fn(tracker.importProject.bind(tracker));
+    const trackerSvc: ITrackerBrowserService = { ...tracker, importProject };
+    const dispatchBus = {
+      getClusters: vi.fn(async () => [
+        { instanceId: 'inst-1', connectionId: 'conn-1', name: 'Valhalla', tags: ['gpu'] },
+      ]),
+    };
+
+    render(<SagasPage />, {
+      wrapper: wrap(withDefaults({ 'ting.tracker': trackerSvc, 'ting.dispatch': dispatchBus })),
+    });
+    await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
+    await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Niuu Core').length).toBeGreaterThan(0));
+
+    const projectButton = screen
+      .getAllByRole('button')
+      .find((button) => button.textContent?.includes('Niuu Core'));
+    fireEvent.click(projectButton!);
+    fireEvent.change(screen.getByTestId('repo-select'), {
+      target: { value: 'niuulabs/volundr' },
+    });
+
+    const workflowSelect = screen.getByDisplayValue('Use project default');
+    fireEvent.change(workflowSelect, {
+      target: { value: '00000000-0000-0000-0000-000000000a01' },
+    });
+    const versionSelect = await screen.findByDisplayValue('1.4.2 · current');
+    await waitFor(() => expect((versionSelect as HTMLSelectElement).disabled).toBe(false));
+    fireEvent.change(versionSelect, { target: { value: '1.4.2' } });
+
+    const targetGroup = screen.getByRole('group', { name: 'Saga target routing mode' });
+    fireEvent.click(within(targetGroup).getByRole('button', { name: 'Instance' }));
+    await waitFor(() => expect(screen.getByText('Select a Volundr instance')).toBeInTheDocument());
+    fireEvent.change(screen.getByDisplayValue('Select a Volundr instance'), {
+      target: { value: 'inst-1' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import saga' }));
+
+    await waitFor(() =>
+      expect(importProject).toHaveBeenCalledWith(
+        'proj-niuu-core',
+        ['niuulabs/volundr'],
+        'main',
+        'inst-1',
+        expect.objectContaining({
+          repoRefs: [{ repo: 'niuulabs/volundr', branch: 'main' }],
+          workflowId: '00000000-0000-0000-0000-000000000a01',
+          workflowVersion: '1.4.2',
+          target: { mode: 'instance', instanceId: 'inst-1' },
+        }),
+      ),
+    );
+  });
+
+  it('routes an import to matching Volundr tags', async () => {
+    const tracker = createMockTrackerService();
+    const importProject = vi.fn(tracker.importProject.bind(tracker));
+    const trackerSvc: ITrackerBrowserService = { ...tracker, importProject };
+
+    render(<SagasPage />, { wrapper: wrap(withDefaults({ 'ting.tracker': trackerSvc })) });
+    await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
+    await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Niuu Core').length).toBeGreaterThan(0));
+
+    const projectButton = screen
+      .getAllByRole('button')
+      .find((button) => button.textContent?.includes('Niuu Core'));
+    fireEvent.click(projectButton!);
+    fireEvent.change(screen.getByTestId('repo-select'), {
+      target: { value: 'niuulabs/volundr' },
+    });
+
+    const targetGroup = screen.getByRole('group', { name: 'Saga target routing mode' });
+    fireEvent.click(within(targetGroup).getByRole('button', { name: 'Tags' }));
+    fireEvent.change(screen.getByPlaceholderText('gpu, valhalla'), {
+      target: { value: 'gpu, valhalla' },
+    });
+    fireEvent.change(screen.getByLabelText('Target tag match mode'), {
+      target: { value: 'any' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import saga' }));
+
+    await waitFor(() =>
+      expect(importProject).toHaveBeenCalledWith(
+        'proj-niuu-core',
+        ['niuulabs/volundr'],
+        'main',
+        undefined,
+        {
+          repoRefs: [{ repo: 'niuulabs/volundr', branch: 'main' }],
+          target: { mode: 'tags', tags: ['gpu', 'valhalla'], match: 'any' },
+        },
+      ),
+    );
+  });
+
+  it('warns that the tracker source will be suffixed onto an existing saga name', async () => {
+    const collidingSaga = makeSaga({
+      id: '00000000-0000-0000-0000-000000000444',
+      trackerId: 'other-project',
+      trackerConnectionId: 'linear-legacy',
+      slug: 'niuu-core',
+      name: 'Legacy Niuu Core',
+    });
+    const sagasSvc = {
+      ...createMockTingService(),
+      getSagas: async (): Promise<Saga[]> => [collidingSaga],
+      getSaga: async (id: string): Promise<Saga | null> =>
+        id === collidingSaga.id ? collidingSaga : null,
+    };
+    const trackerSvc: ITrackerBrowserService = {
+      ...createMockTrackerService(),
+      listProjects: async () => [
+        {
+          id: 'proj-niuu-core-2',
+          trackerConnectionId: 'linear-current',
+          name: 'Niuu Core',
+          description: 'Second connection',
+          status: 'active',
+          url: 'https://linear.app/niuu/project/proj-niuu-core-2',
+          milestoneCount: 1,
+          issueCount: 2,
+          slug: 'niuu-core',
+        },
+      ],
+    };
+
+    render(<SagasPage />, {
+      wrapper: wrap(withDefaults({ ting: sagasSvc, 'ting.tracker': trackerSvc })),
+    });
+    await waitFor(() => expect(screen.getAllByText('Legacy Niuu Core').length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
+    await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
+    const [projectTitle] = await screen.findAllByText('Niuu Core');
+    fireEvent.click(projectTitle.closest('button')!);
+
+    expect(
+      screen.getByText(/already exists; Ting will add the tracker source/i),
+    ).toBeInTheDocument();
+  });
+
+  it('adds and removes extra repositories for a multi-repo import', async () => {
+    const reposSvc = {
+      getRepos: async () => [
+        {
+          provider: 'github',
+          org: 'niuulabs',
+          name: 'volundr',
+          cloneUrl: 'https://github.com/niuulabs/volundr.git',
+          url: 'https://github.com/niuulabs/volundr',
+          defaultBranch: 'main',
+          branches: ['main'],
+        },
+        {
+          provider: 'github',
+          org: 'niuulabs',
+          name: 'niuu',
+          cloneUrl: 'https://github.com/niuulabs/niuu.git',
+          url: 'https://github.com/niuulabs/niuu',
+          defaultBranch: 'main',
+          branches: ['main', 'develop'],
+        },
+      ],
+    };
+
+    render(<SagasPage />, { wrapper: wrap(withDefaults({ 'niuu.repos': reposSvc })) });
+    await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
+    await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Niuu Core').length).toBeGreaterThan(0));
+    const projectButton = screen
+      .getAllByRole('button')
+      .find((button) => button.textContent?.includes('Niuu Core'));
+    fireEvent.click(projectButton!);
+
+    const dialog = screen.getByRole('dialog');
+    fireEvent.change(screen.getByTestId('repo-select'), {
+      target: { value: 'niuulabs/volundr' },
+    });
+    expect(within(dialog).getByText('niuulabs/volundr')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('repo-select'), {
+      target: { value: 'niuulabs/niuu' },
+    });
+    expect(await within(dialog).findByText('niuulabs/niuu')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('branch-select-niuulabs/niuu'), {
+      target: { value: 'develop' },
+    });
+    expect(screen.getByTestId('branch-select-niuulabs/niuu')).toHaveValue('develop');
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove niuulabs/volundr' }));
+    expect(
+      within(dialog).queryByRole('button', { name: 'Remove niuulabs/volundr' }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(dialog).getByRole('button', { name: 'Remove niuulabs/niuu' }),
+    ).toBeInTheDocument();
   });
 
   it('renders grouped bucket items from mixed data', async () => {

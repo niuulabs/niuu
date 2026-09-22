@@ -1505,12 +1505,13 @@ class TestProcessSpawning:
 
         assert result == flock_dir
         init_call = mock_run.call_args_list[0]
-        assert init_call.args[0][-6:] == [
+        assert init_call.args[0][-7:] == [
             "--mesh-transport",
             "ipc",
             "--no-http-gateway",
             "--base-port",
             "7486",
+            "--responsive",
             "--force",
         ]
         cluster = (flock_dir / "cluster.yaml").read_text(encoding="utf-8")
@@ -2310,7 +2311,7 @@ class TestStatus:
         session = Session(id=uuid4(), name="unknown")
         assert await manager.status(session) == SessionStatus.STOPPED
 
-    async def test_status_running(
+    async def test_status_provisioning_until_broker_ready(
         self,
         manager: LocalProcessPodManager,
         git_session: Session,
@@ -2322,7 +2323,31 @@ class TestStatus:
         ):
             await manager.start(git_session, default_spec)
 
+        with patch.object(manager, "_broker_healthy", AsyncMock(return_value=False)):
+            assert await manager.status(git_session) == SessionStatus.PROVISIONING
+        with patch.object(manager, "_broker_healthy", AsyncMock(return_value=True)):
+            assert await manager.wait_for_ready(git_session, timeout=1.0) == SessionStatus.RUNNING
         assert await manager.status(git_session) == SessionStatus.RUNNING
+
+    async def test_status_reobserves_readiness_of_adopted_process(
+        self,
+        manager: LocalProcessPodManager,
+        git_session: Session,
+        default_spec: SessionSpec,
+    ) -> None:
+        """A process adopted after an API restart has no in-memory readiness."""
+        with (
+            _mock_provision(manager),
+            _mock_spawn(manager),
+        ):
+            await manager.start(git_session, default_spec)
+        manager._ready.clear()
+
+        healthy = AsyncMock(return_value=True)
+        with patch.object(manager, "_broker_healthy", healthy):
+            assert await manager.status(git_session) == SessionStatus.RUNNING
+            assert await manager.status(git_session) == SessionStatus.RUNNING
+        healthy.assert_awaited_once()
 
     async def test_status_after_stop(
         self,
@@ -2353,8 +2378,36 @@ class TestStatus:
         ):
             await manager.start(git_session, default_spec)
 
-        result = await manager.wait_for_ready(git_session, timeout=5.0)
+        with patch.object(manager, "_broker_healthy", AsyncMock(return_value=True)):
+            result = await manager.wait_for_ready(git_session, timeout=5.0)
         assert result == SessionStatus.RUNNING
+
+    async def test_wait_for_ready_surfaces_terminal_broker_failure(
+        self,
+        manager: LocalProcessPodManager,
+        git_session: Session,
+        default_spec: SessionSpec,
+    ) -> None:
+        with _mock_provision(manager), _mock_spawn(manager):
+            await manager.start(git_session, default_spec)
+
+        sid = str(git_session.id)
+
+        async def _failed(_session_id: str) -> bool:
+            manager._broker_startup_failures[sid] = "workflow kickoff failed"
+            return False
+
+        with (
+            patch.object(manager, "_broker_healthy", _failed),
+            patch.object(manager, "_terminate_process", AsyncMock()) as terminate,
+        ):
+            result = await manager.wait_for_ready(git_session, timeout=1.0)
+
+        assert result == SessionStatus.FAILED
+        assert manager._processes[sid].state == ProcessState.FAILED
+        assert manager._processes[sid].error == "workflow kickoff failed"
+        assert await manager.status_detail(git_session) == "workflow kickoff failed"
+        terminate.assert_awaited_once()
 
     async def test_wait_for_ready_unknown_session(
         self,
@@ -2363,6 +2416,52 @@ class TestStatus:
         session = Session(id=uuid4(), name="unknown")
         result = await manager.wait_for_ready(session, timeout=1.0)
         assert result == SessionStatus.FAILED
+
+    async def test_broker_readiness_probe_fails_closed(
+        self,
+        manager: LocalProcessPodManager,
+    ) -> None:
+        sid = "probe-session"
+        manager._processes[sid] = ProcessInfo(session_id=sid, port=9191)
+
+        class _Response:
+            status_code = 200
+
+            def __init__(self, payload: object) -> None:
+                self.payload = payload
+
+            def json(self) -> object:
+                if isinstance(self.payload, Exception):
+                    raise self.payload
+                return self.payload
+
+        class _Client:
+            def __init__(self, payload: object, **_kwargs: object) -> None:
+                self.payload = payload
+
+            async def __aenter__(self) -> _Client:
+                return self
+
+            async def __aexit__(self, *_args: object) -> None:
+                return None
+
+            async def get(self, _url: str) -> _Response:
+                return _Response(self.payload)
+
+        for payload in ({}, {"ready": "true"}, ValueError("invalid json")):
+            with patch.object(
+                local_process_mod.httpx,
+                "AsyncClient",
+                lambda **kwargs: _Client(payload, **kwargs),
+            ):
+                assert await manager._broker_healthy(sid) is False
+
+        with patch.object(
+            local_process_mod.httpx,
+            "AsyncClient",
+            lambda **kwargs: _Client({"ready": True, "startup_state": "ready"}, **kwargs),
+        ):
+            assert await manager._broker_healthy(sid) is True
 
     async def test_wait_for_ready_timeout(
         self,
@@ -2826,12 +2925,13 @@ class TestLocalFlockMeshMode:
 
         assert result == flock_dir
         init_call = mock_run.call_args_list[0]
-        assert init_call.args[0][-6:] == [
+        assert init_call.args[0][-7:] == [
             "--mesh-transport",
             "ipc",
             "--no-http-gateway",
             "--base-port",
             "7486",
+            "--responsive",
             "--force",
         ]
         cluster = (flock_dir / "cluster.yaml").read_text(encoding="utf-8")
@@ -2923,6 +3023,22 @@ class TestLocalFlockMeshMode:
             values={
                 "flock": {
                     "personas": [{"name": "reviewer"}],
+                    "ravn_config": {
+                        "workflow_execution": {
+                            "enabled": True,
+                            "execution_id": "execution-test",
+                            "base_url": "https://ting.example/api/v1/ting",
+                            "auth_token": "runtime-only-token",
+                        },
+                        "gateway": {
+                            "platform": {
+                                "a2a_agent_card_urls": [
+                                    "https://ting.example/.well-known/agent-card.json"
+                                ],
+                                "a2a_trusted_origins": ["https://ting.example"],
+                            }
+                        },
+                    },
                 }
             },
             pod_spec=PodSpecAdditions(
@@ -2949,4 +3065,14 @@ class TestLocalFlockMeshMode:
         node_config = yaml.safe_load((flock_dir / "node-reviewer.yaml").read_text(encoding="utf-8"))
         assert node_config["gateway"]["platform"]["enabled"] is True
         assert node_config["gateway"]["platform"]["base_url"] == "http://192.168.1.106:8080"
+        assert node_config["gateway"]["platform"]["a2a_agent_card_urls"] == [
+            "https://ting.example/.well-known/agent-card.json"
+        ]
+        assert node_config["gateway"]["platform"]["a2a_trusted_origins"] == ["https://ting.example"]
+        assert node_config["workflow_execution"] == {
+            "enabled": True,
+            "execution_id": "execution-test",
+            "base_url": "https://ting.example/api/v1/ting",
+            "auth_token": "runtime-only-token",
+        }
         assert node_config["permission"]["workspace_root"] == str(repo_workspace)

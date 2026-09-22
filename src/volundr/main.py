@@ -4,7 +4,7 @@ import asyncio
 import inspect
 import logging
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from uuid import UUID
 
 from fastapi import FastAPI, Request
@@ -122,6 +122,7 @@ from volundr.composition_builders import (  # noqa: F401
     _create_resident_session_controllers,
     _create_resource_provider,
     _create_secret_injection_adapter,
+    _create_workflow_execution_credential_service,
     _runtime_backend,
     create_oauth_client_registry,
     integration_database_pool,
@@ -156,7 +157,9 @@ from volundr.domain.services.telegram_ingress import TelegramIngressService
 from volundr.domain.services.tracker import TrackerService
 from volundr.domain.services.tracker_factory import TrackerFactory
 from volundr.domain.services.workspace import WorkspaceService
+from volundr.external_modules import load_external_module_manifests
 from volundr.infrastructure.database import database_pool
+from volundr.integration_definitions import load_integration_definition_configs
 
 # Interval for periodic stats and heartbeat broadcasts (seconds)
 BROADCAST_INTERVAL = 30
@@ -352,6 +355,55 @@ async def _reconcile_resident_runtimes_loop(
             logger.exception("Resident runtime reconcile iteration failed")
 
 
+def _create_delivery_service_factory(config, integrations):
+    """Compose receipt/workspace adapters once and credential scope per caller."""
+    from niuu.domain.services.delivery import EvidenceVerifier
+    from niuu.ports.delivery import (
+        DeliveryForgeProvider,
+        EvidenceAuthenticator,
+        WorkstreamRepository,
+    )
+    from volundr.domain.services.delivery import DeliveryService
+
+    def adapter_kwargs(adapter_config):
+        return resolve_secret_kwargs(adapter_config.kwargs, adapter_config.secret_kwargs_env)
+
+    authenticator = import_class(config.authenticator.adapter)(
+        **adapter_kwargs(config.authenticator)
+    )
+    if not isinstance(authenticator, EvidenceAuthenticator):
+        raise TypeError("Delivery authenticator must implement EvidenceAuthenticator")
+    workstreams = import_class(config.workstreams.adapter)(
+        **{
+            **adapter_kwargs(config.workstreams),
+            "authenticator": authenticator,
+            "producer_id": config.workstream_producer_id,
+        }
+    )
+    if not isinstance(workstreams, WorkstreamRepository):
+        raise TypeError("Delivery workstreams must implement WorkstreamRepository")
+    verifier = EvidenceVerifier(authenticator, trusted_producers=config.trusted_producers)
+    forge_class = import_class(config.forge.adapter)
+    forge_kwargs = adapter_kwargs(config.forge)
+
+    def for_principal(principal):
+        forge = forge_class(
+            **{**forge_kwargs, "integrations": integrations, "principal": principal}
+        )
+        if not isinstance(forge, DeliveryForgeProvider):
+            raise TypeError("Delivery forge must implement DeliveryForgeProvider")
+        return DeliveryService(
+            workstreams=workstreams,
+            forge=forge,
+            verifier=verifier,
+            authenticator=authenticator,
+            policies=config.policies,
+            producer_id=config.producer_id,
+        )
+
+    return for_principal
+
+
 def _create_otel_providers(otel_cfg):  # pragma: no cover
     """Build OTel TracerProvider + MeterProvider from config.
 
@@ -432,11 +484,15 @@ def create_app(
         settings = app.state.settings
         audit_subscriber: AuditSubscriber | None = None
 
+        external_modules = load_external_module_manifests(
+            settings.integrations.module_manifest_files
+        )
         await _bootstrap_startup_schema(settings)
 
         async with (
             database_pool(settings.database) as pool,
             integration_database_pool(settings, pool) as integration_pool,
+            AsyncExitStack() as compute_resources,
         ):
             # Identity & authorization adapters (dynamic adapter pattern)
             tenant_repository = PostgresTenantRepository(pool)
@@ -491,6 +547,13 @@ def create_app(
             session_persona_provider = RegistrySessionPersonaProvider(persona_registry)
             workload_identity_service = create_workload_identity_service(settings.workload_identity)
             pod_manager = _create_pod_manager(settings)
+            runtime_backend = _runtime_backend(settings, pod_manager)
+            execution_credential_service = _create_workflow_execution_credential_service(
+                settings,
+                repository=repository,
+                token_issuer=workload_identity_service,
+                runtime_backend=runtime_backend,
+            )
             resident_controllers = _create_resident_controllers(settings, pod_manager)
             if hasattr(pod_manager, "set_session_repository"):
                 pod_manager.set_session_repository(repository)
@@ -617,33 +680,62 @@ def create_app(
             compute_provider = None
             compute_pool = None
             compute_pool_task = None
+            execution_components = None
             if settings.compute is not None:
                 from volundr.adapters.outbound.postgres_compute_leases import (
                     PostgresComputeLeaseRepository,
                 )
-                from volundr.compute.main import build_provider
+                from volundr.compute.main import (
+                    build_execution_components,
+                    build_provider,
+                    build_runtime,
+                    provider_fingerprint,
+                )
                 from volundr.domain.compute import ComputePoolPolicy
                 from volundr.domain.services.compute_leases import ComputeLeaseService
                 from volundr.domain.services.compute_pool import ComputePoolService
-                from volundr.domain.vm_runtime import VmRuntime
+                from volundr.domain.vm_runtime import CredentialAwareVmRuntime
 
                 compute = settings.compute
-                if compute.runtime is None or not hasattr(pod_manager, "configure_compute"):
+                if (compute.runtime is None and compute.execution_catalog is None) or not hasattr(
+                    pod_manager, "configure_compute"
+                ):
                     raise ValueError(
                         "Compute sessions require a VM PodManager and a runtime adapter"
                     )
                 if compute.database is not None and compute.database != settings.database:
                     raise ValueError("Forge compute leases must use the Forge database")
-                runtime_cls = import_class(compute.runtime.adapter)
-                runtime = runtime_cls(
-                    **resolve_secret_kwargs(
-                        compute.runtime.kwargs, compute.runtime.secret_kwargs_env
-                    )
-                )
-                if not isinstance(runtime, VmRuntime):
-                    raise TypeError("Compute runtime must implement VmRuntime")
+                runtime = None
+                if compute.runtime is not None:
+                    runtime = build_runtime(compute.runtime, importer=import_class)
+                    compute_resources.push_async_callback(runtime.close)
+                    if isinstance(runtime, CredentialAwareVmRuntime):
+                        runtime.configure_credentials(credential_store)
                 compute_provider = build_provider(compute)
+                compute_resources.push_async_callback(compute_provider.close)
                 compute_repository = PostgresComputeLeaseRepository(pool)
+                if compute.execution_catalog is not None:
+                    if runtime is None:
+                        active_leases = await compute_repository.list(
+                            compute.pool_id, include_released=False
+                        )
+                        if any(lease.execution_plan is None for lease in active_leases):
+                            raise ValueError(
+                                "Existing legacy allocations require compute.runtime until drained"
+                            )
+                    execution_components = await build_execution_components(
+                        compute, credential_store
+                    )
+                    for access in execution_components.accesses:
+                        compute_resources.push_async_callback(access.close)
+                    for preparation in execution_components.preparations.values():
+                        compute_resources.push_async_callback(preparation.close)
+                    for execution_runtime in execution_components.runtimes.values():
+                        compute_resources.push_async_callback(execution_runtime.close)
+                    if runtime is None:
+                        runtime = execution_components.runtimes[
+                            execution_components.default_plan.plan_digest
+                        ]
                 compute_service = ComputeLeaseService(
                     compute_repository,
                     compute_provider,
@@ -651,6 +743,8 @@ def create_app(
                     max_machines=compute.max_machines,
                     bootstrap=compute.bootstrap,
                     bootstrap_store=credential_store,
+                    provider_binding=compute.provider_binding,
+                    provider_fingerprint=provider_fingerprint(compute),
                     provisioning_timeout_seconds=compute.provisioning_timeout_seconds,
                     retry_interval_seconds=compute.retry_interval_seconds,
                     retry_max_seconds=compute.retry_max_seconds,
@@ -662,7 +756,15 @@ def create_app(
                     compute.bootstrap,
                     pool_id=compute.pool_id,
                     max_machines=compute.max_machines,
+                    owns_runtime=False,
                 )
+                compute_resources.push_async_callback(pod_manager.close)
+                if execution_components is not None:
+                    pod_manager.configure_execution(
+                        execution_components.resolver,
+                        execution_components.runtimes,
+                        execution_components.preparations,
+                    )
                 compute_pool = ComputePoolService(
                     compute_repository,
                     compute_service,
@@ -672,7 +774,11 @@ def create_app(
                     bootstrap=compute.bootstrap,
                     interval_seconds=compute.maintenance_interval_seconds,
                     defaults=ComputePoolPolicy(
-                        profile=pod_manager.profile,
+                        profile=(
+                            execution_components.default_plan.provider_profile
+                            if execution_components is not None
+                            else pod_manager.profile
+                        ),
                         max_machines=compute.max_machines,
                         warm_min=compute.warm_min,
                         reuse_policy=compute.reuse_policy,
@@ -681,7 +787,13 @@ def create_app(
                         provisioning_timeout_seconds=compute.provisioning_timeout_seconds,
                     ),
                 )
-                await compute_pool.policy()
+                if execution_components is not None:
+                    compute_pool.configure_execution(
+                        execution_components.resolver,
+                        execution_components.runtimes,
+                        execution_components.preparations,
+                    )
+                await compute_pool.validate_policy(await compute_pool.policy())
                 pod_manager.configure_pool(compute_pool)
             codex_credential_broker = _create_codex_credential_broker(
                 settings,
@@ -738,7 +850,13 @@ def create_app(
             )
 
             integration_definitions = definitions_from_config(
-                [d.model_dump() for d in settings.integrations.definitions],
+                [
+                    definition.model_dump()
+                    for definition in load_integration_definition_configs(
+                        settings.integrations,
+                        external_modules=external_modules,
+                    )
+                ],
             )
             integration_registry = IntegrationRegistry(integration_definitions)
             if settings.integrations.repository is not None:
@@ -815,6 +933,7 @@ def create_app(
                 resource_provider=resource_provider,
                 persona_provider=session_persona_provider,
                 pricing_provider=pricing_provider,
+                execution_credential_service=execution_credential_service,
             )
 
             session_service = SessionService(
@@ -835,7 +954,8 @@ def create_app(
                 public_origin=public_origin,
                 session_communication_port=session_room_port,
                 attention_notifier=attention_notifier,
-                runtime_backend=_runtime_backend(settings, pod_manager),
+                runtime_backend=runtime_backend,
+                execution_resolver=pod_manager if execution_components is not None else None,
                 span_repository=span_repository,
             )
             # Local-process brokers notify the session service when they exit so
@@ -1162,6 +1282,29 @@ def create_app(
             )
             app.include_router(git_router)
 
+            if settings.delivery.enabled:
+                from niuu.ports.delivery import DeliveryAuthorizer
+                from volundr.adapters.inbound.rest_delivery import create_delivery_router
+
+                delivery_service_factory = _create_delivery_service_factory(
+                    settings.delivery, user_integration_service
+                )
+                authorization_config = settings.delivery.authorizer
+                delivery_authorizer = import_class(authorization_config.adapter)(
+                    **resolve_secret_kwargs(
+                        authorization_config.kwargs, authorization_config.secret_kwargs_env
+                    )
+                )
+                if not isinstance(delivery_authorizer, DeliveryAuthorizer):
+                    raise TypeError("Delivery authorizer must implement DeliveryAuthorizer")
+                app.include_router(
+                    create_delivery_router(
+                        delivery_service_factory, extract_principal, delivery_authorizer
+                    )
+                )
+                app.state.delivery_service_factory = delivery_service_factory
+                app.state.delivery_authorizer = delivery_authorizer
+
             # Local git workspace endpoints (mini/local mode)
             from volundr.adapters.inbound.rest_local_git import create_local_git_router
             from volundr.adapters.outbound.local_git import LocalGitService
@@ -1415,6 +1558,9 @@ def create_app(
                     "Volundr Telegram ingress disabled via config (telegram_ingress.enabled=false)"
                 )
 
+            if execution_credential_service is not None:
+                await execution_credential_service.start()
+
             # Reconcile sessions stuck in PROVISIONING after a restart
             await session_service.reconcile_provisioning_sessions()
             await session_service.reconcile_active_sessions()
@@ -1427,6 +1573,8 @@ def create_app(
             try:
                 yield
             finally:
+                if execution_credential_service is not None:
+                    await execution_credential_service.stop()
                 if compute_pool_task is not None:
                     compute_pool_task.cancel()
                     await asyncio.gather(compute_pool_task, return_exceptions=True)
@@ -1460,10 +1608,8 @@ def create_app(
                     await resident_flock_adapter.stop()
                 await resident_runtime_service.close()
                 await event_ingestion.close_all()
-                if hasattr(pod_manager, "close"):
+                if settings.compute is None and hasattr(pod_manager, "close"):
                     await pod_manager.close()
-                if compute_provider is not None:
-                    await compute_provider.close()
                 for controller in resident_controllers:
                     if controller is not pod_manager and hasattr(controller, "close"):
                         await controller.close()

@@ -116,13 +116,14 @@ _PROJECT_FIELDS = """
 
 _LIST_PROJECTS_QUERY = (
     """
-query ListProjects($first: Int!) {
-  projects(first: $first) {
+query ListProjects($first: Int!, $after: String) {
+  projects(first: $first, after: $after) {
     nodes {
 """
     + _PROJECT_FIELDS
     + """
     }
+    pageInfo { hasNextPage endCursor }
   }
 }
 """
@@ -236,10 +237,11 @@ query ListIssueRelations($projectId: ID!, $first: Int!) {
 
 _LIST_ISSUES_QUERY = (
     """
-query ListIssues($projectId: ID!, $first: Int!) {
+query ListIssues($projectId: ID!, $first: Int!, $after: String) {
   issues(
     filter: { project: { id: { eq: $projectId } } }
     first: $first
+    after: $after
     orderBy: updatedAt
   ) {
     nodes {
@@ -247,6 +249,7 @@ query ListIssues($projectId: ID!, $first: Int!) {
     + _ISSUE_FIELDS
     + """
     }
+    pageInfo { hasNextPage endCursor }
   }
 }
 """
@@ -254,13 +257,14 @@ query ListIssues($projectId: ID!, $first: Int!) {
 
 _LIST_ISSUES_BY_MILESTONE_QUERY = (
     """
-query ListIssuesByMilestone($projectId: ID!, $milestoneId: ID!, $first: Int!) {
+query ListIssuesByMilestone($projectId: ID!, $milestoneId: ID!, $first: Int!, $after: String) {
   issues(
     filter: {
       project: { id: { eq: $projectId } }
       projectMilestone: { id: { eq: $milestoneId } }
     }
     first: $first
+    after: $after
     orderBy: updatedAt
   ) {
     nodes {
@@ -268,6 +272,7 @@ query ListIssuesByMilestone($projectId: ID!, $milestoneId: ID!, $first: Int!) {
     + _ISSUE_FIELDS
     + """
     }
+    pageInfo { hasNextPage endCursor }
   }
 }
 """
@@ -637,8 +642,18 @@ class LinearTrackerAdapter(TrackerPort):
         if cached is not None:
             return cached  # type: ignore[return-value]
 
-        data = await self._gql.query(_LIST_PROJECTS_QUERY, {"first": 50})
-        nodes = data.get("projects", {}).get("nodes", [])
+        nodes: list[dict] = []
+        after: str | None = None
+        while True:
+            data = await self._gql.query(_LIST_PROJECTS_QUERY, {"first": 100, "after": after})
+            connection = data.get("projects", {})
+            nodes.extend(connection.get("nodes", []))
+            page_info = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            after = str(page_info.get("endCursor") or "").strip()
+            if not after:
+                raise GraphQLError("Linear projects pagination omitted endCursor")
         projects = [self._node_to_tracker_project(n) for n in nodes]
         self._gql.set_cached(cache_key, projects)
         return projects
@@ -673,18 +688,26 @@ class LinearTrackerAdapter(TrackerPort):
         if cached is not None:
             return cached  # type: ignore[return-value]
 
-        if milestone_id:
-            data = await self._gql.query(
-                _LIST_ISSUES_BY_MILESTONE_QUERY,
-                {"projectId": project_id, "milestoneId": milestone_id, "first": 100},
-            )
-        else:
-            data = await self._gql.query(
-                _LIST_ISSUES_QUERY,
-                {"projectId": project_id, "first": 100},
-            )
-
-        nodes = data.get("issues", {}).get("nodes", [])
+        query = _LIST_ISSUES_BY_MILESTONE_QUERY if milestone_id else _LIST_ISSUES_QUERY
+        nodes: list[dict] = []
+        after: str | None = None
+        while True:
+            variables: dict[str, object] = {
+                "projectId": project_id,
+                "first": 100,
+                "after": after,
+            }
+            if milestone_id:
+                variables["milestoneId"] = milestone_id
+            data = await self._gql.query(query, variables)
+            connection = data.get("issues", {})
+            nodes.extend(connection.get("nodes", []))
+            page_info = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            after = str(page_info.get("endCursor") or "").strip()
+            if not after:
+                raise GraphQLError("Linear issues pagination omitted endCursor")
         issues = [self._node_to_tracker_issue(n) for n in nodes]
         self._gql.set_cached(cache_key, issues)
         return issues
@@ -748,6 +771,7 @@ class LinearTrackerAdapter(TrackerPort):
         retry_count: int | None = None,
         reason: str | None = None,
         owner_id: str | None = None,
+        tenant_id: str | None = None,
         phase_tracker_id: str | None = None,
         saga_tracker_id: str | None = None,
         chronicle_summary: str | None = None,
@@ -760,11 +784,11 @@ class LinearTrackerAdapter(TrackerPort):
             """
             INSERT INTO run_progress
                 (tracker_id, status, session_id, confidence, pr_url, pr_id,
-                 retry_count, reason, owner_id, phase_tracker_id, saga_tracker_id,
+                 retry_count, reason, owner_id, tenant_id, phase_tracker_id, saga_tracker_id,
                  chronicle_summary, reviewer_session_id, review_round, tracker_connection_id)
             VALUES ($1, COALESCE($2, 'PENDING'), $3, $4, $5, $6,
-                    COALESCE($7, 0), $8, $9, $10, $11, $12, $13,
-                    COALESCE($14, 0), $15)
+                    COALESCE($7, 0), $8, $9, $10, $11, $12, $13, $14,
+                    COALESCE($15, 0), $16)
             ON CONFLICT (tracker_connection_id, tracker_id) DO UPDATE SET
                 status              = COALESCE($2, run_progress.status),
                 session_id          = COALESCE($3, run_progress.session_id),
@@ -774,11 +798,12 @@ class LinearTrackerAdapter(TrackerPort):
                 retry_count         = COALESCE($7, run_progress.retry_count),
                 reason              = COALESCE($8, run_progress.reason),
                 owner_id            = COALESCE($9, run_progress.owner_id),
-                phase_tracker_id    = COALESCE($10, run_progress.phase_tracker_id),
-                saga_tracker_id     = COALESCE($11, run_progress.saga_tracker_id),
-                chronicle_summary   = COALESCE($12, run_progress.chronicle_summary),
-                reviewer_session_id = COALESCE($13, run_progress.reviewer_session_id),
-                review_round        = COALESCE($14, run_progress.review_round),
+                tenant_id           = COALESCE($10, run_progress.tenant_id),
+                phase_tracker_id    = COALESCE($11, run_progress.phase_tracker_id),
+                saga_tracker_id     = COALESCE($12, run_progress.saga_tracker_id),
+                chronicle_summary   = COALESCE($13, run_progress.chronicle_summary),
+                reviewer_session_id = COALESCE($14, run_progress.reviewer_session_id),
+                review_round        = COALESCE($15, run_progress.review_round),
                 updated_at          = NOW()
             """,
             tracker_id,
@@ -790,6 +815,7 @@ class LinearTrackerAdapter(TrackerPort):
             retry_count,
             reason,
             owner_id,
+            tenant_id,
             phase_tracker_id,
             saga_tracker_id,
             chronicle_summary,
@@ -842,6 +868,45 @@ class LinearTrackerAdapter(TrackerPort):
             self.connection_id,
         )
         return await self._collect_runs(rows)
+
+    async def get_authorized_run_progress_for_saga(
+        self,
+        saga_tracker_id: str,
+        *,
+        owner_id: str,
+        tenant_id: str,
+    ) -> list[Run]:
+        if self._pool is None:
+            return []
+        rows = await self._pool.fetch(
+            "SELECT tracker_id FROM run_progress WHERE saga_tracker_id = $1 "
+            "AND tracker_connection_id = $2 AND owner_id = $3 AND tenant_id = $4",
+            saga_tracker_id,
+            self.connection_id,
+            owner_id,
+            tenant_id,
+        )
+        return await self._collect_runs(rows)
+
+    async def has_unscoped_run_progress_for_saga(
+        self,
+        saga_tracker_id: str,
+        *,
+        owner_id: str,
+        tenant_id: str,
+    ) -> bool:
+        if self._pool is None or not tenant_id:
+            return False
+        return bool(
+            await self._pool.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM run_progress "
+                "WHERE saga_tracker_id = $1 AND tracker_connection_id = $2 "
+                "AND owner_id = $3 AND COALESCE(tenant_id, '') = '')",
+                saga_tracker_id,
+                self.connection_id,
+                owner_id,
+            )
+        )
 
     async def get_run_by_session(self, session_id: str) -> Run | None:
         if self._pool is None:

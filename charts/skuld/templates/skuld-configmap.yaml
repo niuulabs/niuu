@@ -81,6 +81,9 @@ data:
       kwargs: {{ dig "codexAuth" "kwargs" dict .Values.broker | toJson }}
     host: {{ ternary "127.0.0.1" "0.0.0.0" (and .Values.wsAuth.enforce_ownership .Values.envoy.enabled) | quote }}
     port: 8081
+    workflow:
+      evidence_verifier: {{ .Values.workflow.evidenceVerifier | toJson }}
+      evidence_artifacts: {{ .Values.workflow.evidenceArtifacts | toJson }}
     persistence_mount_path: {{ .Values.persistence.mountPath | default "/volundr/sessions" | quote }}
     {{- if .Values.homeVolume.enabled }}
     persistent_home_path: {{ .Values.homeVolume.mountPath | quote }}

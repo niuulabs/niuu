@@ -1,0 +1,176 @@
+.ting-workflow-catalog {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.ting-workflow-catalog__sidebar {
+  display: flex;
+  flex: 0 0 320px;
+  min-width: 0;
+  flex-direction: column;
+  border-right: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-secondary);
+}
+
+.ting-workflow-catalog__heading,
+.ting-workflow-catalog__header {
+  display: flex;
+  min-height: 60px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  border-bottom: 1px solid var(--color-border-subtle);
+  padding: var(--space-3);
+}
+
+.ting-workflow-catalog__heading {
+  flex-shrink: 0;
+  margin-bottom: var(--space-3);
+}
+
+.ting-workflow-catalog h1,
+.ting-workflow-catalog__heading h2 {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+
+.ting-workflow-catalog__row-title {
+  font-size: 15px;
+}
+
+.ting-workflow-catalog__detail {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--space-6) var(--space-6);
+}
+
+.ting-workflow-catalog__header {
+  margin-inline: calc(-1 * var(--space-6));
+  padding-inline: var(--space-6);
+}
+
+.ting-workflow-catalog__scope {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.ting-workflow-catalog__description {
+  margin: 0;
+  max-width: 80ch;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.ting-workflow-catalog__builder,
+.ting-workflow-catalog__launch-button {
+  display: inline-flex;
+  min-height: 36px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border: 1px solid var(--color-accent-fill, var(--color-brand));
+  border-radius: var(--radius-md);
+  background: var(--color-accent-fill, var(--color-brand));
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-accent-on-fill, var(--color-bg-primary));
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.ting-workflow-catalog__launch-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.ting-workflow-catalog__preview {
+  min-width: 0;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--color-border-subtle);
+  padding-bottom: var(--space-5);
+}
+
+.ting-workflow-catalog__section-title {
+  margin-bottom: var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.ting-workflow-catalog__panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+  align-items: start;
+  gap: var(--space-6);
+}
+
+.ting-workflow-catalog__launch {
+  min-width: 0;
+}
+
+.ting-workflow-catalog__pick-issue {
+  display: block;
+  margin-bottom: var(--space-3);
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--color-brand);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.ting-workflow-catalog :is(button, a):focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+[data-theme='xteo'] .ting-workflow-catalog__sidebar {
+  background: var(--color-panel-quiet);
+}
+
+[data-theme='xteo'] .ting-workflow-catalog__sidebar button[data-selected='true'] {
+  border-color: transparent;
+  background: var(--color-selection-surface);
+  box-shadow: inset 3px 0 var(--color-selection-edge);
+}
+
+@media (max-width: 760px) {
+  .ting-workflow-catalog {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .ting-workflow-catalog__sidebar {
+    flex: 0 0 auto;
+    max-height: 260px;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .ting-workflow-catalog__detail {
+    flex: none;
+    overflow: visible;
+    padding-inline: var(--space-4);
+  }
+
+  .ting-workflow-catalog__header {
+    flex-wrap: wrap;
+    margin-inline: calc(-1 * var(--space-4));
+    padding-inline: var(--space-4);
+  }
+}

@@ -28,6 +28,7 @@ keep running with stale data rather than crashing.
 from __future__ import annotations
 
 import logging
+from urllib.parse import quote
 
 import httpx
 
@@ -43,6 +44,11 @@ from ravn.adapters.personas.loader import (
     _parse_consumes,
     _parse_fan_in,
     _parse_produces,
+)
+from ravn.domain.persona_document import (
+    PortablePersonaDefinition,
+    parse_portable_persona,
+    validate_persona_identifier,
 )
 from ravn.ports.persona import PersonaPort
 
@@ -246,3 +252,44 @@ class HttpPersonaAdapter(PersonaPort):
         names = sorted(item["name"] for item in response.json())
         self._names_cache = CacheEntry(names, self._ttl)
         return list(names)
+
+    def load_portable(
+        self,
+        persona_id: str,
+        revision: str,
+    ) -> PortablePersonaDefinition | None:
+        """Fetch an exact source-authored portable revision without cached fallback."""
+        validate_persona_identifier(persona_id)
+        validate_persona_identifier(revision, field="Persona revision")
+        encoded_id = quote(persona_id, safe="")
+        encoded_revision = quote(revision, safe="")
+        response, url = self._get(
+            f"/api/v1/personas/{encoded_id}/revisions/{encoded_revision}",
+            f"/api/v1/ravn/personas/{encoded_id}/revisions/{encoded_revision}",
+        )
+        if response.status_code == 404:
+            return None
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"HttpPersonaAdapter: GET {url} returned HTTP {response.status_code}"
+            )
+        return parse_portable_persona(response.json())
+
+    def load_current_portable(
+        self,
+        persona_id: str,
+    ) -> PortablePersonaDefinition | None:
+        """Fetch the current source-authored portable definition."""
+        validate_persona_identifier(persona_id)
+        encoded_id = quote(persona_id, safe="")
+        response, url = self._get(
+            f"/api/v1/personas/{encoded_id}/portable",
+            f"/api/v1/ravn/personas/{encoded_id}/portable",
+        )
+        if response.status_code == 404:
+            return None
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"HttpPersonaAdapter: GET {url} returned HTTP {response.status_code}"
+            )
+        return parse_portable_persona(response.json())

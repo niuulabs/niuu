@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Path, Query, Response, status
 from pydantic import BaseModel, Field
 
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter, PersonaConfig
+from ravn.domain.persona_document import PersonaDocumentError, PortablePersonaDefinition
 from ravn.ports.persona import PersonaRegistryPort
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,10 @@ class PersonaProducesResponse(BaseModel):
     """Output event schema for a persona."""
 
     event_type: str = Field(description="Event type produced on completion")
+    event_type_map: dict[str, str] = Field(
+        default_factory=dict,
+        description="Outcome field values mapped to their emitted event types",
+    )
     schema_def: dict = Field(alias="schema", description="Output schema field definitions")
 
     model_config = {"populate_by_name": True}
@@ -62,6 +67,10 @@ class PersonaSummary(BaseModel):
     is_builtin: bool = Field(description="Whether this is a built-in persona")
     has_override: bool = Field(description="Whether a user file overrides the built-in")
     produces_event: str = Field(description="Event type produced on completion (empty if none)")
+    outcome_events: dict[str, str] = Field(
+        default_factory=dict,
+        description="Outcome field values mapped to their emitted event types",
+    )
     consumes_events: list[str] = Field(description="Event types this persona consumes")
 
     @classmethod
@@ -79,6 +88,7 @@ class PersonaSummary(BaseModel):
             is_builtin=is_builtin,
             has_override=has_override,
             produces_event=config.produces.event_type,
+            outcome_events=dict(config.produces.event_type_map),
             consumes_events=config.consumes.event_types,
         )
 
@@ -124,6 +134,7 @@ class PersonaDetail(PersonaSummary):
             is_builtin=is_builtin,
             has_override=has_override,
             produces_event=config.produces.event_type,
+            outcome_events=dict(config.produces.event_type_map),
             consumes_events=config.consumes.event_types,
             system_prompt_template=config.system_prompt_template,
             forbidden_tools=config.forbidden_tools,
@@ -134,6 +145,7 @@ class PersonaDetail(PersonaSummary):
             ),
             produces=PersonaProducesResponse(
                 event_type=config.produces.event_type,
+                event_type_map=dict(config.produces.event_type_map),
                 schema=produces_schema,
             ),  # type: ignore[call-arg]
             consumes=PersonaConsumesResponse(
@@ -301,6 +313,65 @@ def create_personas_router(loader: PersonaRegistryPort) -> APIRouter:
             )
 
         return PersonaValidateResponse(valid=not errors, errors=errors)
+
+    @router.get(
+        "/personas/{name}/portable",
+        response_model=None,
+        responses={404: {"model": ErrorResponse}},
+        tags=["Personas"],
+    )
+    def get_current_portable_persona(
+        name: str = Path(description="Stable persona identifier"),
+    ) -> dict:
+        """Return current raw source content with its immutable revision label."""
+        try:
+            document = loader.load_current_portable(name)
+        except NotImplementedError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail=str(exc),
+            ) from exc
+        except PersonaDocumentError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        if document is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Persona not found: {name}",
+            )
+        return document.to_dict()
+
+    @router.get(
+        "/personas/{name}/revisions/{revision}",
+        response_model=None,
+        responses={404: {"model": ErrorResponse}},
+        tags=["Personas"],
+    )
+    def get_persona_revision(
+        name: str = Path(description="Stable persona identifier"),
+        revision: str = Path(description="Exact persona revision"),
+    ) -> dict:
+        """Return an exact raw portable persona source revision."""
+        try:
+            document: PortablePersonaDefinition | None = loader.load_portable(name, revision)
+        except NotImplementedError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail=str(exc),
+            ) from exc
+        except PersonaDocumentError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        if document is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Persona revision not found: {name}@{revision}",
+            )
+        return document.to_dict()
 
     @router.get(
         "/personas/{name}",

@@ -49,6 +49,10 @@ ALLOWLIST = {
         "volundr/adapters/outbound/skuld_room.py",
         "OPENSHELL_INTERNAL_GATEWAY_URL",
     ): "provider-injected runtime endpoint",
+    (
+        "volundr/adapters/outbound/ssh_guest_access.py",
+        "LD_PRELOAD",
+    ): "preserve NSS wrapper state for SSH transport subprocesses",
 }
 
 

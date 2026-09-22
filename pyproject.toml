@@ -19,6 +19,9 @@ dependencies = [
     "idna>=3.19",
     "fastapi>=0.141.1",
     "starlette>=1.6.0",
+    # Remove this upper bound when Starlette releases the fix merged in
+    # https://github.com/Kludex/starlette/pull/3498.
+    "anyio>=4.14.2,<4.15",
     "python-multipart>=0.0.32",
     "PyJWT>=2.13.0",
     "cryptography>=50.0.1",

@@ -1,7 +1,11 @@
 """Guest runtime control, independent of the machine infrastructure provider."""
 
-from abc import ABC, abstractmethod
+from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from typing import Protocol, runtime_checkable
+
+from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.compute import ComputeLease, MachineBootstrap
 from volundr.domain.models import Session, SessionSpec
@@ -9,6 +13,49 @@ from volundr.domain.models import Session, SessionSpec
 
 class VmRuntimeUnavailableError(RuntimeError):
     """The guest SSH connection is not established; readiness may be retried."""
+
+
+class VmRuntimeStageError(RuntimeError):
+    """A runtime startup command failed at an explicitly non-sensitive stage."""
+
+    def __init__(self, stage: str, diagnostic: str = ""):
+        self.stage = stage
+        self.diagnostic = diagnostic
+        suffix = f": {diagnostic}" if diagnostic else ""
+        super().__init__(f"Guest runtime startup failed at stage {stage}{suffix}")
+
+
+@runtime_checkable
+class CredentialAwareVmRuntime(Protocol):
+    """Optional composition hook for runtimes that inject native credentials."""
+
+    def configure_credentials(self, credential_store: CredentialStorePort) -> None:
+        """Attach the configured credential port without placing values in runtime config."""
+
+
+@runtime_checkable
+class ProfileAwareVmRuntime(Protocol):
+    """Route legacy profile-selected operations before a durable plan is available."""
+
+    def machine_bootstrap_for(
+        self, profile: str, defaults: MachineBootstrap
+    ) -> MachineBootstrap: ...
+
+    def session_bootstrap_for(
+        self,
+        profile: str,
+        session: Session,
+        spec: SessionSpec,
+        machine: MachineBootstrap,
+    ) -> MachineBootstrap: ...
+
+    def bootstrap_for(
+        self,
+        profile: str,
+        session: Session,
+        spec: SessionSpec,
+        defaults: MachineBootstrap,
+    ) -> MachineBootstrap: ...
 
 
 class VmRuntime(ABC):

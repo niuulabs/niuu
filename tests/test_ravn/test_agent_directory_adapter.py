@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from niuu.domain.agent_directory import AgentDirectoryEntry
+from niuu.domain.agent_directory import AgentDirectoryEntry, configured_agent_id
 from ravn.adapters.agent_directory import GuildAgentDirectoryAdapter
 from ravn.adapters.tool_build.http import HttpResponse
 
@@ -91,6 +91,7 @@ async def test_configured_agent_card_skills_join_guild_directory() -> None:
 
     assert len(page.items) == 1
     agent = page.items[0]
+    assert agent.id == configured_agent_id(card_url)
     assert agent.card_url == card_url
     assert agent.skill_ids == ["research"]
     assert agent.skills[0].tags == ["research"]
@@ -121,6 +122,12 @@ async def test_configured_agent_card_is_not_duplicated_when_guild_has_it() -> No
 
     assert [agent.id for agent in page.items] == ["agent-guild"]
     assert len(client.gets) == 1
+
+    configured = await adapter.get_agent(configured_agent_id(card_url))
+    assert configured is not None
+    assert configured.id == configured_agent_id(card_url)
+    assert configured.skill_ids == []
+    assert client.gets[1] == (card_url, {"A2A-Version": "1.0"})
 
 
 @pytest.mark.asyncio

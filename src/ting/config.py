@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import AliasChoices, BaseModel, Field, SecretStr, field_validator
+from pydantic import AliasChoices, BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -65,6 +65,34 @@ class DatabaseConfig(BaseModel):
     def dsn(self) -> str:
         """Return PostgreSQL connection string."""
         return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
+
+
+class WorkflowRepositoryConfig(BaseModel):
+    """Dynamic workflow definition repository configuration."""
+
+    adapter: str = Field(
+        default="ting.adapters.filesystem_workflows.FilesystemWorkflowRepository",
+        description="Fully qualified WorkflowRepository adapter class.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Plain keyword arguments passed to the configured adapter.",
+    )
+    seed_bundled: bool = Field(
+        default=False,
+        description=(
+            "Seed packaged workflows into the selected repository. Disable for the "
+            "filesystem adapter, which reads packaged workflows directly."
+        ),
+    )
+
+
+class WorkflowImportConfig(BaseModel):
+    """Resource bounds for untrusted workflow bundle imports."""
+
+    max_upload_bytes: int = Field(default=4 * 1024 * 1024, ge=1)
+    max_expanded_bytes: int = Field(default=16 * 1024 * 1024, ge=1)
+    max_entries: int = Field(default=128, ge=1)
 
 
 class LoggingConfig(BaseModel):
@@ -519,6 +547,10 @@ class AuthConfig(BaseModel):
         default="dev-user",
         description="User ID for anonymous dev mode fallback.",
     )
+    default_tenant_id: str = Field(
+        default="",
+        description="Tenant for anonymous dev mode; align with the connected Forge identity.",
+    )
 
 
 class WebhookConfig(BaseModel):
@@ -897,6 +929,11 @@ class A2AConfig(BaseModel):
         ge=0,
         description="Cache-Control max-age for the served agent card.",
     )
+    launch_lease_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        description="Lease duration for idempotent A2A workflow launch reservations.",
+    )
     push_encryption_key: SecretStr = Field(
         default=SecretStr(""),
         description="Fernet key used to encrypt callback credentials at rest.",
@@ -995,6 +1032,178 @@ class A2AConfig(BaseModel):
     )
 
 
+class WorkflowExecutionDeliveryConfig(BaseModel):
+    """Code-delivery specialization settings layered over generic workflow execution.
+
+    Everything here — signed reviewer attestation, the Forge evidence and
+    integration policies, and the trusted integration review projector — is
+    meaningless without the delivery extension table and its `forge.*` wait
+    observers. ``enabled`` gates all of it independently of the generic
+    ``workflow_execution.enabled`` flag, which only the reusable fan-out,
+    join, and wait machinery needs.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable the code delivery specialization: the delivery router and "
+            "repository, Forge evidence/review wiring, and forge.* wait observers. "
+            "Requires workflow_execution.enabled."
+        ),
+    )
+    review_authenticator_adapter: str = Field(
+        default="",
+        description=(
+            "Dynamic EvidenceAuthenticator adapter used to sign server-derived "
+            "reviewer receipts, required once delivery is enabled."
+        ),
+    )
+    review_authenticator_kwargs: dict[str, Any] = Field(default_factory=dict)
+    review_authenticator_secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+    review_producers: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Role name to signing-producer identity, required for every role a "
+            "workflow's reviewAttestation declares once delivery is enabled."
+        ),
+    )
+    integration_review_producer: str = Field(
+        default="",
+        description=(
+            "Signing-producer identity for the trusted integration review projector, "
+            "required once delivery is enabled."
+        ),
+    )
+    evidence_policy_id: str = Field(
+        default="",
+        min_length=1,
+        description="Forge evidence policy ID, required once delivery is enabled.",
+    )
+    integration_policy_id: str = Field(
+        default="",
+        min_length=1,
+        description="Forge integration policy ID, required once delivery is enabled.",
+    )
+
+
+class WorkflowExecutionConfig(BaseModel):
+    """Durable, domain-neutral workflow execution: fan-out/join, waits, and the Ravn A2A gateway.
+
+    Every field here serves any workflow that expands into a bounded child
+    DAG and carries no code-delivery vocabulary. The code delivery
+    specialization (its own repository, router, and Forge/review wiring)
+    lives entirely under ``delivery``.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable durable workflow execution: fan-out/join, durable waits, and the "
+            "Ravn A2A gateway. Requires workload identity outside anonymous dev mode."
+        ),
+    )
+    delivery: WorkflowExecutionDeliveryConfig = Field(
+        default_factory=WorkflowExecutionDeliveryConfig
+    )
+    gateway_adapter: str = Field(
+        default="ravn.adapters.child_task_a2a.ConfiguredRavnChildTaskA2AGateway",
+        description="Ravn-owned A2A child gateway adapter.",
+    )
+    gateway_kwargs: dict[str, Any] = Field(default_factory=dict)
+    admission_roles: list[str] = Field(
+        default_factory=lambda: ["volundr:developer"],
+        min_length=1,
+        description=(
+            "Configured gateway admission roles for Ting-issued developer workload "
+            "credentials. These roles are never accepted from execution descriptors."
+        ),
+    )
+    wait_repository_adapter: str = Field(
+        default="ting.adapters.postgres_workflow_waits.PostgresWorkflowWaitRepository",
+        description="Durable repository adapter for workflow waits.",
+    )
+    wait_repository_kwargs: dict[str, Any] = Field(default_factory=dict)
+    wait_observers: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Wait condition observers, each `{condition_type, adapter, ...kwargs}`. "
+            "condition_type is the opaque condition identity a wait node's `conditions` "
+            "list can declare; adapter is the dotted class path implementing "
+            "WaitConditionObserver (ting.ports.workflow_wait). Extra entry keys are "
+            "passed as constructor kwargs; volundr_factory, policy_id, token_issuer, "
+            "admission_roles, and poll_interval_seconds are injected only when the "
+            "adapter's constructor declares them."
+        ),
+    )
+    worker_id: str = Field(default="ting-workflow-execution")
+    launch_claim_limit: int = Field(default=4, ge=1, le=100)
+    reconcile_limit: int = Field(default=100, ge=1, le=1000)
+    lease_seconds: float = Field(default=60.0, gt=0)
+    reconcile_interval_seconds: float = Field(default=5.0, gt=0)
+    default_budget_units: int = Field(default=100, ge=1)
+    default_deadline_seconds: int = Field(default=86400, ge=60)
+    list_page_size: int = Field(default=50, ge=1, le=200)
+    max_child_reconcile_failures: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description=(
+            "Consecutive reconcile failures (gateway/verification exceptions) tolerated for "
+            "one child attempt before it is durably transitioned to a terminal failed state, "
+            "so a single poisoned child cannot starve the reconcile queue forever."
+        ),
+    )
+    max_wait_failures: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description=(
+            "Consecutive reconcile failures tolerated for one wait before it is durably "
+            "transitioned to its terminal failed state."
+        ),
+    )
+    max_parent_stop_failures: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description=(
+            "Consecutive failures tolerated when stopping a canceled parent session before "
+            "the stop intent is recorded as durably failed instead of retried forever."
+        ),
+    )
+
+    @field_validator("admission_roles")
+    @classmethod
+    def _validate_admission_roles(cls, roles: list[str]) -> list[str]:
+        normalized = [role.strip() for role in roles]
+        if any(not role for role in normalized):
+            raise ValueError("developer execution admission roles must be non-empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_delivery_wiring(self) -> WorkflowExecutionConfig:
+        if self.delivery.enabled and not self.enabled:
+            raise ValueError(
+                "workflow_execution.delivery.enabled requires workflow_execution.enabled; "
+                "set workflow_execution.enabled: true or disable workflow_execution.delivery"
+            )
+        if not self.delivery.enabled:
+            offending = sorted(
+                {
+                    adapter
+                    for entry in self.wait_observers
+                    if (adapter := str(entry.get("adapter") or "")).startswith("ting.delivery.")
+                }
+            )
+            if offending:
+                raise ValueError(
+                    "workflow_execution.wait_observers configures ting.delivery adapter(s) "
+                    f"({', '.join(offending)}) while workflow_execution.delivery.enabled is "
+                    "false; enable workflow_execution.delivery or remove the observer(s)"
+                )
+        return self
+
+
 class Settings(BaseSettings):
     """Application settings.
 
@@ -1019,6 +1228,15 @@ class Settings(BaseSettings):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     cors: CorsConfig = Field(default_factory=CorsConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    workflow_repository: WorkflowRepositoryConfig = Field(
+        default_factory=lambda: WorkflowRepositoryConfig(
+            kwargs={
+                "catalog_path": "~/.niuu/workflows",
+                "create_directory": True,
+            }
+        )
+    )
+    workflow_import: WorkflowImportConfig = Field(default_factory=WorkflowImportConfig)
     volundr: VolundrConfig = Field(default_factory=VolundrConfig)
     bifrost: BifrostConfig = Field(default_factory=BifrostConfig)
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
@@ -1047,6 +1265,7 @@ class Settings(BaseSettings):
     event_bus: EventBusConfig = Field(default_factory=EventBusConfig)
     events: EventsConfig = Field(default_factory=EventsConfig)
     a2a: A2AConfig = Field(default_factory=A2AConfig)
+    workflow_execution: WorkflowExecutionConfig = Field(default_factory=WorkflowExecutionConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)

@@ -16,6 +16,7 @@ from niuu.domain.services.token_scope import (
     KNOWN_WORKLOAD_SCOPES,
     VALKYRIE_BUILD_TOKEN_USE,
     bound_workload_scopes,
+    credential_allows_route,
     require_scope,
     token_has_scope,
     token_requires_scope_check,
@@ -84,6 +85,7 @@ class TestKnownWorkloadScopes:
         assert KNOWN_WORKLOAD_SCOPES == frozenset(
             {
                 "forge:session:create",
+                "ting:workflow:coordinate",
                 "ting:workflow:launch",
                 "observatory:topology:push",
             }
@@ -124,6 +126,63 @@ class TestTokenHasScope:
     def test_build_token_with_scope_allowed(self) -> None:
         token = _build_token(["forge:session:create"])
         assert token_has_scope(token, "forge:session:create") is True
+
+    def test_execution_coordinator_can_call_delivery_surface(self) -> None:
+        token = _build_token(["ting:workflow:coordinate"])
+        assert credential_allows_route(
+            token,
+            "POST",
+            "/api/v1/forge/delivery/workspaces/verify",
+        )
+        assert not credential_allows_route(
+            token,
+            "POST",
+            "/api/v1/forge/sessions",
+        )
+
+    def test_workflow_launcher_can_call_a2a_jsonrpc_only_with_launch_scope(self) -> None:
+        launcher = _build_token(["ting:workflow:launch"])
+        unrelated = _build_token(["forge:session:create"])
+
+        assert credential_allows_route(launcher, "POST", "/api/v1/ting/a2a")
+        assert not credential_allows_route(unrelated, "POST", "/api/v1/ting/a2a")
+        assert not credential_allows_route(launcher, "GET", "/api/v1/ting/a2a")
+
+    @pytest.mark.parametrize("suffix", ["expansions", "messages", "reconcile", "cancel", "waits"])
+    def test_execution_coordinator_can_call_generic_execution_mutations(self, suffix: str) -> None:
+        token = _build_token(["ting:workflow:coordinate"])
+
+        assert credential_allows_route(
+            token,
+            "POST",
+            f"/api/v1/ting/workflow-executions/execution-1/{suffix}",
+        )
+
+    @pytest.mark.parametrize(
+        "suffix",
+        ["expansions", "integration-candidate", "complete", "delivery-authorizations"],
+    )
+    def test_execution_coordinator_can_call_delivery_execution_mutations(self, suffix: str) -> None:
+        token = _build_token(["ting:workflow:coordinate"])
+
+        assert credential_allows_route(
+            token,
+            "POST",
+            f"/api/v1/ting/delivery-executions/execution-1/{suffix}",
+        )
+
+    def test_execution_coordinator_retry_is_post_only_and_gets_remain_denied(self) -> None:
+        token = _build_token(["ting:workflow:coordinate"])
+        retry = "/api/v1/ting/workflow-executions/execution-1/children/api/retry"
+        wait = "/api/v1/ting/workflow-executions/execution-1/waits"
+
+        assert credential_allows_route(token, "POST", retry)
+        assert credential_allows_route(token, "POST", wait)
+        assert not credential_allows_route(token, "GET", retry)
+        assert not credential_allows_route(token, "GET", wait)
+        assert not credential_allows_route(
+            token, "GET", "/api/v1/ting/delivery-executions/execution-1/evidence"
+        )
 
     def test_build_token_missing_scope_denied(self) -> None:
         token = _build_token(["ting:workflow:launch"])

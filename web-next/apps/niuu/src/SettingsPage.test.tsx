@@ -151,7 +151,7 @@ vi.mock('@niuulabs/query', () => ({
   })),
 }));
 
-function wrap(children: ReactNode, enableSessions = false) {
+function wrap(children: ReactNode, enableSessions = false, enableInterface = false) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -170,12 +170,15 @@ function wrap(children: ReactNode, enableSessions = false) {
           credentials: { enabled: true, order: 1 },
           integrations: { enabled: true, order: 2 },
           ting: { enabled: true, order: 3 },
+          setup: { enabled: true, order: 4 },
+          settings: { enabled: enableInterface, order: 5 },
         },
         services: {
           identity: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/identity' },
           credentials: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/credentials' },
           integrations: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/integrations' },
           ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
+          runtime: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/niuu/setup' },
         },
       }}
     >
@@ -188,6 +191,20 @@ describe('SettingsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     installDefaultGetMock();
+  });
+
+  it('renders interface mode as a local settings section', () => {
+    routerMocks.params = { providerId: 'interface', sectionId: 'mode' };
+    wrap(<SettingsPage />, false, true);
+
+    expect(screen.getByRole('heading', { name: 'Interface mode' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Interface mode' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Simple' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('button', { name: 'Advanced' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(apiMocks.get).not.toHaveBeenCalled();
   });
 
   it('renders local session checkboxes without fetching or saving a remote schema', () => {
@@ -957,6 +974,202 @@ describe('SettingsPage', () => {
         'No service base URL is configured for this provider in the active app profile.',
       ),
     ).toBeTruthy();
+  });
+
+  it('validates and registers deployment-owned integration packages', async () => {
+    routerMocks.params = { providerId: 'runtime', sectionId: 'external-integrations' };
+    const packageRecord = {
+      id: '0',
+      ok: true,
+      sourceDir: '/var/lib/niuu/private-integrations/acme-bugs',
+      definitionFiles: ['integration.yaml'],
+      definitions: [
+        {
+          slug: 'acme-bugs',
+          name: 'Acme Bugs',
+          integrationType: 'issue_tracker',
+          adapter: 'acme_bugs.adapter.AcmeBugsAdapter',
+        },
+      ],
+      errors: [],
+    };
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/settings') {
+        return {
+          title: 'Runtime',
+          scope: 'admin',
+          sections: [
+            {
+              id: 'external-integrations',
+              label: 'External integrations',
+              fields: [],
+              resources: [
+                {
+                  id: 'external-integration-packages',
+                  type: 'external_integrations',
+                  label: 'Integration packages',
+                  description: 'Private packages remain on this machine.',
+                  listPath: '/api/v1/niuu/setup/settings/external-integrations',
+                  createPath: '/api/v1/niuu/setup/settings/external-integrations',
+                  deletePath: '/api/v1/niuu/setup/settings/external-integrations/{id}',
+                  validatePath: '/api/v1/niuu/setup/settings/external-integrations/validate',
+                },
+              ],
+            },
+          ],
+        };
+      }
+      if (path === '/api/v1/niuu/setup/settings/external-integrations') {
+        return {
+          managedRoot: '/var/lib/niuu/private-integrations',
+          items: [],
+        };
+      }
+      throw new Error(`Unexpected GET ${path}`);
+    });
+    apiMocks.post.mockImplementation(async (path: string) => {
+      if (path.endsWith('/validate')) return packageRecord;
+      if (path === '/api/v1/niuu/setup/settings/external-integrations') {
+        return { ...packageRecord, applyState: 'applying' };
+      }
+      throw new Error(`Unexpected POST ${path}`);
+    });
+
+    wrap(<SettingsPage />);
+
+    const source = (await screen.findByLabelText('Package directory')) as HTMLInputElement;
+    await waitFor(() => expect(source.value).toBe('/var/lib/niuu/private-integrations/'));
+    fireEvent.change(source, {
+      target: { value: '/var/lib/niuu/private-integrations/acme-bugs' },
+    });
+    fireEvent.change(screen.getByLabelText('Definition files'), {
+      target: { value: 'integration.yaml' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Validate package' }));
+
+    expect(await screen.findByText('Package is valid')).toBeTruthy();
+    expect(screen.getByText('Acme Bugs (acme-bugs)')).toBeTruthy();
+    expect(apiMocks.post).toHaveBeenCalledWith(
+      '/api/v1/niuu/setup/settings/external-integrations/validate',
+      {
+        sourceDir: '/var/lib/niuu/private-integrations/acme-bugs',
+        definitionFiles: ['integration.yaml'],
+      },
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add and restart platform' }));
+    await waitFor(() =>
+      expect(apiMocks.post).toHaveBeenCalledWith(
+        '/api/v1/niuu/setup/settings/external-integrations',
+        {
+          sourceDir: '/var/lib/niuu/private-integrations/acme-bugs',
+          definitionFiles: ['integration.yaml'],
+        },
+      ),
+    );
+    expect(
+      await screen.findByText(
+        'Stack update started. The platform may be unavailable briefly while it restarts.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('validates and registers compute-only module packages', async () => {
+    routerMocks.params = { providerId: 'runtime', sectionId: 'external-integrations' };
+    const packageRecord = {
+      id: '0',
+      ok: true,
+      sourceDir: '/var/lib/niuu/private-integrations/acme-machines',
+      definitionFiles: [],
+      manifestFile: 'niuu-module.yaml',
+      moduleId: 'acme-machines',
+      definitions: [],
+      components: [
+        {
+          kind: 'machine_provider',
+          name: 'acme',
+          adapter: 'acme_machines.provider.AcmeMachineProvider',
+        },
+      ],
+      errors: [],
+    };
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/settings') {
+        return {
+          title: 'Runtime',
+          scope: 'admin',
+          sections: [
+            {
+              id: 'external-integrations',
+              label: 'External integrations',
+              fields: [],
+              resources: [
+                {
+                  id: 'external-integration-packages',
+                  type: 'external_integrations',
+                  label: 'Integration packages',
+                  listPath: '/api/v1/niuu/setup/settings/external-integrations',
+                  createPath: '/api/v1/niuu/setup/settings/external-integrations',
+                  deletePath: '/api/v1/niuu/setup/settings/external-integrations/{id}',
+                  validatePath: '/api/v1/niuu/setup/settings/external-integrations/validate',
+                },
+              ],
+            },
+          ],
+        };
+      }
+      if (path === '/api/v1/niuu/setup/settings/external-integrations') {
+        return {
+          managedRoot: '/var/lib/niuu/private-integrations',
+          items: [packageRecord],
+        };
+      }
+      throw new Error(`Unexpected GET ${path}`);
+    });
+    apiMocks.post.mockImplementation(async (path: string) => {
+      if (path.endsWith('/validate')) return packageRecord;
+      if (path === '/api/v1/niuu/setup/settings/external-integrations') {
+        return { ...packageRecord, applyState: 'applying' };
+      }
+      throw new Error(`Unexpected POST ${path}`);
+    });
+
+    wrap(<SettingsPage />);
+
+    expect(await screen.findByText('acme-machines')).toBeTruthy();
+    expect(screen.getByText(/machine provider: acme/)).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Package directory'), {
+      target: { value: '/var/lib/niuu/private-integrations/acme-machines' },
+    });
+    fireEvent.change(screen.getByLabelText('Definition files'), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText('Module manifest'), {
+      target: { value: 'niuu-module.yaml' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Validate package' }));
+
+    expect(await screen.findByText('Package is valid')).toBeTruthy();
+    expect(screen.getByText('acme (machine provider)')).toBeTruthy();
+    expect(apiMocks.post).toHaveBeenCalledWith(
+      '/api/v1/niuu/setup/settings/external-integrations/validate',
+      {
+        sourceDir: '/var/lib/niuu/private-integrations/acme-machines',
+        definitionFiles: [],
+        manifestFile: 'niuu-module.yaml',
+      },
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add and restart platform' }));
+    await waitFor(() =>
+      expect(apiMocks.post).toHaveBeenCalledWith(
+        '/api/v1/niuu/setup/settings/external-integrations',
+        {
+          sourceDir: '/var/lib/niuu/private-integrations/acme-machines',
+          definitionFiles: [],
+          manifestFile: 'niuu-module.yaml',
+        },
+      ),
+    );
   });
 
   it('renders the schema error state when a mounted provider fails to load', async () => {

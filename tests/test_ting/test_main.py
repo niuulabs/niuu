@@ -115,3 +115,86 @@ async def test_shared_integrations_rejects_ambiguous_store():
     with pytest.raises(ValueError, match="not both"):
         async with _integration_repository(settings, object()):
             pytest.fail("Ambiguous integration store accepted")
+
+
+def _mounted_paths(app) -> list[str]:
+    """Flatten FastAPI's routing tree, including included-router wrappers."""
+    paths: list[str] = []
+    for route in app.routes:
+        if hasattr(route, "path"):
+            paths.append(route.path)
+        elif hasattr(route, "original_router"):
+            paths.extend(sub.path for sub in route.original_router.routes if hasattr(sub, "path"))
+    return paths
+
+
+class TestWorkflowExecutionRouterMounting:
+    """The router surface mirrors which packs are actually configured."""
+
+    def test_workflow_execution_disabled_mounts_neither_router(self) -> None:
+        from ting.config import Settings
+        from ting.main import create_app
+
+        app = create_app(Settings())
+        paths = _mounted_paths(app)
+
+        assert not any("workflow-executions" in path for path in paths)
+        assert not any("delivery-executions" in path for path in paths)
+
+    def test_generic_only_mounts_workflow_executions_and_not_delivery(self) -> None:
+        from ting.config import Settings
+        from ting.main import create_app
+
+        settings = Settings(workflow_execution={"enabled": True, "delivery": {"enabled": False}})
+        app = create_app(settings)
+        paths = _mounted_paths(app)
+
+        assert any("workflow-executions" in path for path in paths)
+        assert not any("delivery-executions" in path for path in paths)
+
+    def test_delivery_enabled_mounts_both_routers(self) -> None:
+        from ting.config import Settings
+        from ting.main import create_app
+
+        settings = Settings(workflow_execution={"enabled": True, "delivery": {"enabled": True}})
+        app = create_app(settings)
+        paths = _mounted_paths(app)
+
+        assert any("workflow-executions" in path for path in paths)
+        assert any("delivery-executions" in path for path in paths)
+
+
+def test_delivery_enabled_without_review_authenticator_raises_with_remedy():
+    """Startup fails loudly instead of silently running an unconfigured pack."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi.testclient import TestClient
+
+    from ting.config import AuthConfig, Settings, WorkflowRepositoryConfig
+    from ting.main import create_app
+
+    settings = Settings(
+        auth=AuthConfig(allow_anonymous_dev=True),
+        workflow_repository=WorkflowRepositoryConfig(
+            adapter="ting.adapters.postgres_workflows.PostgresWorkflowRepository",
+            kwargs={},
+            seed_bundled=True,
+        ),
+        workflow_execution={"enabled": True, "delivery": {"enabled": True}},
+    )
+    app = create_app(settings)
+
+    mock_pool = MagicMock()
+    mock_pool.fetch = AsyncMock(return_value=[])
+    mock_pool.fetchrow = AsyncMock(return_value=None)
+    mock_pool.execute = AsyncMock(return_value="INSERT 0 1")
+    mock_pool.close = AsyncMock()
+    mock_pool.acquire.return_value.__aenter__.return_value = mock_pool
+    mock_pool.transaction.return_value.__aenter__.return_value = None
+
+    with patch("ting.main.database_pool") as mock_db:
+        mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_pool)
+        mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+        with pytest.raises(RuntimeError, match="review_authenticator_adapter"):
+            with TestClient(app):
+                pytest.fail("Missing delivery review authenticator was accepted")

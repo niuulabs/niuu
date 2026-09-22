@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 from pathlib import Path
@@ -38,6 +39,8 @@ from volundr.adapters.outbound.local_process import (
     LocalProcessPodManager,
     ProcessInfo,
     ProcessState,
+    cleanup_skuld_mesh_sockets,
+    skuld_mesh_addresses,
 )
 from volundr.domain.models import SessionStatus
 
@@ -64,6 +67,19 @@ DEFAULT_READY_PROBE_TIMEOUT_SECONDS = 2.0
 MANAGED_BY = "docker_container"
 LABEL_SESSION = "niuu.session-id"
 LABEL_MANAGED_BY = "niuu.managed-by"
+_SESSION_SECRET_RUNNER = "/app/entrypoint.sh"
+_CHECK_FLOCK_PIDS = """\
+import json,os,sys
+state=json.load(open(sys.argv[1]))
+pids=list(state.get('pids',{}).values())
+if not pids:
+    raise SystemExit(1)
+for pid in pids:
+    try:
+        os.kill(int(pid),0)
+    except (OSError,ValueError):
+        raise SystemExit(1)
+"""
 
 
 class _NetworkRegistry:
@@ -143,7 +159,7 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
         # the setup wizard's runtime step stages it and applies it through
         # the stack controller (settings key max_sessions).
         self._capacity_settings_path = str(capacity_settings_path)
-        # Sessions whose broker has answered /health at least once.
+        # Sessions whose broker has explicitly answered /ready with ready=true.
         self._ready: set[str] = set()
         self._client = (
             docker.DockerClient(base_url=str(docker_base_url))
@@ -151,12 +167,28 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
             else docker.from_env()
         )
         super().__init__(**kwargs)
+        self._recovered_sessions: set[str] = set()
         for info in self._processes.values():
             info.managed_by = MANAGED_BY
             if info.state == ProcessState.RUNNING:
-                # Recovered from the state file: the broker was up before the
-                # platform restarted and there is no monitor to re-observe it.
-                self._ready.add(info.session_id)
+                self._recovered_sessions.add(info.session_id)
+
+    def _ensure_container_monitor(self, session_id: str) -> None:
+        if session_id not in self._recovered_sessions:
+            return
+        info = self._processes.get(session_id)
+        current = self._monitors.get(session_id)
+        if (
+            info is not None
+            and info.state == ProcessState.RUNNING
+            and info.pid is not None
+            and (current is None or current.done())
+        ):
+            self._monitors[session_id] = asyncio.create_task(
+                self._monitor_process(session_id, info.pid),
+                name=f"monitor-{session_id}",
+            )
+            self._recovered_sessions.discard(session_id)
 
     # ------------------------------------------------------------------
     # Naming and lookup
@@ -232,8 +264,16 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
             return None
         return f"http://127.0.0.1:{info.port}/health"
 
+    def _broker_ready_url(self, session_id: str) -> str | None:
+        if self._network:
+            return f"http://{self.container_name(session_id)}:{self._broker_port}/ready"
+        info = self._processes.get(session_id)
+        if info is None or info.port is None:
+            return None
+        return f"http://127.0.0.1:{info.port}/ready"
+
     async def _broker_healthy(self, session_id: str) -> bool:
-        url = self._broker_health_url(session_id)
+        url = self._broker_ready_url(session_id)
         if url is None:
             return False
         try:
@@ -241,10 +281,41 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
                 response = await client.get(url)
         except httpx.HTTPError:
             return False
-        return response.status_code == 200
+        try:
+            payload = response.json()
+        except (AttributeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        if response.status_code == 200 and payload.get("ready") is True:
+            self._broker_startup_failures.pop(session_id, None)
+            return True
+        if payload.get("startup_state") == "failed":
+            self._broker_startup_failures[session_id] = str(
+                payload.get("error") or "broker startup failed"
+            )
+        return False
+
+    async def _flock_healthy(self, session_id: str) -> bool:
+        info = self._processes.get(session_id)
+        if info is None or not info.flock_dir:
+            return True
+        container = await asyncio.to_thread(self._get_container, session_id)
+        if container is None:
+            return False
+        state_path = str(Path(self._sandbox_workspace(session_id)) / ".flock" / "state.json")
+        try:
+            result = await asyncio.to_thread(
+                container.exec_run,
+                ["python", "-c", _CHECK_FLOCK_PIDS, state_path],
+            )
+        except DockerException:
+            return False
+        return int(result[0] if isinstance(result, tuple) else result.exit_code) == 0
 
     async def status(self, session: Session) -> SessionStatus:
         """Like the base class, but RUNNING only once the broker has answered."""
+        self._ensure_container_monitor(str(session.id))
         base = await super().status(session)
         if base == SessionStatus.RUNNING and str(session.id) not in self._ready:
             return SessionStatus.PROVISIONING
@@ -253,6 +324,7 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
     async def wait_for_ready(self, session: Session, timeout: float) -> SessionStatus:
         """Ready means the container runs *and* its broker answers ``/health``."""
         session_id = str(session.id)
+        self._ensure_container_monitor(session_id)
         elapsed = 0.0
         while elapsed < timeout:
             info = self._processes.get(session_id)
@@ -260,9 +332,16 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
                 return SessionStatus.FAILED
             if info.state == ProcessState.STOPPED:
                 return SessionStatus.STOPPED
-            if info.state == ProcessState.RUNNING and await self._broker_healthy(session_id):
+            if (
+                info.state == ProcessState.RUNNING
+                and await self._broker_healthy(session_id)
+                and await self._flock_healthy(session_id)
+            ):
                 self._ready.add(session_id)
                 return SessionStatus.RUNNING
+            if session_id in self._broker_startup_failures:
+                await self._fail_starting_runtime(session_id, info)
+                return SessionStatus.FAILED
             await asyncio.sleep(self._ready_poll)
             elapsed += self._ready_poll
         logger.warning("Session %s broker did not answer /health within %.0fs", session_id, timeout)
@@ -283,6 +362,7 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
         session: Session,
         spec: SessionSpec,
         workspace: Path,
+        flock_plan: FlockPortPlan | None = None,
     ) -> dict[str, str]:
         session_id = str(session.id)
         sandbox_workspace = self._sandbox_workspace(session_id)
@@ -293,6 +373,24 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
             for entry in spec.pod_spec.env:
                 if name := entry.get("name"):
                     env[name] = entry.get("value", "")
+
+        if flock_plan is not None:
+            flock_dir = Path(sandbox_workspace) / ".flock"
+            cleanup_skuld_mesh_sockets(workspace / ".flock")
+            skuld_pub, skuld_rep = skuld_mesh_addresses(flock_dir)
+            env["SKULD__ROOM__ENABLED"] = "true"
+            env["SKULD__MESH__ADAPTERS"] = json.dumps(
+                [
+                    {
+                        "adapter": "ravn.adapters.discovery.static.StaticDiscoveryAdapter",
+                        "cluster_file": str(flock_dir / "cluster.yaml"),
+                        "poll_interval_s": 5,
+                    }
+                ]
+            )
+            env["SKULD__MESH__NNG__PUB_SUB_ADDRESS"] = skuld_pub
+            env["SKULD__MESH__NNG__REQ_REP_ADDRESS"] = skuld_rep
+            env["SKULD__MESH__HANDSHAKE_PORT"] = str(flock_plan.skuld_handshake_port)
 
         env["SESSION_ID"] = session_id
         env["WORKSPACE_DIR"] = sandbox_workspace
@@ -309,7 +407,11 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
         env["SKULD__HOST"] = "0.0.0.0"
         env["SKULD__PORT"] = str(self._broker_port)
         env.setdefault("SKULD__TRANSPORT", "sdk")
-        env["SKULD__PERSISTENCE_MOUNT_PATH"] = self._sandbox_sessions_dir
+        # The container only owns its workspace and per-session home binds. Codex
+        # ownership leases must therefore live in the durable home bind rather
+        # than the unmounted parent of all session workspaces.
+        env["SKULD__PERSISTENCE_MOUNT_PATH"] = self._sandbox_home
+        env["SKULD__PERSISTENT_HOME_PATH"] = self._sandbox_home
         env["SKULD__VOLUNDR_API_URL"] = self._platform_url
 
         session_vals = spec.values.get("session", {})
@@ -335,8 +437,11 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
         if spec.pod_spec is None:
             return {}
         host_paths: dict[str, tuple[str, str]] = {}
+        mounted_names = {str(mount.get("name", "")) for mount in spec.pod_spec.volume_mounts}
         for volume in spec.pod_spec.volumes:
             name = str(volume.get("name", ""))
+            if name not in mounted_names:
+                continue
             host_path = volume.get("hostPath")
             if not isinstance(host_path, dict) or not host_path.get("path"):
                 raise ValueError(
@@ -368,6 +473,7 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
         spec: SessionSpec,
         workspace: Path,
         port: int,
+        flock_plan: FlockPortPlan | None = None,
     ) -> dict[str, Any]:
         session_id = str(session.id)
         home_dir = self._session_home_dir(session_id)
@@ -383,7 +489,7 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
             "detach": True,
             "init": True,
             "labels": {LABEL_SESSION: session_id, LABEL_MANAGED_BY: MANAGED_BY},
-            "environment": self._container_environment(session, spec, workspace),
+            "environment": self._container_environment(session, spec, workspace, flock_plan),
             "volumes": volumes,
             "extra_hosts": {"host.docker.internal": "host-gateway"},
         }
@@ -414,17 +520,17 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
         flock_plan: FlockPortPlan | None = None,
     ) -> int:
         """Start the session container; returns a synthetic PID for the state file."""
-        if flock_plan is not None:
-            raise RuntimeError(
-                "Flock sidecars are not supported by DockerContainerPodManager; "
-                "run the session without a flock or use the local-process pod manager."
-            )
         session_id = str(session.id)
         stale = await asyncio.to_thread(self._get_container, session_id)
         if stale is not None:
             await asyncio.to_thread(stale.remove, force=True)
 
-        run_kwargs = self._run_kwargs(session, spec, workspace, port)
+        if flock_plan is not None:
+            flock_dir = workspace / ".flock"
+            (flock_dir / "state.json").unlink(missing_ok=True)
+            cleanup_skuld_mesh_sockets(flock_dir)
+
+        run_kwargs = self._run_kwargs(session, spec, workspace, port, flock_plan)
         container = await asyncio.to_thread(self._run_container, run_kwargs)
         await asyncio.to_thread(container.reload)
         if str(container.status) in {"exited", "dead"}:
@@ -450,14 +556,110 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
         self._alive[session_id] = True
         return self._synthetic_pid(session_id)
 
+    def _flock_skuld_port(self, allocated_port: int) -> int:
+        del allocated_port
+        return self._broker_port
+
+    def _flock_runtime_workspace(self, session: Session, workspace: Path) -> Path:
+        del workspace
+        return Path(self._sandbox_workspace(str(session.id)))
+
+    def _flock_platform_url(self) -> str:
+        return self._platform_url
+
+    def _flock_mesh_transport(self) -> str:
+        return "ipc"
+
+    def _flock_skuld_addresses(self, flock_dir: Path, flock_plan: FlockPortPlan) -> tuple[str, str]:
+        del flock_plan
+        return skuld_mesh_addresses(flock_dir)
+
+    async def _run_flock_cli(
+        self,
+        session: Session,
+        workspace: Path,
+        arguments: list[str],
+    ) -> None:
+        """Run every Ravn lifecycle command inside the isolated session container."""
+        session_id = str(session.id)
+        container = await asyncio.to_thread(self._get_container, session_id)
+        if container is None:
+            raise RuntimeError(f"Session container {self.container_name(session_id)} is missing")
+        result = await asyncio.to_thread(
+            container.exec_run,
+            [_SESSION_SECRET_RUNNER, "python", "-m", "ravn", *arguments],
+            workdir=str(self._flock_runtime_workspace(session, workspace)),
+        )
+        exit_code = int(result[0] if isinstance(result, tuple) else result.exit_code)
+        if exit_code != 0:
+            output = result[1] if isinstance(result, tuple) else result.output
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"Container flock command failed with exit code {exit_code}: {str(output).strip()}"
+            )
+
+    async def _stop_flock_runtime(self, session_id: str, flock_dir: str) -> None:
+        try:
+            container = await asyncio.to_thread(self._get_container, session_id)
+            if container is not None:
+                runtime_flock_dir = str(Path(self._sandbox_workspace(session_id)) / ".flock")
+                result = await asyncio.to_thread(
+                    container.exec_run,
+                    [
+                        _SESSION_SECRET_RUNNER,
+                        "python",
+                        "-m",
+                        "ravn",
+                        "flock",
+                        "stop",
+                        "--flock-dir",
+                        runtime_flock_dir,
+                    ],
+                    workdir=self._sandbox_workspace(session_id),
+                )
+                exit_code = int(result[0] if isinstance(result, tuple) else result.exit_code)
+                if exit_code != 0:
+                    logger.warning(
+                        "Container flock stop failed session=%s exit=%d", session_id, exit_code
+                    )
+        except Exception:
+            logger.warning("Failed to stop container flock session=%s", session_id, exc_info=True)
+        finally:
+            cleanup_skuld_mesh_sockets(Path(flock_dir))
+
     async def _monitor_process(self, session_id: str, pid: int) -> None:
         """Watch the container and mark the session stopped when it exits."""
         del pid
         try:
             while await asyncio.to_thread(self._container_running, session_id):
                 self._alive[session_id] = True
-                if session_id not in self._ready and await self._broker_healthy(session_id):
-                    self._ready.add(session_id)
+                info = self._processes.get(session_id)
+                flock_healthy = await self._flock_healthy(session_id)
+                if not flock_healthy:
+                    if info and info.state == ProcessState.RUNNING:
+                        info.state = ProcessState.FAILED
+                        if info.port is not None:
+                            self._port_allocator.release(info.port)
+                        if info.flock_base_port is not None:
+                            self._allocated_flock_base_ports.discard(info.flock_base_port)
+                        if self._skuld_registry is not None:
+                            unregister = getattr(self._skuld_registry, "unregister", None)
+                            if callable(unregister):
+                                unregister(session_id)
+                        self._persist_state()
+                        logger.error("Flock process exited session=%s", session_id)
+                        await self._terminate_process(self._synthetic_pid(session_id))
+                        await self._notify_death(session_id)
+                    return
+                if session_id not in self._ready:
+                    if await self._broker_healthy(session_id):
+                        self._ready.add(session_id)
+                    elif info is not None and session_id in self._broker_startup_failures:
+                        await self._fail_starting_runtime(session_id, info)
+                        logger.error("Broker startup failed session=%s", session_id)
+                        await self._notify_death(session_id)
+                        return
                 await asyncio.sleep(self._monitor_interval)
             self._alive[session_id] = False
             self._ready.discard(session_id)

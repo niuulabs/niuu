@@ -9,6 +9,7 @@ the shapes both sides agree on.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import Any
 
 LOCAL_BIND_HOST = "127.0.0.1"
@@ -36,6 +37,15 @@ class ModelServerSettings:
 
 
 @dataclass(frozen=True)
+class ExternalIntegrationSettings:
+    """One deployment-owned external package mounted into the platform."""
+
+    source_dir: str
+    definition_files: tuple[str, ...]
+    manifest_file: str = ""
+
+
+@dataclass(frozen=True)
 class StackSettings:
     """The subset of the docker bundle settings the wizard shows and edits."""
 
@@ -48,6 +58,7 @@ class StackSettings:
     # Sessions that may run at once (the platform's pod_manager.max_concurrent).
     max_sessions: int = 4
     model_server: ModelServerSettings = field(default_factory=ModelServerSettings)
+    external_integrations: tuple[ExternalIntegrationSettings, ...] = ()
 
     @property
     def access_urls(self) -> list[str]:
@@ -135,6 +146,89 @@ class ModelTestResult:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class ExternalIntegrationDefinition:
+    """A definition discovered while validating an external package."""
+
+    slug: str
+    name: str
+    integration_type: str
+    adapter: str
+
+
+@dataclass(frozen=True)
+class ExternalModuleComponent:
+    """One typed component discovered from an external module manifest."""
+
+    kind: str
+    name: str
+    adapter: str
+
+
+@dataclass(frozen=True)
+class ExternalIntegrationValidation:
+    """Validation result for one external package directory."""
+
+    ok: bool
+    source_dir: str
+    definition_files: tuple[str, ...]
+    manifest_file: str = ""
+    module_id: str = ""
+    definitions: tuple[ExternalIntegrationDefinition, ...] = ()
+    components: tuple[ExternalModuleComponent, ...] = ()
+    errors: tuple[str, ...] = ()
+
+
+def _external_integrations(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise ValueError("external_integrations must be a list")
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"external_integrations item {index + 1} must be an object")
+        source_dir = item.get("source_dir")
+        definition_files = item.get("definition_files", [])
+        manifest_file = item.get("manifest_file", "")
+        if not isinstance(source_dir, str) or not source_dir.strip():
+            raise ValueError(
+                f"external_integrations item {index + 1} source_dir must be a non-empty string"
+            )
+        source_dir = source_dir.strip()
+        if source_dir in seen:
+            raise ValueError(f"external_integrations contains source_dir {source_dir!r} twice")
+        seen.add(source_dir)
+        if not isinstance(definition_files, list):
+            raise ValueError(
+                f"external_integrations item {index + 1} definition_files must be a list"
+            )
+        files: list[str] = []
+        for definition_file in definition_files:
+            if not isinstance(definition_file, str) or not definition_file.strip():
+                raise ValueError("definition_files entries must be non-empty strings")
+            path = PurePosixPath(definition_file.strip())
+            if path.is_absolute() or ".." in path.parts:
+                raise ValueError("definition_files entries must be paths within source_dir")
+            files.append(str(path))
+        if not isinstance(manifest_file, str):
+            raise ValueError("manifest_file must be a string")
+        manifest_file = manifest_file.strip()
+        if manifest_file:
+            manifest_path = PurePosixPath(manifest_file)
+            if manifest_path.is_absolute() or ".." in manifest_path.parts:
+                raise ValueError("manifest_file must be a path within source_dir")
+            manifest_file = str(manifest_path)
+        if not files and not manifest_file:
+            raise ValueError(
+                f"external_integrations item {index + 1} requires manifest_file or definition_files"
+            )
+        package = {"source_dir": source_dir, "definition_files": files}
+        if manifest_file:
+            package["manifest_file"] = manifest_file
+        normalized.append(package)
+    return normalized
+
+
 def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     """Return *base* with *overlay* merged in, nested dicts merged recursively."""
     result = dict(base)
@@ -218,12 +312,15 @@ def validate_stack_changes(changes: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(value, bool):
                 raise ValueError("vllm_trust_remote_code must be true or false")
             vllm["trust_remote_code"] = value
+        elif key == "external_integrations":
+            docker["external_integrations"] = _external_integrations(value)
         else:
             raise ValueError(
                 f"Unknown stack setting {key!r}; the wizard can change bind_host, "
                 "max_sessions, vllm_enabled, vllm_model, vllm_max_model_len, "
                 "vllm_gpu_memory_utilization, vllm_trust_remote_code, model_server_enabled, "
-                "model_server_url, model_server_models and model_server_api_key"
+                "model_server_url, model_server_models, model_server_api_key and "
+                "external_integrations"
             )
     if vllm.get("enabled") and not vllm.get("model", "") and "model" in vllm:
         raise ValueError("vllm_model is required when vllm_enabled is true")

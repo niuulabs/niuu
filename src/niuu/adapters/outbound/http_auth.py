@@ -176,6 +176,7 @@ class ClientCredentialsBearerTokenAuthAdapter(HttpAuthPort):
         client_id: str,
         client_secret: str = "",
         client_secret_env: str = "",
+        client_secret_file: str = "",
         audience: str = "",
         scope: str = "",
         timeout_seconds: float = 10.0,
@@ -186,6 +187,7 @@ class ClientCredentialsBearerTokenAuthAdapter(HttpAuthPort):
         self._client_id = client_id
         self._client_secret = client_secret
         self._client_secret_env = client_secret_env
+        self._client_secret_file = client_secret_file
         self._audience = audience
         self._scope = scope
         self._timeout_seconds = timeout_seconds
@@ -211,6 +213,14 @@ class ClientCredentialsBearerTokenAuthAdapter(HttpAuthPort):
         client_secret = self._client_secret
         if not client_secret and self._client_secret_env:
             client_secret = os.environ.get(self._client_secret_env, "")
+        if not client_secret and self._client_secret_file:
+            path = Path(self._client_secret_file).expanduser()
+            try:
+                client_secret = path.read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                raise RuntimeError(
+                    f"OAuth client credentials secret file could not be read: {path}"
+                ) from exc
         if not client_secret:
             raise RuntimeError("OAuth client credentials auth requires a client secret")
 

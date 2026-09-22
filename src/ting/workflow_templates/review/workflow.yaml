@@ -1,0 +1,65 @@
+schema_version: 2
+id: 55170b7c-c20c-434c-b453-ca37e6a8edab
+name: Reviewed artifact
+description: Create an artifact and revise it after independent review.
+version: 1.0.0
+persona_dependencies:
+  author:
+    source: personas/author.yaml
+  reviewer:
+    source: personas/reviewer.yaml
+workflow_dependencies: {}
+graph:
+  nodes:
+  - id: request
+    kind: trigger
+    label: Task
+    source: user
+    dispatchEvent: artifact.requested
+  - id: draft
+    kind: stage
+    label: Create or revise
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: author
+      model: gpt-5.5
+      budget: 24
+      consumesEventTypes:
+      - artifact.requested
+      - artifact.changes_requested
+  - id: review
+    kind: stage
+    label: Independent review
+    executionMode: sequential
+    joinMode: all
+    stageMembers:
+    - personaId: reviewer
+      model: gpt-5.5
+      budget: 16
+      consumesEventTypes:
+      - artifact.drafted
+  - id: done
+    kind: end
+    label: Reviewed artifact
+    joinMode: all
+    completionEvent: artifact.completed
+    passingVerdicts:
+    - pass
+  edges:
+  - id: start
+    source: request
+    target: draft
+    label: artifact.requested -> artifact.requested
+  - id: inspect
+    source: draft
+    target: review
+    label: artifact.drafted -> artifact.drafted
+  - id: revise
+    source: review
+    target: draft
+    label: artifact.changes_requested -> artifact.changes_requested
+  - id: finish
+    source: review
+    target: done
+    label: artifact.approved -> artifact.approved

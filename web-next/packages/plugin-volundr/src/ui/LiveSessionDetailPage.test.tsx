@@ -2001,6 +2001,23 @@ describe('LiveSessionDetailPage', () => {
       );
     });
 
+    it('shows a non-terminal provider detail while provisioning', async () => {
+      const waitingSession: VolundrSession = {
+        ...STARTING_SESSION,
+        status: 'provisioning',
+        error: 'No CPU hosts available. Your request will be automatically retried.',
+      };
+      const service = buildVolundrService(waitingSession);
+      service.getSession = vi.fn().mockResolvedValue(waitingSession);
+      wrap('test-session-id-1234', { session: waitingSession, volundr: service });
+
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.getByTestId('session-provisioning-detail')).toHaveTextContent(
+        'No CPU hosts available',
+      );
+      expect(screen.queryByTestId('session-failure-reason')).not.toBeInTheDocument();
+    });
+
     it('shows delete button', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');

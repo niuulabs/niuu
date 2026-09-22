@@ -1,11 +1,10 @@
 import { createElement } from 'react';
 import { createRoute, redirect } from '@tanstack/react-router';
-import { Workflow } from 'lucide-react';
+import { BriefcaseBusiness } from 'lucide-react';
 import { definePlugin } from '@niuulabs/plugin-sdk';
-import { readUiMode } from '@niuulabs/shell';
-import { TingPage } from './ui/TingPage';
 import { WorkflowBuilderPage } from './ui/WorkflowBuilderPage';
 import { WorkflowsRoute } from './ui/WorkflowsRoute';
+import { WorkPage } from './ui/WorkPage';
 import { SagasPage } from './ui/SagasPage';
 import { DispatchView } from './ui/DispatchView';
 import { TingTopbar } from './ui/TingTopbar';
@@ -19,6 +18,33 @@ import { ResearchCampaignPage } from './ui/ResearchCampaignPage';
 import { SpecsCenterPage } from './ui/SpecsCenterPage';
 import { SpecsNewPage } from './ui/SpecsNewPage';
 import { SpecsCampaignPage } from './ui/SpecsCampaignPage';
+import { WorkflowExecutionsPage } from './ui/WorkflowExecutionsPage';
+
+export {
+  buildWorkflowExecutionHttpAdapter,
+  buildDeliveryExecutionHttpAdapter,
+} from './adapters/workflowExecution';
+export { buildWorkHttpAdapter } from './adapters/workHttp';
+export type { IWorkService, IWorkflowExecutionService, IDeliveryExecutionService } from './ports';
+export type * from './domain/work';
+export { WorkflowExecutionGraph } from './ui/WorkflowExecutionGraph';
+export type { WorkflowExecutionGraphProps } from './ui/WorkflowExecutionGraph';
+export type * from './domain/workflowExecutionGraph';
+export type * from './domain/workflowExecutionTrace';
+export type {
+  WaitObservation,
+  WorkflowWait,
+  WorkflowExecution,
+  WorkflowExecutionLaunch,
+  DeliveryExecution,
+  DeliveryExecutionLaunch,
+  WorkflowChildExecution,
+  DeliveryChildExecution,
+  DeliveryRemoteCheck,
+} from './domain/workflowExecution';
+export { buildWorkflowExecutionResultsMarkdown } from './application/workflowExecutionResults';
+export { WorkflowResults } from './ui/WorkflowResults';
+export type { WorkflowResultsContextItem, WorkflowResultsProps } from './ui/WorkflowResults';
 
 const LEGACY_SETTINGS_SECTION_TARGETS: Record<string, string> = {
   general: '/settings/ting/general',
@@ -39,37 +65,44 @@ export const tingPlugin = definePlugin({
   title: 'Ting',
   subtitle: 'sagas · runs · dispatch',
   simple: {
-    // Simple mode is one screen: the workflow, its gates, and its runs.
-    tabs: ['workflows'],
-    title: 'Workflows',
-    subtitle: 'stages with gates you approve',
-    icon: createElement(Workflow, { size: 17, 'aria-hidden': true }),
+    tabs: ['work', 'workflows', 'builder'],
+    title: 'Ting',
+    subtitle: 'run and oversee work',
+    icon: createElement(BriefcaseBusiness, { size: 17, 'aria-hidden': true }),
   },
   tabs: [
-    { id: 'dashboard', label: 'Dashboard', rune: '◈', path: '/ting' },
-    { id: 'sagas', label: 'Sagas', rune: '✦', path: '/ting/sagas' },
-    { id: 'dispatch', label: 'Dispatch', rune: '⇥', path: '/ting/dispatch' },
-    { id: 'plan', label: 'Plan', rune: '◇', path: '/ting/plan' },
-    { id: 'research', label: 'Research', rune: '⌁', path: '/ting/research' },
-    { id: 'specs', label: 'Specs', rune: '▤', path: '/ting/specs' },
+    { id: 'work', label: 'Work', rune: '◈', path: '/ting/work' },
     { id: 'workflows', label: 'Workflows', rune: '⚙', path: '/ting/workflows' },
+    { id: 'builder', label: 'Builder', rune: '◇', path: '/ting/workflows/build' },
   ],
   routes: (rootRoute) => [
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting',
       beforeLoad: () => {
-        // Simple mode has no dashboard: workflows are the whole surface.
-        if (readUiMode() === 'simple') {
-          throw redirect({ to: '/ting/workflows' as never });
-        }
+        throw redirect({ to: '/ting/work' as never });
       },
-      component: TingPage,
+      component: () => null,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/work',
+      component: WorkPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/work/$workId',
+      component: WorkPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting/workflows',
       component: WorkflowsRoute,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/workflows/runs',
+      component: WorkflowExecutionsPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -168,6 +201,7 @@ export {
   createMockTingSessionService,
   createMockTrackerService,
   createMockWorkflowService,
+  createMockWorkService,
   createMockResearchService,
   createMockSpecsService,
   createMockDispatchBus,
@@ -197,6 +231,15 @@ export type {
   ITrackerBrowserService,
   IWorkflowService,
   WorkflowLaunchRequest,
+  WorkflowLaunchResult,
+  WorkflowExport,
+  WorkflowExportFormat,
+  WorkflowVersionSummary,
+  WorkflowPersonaImportStatus,
+  WorkflowPersonaImportPreview,
+  WorkflowImportRequirement,
+  WorkflowImportSource,
+  WorkflowImportPreview,
   IResearchService,
   ISpecsService,
   CreateResearchCampaignRequest,
@@ -243,6 +286,8 @@ export type {
   CampaignStageState,
 } from './ports';
 
+export { WorkflowRevisionConflictError } from './ports';
+
 // Application layer — feasibility engine
 export {
   checkFeasibility,
@@ -281,19 +326,44 @@ export {
   workflowStageNodeSchema,
   workflowGateNodeSchema,
   workflowCondNodeSchema,
+  workflowWaitNodeSchema,
   workflowNodeSchema,
   workflowEdgeSchema,
   workflowSchema,
+  workflowPersonaDependencySchema,
+  workflowRequirementSchema,
   validateWorkflow,
   WorkflowValidationError,
+  subworkflowNodes,
+  workflowRequiresDeliveryPack,
   type WorkflowNodeKind,
   type WorkflowStageNode,
   type WorkflowGateNode,
   type WorkflowCondNode,
+  type WorkflowWaitNode,
+  type WorkflowSubworkflowNode,
   type WorkflowNode,
   type WorkflowEdge,
   type Workflow,
+  type WorkflowPersonaDependency,
+  type WorkflowRequirement,
 } from './domain/workflow';
+
+export {
+  WORKFLOW_SCHEMA_VERSION,
+  toPortableWorkflowDocument,
+  serializePortableWorkflow,
+  type PortableWorkflowDocument,
+} from './domain/workflowPortable';
+
+export {
+  addSubworkflowTemplate,
+  bindSubworkflowTemplate,
+  removeSubworkflowTemplate,
+  renameSubworkflowTemplate,
+  WorkflowDependencySelectionError,
+  WorkflowTemplateError,
+} from './domain/workflowDependencies';
 
 export {
   researchCampaignStatusSchema,
@@ -324,8 +394,41 @@ export type { TopologicalLayer } from './domain/topologicalSort';
 export { validateWorkflowFull } from './domain/workflowValidation';
 export type { WorkflowIssue, WorkflowIssueKind } from './domain/workflowValidation';
 
+export {
+  nodePortCatalog,
+  resolveWorkflowEdgePorts,
+  workflowPortId,
+  type WorkflowEdgePortResolution,
+  type WorkflowNodePort,
+  type WorkflowNodePortCatalog,
+  type WorkflowPortCatalogContext,
+  type WorkflowPortPersona,
+} from './domain/workflowPorts';
+export {
+  feedbackLaneAssignments,
+  estimateWorkflowNodeSize,
+  nodeBounds,
+  portAnchor,
+  type WorkflowBounds,
+  type WorkflowGeometryContext,
+  type WorkflowPoint,
+  type WorkflowSize,
+} from './domain/workflowGeometry';
+export {
+  layoutWorkflow,
+  type LayoutPosition,
+  type WorkflowLayoutOptions,
+  type WorkflowLayoutResult,
+} from './domain/workflowLayout';
+
 // WorkflowBuilder UI
 export { WorkflowBuilder } from './ui/WorkflowBuilder';
+export type {
+  WorkflowBuilderProps,
+  WorkflowEditorLocation,
+  WorkflowEditorMode,
+} from './ui/WorkflowBuilder';
+export { WorkflowImportDialog, type WorkflowImportDialogProps } from './ui/WorkflowImportDialog';
 export { WorkflowLaunchModal, type WorkflowLaunchModalProps } from './ui/WorkflowLaunchModal';
 export {
   WorkflowLaunchForm,
@@ -340,7 +443,14 @@ export { WorkflowCard } from './ui/WorkflowCard';
 export { StageProgressRail } from './ui/StageProgressRail';
 export { StepDots } from './ui/StepDots';
 export { useSagas } from './ui/useSagas';
-export { useWorkflows, useWorkflow, useLaunchWorkflow } from './ui/useWorkflows';
+export {
+  useWorkflows,
+  useWorkflow,
+  useLaunchWorkflow,
+  useExportWorkflow,
+  usePreviewWorkflowImport,
+  useApplyWorkflowImport,
+} from './ui/useWorkflows';
 
 export {
   PLAN_STEPS,

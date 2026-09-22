@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { load } from 'js-yaml';
 import {
   makeNodeId,
   makeEdgeId,
@@ -16,8 +17,22 @@ import {
   END_RADIUS,
   RESOURCE_WIDTH,
   RESOURCE_HEIGHT,
+  INCLUDE_WIDTH,
+  INCLUDE_HEIGHT,
+  WAIT_WIDTH,
+  WAIT_HEIGHT,
 } from './graphUtils';
 import type { WorkflowNode, WorkflowEdge } from '../../domain/workflow';
+
+interface ParsedWorkflowGraph extends Record<string, unknown> {
+  nodes: Array<Record<string, unknown>>;
+  edges: Array<Record<string, unknown>>;
+  resourceBindings: Array<Record<string, unknown>>;
+}
+
+function parseWorkflowGraph(value: string): ParsedWorkflowGraph {
+  return (load(value) as { graph: ParsedWorkflowGraph }).graph;
+}
 
 // ---------------------------------------------------------------------------
 // ID generation
@@ -153,6 +168,29 @@ describe('nodeCentre', () => {
       }),
     ).toEqual({ x: 50 + RESOURCE_WIDTH / 2, y: 60 + RESOURCE_HEIGHT / 2 });
   });
+  it('returns centre of an include node', () => {
+    const node: WorkflowNode = {
+      id: 'plan',
+      kind: 'include',
+      label: 'Plan',
+      workflow: 'planning',
+      nodes: { 'planning-analysis': 'plan-author' },
+      position: { x: 10, y: 20 },
+    };
+
+    expect(nodeCentre(node)).toEqual({ x: 10 + INCLUDE_WIDTH / 2, y: 20 + INCLUDE_HEIGHT / 2 });
+  });
+
+  it('returns centre of a wait node', () => {
+    const node: WorkflowNode = {
+      id: 'retry',
+      kind: 'wait',
+      label: 'Retry',
+      position: { x: 30, y: 40 },
+    };
+
+    expect(nodeCentre(node)).toEqual({ x: 30 + WAIT_WIDTH / 2, y: 40 + WAIT_HEIGHT / 2 });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -269,10 +307,8 @@ describe('workflowToYaml', () => {
   });
 
   it('includes node kinds', () => {
-    const yaml = workflowToYaml(workflow);
-    expect(yaml).toContain('kind: stage');
-    expect(yaml).toContain('kind: gate');
-    expect(yaml).toContain('kind: cond');
+    const graph = parseWorkflowGraph(workflowToYaml(workflow));
+    expect(graph.nodes.map((node) => node.kind)).toEqual(['stage', 'gate', 'cond']);
   });
 
   it('includes edge source and target', () => {
@@ -300,16 +336,18 @@ describe('workflowToYaml', () => {
   });
 
   it('includes gate pending behavior', () => {
-    const yaml = workflowToYaml(workflow);
-    expect(yaml).toContain('pendingBehavior: "help_needed"');
+    const graph = parseWorkflowGraph(workflowToYaml(workflow));
+    expect(graph.nodes[1]?.pendingBehavior).toBe('help_needed');
   });
 
   it('includes explicit gate config fields', () => {
-    const yaml = workflowToYaml(workflow);
-    expect(yaml).toContain('mode: "human_approval"');
-    expect(yaml).toContain('approvalEvent: "qa.approved"');
-    expect(yaml).toContain('changesRequestedEvent: "qa.changes_requested"');
-    expect(yaml).toContain('instructions: "Approve or request changes with notes."');
+    const graph = parseWorkflowGraph(workflowToYaml(workflow));
+    expect(graph.nodes[1]).toMatchObject({
+      mode: 'human_approval',
+      approvalEvent: 'qa.approved',
+      changesRequestedEvent: 'qa.changes_requested',
+      instructions: 'Approve or request changes with notes.',
+    });
   });
 
   it('includes cond predicate', () => {
@@ -449,23 +487,30 @@ describe('workflowToYaml', () => {
       resourceBindings: [],
     });
 
-    expect(yaml).toContain('tags: ["release", "ops"]');
-    expect(yaml).toContain('stageMembers:');
-    expect(yaml).toContain('consumesEventTypes: ["code.requested"]');
-    expect(yaml).toContain('eventFilters: {repo: "niuu"}');
-    expect(yaml).toContain('executionMode: serial');
-    expect(yaml).toContain('joinMode: any');
-    expect(yaml).toContain('source: "slack"');
-    expect(yaml).toContain('dispatchEvent: "release.requested"');
-    expect(yaml).toContain('resourceType: "mimir"');
-    expect(yaml).toContain('registryEntryId: "registry-1"');
-    expect(yaml).toContain('seedFromRegistryId: "seed-1"');
-    expect(yaml).toContain('categories: ["docs"]');
-    expect(yaml).toContain('path: "/workspace/docs"');
-    expect(yaml).toContain('url: "https://example.test/docs"');
+    const graph = parseWorkflowGraph(yaml);
+    expect(graph.tags).toEqual(['release', 'ops']);
+    expect(graph.nodes[0]).toMatchObject({
+      stageMembers: [
+        {
+          consumesEventTypes: ['code.requested'],
+          eventFilters: { repo: 'niuu' },
+        },
+      ],
+      executionMode: 'serial',
+      joinMode: 'any',
+    });
+    expect(graph.nodes[1]).toMatchObject({ source: 'slack', dispatchEvent: 'release.requested' });
+    expect(graph.nodes[2]).toMatchObject({
+      resourceType: 'mimir',
+      registryEntryId: 'registry-1',
+      seedFromRegistryId: 'seed-1',
+      categories: ['docs'],
+      path: '/workspace/docs',
+      url: 'https://example.test/docs',
+    });
   });
 
-  it('omits blank optional gate fields and uses trigger/resource defaults', () => {
+  it('retains explicit blank values and does not invent absent graph defaults', () => {
     const yaml = workflowToYaml({
       id: 'wf-defaults',
       name: 'Defaults',
@@ -500,16 +545,18 @@ describe('workflowToYaml', () => {
       resourceBindings: [],
     });
 
-    expect(yaml).not.toContain('approvalEvent:');
-    expect(yaml).not.toContain('changesRequestedEvent:');
-    expect(yaml).not.toContain('instructions:');
-    expect(yaml).toContain('autoForwardAfter: "30m"');
-    expect(yaml).toContain('source: "manual dispatch"');
-    expect(yaml).toContain('dispatchEvent: "code.requested"');
-    expect(yaml).toContain('resourceType: "mimir"');
-    expect(yaml).toContain('bindingMode: "registry"');
-    expect(yaml).toContain('registryEntryId: undefined');
-    expect(yaml).toContain('seedFromRegistryId: undefined');
+    const graph = parseWorkflowGraph(yaml);
+    expect(graph.nodes[0]).toMatchObject({
+      approvalEvent: '   ',
+      changesRequestedEvent: '',
+      instructions: ' ',
+      autoForwardAfter: null,
+    });
+    expect(yaml).not.toContain('source:');
+    expect(yaml).not.toContain('dispatchEvent:');
+    expect(yaml).not.toContain('resourceType:');
+    expect(yaml).not.toContain('bindingMode:');
+    expect(yaml).not.toContain('undefined');
   });
 
   it('serializes resource role/auth fields, edge labels, and resource bindings', () => {
@@ -555,12 +602,16 @@ describe('workflowToYaml', () => {
       ],
     });
 
-    expect(yaml).toContain('role: "reader"');
-    expect(yaml).toContain('authRef: "AUTH_TOKEN"');
-    expect(yaml).toContain('defaultReadPriority: 7');
-    expect(yaml).toContain('label: "loop"');
-    expect(yaml).toContain('resourceBindings:');
-    expect(yaml).toContain('writePrefixes: ["/docs"]');
-    expect(yaml).toContain('readPriority: 2');
+    const graph = parseWorkflowGraph(yaml);
+    expect(graph.nodes[0]).toMatchObject({
+      role: 'reader',
+      authRef: 'AUTH_TOKEN',
+      defaultReadPriority: 7,
+    });
+    expect(graph.edges[0]).toMatchObject({ label: 'loop' });
+    expect(graph.resourceBindings[0]).toMatchObject({
+      writePrefixes: ['/docs'],
+      readPriority: 2,
+    });
   });
 });

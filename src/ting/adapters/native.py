@@ -313,6 +313,7 @@ class NativeTrackerAdapter(TrackerPort):
         retry_count: int | None = None,
         reason: str | None = None,
         owner_id: str | None = None,
+        tenant_id: str | None = None,
         phase_tracker_id: str | None = None,
         saga_tracker_id: str | None = None,
         chronicle_summary: str | None = None,
@@ -367,6 +368,28 @@ class NativeTrackerAdapter(TrackerPort):
             ORDER BY r.created_at
             """,
             saga_tracker_id,
+        )
+        return [self._row_to_run(r) for r in rows]
+
+    async def get_authorized_run_progress_for_saga(
+        self,
+        saga_tracker_id: str,
+        *,
+        owner_id: str,
+        tenant_id: str,
+    ) -> list[Run]:
+        rows = await self._pool.fetch(
+            """
+            SELECT r.* FROM runs r
+            JOIN phases p ON p.id = r.phase_id
+            JOIN sagas s ON s.id = p.saga_id
+            WHERE s.tracker_id = $1 AND s.tracker_type = 'native'
+              AND s.owner_id = $2 AND s.tenant_id = $3
+            ORDER BY r.created_at
+            """,
+            saga_tracker_id,
+            owner_id,
+            tenant_id,
         )
         return [self._row_to_run(r) for r in rows]
 

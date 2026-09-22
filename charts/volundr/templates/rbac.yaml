@@ -47,7 +47,15 @@ rules:
   # Access to secrets for API keys
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "watch"]
+    verbs:
+      - get
+      - list
+      - watch
+      {{- if .Values.workflowExecutionCredentials.enabled }}
+      - create
+      - patch
+      - delete
+      {{- end }}
   # Access to configmaps
   - apiGroups: [""]
     resources: ["configmaps"]
@@ -122,6 +130,12 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch"]
+  {{- /*
+  No secrets rule here, deliberately. workflowExecutionCredentials writes
+  per-session bearer Secrets into the release namespace, which the namespaced
+  Role above already covers. A ClusterRole rule would grant Secret
+  create/patch/delete in every namespace of the cluster.
+  */}}
   {{- with .Values.rbac.extraClusterRules }}
   {{- toYaml . | nindent 2 }}
   {{- end }}

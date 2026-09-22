@@ -3,10 +3,11 @@ import { z } from 'zod';
 /**
  * Workflow — a DAG value object representing a structured execution plan.
  *
- * Nodes are one of three kinds:
+ * Node kinds include:
  *   stage  — a unit of work (maps to a Run)
  *   gate   — a checkpoint requiring human or automated approval before proceeding
  *   cond   — a conditional branch that routes execution based on a predicate
+ *   wait   — a passive boundary resumed by an external observation
  *
  * Edges use cubic bezier curves for UI rendering (control-point pairs cp1/cp2).
  *
@@ -24,6 +25,9 @@ export const workflowNodeKindSchema = z.enum([
   'trigger',
   'end',
   'resource',
+  'subworkflow',
+  'wait',
+  'include',
 ]);
 export type WorkflowNodeKind = z.input<typeof workflowNodeKindSchema>;
 
@@ -31,7 +35,7 @@ export type WorkflowNodeKind = z.input<typeof workflowNodeKindSchema>;
 const positionSchema = z.object({ x: z.number(), y: z.number() });
 const stageExecutionModeSchema = z.enum(['parallel', 'sequential']);
 const stageJoinModeSchema = z.enum(['all', 'any', 'merge']);
-const gateModeSchema = z.enum(['human_approval', 'human_review', 'automated_approval']);
+const gateModeSchema = z.enum(['human_approval', 'human_review', 'automated_approval', 'evidence']);
 const gatePendingBehaviorSchema = z.enum(['silent', 'notify_only', 'help_needed']);
 const stageEventFiltersSchema = z.record(z.string(), z.string()).default({});
 const stageMemberSchema = z.object({
@@ -75,6 +79,10 @@ export const workflowGateNodeSchema = z.object({
   condition: z.string(),
   /** Gate execution mode for runtime and UI semantics. */
   mode: gateModeSchema.default('human_approval'),
+  /** Declarative receipt requirements; verifier trust is deployment configuration. */
+  evidencePolicy: z.record(z.string(), z.unknown()).optional(),
+  /** Exact artifact whose identity binds every receipt evaluated by an evidence gate. */
+  artifact: z.object({ kind: z.string().min(1), id: z.string().min(1) }).optional(),
   /** How the runtime surfaces the gate while it is pending. */
   pendingBehavior: gatePendingBehaviorSchema.default('help_needed'),
   /** Optional explicit approval event type override. */
@@ -141,7 +149,114 @@ export const workflowResourceNodeSchema = z.object({
 });
 export type WorkflowResourceNode = z.input<typeof workflowResourceNodeSchema>;
 
+/**
+ * A default child a subworkflow node already knows about when the workflow
+ * is authored (a research thread, a review angle, ...). The engine never
+ * auto-expands these — a coordinator persona still decides, through the
+ * ordinary expansion route, whether to propose them verbatim, amended, or
+ * alongside additional children it invents at runtime.
+ */
+export const workflowDeclaredChildSchema = z.object({
+  key: z.string().min(1),
+  objective: z.string().min(1),
+  dependencies: z.array(z.string().min(1)).optional(),
+  input: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Name of the node's own `templates` entry this declared child runs.
+   * Optional only when the node offers exactly one template.
+   */
+  template: z.string().min(1).optional(),
+});
+export type WorkflowDeclaredChild = z.input<typeof workflowDeclaredChildSchema>;
+
+export const workflowSubworkflowNodeSchema = z.object({
+  id: z.string().min(1),
+  kind: z.literal('subworkflow'),
+  label: z.string().min(1),
+  position: positionSchema,
+  /**
+   * Named child-workflow templates this node offers, mapping a node-local
+   * template name to a `workflowDependencies` alias. A node offering exactly
+   * one child workflow still declares a mapping with one entry.
+   */
+  templates: z
+    .record(z.string(), z.string().min(1))
+    .refine((value) => Object.keys(value).length > 0, {
+      message: 'templates must declare at least one template',
+    }),
+  allowedCoordinator: z.string().min(1),
+  inputSchema: z.record(z.string(), z.unknown()),
+  resultSchema: z.record(z.string(), z.unknown()),
+  maxChildren: z.number().int().positive(),
+  maxAttempts: z.number().int().positive(),
+  maxActiveChildren: z.number().int().positive().optional(),
+  joinMode: z.literal('all'),
+  /**
+   * Event published to the parent session when this node's children block.
+   * The joined event is not listed separately: it is read from this node's
+   * own outgoing edge, the same way any other node's continuation is.
+   */
+  blockedEvent: z.string().min(1).optional(),
+  /** Default children this node already declares; see `workflowDeclaredChildSchema`. */
+  children: z.array(workflowDeclaredChildSchema).optional(),
+});
+export type WorkflowSubworkflowNode = z.input<typeof workflowSubworkflowNodeSchema>;
+
+export const workflowWaitNodeSchema = z.object({
+  id: z.string().min(1),
+  kind: z.literal('wait'),
+  label: z.string().min(1),
+  /** Passive waits never execute personas. */
+  personaIds: z.never().optional(),
+  stageMembers: z.never().optional(),
+  /**
+   * Condition types this wait accepts (e.g. `forge.checks`, `forge.merge`,
+   * `timer`). Required by the runtime for a schema v2 wait node; optional
+   * here so older or partially-authored documents still parse.
+   */
+  conditions: z.array(z.string()).optional(),
+  position: positionSchema,
+});
+export type WorkflowWaitNode = z.input<typeof workflowWaitNodeSchema>;
+
+/** Presentational-only per-local-id tweak on an `include` node; never
+ *  changes execution semantics, only how the inlined node is labeled or
+ *  placed in this graph's own layout. */
+const workflowIncludeOverrideSchema = z.object({
+  label: z.string().optional(),
+  position: positionSchema.optional(),
+});
+export type WorkflowIncludeOverride = z.input<typeof workflowIncludeOverrideSchema>;
+
+/**
+ * `kind: include` inlines a pinned workflow's `stage`/`gate` nodes (and the
+ * edges between them) directly into this graph, under locally chosen ids —
+ * unlike `subworkflow`, which fans children out into separate child
+ * sessions. When Ting freezes a workflow for a run, it replaces the include
+ * node with the listed nodes copied verbatim from the pinned workflow, and
+ * the parent graph's own edges may reference those local ids as a source or
+ * target even though no node with that id appears in `nodes` — see
+ * `providedNodeIds`. Nested includes and non-stage/gate sources are invalid.
+ */
+export const workflowIncludeNodeSchema = z.object({
+  id: z.string().min(1),
+  kind: z.literal('include'),
+  label: z.string().min(1),
+  /** Alias into the document's `workflowDependencies`, pinning the included workflow. */
+  workflow: z.string(),
+  /** Included node id (in the pinned workflow) -> the id it takes in this graph. */
+  nodes: z.record(z.string(), z.string().min(1)).refine((value) => Object.keys(value).length > 0, {
+    message: 'nodes must map at least one included node',
+  }),
+  overrides: z.record(z.string(), workflowIncludeOverrideSchema).optional(),
+  position: positionSchema,
+});
+export type WorkflowIncludeNode = z.input<typeof workflowIncludeNodeSchema>;
+
 export const workflowNodeSchema = z.discriminatedUnion('kind', [
+  workflowSubworkflowNodeSchema,
+  workflowWaitNodeSchema,
+  workflowIncludeNodeSchema,
   workflowStageNodeSchema,
   workflowGateNodeSchema,
   workflowCondNodeSchema,
@@ -181,6 +296,25 @@ export const workflowResourceBindingSchema = z.object({
 });
 export type WorkflowResourceBinding = z.input<typeof workflowResourceBindingSchema>;
 
+export const workflowPersonaDependencySchema = z.object({
+  id: z.string().min(1),
+  revision: z.string().min(1),
+  digest: z.string().min(1),
+  path: z.string().min(1).optional(),
+  resolved: z.boolean().optional(),
+  message: z.string().optional(),
+});
+export type WorkflowPersonaDependency = z.input<typeof workflowPersonaDependencySchema>;
+
+export const workflowRequirementSchema = z.object({
+  id: z.string().min(1),
+  kind: z.string().min(1),
+  message: z.string(),
+  resolved: z.boolean().optional(),
+  binding: z.string().nullable().optional(),
+});
+export type WorkflowRequirement = z.input<typeof workflowRequirementSchema>;
+
 // ---------------------------------------------------------------------------
 // Workflow DAG invariants
 // ---------------------------------------------------------------------------
@@ -192,34 +326,113 @@ export class WorkflowValidationError extends Error {
   }
 }
 
-export const workflowSchema = z.object({
-  /** Unique identifier (UUID). */
-  id: z.string().uuid(),
-  /** Display name. */
-  name: z.string().min(1),
-  /** Semantic version string (e.g. "1.4.2"). */
-  version: z.string().optional(),
-  /** Human-readable description. */
-  description: z.string().optional(),
-  /** Visibility scope in the persisted workflow catalog. */
-  scope: z.enum(['system', 'user']).optional(),
-  /** Owning user for user-scoped workflows. */
-  ownerId: z.string().nullable().optional(),
-  /** Freeform workflow tags used for launch filtering and discovery. */
-  tags: z.array(z.string()).default([]),
-  /** Nodes in the DAG. IDs must be unique within a workflow. */
-  nodes: z.array(workflowNodeSchema),
-  /** Directed edges. Source and target must reference valid node IDs. */
-  edges: z.array(workflowEdgeSchema),
-  /** Non-execution resource attachments used by runtime composition. */
-  resourceBindings: z.array(workflowResourceBindingSchema).default([]),
-});
+export const workflowSchema = z
+  .object({
+    /** Portable workflow document schema version. */
+    schemaVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+    workflowDependencies: z.record(z.string(), workflowPersonaDependencySchema).default({}),
+    /** Unique identifier (UUID). */
+    id: z.string().uuid(),
+    /** Display name. */
+    name: z.string().min(1),
+    /** Semantic version string (e.g. "1.4.2"). */
+    version: z.string().optional(),
+    /** Human-readable description. */
+    description: z.string().optional(),
+    /** Visibility scope in the persisted workflow catalog. */
+    scope: z.enum(['system', 'user']).optional(),
+    /** Owning user for user-scoped workflows. */
+    ownerId: z.string().nullable().optional(),
+    /** Freeform workflow tags used for launch filtering and discovery. */
+    tags: z.array(z.string()).default([]),
+    /** Nodes in the DAG. IDs must be unique within a workflow. */
+    nodes: z.array(workflowNodeSchema),
+    /** Directed edges. Source and target must reference valid node IDs. */
+    edges: z.array(workflowEdgeSchema),
+    /** Non-execution resource attachments used by runtime composition. */
+    resourceBindings: z.array(workflowResourceBindingSchema).default([]),
+    /** Complete portable graph, including fields not currently edited by this UI. */
+    graph: z.record(z.string(), z.unknown()).optional(),
+    /** Workflow-local persona alias to exact portable persona revision. */
+    personaDependencies: z.record(z.string(), workflowPersonaDependencySchema).default({}),
+    /** Storage revision used for conditional writes. */
+    revision: z.string().nullable().optional(),
+    /** Immutable document revision for the selected workflow version. */
+    documentRevision: z.string().nullable().optional(),
+    /** Whether this immutable document is the current workflow head. */
+    isHead: z.boolean().optional(),
+    /** Where this workflow identity originated. */
+    origin: z.enum(['bundled', 'authored']).optional(),
+    /** Whether the current principal may create a successor version. */
+    canEdit: z.boolean().optional(),
+    /** Legacy backend hint. Editor view/edit mode is controlled separately. */
+    readOnly: z.boolean().optional(),
+    /** Backend canonical source for the persisted document. */
+    canonicalYaml: z.string().optional(),
+    /** Server-side source used only while explicitly creating an editable copy. */
+    copyFrom: z.string().uuid().optional(),
+    /** Persona aliases explicitly requested for repinning during this save only. */
+    refreshPersonas: z.array(z.string()).optional(),
+    /** Local environment requirements that must resolve before launch. */
+    requirements: z.array(workflowRequirementSchema).default([]),
+  })
+  .superRefine((workflow, context) => {
+    if (workflow.nodes.some((node) => node.kind === 'wait') && workflow.schemaVersion !== 2) {
+      context.addIssue({
+        code: 'custom',
+        path: ['schemaVersion'],
+        message: 'Passive wait nodes require workflow schema version 2',
+      });
+    }
+  });
 export type Workflow = z.input<typeof workflowSchema>;
+
+// ---------------------------------------------------------------------------
+// Include nodes
+// ---------------------------------------------------------------------------
+
+/** Every `kind: include` node in the workflow's graph. */
+export function includeNodes(workflow: Pick<Workflow, 'nodes'>): WorkflowIncludeNode[] {
+  return workflow.nodes.filter((node): node is WorkflowIncludeNode => node.kind === 'include');
+}
+
+/**
+ * Local ids that `include` nodes provide — ids an edge may reference as its
+ * source or target even though no node with that id appears in `nodes`: the
+ * frozen graph fills them in with the pinned workflow's stages/gates
+ * verbatim at run time. Maps a provided id to the include node providing it.
+ */
+export function providedNodeIds(
+  workflow: Pick<Workflow, 'nodes'>,
+): Map<string, WorkflowIncludeNode> {
+  const map = new Map<string, WorkflowIncludeNode>();
+  for (const node of includeNodes(workflow)) {
+    for (const localId of Object.values(node.nodes ?? {})) {
+      map.set(localId, node);
+    }
+  }
+  return map;
+}
+
+/**
+ * Resolve a node by its own id, or by a local id an `include` node provides
+ * — such an id is a valid connection point even though it never appears in
+ * `nodes` directly.
+ */
+export function resolveWorkflowNode(
+  workflow: Pick<Workflow, 'nodes'>,
+  id: string,
+): WorkflowNode | undefined {
+  const direct = workflow.nodes.find((node) => node.id === id);
+  if (direct) return direct;
+  return providedNodeIds(workflow).get(id);
+}
 
 /**
  * Validate DAG structural invariants beyond Zod schema:
  *  1. Node IDs are unique.
- *  2. Every edge source and target references an existing node.
+ *  2. Every edge source and target references an existing node, or a local
+ *     id provided by an `include` node.
  *  3. No self-loops.
  *  4. No duplicate edges (same source + target + label tuple).
  *
@@ -239,15 +452,16 @@ export function validateWorkflow(workflow: Workflow): void {
     }
   }
 
+  const providedIds = providedNodeIds(workflow);
   const edgeKeys = new Set<string>();
 
   for (const edge of workflow.edges) {
-    if (!nodeIds.has(edge.source)) {
+    if (!nodeIds.has(edge.source) && !providedIds.has(edge.source)) {
       throw new WorkflowValidationError(
         `Edge ${edge.id} references unknown source node: ${edge.source}`,
       );
     }
-    if (!nodeIds.has(edge.target)) {
+    if (!nodeIds.has(edge.target) && !providedIds.has(edge.target)) {
       throw new WorkflowValidationError(
         `Edge ${edge.id} references unknown target node: ${edge.target}`,
       );
@@ -299,4 +513,34 @@ export function validateWorkflow(workflow: Workflow): void {
     }
     bindingKeys.add(key);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Launch-time introspection
+// ---------------------------------------------------------------------------
+
+/**
+ * `kind: subworkflow` nodes in a workflow's graph — each one is a valid
+ * expansion point (`parentNodeId`) for launching a durable workflow execution.
+ */
+export function subworkflowNodes(workflow: Pick<Workflow, 'nodes'>): WorkflowSubworkflowNode[] {
+  return workflow.nodes.filter(
+    (node): node is WorkflowSubworkflowNode => node.kind === 'subworkflow',
+  );
+}
+
+/**
+ * A workflow requires the code-delivery pack when its graph declares a wait
+ * on a `forge.*` condition type (e.g. `forge.checks`, `forge.merge`) — the
+ * durable observation a Forge-backed delivery uses to confirm remote checks
+ * and merges. This is a structural fact about the workflow graph, not a name
+ * or id match: any workflow whose waits depend on Forge needs a repository
+ * and base branch to launch, whatever the workflow happens to be called.
+ */
+export function workflowRequiresDeliveryPack(workflow: Pick<Workflow, 'nodes'>): boolean {
+  return workflow.nodes.some(
+    (node) =>
+      node.kind === 'wait' &&
+      (node.conditions ?? []).some((condition) => condition.startsWith('forge.')),
+  );
 }

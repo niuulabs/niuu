@@ -32,6 +32,9 @@ const tingMocks = vi.hoisted(() => ({
   buildTingSessionHttpAdapter: vi.fn((client) => ({ kind: 'sessions', client })),
   buildTrackerHttpAdapter: vi.fn((client) => ({ kind: 'tracker', client })),
   buildWorkflowHttpAdapter: vi.fn((client) => ({ kind: 'workflows', client })),
+  buildWorkHttpAdapter: vi.fn((client) => ({ kind: 'work', client })),
+  buildWorkflowExecutionHttpAdapter: vi.fn((client) => ({ kind: 'workflow-executions', client })),
+  buildDeliveryExecutionHttpAdapter: vi.fn((client) => ({ kind: 'delivery-executions', client })),
   buildResearchHttpAdapter: vi.fn((client) => ({ kind: 'research', client })),
   buildSpecsHttpAdapter: vi.fn((client) => ({ kind: 'specs', client })),
   buildDispatchBusHttpAdapter: vi.fn((client) => ({ kind: 'dispatch', client })),
@@ -966,6 +969,10 @@ describe('buildServices', () => {
           mode: 'http',
           baseUrl: 'http://localhost:8080/api/v1/ting/workflows',
         },
+        'ting.work': {
+          mode: 'http',
+          baseUrl: 'http://localhost:8080/api/v1/ting/work',
+        },
         'ting.research': {
           mode: 'http',
           baseUrl: 'http://localhost:8080/api/v1/ting/research',
@@ -990,6 +997,9 @@ describe('buildServices', () => {
       basePath: 'http://localhost:8080/api/v1/ting',
     });
     expect(tingMocks.buildWorkflowHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ting',
+    });
+    expect(tingMocks.buildWorkHttpAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1/ting',
     });
     expect(tingMocks.buildResearchHttpAdapter).toHaveBeenCalledWith({
@@ -1292,6 +1302,17 @@ describe('buildServices', () => {
         state: 'archived',
       }),
     );
+    await expect(
+      sessionStore.getSession('sess-archived', { instanceId: 'thor', signal }),
+    ).resolves.toEqual(expect.objectContaining({ id: 'sess-archived' }));
+    expect(liveVolundr.getSession).toHaveBeenLastCalledWith('sess-archived', {
+      instanceId: 'thor',
+      signal,
+    });
+    expect(liveVolundr.listArchivedSessions).toHaveBeenLastCalledWith({
+      instanceId: 'thor',
+      signal,
+    });
     await sessionStore.deleteSession('sess-live');
     expect(liveVolundr.deleteSession).toHaveBeenCalledWith('sess-live', undefined);
   });

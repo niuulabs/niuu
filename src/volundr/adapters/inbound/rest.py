@@ -43,6 +43,12 @@ from volundr.adapters.inbound.rest_projects import (
     project_result,
 )
 from volundr.config import PermissionAutoApprovalConfig
+from volundr.domain.execution_catalog import (
+    ExecutionCatalogError,
+    ExecutionCatalogNotFoundError,
+    ExecutionPlanMismatchError,
+    ExecutionSelectionError,
+)
 from volundr.domain.history_import import (
     HistoryImportConflictError,
     HistoryImportError,
@@ -130,6 +136,26 @@ _PREVIEW_CACHE_ROOT = FilePath("~/.niuu/preview-cache").expanduser()
 # A tool_use_id's result is immutable — a regenerated preview is byte-equivalent —
 # so previews are safely long-lived cacheable at every layer (incl. URLSession).
 _PREVIEW_RESPONSE_HEADERS = {"Cache-Control": "public, max-age=31536000, immutable"}
+
+
+def _execution_catalog_http_error(
+    exc: ExecutionCatalogError | ExecutionSelectionError,
+) -> HTTPException:
+    """Map only explicit execution-catalog failures to stable public responses."""
+    if isinstance(exc, (ExecutionSelectionError, ExecutionCatalogNotFoundError)):
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Invalid compute execution selection",
+        )
+    if isinstance(exc, ExecutionPlanMismatchError):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Compute execution selection conflicts with its durable allocation",
+        )
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Compute execution catalog is unavailable",
+    )
 
 
 def _public_session_endpoint(
@@ -870,7 +896,7 @@ class SessionResponse(BaseModel):
         description="Kubernetes pod name (null when not running)",
     )
     error: str | None = Field(
-        description="Error message if session is in failed state",
+        description="Failure reason or non-terminal runtime status detail",
     )
     tracker_issue_id: str | None = Field(
         default=None,
@@ -1957,6 +1983,7 @@ def create_router(
         responses={
             422: {"model": ErrorResponse},
             409: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
         },
         tags=["Sessions"],
     )
@@ -1994,6 +2021,8 @@ def create_router(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(e),
             )
+        except (ExecutionCatalogError, ExecutionSelectionError) as e:
+            raise _execution_catalog_http_error(e) from e
         return _session_response(started)
 
     @router.get(
@@ -2219,7 +2248,9 @@ def create_router(
         response_model=SessionResponse,
         responses={
             404: {"model": ErrorResponse},
+            422: {"model": ErrorResponse},
             409: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
         },
         tags=["Sessions"],
     )
@@ -2228,7 +2259,9 @@ def create_router(
         response_model=SessionResponse,
         responses={
             404: {"model": ErrorResponse},
+            422: {"model": ErrorResponse},
             409: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
         },
         tags=["Sessions"],
     )
@@ -2274,6 +2307,8 @@ def create_router(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(e),
             )
+        except (ExecutionCatalogError, ExecutionSelectionError) as e:
+            raise _execution_catalog_http_error(e) from e
 
     @router.post(
         "/sessions/{session_id}/stop",

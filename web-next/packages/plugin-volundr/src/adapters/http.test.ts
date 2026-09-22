@@ -1044,6 +1044,69 @@ describe('buildVolundrHttpAdapter', () => {
     expect(client.get).toHaveBeenCalledWith('/sessions/s1');
   });
 
+  it('uses an explicit instance for a cold detail read and routes later mutations to it', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce({
+      id: 'shared-id',
+      name: 'Build session',
+      source: { type: 'local_mount', local_path: '/workspace' },
+      status: 'running',
+    });
+    const service = buildVolundrHttpAdapter(client);
+
+    await service.getSession('shared-id', { instanceId: 'build' });
+    await service.stopSession('shared-id');
+    await service.archiveSession('shared-id');
+
+    expect(client.get).toHaveBeenCalledWith('/sessions/shared-id?instance_id=build');
+    expect(client.post).toHaveBeenCalledWith('/sessions/shared-id/stop?instance_id=build');
+    expect(client.patch).toHaveBeenCalledWith(
+      '/sessions/shared-id/archive?instance_id=build',
+      undefined,
+    );
+  });
+
+  it('rejects a scoped detail response owned by a different instance', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce({
+      id: 'shared-id',
+      name: 'Unexpected session',
+      instance_id: 'thor',
+      source: { type: 'local_mount', local_path: '/workspace' },
+      status: 'running',
+    });
+    const service = buildVolundrHttpAdapter(client);
+
+    await expect(service.getSession('shared-id', { instanceId: 'build' })).rejects.toThrow(
+      'Session shared-id was returned by thor, expected build',
+    );
+    await service.stopSession('shared-id');
+
+    expect(client.get).toHaveBeenCalledWith('/sessions/shared-id?instance_id=build');
+    expect(client.post).toHaveBeenCalledWith('/sessions/shared-id/stop');
+    expect(client.post).not.toHaveBeenCalledWith('/sessions/shared-id/stop?instance_id=thor');
+  });
+
+  it('does not fall back to a cached owner when an explicit instance has no matching session', async () => {
+    const client = makeClient();
+    client.get
+      .mockResolvedValueOnce({
+        id: 'shared-id',
+        name: 'Thor session',
+        instance_id: 'thor',
+        source: { type: 'local_mount', local_path: '/workspace' },
+        status: 'running',
+      })
+      .mockResolvedValueOnce(null);
+    const service = buildVolundrHttpAdapter(client);
+
+    await service.getSession('shared-id', { instanceId: 'thor' });
+    await expect(service.getSession('shared-id', { instanceId: 'missing' })).resolves.toBeNull();
+
+    expect(client.get).toHaveBeenLastCalledWith('/sessions/shared-id?instance_id=missing');
+    expect(client.get).not.toHaveBeenCalledWith('/sessions/shared-id');
+  });
+
   it('getSession synthesizes trackerIssue from legacy tracker fields', async () => {
     const client = makeClient();
     client.get.mockResolvedValueOnce({

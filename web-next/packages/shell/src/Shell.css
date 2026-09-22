@@ -107,7 +107,7 @@
 .niuu-shell__topbar {
   grid-area: topbar;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
   align-items: center;
   padding: 0 var(--space-6);
   background: var(--color-bg-secondary);
@@ -155,6 +155,7 @@
   display: flex;
   gap: 0;
   align-self: stretch;
+  justify-self: stretch;
 }
 .niuu-shell__tab {
   position: relative;
@@ -226,9 +227,17 @@
   justify-self: end;
   display: flex;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-2);
   font-size: var(--text-xs);
+  min-width: 0;
+  white-space: nowrap;
 }
+
+.niuu-shell__plugin-status {
+  display: flex;
+  align-items: center;
+}
+
 .niuu-shell__mode {
   display: inline-flex;
   align-items: center;
@@ -361,7 +370,7 @@
 
 .niuu-shell__theme-select {
   min-height: 34px;
-  max-width: 124px;
+  max-width: 144px;
   padding: 5px 8px;
   border: 1px solid var(--color-border);
   border-radius: 8px;
@@ -381,16 +390,11 @@
 }
 @media (max-width: 650px) {
   .niuu-shell__topbar-subtitle,
-  .niuu-shell__topbar-right .niuu-live-badge,
   .niuu-shell__topbar-sep {
     display: none;
   }
   .niuu-shell__topbar-right {
     gap: 6px;
-  }
-  .niuu-shell__theme-select {
-    max-width: 112px;
-    min-height: 36px;
   }
 }
 
@@ -445,12 +449,11 @@
     grid-row: 1;
     gap: 6px;
   }
-  .niuu-shell__topbar-right > :not(.niuu-shell__theme-select):not(.niuu-shell__topbar-content) {
+  .niuu-shell__topbar-right > .niuu-shell__plugin-status {
     display: none;
   }
   .niuu-shell__theme-select {
-    max-width: 112px;
-    min-height: 36px;
+    max-width: 104px;
   }
 }
 
@@ -469,11 +472,5 @@
 @media (min-width: 761px) and (max-width: 1100px) {
   .niuu-shell__topbar-right {
     gap: 8px;
-  }
-  /* The centred navigation needs the room; secondary controls step aside. */
-  .niuu-shell__topbar-sep,
-  .niuu-shell__cp-btn,
-  .niuu-shell__mode {
-    display: none;
   }
 }

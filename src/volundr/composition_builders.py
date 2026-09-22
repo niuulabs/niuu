@@ -8,6 +8,9 @@ from contextlib import asynccontextmanager
 from niuu.ports.credentials import CredentialRefreshLockPort
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class, resolve_secret_kwargs
+from volundr.adapters.outbound.contributors.workflow_execution_credentials import (
+    WorkflowExecutionCredentialContributor,
+)
 from volundr.config import Settings
 from volundr.domain.ports import (
     ArchiveStorePort,
@@ -32,8 +35,55 @@ from volundr.domain.services.oauth_clients import (
     OAuthClientRegistry,
 )
 from volundr.domain.services.oauth_token_refresh import OAuthTokenRefreshService
+from volundr.domain.services.workflow_execution_credentials import (
+    WorkflowExecutionCredentialService,
+)
+from volundr.ports.workflow_execution_credentials import ExecutionCredentialProjectionPort
 
 logger = logging.getLogger(__name__)
+
+
+def _create_workflow_execution_credential_service(
+    settings: Settings,
+    *,
+    repository,
+    token_issuer,
+    runtime_backend: str,
+) -> WorkflowExecutionCredentialService | None:
+    """Compose the configured rotation service without selecting adapters in code."""
+    config = settings.workflow_execution_credentials
+    if not config.enabled:
+        return None
+    if config.refresh_interval_seconds >= settings.workload_identity.token_ttl_seconds:
+        raise ValueError(
+            "workflow_execution_credentials.refresh_interval_seconds must be less than "
+            "workload_identity.token_ttl_seconds"
+        )
+    projection_class = import_class(config.projection_adapter)
+    projection_kwargs = resolve_secret_kwargs(
+        config.projection_kwargs,
+        config.projection_secret_kwargs_env,
+    )
+    projection = projection_class(**projection_kwargs)
+    if not isinstance(projection, ExecutionCredentialProjectionPort):
+        raise TypeError(
+            f"Developer credential projection {config.projection_adapter} must implement "
+            "ExecutionCredentialProjectionPort"
+        )
+    service = WorkflowExecutionCredentialService(
+        repository=repository,
+        token_issuer=token_issuer,
+        projection=projection,
+        runtime_backend=runtime_backend,
+        refresh_interval_seconds=config.refresh_interval_seconds,
+        trusted_signing_configured=bool(getattr(token_issuer, "trusted_signing_configured", False)),
+        admission_roles=config.admission_roles,
+    )
+    logger.info(
+        "Developer execution credential projection: %s",
+        config.projection_adapter.rsplit(".", 1)[-1],
+    )
+    return service
 
 
 @asynccontextmanager
@@ -337,6 +387,14 @@ def _create_contributors(
     )
 
     contributors: list[SessionContributor] = []
+    execution_credential_service = ports.get("execution_credential_service")
+    if execution_credential_service is not None:
+        contributors.append(
+            WorkflowExecutionCredentialContributor(
+                execution_credential_service=execution_credential_service
+            )
+        )
+        logger.info("Session contributor: workflow_execution_credentials (auto-wired)")
 
     def _has_contributor(name: str) -> bool:
         return any(contributor.name == name for contributor in contributors)

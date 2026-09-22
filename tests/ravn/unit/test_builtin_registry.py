@@ -59,6 +59,8 @@ class TestRegistryStructure:
             "kubernetes",
             "workflow",
             "a2a",
+            "delivery",
+            "workflow_execution",
         }
         for key, val in BUILTIN_TOOLS.items():
             unknown = val.groups - valid_groups

@@ -45,6 +45,8 @@ export interface PersonaSummary {
   isBuiltin: boolean;
   hasOverride: boolean;
   producesEvent: string;
+  /** Outcome value → emitted event type for personas with branched completion contracts. */
+  outcomeEvents?: Readonly<Record<string, string>>;
   consumesEvents: string[];
 }
 

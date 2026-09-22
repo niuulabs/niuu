@@ -1,7 +1,11 @@
 """Tests for Ting app startup config decisions."""
 
+from types import SimpleNamespace
+
+import pytest
+
 from ting.config import AuthConfig, Settings, VolundrConfig
-from ting.main import _use_local_volundr_factory
+from ting.main import _use_local_volundr_factory, _workflow_execution_token_issuer
 
 
 def test_uses_local_volundr_factory_for_classic_anonymous_dev() -> None:
@@ -29,3 +33,24 @@ def test_non_anonymous_mode_uses_connection_factory() -> None:
     )
 
     assert _use_local_volundr_factory(settings) is False
+
+
+def test_anonymous_workflow_execution_omits_disabled_token_issuer() -> None:
+    settings = Settings(auth=AuthConfig(allow_anonymous_dev=True))
+    disabled = SimpleNamespace(enabled=False)
+
+    assert _workflow_execution_token_issuer(settings, disabled) is None
+
+
+def test_authenticated_workflow_execution_requires_enabled_token_issuer() -> None:
+    settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
+
+    with pytest.raises(RuntimeError, match="requires workload identity"):
+        _workflow_execution_token_issuer(settings, SimpleNamespace(enabled=False))
+
+
+def test_workflow_execution_uses_enabled_token_issuer_in_any_auth_mode() -> None:
+    settings = Settings(auth=AuthConfig(allow_anonymous_dev=True))
+    enabled = SimpleNamespace(enabled=True)
+
+    assert _workflow_execution_token_issuer(settings, enabled) is enabled

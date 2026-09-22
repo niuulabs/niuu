@@ -58,21 +58,26 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
         *,
         owner_id: str,
         session_id: str,
+        connection_id: str | None = None,
     ) -> WorkflowCampaign | None:
-        row = await self._pool.fetchrow(
+        rows = await self._pool.fetch(
             """
             SELECT *
             FROM workflow_campaigns
             WHERE owner_id = $1
               AND session_id = $2
+              AND ($3::text IS NULL OR connection_id = $3)
               AND status IN ('pending', 'running', 'blocked')
             ORDER BY updated_at DESC
-            LIMIT 1
+            LIMIT 2
             """,
             owner_id,
             session_id,
+            connection_id,
         )
-        return self._row_to_campaign(row) if row is not None else None
+        if len(rows) != 1:
+            return None
+        return self._row_to_campaign(rows[0])
 
     async def get_campaign(self, campaign_id: UUID) -> WorkflowCampaign | None:
         row = await self._pool.fetchrow(

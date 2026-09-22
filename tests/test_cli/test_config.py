@@ -48,6 +48,30 @@ class TestCLISettings:
         settings = CLISettings()
         assert settings.context == "remote"
 
+    def test_docker_compute_requires_matching_vm_pod_manager(self) -> None:
+        compute = {
+            "pool_id": "acme",
+            "max_machines": 1,
+            "provider": {"adapter": "private.Provider"},
+            "auth": {"adapter": "private.Auth"},
+            "runtime": {"adapter": "private.Runtime"},
+        }
+        with pytest.raises(ValueError, match="VmPodManager"):
+            CLISettings(mode="docker", compute=compute)
+
+        configured = CLISettings(
+            mode="docker",
+            compute=compute,
+            pod_manager={
+                "adapter": "volundr.adapters.outbound.vm_pod_manager.VmPodManager",
+                "profile": "cpu",
+                "pool_id": "acme",
+                "max_machines": 1,
+            },
+        )
+        assert configured.compute is not None
+        assert configured.compute.pool_id == "acme"
+
 
 class TestDatabaseConfig:
     def test_defaults(self) -> None:

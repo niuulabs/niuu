@@ -24,6 +24,52 @@ logger = logging.getLogger("skuld.broker")
 class TransportLifecycleMixin:
     """Own transport construction and broker startup/shutdown sequencing."""
 
+    def startup_status(self) -> dict[str, object]:
+        """Return machine-readable broker startup and readiness state."""
+        ready = bool(
+            self._startup_ready and not self._startup_failure and self._transport is not None
+        )
+        return {
+            "ready": ready,
+            "startup_state": self._startup_state,
+            **({"error": self._startup_failure} if self._startup_failure else {}),
+        }
+
+    def _fail_startup(self, exc: BaseException) -> None:
+        """Record a terminal startup failure without taking down diagnostics."""
+        message = str(exc).strip() or type(exc).__name__
+        self._startup_ready = False
+        self._startup_state = "failed"
+        self._startup_failure = f"{type(exc).__name__}: {message}"[:2000]
+        self._set_activity_state("error")
+
+    async def _run_supervised_workflow_trigger(self) -> None:
+        """Dispatch kickoff after ASGI startup and retain its readiness result."""
+        try:
+            await self._run_workflow_trigger_task()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._fail_startup(exc)
+            logger.critical(
+                "Workflow kickoff failed; broker remains unready: %s",
+                self._startup_failure,
+                exc_info=True,
+            )
+            await self._report_activity_state(
+                "error",
+                extra_metadata={
+                    "startup_state": self._startup_state,
+                    "startup_error": self._startup_failure,
+                },
+            )
+            return
+
+        self._startup_ready = True
+        self._startup_state = "ready"
+        self._startup_failure = ""
+        logger.info("Workflow kickoff acknowledged; broker is ready")
+
     def _build_transport_kwargs(self) -> dict:
         """Return superset of kwargs that any transport constructor might need."""
         return {
@@ -155,6 +201,9 @@ class TransportLifecycleMixin:
 
     async def startup(self) -> None:
         """Initialize the broker on startup."""
+        self._startup_ready = False
+        self._startup_state = "starting"
+        self._startup_failure = ""
         logger.info("Broker starting for session %s", self.session_id)
         logger.info("Transport adapter: %s", self._settings.transport_adapter)
         _rebuild_presented_registry()  # recover present-file cards across broker restarts
@@ -224,8 +273,12 @@ class TransportLifecycleMixin:
         # lifespan returns promptly and uvicorn binds — otherwise the
         # transport's first turn (which can take seconds to minutes)
         # blocks the HTTP listener and the chat UI gets 502s.
-        if self._has_workflow_trigger():
+        if self._has_workflow_trigger() and self._restored_workflow_terminal_completion is None:
             await self._ensure_workflow_prompt_turn()
+        elif self._restored_workflow_terminal_completion is not None:
+            logger.info(
+                "Recovered durable workflow terminal outcome; skipping workflow trigger replay"
+            )
 
         if self._is_room_routed_session():
             # Room-routed sessions (flock workflows and residents) have no CLI
@@ -236,7 +289,7 @@ class TransportLifecycleMixin:
             # guard must precede the resume branch below.
             logger.info("Room-routed session — skipping transport auto-start")
         elif self._settings.session.initial_prompt:
-            if self._has_workflow_trigger():
+            if self._has_workflow_trigger() and self._restored_workflow_terminal_completion is None:
                 logger.info(
                     "Workflow trigger configured — holding initial prompt for mesh dispatch"
                 )
@@ -263,15 +316,36 @@ class TransportLifecycleMixin:
 
         # Start mesh adapter if enabled (after transport is ready)
         if self._settings.mesh.enabled:
-            await self._start_mesh_adapter()
-            if self._has_workflow_trigger():
-                # A workflow session is not ready until its kickoff has an
-                # acknowledged consumer. Propagate terminal dispatch failure
-                # through the ASGI lifespan instead of losing it in a detached
-                # task while the session appears healthy.
-                await self._run_workflow_trigger_task()
-        elif self._has_workflow_trigger():
-            logger.warning("Workflow trigger configured but mesh is disabled — skipping dispatch")
+            try:
+                await self._start_mesh_adapter()
+            except Exception as exc:
+                self._fail_startup(exc)
+                logger.critical(
+                    "Configured mesh startup failed; broker remains unready: %s",
+                    self._startup_failure,
+                    exc_info=True,
+                )
+                # Keep the HTTP diagnostics surface alive so the pod manager can
+                # observe the exact terminal failure through /ready, persist it,
+                # and tear down the runtime.  Nothing below this point should
+                # start for a broker whose configured mesh never came up.
+                return
+            if self._has_workflow_trigger() and self._restored_workflow_terminal_completion is None:
+                if self._mesh_adapter is None:
+                    self._fail_startup(RuntimeError("configured mesh adapter did not start"))
+                else:
+                    # The acknowledgement arrives through Skuld's Ravn
+                    # WebSocket. Retain the task and return from lifespan so
+                    # that listener can serve the peer handshake.
+                    self._startup_state = "workflow_kickoff_pending"
+                    self._workflow_trigger_task = asyncio.create_task(
+                        self._run_supervised_workflow_trigger(),
+                        name=f"skuld-workflow-kickoff-{self.session_id}",
+                    )
+        elif self._has_workflow_trigger() and self._restored_workflow_terminal_completion is None:
+            error = RuntimeError("workflow trigger is configured but mesh is disabled")
+            self._fail_startup(error)
+            logger.error("%s", error)
 
         if (
             self._room_bridge is not None
@@ -283,6 +357,10 @@ class TransportLifecycleMixin:
         if self._settings.activity_heartbeat.enabled and self.volundr_api_url:
             self._activity_heartbeat_task = asyncio.create_task(self._activity_heartbeat_loop())
 
+        if self._workflow_trigger_task is None and not self._startup_failure:
+            self._startup_ready = True
+            self._startup_state = "ready"
+
     async def shutdown(self) -> None:
         """Clean up on shutdown.
 
@@ -290,6 +368,8 @@ class TransportLifecycleMixin:
         transport, so the CLI process is still alive for summary generation.
         """
         logger.info("Broker shutting down")
+        self._startup_ready = False
+        self._startup_state = "stopping"
 
         if self._room_bridge is not None:
             await self._room_bridge.stop_presence_sweep()

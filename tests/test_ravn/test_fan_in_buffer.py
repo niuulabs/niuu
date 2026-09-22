@@ -56,6 +56,7 @@ class TestAllMustPassStrategy:
         )
         assert result is None
         assert buf.pending_count == 1
+        assert buf.pending_count == 1
 
     def test_second_event_completes(self):
         buf = self._make_buffer()
@@ -219,7 +220,85 @@ class TestProducerAggregation:
             root_correlation_id="root1",
         )
         assert result is None
-        assert buf.pending_count == 1
+
+    def test_required_personas_rejects_missing_and_negative_review(self):
+        buf = FanInBuffer()
+        common = {
+            "aggregation_key": "workflow:accept:review.completed",
+            "consumer_persona": "analyst",
+            "required_personas": ["code-reviewer", "security-reviewer"],
+            "event_type": "review.completed",
+            "root_correlation_id": "root-1",
+            "cycle_correlation_id": "candidate-a",
+        }
+        assert (
+            buf.try_accept_required_personas(
+                producer_persona="code-reviewer",
+                event_payload={"outcome": {"verdict": "pass"}},
+                **common,
+            )
+            is None
+        )
+        result = buf.try_accept_required_personas(
+            producer_persona="security-reviewer",
+            event_payload={"outcome": {"verdict": "changes_required"}},
+            **common,
+        )
+        assert result is not None
+        assert result.persona_name == "analyst"
+        assert result.passed is False
+        assert "FAIL" in result.merged_context
+
+    def test_required_personas_needs_explicit_pass_from_every_reviewer(self):
+        buf = FanInBuffer()
+        common = {
+            "aggregation_key": "workflow:accept:review.completed",
+            "consumer_persona": "analyst",
+            "required_personas": ["code-reviewer", "security-reviewer"],
+            "event_type": "review.completed",
+            "root_correlation_id": "root-1",
+        }
+        assert (
+            buf.try_accept_required_personas(
+                producer_persona="code-reviewer",
+                event_payload={"outcome": {"verdict": "approved"}},
+                **common,
+            )
+            is None
+        )
+        result = buf.try_accept_required_personas(
+            producer_persona="security-reviewer",
+            event_payload={"outcome": {"verdict": "pass"}},
+            **common,
+        )
+        assert result is not None and result.passed is True
+        assert buf.pending_count == 0
+
+    def test_required_personas_rejects_mixed_plan_revisions(self):
+        buf = FanInBuffer()
+        common = {
+            "aggregation_key": "workflow:plan:review.completed",
+            "consumer_persona": "analyst",
+            "required_personas": ["architecture", "security"],
+            "event_type": "review.completed",
+            "root_correlation_id": "root-1",
+            "binding_fields": ["plan_revision"],
+        }
+        assert (
+            buf.try_accept_required_personas(
+                producer_persona="architecture",
+                event_payload={"outcome": {"verdict": "pass", "plan_revision": "revision-1"}},
+                **common,
+            )
+            is None
+        )
+        result = buf.try_accept_required_personas(
+            producer_persona="security",
+            event_payload={"outcome": {"verdict": "pass", "plan_revision": "revision-2"}},
+            **common,
+        )
+        assert result is not None and result.passed is False
+        assert "plan_revision" in result.merged_context
 
     def test_all_contributors_completes(self):
         buf = FanInBuffer()

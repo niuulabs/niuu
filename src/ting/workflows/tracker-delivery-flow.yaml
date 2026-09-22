@@ -1,0 +1,152 @@
+schema_version: 1
+id: 3f444455-6b63-53c2-b057-3205345a56da
+name: Tracker Delivery Flow
+description: Tracker-driven developer workflow that implements a ticket, iterates through code review,
+  updates the tracker, merges the branch, and publishes a durable delivery record.
+version: 1.0.0
+persona_dependencies:
+  closer:
+    id: closer
+    revision: content-2dd7eff6ca4fb5d3
+    digest: sha256:2dd7eff6ca4fb5d32a005f66432590afe89021408a31720914285dcbe0b366e5
+    path: personas/closer.yaml
+  coder:
+    id: coder
+    revision: content-d0370185bc60dd12
+    digest: sha256:d0370185bc60dd12c1994bb84bb8864bafcb698576813a06591473489a25a6dd
+    path: personas/coder.yaml
+  publisher:
+    id: publisher
+    revision: content-29a3f40278dc2183
+    digest: sha256:29a3f40278dc218309daa72094283bdb3f4a7349530f4aee5f46cdd999e9123c
+    path: personas/publisher.yaml
+  reviewer:
+    id: reviewer
+    revision: content-ad16133b08a3cdbd
+    digest: sha256:ad16133b08a3cdbd178971e0faceaabbc2196ffa4c08b0f038e1ed50db8c2f03
+    path: personas/reviewer.yaml
+graph:
+  nodes:
+  - id: delivery-request
+    kind: trigger
+    label: Start tracker delivery
+    source: tracker delivery
+    dispatchEvent: delivery.requested
+    position:
+      x: 96
+      y: 280
+  - id: delivery-memory
+    kind: resource
+    label: Delivery Memory
+    resourceType: mimir
+    bindingMode: registry
+    registryEntryId: mimir-yggdrasil
+    url: https://mimir.yggdrasil.niuu.world/api/v1
+    authRef: workload:mimir
+    role: shared
+    categories:
+    - delivery
+    - tracker
+    - review
+    position:
+      x: 352
+      y: 520
+  - id: delivery-implement
+    kind: stage
+    label: Implement tracker ticket
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: coder
+      budget: 40
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - delivery.requested
+      - review.changes_requested
+    position:
+      x: 352
+      y: 280
+  - id: delivery-review
+    kind: stage
+    label: Review implementation
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: reviewer
+      budget: 24
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - code.changed
+    position:
+      x: 704
+      y: 280
+  - id: delivery-close
+    kind: stage
+    label: Merge and close ticket
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: closer
+      budget: 20
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - review.passed
+    position:
+      x: 1056
+      y: 280
+  - id: delivery-publish
+    kind: stage
+    label: Publish delivery record
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: publisher
+      budget: 16
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - delivery.merged
+    position:
+      x: 1408
+      y: 280
+  - id: delivery-complete
+    kind: end
+    label: Delivery complete
+    joinMode: all
+    completionEvent: delivery.completed
+    position:
+      x: 1760
+      y: 280
+  edges:
+  - id: edge-delivery-request-to-implement
+    source: delivery-request
+    target: delivery-implement
+    label: delivery.requested -> delivery.requested
+  - id: edge-delivery-implement-to-review
+    source: delivery-implement
+    target: delivery-review
+    label: code.changed -> code.changed
+  - id: edge-delivery-review-to-implement
+    source: delivery-review
+    target: delivery-implement
+    label: review.changes_requested -> review.changes_requested
+  - id: edge-delivery-review-to-close
+    source: delivery-review
+    target: delivery-close
+    label: review.passed -> review.passed
+  - id: edge-delivery-close-to-publish
+    source: delivery-close
+    target: delivery-publish
+    label: delivery.merged -> delivery.merged
+  - id: edge-delivery-publish-to-end
+    source: delivery-publish
+    target: delivery-complete
+    label: delivery.completed -> delivery.completed
+  resourceBindings:
+  - id: binding-delivery-memory
+    resourceNodeId: delivery-memory
+    targetType: workflow
+    targetId: tracker-delivery-flow
+    access: read_write
+    writePrefixes:
+    - deliveries/
+    readPriority: 1

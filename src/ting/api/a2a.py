@@ -9,10 +9,12 @@ launch, which is also what makes the run visible to the projector.
 
 from __future__ import annotations
 
+import json
 import logging
 import mimetypes
 import posixpath
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from typing import Any
 from urllib.parse import quote
 from uuid import UUID, uuid4
@@ -48,7 +50,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from google.protobuf.json_format import MessageToDict
 
 from niuu.domain.models import Principal
-from niuu.domain.services.token_scope import token_has_scope
+from niuu.domain.services.token_scope import (
+    VALKYRIE_BUILD_TOKEN_USE,
+    scoped_credential_claims,
+    token_has_scope,
+)
 from niuu.observability import get_observability
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.a2a_card import _endpoint_url as _card_endpoint_url
@@ -63,12 +69,26 @@ from ting.api.research import (
 )
 from ting.api.workflows import (
     WorkflowLaunchBody,
+    WorkflowLaunchExecution,
     _can_view_workflow,
+    _slugify,
     launch_workflow_execution,
     resolve_workflow_repo,
 )
+from ting.domain.a2a_launch import A2ALaunchReservation
+from ting.domain.execution_snapshot import pinned_child_workflow
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
-from ting.domain.workflow_snapshot import workflow_artifact_paths_from_snapshot
+from ting.domain.services.workflow_campaign_lifecycle import (
+    stop_terminal_campaign_session,
+    terminal_session_cleanup_needed,
+)
+from ting.domain.workflow_document import workflow_document_revision
+from ting.domain.workflow_execution import WorkflowExecutionError
+from ting.domain.workflow_snapshot import (
+    build_workflow_snapshot,
+    workflow_artifact_paths_from_snapshot,
+)
+from ting.ports.a2a_launch import A2ALaunchReservationRepository
 from ting.ports.a2a_push import A2APushDispatcherPort
 from ting.ports.volundr import VolundrFactory
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
@@ -83,6 +103,11 @@ _CANCELED_KEY = "a2a_canceled"
 _CONTEXT_ID_KEY = "a2a_context_id"
 _MESSAGE_ID_KEY = "a2a_message_id"
 _WORKFLOW_SLUG_KEY = "a2a_workflow_slug"
+
+
+async def resolve_a2a_launch_repo() -> A2ALaunchReservationRepository:
+    raise HTTPException(status_code=503, detail="A2A launch reservation repository not configured")
+
 
 _STATUS_TO_STATE: dict[WorkflowCampaignStatus, int] = {
     WorkflowCampaignStatus.PENDING: TaskState.TASK_STATE_SUBMITTED,
@@ -132,6 +157,20 @@ def campaign_to_task(campaign: WorkflowCampaign) -> Task:
             ),
         }
     )
+    delivery = campaign.metadata.get("delivery")
+    if isinstance(delivery, dict) and isinstance(delivery.get("result"), dict):
+        task.metadata["deliveryResult"] = {
+            **delivery["result"],
+            "_trustedReviewEnvelope": {
+                "schemaVersion": delivery.get("schemaVersion"),
+                "taskId": campaign.slug,
+                "sessionId": campaign.session_id,
+                "workflowId": str(campaign.workflow_id),
+                "workflowRevision": campaign.workflow_snapshot.get("workflow_revision"),
+                "workflowDigest": campaign.workflow_snapshot.get("workflow_digest"),
+                "reviews": delivery.get("reviews") or [],
+            },
+        }
     return task
 
 
@@ -151,6 +190,7 @@ class WorkflowTaskHandler(RequestHandler):
         bearer_token: str | None,
         workflow_repo: WorkflowRepository,
         campaign_repo: WorkflowCampaignRepository,
+        launch_repo: A2ALaunchReservationRepository,
         volundr_factory: VolundrFactory,
     ) -> None:
         self._request = request
@@ -158,6 +198,7 @@ class WorkflowTaskHandler(RequestHandler):
         self._bearer_token = bearer_token
         self._workflow_repo = workflow_repo
         self._campaign_repo = campaign_repo
+        self._launch_repo = launch_repo
         self._volundr_factory = volundr_factory
 
     # -- Implemented methods ------------------------------------------- #
@@ -177,17 +218,41 @@ class WorkflowTaskHandler(RequestHandler):
             )
 
         metadata = _merged_metadata(params)
+        gateway_claims = self._execution_gateway_claims()
+        if gateway_claims is not None and not isinstance(metadata.get("workflowExecution"), dict):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Developer child credential requires exact launch lineage",
+            )
         prompt = _prompt_from_message(message)
         if not prompt:
             raise InvalidParamsError("message must include a non-empty text part")
 
         existing = await self._campaign_for_message(message.message_id)
-        if existing is not None:
-            requested_skill_id = str(metadata.get("skillId") or "")
-            if requested_skill_id != str(existing.workflow_id):
-                raise InvalidParamsError(
-                    f"messageId {message.message_id!r} already belongs to another skill"
+        workflow = await self._resolve_workflow(metadata)
+        now = datetime.now(UTC)
+        reservation_id = uuid4()
+        campaign_id = uuid4()
+        try:
+            reservation, _created = await self._launch_repo.reserve(
+                A2ALaunchReservation(
+                    id=reservation_id,
+                    owner_id=self._principal.user_id,
+                    tenant_id=self._principal.tenant_id,
+                    message_id=message.message_id,
+                    request_digest=_launch_digest(prompt, metadata),
+                    workflow_id=workflow.id,
+                    task_id=f"a2a-{reservation_id.hex}",
+                    campaign_id=campaign_id,
+                    created_at=now,
+                    updated_at=now,
                 )
+            )
+        except ValueError as exc:
+            raise InvalidParamsError(
+                f"messageId {message.message_id!r} was reused for different launch content"
+            ) from exc
+        if existing is not None and existing.session_id:
             get_observability().event(
                 "ting.a2a.workflow.launch.reused",
                 attributes={
@@ -197,8 +262,64 @@ class WorkflowTaskHandler(RequestHandler):
                 },
             )
             return campaign_to_task(existing)
+        lease_token = uuid4()
+        claimed = await self._launch_repo.claim(
+            reservation.id,
+            lease_token=lease_token,
+            lease_until=now
+            + timedelta(seconds=self._request.app.state.settings.a2a.launch_lease_seconds),
+        )
+        if claimed is None:
+            if existing is not None:
+                return campaign_to_task(existing)
+            return _reservation_task(reservation, message.context_id)
 
-        workflow = await self._resolve_workflow(metadata)
+        pinned_snapshot = (
+            existing.workflow_snapshot
+            if existing is not None
+            else build_workflow_snapshot(
+                workflow,
+                persona_source=getattr(self._request.app.state, "persona_source", None),
+            )
+        )
+        if existing is None:
+            pinned_snapshot["workflow_revision"] = workflow.revision or workflow_document_revision(
+                workflow
+            )
+            pinned_snapshot["workflow_digest"] = workflow_document_revision(workflow)
+        stage_state = _initial_stage_state(pinned_snapshot, now)
+        pending = existing or WorkflowCampaign(
+            id=reservation.campaign_id,
+            slug=reservation.task_id,
+            name=_optional_str(metadata, "sessionName") or workflow.name,
+            owner_id=self._principal.user_id,
+            tenant_id=self._principal.tenant_id,
+            workflow_id=workflow.id,
+            workflow_version=workflow.version,
+            workflow_name=workflow.name,
+            workflow_snapshot=pinned_snapshot,
+            session_id="",
+            session_name="",
+            status=WorkflowCampaignStatus.PENDING,
+            active_stage_id=stage_state[0].stage_id if stage_state else None,
+            stage_state=stage_state,
+            metadata={
+                "surface": A2A_SURFACE,
+                "prompt": prompt,
+                _CONTEXT_ID_KEY: message.context_id or reservation.task_id,
+                _MESSAGE_ID_KEY: message.message_id,
+                _WORKFLOW_SLUG_KEY: _slugify(_optional_str(metadata, "sessionName") or prompt),
+                **({"repo": str(metadata["repo"])} if metadata.get("repo") else {}),
+                **({"branch": str(metadata["branch"])} if metadata.get("branch") else {}),
+            },
+            created_at=now,
+            updated_at=now,
+            last_activity_at=now,
+            connection_id=_optional_str(metadata, "connectionId"),
+        )
+        if existing is None:
+            pending = await self._campaign_repo.save_campaign(pending)
+
         telemetry = get_observability()
         trace_context = _trace_context(metadata)
         attributes = {
@@ -211,16 +332,24 @@ class WorkflowTaskHandler(RequestHandler):
             attributes=attributes,
             carrier=trace_context,
         ) as span:
+            execution_context = await self._workflow_execution_context(metadata, reservation)
+            inherited_result_schema = execution_context.pop("result_schema", {})
             launch = WorkflowLaunchBody(
                 prompt=prompt,
-                sessionName=_optional_str(metadata, "sessionName"),
+                sessionName=f"a2a-{reservation.id.hex}",
                 repo=str(metadata.get("repo") or ""),
                 branch=str(metadata.get("branch") or ""),
                 model=str(metadata.get("model") or ""),
                 connectionId=_optional_str(metadata, "connectionId"),
+                inheritedResultSchema=(
+                    dict(inherited_result_schema)
+                    if isinstance(inherited_result_schema, dict)
+                    else {}
+                ),
                 provenance={
                     "surface": A2A_SURFACE,
                     "a2a_message_id": message.message_id,
+                    **({"workflow_execution": execution_context} if execution_context else {}),
                     **(
                         {"trace_context": outbound_trace_context}
                         if (outbound_trace_context := telemetry.inject() or trace_context)
@@ -229,14 +358,42 @@ class WorkflowTaskHandler(RequestHandler):
                 },
             )
             try:
-                execution = await launch_workflow_execution(
-                    request=self._request,
-                    workflow=workflow,
-                    launch=launch,
-                    volundr_factory=self._volundr_factory,
-                    principal=self._principal,
-                    bearer_token=self._bearer_token,
-                )
+                target_adapter = await self._launch_adapter(_optional_str(metadata, "connectionId"))
+                recovered = None
+                if target_adapter is not None:
+                    sessions = await target_adapter.list_sessions(
+                        auth_token=self._downstream_auth_token(),
+                        principal=self._principal,
+                    )
+                    tracker_key = f"workflow:a2a-{reservation.id.hex}"
+                    recovered = next(
+                        (
+                            session
+                            for session in sessions
+                            if session.tracker_issue_id == tracker_key
+                        ),
+                        None,
+                    )
+                if recovered is not None and target_adapter is not None:
+                    execution = WorkflowLaunchExecution(
+                        workflow=workflow,
+                        workflow_snapshot=pending.workflow_snapshot,
+                        slug=f"a2a-{reservation.id.hex}",
+                        session=recovered,
+                        adapter=target_adapter,
+                        connection_id=getattr(target_adapter, "target_id", None),
+                    )
+                else:
+                    execution = await launch_workflow_execution(
+                        request=self._request,
+                        workflow=workflow,
+                        launch=launch,
+                        volundr_factory=self._volundr_factory,
+                        principal=self._principal,
+                        bearer_token=self._downstream_auth_token(),
+                        pinned_workflow_snapshot=pending.workflow_snapshot,
+                        trusted_workflow_execution=bool(execution_context),
+                    )
             except Exception as exc:
                 telemetry.mark_error(span, type(exc).__name__, str(exc))
                 telemetry.event(
@@ -254,19 +411,17 @@ class WorkflowTaskHandler(RequestHandler):
                 },
             )
 
-        campaign_id = uuid4()
-        slug = f"{execution.slug or 'workflow'}-{campaign_id.hex[:12]}"
         now = datetime.now(UTC)
-        stage_state = _initial_stage_state(execution.workflow_snapshot, now)
         campaign = WorkflowCampaign(
-            id=campaign_id,
-            slug=slug,
-            name=execution.session.name,
+            id=reservation.campaign_id,
+            slug=reservation.task_id,
+            name=pending.name,
             owner_id=self._principal.user_id,
+            tenant_id=self._principal.tenant_id,
             workflow_id=workflow.id,
             workflow_version=workflow.version,
             workflow_name=workflow.name,
-            workflow_snapshot=execution.workflow_snapshot,
+            workflow_snapshot=pending.workflow_snapshot,
             session_id=execution.session.id,
             session_name=execution.session.name,
             status=_campaign_status_from_session(execution.session.status),
@@ -276,9 +431,9 @@ class WorkflowTaskHandler(RequestHandler):
                 "surface": A2A_SURFACE,
                 "prompt": prompt,
                 "cluster_name": execution.session.cluster_name,
-                _CONTEXT_ID_KEY: message.context_id or slug,
+                _CONTEXT_ID_KEY: message.context_id or reservation.task_id,
                 _MESSAGE_ID_KEY: message.message_id,
-                _WORKFLOW_SLUG_KEY: execution.slug,
+                _WORKFLOW_SLUG_KEY: pending.metadata[_WORKFLOW_SLUG_KEY],
                 # Code-output pointers: for code workflows the durable
                 # artifact is the branch the session pushes, not a Mimir page.
                 **({"repo": launch.repo} if launch.repo else {}),
@@ -295,7 +450,7 @@ class WorkflowTaskHandler(RequestHandler):
             try:
                 await execution.adapter.stop_session(
                     execution.session.id,
-                    auth_token=self._bearer_token,
+                    auth_token=self._downstream_auth_token(),
                     principal=self._principal,
                 )
             except Exception:
@@ -304,6 +459,11 @@ class WorkflowTaskHandler(RequestHandler):
                     execution.session.id,
                 )
             raise
+        await self._launch_repo.mark_launched(
+            reservation.id,
+            lease_token=lease_token,
+            session_id=execution.session.id,
+        )
         await _emit_campaign_event(self._request, "workflow.campaign.created", saved)
         await self._queue_push(saved)
         return campaign_to_task(saved)
@@ -313,13 +473,18 @@ class WorkflowTaskHandler(RequestHandler):
         params: GetTaskRequest,
         context: ServerCallContext,
     ) -> Task | None:
+        await self._authorize_execution_task(params.id)
         campaign = await self._owned_campaign(params.id)
         task = campaign_to_task(campaign)
-        if task.status.state == TaskState.TASK_STATE_COMPLETED:
-            await self._attach_artifacts(task, campaign)
-        if task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED:
-            await self._attach_pending_questions(task, campaign)
-            await self._attach_pending_gates(task, campaign)
+        try:
+            if task.status.state == TaskState.TASK_STATE_COMPLETED:
+                await self._attach_artifacts(task, campaign)
+            if task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED:
+                await self._attach_pending_questions(task, campaign)
+                await self._attach_pending_gates(task, campaign)
+        finally:
+            if campaign.status in _TERMINAL_STATUSES:
+                await self._ensure_terminal_session_stopped(campaign)
         return task
 
     async def on_cancel_task(
@@ -327,6 +492,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: CancelTaskRequest,
         context: ServerCallContext,
     ) -> Task | None:
+        await self._authorize_execution_task(params.id)
         campaign = await self._owned_campaign(params.id)
         if campaign.status in _TERMINAL_STATUSES or campaign.metadata.get(_CANCELED_KEY):
             raise TaskNotCancelableError(f"task {params.id} is already in a terminal state")
@@ -339,7 +505,7 @@ class WorkflowTaskHandler(RequestHandler):
             )
         await adapter.stop_session(
             campaign.session_id,
-            auth_token=self._bearer_token,
+            auth_token=self._downstream_auth_token(),
             principal=self._principal,
         )
 
@@ -366,6 +532,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: ListTasksRequest,
         context: ServerCallContext,
     ) -> ListTasksResponse:
+        self._reject_execution_gateway_operation()
         campaigns = await self._campaign_repo.list_campaigns(
             owner_id=self._principal.user_id,
         )
@@ -399,11 +566,15 @@ class WorkflowTaskHandler(RequestHandler):
         campaigns_by_slug = {campaign.slug: campaign for campaign in campaigns}
         for task in selected:
             campaign = campaigns_by_slug[task.id]
-            if params.include_artifacts and task.status.state == TaskState.TASK_STATE_COMPLETED:
-                await self._attach_artifacts(task, campaign)
-            if task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED:
-                await self._attach_pending_questions(task, campaign)
-                await self._attach_pending_gates(task, campaign)
+            try:
+                if params.include_artifacts and task.status.state == TaskState.TASK_STATE_COMPLETED:
+                    await self._attach_artifacts(task, campaign)
+                if task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED:
+                    await self._attach_pending_questions(task, campaign)
+                    await self._attach_pending_gates(task, campaign)
+            finally:
+                if campaign.status in _TERMINAL_STATUSES:
+                    await self._ensure_terminal_session_stopped(campaign)
 
         next_offset = offset + len(selected)
         return ListTasksResponse(
@@ -418,6 +589,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: SendMessageRequest,
         context: ServerCallContext,
     ):
+        self._reject_execution_gateway_operation()
         raise UnsupportedOperationError("streaming is not supported; poll GetTask")
         yield  # pragma: no cover — makes this an async generator
 
@@ -426,6 +598,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: SubscribeToTaskRequest,
         context: ServerCallContext,
     ):
+        self._reject_execution_gateway_operation()
         raise UnsupportedOperationError("streaming is not supported; poll GetTask")
         yield  # pragma: no cover — makes this an async generator
 
@@ -434,6 +607,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: TaskPushNotificationConfig,
         context: ServerCallContext,
     ) -> TaskPushNotificationConfig:
+        self._reject_execution_gateway_operation()
         task_id = str(params.task_id or "").strip()
         if not task_id:
             raise InvalidParamsError("taskId is required")
@@ -453,6 +627,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: GetTaskPushNotificationConfigRequest,
         context: ServerCallContext,
     ) -> TaskPushNotificationConfig:
+        self._reject_execution_gateway_operation()
         task_id = str(params.task_id or "").strip()
         config_id = str(params.id or "").strip()
         if not task_id or not config_id:
@@ -472,6 +647,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: ListTaskPushNotificationConfigsRequest,
         context: ServerCallContext,
     ) -> ListTaskPushNotificationConfigsResponse:
+        self._reject_execution_gateway_operation()
         task_id = str(params.task_id or "").strip()
         if not task_id:
             raise InvalidParamsError("taskId is required")
@@ -503,6 +679,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: DeleteTaskPushNotificationConfigRequest,
         context: ServerCallContext,
     ) -> None:
+        self._reject_execution_gateway_operation()
         task_id = str(params.task_id or "").strip()
         config_id = str(params.id or "").strip()
         if not task_id or not config_id:
@@ -526,6 +703,7 @@ class WorkflowTaskHandler(RequestHandler):
         The public well-known card only advertises system-scope workflows;
         this is how a principal discovers their own workflows as skills.
         """
+        self._reject_execution_gateway_operation()
         settings = self._request.app.state.settings
         workflows = await self._workflow_repo.list_workflows(
             owner_id=self._principal.user_id,
@@ -559,6 +737,7 @@ class WorkflowTaskHandler(RequestHandler):
         - absent: the message text answers a pending peer question
           (``help_needed``) and is delivered to the asking peer
         """
+        await self._authorize_execution_task(message.task_id)
         campaign = await self._owned_campaign(message.task_id)
         task = campaign_to_task(campaign)
         if task.status.state != TaskState.TASK_STATE_INPUT_REQUIRED:
@@ -588,7 +767,7 @@ class WorkflowTaskHandler(RequestHandler):
             )
         gates = await adapter.get_workflow_gates(
             campaign.session_id,
-            auth_token=self._bearer_token,
+            auth_token=self._downstream_auth_token(),
             principal=self._principal,
         )
         gate_id = _select_pending_gate_id(
@@ -606,7 +785,7 @@ class WorkflowTaskHandler(RequestHandler):
             decision,
             notes=notes,
             source=A2A_SURFACE,
-            auth_token=self._bearer_token,
+            auth_token=self._downstream_auth_token(),
             principal=self._principal,
         )
 
@@ -647,7 +826,7 @@ class WorkflowTaskHandler(RequestHandler):
             )
         requests = await adapter.get_help_requests(
             campaign.session_id,
-            auth_token=self._bearer_token,
+            auth_token=self._downstream_auth_token(),
             principal=self._principal,
         )
         request_id = _select_pending_question_id(
@@ -663,7 +842,7 @@ class WorkflowTaskHandler(RequestHandler):
             request_id,
             answer,
             source=A2A_SURFACE,
-            auth_token=self._bearer_token,
+            auth_token=self._downstream_auth_token(),
             principal=self._principal,
         )
 
@@ -718,7 +897,7 @@ class WorkflowTaskHandler(RequestHandler):
         try:
             requests = await adapter.get_help_requests(
                 campaign.session_id,
-                auth_token=self._bearer_token,
+                auth_token=self._downstream_auth_token(),
                 principal=self._principal,
             )
         except Exception as exc:
@@ -751,7 +930,7 @@ class WorkflowTaskHandler(RequestHandler):
         try:
             gates = await adapter.get_workflow_gates(
                 campaign.session_id,
-                auth_token=self._bearer_token,
+                auth_token=self._downstream_auth_token(),
                 principal=self._principal,
             )
         except Exception as exc:
@@ -779,7 +958,11 @@ class WorkflowTaskHandler(RequestHandler):
         research campaigns retain their campaign-prefix discovery behavior.
         """
         settings = self._request.app.state.settings
-        adapter = _campaign_knowledge(campaign, settings, bearer_token=self._bearer_token)
+        adapter = _campaign_knowledge(
+            campaign,
+            settings,
+            bearer_token=self._downstream_auth_token(),
+        )
         if adapter is None:
             return
         loaded: list[Any] = []
@@ -839,10 +1022,246 @@ class WorkflowTaskHandler(RequestHandler):
             workflow_id = UUID(raw_id)
         except ValueError as exc:
             raise InvalidParamsError(f"skillId is not a valid UUID: {raw_id}") from exc
-        workflow = await self._workflow_repo.get_workflow(workflow_id)
+        if metadata.get("workflowExecution") is not None:
+            repository = getattr(self._request.app.state, "workflow_execution_repo", None)
+            if repository is None:
+                raise InvalidParamsError("Developer execution ledger is unavailable")
+            context = metadata["workflowExecution"]
+            if not isinstance(context, dict):
+                raise InvalidParamsError("workflowExecution metadata must be an object")
+            try:
+                attempt_id = UUID(str(metadata.get("attemptId") or ""))
+                execution_id = UUID(str(context.get("executionId") or ""))
+            except ValueError as exc:
+                raise InvalidParamsError("Developer child execution identity is invalid") from exc
+            child = await repository.get_child(attempt_id)
+            execution = await repository.get(
+                execution_id,
+                owner_id=self._principal.user_id,
+                tenant_id=self._principal.tenant_id,
+            )
+            if (
+                child is None
+                or execution is None
+                or child.execution_id != execution.id
+                or child.template_id != workflow_id
+                or child.message_id != str(metadata.get("messageId") or "")
+                or str(child.intent_id) != str(metadata.get("intentId") or "")
+            ):
+                raise InvalidParamsError("Developer child does not match its reserved execution")
+            self._authorize_execution_launch(execution, child)
+            try:
+                return pinned_child_workflow(execution, child)
+            except WorkflowExecutionError as exc:
+                raise InvalidParamsError(str(exc)) from exc
+        raw_version = str(metadata.get("workflowVersion") or "").strip()
+        workflow = (
+            await self._workflow_repo.get_workflow_version(
+                workflow_id,
+                version=raw_version,
+            )
+            if raw_version
+            else await self._workflow_repo.get_workflow(workflow_id)
+        )
         if workflow is None or not _can_view_workflow(workflow, self._principal):
             raise InvalidParamsError(f"unknown skill: {raw_id}")
         return workflow
+
+    async def _launch_adapter(self, connection_id: str | None):
+        if connection_id:
+            return await self._volundr_factory.for_connection(
+                self._principal.user_id,
+                connection_id,
+            )
+        return await self._volundr_factory.primary_for_owner(self._principal.user_id)
+
+    async def _workflow_execution_context(
+        self,
+        metadata: dict[str, Any],
+        reservation: A2ALaunchReservation,
+    ) -> dict[str, Any]:
+        raw = metadata.get("workflowExecution")
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            raise InvalidParamsError("workflowExecution metadata must be an object")
+        raw_attempt_id = str(metadata.get("attemptId") or raw.get("attemptId") or "").strip()
+        raw_intent_id = str(metadata.get("intentId") or "").strip()
+        try:
+            attempt_id = UUID(raw_attempt_id)
+            intent_id = UUID(raw_intent_id)
+        except ValueError as exc:
+            raise InvalidParamsError(
+                "workflowExecution requires valid attemptId and intentId"
+            ) from exc
+        repository = getattr(self._request.app.state, "workflow_execution_repo", None)
+        if repository is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Developer execution lineage verification is not configured",
+            )
+        child = await repository.get_child(attempt_id)
+        execution = await repository.get_internal(child.execution_id) if child is not None else None
+        if (
+            execution is None
+            or child is None
+            or str(raw.get("executionId") or "") != str(execution.id)
+            or child.intent_id != intent_id
+            or child.message_id != str(metadata.get("messageId") or "")
+        ):
+            raise InvalidParamsError("workflowExecution lineage does not match the caller")
+        self._authorize_execution_launch(execution, child)
+        if child.message_id != reservation.message_id:
+            raise InvalidParamsError("Developer child does not match the launch reservation")
+        if child.template_id != self._workflow_id_from_metadata(metadata):
+            raise InvalidParamsError("A2A skill does not match the pinned child workflow")
+        settings = getattr(self._request.app.state, "settings", None)
+        session_key = f"workflow:a2a-{reservation.id.hex}"
+        base_url = settings.a2a.public_base_url.rstrip("/") if settings else ""
+        base_url = base_url or str(self._request.base_url).rstrip("/")
+        return {
+            "base_url": base_url,
+            "execution_id": str(execution.id),
+            "parent_node_id": execution.parent_node_id,
+            "parent_session_key": session_key,
+            "coordinator_id": execution.policy.coordinator_id,
+            "child_attempt_id": str(child.id),
+            "child_intent_id": str(child.intent_id),
+            "child_task_id": reservation.task_id,
+            "result_schema": execution.policy.result_schema,
+        }
+
+    @staticmethod
+    def _workflow_id_from_metadata(metadata: dict[str, Any]) -> UUID:
+        try:
+            return UUID(str(metadata.get("skillId") or ""))
+        except ValueError as exc:
+            raise InvalidParamsError("skillId is not a valid UUID") from exc
+
+    def _execution_gateway_claims(self) -> dict[str, Any] | None:
+        claims = scoped_credential_claims(self._bearer_token or "")
+        if claims is None or claims.get("token_use") != VALKYRIE_BUILD_TOKEN_USE:
+            return None
+        lineage_keys = {
+            "workload_workflow_execution_id",
+            "workload_child_attempt_id",
+            "workload_child_intent_id",
+            "workload_child_task_id",
+        }
+        if not lineage_keys.intersection(claims):
+            return None
+        required = lineage_keys - {"workload_child_task_id"}
+        if any(not str(claims.get(key) or "").strip() for key in required):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Developer child credential has incomplete lineage claims",
+            )
+        return claims
+
+    def _downstream_auth_token(self) -> str | None:
+        """Do not forward scoped A2A credentials to the Forge control plane.
+
+        The selected Volundr adapter supplies its configured owner credential;
+        forwarding the A2A token would both fail Forge scope checks and couple
+        a task-bound credential to unrelated session-control routes.
+        """
+        if scoped_credential_claims(self._bearer_token or "") is not None:
+            return None
+        return self._bearer_token
+
+    def _authorize_execution_launch(self, execution: Any, child: Any) -> None:
+        scoped_claims = scoped_credential_claims(self._bearer_token or "")
+        if scoped_claims is None:
+            return
+        claims = self._execution_gateway_claims()
+        if claims is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Scoped credential does not grant this developer child launch",
+            )
+        expected = {
+            "workload_workflow_execution_id": str(execution.id),
+            "workload_child_attempt_id": str(child.id),
+            "workload_child_intent_id": str(child.intent_id),
+            "workload_sub": f"workflow-child:{child.id}",
+        }
+        if any(str(claims.get(key) or "") != value for key, value in expected.items()):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Developer child credential does not grant this launch",
+            )
+
+    async def _authorize_execution_task(self, task_id: str) -> None:
+        scoped_claims = scoped_credential_claims(self._bearer_token or "")
+        if scoped_claims is None:
+            return
+        claims = self._execution_gateway_claims()
+        if claims is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Scoped credential does not grant A2A task operations",
+            )
+        slug = str(task_id or "").strip()
+        if not slug or str(claims.get("workload_child_task_id") or "") != slug:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Developer child credential does not grant this task operation",
+            )
+        try:
+            child_id = UUID(str(claims["workload_child_attempt_id"]))
+            execution_id = UUID(str(claims["workload_workflow_execution_id"]))
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Developer child credential has invalid lineage claims",
+            ) from exc
+        repository = getattr(self._request.app.state, "workflow_execution_repo", None)
+        if repository is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Developer execution lineage verification is not configured",
+            )
+        child = await repository.get_child(child_id)
+        execution = await repository.get(
+            execution_id,
+            owner_id=self._principal.user_id,
+            tenant_id=self._principal.tenant_id,
+        )
+        if (
+            child is None
+            or execution is None
+            or child.execution_id != execution.id
+            or child.task_id != slug
+            or str(child.intent_id) != str(claims.get("workload_child_intent_id") or "")
+            or str(claims.get("workload_sub") or "") != f"workflow-child:{child.id}"
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Developer child credential does not match the task ledger",
+            )
+        forge_session_id = str(claims.get("workload_forge_session_id") or "")
+        if forge_session_id:
+            campaign = await self._campaign_repo.get_campaign_by_slug(
+                slug,
+                owner_id=execution.owner_id,
+            )
+            if (
+                campaign is None
+                or campaign.tenant_id != execution.tenant_id
+                or not campaign.session_id
+                or campaign.session_id != forge_session_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Developer child credential is not bound to the task Forge session",
+                )
+
+    def _reject_execution_gateway_operation(self) -> None:
+        if scoped_credential_claims(self._bearer_token or "") is not None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Scoped credential does not grant this A2A operation",
+            )
 
     async def _owned_campaign(self, task_id: str) -> WorkflowCampaign:
         slug = str(task_id or "").strip()
@@ -877,6 +1296,35 @@ class WorkflowTaskHandler(RequestHandler):
             )
             return None
         return await self._volundr_factory.primary_for_owner(campaign.owner_id)
+
+    async def _ensure_terminal_session_stopped(self, campaign: WorkflowCampaign) -> None:
+        """Gate terminal A2A observation on durable runtime cleanup."""
+        if not terminal_session_cleanup_needed(campaign):
+            return
+        try:
+            adapter = await self._campaign_adapter(campaign)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Terminal task cleanup is pending; retry GetTask",
+            ) from exc
+        if adapter is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Terminal task cleanup is pending; retry GetTask",
+            )
+        cleaned = await stop_terminal_campaign_session(
+            campaign,
+            adapter=adapter,
+            repo=self._campaign_repo,
+            auth_token=self._downstream_auth_token(),
+            principal=self._principal,
+        )
+        if cleaned is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Terminal task cleanup is pending; retry GetTask",
+            )
 
 
 def _merged_metadata(params: SendMessageRequest) -> dict[str, Any]:
@@ -975,6 +1423,44 @@ def _prompt_from_message(message: Message) -> str:
     return "\n\n".join(text for text in texts if text.strip()).strip()
 
 
+def _launch_digest(prompt: str, metadata: dict[str, Any]) -> str:
+    allowed = {
+        key: metadata[key]
+        for key in (
+            "skillId",
+            "repo",
+            "branch",
+            "model",
+            "connectionId",
+            "workflowExecution",
+        )
+        if key in metadata
+    }
+    encoded = json.dumps(
+        {"prompt": prompt, "metadata": allowed},
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode()
+    return "sha256:" + sha256(encoded).hexdigest()
+
+
+def _reservation_task(
+    reservation: A2ALaunchReservation,
+    context_id: str,
+) -> Task:
+    task = Task(id=reservation.task_id, context_id=context_id or reservation.task_id)
+    task.status.state = TaskState.TASK_STATE_SUBMITTED
+    task.status.timestamp.FromDatetime(reservation.updated_at.astimezone(UTC))
+    task.metadata.update(
+        {
+            "skillId": str(reservation.workflow_id),
+            "launchState": reservation.state,
+        }
+    )
+    return task
+
+
 def _optional_str(metadata: dict[str, Any], key: str) -> str | None:
     value = str(metadata.get(key) or "").strip()
     return value or None
@@ -998,6 +1484,7 @@ def create_a2a_router() -> APIRouter:
         bearer_token: str | None = Depends(extract_bearer_token),
         workflow_repo: WorkflowRepository = Depends(resolve_workflow_repo),
         campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+        launch_repo: A2ALaunchReservationRepository = Depends(resolve_a2a_launch_repo),
         volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
     ) -> Response:
         handler = WorkflowTaskHandler(
@@ -1006,6 +1493,7 @@ def create_a2a_router() -> APIRouter:
             bearer_token=bearer_token,
             workflow_repo=workflow_repo,
             campaign_repo=campaign_repo,
+            launch_repo=launch_repo,
             volundr_factory=volundr_factory,
         )
         dispatcher = JsonRpcDispatcher(request_handler=handler)

@@ -405,7 +405,7 @@ jobs:
 
       - name: Install Playwright browsers
         working-directory: ${{ runner.temp }}/consumer-app
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium webkit
 
       - name: Run consumer Playwright tests
         working-directory: ${{ runner.temp }}/consumer-app

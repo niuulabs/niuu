@@ -637,7 +637,13 @@ def _build_ravn_config(
     if po:
         config["persona_overrides"] = po
 
-    if persona_source_mode == _PERSONA_SOURCE_MOUNTED_VOLUME:
+    portable_definition = persona_override.get("portable_definition")
+    if isinstance(portable_definition, dict):
+        config["persona_source"] = {
+            "adapter": "ravn.adapters.personas.inline.InlinePersonaAdapter",
+            "kwargs": {"definitions": {persona: portable_definition}},
+        }
+    elif persona_source_mode == _PERSONA_SOURCE_MOUNTED_VOLUME:
         config["persona_source"] = {
             "adapter": "ravn.adapters.personas.mounted_volume.MountedVolumePersonaAdapter",
             "kwargs": {"mount_path": persona_source_mount_path},
@@ -660,6 +666,11 @@ def _build_ravn_config(
 
     if extra_ravn_config:
         config = _deep_merge_config(config, extra_ravn_config)
+    if workflow and workflow.get("result_schema"):
+        runtime_workflow = config.get("workflow")
+        if not isinstance(runtime_workflow, dict):
+            raise ValueError("Ravn workflow override must remain an object")
+        runtime_workflow["result_schema"] = dict(workflow["result_schema"])
 
     return yaml.safe_dump(config, default_flow_style=False, sort_keys=False)
 
@@ -679,6 +690,7 @@ def _normalize_workflow_config(
     workflow: dict[str, Any] | None,
     initiative_context: str,
     trace_context: dict[str, str] | None = None,
+    result_schema: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(workflow, dict):
         return None
@@ -693,6 +705,7 @@ def _normalize_workflow_config(
         "version": str(workflow.get("version") or ""),
         "scope": str(workflow.get("scope") or ""),
         "initial_context": initiative_context,
+        "result_schema": dict(result_schema or {}),
         "graph": graph,
         "trace_context": dict(trace_context or {}),
     }
@@ -797,6 +810,7 @@ class RavnFlockContributor(SessionContributor):
         workload_identity_volume_name: str = "niuu-workload-identity",
         workload_identity_mount_path: str = _DEFAULT_WORKLOAD_IDENTITY_MOUNT_PATH,
         workload_identity_token_file_env: str = "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE",
+        execution_credential_service: object | None = None,
         **_extra: object,
     ) -> None:
         self._launch_spec_provider = launch_spec_provider
@@ -811,6 +825,7 @@ class RavnFlockContributor(SessionContributor):
         self._workload_identity_volume_name = workload_identity_volume_name
         self._workload_identity_mount_path = workload_identity_mount_path.rstrip("/")
         self._workload_identity_token_file_env = workload_identity_token_file_env
+        self._execution_credential_service = execution_credential_service
 
     @property
     def name(self) -> str:
@@ -857,8 +872,34 @@ class RavnFlockContributor(SessionContributor):
             "max_concurrent_tasks", _DEFAULT_MAX_CONCURRENT_TASKS
         )
         global_llm: dict | None = wc.get("llm_config") or None
+        provenance = wc.get("provenance")
+        provenance = provenance if isinstance(provenance, dict) else {}
         extra_ravn_config = wc.get("ravn_config")
         extra_ravn_config = extra_ravn_config if isinstance(extra_ravn_config, dict) else None
+        execution_provenance = (
+            provenance.get("workflow_execution") if isinstance(provenance, dict) else None
+        )
+        execution_credential_mounts: tuple[dict, ...] = ()
+        if isinstance(execution_provenance, dict):
+            anonymous = bool(
+                ((extra_ravn_config or {}).get("gateway") or {})
+                .get("platform", {})
+                .get("anonymous_dev_mode", False)
+            )
+            if self._execution_credential_service is None and not anonymous:
+                raise RuntimeError(
+                    "authenticated developer coordinator launch requires "
+                    "workflow_execution_credentials.enabled=true"
+                )
+            scrubbed_ravn_config = dict(extra_ravn_config or {})
+            execution_config = dict(scrubbed_ravn_config.get("workflow_execution") or {})
+            execution_config.pop("auth_token", None)
+            if self._execution_credential_service is not None:
+                projection = self._execution_credential_service.projection(session.id)
+                execution_config["auth_token_file"] = projection.token_file
+                execution_credential_mounts = projection.pod_spec.volume_mounts
+            scrubbed_ravn_config["workflow_execution"] = execution_config
+            extra_ravn_config = scrubbed_ravn_config
         observability_config = wc.get("observability")
         observability_config = (
             {
@@ -885,8 +926,6 @@ class RavnFlockContributor(SessionContributor):
         except (TypeError, ValueError):
             daily_budget_usd = None
         initiative_context = str(wc.get("initiative_context") or "")
-        provenance = wc.get("provenance")
-        provenance = provenance if isinstance(provenance, dict) else {}
         raw_trace_context = provenance.get("trace_context")
         trace_context = (
             {
@@ -901,6 +940,7 @@ class RavnFlockContributor(SessionContributor):
             wc.get("workflow"),
             initiative_context,
             trace_context,
+            wc.get("workflow_result_schema"),
         )
 
         values, pod_spec = self._build_flock_spec(
@@ -921,6 +961,7 @@ class RavnFlockContributor(SessionContributor):
             extra_ravn_config=extra_ravn_config,
             observability_config=observability_config,
             runtime_backend=context.runtime_backend,
+            execution_credential_mounts=execution_credential_mounts,
         )
 
         return SessionContribution(values=values, pod_spec=pod_spec)
@@ -955,6 +996,7 @@ class RavnFlockContributor(SessionContributor):
         extra_ravn_config: dict[str, Any] | None = None,
         observability_config: dict[str, Any] | None = None,
         runtime_backend: str = "",
+        execution_credential_mounts: tuple[dict, ...] = (),
     ) -> tuple[dict[str, Any], PodSpecAdditions]:
         session_id = str(session.id)
         base_port = self._base_port
@@ -1259,6 +1301,7 @@ class RavnFlockContributor(SessionContributor):
                     {"name": _MIMIR_VOLUME_NAME, "mountPath": _MIMIR_MOUNT_PATH},
                 )
             volume_mounts.extend(persona_source_volume_mounts)
+            volume_mounts.extend(dict(mount) for mount in execution_credential_mounts)
 
             container: dict[str, Any] = {
                 "name": f"ravn-{persona}",
@@ -1353,6 +1396,11 @@ class RavnFlockContributor(SessionContributor):
         }
         if daily_budget_usd and daily_budget_usd > 0:
             values["flock"]["daily_budget_usd"] = float(daily_budget_usd)
+        if extra_ravn_config:
+            # LocalProcess and its Docker subclass regenerate node configs with
+            # ``ravn flock init``.  Retain the workload-scoped runtime overlay
+            # so that regeneration can apply the same config as pod sidecars.
+            values["flock"]["ravn_config"] = _deep_merge_config({}, extra_ravn_config)
         if workflow:
             values["workflow"] = workflow
         if openshell_workloads:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from unittest.mock import AsyncMock
 
+import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -14,6 +15,10 @@ from ravn.adapters.personas.postgres_registry import (
     _config_to_payload,
     _normalize_payload,
     _payload_to_config,
+)
+from ravn.domain.persona_document import (
+    PortablePersonaDefinition,
+    portable_persona_from_config,
 )
 from volundr.adapters.inbound.rest_ravn_personas import create_ravn_personas_router
 from volundr.domain.models import Principal, User, UserStatus
@@ -84,6 +89,38 @@ class _InMemoryPersonaRegistry:
             return None
         return FilesystemPersonaAdapter.to_yaml(view.config)
 
+    async def get_current_portable_persona(
+        self,
+        owner_id: str,
+        name: str,
+    ) -> PortablePersonaDefinition | None:
+        override = self._overrides[owner_id].get(name)
+        if override is None:
+            return self._builtin_loader.load_current_portable(name)
+        builtin = self._builtin_loader.load_current_portable(name)
+        fallback = None
+        if builtin is not None:
+            fallback = FilesystemPersonaAdapter.parse(
+                yaml.safe_dump(
+                    builtin.definition,
+                    allow_unicode=True,
+                    sort_keys=False,
+                )
+            )
+        payload = _normalize_payload(override, fallback=fallback)
+        return portable_persona_from_config(_payload_to_config(payload), persona_id=name)
+
+    async def get_portable_persona_revision(
+        self,
+        owner_id: str,
+        name: str,
+        revision: str,
+    ) -> PortablePersonaDefinition | None:
+        document = await self.get_current_portable_persona(owner_id, name)
+        if document is None or document.revision != revision:
+            return None
+        return document
+
     def is_builtin(self, name: str) -> bool:
         return self._builtin_loader.is_builtin(name)
 
@@ -136,6 +173,58 @@ def _make_payload(name: str) -> dict:
 
 
 class TestRavnPersonaRoutes:
+    def test_builtin_summaries_expose_all_outcome_events(self) -> None:
+        client, _ = _make_client()
+        response = client.get(
+            "/api/v1/personas?source=builtin",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert response.status_code == 200
+        reviewer = next(item for item in response.json() if item["name"] == "reviewer")
+        assert reviewer["outcome_events"] == {
+            "pass": "review.passed",
+            "needs_changes": "review.changes_requested",
+            "fail": "review.changes_requested",
+        }
+
+        detail = client.get(
+            "/api/v1/personas/reviewer",
+            headers={"Authorization": "Bearer token"},
+        ).json()
+        assert detail["produces"]["event_type_map"] == reviewer["outcome_events"]
+
+    def test_portable_source_is_owner_scoped_and_exactly_addressable(self) -> None:
+        client, _ = _make_client()
+        client.post(
+            "/api/v1/personas",
+            json=_make_payload("portable-agent"),
+            headers={"Authorization": "Bearer token"},
+        )
+
+        current = client.get(
+            "/api/v1/personas/portable-agent/portable",
+            headers={"Authorization": "Bearer token"},
+        )
+
+        assert current.status_code == 200
+        document = current.json()
+        assert document["id"] == "portable-agent"
+        assert document["revision"].startswith("content-")
+        assert "executor" not in document["definition"]
+
+        exact = client.get(
+            f"/api/v1/personas/portable-agent/revisions/{document['revision']}",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert exact.status_code == 200
+        assert exact.json() == document
+
+        missing = client.get(
+            "/api/v1/personas/portable-agent/revisions/content-0000000000000000",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert missing.status_code == 404
+
     def test_create_get_list_and_yaml(self) -> None:
         client, _ = _make_client()
 

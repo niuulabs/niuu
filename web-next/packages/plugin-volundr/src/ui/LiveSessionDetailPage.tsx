@@ -24,6 +24,7 @@ import {
 import {
   Archive,
   AlertTriangle,
+  ArrowLeft,
   Check,
   ChevronDown,
   ChevronRight,
@@ -94,6 +95,18 @@ const ALL_TABS: Array<{ id: SessionTab; label: string; icon: typeof MessageSquar
   { id: 'telemetry', label: 'Telemetry', icon: Sparkles },
   { id: 'logs', label: 'Logs', icon: FileCode2 },
 ];
+
+export function normalizeWorkReturnTo(value?: string): string | null {
+  if (!value?.startsWith('/')) return null;
+  try {
+    const target = new URL(value, 'https://niuu.local');
+    if (target.origin !== 'https://niuu.local') return null;
+    if (target.pathname !== '/ting/work' && !target.pathname.startsWith('/ting/work/')) return null;
+    return `${target.pathname}${target.search}${target.hash}`;
+  } catch {
+    return null;
+  }
+}
 
 export function isSessionBooting(status: string | null | undefined): boolean {
   return status === 'created' || status === 'starting' || status === 'provisioning';
@@ -3442,17 +3455,23 @@ function LiveDiffsTab({ chatEndpoint }: { chatEndpoint: string | null }) {
 
 export function LiveSessionDetailPage({
   sessionId,
+  instanceId,
+  returnTo,
   readOnly = false,
   initialTab = 'chat',
 }: {
   sessionId: string;
+  instanceId?: string;
+  returnTo?: string;
   readOnly?: boolean;
   initialTab?: SessionTab;
 }) {
   return (
     <LiveSessionDetailPageInner
-      key={sessionId}
+      key={`${instanceId ?? ''}:${sessionId}`}
       sessionId={sessionId}
+      instanceId={instanceId}
+      returnTo={normalizeWorkReturnTo(returnTo)}
       readOnly={readOnly}
       initialTab={initialTab}
     />
@@ -3461,10 +3480,14 @@ export function LiveSessionDetailPage({
 
 function LiveSessionDetailPageInner({
   sessionId,
+  instanceId,
+  returnTo,
   readOnly = false,
   initialTab = 'chat',
 }: {
   sessionId: string;
+  instanceId?: string;
+  returnTo: string | null;
   readOnly?: boolean;
   initialTab?: SessionTab;
 }) {
@@ -3490,10 +3513,10 @@ function LiveSessionDetailPageInner({
   const filesystem = useService<IFileSystemPort>('filesystem');
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const sessionQuery = useSessionDetail(sessionId);
+  const sessionQuery = useSessionDetail(sessionId, instanceId);
   const liveSessionQuery = useQuery({
-    queryKey: ['volundr', 'raw-session', sessionId],
-    queryFn: () => volundr.getSession(sessionId),
+    queryKey: ['volundr', 'raw-session', sessionId, instanceId ?? null],
+    queryFn: ({ signal }) => volundr.getSession(sessionId, { instanceId, signal }),
     refetchInterval: 5_000,
   });
   const liveSession = liveSessionQuery.data;
@@ -3515,13 +3538,13 @@ function LiveSessionDetailPageInner({
   );
   const chat = useSkuldChat(chatEndpoint, { historyEndpoint });
   const workflowGatesQuery = useQuery({
-    queryKey: ['volundr', 'workflow-gates', sessionId],
+    queryKey: ['volundr', 'workflow-gates', sessionId, instanceId ?? null],
     queryFn: () => volundr.getWorkflowGates(sessionId),
     enabled: Boolean(sessionId) && isRunning,
     refetchInterval: isRunning ? 5_000 : false,
   });
   const transcriptQuery = useQuery({
-    queryKey: ['volundr', 'conversation-history', sessionId],
+    queryKey: ['volundr', 'conversation-history', sessionId, instanceId ?? null],
     queryFn: () => volundr.getConversationHistory(sessionId),
     enabled: Boolean(sessionId) && canReplayTranscript,
     staleTime: 5_000,
@@ -3856,6 +3879,17 @@ function LiveSessionDetailPageInner({
         <div className="niuu-live-session__chrome">
           <div className="niuu-live-session__header">
             <div className="niuu-live-session__title-group">
+              {returnTo ? (
+                <button
+                  type="button"
+                  className="niuu-live-session__return-link"
+                  aria-label="Back to Work"
+                  onClick={() => void navigate({ to: returnTo as never })}
+                >
+                  <ArrowLeft aria-hidden="true" />
+                  Work
+                </button>
+              ) : null}
               <span
                 className={cn(
                   'niuu-live-session__status-dot',
@@ -4072,6 +4106,14 @@ function LiveSessionDetailPageInner({
             data-testid="session-failure-reason"
           >
             Session failed: <LinkedText text={liveSession.error} />
+          </div>
+        ) : liveSession?.error && isSessionBooting(sessionStatus) ? (
+          <div
+            role="status"
+            className="niuu:border-b niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-2 niuu:text-xs niuu:text-secondary"
+            data-testid="session-provisioning-detail"
+          >
+            Provisioning: <LinkedText text={liveSession.error} />
           </div>
         ) : null}
 

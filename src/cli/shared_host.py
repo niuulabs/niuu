@@ -89,6 +89,7 @@ from volundr.domain.services.tenant import TenantService
 from volundr.domain.services.tracker import TrackerService
 from volundr.domain.services.tracker_factory import TrackerFactory
 from volundr.domain.services.user_integration import UserIntegrationService
+from volundr.integration_definitions import load_integration_definition_configs
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +168,9 @@ def create_app(
                 definitions_from_config(
                     [
                         definition.model_dump()
-                        for definition in loaded_settings.integrations.definitions
+                        for definition in load_integration_definition_configs(
+                            loaded_settings.integrations
+                        )
                     ]
                 )
             )

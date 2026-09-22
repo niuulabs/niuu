@@ -82,12 +82,18 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
     ) -> None:
         self._config = config
         configured_pem = signing_key_pem or str(getattr(config, "signing_key_pem", "") or "")
+        self._trusted_signing_configured = bool(configured_pem.strip())
         self._private_key = self._load_or_generate_key(configured_pem)
         self._verifiers = dict(verifiers or {})
 
     @property
     def enabled(self) -> bool:
         return bool(getattr(self._config, "enabled", False))
+
+    @property
+    def trusted_signing_configured(self) -> bool:
+        """Whether the key came from configuration shared with token verifiers."""
+        return self._trusted_signing_configured
 
     def jwks(self) -> dict[str, Any]:
         public_numbers = self._private_key.public_key().public_numbers()

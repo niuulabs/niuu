@@ -43,6 +43,20 @@ class TestStorageContributor:
         assert result.values["homeVolume"]["existingClaim"] == "home-pvc"
         assert result.values["persistence"]["existingClaim"] == "ws-pvc"
 
+    async def test_vm_uses_runtime_owned_local_storage(self, session):
+        storage = AsyncMock()
+        contributor = StorageContributor(storage=storage)
+
+        result = await contributor.contribute(
+            session,
+            SessionContext(runtime_backend="vm"),
+        )
+
+        assert result.values == {}
+        storage.get_workspace_by_session.assert_not_awaited()
+        storage.create_session_workspace.assert_not_awaited()
+        storage.provision_user_storage.assert_not_awaited()
+
     async def test_legacy_openshell_resume_does_not_replace_storage(self, session):
         storage = AsyncMock()
         storage.get_workspace_by_session.return_value = None
@@ -80,6 +94,14 @@ class TestStorageContributor:
         c = StorageContributor(storage=storage)
         await c.cleanup(session, SessionContext())
         storage.archive_session_workspace.assert_called_once_with(str(session.id))
+
+    async def test_vm_cleanup_is_owned_by_runtime(self, session):
+        storage = AsyncMock()
+        contributor = StorageContributor(storage=storage)
+
+        await contributor.cleanup(session, SessionContext(runtime_backend="vm"))
+
+        storage.archive_session_workspace.assert_not_awaited()
 
     async def test_home_disabled_skips_provisioning(self, session):
         storage = AsyncMock()

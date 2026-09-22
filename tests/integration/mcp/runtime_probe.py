@@ -11,7 +11,11 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from skuld.transports.mcp_config import build_claude_mcp_config, build_codex_mcp_overrides
+from skuld.transports.mcp_config import (
+    build_claude_mcp_config,
+    build_codex_mcp_isolation_overrides,
+    build_codex_mcp_overrides,
+)
 
 seen = []
 
@@ -88,7 +92,26 @@ for line in sys.stdin:
             "serverInfo": {"name": "stdio-env-ok", "version": "1"},
         }
     elif request["method"] == "tools/list":
-        result = {"tools": []}
+        result = {
+            "tools": [
+                {
+                    "name": "safe_echo",
+                    "description": "Return the supplied text without side effects.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
+                }
+            ]
+        }
+    elif request["method"] == "tools/call":
+        text = request.get("params", {}).get("arguments", {}).get("text", "")
+        result = {
+            "content": [
+                {"type": "text", "text": text}
+            ]
+        }
     print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
 """
     config.append(
@@ -97,6 +120,9 @@ for line in sys.stdin:
             "command": sys.executable,
             "args": ["-u", "-c", child],
             "env_vars": ["MCP_PROBE_TOKEN"],
+            "required": True,
+            "default_tools_approval_mode": "approve",
+            "enabled_tools": ["safe_echo"],
         }
     )
     env = {
@@ -126,9 +152,59 @@ for line in sys.stdin:
         )
     print("Claude header helper: initial and rotated token accepted")
     (root / "codex").mkdir()
-    cmd = ["codex", "app-server", "--strict-config"]
-    for key, value in build_codex_mcp_overrides(config):
+    (root / "codex" / "config.toml").write_text(
+        '[mcp_servers.seeded-rogue]\ncommand = "/usr/bin/false"\n'
+        'default_tools_approval_mode = "approve"\n'
+    )
+    mcp_overrides = build_codex_mcp_overrides(config)
+    catalog_cmd = [
+        "codex",
+        "mcp",
+        "list",
+        "--json",
+        "-c",
+        "features.apps=false",
+        "-c",
+        "features.plugins=false",
+        "-c",
+        "features.tool_suggest=false",
+    ]
+    for key, value in mcp_overrides:
+        catalog_cmd.extend(["-c", key + "=" + value])
+    catalog_result = subprocess.run(
+        catalog_cmd,
+        cwd=root,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    catalog = json.loads(catalog_result.stdout)
+    assert next(item for item in catalog if item["name"] == "seeded-rogue")["enabled"] is True
+    mcp_overrides.extend(
+        build_codex_mcp_isolation_overrides(
+            catalog,
+            allowed_names={"renewal-test", "stdio-test"},
+        )
+    )
+    cmd = [
+        "codex",
+        "app-server",
+        "--strict-config",
+        "-c",
+        "features.apps=false",
+        "-c",
+        "features.plugins=false",
+        "-c",
+        "features.tool_suggest=false",
+    ]
+    for key, value in mcp_overrides:
         cmd.extend(["-c", key + "=" + value])
+    seen.clear()
+    token.write_text(
+        json.dumps({"access_token": "codex-initial", "expires_at": "2099-01-01T00:00:00Z"})
+    )
     proc = subprocess.Popen(
         cmd,
         env=env,
@@ -165,11 +241,13 @@ for line in sys.stdin:
         )
         proc.stdin.write('{"method":"initialized","params":{}}\n')
         proc.stdin.flush()
-        seen.clear()
-        token.write_text(
-            json.dumps({"access_token": "codex-initial", "expires_at": "2099-01-01T00:00:00Z"})
-        )
         status = request(2, "mcpServerStatus/list", {"limit": 100})
+        statuses = {item["name"]: item for item in status["result"]["data"]}
+        assert set(statuses) == {"renewal-test", "seeded-rogue", "stdio-test"}, status
+        assert statuses["seeded-rogue"]["serverInfo"] is None, status
+        assert statuses["seeded-rogue"]["tools"] == {}, status
+        assert statuses["seeded-rogue"]["resources"] == [], status
+        assert statuses["seeded-rogue"]["resourceTemplates"] == [], status
         stdio = next(item for item in status["result"]["data"] if item["name"] == "stdio-test")
         assert stdio["serverInfo"]["name"] == "stdio-env-ok", stdio
         assert "Bearer codex-initial" in seen, (
@@ -185,7 +263,33 @@ for line in sys.stdin:
             "Codex did not reload dynamic header helper",
             status,
         )
-        print("Codex: rotated HTTP token and explicit stdio credential inheritance accepted")
+        thread_result = request(
+            4,
+            "thread/start",
+            {
+                "cwd": str(root),
+                "approvalPolicy": "never",
+                "sandbox": "read-only",
+            },
+        )
+        thread_id = thread_result["result"]["thread"]["id"]
+        tool_result = request(
+            5,
+            "mcpServer/tool/call",
+            {
+                "threadId": thread_id,
+                "server": "stdio-test",
+                "tool": "safe_echo",
+                "arguments": {"text": "approved-safe-echo"},
+            },
+        )
+        assert tool_result["result"]["content"] == [
+            {"type": "text", "text": "approved-safe-echo"}
+        ], tool_result
+        print(
+            "Codex: rotated HTTP token, explicit stdio credentials, and read-only "
+            "approved MCP tool call accepted"
+        )
     finally:
         proc.terminate()
         proc.wait(timeout=10)

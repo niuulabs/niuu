@@ -103,6 +103,72 @@ class _Client:
 
 
 @pytest.mark.asyncio
+async def test_a2a_task_uses_ledger_message_ids_for_start_and_reply() -> None:
+    client = _Client(
+        [
+            {"task": {"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}},
+            {"task": {"id": "task-1", "status": {"state": "TASK_STATE_WORKING"}}},
+        ]
+    )
+    tool = A2ATaskTool(agent_directory=_Directory(_agent()), client=client)
+
+    await tool.execute_persisted_start(
+        {
+            "operation": "start",
+            "agent_id": _agent().id,
+            "skill_id": "review",
+            "prompt": "Review the change.",
+        },
+        message_id="intent-message-1",
+        auth_token="owner-token",
+    )
+    await tool.execute_persisted_reply(
+        {
+            "operation": "reply",
+            "agent_id": _agent().id,
+            "task_id": "task-1",
+            "answer": "Use the existing interface.",
+        },
+        message_id="reply-message-1",
+        auth_token="owner-token",
+    )
+
+    assert client.posts[0][1]["params"]["message"]["messageId"] == "intent-message-1"
+    assert client.posts[1][1]["params"]["message"]["messageId"] == "reply-message-1"
+    assert client.posts[0][2]["Authorization"] == "Bearer owner-token"
+    assert client.posts[1][2]["Authorization"] == "Bearer owner-token"
+
+
+@pytest.mark.asyncio
+async def test_persisted_task_operation_returns_exact_unbounded_delivery_result() -> None:
+    delivery_result = {
+        "candidateSha": "a" * 40,
+        "reviewReceipts": [{"summary": "x" * 8_000}],
+    }
+    client = _Client(
+        [
+            {
+                "id": "task-1",
+                "status": {"state": "TASK_STATE_COMPLETED"},
+                "metadata": {"deliveryResult": delivery_result},
+            }
+        ]
+    )
+    tool = A2ATaskTool(
+        agent_directory=_Directory(_agent()),
+        client=client,
+        result_max_chars=1_000,
+    )
+
+    task = await tool.execute_persisted_task_operation(
+        {"operation": "get", "agent_id": _agent().id, "task_id": "task-1"}
+    )
+
+    assert task["metadata"]["deliveryResult"] == delivery_result
+    assert len(task["metadata"]["deliveryResult"]["reviewReceipts"][0]["summary"]) == 8_000
+
+
+@pytest.mark.asyncio
 async def test_a2a_task_find_uses_durable_registry_without_peer_lookup() -> None:
     queries: list[dict[str, object]] = []
 

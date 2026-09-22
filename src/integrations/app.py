@@ -46,6 +46,7 @@ from volundr.domain.services.integration_registry import (
     definitions_from_config,
 )
 from volundr.domain.services.tracker_factory import TrackerFactory
+from volundr.integration_definitions import load_integration_definition_configs
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             integration_repo = PostgresIntegrationRepository(pool)
             integration_registry = IntegrationRegistry(
                 definitions_from_config(
-                    [definition.model_dump() for definition in settings.integrations.definitions]
+                    [
+                        definition.model_dump()
+                        for definition in load_integration_definition_configs(settings.integrations)
+                    ]
                 )
             )
             tracker_factory = TrackerFactory(credential_store)

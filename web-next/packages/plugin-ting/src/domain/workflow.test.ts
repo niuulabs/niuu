@@ -5,6 +5,9 @@ import {
   WorkflowValidationError,
   workflowNodeSchema,
   workflowEdgeSchema,
+  includeNodes,
+  providedNodeIds,
+  resolveWorkflowNode,
 } from './workflow';
 import type { Workflow } from './workflow';
 
@@ -39,6 +42,28 @@ const nodeC = {
   label: 'All green?',
   predicate: 'ci.exitCode === 0',
   position: { x: 400, y: 0 },
+};
+
+const nodeD = {
+  id: 'node-d',
+  kind: 'wait' as const,
+  label: 'Wait for CI',
+  position: { x: 600, y: 0 },
+};
+
+const nodeInclude = {
+  id: 'node-include',
+  kind: 'include' as const,
+  label: 'Plan the delivery',
+  workflow: 'planning',
+  nodes: {
+    'planning-analysis': 'delivery-plan-author',
+    'planning-reviews': 'delivery-plan-reviews',
+  },
+  overrides: {
+    'delivery-plan-author': { label: 'Author the plan', position: { x: 0, y: 0 } },
+  },
+  position: { x: 800, y: 0 },
 };
 
 const edgeAB = {
@@ -102,12 +127,53 @@ describe('workflowNodeSchema', () => {
     }
   });
 
+  it('parses a passive wait node without persona or gate fields', () => {
+    const result = workflowNodeSchema.parse(nodeD);
+    expect(result).toEqual(nodeD);
+    expect(result.kind).toBe('wait');
+  });
+
+  it('rejects persona execution fields on a passive wait node', () => {
+    expect(() => workflowNodeSchema.parse({ ...nodeD, personaIds: ['reviewer'] })).toThrow();
+    expect(() => workflowNodeSchema.parse({ ...nodeD, stageMembers: [] })).toThrow();
+  });
+
+  it('parses an include node with overrides', () => {
+    const result = workflowNodeSchema.parse(nodeInclude);
+    expect(result.kind).toBe('include');
+    if (result.kind === 'include') {
+      expect(result.workflow).toBe('planning');
+      expect(result.nodes).toEqual({
+        'planning-analysis': 'delivery-plan-author',
+        'planning-reviews': 'delivery-plan-reviews',
+      });
+      expect(result.overrides).toEqual({
+        'delivery-plan-author': { label: 'Author the plan', position: { x: 0, y: 0 } },
+      });
+    }
+  });
+
+  it('rejects an include node with an empty nodes map', () => {
+    expect(() => workflowNodeSchema.parse({ ...nodeInclude, nodes: {} })).toThrow();
+  });
+
   it('rejects unknown node kind', () => {
     expect(() => workflowNodeSchema.parse({ ...nodeA, kind: 'action' })).toThrow();
   });
 
   it('rejects empty node id', () => {
     expect(() => workflowNodeSchema.parse({ ...nodeA, id: '' })).toThrow();
+  });
+});
+
+describe('workflowSchema wait compatibility', () => {
+  it('requires schema version 2 for passive wait nodes', () => {
+    expect(() => workflowSchema.parse(makeWorkflow({ nodes: [nodeD] }))).toThrow(
+      'Passive wait nodes require workflow schema version 2',
+    );
+    expect(workflowSchema.parse(makeWorkflow({ schemaVersion: 2, nodes: [nodeD] })).nodes).toEqual([
+      nodeD,
+    ]);
   });
 });
 
@@ -151,6 +217,44 @@ describe('workflowSchema', () => {
 
   it('rejects invalid UUID', () => {
     expect(() => workflowSchema.parse(makeWorkflow({ id: 'bad-id' }))).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Include helpers
+// ---------------------------------------------------------------------------
+
+describe('includeNodes / providedNodeIds / resolveWorkflowNode', () => {
+  it('returns only include-kind nodes', () => {
+    const workflow = makeWorkflow({ nodes: [nodeA, nodeInclude] });
+    expect(includeNodes(workflow)).toEqual([nodeInclude]);
+  });
+
+  it('returns an empty list when there are no includes', () => {
+    expect(includeNodes(makeWorkflow())).toEqual([]);
+  });
+
+  it('maps every provided local id to its owning include node', () => {
+    const workflow = makeWorkflow({ nodes: [nodeA, nodeInclude] });
+    const provided = providedNodeIds(workflow);
+    expect(provided.get('delivery-plan-author')).toBe(nodeInclude);
+    expect(provided.get('delivery-plan-reviews')).toBe(nodeInclude);
+    expect(provided.has('node-a')).toBe(false);
+  });
+
+  it('resolves a real node id directly', () => {
+    const workflow = makeWorkflow({ nodes: [nodeA, nodeInclude] });
+    expect(resolveWorkflowNode(workflow, 'node-a')).toBe(nodeA);
+  });
+
+  it('resolves a provided local id to its owning include node', () => {
+    const workflow = makeWorkflow({ nodes: [nodeA, nodeInclude] });
+    expect(resolveWorkflowNode(workflow, 'delivery-plan-reviews')).toBe(nodeInclude);
+  });
+
+  it('returns undefined for an id that is neither a node nor provided', () => {
+    const workflow = makeWorkflow({ nodes: [nodeA, nodeInclude] });
+    expect(resolveWorkflowNode(workflow, 'unknown-id')).toBeUndefined();
   });
 });
 
@@ -199,6 +303,29 @@ describe('validateWorkflow', () => {
 
   it('passes for empty workflow (no nodes, no edges)', () => {
     expect(() => validateWorkflow(makeWorkflow({ nodes: [], edges: [] }))).not.toThrow();
+  });
+
+  it('accepts an edge whose source or target is a local id an include provides', () => {
+    const toProvided = { ...edgeAB, source: 'node-a', target: 'delivery-plan-author' };
+    const fromProvided = {
+      id: 'edge-provided',
+      source: 'delivery-plan-reviews',
+      target: 'node-a',
+      cp1: { x: 0, y: 0 },
+      cp2: { x: 0, y: 0 },
+    };
+    expect(() =>
+      validateWorkflow(
+        makeWorkflow({ nodes: [nodeA, nodeInclude], edges: [toProvided, fromProvided] }),
+      ),
+    ).not.toThrow();
+  });
+
+  it('still throws when an edge references an id no include provides', () => {
+    const badEdge = { ...edgeAB, source: 'node-a', target: 'not-provided-anywhere' };
+    expect(() =>
+      validateWorkflow(makeWorkflow({ nodes: [nodeA, nodeInclude], edges: [badEdge] })),
+    ).toThrow(WorkflowValidationError);
   });
 
   it('error message names the problematic id', () => {

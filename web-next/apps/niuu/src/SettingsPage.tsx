@@ -16,6 +16,7 @@ import {
   useMountedSettingsProviders,
   type MountedSettingsProvider,
   type RemoteSettingsCredentialsResource,
+  type RemoteSettingsExternalIntegrationsResource,
   type RemoteSettingsField,
   type RemoteSettingsIntegrationsResource,
   type RemoteSettingsProviderSchema,
@@ -172,6 +173,39 @@ interface IntegrationConnectionRecord {
   credential_error_code?: string | null;
   credentialStatusUpdatedAt?: string | null;
   credential_status_updated_at?: string | null;
+}
+
+interface ExternalIntegrationDefinitionRecord {
+  slug: string;
+  name: string;
+  integrationType: string;
+  adapter: string;
+}
+
+interface ExternalModuleComponentRecord {
+  kind: string;
+  name: string;
+  adapter: string;
+}
+
+interface ExternalIntegrationValidationRecord {
+  ok: boolean;
+  sourceDir: string;
+  definitionFiles: string[];
+  manifestFile?: string;
+  moduleId?: string;
+  definitions: ExternalIntegrationDefinitionRecord[];
+  components?: ExternalModuleComponentRecord[];
+  errors: string[];
+}
+
+interface ExternalIntegrationPackageRecord extends ExternalIntegrationValidationRecord {
+  id: string;
+}
+
+interface ExternalIntegrationPackagesResponse {
+  managedRoot: string;
+  items: ExternalIntegrationPackageRecord[];
 }
 
 interface CredentialEnrollmentRecord {
@@ -1973,6 +2007,254 @@ function IntegrationsResourceCard({
   );
 }
 
+function ExternalIntegrationsResourceCard({
+  resource,
+  rootBase,
+  providerId,
+}: {
+  resource: RemoteSettingsExternalIntegrationsResource;
+  rootBase: string;
+  providerId: string;
+}) {
+  const client = useMemo(() => createApiClient(rootBase), [rootBase]);
+  const queryClient = useQueryClient();
+  const [sourceDir, setSourceDir] = useState('');
+  const [definitionFiles, setDefinitionFiles] = useState('');
+  const [manifestFile, setManifestFile] = useState('');
+  const [validation, setValidation] = useState<ExternalIntegrationValidationRecord | null>(null);
+
+  const packagesQuery = useQuery({
+    queryKey: ['settings-resource', providerId, resource.id, 'external-integrations'],
+    queryFn: () => client.get<ExternalIntegrationPackagesResponse>(resource.listPath),
+  });
+
+  const effectiveSourceDir =
+    sourceDir || (packagesQuery.data?.managedRoot ? `${packagesQuery.data.managedRoot}/` : '');
+
+  const requestBody = () => {
+    const files = definitionFiles
+      .split(/[,\n]/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const manifest = manifestFile.trim();
+    return {
+      sourceDir: effectiveSourceDir.trim(),
+      definitionFiles: files,
+      ...(manifest ? { manifestFile: manifest } : {}),
+    };
+  };
+
+  const validateMutation = useMutation({
+    mutationFn: () =>
+      client.post<ExternalIntegrationValidationRecord>(resource.validatePath, requestBody()),
+    onSuccess: (result) => setValidation(result),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: () => client.post(resource.createPath, requestBody()),
+    onSuccess: async () => {
+      setValidation(null);
+      await queryClient.invalidateQueries({
+        queryKey: ['settings-resource', providerId, resource.id, 'external-integrations'],
+      });
+      await queryClient.invalidateQueries({ queryKey: ['mounted-settings', providerId] });
+    },
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: (id: string) =>
+      client.delete(resource.deletePath.replace('{id}', encodeURIComponent(id))),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ['settings-resource', providerId, resource.id, 'external-integrations'],
+      });
+      await queryClient.invalidateQueries({ queryKey: ['mounted-settings', providerId] });
+    },
+  });
+
+  const files = requestBody().definitionFiles;
+  const canSubmit = Boolean(effectiveSourceDir.trim() && (files.length > 0 || manifestFile.trim()));
+  const mutationError = validateMutation.error ?? createMutation.error ?? removeMutation.error;
+
+  return (
+    <section className="settings-resource">
+      <div className="settings-resource__header">
+        <div>
+          <h2 className="settings-resource__title">{resource.label}</h2>
+          {resource.description ? (
+            <p className="settings-resource__copy">{resource.description}</p>
+          ) : null}
+          {packagesQuery.data?.managedRoot ? (
+            <p className="settings-resource__copy">
+              Put packages under <code>{packagesQuery.data.managedRoot}</code>. Their files remain
+              outside the image and repository.
+            </p>
+          ) : null}
+        </div>
+      </div>
+
+      {resource.writable !== false ? (
+        <form
+          className="settings-resource__composer settings-resource__composer--stacked"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (canSubmit) createMutation.mutate();
+          }}
+        >
+          <div className="settings-resource__schema-fields">
+            <label className="settings-resource__composer-field settings-resource__composer-field--wide">
+              <span className="settings-resource__composer-label">Package directory</span>
+              <input
+                className="settings-field__control"
+                value={effectiveSourceDir}
+                onChange={(event) => {
+                  setSourceDir(event.target.value);
+                  setValidation(null);
+                }}
+                placeholder="/path/to/.niuu/data/private-integrations/my-package"
+              />
+            </label>
+            <label className="settings-resource__composer-field settings-resource__composer-field--wide">
+              <span className="settings-resource__composer-label">Definition files</span>
+              <textarea
+                className="settings-field__textarea"
+                value={definitionFiles}
+                onChange={(event) => {
+                  setDefinitionFiles(event.target.value);
+                  setValidation(null);
+                }}
+                rows={3}
+                placeholder="integration.yaml"
+              />
+            </label>
+            <label className="settings-resource__composer-field settings-resource__composer-field--wide">
+              <span className="settings-resource__composer-label">Module manifest</span>
+              <input
+                className="settings-field__control"
+                value={manifestFile}
+                onChange={(event) => {
+                  setManifestFile(event.target.value);
+                  setValidation(null);
+                }}
+                placeholder="niuu-module.yaml"
+              />
+            </label>
+          </div>
+          <div className="settings-resource__actions">
+            <button
+              type="button"
+              className="settings-shell__save-button settings-shell__save-button--secondary"
+              disabled={!canSubmit || validateMutation.isPending || createMutation.isPending}
+              onClick={() => validateMutation.mutate()}
+            >
+              {validateMutation.isPending ? 'Validating…' : 'Validate package'}
+            </button>
+            <button
+              type="submit"
+              className="settings-shell__save-button"
+              disabled={!canSubmit || createMutation.isPending || validateMutation.isPending}
+            >
+              {createMutation.isPending ? 'Adding…' : 'Add and restart platform'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className="settings-resource__empty">
+          Package registration is managed by this deployment.
+        </div>
+      )}
+
+      {validation ? (
+        <div className="settings-resource__callout" role="status">
+          <div className="settings-resource__callout-title">
+            {validation.ok ? 'Package is valid' : 'Package is not valid'}
+          </div>
+          <p className="settings-resource__copy">
+            {validation.ok
+              ? [
+                  ...validation.definitions.map(
+                    (definition) => `${definition.name} (${definition.slug})`,
+                  ),
+                  ...(validation.components ?? []).map(
+                    (component) => `${component.name} (${component.kind.replace(/_/g, ' ')})`,
+                  ),
+                ].join(', ')
+              : validation.errors.join(' ')}
+          </p>
+        </div>
+      ) : null}
+
+      {mutationError ? (
+        <p className="settings-shell__status settings-shell__status--error" role="alert">
+          {saveErrorText(mutationError)}
+        </p>
+      ) : null}
+      {createMutation.isSuccess || removeMutation.isSuccess ? (
+        <p className="settings-shell__status settings-shell__status--success" role="status">
+          Stack update started. The platform may be unavailable briefly while it restarts.
+        </p>
+      ) : null}
+
+      <div className="settings-resource__list">
+        {packagesQuery.isLoading ? (
+          <div className="settings-resource__empty">Loading external packages…</div>
+        ) : packagesQuery.isError ? (
+          <div className="settings-resource__empty">
+            Could not load external packages: {saveErrorText(packagesQuery.error)}
+          </div>
+        ) : packagesQuery.data?.items.length ? (
+          packagesQuery.data.items.map((item) => (
+            <div key={item.id} className="settings-resource__row">
+              <div className="settings-resource__row-main">
+                <div className="settings-resource__row-title">
+                  {item.definitions.map((definition) => definition.name).join(', ') ||
+                    item.moduleId ||
+                    (item.components ?? []).map((component) => component.name).join(', ') ||
+                    item.sourceDir}
+                </div>
+                <div className="settings-resource__row-meta">
+                  {item.sourceDir} ·{' '}
+                  {[
+                    ...item.definitionFiles,
+                    ...(item.manifestFile ? [item.manifestFile] : []),
+                  ].join(', ')}
+                </div>
+                <div className="settings-resource__row-note">
+                  {item.ok ? (
+                    <>
+                      {`${item.definitions.length} definition${item.definitions.length === 1 ? '' : 's'} loaded`}
+                      {(item.components ?? []).map((component) => (
+                        <span key={`${component.kind}:${component.name}`}>
+                          {' · '}
+                          {component.kind.replace(/_/g, ' ')}: {component.name}
+                        </span>
+                      ))}
+                    </>
+                  ) : (
+                    item.errors.join(' ')
+                  )}
+                </div>
+              </div>
+              {resource.writable !== false ? (
+                <button
+                  type="button"
+                  className="settings-resource__row-action"
+                  disabled={removeMutation.isPending}
+                  onClick={() => removeMutation.mutate(item.id)}
+                >
+                  Remove and restart
+                </button>
+              ) : null}
+            </div>
+          ))
+        ) : (
+          <div className="settings-resource__empty">No external integration packages loaded.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function SettingsSectionResources({
   snapshot,
   resources,
@@ -2011,6 +2293,16 @@ function SettingsSectionResources({
         if (resource.type === 'integrations') {
           return (
             <IntegrationsResourceCard
+              key={resource.id}
+              resource={resource}
+              rootBase={rootBase}
+              providerId={snapshot.provider.id}
+            />
+          );
+        }
+        if (resource.type === 'external_integrations') {
+          return (
+            <ExternalIntegrationsResourceCard
               key={resource.id}
               resource={resource}
               rootBase={rootBase}

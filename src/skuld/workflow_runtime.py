@@ -58,6 +58,7 @@ class WorkflowTerminalNode:
     event_types: list[str]
     join_mode: str
     completion_event_type: str
+    passing_verdicts: frozenset[str] = frozenset()
     require_git_commit: bool = False
     require_git_push: bool = False
 
@@ -74,6 +75,8 @@ class WorkflowGateNode:
     pending_behavior: str = "help_needed"
     instructions: str = ""
     auto_forward_after: str = "30m"
+    evidence_policy: dict[str, Any] | None = None
+    artifact: dict[str, str] | None = None
 
 
 @dataclass
@@ -98,6 +101,69 @@ class WorkflowGateState:
     notes: str = ""
     source: str = "workflow"
     summary: str = ""
+
+
+@dataclass(frozen=True)
+class WorkflowReviewAttestation:
+    """Frozen reviewer identities authenticated by Skuld for one workflow."""
+
+    scope: str
+    event_type: str
+    roles: dict[str, str]
+
+    @property
+    def personas(self) -> dict[str, str]:
+        return {persona_id: role for role, persona_id in self.roles.items()}
+
+
+def _workflow_review_attestation(
+    graph: dict[str, Any] | None,
+) -> WorkflowReviewAttestation | None:
+    """Read the workflow's explicit review binding, if it declares one."""
+    if not isinstance(graph, dict):
+        return None
+    raw = graph.get("reviewAttestation")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) != {"version", "scope", "eventType", "roles"}:
+        raise ValueError("workflow graph reviewAttestation is invalid")
+    if type(raw["version"]) is not int or raw["version"] != 1:
+        raise ValueError("workflow graph reviewAttestation version must be 1")
+    scope = raw["scope"]
+    event_type = raw["eventType"]
+    roles = raw["roles"]
+    if not isinstance(scope, str) or not scope.strip():
+        raise ValueError("workflow graph reviewAttestation scope is required")
+    if not isinstance(event_type, str) or not event_type.strip():
+        raise ValueError("workflow graph reviewAttestation eventType is required")
+    if not isinstance(roles, dict) or not roles:
+        raise ValueError("workflow graph reviewAttestation roles are required")
+    normalized: dict[str, str] = {}
+    for role, persona_id in roles.items():
+        if not isinstance(role, str) or not role.strip():
+            raise ValueError("workflow graph reviewAttestation role names must be non-empty")
+        if not isinstance(persona_id, str) or not persona_id.strip():
+            raise ValueError("workflow graph reviewAttestation persona IDs must be non-empty")
+        normalized[role.strip()] = persona_id.strip()
+    if len(normalized) != len(roles) or len(set(normalized.values())) != len(normalized):
+        raise ValueError("workflow graph reviewAttestation roles and personas must be unique")
+    joined_personas = {
+        str(member.get("personaId") or "").strip()
+        for node in graph.get("nodes", [])
+        if isinstance(node, dict) and node.get("kind") == "stage" and node.get("joinMode") == "all"
+        for member in node.get("stageMembers", [])
+        if isinstance(member, dict)
+    }
+    unjoined = set(normalized.values()) - joined_personas
+    if unjoined:
+        raise ValueError(
+            "workflow graph reviewAttestation personas must belong to a joinMode all stage"
+        )
+    return WorkflowReviewAttestation(
+        scope=scope.strip(),
+        event_type=event_type.strip(),
+        roles=normalized,
+    )
 
 
 def _workflow_terminal_nodes(graph: dict[str, Any] | None) -> list[WorkflowTerminalNode]:
@@ -132,6 +198,11 @@ def _workflow_terminal_nodes(graph: dict[str, Any] | None) -> list[WorkflowTermi
                 event_types=event_types,
                 join_mode=str(node.get("joinMode") or "all"),
                 completion_event_type=str(node.get("completionEvent") or "ravn.task.completed"),
+                passing_verdicts=frozenset(
+                    str(value).strip().casefold()
+                    for value in node.get("passingVerdicts") or []
+                    if str(value).strip()
+                ),
                 require_git_commit=bool(
                     (node.get("completionRules") or {}).get("requireGitCommit")
                 ),
@@ -231,17 +302,23 @@ def _workflow_gate_nodes(graph: dict[str, Any] | None) -> list[WorkflowGateNode]
                 pending_behavior=pending_behavior,
                 instructions=instructions,
                 auto_forward_after=str(node.get("autoForwardAfter") or "30m"),
+                evidence_policy=node.get("evidencePolicy"),
+                artifact=node.get("artifact"),
             )
         )
 
     return gate_nodes
 
 
-def _workflow_outcome_passed(payload: dict[str, Any]) -> bool:
+def _workflow_outcome_passed(
+    payload: dict[str, Any], *, passing_verdicts: frozenset[str] = frozenset()
+) -> bool:
     if not bool(payload.get("valid", True)):
         return False
 
     verdict = str(payload.get("verdict") or "").strip().lower()
+    if passing_verdicts:
+        return verdict in passing_verdicts
     if verdict in _FAILING_VERDICTS:
         return False
     if verdict in _PASSING_VERDICTS:
@@ -265,10 +342,17 @@ def _workflow_outcome_passed(payload: dict[str, Any]) -> bool:
     return True
 
 
-def _workflow_join_satisfied(join_mode: str, outcomes: list[dict[str, Any]]) -> bool:
+def _workflow_join_satisfied(
+    join_mode: str,
+    outcomes: list[dict[str, Any]],
+    *,
+    passing_verdicts: frozenset[str] = frozenset(),
+) -> bool:
     if not outcomes:
         return False
-    passed = [_workflow_outcome_passed(outcome) for outcome in outcomes]
+    passed = [
+        _workflow_outcome_passed(outcome, passing_verdicts=passing_verdicts) for outcome in outcomes
+    ]
     match join_mode:
         case "any":
             return any(passed)
@@ -336,4 +420,13 @@ def _merge_workflow_terminal_outcomes(outcomes: list[dict[str, Any]]) -> dict[st
         merged["tests_passing"] = all(tests)
     if scope_values:
         merged["scope_adherence"] = min(scope_values)
+    # A child workflow's final coordinator emits the typed, unsigned result.
+    # Preserve only this explicitly named object. Ting independently projects
+    # authenticated reviewer outcomes into signed receipts before the result
+    # can satisfy the parent contract.
+    if len(outcomes) == 1:
+        fields = outcomes[0].get("fields")
+        result = fields.get("result") if isinstance(fields, dict) else None
+        if isinstance(result, dict):
+            merged["result"] = dict(result)
     return merged

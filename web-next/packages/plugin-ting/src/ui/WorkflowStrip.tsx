@@ -77,9 +77,11 @@ function BoxNode({ node }: { node: WorkflowNode }) {
         ? (node.source ?? 'manual dispatch')
         : node.kind === 'cond'
           ? node.predicate || 'condition'
-          : node.kind === 'end'
-            ? 'run finishes'
-            : 'resource';
+          : node.kind === 'wait'
+            ? 'wait for external signal'
+            : node.kind === 'end'
+              ? 'run finishes'
+              : 'resource';
   return (
     <div
       data-testid={`workflow-strip-node-${node.id}`}

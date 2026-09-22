@@ -1,0 +1,87 @@
+schema_version: 2
+id: 195d5026-7adb-4ce7-97ee-fb1e18ea4c3a
+name: Developer Planning
+description: Investigate a delivery request and produce an exact-revision plan approved by three independent reviewers.
+version: 1.0.0
+persona_dependencies:
+  developer-analyst:
+    id: developer-analyst
+    revision: content-00aa4026904f070d
+    digest: sha256:00aa4026904f070dda97baf44f3720076b3c47361e452417ffcbf25345070e0f
+    path: personas/developer-analyst.yaml
+  developer-architecture-reviewer:
+    id: developer-architecture-reviewer
+    revision: content-31b0fdd1c6b3226c
+    digest: sha256:31b0fdd1c6b3226c67f092403fcdb973452981de857959a45f283c1272996b7f
+    path: personas/developer-architecture-reviewer.yaml
+  developer-correctness-reviewer:
+    id: developer-correctness-reviewer
+    revision: content-8f360edd60787644
+    digest: sha256:8f360edd607876442b6a3f926723407faa01a9b40fe6c9729eade761a48263b3
+    path: personas/developer-correctness-reviewer.yaml
+  developer-security-plan-reviewer:
+    id: developer-security-plan-reviewer
+    revision: content-0b502c246b1819da
+    digest: sha256:0b502c246b1819da85facb13ecd18e44ea9b9996b85a1da277730c742407ff0d
+    path: personas/developer-security-plan-reviewer.yaml
+workflow_dependencies: {}
+graph:
+  executionContract: developer-planning/v1
+  reviewAttestation:
+    version: 1
+    scope: planning
+    eventType: plan.review.completed
+    roles:
+      architecture: developer-architecture-reviewer
+      correctness: developer-correctness-reviewer
+      security: developer-security-plan-reviewer
+  nodes:
+    - id: planning-request
+      kind: trigger
+      label: Investigate delivery request
+      source: developer delivery
+      dispatchEvent: delivery.requested
+    - id: planning-analysis
+      kind: stage
+      label: Investigate and maintain the canonical plan
+      executionMode: sequential
+      joinMode: any
+      reviewVerdictPolicy:
+        eventType: plan.review.completed
+        passOutcomes: [developer.plan.approved]
+        failOutcomes: [developer.plan.revised]
+        bindingFields: [plan_revision]
+      stageMembers:
+        - personaId: developer-analyst
+          model: gpt-5.5
+          budget: 32
+          consumesEventTypes: [delivery.requested, plan.review.completed]
+    - id: planning-reviews
+      kind: stage
+      label: Independently review the current plan revision
+      executionMode: parallel
+      joinMode: all
+      stageMembers:
+        - personaId: developer-architecture-reviewer
+          model: gpt-5.5
+          budget: 20
+          consumesEventTypes: [developer.plan.revised]
+        - personaId: developer-correctness-reviewer
+          model: gpt-5.5
+          budget: 20
+          consumesEventTypes: [developer.plan.revised]
+        - personaId: developer-security-plan-reviewer
+          model: gpt-5.5
+          budget: 20
+          consumesEventTypes: [developer.plan.revised]
+    - id: planning-complete
+      kind: end
+      label: Exact plan revision approved
+      joinMode: all
+      passingVerdicts: [approved]
+      completionEvent: developer.plan.approved
+  edges:
+    - {id: planning-request-analysis, source: planning-request, target: planning-analysis, label: delivery.requested -> delivery.requested}
+    - {id: planning-analysis-review, source: planning-analysis, target: planning-reviews, label: developer.plan.revised -> developer.plan.revised}
+    - {id: planning-review-revise, source: planning-reviews, target: planning-analysis, label: plan.review.completed -> plan.review.completed}
+    - {id: planning-analysis-complete, source: planning-analysis, target: planning-complete, label: developer.plan.approved -> developer.plan.approved}

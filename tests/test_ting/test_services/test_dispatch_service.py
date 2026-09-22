@@ -922,6 +922,47 @@ class TestDispatchIssues:
         assert t.progress_calls[0]["session_id"] == "ses-1"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("tenant_aware", [False, True])
+    async def test_progress_supports_unchanged_external_adapters(
+        self,
+        saga_repo: MockSagaRepo,
+        dispatcher_repo: MockDispatcherRepo,
+        tenant_aware: bool,
+    ):
+        tracker = _make_tracker()
+        recorded = []
+
+        async def legacy_progress(
+            tracker_id, *, status, session_id, owner_id, phase_tracker_id, saga_tracker_id
+        ):
+            recorded.append({"tracker_id": tracker_id, "owner_id": owner_id})
+
+        async def scoped_progress(tracker_id, *, tenant_id=None, **kwargs):
+            await legacy_progress(tracker_id, **kwargs)
+            recorded[-1]["tenant_id"] = tenant_id
+
+        tracker.update_run_progress = scoped_progress if tenant_aware else legacy_progress
+        service = DispatchService(
+            tracker_factory=MockTrackerFactory([tracker]),
+            volundr_factory=MockVolundrFactory(adapters=[MockVolundr()]),
+            saga_repo=saga_repo,
+            dispatcher_repo=dispatcher_repo,
+            config=DispatchConfig(default_system_prompt="Be helpful."),
+        )
+        result = await service.dispatch_issues(
+            owner_id="dev-user",
+            principal=Principal(user_id="dev-user", email="", tenant_id="tenant-a", roles=[]),
+            items=[
+                DispatchItem(saga_id=str(saga_repo.sagas[0].id), issue_id="i-1", repo="org/repo-a")
+            ],
+        )
+        assert result[0].status == "spawned"
+        expected = {"tracker_id": "i-1", "owner_id": "dev-user"}
+        if tenant_aware:
+            expected["tenant_id"] = "tenant-a"
+        assert recorded == [expected]
+
+    @pytest.mark.asyncio
     async def test_forwards_auth_token(
         self,
         service: DispatchService,
@@ -1523,6 +1564,16 @@ class _StubWorkflowRepo(WorkflowRepository):
     async def save_workflow(self, workflow: WorkflowDefinition) -> WorkflowDefinition:
         self._workflows[workflow.id] = workflow
         return workflow
+
+    async def list_workflow_versions(self, workflow_id):
+        return []
+
+    async def get_workflow_version(self, workflow_id, *, version=None, document_revision=None):
+        workflow = await self.get_workflow(workflow_id)
+        return workflow if workflow is not None and workflow.version == version else None
+
+    async def save_workflow_version(self, workflow, **kwargs):
+        raise NotImplementedError
 
     async def delete_workflow(self, workflow_id) -> bool:
         return self._workflows.pop(workflow_id, None) is not None

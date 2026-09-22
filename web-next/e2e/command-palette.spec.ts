@@ -30,9 +30,10 @@ test.describe('CommandPalette', () => {
     await expect(page.getByRole('dialog')).toBeHidden();
   });
 
-  test('⌘K button in topbar opens the palette', async ({ page }) => {
-    await page.getByRole('button', { name: 'Open command palette (⌘K)' }).click();
+  test('command palette button in the header opens the palette', async ({ page }) => {
+    await page.getByRole('button', { name: 'Open command palette' }).click();
     await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(page.getByPlaceholder('Search commands…')).toBeVisible();
   });
 
   test('type to filter narrows results', async ({ page }) => {
@@ -56,6 +57,16 @@ test.describe('CommandPalette', () => {
     await page.getByRole('option', { name: /ravn/i }).first().click();
     await expect(page.getByRole('dialog')).toBeHidden();
     await expect(page).toHaveURL(/\/ravn/);
+  });
+
+  test('Ting command opens the Work landing page', async ({ page }) => {
+    await page.keyboard.press('Control+k');
+    await page.getByPlaceholder('Search commands…').fill('Ting');
+    const ting = page.getByRole('option', { name: /Ting/i }).first();
+    await expect(ting).toBeVisible();
+    await ting.click();
+    await expect(page.getByRole('dialog')).toBeHidden();
+    await expect(page).toHaveURL(/\/ting\/work$/);
   });
 
   test('ArrowDown moves the active selection', async ({ page }) => {

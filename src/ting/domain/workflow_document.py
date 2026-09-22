@@ -1,0 +1,1284 @@
+"""Canonical portable Ting workflow YAML contract."""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from hashlib import sha256
+from pathlib import PurePosixPath
+from typing import Any
+from uuid import UUID
+
+import yaml
+
+from niuu.domain.json_schema import PortableSchemaError, validate_object_instance
+from niuu.domain.workflow_evidence import validate_evidence_gate_nodes
+from ravn.domain.persona_document import PersonaDocumentError, validate_persona_identifier
+from ting.domain.exceptions import WorkflowDocumentError
+from ting.domain.models import (
+    PersonaDependency,
+    WorkflowDefinition,
+    WorkflowDependency,
+    WorkflowScope,
+)
+
+WORKFLOW_SCHEMA_VERSION = 2
+SUPPORTED_WORKFLOW_SCHEMA_VERSIONS = frozenset({1, 2})
+_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_V1_DOCUMENT_KEYS = {
+    "schema_version",
+    "id",
+    "name",
+    "description",
+    "version",
+    "persona_dependencies",
+    "graph",
+}
+_V2_DOCUMENT_KEYS = _V1_DOCUMENT_KEYS | {"workflow_dependencies"}
+_DEPENDENCY_KEYS = {"id", "revision", "digest", "path"}
+_REVIEW_ATTESTATION_KEYS = {"version", "scope", "eventType", "roles"}
+
+
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects duplicate mapping keys."""
+
+
+def _construct_unique_mapping(
+    loader: _UniqueKeySafeLoader,
+    node: yaml.MappingNode,
+    deep: bool = False,
+) -> dict[object, object]:
+    mapping: dict[object, object] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise WorkflowDocumentError("YAML mapping keys must be scalar values") from exc
+        if duplicate:
+            raise WorkflowDocumentError(f"Duplicate YAML mapping key {key!r}")
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeySafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
+@dataclass(frozen=True)
+class ReviewAttestationBinding:
+    """Pinned reviewer roles and personas authenticated by the workflow runtime."""
+
+    version: int
+    scope: str
+    event_type: str
+    roles: dict[str, str]
+
+    @property
+    def personas(self) -> dict[str, str]:
+        return {persona_id: role for role, persona_id in self.roles.items()}
+
+
+@dataclass(frozen=True)
+class WorkflowDocument:
+    """Portable workflow definition without local ownership or access metadata."""
+
+    schema_version: int
+    id: UUID
+    name: str
+    description: str
+    version: str
+    persona_dependencies: dict[str, PersonaDependency]
+    graph: dict[str, Any]
+    workflow_dependencies: dict[str, WorkflowDependency] = field(default_factory=dict)
+
+    def to_workflow(
+        self,
+        *,
+        scope: WorkflowScope,
+        owner_id: str | None,
+        tenant_id: str = "",
+        created_at: datetime | None = None,
+        updated_at: datetime | None = None,
+        revision: str | None = None,
+        read_only: bool = False,
+        source: str | None = None,
+        persona_definitions: dict[str, dict[str, Any]] | None = None,
+        workflow_definitions: dict[str, dict[str, Any]] | None = None,
+        requirements: list[dict[str, Any]] | None = None,
+    ) -> WorkflowDefinition:
+        now = datetime.now(UTC)
+        return WorkflowDefinition(
+            id=self.id,
+            name=self.name,
+            description=self.description,
+            version=self.version,
+            scope=scope,
+            owner_id=owner_id,
+            graph=self.graph,
+            created_at=created_at or now,
+            updated_at=updated_at or now,
+            tenant_id=tenant_id,
+            persona_dependencies=self.persona_dependencies,
+            schema_version=self.schema_version,
+            workflow_dependencies=self.workflow_dependencies,
+            revision=revision,
+            read_only=read_only,
+            source=source,
+            persona_definitions=persona_definitions or {},
+            workflow_definitions=workflow_definitions or {},
+            requirements=requirements or [],
+        )
+
+
+def document_from_workflow(workflow: WorkflowDefinition) -> WorkflowDocument:
+    """Project a stored workflow into its portable representation."""
+    if workflow.schema_version < 2 and workflow.workflow_dependencies:
+        raise WorkflowDocumentError("Workflow dependencies require workflow schema_version 2")
+    return WorkflowDocument(
+        schema_version=workflow.schema_version,
+        id=workflow.id,
+        name=workflow.name,
+        description=workflow.description,
+        version=workflow.version,
+        persona_dependencies=dict(workflow.persona_dependencies),
+        graph=dict(workflow.graph),
+        workflow_dependencies=dict(workflow.workflow_dependencies),
+    )
+
+
+def load_workflow_document(text: str) -> WorkflowDocument:
+    """Parse and strictly validate a portable workflow YAML document."""
+    try:
+        raw = yaml.load(text, Loader=_UniqueKeySafeLoader)
+    except (yaml.YAMLError, WorkflowDocumentError) as exc:
+        raise WorkflowDocumentError(f"Invalid workflow YAML: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise WorkflowDocumentError("Workflow document must be a YAML mapping")
+
+    if any(not isinstance(key, str) for key in raw):
+        raise WorkflowDocumentError("Workflow document field names must be strings")
+    schema_version = raw.get("schema_version")
+    if type(schema_version) is not int or schema_version not in SUPPORTED_WORKFLOW_SCHEMA_VERSIONS:
+        supported = ", ".join(str(item) for item in sorted(SUPPORTED_WORKFLOW_SCHEMA_VERSIONS))
+        raise WorkflowDocumentError(
+            f"Unsupported workflow schema_version {schema_version!r}; "
+            f"supported versions are {supported}"
+        )
+    document_keys = _V2_DOCUMENT_KEYS if schema_version == 2 else _V1_DOCUMENT_KEYS
+    unknown = set(raw) - document_keys
+    if unknown:
+        raise WorkflowDocumentError(f"Unknown workflow field(s): {', '.join(sorted(unknown))}")
+    missing = document_keys - set(raw)
+    if missing:
+        raise WorkflowDocumentError(f"Missing workflow field(s): {', '.join(sorted(missing))}")
+
+    try:
+        workflow_id = UUID(str(raw["id"]))
+    except (TypeError, ValueError) as exc:
+        raise WorkflowDocumentError("Workflow id must be a valid UUID") from exc
+
+    name = _required_string(raw["name"], "name")
+    description = raw["description"]
+    if not isinstance(description, str):
+        raise WorkflowDocumentError("Workflow description must be a string")
+    version = _required_string(raw["version"], "version")
+    graph = raw["graph"]
+    if not isinstance(graph, dict):
+        raise WorkflowDocumentError("Workflow graph must be a mapping")
+    if any(not isinstance(key, str) for key in graph):
+        raise WorkflowDocumentError("Workflow graph field names must be strings")
+    try:
+        json.dumps(graph, allow_nan=False)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise WorkflowDocumentError(
+            "Workflow graph must contain only finite JSON-compatible values"
+        ) from exc
+    _validate_graph_structure(graph)
+    try:
+        validate_evidence_gate_nodes(graph)
+    except ValueError as exc:
+        raise WorkflowDocumentError(f"Invalid workflow evidence gate: {exc}") from exc
+    _validate_review_verdict_policies(graph)
+    _validate_wait_nodes(graph, schema_version=schema_version)
+    _validate_tool_actions(graph)
+    _validate_disabled_tools(graph)
+
+    dependencies_raw = raw["persona_dependencies"]
+    if not isinstance(dependencies_raw, dict):
+        raise WorkflowDocumentError("persona_dependencies must be a mapping keyed by alias")
+    if any(not isinstance(alias, str) for alias in dependencies_raw):
+        raise WorkflowDocumentError("Persona dependency aliases must be strings")
+    dependencies: dict[str, PersonaDependency] = {}
+    for alias, value in dependencies_raw.items():
+        parsed_alias = _required_string(alias, "persona dependency alias")
+        try:
+            validate_persona_identifier(parsed_alias, field="Workflow persona alias")
+        except PersonaDocumentError as exc:
+            raise WorkflowDocumentError(str(exc)) from exc
+        if parsed_alias in dependencies:
+            raise WorkflowDocumentError(f"Duplicate persona dependency alias {parsed_alias!r}")
+        dependencies[parsed_alias] = _load_dependency(parsed_alias, value)
+
+    referenced_aliases = referenced_persona_aliases(graph)
+    missing_aliases = referenced_aliases - set(dependencies)
+    if missing_aliases:
+        raise WorkflowDocumentError(
+            "Workflow graph references undeclared persona alias(es): "
+            + ", ".join(sorted(missing_aliases))
+        )
+    workflow_review_attestation(
+        graph,
+        persona_dependencies=dependencies,
+        enforce_join_membership=not graph_has_include_nodes(graph),
+    )
+
+    workflow_dependencies = _load_workflow_dependencies(
+        raw.get("workflow_dependencies", {}),
+        schema_version=schema_version,
+    )
+    _validate_subworkflow_nodes(
+        graph,
+        schema_version=schema_version,
+        dependencies=workflow_dependencies,
+        persona_dependencies=dependencies,
+    )
+    _validate_include_nodes(
+        graph, schema_version=schema_version, dependencies=workflow_dependencies
+    )
+
+    return WorkflowDocument(
+        schema_version=schema_version,
+        id=workflow_id,
+        name=name,
+        description=description,
+        version=version,
+        persona_dependencies=dependencies,
+        graph=graph,
+        workflow_dependencies=workflow_dependencies,
+    )
+
+
+def dump_workflow_document(document: WorkflowDocument | WorkflowDefinition) -> str:
+    """Serialize a workflow deterministically as safe portable YAML."""
+    if isinstance(document, WorkflowDefinition):
+        document = document_from_workflow(document)
+    payload = workflow_document_payload(document)
+    return yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, width=100)
+
+
+def workflow_document_payload(
+    document: WorkflowDocument | WorkflowDefinition,
+) -> dict[str, Any]:
+    """Return the canonical portable mapping for a workflow document."""
+    if isinstance(document, WorkflowDefinition):
+        document = document_from_workflow(document)
+    payload: dict[str, Any] = {
+        "schema_version": document.schema_version,
+        "id": str(document.id),
+        "name": document.name,
+        "description": document.description,
+        "version": document.version,
+        "persona_dependencies": {
+            alias: _dependency_to_dict(dependency)
+            for alias, dependency in sorted(document.persona_dependencies.items())
+        },
+    }
+    if document.schema_version >= 2:
+        payload["workflow_dependencies"] = {
+            alias: _workflow_dependency_to_dict(dependency)
+            for alias, dependency in sorted(document.workflow_dependencies.items())
+        }
+    payload["graph"] = document.graph
+    return payload
+
+
+def workflow_document_revision(document: WorkflowDocument | WorkflowDefinition) -> str:
+    """Return an opaque content token for compare-and-swap updates."""
+    if isinstance(document, WorkflowDefinition):
+        document = document_from_workflow(document)
+    canonical = workflow_document_payload(document)
+    for dependencies_key in ("persona_dependencies", "workflow_dependencies"):
+        dependencies = canonical.get(dependencies_key, {})
+        if isinstance(dependencies, dict):
+            for dependency in dependencies.values():
+                if isinstance(dependency, dict):
+                    dependency.pop("path", None)
+    encoded = json.dumps(
+        canonical,
+        allow_nan=False,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{sha256(encoded).hexdigest()}"
+
+
+def _required_string(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise WorkflowDocumentError(f"Workflow {field_name} must be a non-empty string")
+    return value.strip()
+
+
+def _load_dependency(alias: str, value: object) -> PersonaDependency:
+    if not isinstance(value, dict):
+        raise WorkflowDocumentError(f"Persona dependency {alias!r} must be a mapping")
+    unknown = set(value) - _DEPENDENCY_KEYS
+    if unknown:
+        raise WorkflowDocumentError(
+            f"Persona dependency {alias!r} has unknown field(s): " + ", ".join(sorted(unknown))
+        )
+    missing = {"id", "revision", "digest"} - set(value)
+    if missing:
+        raise WorkflowDocumentError(
+            f"Persona dependency {alias!r} is missing field(s): " + ", ".join(sorted(missing))
+        )
+    persona_id = _required_string(value["id"], f"persona dependency {alias!r} id")
+    revision = _required_string(value["revision"], f"persona dependency {alias!r} revision")
+    digest = _required_string(value["digest"], f"persona dependency {alias!r} digest")
+    if not _DIGEST_PATTERN.fullmatch(digest):
+        raise WorkflowDocumentError(
+            f"Persona dependency {alias!r} digest must be sha256:<64 lowercase hex characters>"
+        )
+    path = value.get("path")
+    if path is not None:
+        path = _validate_bundle_path(alias, path)
+    return PersonaDependency(id=persona_id, revision=revision, digest=digest, path=path)
+
+
+def _load_workflow_dependencies(
+    value: object,
+    *,
+    schema_version: int,
+) -> dict[str, WorkflowDependency]:
+    if not isinstance(value, dict):
+        raise WorkflowDocumentError("workflow_dependencies must be a mapping keyed by alias")
+    if any(not isinstance(alias, str) for alias in value):
+        raise WorkflowDocumentError("Workflow dependency aliases must be strings")
+    dependencies: dict[str, WorkflowDependency] = {}
+    for alias, raw_dependency in value.items():
+        parsed_alias = _required_string(alias, "workflow dependency alias")
+        try:
+            validate_persona_identifier(parsed_alias, field="Workflow dependency alias")
+        except PersonaDocumentError as exc:
+            raise WorkflowDocumentError(str(exc)) from exc
+        if not isinstance(raw_dependency, dict):
+            raise WorkflowDocumentError(f"Workflow dependency {parsed_alias!r} must be a mapping")
+        unknown = set(raw_dependency) - _DEPENDENCY_KEYS
+        missing = {"id", "revision", "digest"} - set(raw_dependency)
+        if unknown or missing:
+            details = []
+            if unknown:
+                details.append("unknown: " + ", ".join(sorted(unknown)))
+            if missing:
+                details.append("missing: " + ", ".join(sorted(missing)))
+            raise WorkflowDocumentError(
+                f"Invalid workflow dependency {parsed_alias!r} ({'; '.join(details)})"
+            )
+        try:
+            workflow_id = UUID(str(raw_dependency["id"]))
+        except (TypeError, ValueError) as exc:
+            raise WorkflowDocumentError(
+                f"Workflow dependency {parsed_alias!r} id must be a UUID"
+            ) from exc
+        revision = _required_string(
+            raw_dependency["revision"], f"workflow dependency {parsed_alias!r} revision"
+        )
+        digest = _required_string(
+            raw_dependency["digest"], f"workflow dependency {parsed_alias!r} digest"
+        )
+        if not _DIGEST_PATTERN.fullmatch(digest):
+            raise WorkflowDocumentError(
+                f"Workflow dependency {parsed_alias!r} digest must be "
+                "sha256:<64 lowercase hex characters>"
+            )
+        path = raw_dependency.get("path")
+        if path is not None:
+            path = _validate_workflow_bundle_path(parsed_alias, path)
+        dependencies[parsed_alias] = WorkflowDependency(
+            id=workflow_id,
+            revision=revision,
+            digest=digest,
+            path=path,
+        )
+    if schema_version == 1 and dependencies:
+        raise WorkflowDocumentError("schema_version 1 cannot declare workflow dependencies")
+    return dependencies
+
+
+def _validate_bundle_path(alias: str, value: object) -> str:
+    path = _required_string(value, f"persona dependency {alias!r} path")
+    parsed = PurePosixPath(path)
+    if (
+        parsed.is_absolute()
+        or ".." in parsed.parts
+        or path != parsed.as_posix()
+        or "\\" in path
+        or ":" in path
+        or not path.startswith("personas/")
+        or parsed.suffix not in {".yaml", ".yml"}
+    ):
+        raise WorkflowDocumentError(
+            f"Persona dependency {alias!r} path must be a normalized personas/*.yaml "
+            "relative POSIX path"
+        )
+    return path
+
+
+def _validate_workflow_bundle_path(alias: str, value: object) -> str:
+    path = _required_string(value, f"workflow dependency {alias!r} path")
+    parsed = PurePosixPath(path)
+    if (
+        parsed.is_absolute()
+        or ".." in parsed.parts
+        or path != parsed.as_posix()
+        or "\\" in path
+        or ":" in path
+        or not path.startswith("workflows/")
+        or parsed.suffix not in {".yaml", ".yml"}
+    ):
+        raise WorkflowDocumentError(
+            f"Workflow dependency {alias!r} path must be a normalized workflows/*.yaml "
+            "relative POSIX path"
+        )
+    return path
+
+
+def graph_has_include_nodes(graph: dict[str, Any]) -> bool:
+    """Return whether a graph declares any ``kind: include`` node.
+
+    Shared by the loader (to relax raw-graph checks that need a copied
+    stage's real content) and ``ting.domain.workflow_includes`` (to decide
+    whether there is anything to resolve).
+    """
+    return any(
+        isinstance(node, dict) and node.get("kind") == "include"
+        for node in graph.get("nodes") or []
+    )
+
+
+def referenced_persona_aliases(graph: dict[str, Any]) -> set[str]:
+    """Return stage persona aliases using the runtime's legacy precedence."""
+    aliases: set[str] = set()
+    nodes = graph.get("nodes", [])
+    if not isinstance(nodes, list):
+        raise WorkflowDocumentError("Workflow graph nodes must be a list")
+    for node in nodes:
+        if not isinstance(node, dict):
+            raise WorkflowDocumentError("Each workflow graph node must be a mapping")
+        members = node.get("stageMembers", [])
+        if not isinstance(members, list):
+            raise WorkflowDocumentError("Workflow stageMembers must be a list")
+        for member in members:
+            if not isinstance(member, dict):
+                raise WorkflowDocumentError("Each workflow stage member must be a mapping")
+            alias = member.get("personaId")
+            if alias is None:
+                continue
+            parsed_alias = _required_string(alias, "stage member personaId")
+            try:
+                validate_persona_identifier(parsed_alias, field="Workflow persona alias")
+            except PersonaDocumentError as exc:
+                raise WorkflowDocumentError(str(exc)) from exc
+            aliases.add(parsed_alias)
+        if members:
+            continue
+        legacy_aliases = node.get("personaIds", [])
+        if not isinstance(legacy_aliases, list):
+            raise WorkflowDocumentError("Workflow personaIds must be a list")
+        for alias in legacy_aliases:
+            parsed_alias = _required_string(alias, "stage personaIds alias")
+            try:
+                validate_persona_identifier(parsed_alias, field="Workflow persona alias")
+            except PersonaDocumentError as exc:
+                raise WorkflowDocumentError(str(exc)) from exc
+            aliases.add(parsed_alias)
+    return aliases
+
+
+def workflow_review_attestation(
+    graph: dict[str, Any],
+    *,
+    persona_dependencies: dict[str, PersonaDependency] | None = None,
+    enforce_join_membership: bool = True,
+) -> ReviewAttestationBinding | None:
+    """Parse a workflow-pinned reviewer binding declared directly on the graph.
+
+    ``enforce_join_membership`` checks that every bound persona belongs to a
+    ``joinMode: all`` stage actually present in ``graph``. An ``include``
+    node can stand in for that stage, invisible to a raw scan, so callers
+    validating a graph that still has unresolved includes pass ``False`` and
+    leave this check to ``validate_resolved_workflow_graph`` once the stage
+    it names is really there.
+    """
+    raw = graph.get("reviewAttestation")
+    if raw is None:
+        if _requires_review_attestation(graph):
+            raise WorkflowDocumentError("Workflow graph requires graph.reviewAttestation")
+        return None
+    if not isinstance(raw, dict):
+        raise WorkflowDocumentError("Workflow graph reviewAttestation must be a mapping")
+    unknown = set(raw) - _REVIEW_ATTESTATION_KEYS
+    missing = _REVIEW_ATTESTATION_KEYS - set(raw)
+    if unknown or missing:
+        details = []
+        if unknown:
+            details.append("unknown: " + ", ".join(sorted(unknown)))
+        if missing:
+            details.append("missing: " + ", ".join(sorted(missing)))
+        raise WorkflowDocumentError(
+            "Invalid workflow graph reviewAttestation (" + "; ".join(details) + ")"
+        )
+    if raw["version"] != 1 or type(raw["version"]) is not int:
+        raise WorkflowDocumentError("Workflow graph reviewAttestation version must be 1")
+    scope = _required_string(raw["scope"], "reviewAttestation scope")
+    event_type = _required_string(raw["eventType"], "reviewAttestation eventType")
+    raw_roles = raw["roles"]
+    if not isinstance(raw_roles, dict) or not raw_roles:
+        raise WorkflowDocumentError(
+            "Workflow graph reviewAttestation roles must be a non-empty mapping"
+        )
+    if any(not isinstance(role, str) for role in raw_roles):
+        raise WorkflowDocumentError("Workflow graph reviewAttestation role names must be strings")
+
+    roles: dict[str, str] = {}
+    for role, persona_id in raw_roles.items():
+        normalized_role = _required_string(role, "reviewAttestation role")
+        normalized_persona = _required_string(
+            persona_id, f"reviewAttestation role {normalized_role!r} personaId"
+        )
+        try:
+            validate_persona_identifier(normalized_role, field="Workflow review role")
+            validate_persona_identifier(normalized_persona, field="Workflow review persona alias")
+        except PersonaDocumentError as exc:
+            raise WorkflowDocumentError(str(exc)) from exc
+        roles[normalized_role] = normalized_persona
+    if len(set(roles.values())) != len(roles):
+        raise WorkflowDocumentError(
+            "Workflow graph reviewAttestation personas must be unique across roles"
+        )
+    if persona_dependencies is not None:
+        undeclared = set(roles.values()) - set(persona_dependencies)
+        if undeclared:
+            raise WorkflowDocumentError(
+                "Workflow graph reviewAttestation references undeclared persona alias(es): "
+                + ", ".join(sorted(undeclared))
+            )
+        if enforce_join_membership:
+            joined_personas = {
+                alias
+                for node in graph.get("nodes", [])
+                if isinstance(node, dict)
+                and node.get("kind") == "stage"
+                and node.get("joinMode") == "all"
+                for alias in referenced_persona_aliases({"nodes": [node], "edges": []})
+            }
+            unjoined = set(roles.values()) - joined_personas
+            if unjoined:
+                raise WorkflowDocumentError(
+                    "Workflow graph reviewAttestation persona alias(es) must belong to a "
+                    "joinMode all stage: " + ", ".join(sorted(unjoined))
+                )
+    return ReviewAttestationBinding(
+        version=1,
+        scope=scope,
+        event_type=event_type,
+        roles=roles,
+    )
+
+
+def _requires_review_attestation(graph: dict[str, Any]) -> bool:
+    """Return whether the graph uses a construct that consumes an attested binding.
+
+    A `reviewVerdictPolicy` stage gates its pass/fail outcome on an event type
+    supplied by authenticated reviewer identities, and a subworkflow whose
+    `resultSchema` requires `reviewReceipts` hands a signed reviewer receipt
+    across the child/parent boundary. Either one needs to know which persona
+    may speak for which role, which is exactly what `reviewAttestation`
+    supplies — so declaring one of these constructs without it is fatal rather
+    than silently ungoverned.
+    """
+    for node in graph.get("nodes", []):
+        if not isinstance(node, dict):
+            continue
+        if isinstance(node.get("reviewVerdictPolicy"), dict):
+            return True
+        if node.get("kind") != "subworkflow":
+            continue
+        result_schema = node.get("resultSchema")
+        required = result_schema.get("required") if isinstance(result_schema, dict) else None
+        if isinstance(required, list) and "reviewReceipts" in required:
+            return True
+    return False
+
+
+def _validate_tool_actions(graph: dict[str, Any]) -> None:
+    """Validate the optional graph-level narrowing of tool actions by name.
+
+    `toolActions` maps a tool name to the exact action names a persona running
+    this graph may use from it; the tool builder can only intersect a
+    persona's own declared actions against this list, never widen them. The
+    key is opaque here — no tool or action name is privileged by the engine.
+    """
+    if "toolActions" not in graph:
+        return
+    tool_actions = graph["toolActions"]
+    if not isinstance(tool_actions, dict) or not tool_actions:
+        raise WorkflowDocumentError("Workflow graph toolActions must be a non-empty mapping")
+    for tool_name, actions in tool_actions.items():
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            raise WorkflowDocumentError("Workflow graph toolActions tool names must be strings")
+        if (
+            not isinstance(actions, list)
+            or not actions
+            or any(not isinstance(action, str) or not action.strip() for action in actions)
+        ):
+            raise WorkflowDocumentError(
+                f"Workflow graph toolActions[{tool_name!r}] must be a non-empty list of "
+                "action names"
+            )
+        if len(set(actions)) != len(actions):
+            raise WorkflowDocumentError(
+                f"Workflow graph toolActions[{tool_name!r}] must not repeat action names"
+            )
+
+
+def _validate_disabled_tools(graph: dict[str, Any]) -> None:
+    """Validate the optional graph-level list of tools withheld from every persona.
+
+    `disabledTools` names tools that a persona running this graph does not
+    receive at all, whatever its own document allows. It can only remove. The
+    names are opaque here: no tool is privileged by the engine.
+    """
+    if "disabledTools" not in graph:
+        return
+    disabled = graph["disabledTools"]
+    if (
+        not isinstance(disabled, list)
+        or not disabled
+        or any(not isinstance(name, str) or not name.strip() for name in disabled)
+    ):
+        raise WorkflowDocumentError(
+            "Workflow graph disabledTools must be a non-empty list of tool names"
+        )
+    if len(set(disabled)) != len(disabled):
+        raise WorkflowDocumentError("Workflow graph disabledTools must not repeat tool names")
+    overlap = sorted(set(disabled) & set(graph.get("toolActions") or {}))
+    if overlap:
+        raise WorkflowDocumentError(
+            f"Workflow graph disabledTools and toolActions both name {overlap}; "
+            "a tool is either withheld or narrowed"
+        )
+
+
+def _validate_graph_structure(graph: dict[str, Any]) -> None:
+    for field_name in ("nodes", "edges"):
+        value = graph.get(field_name, [])
+        if not isinstance(value, list):
+            raise WorkflowDocumentError(f"Workflow graph {field_name} must be a list")
+        if any(not isinstance(item, dict) for item in value):
+            raise WorkflowDocumentError(f"Each workflow graph {field_name[:-1]} must be a mapping")
+    for field_name in ("resourceBindings", "resource_bindings"):
+        if field_name not in graph:
+            continue
+        value = graph[field_name]
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            raise WorkflowDocumentError(f"Workflow graph {field_name} must be a list of mappings")
+    for node in graph.get("nodes", []):
+        passing_verdicts = node.get("passingVerdicts")
+        if passing_verdicts is None:
+            continue
+        node_id = str(node.get("id") or "").strip()
+        if (
+            node.get("kind") != "end"
+            or not isinstance(passing_verdicts, list)
+            or not (passing_verdicts)
+        ):
+            raise WorkflowDocumentError(
+                f"Workflow node {node_id!r} passingVerdicts must be a non-empty list on an end node"
+            )
+        if any(not isinstance(value, str) or not value.strip() for value in passing_verdicts):
+            raise WorkflowDocumentError(
+                f"Workflow node {node_id!r} passingVerdicts must contain event verdict strings"
+            )
+
+
+def _validate_review_verdict_policies(graph: dict[str, Any]) -> None:
+    nodes = graph.get("nodes", [])
+    edges = graph.get("edges", [])
+    by_id = {str(node.get("id") or ""): node for node in nodes if isinstance(node, dict)}
+    for node in nodes:
+        policy = node.get("reviewVerdictPolicy")
+        if policy is None:
+            continue
+        node_id = _required_string(node.get("id"), "review verdict policy node id")
+        if node.get("kind") != "stage" or not isinstance(policy, dict):
+            raise WorkflowDocumentError(
+                f"Workflow node {node_id!r} reviewVerdictPolicy must be a mapping on a stage"
+            )
+        unknown = set(policy) - {
+            "eventType",
+            "passOutcomes",
+            "failOutcomes",
+            "bindingFields",
+        }
+        if unknown:
+            raise WorkflowDocumentError(
+                f"Workflow node {node_id!r} reviewVerdictPolicy has unknown field(s): "
+                + ", ".join(sorted(unknown))
+            )
+        event_type = _required_string(
+            policy.get("eventType"), f"Workflow node {node_id!r} review eventType"
+        )
+        outcome_sets: list[set[str]] = []
+        for outcome_field in ("passOutcomes", "failOutcomes"):
+            values = policy.get(outcome_field)
+            if (
+                not isinstance(values, list)
+                or not values
+                or any(not isinstance(value, str) or not value.strip() for value in values)
+            ):
+                raise WorkflowDocumentError(
+                    f"Workflow node {node_id!r} reviewVerdictPolicy {outcome_field} "
+                    "must be a non-empty list of event types"
+                )
+            outcome_sets.append({value.strip() for value in values})
+        if outcome_sets[0] & outcome_sets[1]:
+            raise WorkflowDocumentError(
+                f"Workflow node {node_id!r} review pass and fail outcomes must be disjoint"
+            )
+        binding_fields = policy.get("bindingFields")
+        if (
+            not isinstance(binding_fields, list)
+            or not binding_fields
+            or any(not isinstance(value, str) or not value.strip() for value in binding_fields)
+        ):
+            raise WorkflowDocumentError(
+                f"Workflow node {node_id!r} reviewVerdictPolicy bindingFields "
+                "must be a non-empty list"
+            )
+        incoming_sources = [
+            by_id.get(str(edge.get("source") or ""))
+            for edge in edges
+            if str(edge.get("target") or "") == node_id
+            and _split_edge_label_for_validation(edge.get("label"))[1] == event_type
+        ]
+        reviewers = set().union(
+            *(
+                referenced_persona_aliases({"nodes": [source], "edges": []})
+                for source in incoming_sources
+                if isinstance(source, dict)
+                and source.get("kind") == "stage"
+                and source.get("joinMode") == "all"
+            ),
+            set(),
+        )
+        if len(reviewers) < 2:
+            raise WorkflowDocumentError(
+                f"Workflow node {node_id!r} reviewVerdictPolicy requires an incoming "
+                "joinMode all stage with at least two declared reviewers"
+            )
+        outgoing = {
+            _split_edge_label_for_validation(edge.get("label"))[0]
+            for edge in edges
+            if str(edge.get("source") or "") == node_id
+        }
+        undeclared = (outcome_sets[0] | outcome_sets[1]) - outgoing
+        if undeclared:
+            raise WorkflowDocumentError(
+                f"Workflow node {node_id!r} review outcome(s) are not outgoing topics: "
+                + ", ".join(sorted(undeclared))
+            )
+
+
+def _validate_wait_nodes(graph: dict[str, Any], *, schema_version: int) -> None:
+    """Validate passive external waits without turning them into agent or human gates.
+
+    A wait is always addressed to its own explicit node id, so a graph may
+    declare several. Each one names the condition types it accepts, and its
+    outgoing edges must agree on exactly one event type — that is the event
+    the runtime publishes once this node's wait is observed, read directly
+    from the graph rather than duplicated onto the node.
+    """
+    edges = graph.get("edges", [])
+    wait_nodes = [node for node in graph.get("nodes", []) if node.get("kind") == "wait"]
+    for node in wait_nodes:
+        node_id = _required_string(node.get("id"), "wait node id")
+        _required_string(node.get("label"), f"wait node {node_id!r} label")
+        if schema_version < 2:
+            raise WorkflowDocumentError(f"Wait node {node_id!r} requires workflow schema_version 2")
+        if node.get("stageMembers") or node.get("personaIds"):
+            raise WorkflowDocumentError(
+                f"Wait node {node_id!r} must not declare personas or stage members"
+            )
+        _validate_wait_conditions(node_id, node.get("conditions"))
+        incoming = [edge for edge in edges if str(edge.get("target") or "") == node_id]
+        outgoing = [edge for edge in edges if str(edge.get("source") or "") == node_id]
+        if not incoming or not outgoing:
+            raise WorkflowDocumentError(
+                f"Wait node {node_id!r} requires incoming suspension and "
+                "outgoing continuation edges"
+            )
+        for edge in (*incoming, *outgoing):
+            source_event, target_event = _split_edge_label_for_validation(edge.get("label"))
+            if not source_event or not target_event:
+                raise WorkflowDocumentError(
+                    f"Wait node {node_id!r} edges require source and target event types"
+                )
+        observed_events = {
+            _split_edge_label_for_validation(edge.get("label"))[0] for edge in outgoing
+        }
+        if len(observed_events) != 1:
+            raise WorkflowDocumentError(
+                f"Wait node {node_id!r} outgoing edges must agree on exactly one observed event"
+            )
+
+
+def _validate_wait_conditions(node_id: str, conditions: object) -> None:
+    if not isinstance(conditions, list) or not conditions:
+        raise WorkflowDocumentError(
+            f"Wait node {node_id!r} must declare a non-empty conditions list"
+        )
+    seen: set[str] = set()
+    for item in conditions:
+        condition_type = _required_string(item, f"wait node {node_id!r} condition")
+        if condition_type in seen:
+            raise WorkflowDocumentError(
+                f"Wait node {node_id!r} declares duplicate condition {condition_type!r}"
+            )
+        seen.add(condition_type)
+
+
+def _split_edge_label_for_validation(value: object) -> tuple[str, str]:
+    if not isinstance(value, str) or "->" not in value:
+        return "", ""
+    source, target = value.split("->", 1)
+    return source.strip(), target.strip()
+
+
+def _validate_subworkflow_nodes(
+    graph: dict[str, Any],
+    *,
+    schema_version: int,
+    dependencies: dict[str, WorkflowDependency],
+    persona_dependencies: dict[str, PersonaDependency],
+) -> None:
+    for node in graph.get("nodes", []):
+        if node.get("kind") != "subworkflow":
+            continue
+        node_id = _required_string(node.get("id"), "subworkflow node id")
+        if schema_version < 2:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} requires workflow schema_version 2"
+            )
+        templates = _validate_node_templates(node, node_id=node_id, dependencies=dependencies)
+        coordinator = _required_string(
+            node.get("allowedCoordinator"),
+            f"subworkflow node {node_id!r} allowedCoordinator",
+        )
+        if coordinator not in persona_dependencies:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} allowedCoordinator {coordinator!r} "
+                "is not a declared persona dependency"
+            )
+        _validate_contract_schema(node.get("inputSchema"), node_id=node_id, field="inputSchema")
+        _validate_contract_schema(node.get("resultSchema"), node_id=node_id, field="resultSchema")
+        _validate_declared_children(node, node_id=node_id, templates=templates)
+        _validate_bounded_integer(
+            node.get("maxChildren"),
+            node_id=node_id,
+            field="maxChildren",
+            minimum=1,
+            maximum=100,
+        )
+        _validate_bounded_integer(
+            node.get("maxAttempts"),
+            node_id=node_id,
+            field="maxAttempts",
+            minimum=1,
+            maximum=10,
+        )
+        join_mode = node.get("joinMode")
+        if join_mode not in {"all", "any"}:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} joinMode must be 'all' or 'any'"
+            )
+        blocked_event = _required_string(
+            node.get("blockedEvent"),
+            f"subworkflow node {node_id!r} blockedEvent",
+        )
+        joined_events = {
+            _split_edge_label_for_validation(edge.get("label"))[0]
+            for edge in graph.get("edges", [])
+            if isinstance(edge, dict) and str(edge.get("source") or "") == node_id
+        }
+        if len(joined_events) != 1 or not next(iter(joined_events)):
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} requires exactly one outgoing edge naming "
+                "the event published once its children join"
+            )
+        if blocked_event in joined_events:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} blockedEvent must differ from its joined event"
+            )
+
+
+def _validate_node_templates(
+    node: dict[str, Any],
+    *,
+    node_id: str,
+    dependencies: dict[str, WorkflowDependency],
+) -> dict[str, str]:
+    """Validate and return a subworkflow node's named child-workflow templates.
+
+    `templates` maps a node-local template name to a `workflow_dependencies`
+    alias; a node offering exactly one child workflow still declares a
+    mapping with one entry — there is no separate single-dependency form.
+    Returns the validated name -> alias mapping.
+    """
+    raw = node.get("templates")
+    if not isinstance(raw, dict) or not raw:
+        raise WorkflowDocumentError(
+            f"Subworkflow node {node_id!r} templates must be a non-empty mapping of template "
+            "name to workflowDependencies alias"
+        )
+    templates: dict[str, str] = {}
+    for name, alias in raw.items():
+        parsed_name = _required_string(name, f"subworkflow node {node_id!r} template name")
+        parsed_alias = _required_string(
+            alias, f"subworkflow node {node_id!r} template {parsed_name!r} workflow dependency"
+        )
+        if parsed_name in templates:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} declares duplicate template name {parsed_name!r}"
+            )
+        if parsed_alias not in dependencies:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} template {parsed_name!r} references undeclared "
+                f"workflow dependency {parsed_alias!r}"
+            )
+        templates[parsed_name] = parsed_alias
+    return templates
+
+
+def _validate_declared_children(
+    node: dict[str, Any], *, node_id: str, templates: dict[str, str]
+) -> None:
+    """Validate a subworkflow node's optional default child declarations.
+
+    A `subworkflow` node may declare `children` up front when the workflow
+    author already knows the shape of the fan-out (research threads, review
+    angles, ...). The engine never auto-expands these: a coordinator persona
+    still decides whether to propose them, verbatim or amended, through the
+    ordinary expansion route. This only validates that the declaration itself
+    is internally consistent.
+    """
+    if "children" not in node:
+        return
+    children = node["children"]
+    if not isinstance(children, list) or not children:
+        raise WorkflowDocumentError(
+            f"Subworkflow node {node_id!r} children must be a non-empty list when declared"
+        )
+    input_schema = node.get("inputSchema")
+    by_key: dict[str, dict[str, Any]] = {}
+    for entry in children:
+        if not isinstance(entry, dict):
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} children entries must be mappings"
+            )
+        unknown = set(entry) - {"key", "objective", "dependencies", "input", "template"}
+        if unknown:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} children entry has unknown field(s): "
+                + ", ".join(sorted(unknown))
+            )
+        key = _required_string(entry.get("key"), f"subworkflow node {node_id!r} child key")
+        _required_string(
+            entry.get("objective"), f"subworkflow node {node_id!r} child {key!r} objective"
+        )
+        if key in by_key:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} declares duplicate child key {key!r}"
+            )
+        by_key[key] = entry
+    for key, entry in by_key.items():
+        dependencies = entry.get("dependencies", [])
+        if not isinstance(dependencies, list) or any(
+            not isinstance(item, str) or not item.strip() for item in dependencies
+        ):
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} child {key!r} dependencies must be a list of "
+                "non-empty strings"
+            )
+        unknown_dependencies = set(dependencies) - set(by_key)
+        if unknown_dependencies:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} child {key!r} has unknown dependencies: "
+                + ", ".join(sorted(unknown_dependencies))
+            )
+        if key in dependencies:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} child {key!r} cannot depend on itself"
+            )
+        _validate_declared_child_template(entry, node_id=node_id, key=key, templates=templates)
+        child_input = entry.get("input", {})
+        if not isinstance(child_input, dict):
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} child {key!r} input must be a mapping"
+            )
+        if isinstance(input_schema, dict):
+            try:
+                validate_object_instance(child_input, input_schema, field=f"child {key!r} input")
+            except PortableSchemaError as exc:
+                raise WorkflowDocumentError(
+                    f"Subworkflow node {node_id!r} child {key!r} input is invalid: {exc}"
+                ) from exc
+    _require_acyclic_children(node_id, by_key)
+
+
+def _validate_declared_child_template(
+    entry: dict[str, Any],
+    *,
+    node_id: str,
+    key: str,
+    templates: dict[str, str],
+) -> None:
+    """Validate a declared child's optional `template` name against the node's offer.
+
+    Omitting `template` is only valid when the node offers exactly one; with
+    several on offer, each declared child must name the one it runs.
+    """
+    raw_template = entry.get("template")
+    if raw_template is None:
+        if len(templates) != 1:
+            choices = ", ".join(sorted(templates))
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} child {key!r} must name a template; this node "
+                f"offers: {choices}"
+            )
+        return
+    template_name = _required_string(
+        raw_template, f"subworkflow node {node_id!r} child {key!r} template"
+    )
+    if template_name not in templates:
+        choices = ", ".join(sorted(templates))
+        raise WorkflowDocumentError(
+            f"Subworkflow node {node_id!r} child {key!r} names unknown template "
+            f"{template_name!r}; this node offers: {choices}"
+        )
+
+
+def _require_acyclic_children(node_id: str, by_key: dict[str, dict[str, Any]]) -> None:
+    remaining = {key: set(entry.get("dependencies") or ()) for key, entry in by_key.items()}
+    while remaining:
+        ready = [key for key, dependencies in remaining.items() if not dependencies]
+        if not ready:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} declared children contain a dependency cycle"
+            )
+        for key in ready:
+            remaining.pop(key)
+        for dependencies in remaining.values():
+            dependencies.difference_update(ready)
+
+
+def _validate_contract_schema(value: object, *, node_id: str, field: str) -> None:
+    if not isinstance(value, dict) or value.get("type") != "object":
+        raise WorkflowDocumentError(
+            f"Subworkflow node {node_id!r} {field} must be an object JSON schema"
+        )
+    properties = value.get("properties")
+    if not isinstance(properties, dict) or any(
+        not isinstance(name, str) or not isinstance(schema, dict)
+        for name, schema in properties.items()
+    ):
+        raise WorkflowDocumentError(
+            f"Subworkflow node {node_id!r} {field}.properties must map names to schemas"
+        )
+    required = value.get("required", [])
+    if not isinstance(required, list) or any(
+        not isinstance(name, str) or name not in properties for name in required
+    ):
+        raise WorkflowDocumentError(
+            f"Subworkflow node {node_id!r} {field}.required must reference declared properties"
+        )
+
+
+def _validate_bounded_integer(
+    value: object,
+    *,
+    node_id: str,
+    field: str,
+    minimum: int,
+    maximum: int,
+) -> None:
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise WorkflowDocumentError(
+            f"Subworkflow node {node_id!r} {field} must be an integer from {minimum} to {maximum}"
+        )
+
+
+_INCLUDE_OVERRIDE_KEYS = frozenset({"position", "label"})
+
+
+def _validate_include_nodes(
+    graph: dict[str, Any],
+    *,
+    schema_version: int,
+    dependencies: dict[str, WorkflowDependency],
+) -> None:
+    """Validate an ``include`` node's own shape without resolving its target.
+
+    An include stands in for a set of stage/gate nodes copied in from another
+    pinned workflow at resolution time (``ting.domain.workflow_includes``).
+    Everything checkable without loading that workflow is checked here —
+    whether the named alias is even declared, and whether the local ids this
+    node claims collide with another node already in this graph. Whether the
+    named source ids actually exist in the included graph, whether they are
+    includable kinds, and whether their personas are pinned identically all
+    require the included document, so they are validated wherever a resolver
+    is available instead (at minimum, loading the bundled workflow set).
+    """
+    nodes = graph.get("nodes", [])
+    all_node_ids = {str(node.get("id") or "").strip() for node in nodes if isinstance(node, dict)}
+    include_nodes = [
+        node for node in nodes if isinstance(node, dict) and node.get("kind") == "include"
+    ]
+    if not include_nodes:
+        return
+    claimed_local_ids: set[str] = set()
+    for node in include_nodes:
+        node_id = _required_string(node.get("id"), "include node id")
+        if schema_version < 2:
+            raise WorkflowDocumentError(
+                f"Include node {node_id!r} requires workflow schema_version 2"
+            )
+        alias = _required_string(node.get("workflow"), f"include node {node_id!r} workflow alias")
+        if alias not in dependencies:
+            raise WorkflowDocumentError(
+                f"Include node {node_id!r} references undeclared workflow dependency {alias!r}"
+            )
+        raw_nodes = node.get("nodes")
+        if not isinstance(raw_nodes, dict) or not raw_nodes:
+            raise WorkflowDocumentError(
+                f"Include node {node_id!r} nodes must be a non-empty mapping of source node id "
+                "to local node id"
+            )
+        local_ids_for_node: set[str] = set()
+        for raw_source_id, raw_local_id in raw_nodes.items():
+            _required_string(raw_source_id, f"include node {node_id!r} source node id")
+            local_id = _required_string(
+                raw_local_id, f"include node {node_id!r} local node id for {raw_source_id!r}"
+            )
+            if local_id in all_node_ids:
+                raise WorkflowDocumentError(
+                    f"Include node {node_id!r} local id {local_id!r} collides with an existing "
+                    "node id"
+                )
+            if local_id in claimed_local_ids:
+                raise WorkflowDocumentError(
+                    f"Include node {node_id!r} declares duplicate local id {local_id!r}"
+                )
+            claimed_local_ids.add(local_id)
+            local_ids_for_node.add(local_id)
+        _validate_include_overrides(node_id, node.get("overrides"), local_ids_for_node)
+
+
+def _validate_include_overrides(
+    node_id: str,
+    overrides: object,
+    local_ids: set[str],
+) -> None:
+    if overrides is None:
+        return
+    if not isinstance(overrides, dict):
+        raise WorkflowDocumentError(f"Include node {node_id!r} overrides must be a mapping")
+    unknown_targets = set(overrides) - local_ids
+    if unknown_targets:
+        raise WorkflowDocumentError(
+            f"Include node {node_id!r} overrides name node(s) it does not include: "
+            + ", ".join(sorted(unknown_targets))
+        )
+    for local_id, override in overrides.items():
+        if not isinstance(override, dict) or not override or set(override) - _INCLUDE_OVERRIDE_KEYS:
+            raise WorkflowDocumentError(
+                f"Include node {node_id!r} override for {local_id!r} must be a mapping with "
+                "only 'position' and/or 'label'"
+            )
+        if "label" in override and (
+            not isinstance(override["label"], str) or not override["label"].strip()
+        ):
+            raise WorkflowDocumentError(
+                f"Include node {node_id!r} override for {local_id!r} label must be a "
+                "non-empty string"
+            )
+        if "position" in override and not isinstance(override["position"], dict):
+            raise WorkflowDocumentError(
+                f"Include node {node_id!r} override for {local_id!r} position must be a mapping"
+            )
+
+
+def validate_resolved_workflow_graph(
+    graph: dict[str, Any],
+    *,
+    schema_version: int,
+    persona_dependencies: dict[str, PersonaDependency],
+    workflow_dependencies: dict[str, WorkflowDependency],
+) -> None:
+    """Re-run whole-graph validation against a graph with includes resolved.
+
+    ``load_workflow_document`` validates the raw authored graph, where a
+    ``kind: include`` node stands in for the stage(s) or gate(s) it names.
+    Once ``ting.domain.workflow_includes`` copies those nodes in, everything
+    that depends on their exact content — edges naming their ids, review
+    verdict policy quorum membership, ``reviewAttestation``'s joinMode-all
+    binding, and referenced persona aliases — must be checked again against
+    what actually runs, not the placeholder that stood in for it. Callers
+    with access to a resolver (at minimum, loading the bundled workflow set)
+    run this after resolution; it raises exactly like ``load_workflow_document``
+    on the same defects.
+    """
+    _validate_graph_structure(graph)
+    try:
+        validate_evidence_gate_nodes(graph)
+    except ValueError as exc:
+        raise WorkflowDocumentError(f"Invalid workflow evidence gate: {exc}") from exc
+    _validate_review_verdict_policies(graph)
+    _validate_wait_nodes(graph, schema_version=schema_version)
+    referenced_aliases = referenced_persona_aliases(graph)
+    missing_aliases = referenced_aliases - set(persona_dependencies)
+    if missing_aliases:
+        raise WorkflowDocumentError(
+            "Workflow graph references undeclared persona alias(es): "
+            + ", ".join(sorted(missing_aliases))
+        )
+    workflow_review_attestation(graph, persona_dependencies=persona_dependencies)
+    _validate_subworkflow_nodes(
+        graph,
+        schema_version=schema_version,
+        dependencies=workflow_dependencies,
+        persona_dependencies=persona_dependencies,
+    )
+    _validate_include_nodes(
+        graph, schema_version=schema_version, dependencies=workflow_dependencies
+    )
+
+
+def _dependency_to_dict(dependency: PersonaDependency) -> dict[str, str]:
+    value = {
+        "id": dependency.id,
+        "revision": dependency.revision,
+        "digest": dependency.digest,
+    }
+    if dependency.path is not None:
+        value["path"] = dependency.path
+    return value
+
+
+def _workflow_dependency_to_dict(dependency: WorkflowDependency) -> dict[str, str]:
+    return dependency.to_dict()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -12,6 +13,13 @@ from niuu.domain.models import Principal
 
 AgentKind = Literal["steward", "resident", "workflow-session"]
 SourceHealthStatus = Literal["healthy", "degraded", "failed"]
+
+
+def configured_agent_id(card_url: str) -> str:
+    """Return the stable directory identity for an explicitly configured Agent Card."""
+    if not card_url:
+        raise ValueError("Configured Agent Card URL must not be empty")
+    return f"agent-{hashlib.sha256(card_url.encode()).hexdigest()[:24]}"
 
 
 class _AgentDirectoryModel(BaseModel):

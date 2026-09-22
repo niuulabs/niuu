@@ -4,7 +4,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import type { ISessionStore } from '../../ports/ISessionStore';
 import type { Session } from '../../domain/session';
-import { useSessionList } from './useSessionStore';
+import { useSessionDetail, useSessionList } from './useSessionStore';
 
 let store: ISessionStore;
 vi.mock('@niuulabs/plugin-sdk', () => ({ useService: () => store }));
@@ -178,6 +178,26 @@ it('handles an empty registry without probing arbitrary hosts', async () => {
   await waitFor(() => expect(result.current.data).toEqual([]));
   expect(result.current.isLoading).toBe(false);
   expect(store.listSessions).not.toHaveBeenCalled();
+});
+
+it('keeps same-id session details source-qualified and forwards cancellation', async () => {
+  store.getSession = vi.fn(async () => row('shared-id'));
+  const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { result } = renderHook(() => useSessionDetail('shared-id', 'build'), {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={cache}>{children}</QueryClientProvider>
+    ),
+  });
+
+  await waitFor(() => expect(result.current.data).toEqual(row('shared-id')));
+  expect(store.getSession).toHaveBeenCalledWith('shared-id', {
+    instanceId: 'build',
+    signal: expect.any(AbortSignal),
+  });
+  expect(cache.getQueryData(['volundr', 'domain-session', 'shared-id', 'build'])).toEqual(
+    row('shared-id'),
+  );
+  expect(cache.getQueryData(['volundr', 'domain-session', 'shared-id', 'thor'])).toBeUndefined();
 });
 
 it('prefers live data over an older cached archived copy of a restored session', async () => {

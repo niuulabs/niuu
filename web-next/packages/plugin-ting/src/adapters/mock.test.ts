@@ -8,7 +8,9 @@ import {
   createMockAuditLogService,
   createMockDispatchBus,
   createMockWorkflowService,
+  createMockWorkService,
   createMockResearchService,
+  createMockSpecsService,
 } from './mock';
 
 // ---------------------------------------------------------------------------
@@ -199,6 +201,36 @@ describe('createMockTingService', () => {
     expect(saga.repoRefs).toEqual(repoRefs);
     expect(saga.baseBranch).toBe('dev');
   });
+
+  it('assignRepos throws for an unknown saga', async () => {
+    const svc = createMockTingService();
+    await expect(svc.assignRepos('nope', [])).rejects.toThrow('Saga not found: nope');
+  });
+
+  it('assignRepos keeps the existing base branch when no repo ref supplies one', async () => {
+    const svc = createMockTingService();
+    const before = await svc.getSaga('00000000-0000-0000-0000-000000000001');
+    const saga = await svc.assignRepos('00000000-0000-0000-0000-000000000001', []);
+    expect(saga.baseBranch).toBe(before?.baseBranch);
+  });
+
+  it('deleteSaga removes the saga from the seed set', async () => {
+    const svc = createMockTingService();
+    await svc.deleteSaga?.('00000000-0000-0000-0000-000000000001');
+    const result = await svc.getSaga('00000000-0000-0000-0000-000000000001');
+    expect(result).toBeNull();
+  });
+
+  it('listPlanSessions returns an empty array', async () => {
+    const svc = createMockTingService();
+    const sessions = await svc.listPlanSessions?.();
+    expect(sessions).toEqual([]);
+  });
+
+  it('cancelPlanSession resolves without error', async () => {
+    const svc = createMockTingService();
+    await expect(svc.cancelPlanSession?.('plan-1')).resolves.toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -371,9 +403,21 @@ describe('createMockTrackerService', () => {
         { repo: 'niuulabs/ting', branch: 'feat/x' },
         { repo: 'niuulabs/volundr', branch: 'main' },
       ],
+      workflowId: 'workflow-pinned',
+      workflowVersion: '1.7.0',
     });
     expect(saga.repos).toEqual(['niuulabs/ting', 'niuulabs/volundr']);
     expect(saga.baseBranch).toBe('feat/x');
+    expect(saga.workflowId).toBe('workflow-pinned');
+    expect(saga.workflowVersion).toBe('1.7.0');
+  });
+
+  it('importProject defaults base branch to main when no repo ref or base branch is given', async () => {
+    const svc = createMockTrackerService();
+    const saga = await svc.importProject('proj-niuu-core', [], undefined, null, {
+      repoRefs: [],
+    });
+    expect(saga.baseBranch).toBe('main');
   });
 
   it('importProject pins to an instance target', async () => {
@@ -514,11 +558,15 @@ describe('createMockWorkflowService', () => {
     const svc = createMockWorkflowService();
     const result = await svc.launchWorkflow('00000000-0000-0000-0000-000000000a01', {
       prompt: 'Ship The Release!',
+      workflowVersion: '0.9.0',
     });
     expect(result.slug).toBe('ship-the-release');
     expect(result.status).toBe('starting');
     expect(result.clusterName).toBe('mock');
     expect(result.sessionName).toContain('ship-the-release');
+    expect(result.workflowVersion).toBe('0.9.0');
+    expect(result.documentRevision).toBeTruthy();
+    expect(result.chatEndpoint).toBeNull();
   });
 
   it('launchWorkflow falls back to the workflow name when prompt is empty', async () => {
@@ -545,6 +593,95 @@ describe('createMockWorkflowService', () => {
       sessionName: 'my-session',
     });
     expect(result.sessionName).toBe('my-session');
+  });
+
+  it('launchWorkflow defaults workflowVersion to an empty string when neither the request nor the workflow has one', async () => {
+    const svc = createMockWorkflowService();
+    const existing = await svc.getWorkflow('00000000-0000-0000-0000-000000000a01');
+    const versionless = await svc.saveWorkflow({
+      ...existing!,
+      id: 'wf-versionless',
+      version: undefined,
+    });
+    expect(versionless.version).toBeUndefined();
+
+    const result = await svc.launchWorkflow('wf-versionless', { prompt: 'go' });
+
+    expect(result.workflowVersion).toBe('');
+
+    const versions = await svc.listWorkflowVersions?.('wf-versionless');
+    expect(versions?.[0]?.version).toBe('draft');
+  });
+
+  it('listWorkflowVersions returns a single synthetic version for a known workflow', async () => {
+    const svc = createMockWorkflowService();
+    const versions = await svc.listWorkflowVersions?.('00000000-0000-0000-0000-000000000a01');
+    expect(versions).toEqual([
+      expect.objectContaining({
+        version: '1.4.2',
+        documentRevision: '00000000-0000-0000-0000-000000000a01',
+        isHead: true,
+        basedOnRevision: null,
+      }),
+    ]);
+  });
+
+  it('listWorkflowVersions returns an empty array for an unknown workflow', async () => {
+    const svc = createMockWorkflowService();
+    const versions = await svc.listWorkflowVersions?.('nope');
+    expect(versions).toEqual([]);
+  });
+
+  it('getWorkflowVersion returns the workflow when the version matches', async () => {
+    const svc = createMockWorkflowService();
+    const workflow = await svc.getWorkflowVersion?.(
+      '00000000-0000-0000-0000-000000000a01',
+      '1.4.2',
+    );
+    expect(workflow?.id).toBe('00000000-0000-0000-0000-000000000a01');
+  });
+
+  it('getWorkflowVersion returns null when the version does not match', async () => {
+    const svc = createMockWorkflowService();
+    const workflow = await svc.getWorkflowVersion?.(
+      '00000000-0000-0000-0000-000000000a01',
+      '9.9.9',
+    );
+    expect(workflow).toBeNull();
+  });
+
+  it('exportWorkflow returns yaml content for a known workflow', async () => {
+    const svc = createMockWorkflowService();
+    const exported = await svc.exportWorkflow('00000000-0000-0000-0000-000000000a01', 'yaml');
+    expect(exported.filename).toBe('00000000-0000-0000-0000-000000000a01.yaml');
+    expect(exported.mediaType).toBe('application/yaml');
+    expect(exported.data.size).toBeGreaterThan(0);
+  });
+
+  it('exportWorkflow throws for an unknown workflow', async () => {
+    const svc = createMockWorkflowService();
+    await expect(svc.exportWorkflow('nope', 'yaml')).rejects.toThrow('Workflow nope not found');
+  });
+
+  it('exportWorkflow throws for the unsupported bundle format', async () => {
+    const svc = createMockWorkflowService();
+    await expect(
+      svc.exportWorkflow('00000000-0000-0000-0000-000000000a01', 'bundle'),
+    ).rejects.toThrow('Workflow bundle export is unavailable in the in-memory adapter.');
+  });
+
+  it('previewWorkflowImport is unavailable in the in-memory adapter', async () => {
+    const svc = createMockWorkflowService();
+    await expect(svc.previewWorkflowImport?.({ content: '', filename: 'x.yaml' })).rejects.toThrow(
+      'Workflow import is unavailable in the in-memory adapter.',
+    );
+  });
+
+  it('applyWorkflowImport is unavailable in the in-memory adapter', async () => {
+    const svc = createMockWorkflowService();
+    await expect(svc.applyWorkflowImport?.({ content: '', filename: 'x.yaml' })).rejects.toThrow(
+      'Workflow import is unavailable in the in-memory adapter.',
+    );
   });
 });
 
@@ -587,9 +724,11 @@ describe('createMockResearchService', () => {
       question: 'q',
       name: 'Pinned workflow',
       workflowId: '00000000-0000-0000-0000-000000000a02',
+      workflowVersion: '0.8.0',
     });
     expect(campaign.workflowId).toBe('00000000-0000-0000-0000-000000000a02');
     expect(campaign.workflowName).toContain('deep-review');
+    expect(campaign.workflowVersion).toBe('0.8.0');
   });
 
   it('createCampaign falls back to a seed workflow for unknown workflow ids', async () => {
@@ -697,6 +836,126 @@ describe('createMockResearchService', () => {
     const svc = createMockResearchService();
     expect(await svc.getArtifact('rag-landscape', 'missing.md')).toBeNull();
     expect(await svc.getArtifact('nope', 'missing.md')).toBeNull();
+  });
+});
+
+describe('createMockSpecsService', () => {
+  it('preserves the selected workflow version on a created campaign', async () => {
+    const campaign = await createMockSpecsService().createCampaign({
+      prompt: 'Specify the release',
+      workflowVersion: '2.3.0',
+    });
+
+    expect(campaign.workflowVersion).toBe('2.3.0');
+  });
+
+  it('createCampaign defaults workflowId, name, and metadata fields when omitted', async () => {
+    const campaign = await createMockSpecsService().createCampaign({
+      prompt: 'a prompt with no name, repo, or context',
+    });
+
+    expect(campaign.workflowId).toBe('96ecf5df-18a0-542b-9df6-aef6aef6a5db');
+    expect(campaign.workflowVersion).toBe('1.0.0');
+    expect(campaign.name).toBe('a prompt with no name, repo, or context');
+    expect(campaign.metadata).toMatchObject({ context: '', repo: '', repos: [], branch: '' });
+  });
+
+  it('createCampaign derives repo and repos from a single repo field', async () => {
+    const campaign = await createMockSpecsService().createCampaign({
+      prompt: 'Specify the release',
+      repo: 'niuulabs/volundr',
+    });
+
+    expect(campaign.metadata).toMatchObject({
+      repo: 'niuulabs/volundr',
+      repos: ['niuulabs/volundr'],
+    });
+  });
+
+  it('createCampaign falls back to a generated slug when the name has no keepable characters', async () => {
+    const svc = createMockSpecsService();
+    const first = await svc.createCampaign({ prompt: '!!!' });
+    expect(first.slug).toBe('spec-2');
+  });
+
+  it('lists the seed spec campaign and gets it by slug', async () => {
+    const svc = createMockSpecsService();
+    const campaigns = await svc.listCampaigns();
+    expect(campaigns).toHaveLength(1);
+
+    const campaign = await svc.getCampaign('smart-device-control-protocol');
+    expect(campaign?.name).toBe('SDCP operator specification');
+  });
+
+  it('getCampaign returns null for an unknown slug', async () => {
+    const svc = createMockSpecsService();
+    expect(await svc.getCampaign('missing')).toBeNull();
+  });
+
+  it('deleteCampaign removes the campaign', async () => {
+    const svc = createMockSpecsService();
+    await svc.deleteCampaign('smart-device-control-protocol');
+    expect(await svc.getCampaign('smart-device-control-protocol')).toBeNull();
+  });
+
+  it('getArtifact returns the mock content for a known artifact path', async () => {
+    const svc = createMockSpecsService();
+    const artifact = await svc.getArtifact(
+      'smart-device-control-protocol',
+      'specifications/smart-device-control-protocol/00-brief.md',
+    );
+    expect(artifact?.content).toContain('Mock specification content');
+  });
+
+  it('getArtifact returns null for an unknown path or campaign', async () => {
+    const svc = createMockSpecsService();
+    expect(await svc.getArtifact('smart-device-control-protocol', 'missing.md')).toBeNull();
+    expect(await svc.getArtifact('missing-campaign', 'missing.md')).toBeNull();
+  });
+
+  it('reviewCampaign approves a gate and clears pending gates', async () => {
+    const svc = createMockSpecsService();
+    const updated = await svc.reviewCampaign('smart-device-control-protocol', {
+      decision: 'approve',
+      notes: 'Looks solid',
+      gateId: 'mock-prd-gate',
+      nodeId: 'spec-prd-gate',
+    });
+
+    expect(updated.status).toBe('running');
+    expect(updated.metadata.pending_workflow_gates).toEqual([]);
+    expect(updated.metadata.latest_spec_review).toEqual({
+      decision: 'approve',
+      notes: 'Looks solid',
+      gate_id: 'mock-prd-gate',
+      node_id: 'spec-prd-gate',
+    });
+  });
+
+  it('reviewCampaign blocks the campaign and defaults review notes when changes are requested', async () => {
+    const svc = createMockSpecsService();
+    const before = await svc.getCampaign('smart-device-control-protocol');
+    const updated = await svc.reviewCampaign('smart-device-control-protocol', {
+      decision: 'changes_requested',
+    });
+
+    expect(updated.status).toBe('blocked');
+    expect(updated.metadata.pending_workflow_gates).toEqual(
+      before?.metadata.pending_workflow_gates,
+    );
+    expect(updated.metadata.latest_spec_review).toEqual({
+      decision: 'changes_requested',
+      notes: '',
+      gate_id: '',
+      node_id: '',
+    });
+  });
+
+  it('reviewCampaign throws for an unknown campaign', async () => {
+    const svc = createMockSpecsService();
+    await expect(svc.reviewCampaign('missing-campaign', { decision: 'approve' })).rejects.toThrow(
+      'Spec campaign missing-campaign not found',
+    );
   });
 });
 
@@ -858,5 +1117,30 @@ describe('createMockAuditLogService', () => {
     });
     expect(entries.every((e) => e.actor === 'system')).toBe(true);
     expect(entries.every((e) => e.kind.startsWith('dispatcher.'))).toBe(true);
+  });
+});
+
+describe('createMockWorkService', () => {
+  it('lists projects and campaigns separately with no executions', async () => {
+    const work = await createMockWorkService().list();
+
+    expect(work.projects.map((item) => item.kind)).toEqual(['project']);
+    expect(work.campaigns.map((item) => item.kind)).toEqual(['research']);
+    expect(work.executions).toEqual([]);
+    expect(work.executionNextCursor).toBeNull();
+  });
+
+  it('returns the detail of a listed item', async () => {
+    const detail = await createMockWorkService().get('campaign', 'demo-research');
+
+    expect(detail.item.title).toBe('Queue latency study');
+    expect(detail.item.attention?.kind).toBe('input');
+    expect(detail.tasks).toEqual([]);
+  });
+
+  it('rejects an item that is not listed', async () => {
+    await expect(createMockWorkService().get('project', 'missing')).rejects.toThrow(
+      'Work project:missing not found',
+    );
   });
 });

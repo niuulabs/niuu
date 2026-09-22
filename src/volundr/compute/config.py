@@ -17,6 +17,12 @@ class ComputeConfig(BaseModel):
     provider: DynamicAdapterConfig
     auth: HttpAuthAdapterConfig | None = None
     runtime: DynamicAdapterConfig | None = None
+    execution_catalog: DynamicAdapterConfig | None = Field(
+        default=None, description="File-backed operator execution catalog adapter"
+    )
+    provider_binding: str = Field(
+        default="", description="Stable deployment provider identity used by execution profiles"
+    )
     database: DatabaseConfig | None = None
     bootstrap: MachineBootstrap = Field(default_factory=MachineBootstrap)
     provisioning_timeout_seconds: float = Field(default=600, gt=0)

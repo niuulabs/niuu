@@ -196,8 +196,47 @@ def test_validate_stack_changes_whitelists_keys() -> None:
             }
         }
     }
+    assert validate_stack_changes(
+        {
+            "external_integrations": [
+                {
+                    "source_dir": "/var/lib/niuu/private-integrations/compute",
+                    "manifest_file": "niuu-module.yaml",
+                }
+            ]
+        }
+    ) == {
+        "docker": {
+            "external_integrations": [
+                {
+                    "source_dir": "/var/lib/niuu/private-integrations/compute",
+                    "definition_files": [],
+                    "manifest_file": "niuu-module.yaml",
+                }
+            ]
+        }
+    }
     assert validate_stack_changes({"model_server_models": ["x", " y "]}) == {
         "docker": {"model_server": {"models": ["x", "y"]}}
+    }
+    assert validate_stack_changes(
+        {
+            "external_integrations": [
+                {
+                    "source_dir": "/var/lib/niuu/private-integrations/acme",
+                    "definition_files": ["integration.yaml", "catalog/more.yaml"],
+                }
+            ]
+        }
+    ) == {
+        "docker": {
+            "external_integrations": [
+                {
+                    "source_dir": "/var/lib/niuu/private-integrations/acme",
+                    "definition_files": ["integration.yaml", "catalog/more.yaml"],
+                }
+            ]
+        }
     }
     for bad in (
         {"model_server_enabled": "yes"},
@@ -215,6 +254,9 @@ def test_validate_stack_changes_whitelists_keys() -> None:
         {"vllm_max_model_len": True},
         {"vllm_gpu_memory_utilization": 2},
         {"vllm_enabled": True, "vllm_model": ""},
+        {"external_integrations": "no"},
+        {"external_integrations": [{"source_dir": "x", "definition_files": ["../x"]}]},
+        {"external_integrations": [{"source_dir": "x"}]},
         {"image": "x"},
     ):
         with pytest.raises(ValueError):
@@ -427,6 +469,362 @@ def test_stack_settings_view_reports_the_model_server() -> None:
     assert sc.stack_settings_view(CLISettings(mode="docker"), "h").model_server == (
         sc.ModelServerSettings()
     )
+
+
+@pytest.mark.asyncio
+async def test_external_integration_validation_is_real_and_confined_to_managed_root(
+    controller: DockerStackController, stack_dir: Path
+) -> None:
+    package = stack_dir / "private-integrations" / "acme"
+    package.mkdir(parents=True)
+    (package / "integration.yaml").write_text(
+        """\
+slug: acme
+name: Acme
+integration_type: issue_tracker
+auth_type: api_key
+"""
+    )
+
+    result = await controller.validate_external_integration(str(package), ["integration.yaml"])
+    assert result.ok is True
+    assert [(item.slug, item.name) for item in result.definitions] == [("acme", "Acme")]
+    assert await controller.external_integrations_root() == str(stack_dir / "private-integrations")
+
+    outside = await controller.validate_external_integration(
+        str(stack_dir.parent / "outside"), ["integration.yaml"]
+    )
+    assert outside.ok is False
+    assert "must be inside" in outside.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_registered_external_integration_validates_its_container_mount(
+    controller: DockerStackController, stack_dir: Path, tmp_path: Path
+) -> None:
+    host_source = tmp_path / "host-owned" / "compute"
+    stack = yaml.safe_load((stack_dir / "stack.yaml").read_text())
+    stack["docker"]["external_integrations"] = [
+        {
+            "source_dir": str(host_source),
+            "definition_files": [],
+            "manifest_file": "niuu-module.yaml",
+        }
+    ]
+    (stack_dir / "stack.yaml").write_text(yaml.safe_dump(stack))
+
+    mount_root = tmp_path / "mounted-integrations"
+    package = mount_root / "0"
+    package.mkdir(parents=True)
+    (package / "niuu-module.yaml").write_text(
+        "schema_version: 1\n"
+        "id: private-compute\n"
+        "requires:\n"
+        "  niuu_machine_provider: 1\n"
+        "components:\n"
+        "  - kind: machine_provider\n"
+        "    name: private\n"
+        "    adapter: volundr.adapters.outbound.harvester.HarvesterMachineProvider\n"
+    )
+
+    with patch.object(sc, "EXTERNAL_INTEGRATION_MOUNT_ROOT", mount_root):
+        result = await controller.validate_external_integration(
+            str(host_source), [], "niuu-module.yaml"
+        )
+        changed = await controller.validate_external_integration(
+            str(host_source), ["unregistered.yaml"], "niuu-module.yaml"
+        )
+
+    assert result.ok is True
+    assert result.source_dir == str(host_source)
+    assert result.module_id == "private-compute"
+    assert changed.ok is False
+    assert "must be inside" in changed.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_external_integration_validation_checks_adapter_imports(
+    controller: DockerStackController, stack_dir: Path
+) -> None:
+    package = stack_dir / "private-integrations" / "broken"
+    package.mkdir(parents=True)
+    (package / "integration.yaml").write_text(
+        """\
+slug: private-broken
+name: Broken
+integration_type: issue_tracker
+adapter: package_that_does_not_exist.Adapter
+"""
+    )
+    result = await controller.validate_external_integration(str(package), ["integration.yaml"])
+    assert result.ok is False
+    assert "package_that_does_not_exist" in result.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_external_compute_only_module_validation(
+    controller: DockerStackController, stack_dir: Path
+) -> None:
+    package = stack_dir / "private-integrations" / "compute"
+    package.mkdir(parents=True)
+    (package / "niuu-module.yaml").write_text(
+        "schema_version: 1\n"
+        "id: private-compute\n"
+        "requires:\n"
+        "  niuu_machine_provider: 1\n"
+        "components:\n"
+        "  - kind: machine_provider\n"
+        "    name: private\n"
+        "    adapter: volundr.adapters.outbound.harvester.HarvesterMachineProvider\n"
+    )
+
+    result = await controller.validate_external_integration(str(package), [], "niuu-module.yaml")
+
+    assert result.ok is True
+    assert result.module_id == "private-compute"
+    assert [(component.kind, component.name) for component in result.components] == [
+        ("machine_provider", "private")
+    ]
+    assert result.definitions == ()
+
+
+@pytest.mark.asyncio
+async def test_external_module_revalidation_does_not_reuse_import_cache(
+    controller: DockerStackController, stack_dir: Path
+) -> None:
+    package = stack_dir / "private-integrations" / "replaceable"
+    package.mkdir(parents=True)
+    provider = package / "replaceable_provider.py"
+    provider.write_text(
+        "from volundr.adapters.outbound.harvester import HarvesterMachineProvider\n"
+        "class Provider(HarvesterMachineProvider):\n"
+        "    pass\n"
+    )
+    (package / "niuu-module.yaml").write_text(
+        "schema_version: 1\n"
+        "id: replaceable\n"
+        "requires:\n"
+        "  niuu_machine_provider: 1\n"
+        "components:\n"
+        "  - kind: machine_provider\n"
+        "    name: replaceable\n"
+        "    adapter: replaceable_provider.Provider\n"
+    )
+
+    initial = await controller.validate_external_integration(str(package), [], "niuu-module.yaml")
+    assert initial.ok is True
+
+    provider.write_text("class Provider:\n    pass\n")
+    replaced = await controller.validate_external_integration(str(package), [], "niuu-module.yaml")
+
+    assert replaced.ok is False
+    assert "must implement" in replaced.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_stage_rejects_an_external_integration_outside_the_managed_root(
+    controller: DockerStackController,
+) -> None:
+    """`PUT /stack` must not be able to mount an arbitrary host directory just
+    because it skips the dedicated `/settings/external-integrations` endpoint:
+    `stage()` is the one path both go through."""
+    with pytest.raises(ValueError, match="must be inside"):
+        await controller.stage(
+            {"external_integrations": [{"source_dir": "/", "manifest_file": "x.yaml"}]}
+        )
+    view = await controller.view()
+    assert view.staged == {}
+
+
+@pytest.mark.asyncio
+async def test_stage_rejects_a_confined_package_that_shadows_the_platform(
+    controller: DockerStackController, stack_dir: Path
+) -> None:
+    """Confinement alone is not enough: a package inside the managed root that
+    ships a top-level `niuu` package would replace platform code once mounted,
+    so the generic stage path rejects it just as the dedicated endpoint does."""
+    package = stack_dir / "private-integrations" / "shadowing"
+    (package / "niuu").mkdir(parents=True)
+    (package / "niuu" / "__init__.py").write_text("")
+    (package / "integration.yaml").write_text(
+        "slug: private-shadow\nname: Shadow\nintegration_type: issue_tracker\n"
+        "adapter: niuu.Adapter\n"
+    )
+
+    with pytest.raises(ValueError, match="shadow"):
+        await controller.stage(
+            {
+                "external_integrations": [
+                    {"source_dir": str(package), "definition_files": ["integration.yaml"]}
+                ]
+            }
+        )
+    view = await controller.view()
+    assert view.staged == {}
+
+
+@pytest.mark.asyncio
+async def test_stage_accepts_a_confined_and_valid_external_integration_list(
+    controller: DockerStackController, stack_dir: Path
+) -> None:
+    package = stack_dir / "private-integrations" / "acme"
+    package.mkdir(parents=True)
+    (package / "integration.yaml").write_text(
+        "slug: acme\nname: Acme\nintegration_type: issue_tracker\nauth_type: api_key\n"
+    )
+
+    view = await controller.stage(
+        {
+            "external_integrations": [
+                {"source_dir": str(package), "definition_files": ["integration.yaml"]}
+            ]
+        }
+    )
+
+    assert [item.source_dir for item in view.effective.external_integrations] == [str(package)]
+
+
+@pytest.mark.asyncio
+async def test_stage_rejects_colliding_slugs_across_external_integrations(
+    controller: DockerStackController, stack_dir: Path
+) -> None:
+    first = stack_dir / "private-integrations" / "one"
+    second = stack_dir / "private-integrations" / "two"
+    for package in (first, second):
+        package.mkdir(parents=True)
+        (package / "integration.yaml").write_text(
+            "slug: shared-slug\nname: Shared\nintegration_type: issue_tracker\nauth_type: api_key\n"
+        )
+
+    with pytest.raises(ValueError, match="more than one external package"):
+        await controller.stage(
+            {
+                "external_integrations": [
+                    {"source_dir": str(first), "definition_files": ["integration.yaml"]},
+                    {"source_dir": str(second), "definition_files": ["integration.yaml"]},
+                ]
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_import_shadowing_is_rejected_before_anything_is_imported(
+    controller: DockerStackController, stack_dir: Path
+) -> None:
+    """A package that ships a top-level `os.py` would replace the stdlib `os`
+    module in every process that later imports it, not just the validator's."""
+    package = stack_dir / "private-integrations" / "shadowing"
+    package.mkdir(parents=True)
+    (package / "os.py").write_text("raise RuntimeError('should never import')\n")
+    (package / "niuu-module.yaml").write_text(
+        "schema_version: 1\n"
+        "id: shadowing\n"
+        "requires:\n"
+        "  niuu_machine_provider: 1\n"
+        "components:\n"
+        "  - kind: machine_provider\n"
+        "    name: shadowing\n"
+        "    adapter: os.Provider\n"
+    )
+
+    result = await controller.validate_external_integration(str(package), [], "niuu-module.yaml")
+
+    assert result.ok is False
+    assert "shadow" in result.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_describe_external_integration_never_executes_the_package(
+    controller: DockerStackController, stack_dir: Path
+) -> None:
+    """Listing/describing must be static: a package whose adapter cannot even
+    be imported still describes cleanly, because describe never imports it."""
+    package = stack_dir / "private-integrations" / "broken"
+    package.mkdir(parents=True)
+    (package / "integration.yaml").write_text(
+        "slug: private-broken\nname: Broken\nintegration_type: issue_tracker\n"
+        "adapter: package_that_does_not_exist.Adapter\n"
+    )
+
+    with patch.object(sc, "subprocess") as fake_subprocess:
+        described = await controller.describe_external_integration(
+            str(package), ["integration.yaml"]
+        )
+
+    assert described.ok is True
+    assert [item.slug for item in described.definitions] == ["private-broken"]
+    fake_subprocess.run.assert_not_called()
+
+    full = await controller.validate_external_integration(str(package), ["integration.yaml"])
+    assert full.ok is False
+    assert "package_that_does_not_exist" in full.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_validate_external_imports_uses_a_scrubbed_environment(
+    controller: DockerStackController, stack_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NIUU_POSTGRES_PASSWORD", "super-secret")
+    package = stack_dir / "private-integrations" / "compute"
+    package.mkdir(parents=True)
+    (package / "niuu-module.yaml").write_text(
+        "schema_version: 1\n"
+        "id: private-compute\n"
+        "requires:\n"
+        "  niuu_machine_provider: 1\n"
+        "components:\n"
+        "  - kind: machine_provider\n"
+        "    name: private\n"
+        "    adapter: volundr.adapters.outbound.harvester.HarvesterMachineProvider\n"
+    )
+    captured: dict[str, Any] = {}
+    real_run = sc.subprocess.run
+
+    def _spy(command: list[str], **kwargs: Any) -> Any:
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return real_run(command, **kwargs)
+
+    with patch.object(sc.subprocess, "run", side_effect=_spy):
+        result = await controller.validate_external_integration(
+            str(package), [], "niuu-module.yaml"
+        )
+
+    assert result.ok is True
+    assert "cwd" not in captured["kwargs"]
+    assert "NIUU_POSTGRES_PASSWORD" not in captured["kwargs"]["env"]
+    assert captured["kwargs"]["timeout"] == 30.0
+    assert "-P" in captured["command"]
+    assert "--package-path" in captured["command"]
+
+
+@pytest.mark.asyncio
+async def test_validate_external_imports_timeout_is_a_typed_failure(
+    controller: DockerStackController, stack_dir: Path
+) -> None:
+    package = stack_dir / "private-integrations" / "compute"
+    package.mkdir(parents=True)
+    (package / "niuu-module.yaml").write_text(
+        "schema_version: 1\n"
+        "id: private-compute\n"
+        "requires:\n"
+        "  niuu_machine_provider: 1\n"
+        "components:\n"
+        "  - kind: machine_provider\n"
+        "    name: private\n"
+        "    adapter: volundr.adapters.outbound.harvester.HarvesterMachineProvider\n"
+    )
+    with patch.object(
+        sc.subprocess,
+        "run",
+        side_effect=sc.subprocess.TimeoutExpired(cmd="python", timeout=30.0),
+    ):
+        result = await controller.validate_external_integration(
+            str(package), [], "niuu-module.yaml"
+        )
+
+    assert result.ok is False
+    assert "timed out" in result.errors[0]
 
 
 @pytest.mark.asyncio

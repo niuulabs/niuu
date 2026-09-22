@@ -6,15 +6,36 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
 
+from niuu.domain.delivery import (
+    AcceptancePolicy,
+    CandidateEvidence,
+    CheckReceipt,
+    EvidenceValidationReport,
+    IntegrationCandidateInspection,
+    IntegrationReceipt,
+    MergeReceipt,
+    MergeRequest,
+    ReviewCandidate,
+    WorkspaceAllocation,
+)
 from niuu.domain.models import Principal
 from niuu.ports.http_auth import HttpAuthPort
+from ravn.domain.persona_document import PortablePersonaDefinition, parse_portable_persona
 from ting.domain.models import PRStatus
-from ting.ports.volundr import ActivityEvent, SpawnRequest, VolundrPort, VolundrSession
+from ting.ports.volundr import (
+    ActivityEvent,
+    PublicSessionLogEntry,
+    PublicSessionLogPage,
+    SpawnRequest,
+    VolundrPort,
+    VolundrSession,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +199,172 @@ class VolundrHTTPAdapter(VolundrPort):
                 activity_metadata=data.get("activity_metadata") or {},
             )
 
+    async def resolve_delivery_ref(
+        self,
+        repository: str,
+        ref: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ):
+        from niuu.domain.delivery import ResolvedRef  # noqa: PLC0415
+
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.post(
+                f"{self._base_url}/api/v1/forge/delivery/refs/resolve",
+                headers=self._headers(auth_token, principal),
+                json={"repository": repository, "ref": ref},
+            )
+        response.raise_for_status()
+        return ResolvedRef.model_validate(response.json())
+
+    async def validate_delivery_evidence(
+        self,
+        evidence: CandidateEvidence,
+        *,
+        policy_id: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> EvidenceValidationReport:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.post(
+                f"{self._base_url}/api/v1/forge/delivery/evidence/validate",
+                headers=self._headers(auth_token, principal),
+                json={"evidence": evidence.model_dump(mode="json"), "policy_id": policy_id},
+            )
+        response.raise_for_status()
+        return EvidenceValidationReport.model_validate(response.json())
+
+    async def reconcile_delivery_merge(
+        self,
+        request: MergeRequest,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> MergeReceipt:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.post(
+                f"{self._base_url}/api/v1/forge/delivery/forge/reconcile",
+                headers=self._headers(auth_token, principal),
+                json=request.model_dump(mode="json"),
+            )
+        response.raise_for_status()
+        return MergeReceipt.model_validate(response.json())
+
+    async def describe_delivery_policy(
+        self,
+        *,
+        campaign_id: str,
+        repository: str,
+        policy_id: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> AcceptancePolicy:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.post(
+                f"{self._base_url}/api/v1/forge/delivery/evidence/policy",
+                headers=self._headers(auth_token, principal),
+                json={
+                    "campaign_id": campaign_id,
+                    "repository": repository,
+                    "policy_id": policy_id,
+                },
+            )
+        response.raise_for_status()
+        return AcceptancePolicy.model_validate(response.json())
+
+    async def inspect_delivery_candidate(
+        self,
+        repository: str,
+        review_number: int,
+        *,
+        campaign_id: str,
+        policy_id: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> tuple[ReviewCandidate, CheckReceipt]:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.post(
+                f"{self._base_url}/api/v1/forge/delivery/forge/inspect",
+                headers=self._headers(auth_token, principal),
+                json={
+                    "campaign_id": campaign_id,
+                    "repository": repository,
+                    "review_number": review_number,
+                    "policy_id": policy_id,
+                },
+            )
+        response.raise_for_status()
+        payload = response.json()
+        return (
+            ReviewCandidate.model_validate(payload["candidate"]),
+            CheckReceipt.model_validate(payload["checks"]),
+        )
+
+    async def inspect_delivery_integration(
+        self,
+        allocation: WorkspaceAllocation,
+        receipt: IntegrationReceipt,
+        *,
+        policy_id: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> IntegrationCandidateInspection:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.post(
+                f"{self._base_url}/api/v1/forge/delivery/workspaces/integration/inspect",
+                headers=self._headers(auth_token, principal),
+                json={
+                    "allocation": allocation.model_dump(mode="json"),
+                    "integration_receipt": receipt.model_dump(mode="json"),
+                    "policy_id": policy_id,
+                },
+            )
+        response.raise_for_status()
+        return IntegrationCandidateInspection.model_validate(response.json())
+
+    async def inspect_delivery_integration_chain(
+        self,
+        allocation: WorkspaceAllocation,
+        receipts: tuple[IntegrationReceipt, ...],
+        *,
+        policy_id: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> IntegrationCandidateInspection:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.post(
+                f"{self._base_url}/api/v1/forge/delivery/workspaces/integration/inspect-chain",
+                headers=self._headers(auth_token, principal),
+                json={
+                    "allocation": allocation.model_dump(mode="json"),
+                    "integration_receipts": [
+                        receipt.model_dump(mode="json") for receipt in receipts
+                    ],
+                    "policy_id": policy_id,
+                },
+            )
+        response.raise_for_status()
+        return IntegrationCandidateInspection.model_validate(response.json())
+
+    async def get_current_portable_persona(
+        self,
+        persona_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> PortablePersonaDefinition | None:
+        encoded_id = quote(persona_id, safe="")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.get(
+                f"{self._base_url}/api/v1/personas/{encoded_id}/portable",
+                headers=self._headers(auth_token, principal),
+            )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return parse_portable_persona(response.json())
+
     async def get_session(
         self,
         session_id: str,
@@ -299,7 +486,9 @@ class VolundrHTTPAdapter(VolundrPort):
         if session is None or not session.chat_endpoint:
             raise LookupError(f"Session {session_id} has no active room endpoint")
 
-        base_url = _session_chat_base_url(session.chat_endpoint)
+        base_url = _session_chat_base_url(
+            session.chat_endpoint, gateway_base_url=self._base_url, session_id=session_id
+        )
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(
                 f"{base_url}/api/room/direct",
@@ -307,6 +496,41 @@ class VolundrHTTPAdapter(VolundrPort):
                 json={
                     "target_peer_id": target_peer_id,
                     "content": message,
+                    "source": "ting",
+                },
+            )
+            resp.raise_for_status()
+
+    async def publish_workflow_event(
+        self,
+        session_id: str,
+        event_type: str,
+        content: str,
+        *,
+        payload: dict | None = None,
+        request_id: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        session = await self.get_session(
+            session_id,
+            auth_token=auth_token,
+            principal=principal,
+        )
+        if session is None or not session.chat_endpoint:
+            raise LookupError(f"Session {session_id} has no active room endpoint")
+        base_url = _session_chat_base_url(
+            session.chat_endpoint, gateway_base_url=self._base_url, session_id=session_id
+        )
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                f"{base_url}/api/room/workflow-events",
+                headers=self._headers(auth_token, principal),
+                json={
+                    "event_type": event_type,
+                    "content": content,
+                    "payload": dict(payload or {}),
+                    "request_id": request_id,
                     "source": "ting",
                 },
             )
@@ -402,13 +626,21 @@ class VolundrHTTPAdapter(VolundrPort):
         auth_token: str | None = None,
         principal: Principal | None = None,
     ) -> None:
+        headers = self._headers(auth_token, principal)
+        url = f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}"
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.delete(
-                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}",
-                headers=self._headers(auth_token, principal),
+            resp = await client.post(
+                f"{url}/stop",
+                headers=headers,
             )
             if resp.status_code == 404:
                 return
+            if resp.status_code == 409:
+                current = await client.get(url, headers=headers)
+                current.raise_for_status()
+                status = str(current.json().get("status") or "").strip().lower()
+                if status == "stopped":
+                    return
             resp.raise_for_status()
 
     async def list_integration_ids(
@@ -480,6 +712,47 @@ class VolundrHTTPAdapter(VolundrPort):
             )
             resp.raise_for_status()
             return resp.json()
+
+    async def get_public_session_log_page(
+        self,
+        session_id: str,
+        *,
+        after: int,
+        limit: int,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> PublicSessionLogPage:
+        """Fetch the default, internal-content-hidden Forge event-log view."""
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.get(
+                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/log/page",
+                headers=self._headers(auth_token, principal),
+                params={"after": after, "limit": limit, "show_internal": False},
+            )
+        response.raise_for_status()
+        payload = response.json()
+        raw_entries = payload.get("entries") if isinstance(payload, dict) else None
+        if not isinstance(raw_entries, list):
+            raise ValueError("Volundr session log page response must contain entries")
+        entries = tuple(
+            PublicSessionLogEntry(
+                session_id=str(item["session_id"]),
+                seq=int(item["seq"]),
+                kind=str(item["kind"]),
+                role=str(item["role"]) if item.get("role") is not None else None,
+                request_id=(
+                    str(item["request_id"]) if item.get("request_id") is not None else None
+                ),
+                payload=dict(item.get("payload") or {}),
+                ts=datetime.fromisoformat(str(item["ts"])),
+            )
+            for item in raw_entries
+        )
+        return PublicSessionLogPage(
+            entries=entries,
+            scanned_through=int(payload["scannedThrough"]),
+            has_more=bool(payload["hasMore"]),
+        )
 
     async def get_last_assistant_message(
         self,
@@ -575,11 +848,19 @@ class VolundrHTTPAdapter(VolundrPort):
                         event_type = ""
 
 
-def _session_chat_base_url(chat_endpoint: str) -> str:
+def _session_chat_base_url(
+    chat_endpoint: str, *, gateway_base_url: str = "", session_id: str = ""
+) -> str:
     normalized = chat_endpoint.replace("wss://", "https://", 1).replace("ws://", "http://", 1)
     parsed = urlparse(normalized)
     if not parsed.scheme or not parsed.netloc:
         raise ValueError(f"Invalid chat endpoint: {chat_endpoint}")
+    # Gateway session paths belong to the same Forge connection that resolved
+    # the session. Its advertised browser origin need not be reachable from
+    # Ting (for example, a host address advertised by a Docker deployment).
+    # Direct Skuld endpoints keep their own origin and route.
+    if gateway_base_url and session_id and parsed.path == f"/s/{session_id}/session":
+        return f"{gateway_base_url.rstrip('/')}/s/{session_id}"
     path = parsed.path
     if path.endswith("/session"):
         path = path[: -len("/session")]

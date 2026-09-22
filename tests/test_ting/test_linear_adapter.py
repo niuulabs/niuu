@@ -156,6 +156,38 @@ class TestListProjects:
         assert first == second
         assert adapter._gql._client.post.call_count == 1
 
+    async def test_paginates_all_projects(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.side_effect = [
+            _mock_response(
+                {
+                    "data": {
+                        "projects": {
+                            "nodes": [_project_node(id="proj-1")],
+                            "pageInfo": {"hasNextPage": True, "endCursor": "cursor-1"},
+                        }
+                    }
+                }
+            ),
+            _mock_response(
+                {
+                    "data": {
+                        "projects": {
+                            "nodes": [_project_node(id="proj-2")],
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        }
+                    }
+                }
+            ),
+        ]
+
+        projects = await adapter.list_projects()
+
+        assert [project.id for project in projects] == ["proj-1", "proj-2"]
+        second_payload = adapter._gql._client.post.call_args_list[1].kwargs["json"]
+        assert second_payload["variables"]["after"] == "cursor-1"
+
 
 # ---------------------------------------------------------------------------
 # get_project
@@ -263,6 +295,38 @@ class TestListIssues:
 
         assert first == second
         assert adapter._gql._client.post.call_count == 1
+
+    async def test_paginates_all_issues(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.side_effect = [
+            _mock_response(
+                {
+                    "data": {
+                        "issues": {
+                            "nodes": [_issue_node(id="issue-1")],
+                            "pageInfo": {"hasNextPage": True, "endCursor": "cursor-1"},
+                        }
+                    }
+                }
+            ),
+            _mock_response(
+                {
+                    "data": {
+                        "issues": {
+                            "nodes": [_issue_node(id="issue-2")],
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        }
+                    }
+                }
+            ),
+        ]
+
+        issues = await adapter.list_issues("proj-1")
+
+        assert [issue.id for issue in issues] == ["issue-1", "issue-2"]
+        second_payload = adapter._gql._client.post.call_args_list[1].kwargs["json"]
+        assert second_payload["variables"]["after"] == "cursor-1"
 
 
 # ---------------------------------------------------------------------------
@@ -795,6 +859,43 @@ class TestUpdateRunProgress:
         assert "INSERT INTO run_progress" in sql
         assert "chronicle_summary" in sql
         assert result.tracker_id == "t-1"
+
+    async def test_authorized_run_read_scopes_owner_tenant_and_connection(self):
+        adapter, pool = _make_adapter_with_pool()
+        adapter.bind_connection(connection_id="linear-a", provider="linear", name="Linear")
+        pool.fetch.return_value = []
+
+        result = await adapter.get_authorized_run_progress_for_saga(
+            "project-1", owner_id="owner-1", tenant_id="tenant-1"
+        )
+
+        assert result == []
+        sql, saga_id, connection_id, owner_id, tenant_id = pool.fetch.call_args.args
+        assert "owner_id = $3 AND tenant_id = $4" in sql
+        assert (saga_id, connection_id, owner_id, tenant_id) == (
+            "project-1",
+            "linear-a",
+            "owner-1",
+            "tenant-1",
+        )
+
+    async def test_detects_legacy_unscoped_progress_without_returning_run_data(self):
+        adapter, pool = _make_adapter_with_pool()
+        adapter.bind_connection(connection_id="linear-a", provider="linear", name="Linear")
+        pool.fetchval.return_value = True
+
+        withheld = await adapter.has_unscoped_run_progress_for_saga(
+            "project-1", owner_id="owner-1", tenant_id="tenant-1"
+        )
+
+        assert withheld is True
+        sql, saga_id, connection_id, owner_id = pool.fetchval.call_args.args
+        assert "COALESCE(tenant_id, '') = ''" in sql
+        assert (saga_id, connection_id, owner_id) == (
+            "project-1",
+            "linear-a",
+            "owner-1",
+        )
 
     async def test_status_sync_failure_is_logged_not_raised(self):
         """update_run_state error should be swallowed, not bubble up."""

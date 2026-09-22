@@ -42,6 +42,7 @@ from niuu.config_models import (
     WorkloadIdentityConfig,
     default_session_definitions,
 )
+from niuu.domain.delivery import AcceptancePolicy
 from ravn.config import PersonaSourceConfig
 from volundr.compute.config import ComputeConfig
 from volundr.domain.models import (
@@ -74,6 +75,45 @@ class LocalGitConfig(BaseModel):
         default=30.0,
         description="Maximum time in seconds a git/gh subprocess may run before being killed.",
     )
+
+
+class DeliveryConfig(BaseModel):
+    """Explicit deployment policy for evidence-backed developer delivery."""
+
+    enabled: bool = False
+    authenticator: DynamicAdapterConfig = Field(default_factory=DynamicAdapterConfig)
+    workstreams: DynamicAdapterConfig = Field(default_factory=DynamicAdapterConfig)
+    authorizer: DynamicAdapterConfig = Field(default_factory=DynamicAdapterConfig)
+    forge: DynamicAdapterConfig = Field(
+        default_factory=lambda: DynamicAdapterConfig(
+            adapter="volundr.adapters.outbound.user_delivery_forge.UserDeliveryForgeProvider"
+        )
+    )
+    producer_id: str = "forge-service"
+    workstream_producer_id: str = "workstream-runner"
+    trusted_producers: tuple[str, ...] = ()
+    policies: dict[str, AcceptancePolicy] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def require_explicit_delivery_configuration(self):
+        if self.enabled:
+            if (
+                not self.authenticator.adapter
+                or not self.workstreams.adapter
+                or not self.forge.adapter
+            ):
+                raise ValueError(
+                    "Enabled delivery requires authenticator, workstreams, and forge adapters"
+                )
+            if not self.trusted_producers or not self.policies:
+                raise ValueError(
+                    "Enabled delivery requires pinned producers and acceptance policies"
+                )
+            if not self.producer_id.strip() or not self.workstream_producer_id.strip():
+                raise ValueError("Enabled delivery requires forge and workstream producer IDs")
+            if not self.authorizer.adapter:
+                raise ValueError("Enabled delivery requires an execution authorizer adapter")
+        return self
 
 
 class LocalMountsConfig(BaseModel):
@@ -917,6 +957,40 @@ class SessionContributorConfig(BaseModel):
     )
 
 
+class WorkflowExecutionCredentialsConfig(BaseModel):
+    """Rotation of scoped coordinator credentials for developer workflows."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Project and rotate exact-scope credentials for developer coordinators.",
+    )
+    projection_adapter: str = Field(
+        default="",
+        description="Fully-qualified ExecutionCredentialProjectionPort adapter class.",
+    )
+    projection_kwargs: dict[str, Any] = Field(default_factory=dict)
+    projection_secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+    refresh_interval_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description="Seconds between active-session token replacement cycles.",
+    )
+    admission_roles: tuple[str, ...] = Field(
+        default=("volundr:developer",),
+        description=(
+            "Gateway admission roles on the scoped JWT; route scope still limits authority."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _configured_adapter(self) -> "WorkflowExecutionCredentialsConfig":
+        if self.enabled and not self.projection_adapter.strip():
+            raise ValueError(
+                "workflow_execution_credentials.projection_adapter is required when enabled"
+            )
+        return self
+
+
 class OAuthSpecConfig(BaseModel):
     """OAuth2 provider specification in config."""
 
@@ -1411,6 +1485,28 @@ class IntegrationsConfig(BaseModel):
     )
     definitions: list[IntegrationDefinitionConfig] = Field(
         default_factory=_default_integration_definitions,
+    )
+    definition_files: list[str] = Field(
+        default_factory=list,
+        description=(
+            "YAML or JSON files containing additional integration definitions. "
+            "Files are loaded at startup and merged with the configured catalog."
+        ),
+    )
+    module_manifest_files: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Versioned manifests for trusted external packages. Manifest components "
+            "are contract-checked at startup but remain inactive until selected by config."
+        ),
+    )
+    allow_definition_overrides: bool = Field(
+        default=False,
+        description=(
+            "Allow a definition loaded from a later external file to replace an "
+            "existing definition with the same slug. Duplicate slugs fail startup "
+            "when this is false."
+        ),
     )
     seed_connections: list["SeededIntegrationConnectionConfig"] = Field(
         default_factory=list,
@@ -2100,6 +2196,9 @@ class Settings(BaseSettings):
     linear: LinearConfig = Field(default_factory=LinearConfig)
     pat: PATConfig = Field(default_factory=PATConfig)
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
+    workflow_execution_credentials: WorkflowExecutionCredentialsConfig = Field(
+        default_factory=WorkflowExecutionCredentialsConfig
+    )
     auth_discovery: AuthDiscoveryConfig = Field(default_factory=AuthDiscoveryConfig)
     session_room: SessionRoomConfig = Field(default_factory=SessionRoomConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
@@ -2110,6 +2209,7 @@ class Settings(BaseSettings):
         description="Server-side allow/deny policy for permission request auto approvals.",
     )
     local_git: LocalGitConfig = Field(default_factory=LocalGitConfig)
+    delivery: DeliveryConfig = Field(default_factory=DeliveryConfig)
     local_mounts: LocalMountsConfig = Field(default_factory=LocalMountsConfig)
     external_sessions: ExternalSessionsConfig = Field(default_factory=ExternalSessionsConfig)
     telegram_ingress: TelegramIngressConfig = Field(default_factory=TelegramIngressConfig)

@@ -93,9 +93,11 @@ FROM python:3.14-slim-trixie@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aa
 
 
 # git: the platform clones session workspaces before a sandbox container starts.
+# openssh-client: VM-backed sessions bootstrap and tunnel to their guest over SSH.
 # curl: fetches the docker CLI below.
 RUN apt-get update && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends git ca-certificates curl \
+    && apt-get install -y --no-install-recommends \
+        git openssh-client libnss-wrapper ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 # docker CLI + compose plugin: in docker mode this image is also the host-side
@@ -110,10 +112,14 @@ RUN set -eu; \
       arm64) arch=aarch64 ;; \
       *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL "https://download.docker.com/linux/static/stable/${arch}/docker-${DOCKER_CLI_VERSION}.tgz" \
-      | tar -xz -C /usr/local/bin --strip-components=1 docker/docker; \
+    curl -fsSL --retry 3 --retry-all-errors \
+      -o /tmp/docker.tgz \
+      "https://download.docker.com/linux/static/stable/${arch}/docker-${DOCKER_CLI_VERSION}.tgz"; \
+    tar -xzf /tmp/docker.tgz -C /usr/local/bin --strip-components=1 docker/docker; \
+    rm /tmp/docker.tgz; \
     mkdir -p /usr/local/lib/docker/cli-plugins; \
-    curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+    curl -fsSL --retry 3 --retry-all-errors \
+      -o /usr/local/lib/docker/cli-plugins/docker-compose \
       "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-${arch}"; \
     chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose; \
     docker --version; docker compose version
@@ -139,6 +145,8 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 COPY --from=builder --chown=65532:65532 /opt/venv /opt/venv
 COPY --from=builder --chown=65532:65532 /dist-root/data /data
+
+RUN --network=none ssh -V
 
 USER 65532:65532
 

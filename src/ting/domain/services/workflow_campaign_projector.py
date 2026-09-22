@@ -6,7 +6,12 @@ import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 
+from niuu.domain.models import Principal
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
+from ting.domain.services.workflow_campaign_lifecycle import (
+    stop_terminal_campaign_session,
+    terminal_session_cleanup_needed,
+)
 from ting.ports.a2a_push import A2APushDispatcherPort
 from ting.ports.event_bus import EventBusPort, TingEvent
 from ting.ports.volundr import ActivityEvent, VolundrFactory
@@ -67,12 +72,23 @@ class WorkflowCampaignProjector:
                     exc_info=True,
                 )
 
-    async def handle_activity(self, event: ActivityEvent, owner_id: str) -> bool:
+    async def handle_activity(
+        self,
+        event: ActivityEvent,
+        owner_id: str,
+        *,
+        connection_id: str | None = None,
+    ) -> bool:
         """Apply one Volundr stream event; return whether it was a campaign event."""
-        campaign = await self._active_campaign(owner_id, event.session_id)
+        campaign = await self._active_campaign(
+            owner_id, event.session_id, connection_id=connection_id
+        )
         if campaign is None:
             return False
 
+        delivery = _authoritative_delivery(
+            event.metadata, completion_event=_campaign_completion_event(campaign)
+        )
         if event.state == "error" or event.session_status in {"failed", "cancelled", "canceled"}:
             error = str(event.metadata.get("error") or event.metadata.get("message") or "").strip()
             if not error:
@@ -82,10 +98,21 @@ class WorkflowCampaignProjector:
                 WorkflowCampaignStatus.FAILED,
                 failure_error=error,
             )
+        elif delivery is not None:
+            await self._save_transition(
+                campaign,
+                WorkflowCampaignStatus.COMPLETED,
+                metadata={**campaign.metadata, "delivery": delivery},
+            )
         elif event.session_status == "stopped":
             await self._save_transition(campaign, WorkflowCampaignStatus.BLOCKED)
         elif event.session_status in {"completed", "complete", "succeeded"}:
-            await self._save_transition(campaign, WorkflowCampaignStatus.COMPLETED)
+            metadata = _with_delivery(campaign, event.metadata)
+            await self._save_transition(
+                campaign,
+                WorkflowCampaignStatus.COMPLETED,
+                metadata=metadata,
+            )
         elif campaign.status == WorkflowCampaignStatus.PENDING and event.state in {
             "active",
             "idle",
@@ -101,9 +128,10 @@ class WorkflowCampaignProjector:
         *,
         session_id: str,
         gate: dict[str, object],
+        connection_id: str | None = None,
     ) -> bool:
         """Persist an input-required event and immediately notify A2A callbacks."""
-        campaign = await self._active_campaign(owner_id, session_id)
+        campaign = await self._active_campaign(owner_id, session_id, connection_id=connection_id)
         if campaign is None:
             return False
 
@@ -139,10 +167,17 @@ class WorkflowCampaignProjector:
         )
         return True
 
-    async def _active_campaign(self, owner_id: str, session_id: str) -> WorkflowCampaign | None:
+    async def _active_campaign(
+        self,
+        owner_id: str,
+        session_id: str,
+        *,
+        connection_id: str | None = None,
+    ) -> WorkflowCampaign | None:
         return await self._repo.get_active_campaign_by_session(
             owner_id=owner_id,
             session_id=session_id,
+            connection_id=connection_id,
         )
 
     async def _refresh_campaign(self, campaign: WorkflowCampaign) -> None:
@@ -159,12 +194,20 @@ class WorkflowCampaignProjector:
             if activity_state == "error"
             else _status_from_session(session.status, fallback=campaign.status)
         )
-        if next_status == WorkflowCampaignStatus.RUNNING and await self._session_awaits_input(
+        activity_metadata = getattr(session, "activity_metadata", {}) or {}
+        if (
+            next_status != WorkflowCampaignStatus.FAILED
+            and _authoritative_delivery(
+                activity_metadata, completion_event=_campaign_completion_event(campaign)
+            )
+            is not None
+        ):
+            next_status = WorkflowCampaignStatus.COMPLETED
+        elif next_status == WorkflowCampaignStatus.RUNNING and await self._session_awaits_input(
             adapter, campaign.session_id
         ):
             next_status = WorkflowCampaignStatus.BLOCKED
 
-        activity_metadata = getattr(session, "activity_metadata", {}) or {}
         failure_error = ""
         if next_status == WorkflowCampaignStatus.FAILED:
             failure_error = str(
@@ -175,6 +218,7 @@ class WorkflowCampaignProjector:
             next_status,
             session_name=session.name,
             failure_error=failure_error,
+            metadata=_with_delivery(campaign, activity_metadata),
         )
 
     async def _campaign_adapter(self, campaign: WorkflowCampaign):
@@ -191,6 +235,35 @@ class WorkflowCampaignProjector:
             )
             return None
         return await self._volundr_factory.primary_for_owner(campaign.owner_id)
+
+    async def cleanup_terminal_session(
+        self,
+        campaign: WorkflowCampaign,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> WorkflowCampaign | None:
+        """Release one terminal A2A runtime without changing its task outcome."""
+        if not terminal_session_cleanup_needed(campaign):
+            return campaign
+        try:
+            adapter = await self._campaign_adapter(campaign)
+        except Exception:
+            logger.warning(
+                "Could not resolve terminal campaign session %s for cleanup",
+                campaign.session_id,
+                exc_info=True,
+            )
+            return None
+        if adapter is None:
+            return None
+        return await stop_terminal_campaign_session(
+            campaign,
+            adapter=adapter,
+            repo=self._repo,
+            auth_token=auth_token,
+            principal=principal,
+        )
 
     async def _session_awaits_input(self, adapter, session_id: str) -> bool:
         try:
@@ -248,31 +321,97 @@ class WorkflowCampaignProjector:
             event_name = "workflow.campaign.completed"
         elif next_status == WorkflowCampaignStatus.FAILED:
             event_name = "workflow.campaign.failed"
-        await self._event_bus.emit(
-            TingEvent(
-                event=event_name,
-                owner_id=saved.owner_id,
-                data={
-                    "campaign_id": str(saved.id),
-                    "slug": saved.slug,
-                    "name": saved.name,
-                    "status": saved.status.value,
-                    "session_id": saved.session_id,
-                    "workflow_id": str(saved.workflow_id),
-                    "active_stage_id": saved.active_stage_id,
-                    **(
-                        {"error": str(saved.metadata["failure_error"])}
-                        if saved.metadata.get("failure_error")
-                        else {}
-                    ),
-                },
+        try:
+            await self._event_bus.emit(
+                TingEvent(
+                    event=event_name,
+                    owner_id=saved.owner_id,
+                    data={
+                        "campaign_id": str(saved.id),
+                        "slug": saved.slug,
+                        "name": saved.name,
+                        "status": saved.status.value,
+                        "session_id": saved.session_id,
+                        "workflow_id": str(saved.workflow_id),
+                        "active_stage_id": saved.active_stage_id,
+                        **(
+                            {"error": str(saved.metadata["failure_error"])}
+                            if saved.metadata.get("failure_error")
+                            else {}
+                        ),
+                    },
+                )
             )
-        )
-        if self._push_dispatcher is not None:
-            await self._push_dispatcher.queue_campaign(saved)
+            if self._push_dispatcher is not None:
+                await self._push_dispatcher.queue_campaign(saved)
+        finally:
+            if terminal_session_cleanup_needed(saved):
+                await self.cleanup_terminal_session(saved)
 
 
 _PENDING_BLOCKER_STATUSES = frozenset({"", "pending", "open", "waiting", "help_needed", "blocked"})
+
+
+def _with_delivery(campaign: WorkflowCampaign, activity_metadata: dict) -> dict:
+    metadata = dict(campaign.metadata)
+    envelope = activity_metadata.get("delivery")
+    if isinstance(envelope, dict):
+        metadata["delivery"] = envelope
+    return metadata
+
+
+def _campaign_completion_event(campaign: WorkflowCampaign) -> str:
+    """Return the event type the campaign's own pinned graph names for completion.
+
+    Read from the graph's ``end`` node rather than assumed, so this projector
+    works for whatever workflow the campaign is running. An empty result means
+    the campaign's workflow declares no completion event, so the authoritative
+    fast path simply does not apply to it.
+    """
+    snapshot = campaign.workflow_snapshot
+    graph = snapshot.get("graph") if isinstance(snapshot, dict) else None
+    if not isinstance(graph, dict):
+        return ""
+    for node in graph.get("nodes") or []:
+        if isinstance(node, dict) and node.get("kind") == "end":
+            event_type = str(node.get("completionEvent") or "").strip()
+            if event_type:
+                return event_type
+    return ""
+
+
+def _authoritative_delivery(activity_metadata: dict, *, completion_event: str) -> dict | None:
+    """Extract Skuld's terminal result without trusting generic idle metadata."""
+    if not completion_event:
+        return None
+    if activity_metadata.get("completion_source") != "ravn_flock":
+        return None
+    if activity_metadata.get("completion_event_type") != completion_event:
+        return None
+    if not str(activity_metadata.get("completion_peer_id") or "").startswith("workflow-stop:"):
+        return None
+
+    structured = activity_metadata.get("structured_outcome")
+    if not isinstance(structured, dict) or not structured:
+        return None
+    structured_payload = (
+        structured["outcome"] if isinstance(structured.get("outcome"), dict) else structured
+    )
+    if not isinstance(structured_payload, dict) or not structured_payload:
+        return None
+    if not bool(structured_payload.get("authoritative") or activity_metadata.get("outcome_valid")):
+        return None
+
+    envelope = activity_metadata.get("delivery")
+    if not isinstance(envelope, dict) or envelope.get("schemaVersion") != 1:
+        return None
+    result = envelope.get("result")
+    reviews = envelope.get("reviews")
+    if not isinstance(result, dict) or not result or not isinstance(reviews, list):
+        return None
+    if structured_payload.get("result") != result:
+        return None
+    return envelope
 
 
 def _has_pending_entry(entries: list, status_key: str = "status") -> bool:

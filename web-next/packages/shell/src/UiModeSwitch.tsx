@@ -1,11 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
-import {
-  useOptionalService,
-  type IFeatureCatalogService,
-  type PluginDescriptor,
-} from '@niuulabs/plugin-sdk';
+import { useState } from 'react';
+import { type PluginDescriptor } from '@niuulabs/plugin-sdk';
 import { SegmentedFilter } from '@niuulabs/ui';
-import { cacheUiMode, uiModeFromPreferences, useSetUiMode, useUiMode, type UiMode } from './uiMode';
+import { useSetUiMode, useUiMode, type UiMode } from './uiMode';
 
 const OPTIONS: Array<{ value: UiMode; label: string }> = [
   { value: 'simple', label: 'Simple' },
@@ -18,34 +14,11 @@ const OPTIONS: Array<{ value: UiMode; label: string }> = [
  * A host that wires no `features` service (an embedded consumer) keeps the mode in
  * the browser only; that is the host's decision, not a fallback taken here.
  */
-export function UiModeSwitch({ plugins }: { plugins: PluginDescriptor[] }) {
-  const features = useOptionalService<IFeatureCatalogService>('features');
+export function UiModeSwitch({ plugins }: { plugins?: PluginDescriptor[] }) {
   const setUiMode = useSetUiMode();
   const mode = useUiMode();
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const loaded = useRef(false);
-
-  // Boot: the saved preference wins over the local cache, once.
-  useEffect(() => {
-    if (loaded.current || !features) return;
-    loaded.current = true;
-    let cancelled = false;
-    features
-      .getUserFeaturePreferences()
-      .then((preferences) => {
-        if (cancelled) return;
-        const saved = uiModeFromPreferences(preferences);
-        if (saved && saved !== mode) cacheUiMode(saved);
-      })
-      .catch((cause: unknown) => {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [features]);
 
   async function change(next: UiMode) {
     if (next === mode || saving) return;

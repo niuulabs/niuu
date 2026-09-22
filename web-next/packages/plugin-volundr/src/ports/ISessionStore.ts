@@ -8,9 +8,14 @@ export interface SessionFilters {
   ravnId?: string;
 }
 
+export interface SessionLookupOptions {
+  instanceId?: string;
+  signal?: AbortSignal;
+}
+
 /** Port for persisting and retrieving domain Sessions. */
 export interface ISessionStore {
-  getSession(id: string): Promise<Session | null>;
+  getSession(id: string, options?: SessionLookupOptions): Promise<Session | null>;
   listSessions(filters?: SessionFilters, signal?: AbortSignal): Promise<Session[]>;
   /** Registry-backed stores expose independent sources for progressive loading. */
   listSources?(): Promise<Array<{ id: string; name: string }>>;

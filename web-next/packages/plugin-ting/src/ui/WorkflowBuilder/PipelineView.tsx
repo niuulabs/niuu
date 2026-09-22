@@ -23,21 +23,30 @@ export interface PipelineViewProps {
 }
 
 const KIND_LABEL: Record<WorkflowNode['kind'], string> = {
+  subworkflow: 'Child workflows',
   trigger: 'Trigger',
   stage: 'Stage',
   gate: 'Gate',
   cond: 'Cond',
   end: 'End',
   resource: 'Resource',
+  wait: 'Wait',
+  include: 'Include',
 };
 
 const KIND_BADGE_CLASS: Record<WorkflowNode['kind'], string> = {
+  subworkflow: 'niuu:text-brand',
   trigger: 'niuu:text-status-cyan',
   stage: 'niuu:text-brand',
   gate: 'niuu:text-status-amber',
   cond: 'niuu:text-status-cyan',
   end: 'niuu:text-status-emerald',
   resource: 'niuu:text-text-secondary',
+  wait: 'niuu:text-status-cyan',
+  // No Tailwind utility maps to the violet accent nodeAccent.css uses for
+  // this kind's canvas card (see that file's header comment) — reuse the
+  // brand color already used for the other pinned-workflow kind here.
+  include: 'niuu:text-brand',
 };
 
 function stageSummary(node: WorkflowStageNode) {
@@ -164,6 +173,11 @@ export function PipelineView({
                   {node.kind === 'cond' && (
                     <span className="niuu:text-[10px] niuu:font-mono niuu:text-text-faint niuu:max-w-[180px] niuu:truncate">
                       {node.predicate || 'expr …'}
+                    </span>
+                  )}
+                  {node.kind === 'wait' && (
+                    <span className="niuu:text-[10px] niuu:font-mono niuu:text-text-faint">
+                      passive · external observation
                     </span>
                   )}
                 </button>

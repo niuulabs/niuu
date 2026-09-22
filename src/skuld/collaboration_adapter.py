@@ -28,6 +28,7 @@ TimelineReporter = Callable[[dict[str, Any]], Awaitable[None]]
 PeerObserver = Callable[[str, str, dict[str, Any]], Awaitable[None]]
 PresencePublisher = Callable[[Any], Awaitable[None]]
 UsageReporter = Callable[[dict[str, Any]], Awaitable[None]]
+FrameEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 def _source_wire_fields(event: dict[str, Any]) -> dict[str, Any]:
@@ -47,7 +48,11 @@ def _source_wire_fields(event: dict[str, Any]) -> dict[str, Any]:
     return fields
 
 
-def _peer_observation(event: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+def _peer_observation(
+    event: dict[str, Any],
+    *,
+    strict_review_event_types: frozenset[str] = frozenset(),
+) -> tuple[str, dict[str, Any]] | None:
     """Translate a collaboration event into Skuld's peer-observation contract."""
     kind = str(event.get("kind") or "")
     base = {
@@ -81,12 +86,17 @@ def _peer_observation(event: dict[str, Any]) -> tuple[str, dict[str, Any]] | Non
         if not isinstance(context, dict):
             context = {}
         event_type = str(event.get("eventType") or "")
+        validity = (
+            event.get("valid")
+            if event_type in strict_review_event_types
+            else event.get("valid", True)
+        )
         data = {
             **fields,
             **context,
             "event_type": event_type,
             "fields": dict(fields),
-            "valid": bool(event.get("valid", True)),
+            "valid": validity,
         }
         for key in ("summary", "verdict"):
             if event.get(key) is not None:
@@ -141,6 +151,8 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         self,
         config: RoomConfig,
         channels: ChannelRegistry,
+        *,
+        emit_frame: FrameEmitter,
         append_turn: TurnAppender | None = None,
         report_timeline_event: TimelineReporter | None = None,
         observe_peer_event: PeerObserver | None = None,
@@ -148,14 +160,23 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         report_usage: UsageReporter | None = None,
         environment_id: str | None = None,
         clock: Callable[[], float] | None = None,
+        attestable_review_event_types: frozenset[str] | set[str] = frozenset(),
     ) -> None:
         self._config = config
         self._channels = channels
+        self._emit_frame = emit_frame
         self._append_turn = append_turn
         self._report_timeline_event = report_timeline_event
         self._observe_peer_event = observe_peer_event
         self._publish_presence_event = publish_presence_event
         self._report_usage = report_usage
+        # Event types requiring an explicit boolean `valid` before being trusted
+        # as attested review evidence: exactly whatever event type(s) this
+        # workflow's own `reviewAttestation` names, threaded in by the caller
+        # (see `attestable_review_event_types`), so a configured review event
+        # never falls through to the default "no `valid` field means valid"
+        # coercion applied to ordinary outcomes.
+        self._strict_review_event_types = frozenset(attestable_review_event_types)
         self._websockets: dict[str, WebSocket] = {}
         self._reported_usage_ids: set[str] = set()
         self._delivered_source_events: OrderedDict[str, None] = OrderedDict()
@@ -262,7 +283,9 @@ class SkuldCollaborationAdapter(CollaborationRoom):
                     )
                     return
 
-                observation = _peer_observation(event)
+                observation = _peer_observation(
+                    event, strict_review_event_types=self._strict_review_event_types
+                )
                 if self._observe_peer_event is not None and observation is not None:
                     event_type, payload = observation
                     await self._observe_peer_event(participant.peer_id, event_type, payload)
@@ -417,29 +440,45 @@ class SkuldCollaborationAdapter(CollaborationRoom):
     async def _handle_outcome(self, participant: Participant, event: dict[str, Any]) -> None:
         if event.get("routingOnly"):
             return
+        event_type = str(event.get("eventType") or "")
+        validity = (
+            event.get("valid")
+            if event_type in self._strict_review_event_types
+            else event.get("valid", True)
+        )
         outcome: dict[str, Any] = {
             "type": "room_outcome",
             "participantId": participant.peer_id,
             "participant": asdict(participant),
             "persona": event.get("persona") or participant.persona,
-            "eventType": event.get("eventType") or "",
+            "eventType": event_type,
             "fields": dict(event.get("fields") or {}),
-            "valid": bool(event.get("valid", True)),
+            "valid": validity,
             **_source_wire_fields(event),
         }
         for key in ("summary", "verdict"):
             if event.get(key):
                 outcome[key] = event[key]
-        await self._channels.broadcast(outcome)
-        await self._deliver_outcome_to_subscribers(outcome)
+        await self._emit_frame(outcome)
+        await self._deliver_outcome_to_subscribers(
+            outcome,
+            source_is_mesh=participant.participant_kind == "mesh",
+        )
 
-    async def _deliver_outcome_to_subscribers(self, outcome: dict[str, Any]) -> None:
+    async def _deliver_outcome_to_subscribers(
+        self,
+        outcome: dict[str, Any],
+        *,
+        source_is_mesh: bool,
+    ) -> None:
         event_type = str(outcome.get("eventType") or "")
         if not event_type:
             return
         payload = {**outcome, "type": "collaboration.outcome"}
         for participant in self.participants.values():
             if not matches_subscription(event_type, participant.subscribes_to):
+                continue
+            if source_is_mesh and participant.participant_kind == "mesh":
                 continue
             await self._deliver_to_websocket(participant.peer_id, payload)
 

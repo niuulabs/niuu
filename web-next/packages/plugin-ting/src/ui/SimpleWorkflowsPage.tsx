@@ -27,6 +27,10 @@ import {
 import { WorkflowStrip, gateWaitsForPerson } from './WorkflowStrip';
 import { WorkflowRunsCard } from './WorkflowRunsCard';
 import { WorkflowIssuePicker, issueLaunchPrompt } from './WorkflowIssuePicker';
+import { WorkflowImportDialog } from './WorkflowImportDialog';
+import { usePersonasBrowser } from './settings/usePersonasBrowser';
+import { useWorkflowRegistryMounts } from './useWorkflowRegistryMounts';
+import './SimpleWorkflowsPage.css';
 
 interface SimpleWorkflowsSearch {
   workflow?: string;
@@ -65,6 +69,13 @@ function gatesSentence(workflow: Workflow): string {
   return `Stops for you at ${gates} gates`;
 }
 
+function workflowHasUnresolvedRequirements(workflow: Workflow): boolean {
+  if ((workflow.requirements ?? []).some((requirement) => !requirement.resolved)) return true;
+  return Object.values(workflow.personaDependencies ?? {}).some(
+    (dependency) => dependency.resolved === false,
+  );
+}
+
 function WorkflowOptionCard({
   workflow,
   selected,
@@ -93,14 +104,14 @@ function WorkflowOptionCard({
         <WorkflowIcon size={14} aria-hidden="true" />
       </span>
       <span className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col niuu:gap-0.5">
-        <span className="niuu:truncate niuu:text-[13px] niuu:font-semibold niuu:text-text-primary">
+        <span className="ting-workflow-catalog__row-title niuu:truncate niuu:font-semibold niuu:text-text-primary">
           {workflow.name}
         </span>
-        <span className="niuu:flex niuu:items-baseline niuu:gap-3">
-          <span className="niuu:min-w-0 niuu:flex-1 niuu:truncate niuu:text-[11px] niuu:text-text-muted">
+        <span className="niuu:flex niuu:min-w-0 niuu:flex-col niuu:gap-1">
+          <span className="niuu:min-w-0 niuu:flex-1 niuu:truncate niuu:text-xs niuu:text-text-muted">
             {workflowSummary(workflow)}
           </span>
-          <span className="niuu:shrink-0 niuu:font-mono niuu:text-[10px] niuu:text-text-faint">
+          <span className="niuu:shrink-0 niuu:font-mono niuu:text-xs niuu:text-text-faint">
             {humanGateCount(workflow)} gates · {stageCount(workflow)} stages
             {runCount > 0 ? ` · ran ${runCount}×` : ''}
           </span>
@@ -131,6 +142,9 @@ export function SimpleWorkflowsPage() {
   const createWorkflow = useCreateWorkflow();
   const launchWorkflow = useLaunchWorkflow();
   const [issuePickerOpen, setIssuePickerOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const { data: personas = [] } = usePersonasBrowser();
+  const { data: registryMounts = [] } = useWorkflowRegistryMounts();
 
   const reposQuery = useQuery({
     queryKey: ['niuu', 'repos'],
@@ -183,38 +197,46 @@ export function SimpleWorkflowsPage() {
   }
 
   const canLaunch =
-    selected !== null && draft.values.prompt.trim().length > 0 && !launchWorkflow.isPending;
+    selected !== null &&
+    !workflowHasUnresolvedRequirements(selected) &&
+    draft.values.prompt.trim().length > 0 &&
+    !launchWorkflow.isPending;
 
   return (
-    <div
-      data-testid="simple-workflows-page"
-      className="niuu:flex niuu:h-full niuu:min-h-0 niuu:overflow-hidden niuu:font-sans niuu:bg-bg-primary"
-    >
-      <aside className="niuu:flex niuu:w-[340px] niuu:shrink-0 niuu:flex-col niuu:border-r niuu:border-border niuu:bg-bg-secondary">
-        <div className="niuu:flex niuu:items-center niuu:justify-between niuu:px-5 niuu:pt-5 niuu:pb-3">
-          <h2 className="niuu:m-0 niuu:text-[15px] niuu:font-semibold niuu:text-text-primary">
-            Your workflows
-          </h2>
-          <button
-            type="button"
-            data-testid="simple-workflow-new"
-            onClick={handleNew}
-            disabled={createWorkflow.isPending}
-            className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-2.5 niuu:py-1 niuu:text-[11px] niuu:text-text-secondary niuu:cursor-pointer niuu:hover:text-text-primary niuu:disabled:opacity-50"
-          >
-            New
-          </button>
+    <div data-testid="simple-workflows-page" className="ting-workflow-catalog">
+      <aside className="ting-workflow-catalog__sidebar" aria-label="Workflow catalog">
+        <div className="ting-workflow-catalog__heading">
+          <h2>Workflows</h2>
+          <div className="niuu:flex niuu:items-center niuu:gap-2">
+            <button
+              type="button"
+              data-testid="simple-workflow-import"
+              onClick={() => setImportOpen(true)}
+              className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:text-text-secondary niuu:cursor-pointer niuu:hover:text-text-primary"
+            >
+              Import
+            </button>
+            <button
+              type="button"
+              data-testid="simple-workflow-new"
+              onClick={handleNew}
+              disabled={createWorkflow.isPending}
+              className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:text-text-secondary niuu:cursor-pointer niuu:hover:text-text-primary niuu:disabled:opacity-50"
+            >
+              New
+            </button>
+          </div>
         </div>
 
         <div className="niuu:flex niuu:flex-1 niuu:flex-col niuu:gap-1 niuu:overflow-y-auto niuu:px-3 niuu:pb-3">
           {isLoading ? <LoadingState label="Loading workflows…" /> : null}
           {isError ? (
-            <p className="niuu:m-0 niuu:px-2 niuu:text-[12px] niuu:text-critical" role="alert">
+            <p className="niuu:m-0 niuu:px-2 niuu:text-xs niuu:text-critical" role="alert">
               {error instanceof Error ? error.message : 'Failed to load workflows.'}
             </p>
           ) : null}
           {!isLoading && !isError && (workflows?.length ?? 0) === 0 ? (
-            <p className="niuu:m-0 niuu:px-2 niuu:text-[12px] niuu:text-text-muted">
+            <p className="niuu:m-0 niuu:px-2 niuu:text-xs niuu:text-text-muted">
               No workflows yet. New builds your first one.
             </p>
           ) : null}
@@ -228,78 +250,78 @@ export function SimpleWorkflowsPage() {
             />
           ))}
         </div>
-
-        {tracker ? (
-          <div className="niuu:m-3 niuu:rounded-lg niuu:border niuu:border-brand/40 niuu:bg-brand/10 niuu:p-3.5">
-            <p className="niuu:m-0 niuu:text-[13px] niuu:font-semibold niuu:text-text-primary">
-              Start from a Linear issue
-            </p>
-            <p className="niuu:m-0 niuu:mt-1 niuu:mb-2.5 niuu:text-[11px] niuu:text-text-muted">
-              Pick one off a board and it becomes the prompt.
-            </p>
-            <button
-              type="button"
-              data-testid="simple-workflow-pick-issue"
-              onClick={() => setIssuePickerOpen(true)}
-              className="niuu:rounded-md niuu:border niuu:border-brand/50 niuu:bg-bg-elevated niuu:px-2.5 niuu:py-1 niuu:text-[11px] niuu:text-brand niuu:cursor-pointer"
-            >
-              Pick an issue
-            </button>
-          </div>
-        ) : null}
       </aside>
 
-      <main className="niuu:min-w-0 niuu:flex-1 niuu:min-h-0 niuu:overflow-y-auto niuu:px-9 niuu:py-7">
+      {importOpen ? (
+        <WorkflowImportDialog
+          open
+          workflows={workflows ?? []}
+          personas={personas}
+          registryMounts={registryMounts}
+          onClose={() => setImportOpen(false)}
+          onImported={(workflow) => selectWorkflow(workflow.id)}
+        />
+      ) : null}
+
+      <main className="ting-workflow-catalog__detail">
         {!isLoading && !selected ? (
           <p className="niuu:m-0 niuu:text-sm niuu:text-text-muted">No workflow selected yet.</p>
         ) : null}
 
         {selected ? (
           <div className="niuu:flex niuu:flex-col niuu:gap-5">
-            <header className="niuu:flex niuu:items-start niuu:gap-4">
+            <header className="ting-workflow-catalog__header">
               <div className="niuu:min-w-0 niuu:flex-1">
                 <div className="niuu:flex niuu:items-center niuu:gap-2.5">
-                  <h1 className="niuu:m-0 niuu:text-[22px] niuu:font-semibold niuu:text-text-primary">
-                    {selected.name}
-                  </h1>
-                  <span className="niuu:rounded-full niuu:border niuu:border-border-subtle niuu:px-2 niuu:py-0.5 niuu:text-[10px] niuu:text-text-muted">
+                  <h1>{selected.name}</h1>
+                  <span className="ting-workflow-catalog__scope">
                     {selected.scope === 'system' ? 'shared' : 'yours'}
                   </span>
                 </div>
-                <p className="niuu:m-0 niuu:mt-1.5 niuu:text-[13px] niuu:text-text-secondary">
-                  {workflowSummary(selected)}
-                </p>
               </div>
               <Link
                 to="/ting/workflows/build"
                 search={{ id: selected.id }}
                 data-testid="simple-workflow-edit"
-                className="niuu:shrink-0 niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-3 niuu:py-1.5 niuu:text-[12px] niuu:text-text-secondary niuu:no-underline niuu:hover:text-text-primary"
+                className="ting-workflow-catalog__builder"
               >
-                Edit stages
+                <WorkflowIcon size={15} aria-hidden="true" /> Open in builder
               </Link>
             </header>
 
-            <section className="niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-5">
-              <div
-                role="heading"
-                aria-level={2}
-                className="niuu:mb-3.5 niuu:text-[10px] niuu:font-medium niuu:uppercase niuu:tracking-[0.08em] niuu:text-text-muted"
-              >
+            <p className="ting-workflow-catalog__description">{workflowSummary(selected)}</p>
+
+            <section className="ting-workflow-catalog__preview">
+              <div role="heading" aria-level={2} className="ting-workflow-catalog__section-title">
                 How it runs
               </div>
               <WorkflowStrip nodes={selected.nodes} edges={selected.edges} />
             </section>
 
-            <div className="niuu:grid niuu:grid-cols-[repeat(auto-fit,minmax(400px,1fr))] niuu:items-start niuu:gap-5">
-              <section className="niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-5">
-                <div
-                  role="heading"
-                  aria-level={2}
-                  className="niuu:mb-3 niuu:text-[15px] niuu:font-semibold niuu:text-text-primary"
-                >
-                  Launch it
+            <div className="ting-workflow-catalog__panels">
+              <section className="ting-workflow-catalog__launch">
+                <div role="heading" aria-level={2} className="ting-workflow-catalog__section-title">
+                  Run workflow
                 </div>
+                {tracker ? (
+                  <button
+                    type="button"
+                    data-testid="simple-workflow-pick-issue"
+                    onClick={() => setIssuePickerOpen(true)}
+                    className="ting-workflow-catalog__pick-issue"
+                  >
+                    Use a tracker issue as the prompt
+                  </button>
+                ) : null}
+                {workflowHasUnresolvedRequirements(selected) ? (
+                  <p
+                    data-testid="simple-workflow-unresolved"
+                    className="niuu:mt-0 niuu:mb-3 niuu:rounded-md niuu:border niuu:border-warning/40 niuu:bg-warning/10 niuu:p-2.5 niuu:text-xs niuu:text-warning"
+                  >
+                    Resolve imported persona dependencies and local bindings in the Builder before
+                    launch.
+                  </p>
+                ) : null}
                 {reposQuery.isFetching ? <LoadingState label="Loading repositories…" /> : null}
                 {reposQuery.error ? (
                   <p role="alert">Could not load repositories: {reposQuery.error.message}</p>
@@ -315,7 +337,7 @@ export function SimpleWorkflowsPage() {
                   onPromptSubmit={() => void handleLaunch()}
                 />
                 <div className="niuu:mt-4 niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
-                  <span className="niuu:text-[11px] niuu:text-text-muted">
+                  <span className="niuu:text-xs niuu:text-text-muted">
                     {gatesSentence(selected)}
                   </span>
                   <button
@@ -323,7 +345,7 @@ export function SimpleWorkflowsPage() {
                     data-testid="simple-workflow-launch"
                     disabled={!canLaunch}
                     onClick={() => void handleLaunch()}
-                    className="niuu:rounded-full niuu:bg-brand niuu:px-4 niuu:py-1.5 niuu:text-[12px] niuu:font-medium niuu:text-bg-primary niuu:cursor-pointer niuu:disabled:opacity-50"
+                    className="ting-workflow-catalog__launch-button"
                   >
                     {launchWorkflow.isPending ? 'Launching…' : 'Launch'}
                   </button>

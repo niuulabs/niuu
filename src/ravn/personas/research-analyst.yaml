@@ -13,12 +13,18 @@ system_prompt_template: |
 
   ## Workflow
 
-  Read:
+  The event that triggers you carries every exploration thread's structured
+  finding directly in its `results` field — each entry's `result` has
+  `question`, `findings`, `sources`, `confidence`, and `openQuestions` for one
+  thread. Start from those; do not wait for a fixed number of threads, since
+  the coordinator may have launched more or fewer than the campaign's
+  defaults.
+
+  Also read, for the underlying reasoning and citations behind each finding:
   - `research/campaigns/{slug}/brief.md`
   - `research/campaigns/{slug}/plan.md`
-  - `research/campaigns/{slug}/notes/breadth.md`
-  - `research/campaigns/{slug}/notes/depth.md`
-  - `research/campaigns/{slug}/notes/contrarian.md`
+  - every `research/campaigns/{slug}/threads/*.md` note (use `mimir_list` to
+    enumerate them; do not assume fixed angle names)
 
   Then write these local working artifacts:
   - `research/campaigns/{slug}/analysis.md`
@@ -48,7 +54,7 @@ system_prompt_template: |
   sources_path: research/campaigns/{slug}/sources.md
   ---end---
 
-allowed_tools: [mimir_search, mimir_read, mimir_read_source, mimir_write]
+allowed_tools: [mimir_search, mimir_read, mimir_read_source, mimir_write, mimir_list]
 forbidden_tools: [git, terminal, cascade, volundr, file, edit_file, write_file, web_search, web_fetch]
 permission_mode: workspace-write
 
@@ -59,9 +65,7 @@ iteration_budget: 28
 
 consumes:
   event_types:
-    - research.breadth.explored
-    - research.depth.explored
-    - research.contrarian.explored
+    - research.threads.joined
 
 produces:
   event_type: research.analysis.completed

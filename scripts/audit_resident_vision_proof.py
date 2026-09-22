@@ -61,9 +61,7 @@ _LAYER_TITLES = {
 
 
 _REQUIREMENTS = {
-    "wakefulness": (
-        EvidenceRequirement("wake cycle records", "**/resident/wakeful/cycles/*.md"),
-    ),
+    "wakefulness": (EvidenceRequirement("wake cycle records", "**/resident/wakeful/cycles/*.md"),),
     "long_horizon": (
         EvidenceRequirement("portfolio summary", "**/resident/portfolio/portfolio.md"),
         EvidenceRequirement("portfolio objectives", "**/resident/portfolio/objectives/*.md"),
@@ -245,10 +243,7 @@ def _render_markdown(results: list[LayerResult]) -> str:
         lines.append(f"- layer: `{result.key}`")
         lines.append(f"- root: `{result.root}`")
         for requirement in result.requirements:
-            lines.append(
-                f"- {requirement.label}: {requirement.status} "
-                f"(`{requirement.pattern}`)"
-            )
+            lines.append(f"- {requirement.label}: {requirement.status} (`{requirement.pattern}`)")
             for match in requirement.matches[:3]:
                 lines.append(f"  - `{match}`")
             if requirement.missing_contains:

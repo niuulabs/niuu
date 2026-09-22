@@ -36,6 +36,7 @@ from niuu.domain.model_runtime import (
 )
 from niuu.domain.models import Principal
 from niuu.domain.tags import matches_tags
+from ravn.domain.persona_document import PortablePersonaSource
 from ting.domain.flock_merge import build_flock_workload_config
 from ting.domain.models import (
     DispatcherState,
@@ -56,6 +57,7 @@ from ting.domain.workflow_snapshot import (
     workflow_mimir_from_snapshot,
     workflow_name_from_snapshot,
     workflow_personas_from_snapshot,
+    workflow_runtime_personas_from_snapshot,
     workflow_stage_models_from_snapshot,
 )
 from ting.ports.dispatcher_repository import DispatcherRepository
@@ -88,9 +90,9 @@ def _sanitize_log(value: object) -> str:
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
 
-def _supports_principal_kwarg(method: object) -> bool:
+def _supports_keyword_arg(method: object, keyword: str) -> bool:
     try:
-        return "principal" in inspect.signature(method).parameters
+        return keyword in inspect.signature(method).parameters
     except (TypeError, ValueError):
         return False
 
@@ -168,7 +170,7 @@ def _resolve_workflow_execution(
         if requested_definition
         else None
     )
-    for persona in workflow_personas_from_snapshot(workflow_snapshot):
+    for persona in workflow_runtime_personas_from_snapshot(workflow_snapshot):
         if not isinstance(persona, dict):
             continue
         runtime_persona = dict(persona)
@@ -530,6 +532,7 @@ class DispatchService:
         event_bus: EventBusPort | None = None,
         flow_provider: FlockFlowProvider | None = None,
         workflow_repo: WorkflowRepository | None = None,
+        persona_source: PortablePersonaSource | None = None,
     ) -> None:
         self._tracker_factory = tracker_factory
         self._volundr_factory = volundr_factory
@@ -541,6 +544,7 @@ class DispatchService:
         self._event_bus = event_bus
         self._flow_provider = flow_provider
         self._workflow_repo = workflow_repo
+        self._persona_source = persona_source
 
     async def _dispatch_capacity_snapshot(
         self,
@@ -1296,7 +1300,9 @@ class DispatchService:
         """Fetch integration IDs from Volundr, returning empty on failure."""
         try:
             kwargs: dict[str, Any] = {"auth_token": auth_token}
-            if principal is not None and _supports_principal_kwarg(volundr.list_integration_ids):
+            if principal is not None and _supports_keyword_arg(
+                volundr.list_integration_ids, "principal"
+            ):
                 kwargs["principal"] = principal
             ids = await volundr.list_integration_ids(**kwargs)
             logger.info("Fetched %d Volundr integration IDs: %s", len(ids), ids)
@@ -1545,17 +1551,24 @@ class DispatchService:
                 "request": request,
                 "auth_token": auth_token,
             }
-            if principal is not None and _supports_principal_kwarg(target_volundr.spawn_session):
+            if principal is not None and _supports_keyword_arg(
+                target_volundr.spawn_session, "principal"
+            ):
                 spawn_kwargs["principal"] = principal
             session = await target_volundr.spawn_session(**spawn_kwargs)
 
             # Record run progress and set tracker issue to In Progress
             adapter_name = type(adapter).__name__
+            # Older external adapters may not yet accept tenant attribution.
+            progress_scope = {}
+            if _supports_keyword_arg(adapter.update_run_progress, "tenant_id"):
+                progress_scope["tenant_id"] = principal.tenant_id if principal is not None else ""
             await adapter.update_run_progress(
                 issue.id,
                 status=RunStatus.RUNNING,
                 session_id=session.id,
                 owner_id=owner_id,
+                **progress_scope,
                 phase_tracker_id=issue.milestone_id,
                 saga_tracker_id=saga.tracker_id,
             )
@@ -1637,7 +1650,11 @@ class DispatchService:
             return None, f"workflow {item.workflow_id!r} is not visible to this saga owner"
         from ting.domain.workflow_snapshot import build_workflow_snapshot  # noqa: PLC0415
 
-        return build_workflow_snapshot(workflow), None
+        try:
+            snapshot = build_workflow_snapshot(workflow, persona_source=self._persona_source)
+        except ValueError as exc:
+            return None, str(exc)
+        return snapshot, None
 
     async def _resolve_default_workflow_snapshot(
         self,
@@ -1660,7 +1677,10 @@ class DispatchService:
 
         from ting.domain.workflow_snapshot import build_workflow_snapshot  # noqa: PLC0415
 
-        snapshot = build_workflow_snapshot(workflow)
+        try:
+            snapshot = build_workflow_snapshot(workflow, persona_source=self._persona_source)
+        except ValueError as exc:
+            return None, str(exc)
         await self._saga_repo.update_saga_workflow(
             saga.id,
             workflow_id=workflow.id,

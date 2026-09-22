@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from ting.config import AuthConfig, Settings
+from ting.config import AuthConfig, Settings, WorkflowRepositoryConfig
 from ting.main import create_app
 
 
@@ -23,7 +23,16 @@ def _database_pool_stub(pool):
 @pytest.fixture
 def app():
     """Create app instance."""
-    return create_app(Settings(auth=AuthConfig(allow_anonymous_dev=True)))
+    return create_app(
+        Settings(
+            auth=AuthConfig(allow_anonymous_dev=True),
+            workflow_repository=WorkflowRepositoryConfig(
+                adapter="ting.adapters.postgres_workflows.PostgresWorkflowRepository",
+                kwargs={},
+                seed_bundled=True,
+            ),
+        )
+    )
 
 
 @pytest.fixture
@@ -35,6 +44,8 @@ def mock_pool():
     pool.fetchrow = AsyncMock(return_value=None)
     pool.execute = AsyncMock(return_value="OK")
     pool.close = AsyncMock()
+    pool.acquire.return_value.__aenter__.return_value = pool
+    pool.transaction.return_value.__aenter__.return_value = None
     return pool
 
 

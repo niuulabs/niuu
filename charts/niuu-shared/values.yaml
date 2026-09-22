@@ -131,6 +131,15 @@ credentialStore:
   kwargs: {}
   secretKwargs: []
 
+# Deployment-owned integration definitions can be mounted without adding
+# provider-specific code or credentials to the Niuu image.
+integrations: {}
+  # databaseName: niuu_shared
+  # definitionFiles: []  # Absolute paths supplied through extraVolumes/extraVolumeMounts.
+  # moduleManifestFiles: []  # Trusted external component manifests supplied through mounts.
+  # allowDefinitionOverrides: false
+  # definitions: []
+
 # Trusted login runner for interactive credential enrollment (e.g. the Codex
 # ChatGPT device login and Claude setup-token). Configure KubernetesLoginRunner
 # with kwargs.image (a pinned Skuld image) and kwargs.namespace (niuu-logins).

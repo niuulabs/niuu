@@ -1,0 +1,61 @@
+schema_version: 2
+id: f776d181-ed63-4e3a-b5c4-7b128e4d2094
+name: Developer Integration
+description: Verify and review the complete integration candidate against the approved delivery plan.
+version: 1.0.0
+persona_dependencies:
+  developer-coordinator:
+    id: developer-coordinator
+    revision: content-88ab53096f6bf786
+    digest: sha256:88ab53096f6bf786bf2f9c02f3a82eb91cf633e4ba9d1dd238d47a013d1337b1
+    path: personas/developer-coordinator.yaml
+  developer-integration-verifier:
+    id: developer-integration-verifier
+    revision: content-52ddb521e74bf8a5
+    digest: sha256:52ddb521e74bf8a54fae225ccde0fc4fae9fc96cef50d1c7ba2b7591556f0f32
+    path: personas/developer-integration-verifier.yaml
+workflow_dependencies: {}
+graph:
+  executionContract: developer-integration/v1
+  reviewAttestation:
+    version: 1
+    scope: integration
+    eventType: developer.integration.reviewed
+    roles:
+      integration: developer-integration-verifier
+  nodes:
+    - id: integration-request
+      kind: trigger
+      label: Verify integrated candidate
+      source: developer execution
+      dispatchEvent: developer.integration.requested
+    - id: integration-tests
+      kind: stage
+      label: Request trusted integration verification
+      executionMode: sequential
+      joinMode: any
+      stageMembers:
+        - personaId: developer-coordinator
+          model: gpt-5.5
+          budget: 12
+          consumesEventTypes: [developer.integration.requested]
+    - id: integration-review
+      kind: stage
+      label: Review the complete verified change
+      executionMode: sequential
+      joinMode: all
+      stageMembers:
+        - personaId: developer-integration-verifier
+          model: gpt-5.5
+          budget: 28
+          consumesEventTypes: [developer.integration.verified]
+    - id: integration-complete
+      kind: end
+      label: Integration accepted
+      joinMode: all
+      passingVerdicts: [pass]
+      completionEvent: developer.integration.approved
+  edges:
+    - {id: integration-request-tests, source: integration-request, target: integration-tests, label: developer.integration.requested -> developer.integration.requested}
+    - {id: integration-tests-review, source: integration-tests, target: integration-review, label: developer.integration.verified -> developer.integration.verified}
+    - {id: integration-review-complete, source: integration-review, target: integration-complete, label: developer.integration.approved -> developer.integration.approved}

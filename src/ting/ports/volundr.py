@@ -5,9 +5,24 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Protocol
 
+from niuu.domain.delivery import (
+    AcceptancePolicy,
+    CandidateEvidence,
+    CheckReceipt,
+    EvidenceValidationReport,
+    IntegrationCandidateInspection,
+    IntegrationReceipt,
+    MergeReceipt,
+    MergeRequest,
+    ResolvedRef,
+    ReviewCandidate,
+    WorkspaceAllocation,
+)
 from niuu.domain.models import Principal
+from ravn.domain.persona_document import PortablePersonaDefinition
 from ting.domain.models import PRStatus
 
 
@@ -91,6 +106,32 @@ class ActivityEvent:
     session_status: str = ""
 
 
+@dataclass(frozen=True)
+class PublicSessionLogEntry:
+    """One public Forge session-log record.
+
+    Ting deliberately consumes the default public log view. Implementations must
+    not request internal tool or reasoning blocks when serving this contract.
+    """
+
+    session_id: str
+    seq: int
+    kind: str
+    payload: dict
+    ts: datetime
+    role: str | None = None
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class PublicSessionLogPage:
+    """One public log page with progress through Forge's raw cursor space."""
+
+    entries: tuple[PublicSessionLogEntry, ...]
+    scanned_through: int
+    has_more: bool
+
+
 class VolundrPort(ABC):
     """Abstract interface for Volundr session management."""
 
@@ -118,6 +159,89 @@ class VolundrPort(ABC):
         principal: Principal | None = None,
     ) -> VolundrSession:
         raise NotImplementedError
+
+    async def resolve_delivery_ref(
+        self,
+        repository: str,
+        ref: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> ResolvedRef:
+        """Resolve a provider ref to an immutable commit through Forge."""
+        raise NotImplementedError("This Volundr adapter does not support delivery ref resolution")
+
+    async def validate_delivery_evidence(
+        self,
+        evidence: CandidateEvidence,
+        *,
+        policy_id: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> EvidenceValidationReport:
+        """Validate authenticated evidence using a server-registered acceptance policy."""
+        raise NotImplementedError("This Volundr adapter does not support delivery evidence")
+
+    async def reconcile_delivery_merge(
+        self,
+        request: MergeRequest,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> MergeReceipt:
+        """Read authoritative remote publication state for an exact candidate."""
+        raise NotImplementedError("This Volundr adapter does not support delivery publication")
+
+    async def describe_delivery_policy(
+        self,
+        *,
+        campaign_id: str,
+        repository: str,
+        policy_id: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> AcceptancePolicy:
+        """Read one server-configured delivery policy for deterministic observation."""
+        raise NotImplementedError("This Volundr adapter does not support delivery policies")
+
+    async def inspect_delivery_candidate(
+        self,
+        repository: str,
+        review_number: int,
+        *,
+        campaign_id: str,
+        policy_id: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> tuple[ReviewCandidate, CheckReceipt]:
+        """Read exact remote review identity and configured checks."""
+        raise NotImplementedError("This Volundr adapter does not support delivery inspection")
+
+    async def inspect_delivery_integration(
+        self,
+        allocation: WorkspaceAllocation,
+        receipt: IntegrationReceipt,
+        *,
+        policy_id: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> IntegrationCandidateInspection:
+        """Verify a signed integration receipt against the live workspace candidate."""
+        raise NotImplementedError("This Volundr adapter does not support integration inspection")
+
+    async def inspect_delivery_integration_chain(
+        self,
+        allocation: WorkspaceAllocation,
+        receipts: tuple[IntegrationReceipt, ...],
+        *,
+        policy_id: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> IntegrationCandidateInspection:
+        """Verify the complete signed integration chain and its live final workspace."""
+        raise NotImplementedError(
+            "This Volundr adapter does not support integration-chain inspection"
+        )
 
     @abstractmethod
     async def get_session(
@@ -177,6 +301,32 @@ class VolundrPort(ABC):
             message,
             auth_token=auth_token,
             principal=principal,
+        )
+
+    async def publish_workflow_event(
+        self,
+        session_id: str,
+        event_type: str,
+        content: str,
+        *,
+        payload: dict | None = None,
+        request_id: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        """Publish an idempotently identified event into a running workflow mesh."""
+        raise NotImplementedError("This Volundr adapter cannot publish workflow events")
+
+    async def get_current_portable_persona(
+        self,
+        persona_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> PortablePersonaDefinition | None:
+        """Return the caller-scoped current portable persona source."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not expose caller-scoped portable personas"
         )
 
     async def get_workflow_gates(
@@ -278,6 +428,18 @@ class VolundrPort(ABC):
     ) -> dict:
         """Return the full conversation history for a session."""
         raise NotImplementedError
+
+    async def get_public_session_log_page(
+        self,
+        session_id: str,
+        *,
+        after: int,
+        limit: int,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> PublicSessionLogPage:
+        """Return one cursor page from Forge's public session log."""
+        raise NotImplementedError("This Volundr adapter does not expose public session logs")
 
     @abstractmethod
     async def subscribe_activity(self) -> AsyncGenerator[ActivityEvent, None]:

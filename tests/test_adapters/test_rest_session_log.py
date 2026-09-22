@@ -208,6 +208,59 @@ class TestReplay:
         assert resp.status_code == 200
         assert resp.json() == []
 
+    def test_page_advances_raw_cursor_across_fully_hidden_batch(self):
+        client, _ = _client()
+        sid = str(uuid4())
+        hidden = [
+            {
+                "seq": seq,
+                "kind": "user",
+                "payload": {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": f"tool-{seq}",
+                                "content": "private",
+                            }
+                        ],
+                    },
+                },
+            }
+            for seq in range(1, 4)
+        ]
+        outcome = {
+            "seq": 4,
+            "kind": "room_outcome",
+            "payload": {
+                "type": "room_outcome",
+                "eventType": "review.completed",
+                "fields": {"summary": "Public evidence"},
+            },
+        }
+        client.post(
+            f"/api/v1/forge/sessions/{sid}/log",
+            json={"entries": [*hidden, outcome]},
+        )
+
+        first = client.get(
+            f"/api/v1/forge/sessions/{sid}/log/page",
+            params={"after": 0, "limit": 3, "show_internal": "false"},
+        )
+        second = client.get(
+            f"/api/v1/forge/sessions/{sid}/log/page",
+            params={"after": first.json()["scannedThrough"], "limit": 3, "show_internal": "false"},
+        )
+
+        assert first.status_code == 200
+        assert first.json() == {"entries": [], "scannedThrough": 3, "hasMore": True}
+        assert second.status_code == 200
+        assert [entry["seq"] for entry in second.json()["entries"]] == [4]
+        assert second.json()["scannedThrough"] == 4
+        assert second.json()["hasMore"] is False
+
 
 # Rows mirroring the streaming shape: assistant/user content lists carrying
 # tool_use / tool_result blocks plus standalone content_block_* deltas.
@@ -409,6 +462,7 @@ def test_orphaned_log_cannot_be_read_or_modified():
     with TestClient(app) as client:
         path = f"/api/v1/forge/sessions/{uuid4()}/log"
         assert client.get(path, headers=headers).status_code == 404
+        assert client.get(path + "/page", headers=headers).status_code == 404
         assert client.get(path + "/head", headers=headers).status_code == 404
         assert client.post(path, headers=headers, json={"entries": [_frame(1)]}).status_code == 404
     repo.read_after.assert_not_called()
@@ -424,6 +478,31 @@ def test_log_authorization_unconfigured_denies_access():
     app.include_router(create_session_log_router(repo))
     with TestClient(app) as client:
         assert client.get(f"/api/v1/forge/sessions/{uuid4()}/log").status_code == 503
+        assert client.get(f"/api/v1/forge/sessions/{uuid4()}/log/page").status_code == 503
+    repo.read_after.assert_not_called()
+
+
+def test_log_page_reuses_strict_session_read_authorization():
+    from unittest.mock import AsyncMock
+
+    from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
+    from volundr.domain.services.session import SessionAccessDeniedError
+
+    session_id = uuid4()
+    repo = AsyncMock(spec=SessionEventLogRepository)
+    service = AsyncMock()
+    service.get_session.return_value = object()
+    service._check_access.side_effect = SessionAccessDeniedError(session_id, "alice")
+    app = FastAPI()
+    app.state.identity = EnvoyHeaderAuthenticationAdapter()
+    app.include_router(create_session_log_router(repo, session_service=service))
+
+    response = TestClient(app).get(
+        f"/api/v1/forge/sessions/{session_id}/log/page",
+        headers={"x-auth-user-id": "alice", "x-auth-tenant": "acme"},
+    )
+
+    assert response.status_code == 403
     repo.read_after.assert_not_called()
 
 

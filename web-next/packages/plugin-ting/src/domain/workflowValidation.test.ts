@@ -48,6 +48,58 @@ function makeCond(id: string): WorkflowNode {
   };
 }
 
+function makeWait(id: string): WorkflowNode {
+  return {
+    id,
+    kind: 'wait',
+    label: `Wait ${id}`,
+    position: { x: 0, y: 0 },
+  };
+}
+
+function makeSubworkflow(
+  id: string,
+  templates: Record<string, string> = { default: 'worker' },
+): WorkflowNode {
+  return {
+    id,
+    kind: 'subworkflow',
+    label: `Children ${id}`,
+    position: { x: 0, y: 0 },
+    templates,
+    allowedCoordinator: 'coordinator',
+    inputSchema: { type: 'object' },
+    resultSchema: { type: 'object' },
+    maxChildren: 10,
+    maxAttempts: 3,
+    maxActiveChildren: 4,
+    joinMode: 'all',
+    blockedEvent: 'children.blocked',
+  };
+}
+
+function makeInclude(
+  id: string,
+  opts: { workflow?: string; nodes?: Record<string, string> } = {},
+): WorkflowNode {
+  return {
+    id,
+    kind: 'include',
+    label: `Include ${id}`,
+    workflow: opts.workflow ?? 'planning',
+    nodes: opts.nodes ?? { 'planning-analysis': 'local-analysis' },
+    position: { x: 0, y: 0 },
+  };
+}
+
+const PLANNING_DEPENDENCY = {
+  planning: {
+    id: '20000000-0000-0000-0000-000000000001',
+    revision: 'planning-revision',
+    digest: `sha256:${'d'.repeat(64)}`,
+  },
+};
+
 function makeEdge(id: string, source: string, target: string, label?: string): WorkflowEdge {
   return {
     id,
@@ -135,6 +187,34 @@ describe('validateWorkflowFull — cycle', () => {
     ];
     const issues = validateWorkflowFull(makeWorkflow(nodes, edges));
     expect(issues.filter((i) => i.kind === 'cycle')).toHaveLength(0);
+  });
+
+  it.each([
+    ['plan review feedback', 'plan.review.completed -> plan.review.completed'],
+    ['child repair', 'developer.workstream.repair_requested -> developer.children.waiting'],
+    ['provider wait resume', 'developer.delivery.observed -> developer.delivery.observed'],
+  ])('does not report cycle for %s', (_name, feedbackLabel) => {
+    const nodes = [makeStage('forward'), makeStage('feedback')];
+    const edges = [
+      makeEdge('forward', 'forward', 'feedback', 'workflow.progressed -> workflow.progressed'),
+      makeEdge('feedback', 'feedback', 'forward', feedbackLabel),
+    ];
+
+    const issues = validateWorkflowFull(makeWorkflow(nodes, edges));
+
+    expect(issues.filter((issue) => issue.kind === 'cycle')).toHaveLength(0);
+  });
+
+  it('still reports a cycle whose outcome is not a recognized feedback or resume event', () => {
+    const nodes = [makeStage('forward'), makeStage('backward')];
+    const edges = [
+      makeEdge('forward', 'forward', 'backward', 'workflow.progressed -> workflow.progressed'),
+      makeEdge('backward', 'backward', 'forward', 'review.completed -> review.completed'),
+    ];
+
+    const issues = validateWorkflowFull(makeWorkflow(nodes, edges));
+
+    expect(issues.filter((issue) => issue.kind === 'cycle')).toHaveLength(2);
   });
 });
 
@@ -290,6 +370,14 @@ describe('validateWorkflowFull — missing_persona', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateWorkflowFull — no_producer', () => {
+  it('reports no_producer for a passive wait with no incoming edge', () => {
+    const nodes = [makeStage('s1'), makeWait('w1')];
+    const issues = validateWorkflowFull(makeWorkflow(nodes, []));
+    expect(issues).toContainEqual(
+      expect.objectContaining({ kind: 'no_producer', nodeId: 'w1', severity: 'error' }),
+    );
+  });
+
   it('reports no_producer for gate node with no incoming edges', () => {
     const nodes = [makeStage('s1'), makeGate('g1')];
     const edges: WorkflowEdge[] = []; // gate has no input
@@ -331,6 +419,25 @@ describe('validateWorkflowFull — no_producer', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateWorkflowFull — no_consumer', () => {
+  it('reports an error for a passive wait with no outgoing edge', () => {
+    const nodes = [makeStage('s1'), makeWait('w1')];
+    const edges = [makeEdge('e1', 's1', 'w1', 'custom.build.waiting -> custom.build.waiting')];
+    const issues = validateWorkflowFull(makeWorkflow(nodes, edges));
+    expect(issues).toContainEqual(
+      expect.objectContaining({ kind: 'no_consumer', nodeId: 'w1', severity: 'error' }),
+    );
+  });
+
+  it('accepts a passive wait with incoming and outgoing event edges', () => {
+    const nodes = [makeStage('s1'), makeWait('w1'), makeGate('g1')];
+    const edges = [
+      makeEdge('e1', 's1', 'w1', 'custom.build.waiting -> custom.build.waiting'),
+      makeEdge('e2', 'w1', 'g1', 'custom.build.finished -> custom.build.finished'),
+    ];
+    const issues = validateWorkflowFull(makeWorkflow(nodes, edges));
+    expect(issues.filter((issue) => issue.nodeId === 'w1')).toHaveLength(0);
+  });
+
   it('reports no_consumer for stage with no outgoing edges in multi-node workflow', () => {
     const nodes = [makeStage('s1'), makeStage('s2')];
     const edges: WorkflowEdge[] = []; // no edges at all
@@ -359,6 +466,382 @@ describe('validateWorkflowFull — no_consumer', () => {
     for (const issue of issues.filter((i) => i.kind === 'no_consumer')) {
       expect(issue.severity).toBe('warning');
     }
+  });
+});
+
+describe('validateWorkflowFull — child workflow contract', () => {
+  function validChildWorkflow(): Workflow {
+    return {
+      ...makeWorkflow(
+        [makeSubworkflow('children'), makeGate('next')],
+        [makeEdge('joined', 'children', 'next', 'children.completed -> children.completed')],
+      ),
+      workflowDependencies: {
+        worker: {
+          id: '10000000-0000-0000-0000-000000000001',
+          revision: 'child-revision',
+          digest: `sha256:${'a'.repeat(64)}`,
+        },
+      },
+      personaDependencies: {
+        coordinator: {
+          id: 'coordinator',
+          revision: 'persona-revision',
+          digest: `sha256:${'b'.repeat(64)}`,
+        },
+      },
+    };
+  }
+
+  it('accepts a pinned child with one edge-defined joined event', () => {
+    const issues = validateWorkflowFull(validChildWorkflow());
+    expect(issues.filter((issue) => issue.kind.startsWith('subworkflow_'))).toEqual([]);
+  });
+
+  it('requires declared dependency and coordinator aliases', () => {
+    const workflow = validChildWorkflow();
+    workflow.workflowDependencies = {};
+    workflow.personaDependencies = {};
+
+    const issues = validateWorkflowFull(workflow);
+
+    expect(issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'subworkflow_dependency', severity: 'error' }),
+        expect.objectContaining({ kind: 'subworkflow_coordinator', severity: 'error' }),
+      ]),
+    );
+  });
+
+  it('requires a blocked event and one distinct edge-defined joined event', () => {
+    const workflow = validChildWorkflow();
+    const child = workflow.nodes[0]!;
+    if (child.kind !== 'subworkflow') throw new Error('expected subworkflow');
+    child.blockedEvent = '';
+    workflow.edges = [];
+
+    const issues = validateWorkflowFull(workflow);
+
+    expect(issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'subworkflow_blocked_event', severity: 'error' }),
+        expect.objectContaining({ kind: 'subworkflow_joined_event', severity: 'error' }),
+      ]),
+    );
+  });
+
+  it.each([
+    ['the blocked event', ['children.blocked -> next.input']],
+    [
+      'ambiguous joined events',
+      ['children.completed -> next.input', 'children.other -> next.input'],
+    ],
+    ['a malformed contract', ['not a typed contract']],
+  ])('rejects %s as the joined continuation', (_name, labels) => {
+    const workflow = validChildWorkflow();
+    workflow.edges = labels.map((label, index) =>
+      makeEdge(`edge-${index}`, 'children', 'next', label),
+    );
+
+    const issues = validateWorkflowFull(workflow);
+
+    expect(issues).toContainEqual(
+      expect.objectContaining({ kind: 'subworkflow_joined_event', severity: 'error' }),
+    );
+  });
+
+  it.each([
+    { maxChildren: 0 },
+    { maxChildren: 101 },
+    { maxAttempts: 0 },
+    { maxAttempts: 11 },
+    { maxActiveChildren: 0 },
+    { maxChildren: 3, maxActiveChildren: 4 },
+  ])('rejects runtime-incompatible expansion limits %o', (limits) => {
+    const workflow = validChildWorkflow();
+    workflow.nodes[0] = { ...workflow.nodes[0]!, ...limits } as WorkflowNode;
+
+    const issues = validateWorkflowFull(workflow);
+
+    expect(issues).toContainEqual(
+      expect.objectContaining({ kind: 'subworkflow_limits', severity: 'error' }),
+    );
+  });
+});
+
+describe('validateWorkflowFull — child workflow templates', () => {
+  function multiTemplateWorkflow(): Workflow {
+    return {
+      ...makeWorkflow(
+        [makeSubworkflow('children', { breadth: 'worker', depth: 'thread' }), makeGate('next')],
+        [makeEdge('joined', 'children', 'next', 'children.completed -> children.completed')],
+      ),
+      workflowDependencies: {
+        worker: {
+          id: '10000000-0000-0000-0000-000000000001',
+          revision: 'child-revision',
+          digest: `sha256:${'a'.repeat(64)}`,
+        },
+        thread: {
+          id: '10000000-0000-0000-0000-000000000002',
+          revision: 'child-revision-2',
+          digest: `sha256:${'c'.repeat(64)}`,
+        },
+      },
+      personaDependencies: {
+        coordinator: {
+          id: 'coordinator',
+          revision: 'persona-revision',
+          digest: `sha256:${'b'.repeat(64)}`,
+        },
+      },
+    };
+  }
+
+  it('accepts several templates each pinned to a declared dependency', () => {
+    const issues = validateWorkflowFull(multiTemplateWorkflow());
+    expect(issues.filter((issue) => issue.kind.startsWith('subworkflow_'))).toEqual([]);
+  });
+
+  it('flags a template whose alias is not declared', () => {
+    const workflow = multiTemplateWorkflow();
+    workflow.workflowDependencies = { worker: workflow.workflowDependencies!.worker! };
+
+    const issues = validateWorkflowFull(workflow);
+
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        kind: 'subworkflow_dependency',
+        nodeId: 'children',
+        message: expect.stringContaining("Template 'depth'"),
+      }),
+    );
+  });
+
+  it('requires a static child to name a template when the node offers several', () => {
+    const workflow = multiTemplateWorkflow();
+    const node = workflow.nodes[0]!;
+    if (node.kind !== 'subworkflow') throw new Error('expected subworkflow');
+    node.children = [{ key: 'first', objective: 'Map broadly' }];
+
+    const issues = validateWorkflowFull(workflow);
+
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        kind: 'subworkflow_template',
+        nodeId: 'children',
+        message: expect.stringContaining("Child 'first' must name a template"),
+      }),
+    );
+  });
+
+  it('does not require a template name from a static child when the node offers exactly one', () => {
+    const workflow = validChildWorkflowWithOneTemplate();
+    const node = workflow.nodes[0]!;
+    if (node.kind !== 'subworkflow') throw new Error('expected subworkflow');
+    node.children = [{ key: 'first', objective: 'Map broadly' }];
+
+    const issues = validateWorkflowFull(workflow);
+
+    expect(issues.filter((issue) => issue.kind === 'subworkflow_template')).toEqual([]);
+  });
+
+  it('flags a static child naming an unknown template', () => {
+    const workflow = multiTemplateWorkflow();
+    const node = workflow.nodes[0]!;
+    if (node.kind !== 'subworkflow') throw new Error('expected subworkflow');
+    node.children = [{ key: 'first', objective: 'Map broadly', template: 'unknown' }];
+
+    const issues = validateWorkflowFull(workflow);
+
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        kind: 'subworkflow_template',
+        nodeId: 'children',
+        message: expect.stringContaining("names unknown template 'unknown'"),
+      }),
+    );
+  });
+
+  function validChildWorkflowWithOneTemplate(): Workflow {
+    return {
+      ...makeWorkflow(
+        [makeSubworkflow('children'), makeGate('next')],
+        [makeEdge('joined', 'children', 'next', 'children.completed -> children.completed')],
+      ),
+      workflowDependencies: {
+        worker: {
+          id: '10000000-0000-0000-0000-000000000001',
+          revision: 'child-revision',
+          digest: `sha256:${'a'.repeat(64)}`,
+        },
+      },
+      personaDependencies: {
+        coordinator: {
+          id: 'coordinator',
+          revision: 'persona-revision',
+          digest: `sha256:${'b'.repeat(64)}`,
+        },
+      },
+    };
+  }
+});
+
+// ---------------------------------------------------------------------------
+// include contract
+// ---------------------------------------------------------------------------
+
+describe('validateWorkflowFull — include contract', () => {
+  it('accepts an include that pins a declared dependency and maps a node', () => {
+    const nodes = [makeStage('s1', { personaIds: ['p1'] }), makeInclude('inc1'), makeGate('g1')];
+    const edges = [makeEdge('e1', 's1', 'local-analysis'), makeEdge('e2', 'local-analysis', 'g1')];
+    const workflow = {
+      ...makeWorkflow(nodes, edges),
+      workflowDependencies: PLANNING_DEPENDENCY,
+    };
+    const issues = validateWorkflowFull(workflow);
+    expect(issues.filter((issue) => issue.kind === 'include')).toEqual([]);
+  });
+
+  it('reports include when the workflow alias is blank', () => {
+    const nodes = [makeInclude('inc1', { workflow: '' })];
+    const issues = validateWorkflowFull(makeWorkflow(nodes, []));
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        kind: 'include',
+        nodeId: 'inc1',
+        severity: 'error',
+        message: expect.stringContaining('declared workflow dependency'),
+      }),
+    );
+  });
+
+  it('reports include when the alias is not a declared dependency', () => {
+    const nodes = [makeInclude('inc1', { workflow: 'missing-alias' })];
+    const issues = validateWorkflowFull(makeWorkflow(nodes, []));
+    expect(issues).toContainEqual(
+      expect.objectContaining({ kind: 'include', nodeId: 'inc1', severity: 'error' }),
+    );
+  });
+
+  it('reports include when nodes is empty', () => {
+    const nodes = [makeInclude('inc1', { nodes: {} })];
+    const workflow = { ...makeWorkflow(nodes, []), workflowDependencies: PLANNING_DEPENDENCY };
+    const issues = validateWorkflowFull(workflow);
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        kind: 'include',
+        nodeId: 'inc1',
+        severity: 'error',
+        message: expect.stringContaining('at least one node'),
+      }),
+    );
+  });
+
+  it('reports include when a local id collides with an existing node id', () => {
+    const nodes = [
+      makeStage('shared-id', { personaIds: ['p1'] }),
+      makeInclude('inc1', { nodes: { 'planning-analysis': 'shared-id' } }),
+    ];
+    const workflow = { ...makeWorkflow(nodes, []), workflowDependencies: PLANNING_DEPENDENCY };
+    const issues = validateWorkflowFull(workflow);
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        kind: 'include',
+        nodeId: 'inc1',
+        severity: 'error',
+        message: expect.stringContaining("'shared-id' collides"),
+      }),
+    );
+  });
+
+  it('reports include when two includes share a local id', () => {
+    const nodes = [
+      makeInclude('inc1', { nodes: { 'planning-analysis': 'shared-local' } }),
+      makeInclude('inc2', { nodes: { 'planning-reviews': 'shared-local' } }),
+    ];
+    const workflow = { ...makeWorkflow(nodes, []), workflowDependencies: PLANNING_DEPENDENCY };
+    const issues = validateWorkflowFull(workflow);
+    const collisions = issues.filter(
+      (issue) => issue.kind === 'include' && issue.message.includes('more than one include'),
+    );
+    expect(collisions.map((issue) => issue.nodeId).sort()).toEqual(['inc1', 'inc2']);
+  });
+
+  it('reports include when the same included node id is mapped twice on one node', () => {
+    const nodes = [
+      {
+        ...makeInclude('inc1', { nodes: {} }),
+        nodes: { a: 'dup', b: 'dup' },
+      } as WorkflowNode,
+    ];
+    const workflow = { ...makeWorkflow(nodes, []), workflowDependencies: PLANNING_DEPENDENCY };
+    const issues = validateWorkflowFull(workflow);
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        kind: 'include',
+        nodeId: 'inc1',
+        message: expect.stringContaining('mapped more than once'),
+      }),
+    );
+  });
+
+  it('does not cross-check mapped source ids when the pinned workflow is not in the catalog', () => {
+    const nodes = [makeInclude('inc1')];
+    const workflow = { ...makeWorkflow(nodes, []), workflowDependencies: PLANNING_DEPENDENCY };
+    const issues = validateWorkflowFull(workflow, undefined, []);
+    expect(issues.filter((issue) => issue.message.includes('is not a stage or gate'))).toEqual([]);
+  });
+
+  it('flags a mapped source id that is not a stage or gate in the loaded catalog', () => {
+    const nodes = [makeInclude('inc1', { nodes: { 'planning-branch': 'local-branch' } })];
+    const workflow = { ...makeWorkflow(nodes, []), workflowDependencies: PLANNING_DEPENDENCY };
+    const pinnedWorkflow: Workflow = {
+      ...makeWorkflow([makeCond('planning-branch')], []),
+      id: PLANNING_DEPENDENCY.planning.id,
+      name: 'Planning',
+    };
+    const issues = validateWorkflowFull(workflow, undefined, [pinnedWorkflow]);
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        kind: 'include',
+        nodeId: 'inc1',
+        message: expect.stringContaining("'planning-branch' is not a stage or gate"),
+      }),
+    );
+  });
+
+  it('accepts a mapped source id that is a stage or gate in the loaded catalog', () => {
+    const nodes = [makeInclude('inc1', { nodes: { 'planning-analysis': 'local-analysis' } })];
+    const workflow = { ...makeWorkflow(nodes, []), workflowDependencies: PLANNING_DEPENDENCY };
+    const pinnedWorkflow: Workflow = {
+      ...makeWorkflow([makeStage('planning-analysis', { personaIds: ['p'] })], []),
+      id: PLANNING_DEPENDENCY.planning.id,
+      name: 'Planning',
+    };
+    const issues = validateWorkflowFull(workflow, undefined, [pinnedWorkflow]);
+    expect(issues.filter((issue) => issue.message.includes('is not a stage or gate'))).toEqual([]);
+  });
+
+  it('does NOT report orphan or no_producer for an include whose provided id carries the edges', () => {
+    const nodes = [makeStage('s1', { personaIds: ['p1'] }), makeInclude('inc1'), makeGate('g1')];
+    const edges = [makeEdge('e1', 's1', 'local-analysis'), makeEdge('e2', 'local-analysis', 'g1')];
+    const workflow = { ...makeWorkflow(nodes, edges), workflowDependencies: PLANNING_DEPENDENCY };
+    const issues = validateWorkflowFull(workflow);
+    expect(
+      issues.filter(
+        (issue) =>
+          issue.nodeId === 'inc1' && (issue.kind === 'orphan' || issue.kind === 'no_producer'),
+      ),
+    ).toEqual([]);
+  });
+
+  it('still reports no_producer for an include with nothing feeding any of its provided ids', () => {
+    const nodes = [makeInclude('inc1'), makeGate('g1')];
+    const edges = [makeEdge('e1', 'local-analysis', 'g1')];
+    const workflow = { ...makeWorkflow(nodes, edges), workflowDependencies: PLANNING_DEPENDENCY };
+    const issues = validateWorkflowFull(workflow);
+    expect(issues).toContainEqual(expect.objectContaining({ kind: 'no_producer', nodeId: 'inc1' }));
   });
 });
 

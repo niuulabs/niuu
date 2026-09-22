@@ -10,7 +10,11 @@ from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.integrations import IntegrationRepository
 from niuu.utils import import_class
 from ting.adapters.native import NativeTrackerAdapter
-from ting.ports.tracker import TrackerPort
+from ting.ports.tracker import (
+    TrackerPort,
+    TrackerResolution,
+    TrackerResolutionFailure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,16 +65,34 @@ class TrackerAdapterFactory:
         The pool is injected alongside the credential/config kwargs so adapters
         that require local postgres storage (LinearAdapter) receive it.
         """
+        resolution = await self.for_owner_with_resolution(owner_id)
+        return list(resolution.adapters)
+
+    async def for_owner_with_resolution(self, owner_id: str) -> TrackerResolution:
+        """Resolve adapters without hiding failures for enabled connections.
+
+        Existing command paths consume :meth:`for_owner`.  Read surfaces that
+        promise source coverage use this richer result so a broken configured
+        connection cannot look like a complete, empty tracker catalog.
+        """
         connections = await self._integration_repo.list_connections(
             owner_id,
             integration_type=IntegrationType.ISSUE_TRACKER,
         )
         adapters: list[TrackerPort] = []
+        failures: list[TrackerResolutionFailure] = []
         for conn in connections:
             if not conn.enabled:
                 continue
             resolved_adapter = _resolve_tracker_adapter(conn.adapter)
             if resolved_adapter is None:
+                failures.append(
+                    TrackerResolutionFailure(
+                        connection_id=str(conn.id),
+                        code="unsupportedAdapter",
+                        message="The configured tracker adapter is not supported by Ting.",
+                    )
+                )
                 continue
             try:
                 cred = await self._credential_store.get_value(
@@ -79,6 +101,13 @@ class TrackerAdapterFactory:
                     conn.credential_name,
                 )
                 if cred is None:
+                    failures.append(
+                        TrackerResolutionFailure(
+                            connection_id=str(conn.id),
+                            code="credentialUnavailable",
+                            message="The configured tracker credential is unavailable.",
+                        )
+                    )
                     continue
 
                 cls = import_class(resolved_adapter)
@@ -93,12 +122,26 @@ class TrackerAdapterFactory:
                 )
                 adapters.append(tracker)
             except (ImportError, TypeError, ValueError, AttributeError) as exc:
+                failures.append(
+                    TrackerResolutionFailure(
+                        connection_id=str(conn.id),
+                        code="adapterUnavailable",
+                        message="The configured tracker adapter could not be initialized.",
+                    )
+                )
                 logger.error(
                     "Failed to create tracker adapter for connection %s: %s",
                     conn.id,
                     exc,
                 )
             except Exception:
+                failures.append(
+                    TrackerResolutionFailure(
+                        connection_id=str(conn.id),
+                        code="adapterUnavailable",
+                        message="The configured tracker adapter could not be initialized.",
+                    )
+                )
                 logger.error(
                     "Unexpected error creating tracker adapter for connection %s",
                     conn.id,
@@ -114,4 +157,4 @@ class TrackerAdapterFactory:
             native = NativeTrackerAdapter(pool=self._pool)
             native.bind_connection(connection_id="native", provider="native", name="Niuu")
             adapters.append(native)
-        return adapters
+        return TrackerResolution(adapters=tuple(adapters), failures=tuple(failures))

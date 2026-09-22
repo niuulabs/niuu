@@ -142,6 +142,8 @@ describe('ValidationPanel', () => {
       />,
     );
     expect(screen.getByTestId('validation-pill')).toBeInTheDocument();
+    expect(screen.queryByTitle('Reset zoom')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('Fit to view')).not.toBeInTheDocument();
   });
 
   it('shows no error/warn badges for a valid workflow', () => {

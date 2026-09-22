@@ -198,4 +198,104 @@ describe('PipelineView', () => {
     // clicking should not throw
     expect(() => fireEvent.click(screen.getByTestId('pipeline-node-stage-a'))).not.toThrow();
   });
+
+  it('shows an explicit gate mode and pending behavior instead of the defaults', () => {
+    const gate: WorkflowNode = {
+      id: 'gate-explicit',
+      kind: 'gate',
+      label: 'Explicit gate',
+      condition: 'ok',
+      mode: 'auto_approve',
+      pendingBehavior: 'auto_retry',
+      position: { x: 0, y: 0 },
+    };
+    render(<PipelineView nodes={[gate]} edges={[]} />);
+    expect(screen.getByText('auto approve · auto retry')).toBeInTheDocument();
+  });
+
+  it('shows the default trigger source and an explicit one', () => {
+    const defaultTrigger: WorkflowNode = {
+      id: 'trigger-default',
+      kind: 'trigger',
+      label: 'Default trigger',
+      position: { x: 0, y: 0 },
+    };
+    const explicitTrigger: WorkflowNode = {
+      id: 'trigger-explicit',
+      kind: 'trigger',
+      label: 'Explicit trigger',
+      source: 'webhook',
+      position: { x: 200, y: 0 },
+    };
+    render(<PipelineView nodes={[defaultTrigger, explicitTrigger]} edges={[]} />);
+    expect(screen.getByText('manual dispatch')).toBeInTheDocument();
+    expect(screen.getByText('webhook')).toBeInTheDocument();
+  });
+
+  it('shows a placeholder for a condition node without a predicate', () => {
+    const emptyCond: WorkflowNode = {
+      id: 'cond-empty',
+      kind: 'cond',
+      label: 'Empty cond',
+      predicate: '',
+      position: { x: 0, y: 0 },
+    };
+    render(<PipelineView nodes={[emptyCond]} edges={[]} />);
+    expect(screen.getByText('expr …')).toBeInTheDocument();
+  });
+
+  it('renders a wait node with its passive-observation note', () => {
+    const waitNode: WorkflowNode = {
+      id: 'wait-a',
+      kind: 'wait',
+      label: 'Wait for review',
+      position: { x: 0, y: 0 },
+    };
+    render(<PipelineView nodes={[waitNode]} edges={[]} />);
+    expect(screen.getByText('passive · external observation')).toBeInTheDocument();
+  });
+
+  it('selects a cycle node by clicking it', () => {
+    const onSelectNode = vi.fn();
+    const cyclicNodes: WorkflowNode[] = [
+      { id: 'a', kind: 'stage', label: 'A', runId: null, personaIds: [], position: { x: 0, y: 0 } },
+      {
+        id: 'b',
+        kind: 'stage',
+        label: 'B',
+        runId: null,
+        personaIds: [],
+        position: { x: 200, y: 0 },
+      },
+    ];
+    const cyclicEdges: WorkflowEdge[] = [
+      { id: 'e1', source: 'a', target: 'b', cp1: { x: 80, y: 0 }, cp2: { x: -80, y: 0 } },
+      { id: 'e2', source: 'b', target: 'a', cp1: { x: -80, y: 0 }, cp2: { x: 80, y: 0 } },
+    ];
+    render(<PipelineView nodes={cyclicNodes} edges={cyclicEdges} onSelectNode={onSelectNode} />);
+    const cycleButtons = screen.getAllByTestId(/pipeline-node-/);
+    const cycleButton = cycleButtons.find((el) => el.textContent === 'A');
+    fireEvent.click(cycleButton!);
+    expect(onSelectNode).toHaveBeenCalledWith('a');
+  });
+
+  it('resolves a stage model label from the models list, falling back to the raw id', () => {
+    const stageWithModel: WorkflowNode = {
+      id: 'stage-model',
+      kind: 'stage',
+      label: 'Stage with model',
+      runId: null,
+      personaIds: ['persona-a', 'persona-b'],
+      position: { x: 0, y: 0 },
+    };
+    render(
+      <PipelineView
+        nodes={[stageWithModel]}
+        edges={[]}
+        models={[{ id: 'model-known', label: 'Known Model' }]}
+      />,
+    );
+    // With no per-member model set, the summary falls through to "no model".
+    expect(screen.getByText('no model')).toBeInTheDocument();
+  });
 });

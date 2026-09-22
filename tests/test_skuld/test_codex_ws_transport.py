@@ -235,6 +235,7 @@ class TestConstruction:
                     "args": ["-m", "ravn", "tool-mcp"],
                     "startup_timeout_sec": 30,
                     "tool_timeout_sec": 3600,
+                    "required": True,
                 }
             ],
         )
@@ -247,6 +248,54 @@ class TestConstruction:
             "mcp_servers.ravn-tools.tool_timeout_sec",
             "3600.0",
         ) in t._mcp_overrides
+        assert ("mcp_servers.ravn-tools.required", "true") in t._mcp_overrides
+
+    def test_init_with_mcp_tool_policy_uses_codex_overrides(self, tmp_path):
+        t = _make_transport(
+            tmp_path,
+            mcp_servers=[
+                {
+                    "name": "ravn-tools",
+                    "command": "python3",
+                    "args": ["-m", "ravn", "tool-mcp"],
+                    "default_tools_approval_mode": "approve",
+                    "enabled_tools": ["delivery_evidence", "workflow_execution_create"],
+                }
+            ],
+        )
+
+        assert (
+            "mcp_servers.ravn-tools.default_tools_approval_mode",
+            '"approve"',
+        ) in t._mcp_overrides
+        assert (
+            "mcp_servers.ravn-tools.enabled_tools",
+            '["delivery_evidence", "workflow_execution_create"]',
+        ) in t._mcp_overrides
+
+    def test_mcp_startup_timeout_is_configurable(self, tmp_path):
+        t = _make_transport(tmp_path, mcp_startup_timeout_seconds=17.0)
+
+        assert t._mcp_startup_timeout_seconds == 17.0
+
+    def test_mcp_startup_timeout_must_be_positive(self, tmp_path):
+        with pytest.raises(ValueError, match="mcp_startup_timeout_seconds must be positive"):
+            _make_transport(tmp_path, mcp_startup_timeout_seconds=0)
+
+    @pytest.mark.asyncio
+    async def test_mcp_catalog_failure_does_not_echo_codex_stderr(self, tmp_path):
+        t = _make_transport(tmp_path)
+        process = MagicMock(returncode=2)
+        process.communicate = AsyncMock(return_value=(b"", b"Authorization: Bearer must-not-leak"))
+        with patch(
+            "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=process,
+        ):
+            with pytest.raises(RuntimeError, match="exited with status 2") as raised:
+                await t._resolved_mcp_catalog("/bin/codex", env={}, overrides=[])
+
+        assert "must-not-leak" not in str(raised.value)
 
     @pytest.mark.asyncio
     async def test_connect_ws_uses_configured_large_message_limit(self, tmp_path):
@@ -430,6 +479,38 @@ class TestHandshake:
         assert thread_params["sandbox"] == "workspace-write"
 
     @pytest.mark.asyncio
+    async def test_handshake_read_only_never_requests_approval(self, tmp_path):
+        t = _make_transport(
+            tmp_path,
+            skip_permissions=False,
+            approval_policy="never",
+            sandbox="read-only",
+            shell_tool_enabled=False,
+        )
+        t._ws = FakeWebSocket()
+        t._alive = True
+
+        params_captured = []
+
+        async def fake_send_rpc(method, params=None):
+            params_captured.append((method, params))
+            if method == "initialize":
+                return {"userAgent": "codex"}
+            if method == "thread/start":
+                return {"thread": {"id": "t-1"}}
+            return {}
+
+        t._send_rpc = fake_send_rpc
+        t._send_notification = AsyncMock()
+        _collect_emits(t)
+
+        await t._handshake()
+
+        thread_params = params_captured[1][1]
+        assert thread_params["approvalPolicy"] == "never"
+        assert thread_params["sandbox"] == "read-only"
+
+    @pytest.mark.asyncio
     async def test_handshake_without_overrides_defers_to_codex_config(self, tmp_path):
         t = _make_transport(tmp_path, skip_permissions=False)
         t._ws = FakeWebSocket()
@@ -457,6 +538,28 @@ class TestHandshake:
 
 
 class TestSpawnAppServer:
+    @pytest.mark.asyncio
+    async def test_spawn_app_server_disables_native_shell_and_agents_when_configured(
+        self, tmp_path
+    ):
+        t = _make_transport(
+            tmp_path,
+            shell_tool_enabled=False,
+            multi_agent_enabled=False,
+        )
+        t._codex_socket_path = str(tmp_path / "app-server.sock")
+
+        process = MagicMock()
+        process.pid = 123
+        process.stdout = None
+        process.stderr = None
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)) as spawn:
+            await t._spawn_app_server()
+
+        call_args = spawn.call_args.args
+        assert "features.shell_tool=false" in call_args
+        assert "features.multi_agent=false" in call_args
+
     @pytest.mark.asyncio
     async def test_spawn_app_server_passes_mcp_overrides(self, tmp_path):
         t = _make_transport(
@@ -567,6 +670,22 @@ class TestSpawnAppServer:
 
 
 class TestStartupFailure:
+    @pytest.mark.asyncio
+    async def test_required_mcp_failure_prevents_initial_prompt(self, tmp_path):
+        t = _make_transport(tmp_path, initial_prompt="Coordinate delivery")
+        t._spawn_app_server = AsyncMock()
+        t._connect_ws = AsyncMock()
+        t._handshake = AsyncMock(
+            side_effect=RuntimeError("required MCP server ravn-tools failed to initialize")
+        )
+        t.stop = AsyncMock()
+        t.send_message = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="Codex app-server startup failed"):
+            await t.start()
+
+        t.send_message.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_start_rejects_app_server_failure_without_substitution(self, tmp_path):
         t = _make_transport(tmp_path, initial_prompt="Investigate this")
@@ -3612,6 +3731,142 @@ class TestModelGateway:
         assert 'model_providers.niuu.base_url="http://niuu:8080/api/v1/bifrost/v1"' in args
         assert 'model_providers.niuu.wire_api="responses"' in args
         assert mock_exec.call_args.kwargs["env"]["NIUU_MODEL_GATEWAY_TOKEN"] == "niuu-gateway"
+
+    @pytest.mark.asyncio
+    async def test_read_only_mcp_spawn_disables_other_native_capability_sources(self, tmp_path):
+        t = _make_transport(
+            tmp_path,
+            read_only_mcp_only=True,
+            shell_tool_enabled=False,
+            multi_agent_enabled=False,
+            mcp_servers=[
+                {
+                    "name": "ravn-tools",
+                    "command": "ravn-tool-mcp",
+                    "default_tools_approval_mode": "approve",
+                    "enabled_tools": ["delivery_evidence"],
+                }
+            ],
+        )
+        t._resolved_mcp_catalog = AsyncMock(
+            return_value=[
+                {"name": "ravn-tools", "enabled": True},
+                {"name": "seeded-rogue", "enabled": True},
+            ]
+        )
+        mock_process = MagicMock(stdout=None, stderr=None, pid=12345)
+        with (
+            patch(
+                "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch("skuld.transports.codex_ws.resolve_codex_cli", return_value="/bin/codex"),
+            patch(
+                "skuld.transports.codex_ws.ensure_codex_tool_shims",
+                return_value=(tmp_path / ".skuld-tools" / "bin", {}),
+            ),
+        ):
+            mock_exec.return_value = mock_process
+            await t._spawn_app_server()
+
+        args = mock_exec.call_args.args
+        assert "features.shell_tool=false" in args
+        assert "features.multi_agent=false" in args
+        assert "features.apps=false" in args
+        assert "features.plugins=false" in args
+        assert "features.tool_suggest=false" in args
+        assert 'mcp_servers.ravn-tools.default_tools_approval_mode="approve"' in args
+        assert 'mcp_servers.ravn-tools.enabled_tools=["delivery_evidence"]' in args
+        assert "mcp_servers.ravn-tools.enabled=true" in args
+        assert "mcp_servers.seeded-rogue.enabled=false" in args
+
+    @pytest.mark.asyncio
+    async def test_read_only_mcp_status_rejects_unexpected_initialized_server(self, tmp_path):
+        t = _make_transport(
+            tmp_path,
+            read_only_mcp_only=True,
+            mcp_servers=[{"name": "ravn-tools", "command": "ravn-tool-mcp"}],
+        )
+        t._send_rpc = AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "name": "ravn-tools",
+                        "serverInfo": {"name": "ravn-tools"},
+                        "tools": {},
+                        "resources": [],
+                        "resourceTemplates": [],
+                    },
+                    {
+                        "name": "seeded-rogue",
+                        "serverInfo": {"name": "seeded-rogue"},
+                        "tools": {"write": {}},
+                        "resources": [],
+                        "resourceTemplates": [],
+                    },
+                ],
+                "nextCursor": None,
+            }
+        )
+
+        with pytest.raises(RuntimeError, match="isolation failed"):
+            await t._verify_read_only_mcp_servers()
+
+    @pytest.mark.asyncio
+    async def test_read_only_mcp_status_accepts_only_generated_server(self, tmp_path):
+        t = _make_transport(
+            tmp_path,
+            read_only_mcp_only=True,
+            mcp_servers=[{"name": "ravn-tools", "command": "ravn-tool-mcp"}],
+        )
+        t._send_rpc = AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "name": "ravn-tools",
+                        "serverInfo": {"name": "ravn-tools"},
+                        "tools": {},
+                        "resources": [],
+                        "resourceTemplates": [],
+                    },
+                    {
+                        "name": "seeded-rogue",
+                        "serverInfo": None,
+                        "tools": {},
+                        "resources": [],
+                        "resourceTemplates": [],
+                    },
+                ],
+                "nextCursor": None,
+            }
+        )
+
+        await t._verify_read_only_mcp_servers()
+
+    @pytest.mark.asyncio
+    async def test_read_only_mcp_status_rejects_disconnected_allowed_server(self, tmp_path):
+        t = _make_transport(
+            tmp_path,
+            read_only_mcp_only=True,
+            mcp_servers=[{"name": "ravn-tools", "command": "ravn-tool-mcp"}],
+        )
+        t._send_rpc = AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "name": "ravn-tools",
+                        "serverInfo": None,
+                        "tools": {},
+                        "resources": [],
+                        "resourceTemplates": [],
+                    }
+                ],
+                "nextCursor": None,
+            }
+        )
+
+        with pytest.raises(RuntimeError, match="disconnected allowed"):
+            await t._verify_read_only_mcp_servers()
 
     @pytest.mark.asyncio
     async def test_no_chatgpt_login_when_routed_through_the_gateway(self, tmp_path):

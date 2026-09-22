@@ -3,7 +3,6 @@ import clsx from 'clsx';
 import { Outlet, useRouter, useRouterState } from '@tanstack/react-router';
 import { type PluginCtx, type PluginDescriptor } from '@niuulabs/plugin-sdk';
 import {
-  LiveBadge,
   Kbd,
   Tooltip,
   TooltipProvider,
@@ -12,8 +11,13 @@ import {
 } from '@niuulabs/ui';
 import { useTheme, type ThemeName } from '@niuulabs/design-tokens';
 import { useShellContext } from './ShellContext';
-import { UiModeSwitch } from './UiModeSwitch';
-import { isVisibleInMode, pluginFace, tabsForMode, useUiMode } from './uiMode';
+import {
+  isVisibleInMode,
+  pluginFace,
+  tabsForMode,
+  useUiMode,
+  useUiModePreferenceSync,
+} from './uiMode';
 import './Shell.css';
 
 function pathMatches(pathname: string, basePath: string): boolean {
@@ -57,6 +61,7 @@ export function ShellLayout() {
   const pathname = location.pathname;
   const { setOpen } = useCommandPalette();
   const { register, unregister } = useCommandPaletteRegistry();
+  const modePreferenceError = useUiModePreferenceSync();
 
   // System plugins (e.g. login) register routes but stay out of the nav rail.
   const allNavPlugins = useMemo(() => enabled.filter((p) => !p.system), [enabled]);
@@ -180,9 +185,6 @@ export function ShellLayout() {
               <>
                 <span className="niuu-shell__rune-mark">{face(active).glyph}</span>
                 <h1>{face(active).title}</h1>
-                {face(active).subtitle && (
-                  <span className="niuu-shell__topbar-subtitle">{face(active).subtitle}</span>
-                )}
               </>
             )}
           </div>
@@ -195,7 +197,13 @@ export function ShellLayout() {
                     ? active.activeTab === t.id
                     : tabPath === `/${active.id}`
                       ? pathname === tabPath
-                      : pathname === tabPath || pathname.startsWith(tabPath + '/');
+                      : pathMatches(pathname, tabPath) &&
+                        !activeTabs.some((other) => {
+                          const otherPath = other.path ?? `/${active.id}/${other.id}`;
+                          return (
+                            otherPath.length > tabPath.length && pathMatches(pathname, otherPath)
+                          );
+                        });
                 return (
                   <button
                     key={t.id}
@@ -221,13 +229,9 @@ export function ShellLayout() {
             </div>
           )}
           <div className="niuu-shell__topbar-right">
-            {simpleAvailable && (
-              <>
-                <UiModeSwitch plugins={allNavPlugins} />
-                <div className="niuu-shell__topbar-sep" />
-              </>
-            )}
-            <PluginSlot render={active?.topbarRight ?? null} ctx={ctx} />
+            <div className="niuu-shell__plugin-status">
+              <PluginSlot render={active?.topbarRight ?? null} ctx={ctx} />
+            </div>
             <select
               className="niuu-shell__theme-select"
               aria-label="Color theme"
@@ -239,17 +243,17 @@ export function ShellLayout() {
               <option value="amber">Amber</option>
               <option value="spring">Spring</option>
             </select>
-            <LiveBadge />
-            <div className="niuu-shell__topbar-sep" />
             <button
               type="button"
               className="niuu-shell__cp-btn"
               onClick={() => setOpen(true)}
-              aria-label="Open command palette (⌘K)"
+              aria-label="Open command palette"
             >
               <Kbd>⌘K</Kbd>
             </button>
-            {topbarContent && <div className="niuu-shell__topbar-content">{topbarContent}</div>}
+            {topbarContent ? (
+              <div className="niuu-shell__topbar-content">{topbarContent}</div>
+            ) : null}
           </div>
         </header>
 
@@ -273,6 +277,11 @@ export function ShellLayout() {
             <PluginSlot render={active?.footer ?? null} ctx={ctx} />
           </div>
           <div className="niuu-shell__footer-right">
+            {modePreferenceError ? (
+              <span className="niuu-shell__mode-error" role="alert" title={modePreferenceError}>
+                interface preference unavailable
+              </span>
+            ) : null}
             <span>{enabled.length} plugins loaded</span>
           </div>
         </footer>

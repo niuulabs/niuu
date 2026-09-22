@@ -40,6 +40,24 @@ from niuu.adapters.inbound.ws_forge_replay import forward_replay
 from niuu.domain.models import InstanceKind, Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
 
+_DELIVERY_POST_PATHS = frozenset(
+    {
+        "refs/resolve",
+        "forge/reviews",
+        "forge/branches",
+        "workspaces/allocate",
+        "workspaces/verify",
+        "workspaces/integration/inspect",
+        "workspaces/integration/inspect-chain",
+        "evidence/policy",
+        "evidence/validate",
+        "workspaces/integrate",
+        "forge/inspect",
+        "forge/merge",
+        "forge/reconcile",
+    }
+)
+
 
 class SessionProjectAssignment(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -579,6 +597,52 @@ def create_volundr_router(
 ) -> APIRouter:
     """Create a registry-aware Forge runtime router."""
     router = APIRouter(prefix="/api/v1/forge", tags=["Forge"])
+
+    @router.post("/delivery/{operation:path}")
+    async def delivery_operation(
+        request: Request,
+        operation: str,
+        instance_id: str | None = Query(default=None),
+        target_tags: list[str] | None = Query(default=None),
+        target_match: str = Query(default="all"),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Forward the typed coordinator delivery surface to one visible Forge."""
+        if operation not in _DELIVERY_POST_PATHS:
+            raise HTTPException(status_code=404, detail="Unknown delivery operation")
+        instance = await _resolve_target_instance(
+            service,
+            principal,
+            instance_id,
+            tags=target_tags,
+            match=target_match,
+        )
+        body = await request.body()
+        content_type = request.headers.get("content-type")
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/delivery/{operation}",
+            content_body=body,
+            params=[
+                (key, value)
+                for key, value in request.query_params.multi_items()
+                if key not in {"instance_id", "target_tags", "target_match"}
+            ],
+            extra_headers={"content-type": content_type} if content_type else None,
+            embedded_app=embedded_forge_app,
+        )
+        forwarded_headers = {
+            name: response.headers[name]
+            for name in ("content-type", "retry-after", "www-authenticate")
+            if name in response.headers
+        }
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            headers=forwarded_headers,
+        )
 
     @router.get("/storage/home")
     @router.delete("/storage/home")
@@ -1671,6 +1735,27 @@ def create_volundr_router(
             request,
             method="GET",
             path=f"/sessions/{session_id}/log/head",
+            params=_query_params(request),
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.get("/sessions/{session_id}/log/page")
+    async def get_log_page(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/log/page",
             params=_query_params(request),
             embedded_app=embedded_forge_app,
         )

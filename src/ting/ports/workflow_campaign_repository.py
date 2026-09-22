@@ -29,17 +29,18 @@ class WorkflowCampaignRepository(ABC):
         *,
         owner_id: str,
         session_id: str,
+        connection_id: str | None = None,
     ) -> WorkflowCampaign | None:
         """Fetch the active campaign associated with one Volundr session."""
         campaigns = await self.list_active_campaigns()
-        return next(
-            (
-                campaign
-                for campaign in campaigns
-                if campaign.owner_id == owner_id and campaign.session_id == session_id
-            ),
-            None,
-        )
+        matches = [
+            campaign
+            for campaign in campaigns
+            if campaign.owner_id == owner_id
+            and campaign.session_id == session_id
+            and (connection_id is None or campaign.connection_id == connection_id)
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     @abstractmethod
     async def get_campaign(self, campaign_id: UUID) -> WorkflowCampaign | None:

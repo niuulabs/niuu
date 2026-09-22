@@ -15,6 +15,7 @@ except ImportError:
     _catalog_started = None  # type: ignore[assignment]
     _catalog_failed = None  # type: ignore[assignment]
 
+from volundr.domain.execution_catalog import ExecutionCatalogError, ExecutionSelectionError
 from volundr.domain.models import (
     CleanupTarget,
     CommunicationRoute,
@@ -22,6 +23,7 @@ from volundr.domain.models import (
     GitSource,
     IntegrationConnection,
     IntegrationType,
+    LocalMountSource,
     Principal,
     RealtimeEvent,
     Session,
@@ -46,6 +48,7 @@ from volundr.domain.ports import (
     SessionContext,
     SessionContribution,
     SessionContributor,
+    SessionExecutionResolver,
     SessionRepository,
     SessionSpanRepository,
     StoragePort,
@@ -63,6 +66,14 @@ logger = logging.getLogger(__name__)
 def _sanitize_log(value: object) -> str:
     """Sanitize a value for safe log output (prevent log injection)."""
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
+def _is_workflow_child_local_mount(session: Session, workload_config: dict) -> bool:
+    """Identify isolated workflow-child workspaces that need no Forge credential."""
+    if not isinstance(session.source, LocalMountSource):
+        return False
+    provenance = workload_config.get("provenance")
+    return isinstance(provenance, dict) and isinstance(provenance.get("workflow_execution"), dict)
 
 
 class SessionNotFoundError(Exception):
@@ -142,6 +153,7 @@ class SessionService:
         session_communication_port: SessionCommunicationPort | None = None,
         attention_notifier: AttentionNotifier | None = None,
         runtime_backend: str = "kubernetes",
+        execution_resolver: SessionExecutionResolver | None = None,
         public_origin: str = "http://localhost:8080",
         span_repository: SessionSpanRepository | None = None,
         user_integration: UserIntegrationPort | None = None,
@@ -169,6 +181,7 @@ class SessionService:
         self._session_communication_port = session_communication_port
         self._span_repository = span_repository
         self._runtime_backend = runtime_backend
+        self._execution_resolver = execution_resolver
         normalized_public_origin = public_origin.rstrip("/")
         if normalized_public_origin.startswith("https://"):
             self._public_ws_origin = "wss://" + normalized_public_origin.removeprefix("https://")
@@ -787,9 +800,22 @@ class SessionService:
         # Cancel provisioning task if active
         self._cancel_provisioning_task(session_id)
 
+        cleanup_context = None
+        if self._contributors:
+            cleanup_context = SessionContext(
+                principal=principal,
+                **await self._execution_context(session),
+            )
+
+        durable_compute = self._runtime_backend == "vm" or self._execution_resolver is not None
+
         try:
-            await self._pod_manager.stop(session)
+            stopped = await self._pod_manager.stop(session)
+            if durable_compute and not stopped:
+                raise RuntimeError("Compute infrastructure deletion was not confirmed")
         except Exception as e:
+            if durable_compute:
+                raise
             logger.warning(
                 "Failed to stop infrastructure for session %s during deletion: %s. "
                 "Proceeding with session deletion.",
@@ -798,7 +824,7 @@ class SessionService:
             )
 
         # Run contributor cleanup in reverse order
-        await self._run_cleanup(session, principal)
+        await self._run_cleanup(session, principal, context=cleanup_context)
 
         deleted = await self._repository.delete(session_id)
 
@@ -872,15 +898,62 @@ class SessionService:
                 exc_info=True,
             )
 
-    async def ensure_capacity(self) -> None:
+    async def ensure_capacity(self, session: Session | None = None) -> None:
         """Raise SessionCapacityError when the runtime has no free slot.
 
         Runtimes without a fixed cap report no capacity and are never refused.
         """
-        capacity = await self._pod_manager.capacity()
+        capacity = (
+            await self._pod_manager.capacity_for(session)
+            if session is not None
+            else await self._pod_manager.capacity()
+        )
         if capacity is None or capacity.available > 0:
             return
         raise SessionCapacityError(capacity)
+
+    async def _resolve_execution_config(
+        self, session: Session, workload_config: dict, launch_spec: str | None
+    ) -> dict:
+        """Retain an existing pin, or resolve once before any runtime side effects."""
+        config = dict(workload_config)
+        pinned = session.workload_config.get("_compute_execution")
+        if pinned is not None:
+            config["_compute_execution"] = pinned
+        elif (
+            not config.get("execution_profile")
+            and not config.get("compute_profile")
+            and not await self._execution_resolver.has_legacy_allocation(session)
+        ):
+            if self._launch_spec_provider is not None:
+                selected = (
+                    self._launch_spec_provider.get(launch_spec)
+                    if launch_spec
+                    else self._launch_spec_provider.get_default("session")
+                )
+                if launch_spec and selected is None:
+                    raise ExecutionSelectionError("Selected launch spec is not configured")
+                if selected is not None:
+                    for key in ("execution_profile", "compute_profile"):
+                        if selected.workload_config.get(key):
+                            config[key] = selected.workload_config[key]
+        selected_session = session.model_copy(update={"workload_config": config})
+        plan = await self._execution_resolver.resolve_execution(selected_session)
+        if plan is not None:
+            config["_compute_execution"] = self._execution_resolver.execution_reference(plan)
+        return config
+
+    async def _execution_context(self, session: Session) -> dict:
+        if "_compute_execution" not in session.workload_config:
+            return {"runtime_backend": self._runtime_backend}
+        if self._execution_resolver is None:
+            raise ExecutionCatalogError("Pinned compute execution requires its configured catalog")
+        plan = await self._execution_resolver.execution_for(session)
+        return {
+            "runtime_backend": plan.runtime.contributor_backend,
+            "storage_backend": plan.runtime.storage_mode,
+            "runtime_capabilities": plan.runtime.capabilities,
+        }
 
     async def start_session(
         self,
@@ -912,6 +985,11 @@ class SessionService:
         if not session.can_start():
             raise SessionStateError(session_id, "start", session.status)
 
+        if workload_config is not None and "_compute_execution" in workload_config:
+            raise ExecutionSelectionError(
+                "Compute execution references are managed by the session service"
+            )
+
         # Restart parity: persist the definition the first time it is supplied and
         # reuse the stored one on later restarts, so a session keeps its transport
         # (e.g. Grok ACP) instead of falling back to the platform default.
@@ -928,6 +1006,16 @@ class SessionService:
             workload_type = session.workload_type
         if not workload_config and session.workload_config:
             workload_config = dict(session.workload_config)
+        if self._execution_resolver is not None:
+            workload_config = await self._resolve_execution_config(
+                session, workload_config or {}, launch_spec
+            )
+        elif (workload_config or {}).get("execution_profile") or "_compute_execution" in (
+            workload_config or {}
+        ):
+            raise ExecutionSelectionError(
+                "Compute execution selection requires a configured catalog"
+            )
         if workload_type == "ravn_flock" and not initial_prompt:
             initial_prompt = str((workload_config or {}).get("initiative_context") or "")
 
@@ -946,7 +1034,7 @@ class SessionService:
         # route before the pod is ready; local mode falls back to the root proxy.
         # Refuse here, before the session flips to STARTING, so the caller
         # gets the answer instead of a session that fails a moment later.
-        await self.ensure_capacity()
+        await self.ensure_capacity(session)
 
         chat_endpoint = self._pod_manager.initial_chat_endpoint(session)
         if not chat_endpoint:
@@ -1054,11 +1142,45 @@ class SessionService:
             poll_task.add_done_callback(lambda t: self._provisioning_tasks.pop(final.id, None))
 
         except Exception as e:
-            logger.error("Provisioning failed for session %s: %s", session.id, e)
+            error = str(e).strip()
+            if not error:
+                error = (
+                    "Provisioning timed out"
+                    if isinstance(e, TimeoutError)
+                    else "Provisioning failed"
+                )
+            logger.error("Provisioning failed for session %s: %s", session.id, error)
+            # A failed start may already own partially-created infrastructure.
+            # Stop it before publishing the terminal session verdict so pending
+            # provider requests do not remain bound to a failed session forever.
+            #
+            # A cleanup failure here must never vanish (no-fallbacks): for a
+            # durable-compute backend (VM, or any backend behind an execution
+            # resolver) the machine keeps running and capacity keeps being
+            # charged if we merely warn-and-continue as before. Both failures
+            # are recorded on the session so an operator sees the full story,
+            # and reconcile_active_sessions() now also sweeps FAILED sessions
+            # for durable-compute backends (previously kubernetes-only) so the
+            # leaked infrastructure gets a retry on the next reconcile pass
+            # instead of being excluded from the sweep forever.
+            cleanup_error: str | None = None
+            try:
+                await self._pod_manager.stop(session)
+            except Exception as cleanup_exc:
+                cleanup_error = str(cleanup_exc).strip() or repr(cleanup_exc)
+                logger.error(
+                    "Failed to clean up infrastructure after provisioning failure for "
+                    "session %s; infrastructure may still be running and will be retried "
+                    "by the next reconcile sweep",
+                    _sanitize_log(session.id),
+                    exc_info=True,
+                )
             session = await self._repository.get(session.id)
             if session is None:
                 return
-            failed = session.with_status(SessionStatus.FAILED).with_error(str(e))
+            if cleanup_error is not None:
+                error = f"{error}; cleanup after provisioning failure also failed: {cleanup_error}"
+            failed = session.with_status(SessionStatus.FAILED).with_error(error)
             await self._repository.update(failed)
 
             if self._broadcaster is not None:
@@ -1080,6 +1202,10 @@ class SessionService:
         workload_config: dict | None = None,
     ):
         """Run the contributor pipeline and start pods with merged spec."""
+        workload_config = {**session.workload_config, **(workload_config or {})}
+        # A caller cannot change the internally persisted execution during contribution.
+        if "_compute_execution" in session.workload_config:
+            workload_config["_compute_execution"] = session.workload_config["_compute_execution"]
         # Auto-include all enabled integrations when none are specified.
         # Keep the fetched connections so contributors don't re-fetch by ID.
         resolved_connections: list[IntegrationConnection] = []
@@ -1121,7 +1247,15 @@ class SessionService:
             )
             resolved_connections.extend(c for c in source_connections if c.enabled)
 
-        if resolved_connections:
+        workflow_child_local_mount = _is_workflow_child_local_mount(session, workload_config)
+        if workflow_child_local_mount:
+            resolved_connections = [
+                connection
+                for connection in resolved_connections
+                if connection.integration_type != IntegrationType.SOURCE_CONTROL
+            ]
+
+        if resolved_connections or workflow_child_local_mount:
             workload_config = {
                 **(workload_config or {}),
                 "integration_ids": [c.id for c in resolved_connections],
@@ -1133,7 +1267,7 @@ class SessionService:
             principal=principal,
             definition=definition,
             launch_spec=launch_spec,
-            runtime_backend=self._runtime_backend,
+            **await self._execution_context(session),
             terminal_restricted=terminal_restricted,
             credential_names=tuple(credential_names or ()),
             integration_ids=tuple(c.id for c in resolved_connections),
@@ -1197,6 +1331,8 @@ class SessionService:
         self,
         session: Session,
         principal: Principal | None,
+        *,
+        context: SessionContext | None = None,
     ) -> None:
         """Run contributor cleanup in reverse config order.
 
@@ -1215,7 +1351,11 @@ class SessionService:
         if not self._contributors:
             return
 
-        context = SessionContext(principal=principal)
+        if context is None:
+            context = SessionContext(
+                principal=principal,
+                **await self._execution_context(session),
+            )
         for contributor in reversed(self._contributors):
             try:
                 await contributor.cleanup(session, context)
@@ -1262,7 +1402,8 @@ class SessionService:
             await self._persist_reconciled_session(current, result_status)
             return
 
-        msg = "Provisioning failed: infrastructure reported failure"
+        status_detail = await self._pod_manager.status_detail(current)
+        msg = status_detail or "Provisioning failed: infrastructure reported failure"
         failed = current.with_status(SessionStatus.FAILED).with_error(msg)
         await self._repository.update(failed)
         if self._broadcaster is not None:
@@ -1389,8 +1530,16 @@ class SessionService:
             await self._broadcaster.publish_session_updated(stopping)
 
         try:
+            cleanup_context = None
+            if self._contributors:
+                cleanup_context = SessionContext(
+                    principal=principal,
+                    **await self._execution_context(session),
+                )
             stopped = await self._pod_manager.stop(session)
             if not stopped:
+                if self._runtime_backend == "vm" or self._execution_resolver is not None:
+                    raise RuntimeError("Compute infrastructure stop was not confirmed")
                 logger.warning(
                     "Pod manager could not find/cancel pods for session %s "
                     "(may already be stopped or task ID mismatch)",
@@ -1398,7 +1547,7 @@ class SessionService:
                 )
 
             # Run contributor cleanup in reverse order
-            await self._run_cleanup(session, principal)
+            await self._run_cleanup(session, principal, context=cleanup_context)
 
             stopped = (
                 stopping.with_status(SessionStatus.STOPPED)
@@ -1532,7 +1681,12 @@ class SessionService:
                 lambda t, sid=session.id: self._provisioning_tasks.pop(sid, None)
             )
 
-    def _reconciled_session(self, session: Session, actual_status: SessionStatus) -> Session:
+    def _reconciled_session(
+        self,
+        session: Session,
+        actual_status: SessionStatus,
+        status_detail: str | None = None,
+    ) -> Session:
         """Return the corrected session row for a pod-status divergence.
 
         Dead runtimes clear endpoints and stamp a queryable ``liveness:`` error.
@@ -1548,7 +1702,7 @@ class SessionService:
             return (
                 session.with_status(SessionStatus.FAILED)
                 .with_cleared_endpoints()
-                .with_error("liveness: session runtime is no longer available")
+                .with_error(status_detail or "liveness: session runtime is no longer available")
             )
 
         target_status = actual_status
@@ -1561,7 +1715,7 @@ class SessionService:
                 or self._pod_manager.initial_chat_endpoint(session),
                 "code_endpoint": session.code_endpoint
                 or self._pod_manager.initial_code_endpoint(session),
-                "error": None,
+                "error": status_detail,
             }
         )
 
@@ -1569,8 +1723,9 @@ class SessionService:
         self,
         session: Session,
         actual_status: SessionStatus,
+        status_detail: str | None = None,
     ) -> Session:
-        updated = self._reconciled_session(session, actual_status)
+        updated = self._reconciled_session(session, actual_status, status_detail)
         final = await self._repository.update(updated)
         if self._broadcaster is not None:
             await self._broadcaster.publish_session_updated(final)
@@ -1598,6 +1753,7 @@ class SessionService:
             SessionStatus.RUNNING,
             SessionStatus.STOPPING,
         ]
+        durable_compute = self._runtime_backend == "vm" or self._execution_resolver is not None
         if self._runtime_backend == "kubernetes":
             statuses.extend(
                 [
@@ -1606,12 +1762,27 @@ class SessionService:
                     SessionStatus.ARCHIVED,
                 ]
             )
+        elif durable_compute:
+            # Kubernetes sheds orphaned resources for terminal rows on its own,
+            # so only FAILED (a row a provisioning-cleanup failure can leave
+            # bound to still-running compute) needs to keep being swept for a
+            # durable-compute backend; see the comment in _provision_background.
+            statuses.append(SessionStatus.FAILED)
         sessions = [
             session for status in statuses for session in await self._repository.list(status=status)
         ]
         reconciled = 0
         for session in sessions:
+            if session.status == SessionStatus.FAILED and self._runtime_backend != "kubernetes":
+                # Swept only to release compute a failed cleanup left bound. Never
+                # ask for its status: a VM runtime reports a still-bound lease as
+                # provisioning and restarts it, which would resurrect the session.
+                if await self._pod_manager.stop(session):
+                    reconciled += 1
+                continue
+
             actual_status = await self._pod_manager.status(session)
+            status_detail = await self._pod_manager.status_detail(session)
 
             if session.status in {
                 SessionStatus.STOPPING,
@@ -1644,6 +1815,12 @@ class SessionService:
                 continue
 
             if actual_status == session.status:
+                if (
+                    actual_status in {SessionStatus.STARTING, SessionStatus.PROVISIONING}
+                    and session.error != status_detail
+                ):
+                    await self._persist_reconciled_session(session, actual_status, status_detail)
+                    reconciled += 1
                 continue
 
             logger.info(
@@ -1652,7 +1829,7 @@ class SessionService:
                 session.status.value,
                 actual_status.value,
             )
-            final = await self._persist_reconciled_session(session, actual_status)
+            final = await self._persist_reconciled_session(session, actual_status, status_detail)
             reconciled += 1
             if actual_status == SessionStatus.FAILED and self._runtime_backend == "kubernetes":
                 await self._pod_manager.stop(final)
@@ -1674,7 +1851,13 @@ class SessionService:
             return session
 
         actual_status = await self._pod_manager.status(session)
+        status_detail = await self._pod_manager.status_detail(session)
         if actual_status == session.status:
+            if (
+                actual_status in {SessionStatus.STARTING, SessionStatus.PROVISIONING}
+                and session.error != status_detail
+            ):
+                return await self._persist_reconciled_session(session, actual_status, status_detail)
             return session
 
         logger.info(
@@ -1689,7 +1872,7 @@ class SessionService:
         }:
             return session
 
-        return await self._persist_reconciled_session(session, actual_status)
+        return await self._persist_reconciled_session(session, actual_status, status_detail)
 
     async def mark_session_dead(self, session_id: UUID) -> Session | None:
         """Force a single session to be reconciled against the pod manager NOW.

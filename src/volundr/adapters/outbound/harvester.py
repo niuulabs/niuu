@@ -134,7 +134,11 @@ class HarvesterMachineProvider(MachineProvider):
                 name=name,
                 revision=hashlib.sha256(
                     json.dumps(
-                        {"profile": profile.model_dump(), "cloud_init": self._cloud_init},
+                        {
+                            "name": name,
+                            "profile": profile.model_dump(),
+                            "cloud_init": self._cloud_init,
+                        },
                         sort_keys=True,
                         separators=(",", ":"),
                     ).encode()

@@ -14,6 +14,7 @@ from niuu.domain.agent_directory import (
     AgentInterface,
     AgentProvenance,
     AgentSkill,
+    configured_agent_id,
 )
 from ravn.adapters.tool_build.http import AsyncJsonHttpClient
 
@@ -82,6 +83,16 @@ class GuildAgentDirectoryAdapter:
         normalized = str(agent_id or "").strip()
         if not normalized:
             return None
+        configured_url = next(
+            (
+                card_url
+                for card_url in self._agent_card_urls
+                if configured_agent_id(card_url) == normalized
+            ),
+            None,
+        )
+        if configured_url is not None:
+            return await self._load_agent_card(configured_url)
         page = await self.list_agents()
         return next((item for item in page.items if item.id == normalized), None)
 
@@ -108,8 +119,8 @@ def _agent_directory_url(base_url: str) -> str:
 def _agent_from_card(card_url: str, card: dict[str, Any]) -> AgentDirectoryEntry:
     canonical = json.dumps(card, sort_keys=True, separators=(",", ":"), default=str)
     card_hash = hashlib.sha256(canonical.encode()).hexdigest()
-    source_agent_id = hashlib.sha256(card_url.encode()).hexdigest()[:24]
-    agent_id = f"agent-{source_agent_id}"
+    agent_id = configured_agent_id(card_url)
+    source_agent_id = agent_id.removeprefix("agent-")
     topology_node_id = f"agent-card:{source_agent_id}"
     skills = [
         AgentSkill.model_validate(skill)

@@ -70,11 +70,15 @@ class Provider:
 
     def __init__(self):
         self.profile_revision = "revision-1"
+        self.closed = False
         self.machines = {}
         self.create_error = False
         self.delete_error = False
         self.delete_pending = False
         self.created = []
+
+    async def close(self):
+        self.closed = True
 
     async def create(self, request):
         self.created.append(request.allocation_id)

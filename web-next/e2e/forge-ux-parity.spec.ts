@@ -910,10 +910,13 @@ test('delayed history has one clean loading surface and reveals a long conversat
   });
   await page.route('**/api/v1/forge/sessions/review/conversation?*', async (route) => {
     await historyReady;
+    const requestedLimit = Number(new URL(route.request().url()).searchParams.get('limit'));
+    const turnCount =
+      Number.isSafeInteger(requestedLimit) && requestedLimit > 0 ? requestedLimit : 50;
     await route.fulfill({
       json: {
-        turns: Array.from({ length: 50 }, (_, index) => {
-          const i = index + 50;
+        turns: Array.from({ length: turnCount }, (_, index) => {
+          const i = 100 - turnCount + index;
           return {
             id: `long-${i}`,
             role: 'assistant',
@@ -1004,46 +1007,50 @@ test('an enabled Terminal tab explains unsupported hosts without trying to spawn
   expect(mutations).toEqual([]);
 });
 
-test('centers top-level navigation and keeps compact account controls clear at every width', async ({
+test('keeps top-level navigation and visible account controls clear at every width', async ({
   page,
 }, testInfo) => {
   await fixture(page);
   await page.goto('/volundr/sessions/review');
+  await page.getByRole('button', { name: 'Ting', exact: true }).click();
+  await expect(page).toHaveURL(/\/ting\/work$/);
+  await expect(page.getByTestId('ting-tab-work')).toBeVisible();
+  await expect(page.getByTestId('ting-tab-workflows')).toBeVisible();
+  await page.getByRole('button', { name: 'Völundr', exact: true }).click();
+  await expect(page).toHaveURL(/\/volundr\/forge$/);
   const header = page.locator('.niuu-shell__topbar');
   const tabs = page.locator('.niuu-shell__tabs');
   const account = header.getByRole('button', { name: 'Disconnect', exact: true });
-  await expect(account).toHaveText('');
+  const theme = header.getByRole('combobox', { name: 'Color theme' });
+  const command = header.getByRole('button', { name: 'Open command palette' });
+  await expect(account).toBeVisible();
+  await expect(theme).toBeVisible();
+  await expect(command).toBeVisible();
   await expect(page.getByText('Private connection', { exact: true })).toHaveCount(0);
-  await expect(
-    header.getByRole('combobox', { name: 'Color theme' }).locator('option:checked'),
-  ).toHaveText('blue');
-  await account.hover();
-  await expect(page.getByRole('tooltip', { name: 'Disconnect', exact: true })).toBeVisible();
-  await page.mouse.move(0, 0);
-  await account.focus();
-  await expect(page.getByRole('tooltip', { name: 'Disconnect', exact: true })).toBeVisible();
-  await page.keyboard.press('Escape');
+  await expect(theme.locator('option:checked')).toHaveText('blue');
   for (const width of [1440, 1024, 820, 761, 390, 320]) {
     await page.setViewportSize({ width, height: 900 });
     const headerBox = (await header.boundingBox())!;
     const tabsBox = (await tabs.boundingBox())!;
     const controlsBox = (await page.locator('.niuu-shell__topbar-right').boundingBox())!;
     const titleBox = (await page.locator('.niuu-shell__topbar-title').boundingBox())!;
-    expect(
-      Math.abs(tabsBox.x + tabsBox.width / 2 - (headerBox.x + headerBox.width / 2)),
-    ).toBeLessThan(1);
     expect(controlsBox.x + controlsBox.width).toBeLessThanOrEqual(width);
     expect(titleBox.x + titleBox.width).toBeLessThanOrEqual(controlsBox.x);
     if (width > 760) {
       expect(titleBox.x + titleBox.width).toBeLessThanOrEqual(tabsBox.x + 1);
       expect(tabsBox.x + tabsBox.width).toBeLessThanOrEqual(controlsBox.x);
+      expect(tabsBox.width).toBeGreaterThan(200);
     } else {
       expect(tabsBox.y).toBeGreaterThanOrEqual(controlsBox.y + controlsBox.height);
+      expect(tabsBox.x).toBeGreaterThanOrEqual(headerBox.x);
+      expect(tabsBox.x + tabsBox.width).toBeLessThanOrEqual(headerBox.x + headerBox.width);
     }
     await expect(account).toBeVisible();
+    await expect(theme).toBeVisible();
+    await expect(command).toBeVisible();
     if (width === 1440 || width === 390)
       await page.screenshot({
-        path: testInfo.outputPath(`centered-header-${width}.png`),
+        path: testInfo.outputPath(`responsive-header-${width}.png`),
         animations: 'disabled',
       });
   }

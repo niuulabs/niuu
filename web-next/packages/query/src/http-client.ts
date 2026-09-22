@@ -24,7 +24,11 @@ export class ApiClientError extends Error {
 export interface ApiClient {
   basePath?: string;
   get<T>(endpoint: string, options?: { signal?: AbortSignal }): Promise<T>;
-  post<T>(endpoint: string, body?: unknown): Promise<T>;
+  post<T>(
+    endpoint: string,
+    body?: unknown,
+    options?: { headers?: HeadersInit; signal?: AbortSignal },
+  ): Promise<T>;
   put<T>(endpoint: string, body: unknown): Promise<T>;
   patch<T>(endpoint: string, body: unknown): Promise<T>;
   delete<T>(endpoint: string, body?: unknown): Promise<T>;
@@ -222,10 +226,11 @@ export function createApiClient(basePath: string): ApiClient {
   async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const url = `${basePath}${endpoint}`;
 
-    const headers = getAuthHeaders({
-      ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
-      ...(options.headers as Record<string, string>),
-    });
+    const requestHeaders = new Headers(options.headers);
+    if (!(options.body instanceof FormData) && !requestHeaders.has('Content-Type')) {
+      requestHeaders.set('Content-Type', 'application/json');
+    }
+    const headers = getAuthHeaders(requestHeaders);
 
     const config: RequestInit = { ...options, headers };
     const response = await fetch(url, config);
@@ -257,11 +262,16 @@ export function createApiClient(basePath: string): ApiClient {
     get<T>(endpoint: string, options?: { signal?: AbortSignal }): Promise<T> {
       return request<T>(endpoint, { ...options, method: 'GET' });
     },
-    post<T>(endpoint: string, body?: unknown): Promise<T> {
+    post<T>(
+      endpoint: string,
+      body?: unknown,
+      options?: { headers?: HeadersInit; signal?: AbortSignal },
+    ): Promise<T> {
       if (body instanceof FormData) {
-        return request<T>(endpoint, { method: 'POST', body });
+        return request<T>(endpoint, { ...options, method: 'POST', body });
       }
       return request<T>(endpoint, {
+        ...options,
         method: 'POST',
         body: body ? JSON.stringify(body) : undefined,
       });

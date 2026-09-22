@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useNavigate, useParams } from '@tanstack/react-router';
+import { useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import {
@@ -26,6 +26,7 @@ import type {
   TrackerProject,
 } from '../ports';
 import { useSagas } from './useSagas';
+import { useWorkflows, useWorkflowVersions } from './useWorkflows';
 import { SagaDetailPage } from './SagaDetailPage';
 
 type SagaBucket = 'active' | 'review' | 'complete' | 'failed';
@@ -198,13 +199,15 @@ function SagasPageContent() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const params = useParams({ strict: false }) as { sagaId?: string };
+  const routeSearch = useSearch({ strict: false }) as { import?: string; returnTo?: string };
   const ting = useService<ITingService>('ting');
   const tracker = useService<ITrackerBrowserService>('ting.tracker');
   const dispatchBus = useService<IDispatchBus>('ting.dispatch');
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const { data: sagas, isLoading, isError, error } = useSagas();
+  const workflowsQuery = useWorkflows();
   const [showNewSagaModal, setShowNewSagaModal] = useState(false);
-  const [showImportModal, setShowImportModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(routeSearch.import === '1');
   const [search, setSearch] = useState('');
   const [selectedSagaIdState, setSelectedSagaIdState] = useState<string | null>(
     params.sagaId ?? null,
@@ -214,6 +217,8 @@ function SagasPageContent() {
   const [repoCandidate, setRepoCandidate] = useState('');
   const [baseBranch, setBaseBranch] = useState('main');
   const [selectedInstanceId, setSelectedInstanceId] = useState('');
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState('');
+  const [selectedWorkflowVersion, setSelectedWorkflowVersion] = useState('');
   const [targetMode, setTargetMode] = useState<ImportTargetMode>('default');
   const [targetTagsDraft, setTargetTagsDraft] = useState('');
   const [targetMatch, setTargetMatch] = useState<'all' | 'any'>('all');
@@ -223,6 +228,14 @@ function SagasPageContent() {
     () => selectedRepoRefs.map((entry) => entry.repo),
     [selectedRepoRefs],
   );
+  const workflows = workflowsQuery.data ?? [];
+  const selectedWorkflow = workflows.find((workflow) => workflow.id === selectedWorkflowId) ?? null;
+  const workflowVersionsQuery = useWorkflowVersions(selectedWorkflowId);
+  const workflowVersions = workflowVersionsQuery.data ?? [];
+  const effectiveWorkflowVersion =
+    workflowVersions.find((entry) => entry.version === selectedWorkflowVersion)?.version ??
+    selectedWorkflow?.version ??
+    '';
 
   const allSagas = useMemo(() => sagas ?? [], [sagas]);
   const selectedSagaId = selectedSagaIdState ?? allSagas[0]?.id ?? null;
@@ -359,6 +372,8 @@ function SagasPageContent() {
     setRepoCandidate('');
     setBaseBranch('');
     setSelectedInstanceId('');
+    setSelectedWorkflowId('');
+    setSelectedWorkflowVersion('');
     setTargetMode('default');
     setTargetTagsDraft('');
     setTargetMatch('all');
@@ -372,6 +387,8 @@ function SagasPageContent() {
     setRepoCandidate('');
     setBaseBranch('');
     setSelectedInstanceId('');
+    setSelectedWorkflowId('');
+    setSelectedWorkflowVersion('');
     setTargetMode('default');
     setTargetTagsDraft('');
     setTargetMatch('all');
@@ -383,6 +400,9 @@ function SagasPageContent() {
       return;
     }
     closeImportModal();
+    if (routeSearch.returnTo) {
+      void navigate({ to: routeSearch.returnTo as never });
+    }
   }
 
   async function handleImportProject() {
@@ -399,6 +419,12 @@ function SagasPageContent() {
         {
           repoRefs: selectedRepoRefs,
           trackerConnectionId: effectiveSelectedProject.trackerConnectionId,
+          ...(selectedWorkflowId
+            ? {
+                workflowId: selectedWorkflowId,
+                workflowVersion: effectiveWorkflowVersion || undefined,
+              }
+            : {}),
           target:
             targetMode === 'tags'
               ? { mode: 'tags', tags: targetTags, match: targetMatch }
@@ -411,6 +437,13 @@ function SagasPageContent() {
       setSelectedSagaIdState(importedSaga.id);
       closeImportModal();
       toast({ title: `Imported ${effectiveSelectedProject.name}`, tone: 'success' });
+      if (routeSearch.returnTo === '/ting/work') {
+        void navigate({
+          to: '/ting/work/$workId' as never,
+          params: { workId: `project:${importedSaga.id}` } as never,
+        });
+        return;
+      }
       void navigate({ to: '/ting/sagas/$sagaId', params: { sagaId: importedSaga.id } });
     } catch (importError) {
       toast({
@@ -827,6 +860,55 @@ function SagasPageContent() {
                           </div>
                         </div>
                       )}
+                    </div>
+
+                    <div className="niuu:grid niuu:grid-cols-[minmax(0,1fr)_140px] niuu:gap-2">
+                      <label className="niuu:block">
+                        <span className="niuu:block niuu:mb-1.5 niuu:text-xs niuu:font-mono niuu:text-text-muted">
+                          Workflow
+                        </span>
+                        <select
+                          value={selectedWorkflowId}
+                          onChange={(event) => {
+                            setSelectedWorkflowId(event.target.value);
+                            setSelectedWorkflowVersion('');
+                          }}
+                          className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
+                        >
+                          <option value="">Use project default</option>
+                          {workflows.map((workflow) => (
+                            <option key={workflow.id} value={workflow.id}>
+                              {workflow.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="niuu:block">
+                        <span className="niuu:block niuu:mb-1.5 niuu:text-xs niuu:font-mono niuu:text-text-muted">
+                          Version
+                        </span>
+                        <select
+                          value={effectiveWorkflowVersion}
+                          onChange={(event) => setSelectedWorkflowVersion(event.target.value)}
+                          disabled={!selectedWorkflowId || workflowVersionsQuery.isLoading}
+                          className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:disabled:opacity-50"
+                        >
+                          {!selectedWorkflowId ? <option value="">Default</option> : null}
+                          {selectedWorkflowId &&
+                          workflowVersions.length === 0 &&
+                          selectedWorkflow ? (
+                            <option value={selectedWorkflow.version}>
+                              {selectedWorkflow.version}
+                            </option>
+                          ) : null}
+                          {workflowVersions.map((entry) => (
+                            <option key={entry.documentRevision} value={entry.version}>
+                              {entry.version}
+                              {entry.isHead ? ' · current' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
                     </div>
 
                     <div className="niuu:block">

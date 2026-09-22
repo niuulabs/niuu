@@ -7,19 +7,16 @@ operator cloud-init must install Docker, Python 3.12+, and OpenSSH.
 
 from __future__ import annotations
 
-import asyncio
-import base64
+import asyncio  # noqa: F401 - compatibility for tests patching the shared module
 import json
 import os
+import pwd  # noqa: F401 - compatibility for tests patching the shared module
+import re
 import shlex
-import socket
-import sys
 import tempfile
 from pathlib import Path, PurePosixPath
 
 import httpx
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.brokered_credentials import (
@@ -27,12 +24,19 @@ from volundr.adapters.outbound.brokered_credentials import (
     BrokeredCredentialPodManager,
 )
 from volundr.adapters.outbound.local_process import LocalProcessPodManager
+from volundr.adapters.outbound.ssh_guest_access import (
+    HOST_KEY_CONFIG_PATH,
+    HOST_KEY_PATH,
+    SshGuestAccess,
+)
 from volundr.domain.compute import BootstrapFile, ComputeLease, MachineBootstrap
+from volundr.domain.guest_access import GuestAccess
 from volundr.domain.models import Session, SessionSpec
-from volundr.domain.vm_runtime import VmRuntime, VmRuntimeUnavailableError
+from volundr.domain.vm_runtime import VmRuntime
 
 # cloud-init's SSH module deletes/recreates keys at /etc/ssh/ssh_host_*.
-_HOST_KEY = "/etc/niuu/ssh_host_ed25519_key"
+_HOST_KEY = HOST_KEY_PATH
+_HOST_KEY_CONFIG = HOST_KEY_CONFIG_PATH
 _LAUNCH = "/etc/niuu/session-launch.json"
 _REMOTE_DATA = "/var/lib/niuu/session"
 
@@ -145,15 +149,16 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
     def __init__(
         self,
         *,
-        ssh_private_key_file: str,
-        ssh_public_key_file: str,
-        data_dir: str,
+        ssh_private_key_file: str | None = None,
+        ssh_public_key_file: str | None = None,
+        data_dir: str | None = None,
         skuld_image: str,
         codex_auth_adapter: str = DEFAULT_CODEX_AUTH_ADAPTER,
         codex_auth_kwargs: dict | None = None,
         platform_host: str = "127.0.0.1",
         platform_port: int = 8080,
         guest_platform_port: int = 18080,
+        guest_platform_bind_host: str = "127.0.0.1",
         ssh_user: str = "ubuntu",
         ssh_port: int = 22,
         broker_port: int = 8081,
@@ -163,9 +168,15 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         poll_interval_seconds: float = 2,
         health_timeout_seconds: float = 5,
         archive_excludes: list[str] | None = None,
+        bootstrap_delivery: str = "provider",
+        machine_commands: list[list[str]] | tuple[tuple[str, ...], ...] = (),
+        guest_access: GuestAccess | None = None,
+        host_prepared: bool = False,
     ):
         if not skuld_image or not ssh_user or ssh_user.startswith("-"):
             raise ValueError("Configure a Skuld image and SSH user")
+        if host_prepared and not re.search(r"@sha256:[a-f0-9]{64}$", skuld_image):
+            raise ValueError("Prepared-host runtime requires a digest-pinned Skuld image")
         if any(
             p < 1 or p > 65535 for p in (ssh_port, broker_port, platform_port, guest_platform_port)
         ):
@@ -181,12 +192,43 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             <= 0
         ):
             raise ValueError("VM runtime timeouts must be positive")
-        self._private_key = str(Path(ssh_private_key_file).expanduser().resolve(strict=True))
-        self._public_key = Path(ssh_public_key_file).expanduser().read_text().strip()
-        serialization.load_ssh_public_key(self._public_key.encode())
+        if guest_platform_bind_host not in {"127.0.0.1", "0.0.0.0"}:
+            raise ValueError("guest_platform_bind_host must be '127.0.0.1' or '0.0.0.0'")
+        if any(
+            not command or any(not str(argument) for argument in command)
+            for command in machine_commands
+        ):
+            raise ValueError("VM machine commands must contain non-empty arguments")
+        self._owns_guest_access = guest_access is None
+        if guest_access is None:
+            if not ssh_private_key_file or not ssh_public_key_file or not data_dir:
+                raise ValueError("Configure SSH key files and data_dir, or inject guest_access")
+            guest_access = SshGuestAccess(
+                ssh_private_key_file=ssh_private_key_file,
+                ssh_public_key_file=ssh_public_key_file,
+                data_dir=data_dir,
+                ssh_user=ssh_user,
+                ssh_port=ssh_port,
+                connect_timeout_seconds=connect_timeout_seconds,
+                command_timeout_seconds=command_timeout_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                bootstrap_delivery=bootstrap_delivery,
+                machine_commands=machine_commands,
+            )
+        elif machine_commands:
+            raise ValueError("machine_commands belong to the injected guest access binding")
+        if data_dir is None:
+            if isinstance(guest_access, SshGuestAccess):
+                data_dir = str(guest_access.data_dir)
+            else:
+                raise ValueError("Injected guest access requires a runtime data_dir")
+        self._guest_access = guest_access
         self._data = Path(data_dir).expanduser().resolve()
         self._data.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self._archive_excludes = tuple(str(PurePosixPath(p)) for p in (archive_excludes or ()))
+        self._archive_excludes = tuple(
+            str(PurePosixPath(p))
+            for p in (archive_excludes if archive_excludes is not None else ("home/.codex/tmp",))
+        )
         if any(
             p == "."
             or PurePosixPath(p).is_absolute()
@@ -195,21 +237,38 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             for p in self._archive_excludes
         ):
             raise ValueError("VM archive exclusions must be explicit relative paths, not globs")
+        self._private_key = (
+            guest_access.private_key if isinstance(guest_access, SshGuestAccess) else None
+        )
+        self._public_key = (
+            guest_access.public_key if isinstance(guest_access, SshGuestAccess) else None
+        )
+        self._subprocess_env = (
+            guest_access.subprocess_env if isinstance(guest_access, SshGuestAccess) else None
+        )
         self._image = skuld_image
         self._configure_brokered_credentials(
             codex_auth_adapter=codex_auth_adapter, codex_auth_kwargs=codex_auth_kwargs
         )
         self._platform_host, self._platform_port = platform_host, platform_port
         self._guest_platform_port = guest_platform_port
-        self._ssh_user, self._ssh_port = ssh_user, ssh_port
+        self._guest_platform_bind_host = guest_platform_bind_host
+        self._ssh_user, self._ssh_port = guest_access.principal, ssh_port
         self._broker_port = broker_port
         self._connect_timeout = connect_timeout_seconds
         self._command_timeout = command_timeout_seconds
         self._stop_timeout = stop_timeout_seconds
         self._poll = poll_interval_seconds
         self._health_timeout = health_timeout_seconds
-        self._tunnels: dict[str, tuple[asyncio.subprocess.Process, int, str]] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
+        self._bootstrap_delivery = bootstrap_delivery
+        self._machine_commands = ()
+        self._host_prepared = host_prepared
+
+    def _ssh_subprocess_environment(self) -> dict[str, str] | None:
+        """Retained compatibility hook; SSH access owns process identity setup."""
+        if not isinstance(self._guest_access, SshGuestAccess):
+            return None
+        return self._guest_access.subprocess_env
 
     def bootstrap(
         self, session: Session, spec: SessionSpec, defaults: MachineBootstrap
@@ -295,45 +354,19 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         )
 
     def machine_bootstrap(self, defaults: MachineBootstrap) -> MachineBootstrap:
-        key = Ed25519PrivateKey.generate()
-        private = key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.OpenSSH,
-            serialization.NoEncryption(),
-        ).decode()
-        public = (
-            key.public_key()
-            .public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
-            .decode()
-        )
-        files = (
-            BootstrapFile(path=_HOST_KEY, content=private),
-            BootstrapFile(path=_HOST_KEY + ".pub", content=public, permissions="0644"),
-            BootstrapFile(
-                path="/etc/ssh/sshd_config.d/10-niuu-host-key.conf",
-                content=f"HostKey {_HOST_KEY}\n",
-                permissions="0644",
-            ),
-        )
-        paths = [f.path for f in (*defaults.files, *files)]
-        if len(paths) != len(set(paths)) or any(
+        if any(
             f.path == _LAUNCH or f.path.startswith("/etc/niuu/session-secrets/")
             for f in defaults.files
         ):
             raise ValueError("Default bootstrap conflicts with VM runtime files")
-        return MachineBootstrap(
-            files=(*defaults.files, *files),
-            commands=(*defaults.commands, ("systemctl", "restart", "ssh")),
-            ssh_authorized_keys=(*defaults.ssh_authorized_keys, self._public_key),
-        )
+        return self._guest_access.machine_bootstrap(defaults)
 
     async def warm(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
         await self.prepare(lease, bootstrap)
-        await self._run(
-            [
-                *self._ssh(lease, bootstrap),
-                shlex.join(["sudo", "-n", "docker", "pull", self._image]),
-            ]
+        await self._guest_access.execute(
+            lease,
+            bootstrap,
+            shlex.join(["sudo", "-n", "docker", "pull", self._image]),
         )
 
     @staticmethod
@@ -379,49 +412,56 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         return files, mounts
 
     def _ssh(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> list[str]:
-        if not lease.machine or not lease.machine.addresses:
-            raise RuntimeError("VM has no observed network address")
-        address = lease.machine.addresses[0]
-        alias = "niuu-" + str(lease.id)
-        public = next(f.content for f in bootstrap.files if f.path == _HOST_KEY + ".pub")
-        directory = self._data / str(lease.session_id or lease.id)
-        directory.mkdir(mode=0o700, exist_ok=True, parents=True)
-        known = directory / "known_hosts"
-        known.write_text(f"{alias} {public}\n")
-        return [
-            "ssh",
-            "-F",
-            "/dev/null",
-            "-i",
-            self._private_key,
-            "-p",
-            str(self._ssh_port),
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "IdentitiesOnly=yes",
-            "-o",
-            "StrictHostKeyChecking=yes",
-            "-o",
-            f"UserKnownHostsFile={known}",
-            "-o",
-            f"HostKeyAlias={alias}",
-            "-o",
-            f"ConnectTimeout={self._connect_timeout}",
-            "-o",
-            "ServerAliveInterval=15",
-            "-o",
-            "ServerAliveCountMax=3",
-            "-o",
-            "ExitOnForwardFailure=yes",
-            f"{self._ssh_user}@{address}",
-        ]
+        if not isinstance(self._guest_access, SshGuestAccess):
+            raise TypeError("Raw SSH command inspection requires SshGuestAccess")
+        return self._guest_access.command_argv(lease, bootstrap)
+
+    def _bootstrap_ssh(self, lease: ComputeLease) -> list[str]:
+        """Build the explicit first-contact SSH command for post-connect bootstrap."""
+        if not isinstance(self._guest_access, SshGuestAccess):
+            raise TypeError("Raw SSH command inspection requires SshGuestAccess")
+        return self._guest_access.bootstrap_argv(lease)
+
+    def _bootstrap_verified_marker(self, lease: ComputeLease) -> Path:
+        if not isinstance(self._guest_access, SshGuestAccess):
+            raise TypeError("SSH bootstrap markers require SshGuestAccess")
+        return self._guest_access.bootstrap_verified_marker(lease)
+
+    def _allocation_directory(self, lease: ComputeLease) -> Path:
+        return self._data / str(lease.id)
+
+    def _has_host_pin(self, lease: ComputeLease) -> bool:
+        if not isinstance(self._guest_access, SshGuestAccess):
+            raise TypeError("SSH host pin inspection requires SshGuestAccess")
+        return self._guest_access._has_host_pin(lease)
+
+    @staticmethod
+    def _host_alias(lease: ComputeLease) -> str:
+        return SshGuestAccess._host_alias(lease)
+
+    @staticmethod
+    def _ssh_machine_bootstrap(bootstrap: MachineBootstrap) -> MachineBootstrap:
+        """Remove session data and controller-generated private identity from TOFU delivery."""
+        return bootstrap.model_copy(
+            update={
+                "files": tuple(
+                    item
+                    for item in bootstrap.files
+                    if item.path not in {_HOST_KEY, _HOST_KEY + ".pub", _HOST_KEY_CONFIG, _LAUNCH}
+                    and not item.path.startswith("/etc/niuu/session-secrets/")
+                )
+            }
+        )
+
+    async def _deliver_bootstrap_over_ssh(
+        self, lease: ComputeLease, bootstrap: MachineBootstrap
+    ) -> None:
+        machine = self._ssh_machine_bootstrap(bootstrap)
+        await self._guest_access.ensure(lease, machine)
 
     @staticmethod
     def _python(program: str, *args: str) -> str:
-        encoded = base64.b64encode(program.encode()).decode()
-        code = f"import base64;exec(base64.b64decode({encoded!r}))"
-        return shlex.join(["sudo", "-n", "python3", "-c", code, *args])
+        return SshGuestAccess.python_command(program, *args)
 
     async def _run(
         self,
@@ -431,71 +471,30 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         stdin=None,
         stdout=None,
         expected_exit_codes: tuple[int, ...] = (0,),
+        safe_error_prefix: str | None = None,
+        safe_detail_prefix: str | None = None,
     ) -> int:
-        process = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=stdin if stdin is not None else asyncio.subprocess.PIPE,
-            stdout=stdout if stdout is not None else asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
+        result = await self._guest_access.run_argv(
+            argv,
+            data=data,
+            stdin=stdin,
+            stdout=stdout,
+            expected_exit_codes=expected_exit_codes,
+            safe_error_prefix=safe_error_prefix,
+            safe_detail_prefix=safe_detail_prefix,
         )
-        try:
-            async with asyncio.timeout(self._command_timeout):
-                await process.communicate(data)
-        except BaseException:
-            if process.returncode is None:
-                process.kill()
-            await process.wait()
-            raise
-        if process.returncode not in expected_exit_codes:
-            # Remote stderr can contain session credentials or source-control URLs.
-            if process.returncode == 255:
-                raise VmRuntimeUnavailableError(
-                    "VM SSH connection unavailable; check readiness and pinned identity"
-                )
-            raise RuntimeError(
-                f"VM SSH command failed with exit code {process.returncode}; inspect the guest"
-            )
-        return process.returncode
+        return result.exit_code
 
     async def target(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> SessionProxyTarget:
-        key = str(lease.id)
-        async with self._locks.setdefault(key, asyncio.Lock()):
-            current = self._tunnels.get(key)
-            address = (
-                lease.machine.addresses[0] if lease.machine and lease.machine.addresses else ""
-            )
-            if current is not None and current[0].returncode is None and current[2] == address:
-                return SessionProxyTarget(
-                    service_url=f"http://127.0.0.1:{current[1]}",
-                    connect_host="127.0.0.1",
-                    connect_port=current[1],
-                )
-            if current is not None:
-                await self._close_tunnel(key)
-            with socket.socket() as sock:
-                sock.bind(("127.0.0.1", 0))
-                port = sock.getsockname()[1]
-            argv = self._ssh(lease, bootstrap)
-            options = self._tunnel_options(port)
-            # EOF on this pipe also occurs after SIGKILL of the controller. The
-            # supervisor then reaps SSH, releasing the guest's reverse listener.
-            process = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-m",
-                "volundr.adapters.outbound.ssh_tunnel",
-                str(self._poll),
-                str(self._connect_timeout),
-                *argv[:-1],
-                *options,
-                argv[-1],
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            self._tunnels[key] = (process, port, address)
-            return SessionProxyTarget(
-                service_url=f"http://127.0.0.1:{port}", connect_host="127.0.0.1", connect_port=port
-            )
+        return await self._guest_access.open_tunnel(
+            lease,
+            bootstrap,
+            remote_port=self._broker_port,
+            reverse_bind_host=self._guest_platform_bind_host,
+            reverse_port=self._guest_platform_port,
+            controller_host=self._platform_host,
+            controller_port=self._platform_port,
+        )
 
     def _tunnel_options(self, port: int) -> list[str]:
         return [
@@ -507,14 +506,19 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         ]
 
     async def prepare(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
-        ssh = self._ssh(lease, bootstrap)
-        # cloud-init finishes before Docker and the pinned host key are used.
-        await self._run([*ssh, "sudo -n cloud-init status --wait"])
+        if self._host_prepared:
+            await self._guest_access.execute(lease, bootstrap, "true")
+            return
+        access_bootstrap = bootstrap
+        if self._bootstrap_delivery == "ssh":
+            access_bootstrap = self._ssh_machine_bootstrap(bootstrap)
+        await self._guest_access.ensure(lease, access_bootstrap)
 
     async def start(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
         if lease.session_id is None:
             raise ValueError("Cannot start an unbound guest")
-        ssh = self._ssh(lease, bootstrap)
+        session_directory = self._data / str(lease.session_id)
+        session_directory.mkdir(mode=0o700, exist_ok=True, parents=True)
         # Warm machines were created without session secrets. Deliver them only
         # after the durable binding, through the authenticated guest transport.
         files = [
@@ -522,35 +526,40 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             for f in bootstrap.files
             if f.path == _LAUNCH or f.path.startswith("/etc/niuu/session-secrets/")
         ]
-        await self._run([*ssh, self._python(_SESSION_FILES)], data=json.dumps(files).encode())
+        await self._guest_access.execute(
+            lease,
+            bootstrap,
+            self._python(_SESSION_FILES),
+            data=json.dumps(files).encode(),
+        )
         await self._restore_data(lease, bootstrap)
         await self.target(lease, bootstrap)
         payload = json.loads(next(f.content for f in bootstrap.files if f.path == _LAUNCH))
         payload["allocation_id"] = str(lease.id)
-        await self._run([*ssh, self._python(_START)], data=json.dumps(payload).encode())
+        await self._guest_access.execute(
+            lease,
+            bootstrap,
+            self._python(_START),
+            data=json.dumps(payload).encode(),
+        )
 
     async def _restore_data(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
-        ssh = self._ssh(lease, bootstrap)
         archive = self._data / str(lease.session_id) / "session.tar"
         if archive.exists():
             with archive.open("rb") as src:
-                await self._run(
-                    [
-                        *ssh,
-                        self._python(
-                            _PREPARE, str(lease.id), "restore", json.dumps(self._archive_excludes)
-                        ),
-                    ],
+                await self._guest_access.execute(
+                    lease,
+                    bootstrap,
+                    self._python(
+                        _PREPARE, str(lease.id), "restore", json.dumps(self._archive_excludes)
+                    ),
                     stdin=src,
                 )
         else:
-            await self._run(
-                [
-                    *ssh,
-                    self._python(
-                        _PREPARE, str(lease.id), "empty", json.dumps(self._archive_excludes)
-                    ),
-                ]
+            await self._guest_access.execute(
+                lease,
+                bootstrap,
+                self._python(_PREPARE, str(lease.id), "empty", json.dumps(self._archive_excludes)),
             )
 
     async def ready(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> bool:
@@ -563,12 +572,13 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         return response.status_code == 200
 
     async def stop(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
-        ssh = self._ssh(lease, bootstrap)
-        result = await self._run(
-            [*ssh, self._python(_STOP, str(lease.id), str(self._stop_timeout))],
+        result = await self._guest_access.execute(
+            lease,
+            bootstrap,
+            self._python(_STOP, str(lease.id), str(self._stop_timeout)),
             expected_exit_codes=(0, 42),
         )
-        if result == 42:
+        if result.exit_code == 42:
             # Cancelled before storage restore: retain any previous local archive.
             await self._close_tunnel(str(lease.id))
             return
@@ -576,30 +586,29 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         await self._close_tunnel(str(lease.id))
 
     async def _archive_data(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
-        ssh = self._ssh(lease, bootstrap)
         directory = self._data / str(lease.session_id or lease.id)
+        directory.mkdir(mode=0o700, exist_ok=True, parents=True)
         fd, temporary = tempfile.mkstemp(prefix="session-", suffix=".tar", dir=directory)
         try:
             with os.fdopen(fd, "wb") as dest:
-                await self._run(
-                    [
-                        *ssh,
-                        shlex.join(
-                            [
-                                "sudo",
-                                "-n",
-                                "tar",
-                                "--one-file-system",
-                                "--exclude=./.allocation",
-                                *[f"--exclude=./{p}" for p in self._archive_excludes],
-                                "-C",
-                                _REMOTE_DATA,
-                                "-cf",
-                                "-",
-                                ".",
-                            ]
-                        ),
-                    ],
+                await self._guest_access.execute(
+                    lease,
+                    bootstrap,
+                    shlex.join(
+                        [
+                            "sudo",
+                            "-n",
+                            "tar",
+                            "--one-file-system",
+                            "--exclude=./.allocation",
+                            *[f"--exclude=./{p}" for p in self._archive_excludes],
+                            "-C",
+                            _REMOTE_DATA,
+                            "-cf",
+                            "-",
+                            ".",
+                        ]
+                    ),
                     stdout=dest,
                 )
                 dest.flush()
@@ -609,12 +618,8 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             Path(temporary).unlink(missing_ok=True)
 
     async def _close_tunnel(self, key: str) -> None:
-        current = self._tunnels.pop(key, None)
-        if current is None or current[0].returncode is not None:
-            return
-        current[0].terminate()
-        await current[0].wait()
+        await self._guest_access.close_tunnel(key)
 
     async def close(self) -> None:
-        for key in list(self._tunnels):
-            await self._close_tunnel(key)
+        if self._owns_guest_access:
+            await self._guest_access.close()

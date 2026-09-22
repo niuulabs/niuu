@@ -8,6 +8,7 @@ import pytest
 
 from volundr.composition_builders import integration_database_pool
 from volundr.config import Settings
+from volundr.domain.models import Session
 from volundr.domain.services.session import SessionService
 
 
@@ -52,7 +53,7 @@ async def test_foreign_connection_rejected_before_session_launch():
     )
     with pytest.raises(ValueError, match="Integration connection not found"):
         await service._start_with_pipeline(
-            SimpleNamespace(),
+            Session(name="test", model="test"),
             SimpleNamespace(user_id="owner"),
             None,
             None,
@@ -71,6 +72,11 @@ async def test_missing_or_disabled_selection_is_not_silently_dropped(connection)
     service = SessionService(AsyncMock(), pods, integration_repo=integrations)
     with pytest.raises(ValueError, match="missing or disabled"):
         await service._start_with_pipeline(
-            SimpleNamespace(), None, None, None, False, integration_ids=["selected"]
+            Session(name="test", model="test"),
+            None,
+            None,
+            None,
+            False,
+            integration_ids=["selected"],
         )
     pods.start.assert_not_called()

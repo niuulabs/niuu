@@ -369,6 +369,16 @@ class AgentTask:
     root_correlation_id: str = ""  # Propagated from triggering event for fan-in chain tracking
     workflow_parent_event_id: str = ""  # Direct upstream event ID for per-cycle joins
     workflow_node_id: str = ""  # Active workflow graph node for node-scoped contracts
+    # A strict review join resolves one immutable upstream workflow cycle.  Keep
+    # that causal identity separate from the last reviewer event so the runtime
+    # can reject an outcome if a newer artifact supersedes it while queued or
+    # running.
+    workflow_review_cycle_id: str = ""
+    workflow_review_source_node_id: str = ""
+    workflow_review_source_event_type: str = ""
+    # Runtime-derived restriction for a strict reviewer join. Empty means the
+    # graph's normal outgoing topics apply.
+    workflow_allowed_outcome_topics: list[str] = field(default_factory=list)
     tool_outcomes: dict[str, dict[str, Any]] = field(default_factory=dict)
     human_initiated: bool = False  # True when a human message entered through a channel
     #: What to search memory with, when ``initiative_context`` is an envelope rather than the

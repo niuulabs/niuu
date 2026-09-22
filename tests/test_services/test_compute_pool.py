@@ -12,6 +12,7 @@ from volundr.domain.compute import (
     LeaseState,
     Machine,
     MachineBootstrap,
+    MachineProviderError,
     MachineState,
 )
 from volundr.domain.services.compute_leases import ComputeLeaseService
@@ -131,6 +132,50 @@ async def test_orphans_quarantined_and_counted_without_destructive_guessing(setu
     assert orphan_id not in provider.machines
     with pytest.raises(LookupError):
         await pool.dispose(uuid4())
+
+
+async def test_quarantined_inventory_keeps_provider_identity_before_manual_disposal(setup):
+    pool, _, repo, provider, _, store = setup
+    original_leases = ComputeLeaseService(
+        repo,
+        provider,
+        pool_id="pool",
+        max_machines=2,
+        bootstrap=MachineBootstrap(),
+        bootstrap_store=store,
+        provider_binding="provider-a",
+        provider_fingerprint="deployment-a",
+    )
+    pool.leases = original_leases
+    pool.defaults = pool.defaults.model_copy(update={"warm_min": 0})
+    orphan_id = uuid4()
+    provider.machines[orphan_id] = Machine(
+        allocation_id=orphan_id,
+        resource_id="opaque",
+        state=MachineState.RUNNING,
+    )
+
+    await pool.maintain()
+
+    quarantined = repo.leases[orphan_id]
+    assert quarantined.execution_plan is None
+    assert quarantined.provider_binding == "provider-a"
+    assert quarantined.provider_fingerprint == "deployment-a"
+
+    changed_leases = ComputeLeaseService(
+        repo,
+        provider,
+        pool_id="pool",
+        max_machines=2,
+        bootstrap=MachineBootstrap(),
+        bootstrap_store=store,
+        provider_binding="provider-a",
+        provider_fingerprint="deployment-b",
+    )
+    pool.leases = changed_leases
+    with pytest.raises(MachineProviderError, match="provider binding is unavailable or changed"):
+        await pool.dispose(orphan_id)
+    assert orphan_id in provider.machines
 
 
 async def test_persistent_deadline_survives_new_service_and_expired_warm_guest_cleans_up(setup):
@@ -308,7 +353,7 @@ async def test_stale_stop_snapshot_cannot_stop_next_session_on_reused_vm(setup):
             repo.leases[lease.id], uuid4(), "two", "tenant", MachineBootstrap(), 120
         )
     runtime.stop.reset_mock()
-    await pool._maintain_lease(stale, await pool.policy())
+    await pool._maintain_lease(stale, await pool.policy(), None)
     runtime.stop.assert_not_called()
     assert repo.leases[lease.id].session_id == second.session_id
 
@@ -329,3 +374,15 @@ async def test_unstarted_allocation_can_be_deleted_without_bootstrap_secret(setu
     assert repo.leases[bound.id].state == LeaseState.RELEASED
     assert bound.id not in provider.machines
     runtime.stop.assert_not_called()
+
+
+async def test_durable_policy_must_reference_a_validated_provider_profile(setup):
+    pool, _, repo, provider, _, _ = setup
+    repo.policies["pool"] = (await pool.policy()).model_copy(update={"profile": "removed"})
+
+    with pytest.raises(ValueError, match="configured by the provider"):
+        await pool.validate_policy(await pool.policy())
+
+    provider.profile_revision = ""
+    with pytest.raises(ValueError, match="revision"):
+        await pool.validate_policy(pool.defaults)

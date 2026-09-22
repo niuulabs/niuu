@@ -300,6 +300,33 @@ class TestDockerSocketGid:
         with patch(f"{MOD}.docker_info", return_value=failed):
             assert docker_socket_gid(config, str(tmp_path / "nope.sock")) is None
 
+    def test_remote_linux_socket_group_is_probed_in_daemon_namespace(
+        self, config: DockerPreflightConfig, tmp_path: Path
+    ) -> None:
+        completed = subprocess.CompletedProcess([], 0, stdout="991\n", stderr="")
+        missing = str(tmp_path / "not-on-client.sock")
+        with (
+            patch(f"{MOD}.docker_info", return_value={"OperatingSystem": "Ubuntu 24.04"}),
+            patch(f"{MOD}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{MOD}._run", return_value=completed) as run,
+        ):
+            assert docker_socket_gid(config, missing, "niuu:test") == 991
+        assert run.call_args.args[0] == [
+            "/usr/bin/docker",
+            "run",
+            "--rm",
+            "--user",
+            "0:0",
+            "--volume",
+            f"{missing}:/var/run/docker.sock",
+            "--entrypoint",
+            "stat",
+            "niuu:test",
+            "-c",
+            "%g",
+            "/var/run/docker.sock",
+        ]
+
 
 class TestDataDir:
     def test_creates_and_passes(self, config: DockerPreflightConfig) -> None:

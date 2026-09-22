@@ -80,6 +80,22 @@ describe('useWorkflowBuilder — initial state', () => {
     expect(result.current.view).toBe('graph');
   });
 
+  it('restores an unsaved draft with its persisted baseline and undo history', () => {
+    const saved = { ...makeWorkflow(), description: 'Persisted description' };
+    const draft = { ...saved, description: 'Unsaved parent draft' };
+    const { result } = renderHook(() => useWorkflowBuilder(draft, [], [], saved));
+
+    expect(result.current.workflow.description).toBe('Unsaved parent draft');
+    expect(result.current.savedWorkflow.description).toBe('Persisted description');
+    expect(result.current.isDirty).toBe(true);
+    expect(result.current.canUndo).toBe(true);
+
+    act(() => result.current.undo());
+    expect(result.current.workflow.description).toBe('Persisted description');
+    expect(result.current.isDirty).toBe(false);
+    expect(result.current.canRedo).toBe(true);
+  });
+
   it('has no selected node', () => {
     const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
     expect(result.current.selectedNodeId).toBeNull();
@@ -329,6 +345,27 @@ describe('useWorkflowBuilder — addNode', () => {
     expect(result.current.workflow.nodes[2]!.kind).toBe('end');
   });
 
+  it('adds a passive wait node', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.addNode('wait'));
+    expect(result.current.workflow.nodes[2]).toMatchObject({
+      kind: 'wait',
+      label: 'Wait for observation',
+    });
+    expect(result.current.workflow.schemaVersion).toBe(2);
+  });
+
+  it('adds an include node with no workflow chosen yet', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.addNode('include'));
+    const added = result.current.workflow.nodes[2]!;
+    expect(added.kind).toBe('include');
+    if (added.kind === 'include') {
+      expect(added.workflow).toBe('');
+      expect(added.nodes).toEqual({});
+    }
+  });
+
   it('adds a resource node with registry defaults', () => {
     const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
     act(() => result.current.addNode('resource'));
@@ -406,6 +443,62 @@ describe('useWorkflowBuilder — addNode', () => {
     expect(resourceNode?.bindingMode).toBe('ephemeral_local');
     expect(resourceNode?.registryEntryId).toBeNull();
     expect(resourceNode?.role).toBe('local');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// addNodeFromPort — "insert a step from a port", flow-control candidates
+// ---------------------------------------------------------------------------
+
+describe('useWorkflowBuilder — addNodeFromPort', () => {
+  it('creates the node and wires an edge from the source at the given position', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() =>
+      result.current.addNodeFromPort('gate', 'stage-1', 'code.changed', { x: 400, y: 150 }),
+    );
+
+    const added = result.current.workflow.nodes[2]!;
+    expect(added.kind).toBe('gate');
+    expect(added.position).toEqual({ x: 400, y: 150 });
+
+    const edge = result.current.workflow.edges.find((e) => e.target === added.id);
+    expect(edge).toMatchObject({ source: 'stage-1', label: 'code.changed -> code.changed' });
+  });
+
+  it('sets schemaVersion 2 when inserting a wait node, same as addNode', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.addNodeFromPort('wait', 'stage-1', 'code.changed'));
+    expect(result.current.workflow.schemaVersion).toBe(2);
+  });
+
+  it('falls back to the default next position when none is given', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.addNodeFromPort('end', 'stage-1', 'code.changed'));
+    const added = result.current.workflow.nodes[2]!;
+    // gate-1 (the last existing node) sits at (300, 100); nextPosition offsets from it.
+    expect(added.position).toEqual({ x: 300 + 180, y: 100 });
+  });
+
+  it('is an atomic no-op if the source id does not exist', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    const before = result.current.workflow.edges.length;
+    act(() => result.current.addNodeFromPort('cond', 'no-such-node', 'code.changed'));
+    expect(result.current.workflow.nodes).toHaveLength(2);
+    expect(result.current.workflow.edges).toHaveLength(before);
+    expect(result.current.canUndo).toBe(false);
+  });
+
+  it('is a single undo step — undo removes both the node and its edge together', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    const nodesBefore = result.current.workflow.nodes.length;
+    const edgesBefore = result.current.workflow.edges.length;
+
+    act(() => result.current.addNodeFromPort('gate', 'stage-1', 'code.changed'));
+    expect(result.current.canUndo).toBe(true);
+
+    act(() => result.current.undo());
+    expect(result.current.workflow.nodes).toHaveLength(nodesBefore);
+    expect(result.current.workflow.edges).toHaveLength(edgesBefore);
   });
 });
 
@@ -497,6 +590,198 @@ describe('useWorkflowBuilder — deleteNode', () => {
     act(() => result.current.deleteNode('resource-1'));
     expect(result.current.workflow.resourceBindings).toEqual([]);
   });
+
+  it('prunes an orphaned child pin in the same undo step and restores both on undo', () => {
+    const childNode: Workflow['nodes'][number] = {
+      id: 'children',
+      kind: 'subworkflow',
+      label: 'Child work',
+      position: { x: 500, y: 100 },
+      templates: { default: 'worker' },
+      allowedCoordinator: 'coordinator',
+      inputSchema: { type: 'object', properties: {} },
+      resultSchema: { type: 'object', properties: {} },
+      maxChildren: 10,
+      maxAttempts: 3,
+      maxActiveChildren: 4,
+      joinMode: 'all',
+      blockedEvent: 'children.blocked',
+    };
+    const dependency = {
+      id: '00000000-0000-4000-8000-000000000002',
+      revision: 'sha256:child',
+      digest: 'sha256:child',
+    };
+    const workflow: Workflow = {
+      ...makeWorkflow(),
+      schemaVersion: 2,
+      nodes: [...makeWorkflow().nodes, childNode],
+      workflowDependencies: { worker: dependency },
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(workflow));
+
+    act(() => result.current.deleteNode(childNode.id));
+
+    expect(result.current.workflow.nodes).not.toContainEqual(childNode);
+    expect(result.current.workflow.workflowDependencies).toEqual({});
+
+    act(() => result.current.undo());
+
+    expect(result.current.workflow.nodes).toContainEqual(childNode);
+    expect(result.current.workflow.workflowDependencies).toEqual({ worker: dependency });
+  });
+
+  it('retains a child pin while another subworkflow still references its alias', () => {
+    const childNode = {
+      id: 'children-a',
+      kind: 'subworkflow' as const,
+      label: 'Child work A',
+      position: { x: 500, y: 100 },
+      templates: { default: 'worker' },
+      allowedCoordinator: 'coordinator',
+      inputSchema: { type: 'object', properties: {} },
+      resultSchema: { type: 'object', properties: {} },
+      maxChildren: 10,
+      maxAttempts: 3,
+      maxActiveChildren: 4,
+      joinMode: 'all' as const,
+      blockedEvent: 'children.blocked',
+    };
+    const dependency = {
+      id: '00000000-0000-4000-8000-000000000002',
+      revision: 'sha256:child',
+      digest: 'sha256:child',
+    };
+    const workflow: Workflow = {
+      ...makeWorkflow(),
+      schemaVersion: 2,
+      nodes: [
+        ...makeWorkflow().nodes,
+        childNode,
+        { ...childNode, id: 'children-b', label: 'Child work B' },
+      ],
+      workflowDependencies: { worker: dependency },
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(workflow));
+
+    act(() => result.current.deleteNode(childNode.id));
+
+    expect(result.current.workflow.workflowDependencies).toEqual({ worker: dependency });
+  });
+
+  it('prunes every unreferenced template alias of a multi-template node, keeping shared ones', () => {
+    const childNode: Workflow['nodes'][number] = {
+      id: 'children',
+      kind: 'subworkflow',
+      label: 'Child work',
+      position: { x: 500, y: 100 },
+      templates: { breadth: 'worker', depth: 'thread' },
+      allowedCoordinator: 'coordinator',
+      inputSchema: { type: 'object', properties: {} },
+      resultSchema: { type: 'object', properties: {} },
+      maxChildren: 10,
+      maxAttempts: 3,
+      maxActiveChildren: 4,
+      joinMode: 'all',
+      blockedEvent: 'children.blocked',
+    };
+    const otherNode: Workflow['nodes'][number] = {
+      ...childNode,
+      id: 'other-children',
+      templates: { default: 'thread' },
+    };
+    const workflow: Workflow = {
+      ...makeWorkflow(),
+      schemaVersion: 2,
+      nodes: [...makeWorkflow().nodes, childNode, otherNode],
+      workflowDependencies: {
+        worker: { id: '00000000-0000-4000-8000-000000000002', revision: 'r1', digest: 'r1' },
+        thread: { id: '00000000-0000-4000-8000-000000000003', revision: 'r2', digest: 'r2' },
+      },
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(workflow));
+
+    act(() => result.current.deleteNode(childNode.id));
+
+    expect(result.current.workflow.workflowDependencies).toEqual({
+      thread: { id: '00000000-0000-4000-8000-000000000003', revision: 'r2', digest: 'r2' },
+    });
+  });
+
+  it('prunes an orphaned include pin in the same undo step and restores it on undo', () => {
+    const includeNode: Workflow['nodes'][number] = {
+      id: 'delivery-planning',
+      kind: 'include',
+      label: 'Plan the delivery',
+      workflow: 'planning',
+      nodes: { 'planning-analysis': 'delivery-plan-author' },
+      position: { x: 500, y: 100 },
+    };
+    const dependency = {
+      id: '00000000-0000-4000-8000-000000000002',
+      revision: 'sha256:planning',
+      digest: 'sha256:planning',
+    };
+    const workflow: Workflow = {
+      ...makeWorkflow(),
+      schemaVersion: 2,
+      nodes: [...makeWorkflow().nodes, includeNode],
+      workflowDependencies: { planning: dependency },
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(workflow));
+
+    act(() => result.current.deleteNode(includeNode.id));
+
+    expect(result.current.workflow.nodes).not.toContainEqual(includeNode);
+    expect(result.current.workflow.workflowDependencies).toEqual({});
+
+    act(() => result.current.undo());
+
+    expect(result.current.workflow.nodes).toContainEqual(includeNode);
+    expect(result.current.workflow.workflowDependencies).toEqual({ planning: dependency });
+  });
+
+  it('retains an include pin still referenced by a subworkflow template sharing its alias', () => {
+    const subworkflowNode: Workflow['nodes'][number] = {
+      id: 'children',
+      kind: 'subworkflow',
+      label: 'Child work',
+      position: { x: 500, y: 100 },
+      templates: { default: 'planning' },
+      allowedCoordinator: 'coordinator',
+      inputSchema: { type: 'object', properties: {} },
+      resultSchema: { type: 'object', properties: {} },
+      maxChildren: 10,
+      maxAttempts: 3,
+      maxActiveChildren: 4,
+      joinMode: 'all',
+      blockedEvent: 'children.blocked',
+    };
+    const includeNode: Workflow['nodes'][number] = {
+      id: 'delivery-planning',
+      kind: 'include',
+      label: 'Plan the delivery',
+      workflow: 'planning',
+      nodes: { 'planning-analysis': 'delivery-plan-author' },
+      position: { x: 700, y: 100 },
+    };
+    const dependency = {
+      id: '00000000-0000-4000-8000-000000000002',
+      revision: 'sha256:planning',
+      digest: 'sha256:planning',
+    };
+    const workflow: Workflow = {
+      ...makeWorkflow(),
+      schemaVersion: 2,
+      nodes: [...makeWorkflow().nodes, subworkflowNode, includeNode],
+      workflowDependencies: { planning: dependency },
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(workflow));
+
+    act(() => result.current.deleteNode(includeNode.id));
+
+    expect(result.current.workflow.workflowDependencies).toEqual({ planning: dependency });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -510,6 +795,62 @@ describe('useWorkflowBuilder — moveNode', () => {
     const node = result.current.workflow.nodes.find((n) => n.id === 'stage-1')!;
     expect(node.position.x).toBe(999);
     expect(node.position.y).toBe(888);
+  });
+});
+
+describe('useWorkflowBuilder — autoLayout', () => {
+  it('spaces tall cards by their contracts and restores the whole layout with one undo', () => {
+    const stage = makeWorkflow().nodes[0]!;
+    const workflow: Workflow = {
+      ...makeWorkflow(),
+      nodes: [
+        { ...stage, kind: 'stage', id: 'a', personaIds: ['lead', 'critic', 'writer'], runId: null },
+        { ...stage, kind: 'stage', id: 'b', personaIds: ['lead'], runId: null },
+      ],
+      edges: [],
+    };
+    const personas = ['lead', 'critic', 'writer'].map((id) => ({
+      id,
+      label: id,
+      role: 'build',
+      consumes: ['request'],
+      produces: ['done'],
+    }));
+    const { result } = renderHook(() => useWorkflowBuilder(workflow, personas));
+    const before = result.current.workflow.nodes.map((node) => node.position);
+    act(() => result.current.autoLayout());
+    const [first, second] = result.current.workflow.nodes;
+    expect(second!.position.y - first!.position.y).toBe(172 + 36);
+    act(() => result.current.undo());
+    expect(result.current.workflow.nodes.map((node) => node.position)).toEqual(before);
+  });
+
+  it('repositions every node via layoutWorkflow, in one state update', () => {
+    const wf: Workflow = {
+      ...makeWorkflow(),
+      nodes: [
+        { ...makeWorkflow().nodes[0]!, position: { x: 5, y: 5 } },
+        { ...makeWorkflow().nodes[1]!, position: { x: 9, y: 9 } },
+      ],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(wf));
+
+    act(() => result.current.autoLayout());
+
+    const stage = result.current.workflow.nodes.find((n) => n.id === 'stage-1')!;
+    const gate = result.current.workflow.nodes.find((n) => n.id === 'gate-1')!;
+    // stage-1 -> gate-1 is a structural edge, so gate-1 lands in the next
+    // column, strictly to the right, at layoutWorkflow's default spacing —
+    // not just "different from the hand-set (5,5)/(9,9) fixture positions".
+    expect(stage.position).toEqual({ x: 40, y: 40 });
+    expect(gate.position).toEqual({ x: 360, y: 40 });
+  });
+
+  it('is a no-op on an empty workflow', () => {
+    const empty: Workflow = { ...makeWorkflow(), nodes: [], edges: [] };
+    const { result } = renderHook(() => useWorkflowBuilder(empty));
+    act(() => result.current.autoLayout());
+    expect(result.current.workflow.nodes).toEqual([]);
   });
 });
 
@@ -586,6 +927,20 @@ describe('useWorkflowBuilder — startConnect / cancelConnect / completeConnect'
     );
     expect(newEdge).toBeDefined();
     expect(newEdge?.label).toBe('qa.report -> complete');
+  });
+
+  it('completeConnect uses an explicitly configured wait input event', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.addNode('wait', { x: 500, y: 100 }));
+    const waitNodeId = result.current.workflow.nodes[2]!.id;
+    act(() => result.current.startConnect('stage-1', 'custom.build.queued'));
+    act(() => result.current.completeConnect(waitNodeId, 'custom.build.waiting'));
+
+    expect(
+      result.current.workflow.edges.find(
+        (edge) => edge.source === 'stage-1' && edge.target === waitNodeId,
+      )?.label,
+    ).toBe('custom.build.queued -> custom.build.waiting');
   });
 
   it('completeConnect can target a gate without an explicit input label', () => {
@@ -748,6 +1103,49 @@ describe('useWorkflowBuilder — startConnect / cancelConnect / completeConnect'
 // ---------------------------------------------------------------------------
 
 describe('useWorkflowBuilder — persona management', () => {
+  it('addStageFromPort creates only the requested edge and scopes the stage input', () => {
+    const existing: Workflow = {
+      ...makeWorkflow(),
+      nodes: [
+        ...makeWorkflow().nodes,
+        {
+          id: 'other-stage',
+          kind: 'stage',
+          label: 'Other matching producer',
+          runId: null,
+          personaIds: ['coder'],
+          stageMembers: [{ personaId: 'coder', model: '', budget: 40 }],
+          executionMode: 'parallel',
+          maxConcurrent: 3,
+          joinMode: 'all',
+          position: { x: 100, y: 300 },
+        },
+      ],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(existing, PERSONAS));
+    act(() =>
+      result.current.addStageFromPort('stage-1', 'code.changed', 'reviewer', { x: 520, y: 120 }),
+    );
+    const added = result.current.workflow.nodes.at(-1);
+    expect(added?.kind).toBe('stage');
+    if (added?.kind !== 'stage') return;
+    expect(added.stageMembers?.[0]?.consumesEventTypes).toEqual(['code.changed']);
+    expect(result.current.workflow.edges.filter((edge) => edge.target === added.id)).toEqual([
+      expect.objectContaining({
+        source: 'stage-1',
+        label: 'code.changed -> code.changed',
+      }),
+    ]);
+  });
+
+  it('addStageFromPort is an atomic no-op for an unknown source or persona', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow(), PERSONAS));
+    act(() => result.current.addStageFromPort('missing', 'code.changed', 'reviewer'));
+    act(() => result.current.addStageFromPort('stage-1', 'code.changed', 'missing'));
+    expect(result.current.workflow.nodes).toHaveLength(2);
+    expect(result.current.canUndo).toBe(false);
+  });
+
   it('addPersonaToStage adds a persona ID to a stage', () => {
     const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
     act(() => result.current.addPersonaToStage('stage-1', 'persona-build'));
@@ -994,6 +1392,88 @@ describe('useWorkflowBuilder — persona management', () => {
     const { result } = renderHook(() => useWorkflowBuilder(existing, PERSONAS));
     act(() => result.current.addStageWithPersona('coder', undefined, { x: 320, y: 100 }));
     expect(result.current.workflow.edges).toEqual([]);
+  });
+});
+
+describe('useWorkflowBuilder — document lifecycle', () => {
+  it('tracks dirty state, saved state, and resets history with a replacement document', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    expect(result.current.isDirty).toBe(false);
+    act(() => result.current.updateNodeLabel('stage-1', 'Changed'));
+    expect(result.current.isDirty).toBe(true);
+    act(() => result.current.markSaved());
+    expect(result.current.isDirty).toBe(false);
+    act(() => result.current.undo());
+    expect(result.current.isDirty).toBe(true);
+
+    const replacement = { ...makeWorkflow(), name: 'Replacement' };
+    act(() => result.current.resetWorkflow(replacement));
+    expect(result.current.workflow.name).toBe('Replacement');
+    expect(result.current.isDirty).toBe(false);
+    expect(result.current.canUndo).toBe(false);
+    expect(result.current.canRedo).toBe(false);
+  });
+
+  it('does not add history entries for semantic no-op mutations', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.deleteNode('missing'));
+    act(() => result.current.deleteEdge('missing'));
+    act(() => result.current.moveNode('missing', { x: 1, y: 1 }));
+    act(() => result.current.undo());
+    expect(result.current.canUndo).toBe(false);
+    expect(result.current.canRedo).toBe(false);
+    expect(result.current.isDirty).toBe(false);
+  });
+
+  it('keeps edits made after a submitted save snapshot dirty', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.updateNodeLabel('stage-1', 'Submitted'));
+    const submitted = result.current.workflow;
+    act(() => result.current.updateNodeLabel('stage-1', 'Edited while saving'));
+    const saved = {
+      ...submitted,
+      version: '1.1.0',
+      revision: 'head-cas-2',
+      documentRevision: 'sha256:document-11',
+      isHead: true,
+    };
+    let changedWhileSaving = false;
+    act(() => {
+      changedWhileSaving = result.current.markSaved(saved, submitted);
+    });
+    expect(changedWhileSaving).toBe(true);
+    expect(result.current.isDirty).toBe(true);
+    expect(result.current.workflow).toMatchObject({
+      version: '1.1.0',
+      revision: 'head-cas-2',
+      documentRevision: 'sha256:document-11',
+    });
+    expect(result.current.workflow.nodes.find((node) => node.id === 'stage-1')?.label).toBe(
+      'Edited while saving',
+    );
+  });
+
+  it('keeps the latest server revision when undoing after a versioned save', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.updateNodeLabel('stage-1', 'Version 1.0.1'));
+    const submitted = result.current.workflow;
+    const saved = {
+      ...submitted,
+      version: '1.0.1',
+      revision: 'head-cas-2',
+      documentRevision: 'sha256:document-101',
+      canEdit: true,
+    };
+    act(() => result.current.markSaved(saved, submitted));
+    act(() => result.current.undo());
+
+    expect(result.current.workflow).toMatchObject({
+      version: '1.0.1',
+      revision: 'head-cas-2',
+      documentRevision: 'sha256:document-101',
+      canEdit: true,
+    });
+    expect(result.current.isDirty).toBe(true);
   });
 });
 
@@ -1367,5 +1847,221 @@ describe('useWorkflowBuilder — resource bindings and workflow metadata', () =>
       version: '2',
       tags: ['review', 'automation'],
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Undo / redo
+// ---------------------------------------------------------------------------
+
+describe('useWorkflowBuilder — child workflow selection', () => {
+  function workflowWithChildNode(): Workflow {
+    return {
+      ...makeWorkflow(),
+      nodes: [
+        ...makeWorkflow().nodes,
+        {
+          id: 'children',
+          kind: 'subworkflow',
+          label: 'Child work',
+          position: { x: 500, y: 100 },
+          templates: { default: '' },
+          allowedCoordinator: 'coordinator',
+          inputSchema: { type: 'object', properties: {} },
+          resultSchema: { type: 'object', properties: {} },
+          maxChildren: 10,
+          maxAttempts: 3,
+          maxActiveChildren: 4,
+          joinMode: 'all',
+          blockedEvent: 'children.blocked',
+        },
+      ],
+    };
+  }
+
+  it('pins the child and node together as one undo step', () => {
+    const workflow = workflowWithChildNode();
+    const child: Workflow = {
+      id: '00000000-0000-4000-8000-000000000002',
+      name: 'Research Thread',
+      documentRevision: 'sha256:child',
+      nodes: [],
+      edges: [],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(workflow));
+
+    act(() => result.current.selectSubworkflowTemplate('children', 'default', child));
+
+    expect(result.current.workflow.schemaVersion).toBe(2);
+    expect(result.current.workflow.workflowDependencies).toEqual({
+      'research-thread': {
+        id: child.id,
+        revision: 'sha256:child',
+        digest: 'sha256:child',
+      },
+    });
+    expect(result.current.workflow.nodes.at(-1)).toMatchObject({
+      templates: { default: 'research-thread' },
+    });
+
+    act(() => result.current.undo());
+
+    expect(result.current.workflow.workflowDependencies ?? {}).toEqual({});
+    expect(result.current.workflow.nodes.at(-1)).toMatchObject({ templates: { default: '' } });
+  });
+
+  it('adds, renames, and removes templates as separate undo steps', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(workflowWithChildNode()));
+
+    act(() => result.current.addSubworkflowTemplate('children'));
+    expect(result.current.workflow.nodes.at(-1)).toMatchObject({
+      templates: { default: '', 'template-2': '' },
+    });
+
+    act(() => result.current.renameSubworkflowTemplate('children', 'template-2', 'breadth'));
+    expect(result.current.workflow.nodes.at(-1)).toMatchObject({
+      templates: { default: '', breadth: '' },
+    });
+
+    act(() => result.current.removeSubworkflowTemplate('children', 'breadth'));
+    expect(result.current.workflow.nodes.at(-1)).toMatchObject({ templates: { default: '' } });
+
+    act(() => result.current.undo());
+    expect(result.current.workflow.nodes.at(-1)).toMatchObject({
+      templates: { default: '', breadth: '' },
+    });
+
+    act(() => result.current.undo());
+    expect(result.current.workflow.nodes.at(-1)).toMatchObject({
+      templates: { default: '', 'template-2': '' },
+    });
+
+    act(() => result.current.undo());
+    expect(result.current.workflow.nodes.at(-1)).toMatchObject({ templates: { default: '' } });
+  });
+});
+
+describe('useWorkflowBuilder — include workflow selection', () => {
+  function workflowWithIncludeNode(): Workflow {
+    return {
+      ...makeWorkflow(),
+      nodes: [
+        ...makeWorkflow().nodes,
+        {
+          id: 'delivery-planning',
+          kind: 'include',
+          label: 'Plan the delivery',
+          workflow: '',
+          nodes: {},
+          position: { x: 500, y: 100 },
+        },
+      ],
+    };
+  }
+
+  it('pins the included workflow and node together as one undo step', () => {
+    const workflow = workflowWithIncludeNode();
+    const child: Workflow = {
+      id: '00000000-0000-4000-8000-000000000002',
+      name: 'Planning',
+      documentRevision: 'sha256:planning',
+      nodes: [],
+      edges: [],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(workflow));
+
+    act(() => result.current.selectIncludeWorkflow('delivery-planning', child));
+
+    expect(result.current.workflow.schemaVersion).toBe(2);
+    expect(result.current.workflow.workflowDependencies).toEqual({
+      planning: {
+        id: child.id,
+        revision: 'sha256:planning',
+        digest: 'sha256:planning',
+      },
+    });
+    expect(result.current.workflow.nodes.at(-1)).toMatchObject({ workflow: 'planning' });
+
+    act(() => result.current.undo());
+
+    expect(result.current.workflow.workflowDependencies ?? {}).toEqual({});
+    expect(result.current.workflow.nodes.at(-1)).toMatchObject({ workflow: '' });
+  });
+});
+
+describe('useWorkflowBuilder — undo/redo', () => {
+  it('starts with nothing to undo or redo', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    expect(result.current.canUndo).toBe(false);
+    expect(result.current.canRedo).toBe(false);
+  });
+
+  it('undo reverts the last mutation and redo reapplies it', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.moveNode('stage-1', { x: 999, y: 888 }));
+    expect(result.current.canUndo).toBe(true);
+    expect(result.current.canRedo).toBe(false);
+
+    act(() => result.current.undo());
+    expect(result.current.workflow.nodes.find((n) => n.id === 'stage-1')!.position).toEqual({
+      x: 100,
+      y: 100,
+    });
+    expect(result.current.canUndo).toBe(false);
+    expect(result.current.canRedo).toBe(true);
+
+    act(() => result.current.redo());
+    expect(result.current.workflow.nodes.find((n) => n.id === 'stage-1')!.position).toEqual({
+      x: 999,
+      y: 888,
+    });
+    expect(result.current.canUndo).toBe(true);
+    expect(result.current.canRedo).toBe(false);
+  });
+
+  it('is a no-op at the start or end of history', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    const initial = result.current.workflow;
+
+    act(() => result.current.undo());
+    expect(result.current.workflow).toBe(initial);
+
+    act(() => result.current.moveNode('stage-1', { x: 5, y: 5 }));
+    const moved = result.current.workflow;
+    act(() => result.current.redo());
+    expect(result.current.workflow).toBe(moved);
+  });
+
+  it('walks back through several mutations in order', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.moveNode('stage-1', { x: 1, y: 1 }));
+    act(() => result.current.moveNode('stage-1', { x: 2, y: 2 }));
+    act(() => result.current.moveNode('stage-1', { x: 3, y: 3 }));
+
+    const posAt = () => result.current.workflow.nodes.find((n) => n.id === 'stage-1')!.position;
+    expect(posAt()).toEqual({ x: 3, y: 3 });
+    act(() => result.current.undo());
+    expect(posAt()).toEqual({ x: 2, y: 2 });
+    act(() => result.current.undo());
+    expect(posAt()).toEqual({ x: 1, y: 1 });
+    act(() => result.current.undo());
+    expect(posAt()).toEqual({ x: 100, y: 100 });
+    expect(result.current.canUndo).toBe(false);
+  });
+
+  it('discards the redo tail once a new mutation is made after undoing', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.moveNode('stage-1', { x: 1, y: 1 }));
+    act(() => result.current.undo());
+    expect(result.current.canRedo).toBe(true);
+
+    act(() => result.current.moveNode('stage-1', { x: 9, y: 9 }));
+    expect(result.current.canRedo).toBe(false);
+
+    const posAt = () => result.current.workflow.nodes.find((n) => n.id === 'stage-1')!.position;
+    expect(posAt()).toEqual({ x: 9, y: 9 });
+    act(() => result.current.undo());
+    // Back to the pre-undo baseline (100,100), not the discarded (1,1) branch.
+    expect(posAt()).toEqual({ x: 100, y: 100 });
   });
 });

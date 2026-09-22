@@ -120,9 +120,9 @@ export { buildVolundrHttpAdapter, buildVolundrFileSystemHttpAdapter } from './ad
 export { buildVolundrPtyWsAdapter, buildVolundrMetricsSseAdapter } from './adapters/streams';
 
 // Port types
-export type { IVolundrService } from './ports/IVolundrService';
+export type { IVolundrService, SessionReadOptions } from './ports/IVolundrService';
 export type { IClusterAdapter } from './ports/IClusterAdapter';
-export type { ISessionStore, SessionFilters } from './ports/ISessionStore';
+export type { ISessionStore, SessionFilters, SessionLookupOptions } from './ports/ISessionStore';
 export type { IPtyStream } from './ports/IPtyStream';
 export type { IMetricsStream, MetricPoint } from './ports/IMetricsStream';
 export type { IFileSystemPort, FileTreeNode } from './ports/IFileSystemPort';

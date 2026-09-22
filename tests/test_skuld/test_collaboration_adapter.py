@@ -15,6 +15,7 @@ from sleipnir.domain import registry
 def _adapter(**kwargs) -> tuple[SkuldCollaborationAdapter, MagicMock]:
     channels = MagicMock()
     channels.broadcast = AsyncMock()
+    emit_frame = kwargs.pop("emit_frame", channels.broadcast)
     adapter = SkuldCollaborationAdapter(
         RoomConfig(
             enabled=True,
@@ -23,6 +24,7 @@ def _adapter(**kwargs) -> tuple[SkuldCollaborationAdapter, MagicMock]:
             presence_sweep_interval_s=0,
         ),
         channels,
+        emit_frame=emit_frame,
         **kwargs,
     )
     return adapter, channels
@@ -269,6 +271,126 @@ async def test_outcome_is_visible_and_delivered_to_declared_subscribers() -> Non
     assert (peer_id, event_type) == ("producer", "outcome")
     assert observation["data"]["workflow_parent_event_id"] == "activation-1"
     assert observation["data"]["fields"] == {"artifact": "result.md"}
+
+
+@pytest.mark.asyncio
+async def test_configured_review_event_type_never_coerces_missing_valid_to_true() -> None:
+    """A workflow's own reviewAttestation.eventType must be as strict as the built-ins.
+
+    Without threading it into `attestable_review_event_types`, an event of this
+    (non-built-in) type with no `valid` field would default to `valid: True` and
+    read downstream as attested review evidence that never asserted validity.
+    """
+    observe = AsyncMock()
+    adapter, channels = _adapter(
+        observe_peer_event=observe,
+        attestable_review_event_types=frozenset({"artifact.review.completed"}),
+    )
+    producer = _websocket()
+    await adapter.register("producer", "Producer", producer)
+    channels.broadcast.reset_mock()
+
+    await adapter.handle_collaboration_frame(
+        "producer",
+        {
+            "events": [
+                {
+                    "kind": "outcome",
+                    "sourceEventType": "outcome",
+                    "eventType": "artifact.review.completed",
+                    "fields": {"verdict": "pass"},
+                    # No "valid" field at all — the attestable-event path must
+                    # never coerce this to True.
+                }
+            ]
+        },
+    )
+
+    outcome = channels.broadcast.await_args.args[0]
+    assert outcome["valid"] is None
+
+    peer_id, event_type, observation = observe.await_args.args
+    assert (peer_id, event_type) == ("producer", "outcome")
+    assert observation["data"]["valid"] is None
+
+    # An ordinary, non-attestable outcome still defaults a missing `valid` to True.
+    channels.broadcast.reset_mock()
+    observe.reset_mock()
+    await adapter.handle_collaboration_frame(
+        "producer",
+        {
+            "events": [
+                {
+                    "kind": "outcome",
+                    "sourceEventType": "outcome",
+                    "eventType": "research.completed",
+                    "fields": {"artifact": "result.md"},
+                }
+            ]
+        },
+    )
+    assert channels.broadcast.await_args.args[0]["valid"] is True
+    assert observe.await_args.args[2]["data"]["valid"] is True
+
+
+@pytest.mark.asyncio
+async def test_mesh_outcome_uses_room_delivery_only_for_non_mesh_subscribers() -> None:
+    adapter, channels = _adapter()
+    producer = _websocket()
+    mesh_subscriber = _websocket()
+    websocket_subscriber = _websocket()
+    await adapter.register_mesh_peer(
+        "mesh-producer",
+        "Mesh Producer",
+        participant_kind="mesh",
+    )
+    await adapter.register("mesh-producer", "Mesh Producer", producer)
+    await adapter.register_mesh_peer(
+        "mesh-subscriber",
+        "Mesh Subscriber",
+        participant_kind="mesh",
+        subscribes_to=["research.*"],
+    )
+    await adapter.register("mesh-subscriber", "Mesh Subscriber", mesh_subscriber)
+    await adapter.register(
+        "websocket-subscriber",
+        "WebSocket Subscriber",
+        websocket_subscriber,
+        subscribes_to=["research.*"],
+    )
+    channels.broadcast.reset_mock()
+
+    await adapter.handle_collaboration_frame(
+        "mesh-producer",
+        {
+            "kind": "outcome",
+            "eventType": "research.completed",
+            "fields": {"artifact": "result.md"},
+        },
+    )
+
+    mesh_subscriber.send_text.assert_not_awaited()
+    delivered = json.loads(websocket_subscriber.send_text.await_args.args[0])
+    assert delivered["type"] == "collaboration.outcome"
+    assert delivered["eventType"] == "research.completed"
+
+    await adapter.handle_collaboration_frame(
+        "websocket-subscriber",
+        {
+            "kind": "outcome",
+            "eventType": "research.completed",
+            "fields": {"artifact": "channel-result.md"},
+        },
+    )
+    channel_only_delivery = json.loads(mesh_subscriber.send_text.await_args.args[0])
+    assert channel_only_delivery["type"] == "collaboration.outcome"
+    assert channel_only_delivery["fields"] == {"artifact": "channel-result.md"}
+
+    mesh_subscriber.send_text.reset_mock()
+    assert await adapter.route_directed_message("mesh-subscriber", "Please retry") is True
+    directed = json.loads(mesh_subscriber.send_text.await_args.args[0])
+    assert directed["type"] == "directed_message"
+    assert directed["content"] == "Please retry"
 
 
 @pytest.mark.asyncio

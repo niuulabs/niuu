@@ -46,7 +46,10 @@ from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.codex_auth import CodexAuthProviderError, CodexAuthProviderPort, HostCodexAuthProvider
 from skuld.tool_images import image_payloads
 from skuld.transports.codex import _map_codex_tool, resolve_codex_cli
-from skuld.transports.mcp_config import build_codex_mcp_overrides
+from skuld.transports.mcp_config import (
+    build_codex_mcp_isolation_overrides,
+    build_codex_mcp_overrides,
+)
 from skuld.transports.owned_codex_process import OwnedCodexProcess, OwnedProcessError
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
@@ -294,11 +297,15 @@ class CodexWebSocketTransport(CLITransport):
         skip_permissions: bool = False,
         approval_policy: str = "",
         sandbox: str = "",
+        shell_tool_enabled: bool | None = None,
+        multi_agent_enabled: bool | None = None,
+        read_only_mcp_only: bool = False,
         system_prompt: str = "",
         initial_prompt: str = "",
         codex_port: int = 0,
         codex_receive_max_bytes: int = _DEFAULT_MAX_WS_MESSAGE_BYTES,
         live_frame_max_bytes: int = 900 * 1024,
+        mcp_startup_timeout_seconds: float = 30.0,
         mcp_servers: list[dict] | None = None,
         resume_session_id: str = "",
         reasoning_effort: str = "",
@@ -328,6 +335,9 @@ class CodexWebSocketTransport(CLITransport):
         self._skip_permissions = skip_permissions
         self._approval_policy = approval_policy.strip()
         self._sandbox = sandbox.strip()
+        self._shell_tool_enabled = shell_tool_enabled
+        self._multi_agent_enabled = multi_agent_enabled
+        self._read_only_mcp_only = read_only_mcp_only
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
         self._codex_port = codex_port or _pick_free_port()
@@ -344,6 +354,9 @@ class CodexWebSocketTransport(CLITransport):
         if live_frame_max_bytes <= 0:
             raise ValueError("live_frame_max_bytes must be positive")
         self._live_frame_max_bytes = live_frame_max_bytes
+        if mcp_startup_timeout_seconds <= 0:
+            raise ValueError("mcp_startup_timeout_seconds must be positive")
+        self._mcp_startup_timeout_seconds = mcp_startup_timeout_seconds
         self._mcp_servers = list(mcp_servers or [])
         self._mcp_overrides = build_codex_mcp_overrides(self._mcp_servers)
         self._resume_session_id = (resume_session_id or "").strip() or None
@@ -569,19 +582,47 @@ class CodexWebSocketTransport(CLITransport):
         if shim_env:
             self._env.update(shim_env)
 
+        env = dict(self._env)
+        self._ensure_codex_home(env)
+        mcp_overrides = list(self._mcp_overrides)
+        if self._read_only_mcp_only:
+            catalog = await self._resolved_mcp_catalog(
+                codex_cli,
+                env=env,
+                overrides=mcp_overrides,
+            )
+            mcp_overrides.extend(
+                build_codex_mcp_isolation_overrides(
+                    catalog,
+                    allowed_names={
+                        str(server.get("name") or "")
+                        for server in self._mcp_servers
+                        if server.get("name")
+                    },
+                )
+            )
+
         cmd = [
             codex_cli,
             "app-server",
             "--listen",
             listen_url,
         ]
-        for key, value in self._mcp_overrides:
+        for key, value in mcp_overrides:
             cmd.extend(["-c", f"{key}={value}"])
         for key, value in self._gateway_overrides:
             cmd.extend(["-c", f"{key}={value}"])
+        if self._shell_tool_enabled is not None:
+            cmd.extend(["-c", f"features.shell_tool={str(self._shell_tool_enabled).lower()}"])
+        if self._multi_agent_enabled is not None:
+            cmd.extend(["-c", f"features.multi_agent={str(self._multi_agent_enabled).lower()}"])
+        if self._read_only_mcp_only:
+            # Account connectors, installed plugins and tool suggestions are
+            # separate native capability sources. A read-only workflow uses
+            # only its exact persona-filtered ravn-tools MCP registry.
+            for feature in ("apps", "plugins", "tool_suggest"):
+                cmd.extend(["-c", f"features.{feature}=false"])
 
-        env = dict(self._env)
-        self._ensure_codex_home(env)
         if self._model_gateway_url:
             # The provider block names this env var as its key source.
             env[CODEX_GATEWAY_TOKEN_ENV] = self._model_gateway_token
@@ -610,6 +651,45 @@ class CodexWebSocketTransport(CLITransport):
 
         asyncio.create_task(_drain_stream(self._process.stdout, "codex-app-stdout"))
         asyncio.create_task(_drain_stream(self._process.stderr, "codex-app-stderr"))
+
+    async def _resolved_mcp_catalog(
+        self,
+        codex_cli: str,
+        *,
+        env: dict[str, str],
+        overrides: list[tuple[str, str]],
+    ) -> object:
+        """Resolve every active config layer without starting any MCP server."""
+        cmd = [codex_cli, "mcp", "list", "--json"]
+        for feature in ("apps", "plugins", "tool_suggest"):
+            cmd.extend(["-c", f"features.{feature}=false"])
+        for key, value in overrides:
+            cmd.extend(["-c", f"{key}={value}"])
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=self.workspace_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        try:
+            stdout, _stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=self._mcp_startup_timeout_seconds
+            )
+        except TimeoutError:
+            with suppress(ProcessLookupError):
+                proc.kill()
+            await proc.wait()
+            raise RuntimeError("Timed out resolving Codex MCP configuration") from None
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "Could not resolve Codex MCP configuration "
+                f"(Codex exited with status {proc.returncode})"
+            )
+        try:
+            return json.loads(stdout)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Codex returned an invalid MCP server catalog") from exc
 
     async def _connect_ws(self) -> None:
         """Connect to the Codex app-server with retries."""
@@ -689,6 +769,8 @@ class CodexWebSocketTransport(CLITransport):
         logger.info("Codex initialize response: %s", result)
 
         await self._send_notification("initialized")
+        if self._read_only_mcp_only:
+            await self._verify_read_only_mcp_servers()
         await self._authenticate_codex()
 
         if self._resume_session_id:
@@ -755,6 +837,57 @@ class CodexWebSocketTransport(CLITransport):
                 "tools": [],
             }
         )
+
+    async def _verify_read_only_mcp_servers(self) -> None:
+        """Fail before thread creation if Codex initialized an unapproved server."""
+        expected = {
+            str(server.get("name") or "") for server in self._mcp_servers if server.get("name")
+        }
+        reported: dict[str, dict] = {}
+        cursor: str | None = None
+        seen: set[str] = set()
+        while True:
+            params: dict[str, object] = {"limit": 100}
+            if cursor is not None:
+                params["cursor"] = cursor
+            result = await self._send_rpc("mcpServerStatus/list", params)
+            data = result.get("data") if isinstance(result, dict) else None
+            if not isinstance(data, list):
+                raise RuntimeError("Codex did not report MCP server startup status")
+            for item in data:
+                if not isinstance(item, dict) or not item.get("name"):
+                    raise RuntimeError("Codex reported malformed MCP server startup status")
+                name = str(item["name"])
+                if name in reported:
+                    raise RuntimeError("Codex reported duplicate MCP server startup status")
+                reported[name] = item
+            cursor = result.get("nextCursor")
+            if cursor is None:
+                break
+            if not isinstance(cursor, str) or cursor in seen:
+                raise RuntimeError("Codex returned an invalid or repeated MCP status cursor")
+            seen.add(cursor)
+        disconnected = sorted(
+            name
+            for name in expected
+            if name not in reported or not isinstance(reported[name].get("serverInfo"), dict)
+        )
+        exposed = sorted(
+            name
+            for name, item in reported.items()
+            if name not in expected
+            and not (
+                item.get("serverInfo") is None
+                and item.get("tools") == {}
+                and item.get("resources") == []
+                and item.get("resourceTemplates") == []
+            )
+        )
+        if disconnected or exposed:
+            raise RuntimeError(
+                "Codex read-only MCP isolation failed; disconnected allowed servers "
+                f"{disconnected}, capability-bearing unexpected servers {exposed}"
+            )
 
     @staticmethod
     def _thread_response_id(result: dict, *, expected: str | None = None) -> str:

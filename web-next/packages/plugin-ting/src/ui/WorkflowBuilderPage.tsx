@@ -1,34 +1,35 @@
-/**
- * WorkflowBuilderPage — the /ting/workflows route component.
- *
- * Layout matches web2 prototype: templates sidebar on the left with a list
- * of saved workflows + working copy section, and the full WorkflowBuilder
- * filling the remaining space.
- *
- * Owner: plugin-ting.
- */
+/** The full-canvas workflow editor route. */
 
 import { useState } from 'react';
 import { useSearch } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import type { IBifrostService } from '@niuulabs/plugin-bifrost';
 import { useService } from '@niuulabs/plugin-sdk';
-import { StateDot, cn, type RepoRecord } from '@niuulabs/ui';
+import { StateDot, type RepoRecord } from '@niuulabs/ui';
 import type { Workflow } from '../domain/workflow';
-import type { WorkflowLaunchRequest } from '../ports';
+import type { WorkflowExportFormat, WorkflowLaunchRequest } from '../ports';
 import {
   useWorkflows,
   useCreateWorkflow,
   useDeleteWorkflow,
   useSaveWorkflow,
   useLaunchWorkflow,
+  useExportWorkflow,
+  useLoadWorkflowVersion,
+  useWorkflowVersions,
 } from './useWorkflows';
 import { usePersonasBrowser } from './settings/usePersonasBrowser';
-import { WorkflowBuilder } from './WorkflowBuilder';
+import {
+  WorkflowBuilder,
+  type WorkflowEditorLocation,
+  type WorkflowEditorMode,
+} from './WorkflowBuilder';
 import type { PersonaEntry } from './WorkflowBuilder/LibraryPanel';
 import type { WorkflowStageModelOption } from './WorkflowBuilder/useWorkflowBuilder';
 import { useWorkflowRegistryMounts } from './useWorkflowRegistryMounts';
 import { WorkflowLaunchModal } from './WorkflowLaunchModal';
+import { WorkflowImportDialog } from './WorkflowImportDialog';
+import { downloadWorkflowFile } from './workflowFiles';
 
 type RepoCatalogService = {
   getRepos(): Promise<RepoRecord[]>;
@@ -46,7 +47,6 @@ function formatModelOption(
 }
 
 interface WorkflowBuilderSearch {
-  /** Open this workflow — the Simple-mode page links here with it. */
   id?: string;
 }
 
@@ -65,204 +65,271 @@ export function WorkflowBuilderPage() {
     queryKey: ['niuu', 'repos'],
     queryFn: () => repoCatalog.getRepos(),
   });
-  const [activeWorkflow, setActiveWorkflow] = useState<Workflow | null>(null);
+  const [activeLocation, setActiveLocation] = useState<WorkflowEditorLocation | null>(null);
+  const [ancestry, setAncestry] = useState<WorkflowEditorLocation[]>([]);
   const createMutation = useCreateWorkflow();
   const saveMutation = useSaveWorkflow();
   const deleteMutation = useDeleteWorkflow();
   const launchMutation = useLaunchWorkflow();
+  const exportMutation = useExportWorkflow();
+  const loadVersionMutation = useLoadWorkflowVersion();
   const [showLaunchModal, setShowLaunchModal] = useState(false);
+  const [showImportDialog, setShowImportDialog] = useState(false);
 
-  const requested = search.id ? (workflows?.find((wf) => wf.id === search.id) ?? null) : null;
-  const displayed = activeWorkflow ?? requested ?? workflows?.[0] ?? null;
-  const activeCount = workflows?.length ?? 0;
+  const requested = search.id ? (workflows?.find((item) => item.id === search.id) ?? null) : null;
+  const catalogWorkflow = requested ?? workflows?.[0] ?? null;
+  const location =
+    activeLocation ??
+    (catalogWorkflow
+      ? { workflow: catalogWorkflow, savedWorkflow: catalogWorkflow, mode: 'view' as const }
+      : null);
+  const displayed = location?.workflow ?? null;
+  const versionsQuery = useWorkflowVersions(displayed?.id ?? '');
 
-  const workflowPersonas: PersonaEntry[] | undefined = personas?.map((persona) => ({
-    id: persona.name,
-    label: persona.name,
-    role: persona.role ?? 'build',
-    produces: persona.producesEvent ? [persona.producesEvent] : [],
-    consumes: persona.consumesEvents ?? [],
-  }));
+  const workflowPersonas: PersonaEntry[] | undefined = personas?.map((persona) => {
+    const outcomeEvents = persona.outcomeEvents ?? {};
+    const produces = [...new Set([...Object.values(outcomeEvents), persona.producesEvent])].filter(
+      Boolean,
+    );
+    return {
+      id: persona.name,
+      label: persona.name,
+      role: persona.role ?? 'build',
+      produces,
+      outcomeEvents,
+      consumes: persona.consumesEvents ?? [],
+    };
+  });
   const workflowModels: WorkflowStageModelOption[] = Object.entries(modelsQuery.data ?? {})
-    .map(([id, model]) => ({
-      id,
-      label: formatModelOption(id, model),
-      vendor: model.vendor,
-    }))
+    .map(([id, model]) => ({ id, label: formatModelOption(id, model), vendor: model.vendor }))
     .sort((left, right) => left.label.localeCompare(right.label));
+
+  function makeLocation(
+    workflow: Workflow,
+    mode: WorkflowEditorMode = 'view',
+  ): WorkflowEditorLocation {
+    return { workflow, savedWorkflow: workflow, mode };
+  }
 
   function handleNew() {
     createMutation.mutate(
       {},
       {
-        onSuccess: (newWf) => setActiveWorkflow(newWf),
+        onSuccess: (workflow) => {
+          setActiveLocation(makeLocation(workflow, 'edit'));
+          setAncestry([]);
+        },
       },
     );
   }
 
-  function handleDelete(id: string) {
-    if (!window.confirm('Delete this workflow?')) return;
-    deleteMutation.mutate(id, {
-      onSuccess: () => setActiveWorkflow(null),
+  function handleDelete(workflow: Workflow) {
+    if (!window.confirm(`Delete "${workflow.name}"?`)) return;
+    deleteMutation.mutate(workflow.id, {
+      onSuccess: () => {
+        setActiveLocation(null);
+        setAncestry([]);
+      },
     });
   }
 
   async function handleLaunch(request: WorkflowLaunchRequest) {
     if (!displayed) return;
-    const result = await launchMutation.mutateAsync({ workflowId: displayed.id, request });
+    const result = await launchMutation.mutateAsync({
+      workflowId: displayed.id,
+      request: { ...request, workflowVersion: displayed.version },
+    });
     setShowLaunchModal(false);
-    if (typeof window !== 'undefined') {
-      window.location.assign(`/volundr/sessions/${encodeURIComponent(result.sessionId)}`);
-    }
+    window.location.assign(`/volundr/sessions/${encodeURIComponent(result.sessionId)}`);
+  }
+
+  function handleExport(format: WorkflowExportFormat) {
+    if (!displayed) return;
+    exportMutation.mutate(
+      { id: displayed.id, format, version: displayed.version },
+      { onSuccess: downloadWorkflowFile },
+    );
+  }
+
+  function handleSelectWorkflow(workflow: Workflow) {
+    setActiveLocation(makeLocation(workflow));
+    setAncestry([]);
+  }
+
+  function handleOpenWorkflow(workflow: Workflow, current: WorkflowEditorLocation) {
+    setAncestry((parents) => [...parents, current]);
+    setActiveLocation(makeLocation(workflow));
+  }
+
+  function handleNavigateAncestor(index: number) {
+    const parent = ancestry[index];
+    if (!parent) return;
+    setAncestry((parents) => parents.slice(0, index));
+    setActiveLocation(parent);
+  }
+
+  function handleSelectVersion(version: string) {
+    if (!displayed || version === displayed.version) return;
+    loadVersionMutation.mutate(
+      { id: displayed.id, version },
+      {
+        onSuccess: (workflow) => {
+          setActiveLocation(makeLocation(workflow));
+        },
+      },
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div
+        data-testid="workflow-builder-page"
+        className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:gap-2 niuu:bg-bg-primary niuu:text-sm niuu:text-text-secondary"
+      >
+        <StateDot state="processing" pulse /> Loading workflows…
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div
+        data-testid="workflow-builder-page"
+        role="alert"
+        className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:gap-2 niuu:bg-bg-primary niuu:text-sm niuu:text-critical"
+      >
+        <StateDot state="failed" /> {error instanceof Error ? error.message : 'Load failed'}
+      </div>
+    );
+  }
+
+  if (!displayed) {
+    return (
+      <div
+        data-testid="workflow-builder-page"
+        className="niuu:flex niuu:h-full niuu:flex-col niuu:items-center niuu:justify-center niuu:gap-3 niuu:bg-bg-primary niuu:text-sm niuu:text-text-muted"
+      >
+        <span>No workflows found.</span>
+        <button
+          type="button"
+          data-testid="new-workflow"
+          onClick={handleNew}
+          className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-text-primary"
+        >
+          Create workflow
+        </button>
+      </div>
+    );
   }
 
   return (
     <div
       data-testid="workflow-builder-page"
-      className="niuu:flex niuu:h-full niuu:font-sans niuu:bg-bg-primary"
+      className="niuu:flex niuu:h-full niuu:min-h-0 niuu:flex-col niuu:bg-bg-primary niuu:font-sans"
     >
-      {/* Templates sidebar */}
-      <aside className="niuu:w-[244px] niuu:shrink-0 niuu:border-r niuu:border-border niuu:bg-bg-secondary niuu:flex niuu:flex-col niuu:overflow-hidden">
-        {/* Header */}
-        <div className="niuu:flex niuu:items-start niuu:justify-between niuu:px-4 niuu:pt-3 niuu:pb-1">
-          <div className="niuu:flex niuu:flex-col niuu:gap-0.5">
-            <span className="niuu:text-[10px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.24em] niuu:text-text-muted niuu:font-sans">
-              Templates
-            </span>
-            <span className="niuu:text-[11px] niuu:font-semibold niuu:text-text-primary niuu:font-sans">
-              Saved workflow catalog
-            </span>
-          </div>
-          <button
-            data-testid="new-workflow"
-            onClick={handleNew}
-            disabled={createMutation.isPending}
-            className="niuu:rounded-md niuu:px-2.5 niuu:py-1 niuu:text-[10px] niuu:border niuu:border-border niuu:bg-bg-elevated niuu:text-text-secondary niuu:cursor-pointer niuu:hover:text-text-primary niuu:transition-colors niuu:font-sans niuu:disabled:opacity-50"
-          >
-            + new
-          </button>
+      <WorkflowBuilder
+        key={`${displayed.id}:${displayed.documentRevision ?? displayed.version ?? 'head'}`}
+        initialWorkflow={displayed}
+        initialSavedWorkflow={location?.savedWorkflow}
+        mode={location?.mode}
+        ancestry={ancestry}
+        versions={versionsQuery.data ?? []}
+        versionPending={loadVersionMutation.isPending}
+        onSelectVersion={handleSelectVersion}
+        workflowCatalog={workflows ?? []}
+        onSelectWorkflow={handleSelectWorkflow}
+        onOpenWorkflow={handleOpenWorkflow}
+        onNavigateAncestor={handleNavigateAncestor}
+        onCreateWorkflow={handleNew}
+        onImportWorkflow={() => setShowImportDialog(true)}
+        onDeleteWorkflow={handleDelete}
+        personas={workflowPersonas}
+        models={workflowModels}
+        registryMounts={registryMounts}
+        onLaunch={() => setShowLaunchModal(true)}
+        launchPending={launchMutation.isPending}
+        onSave={(updated) => saveMutation.mutateAsync(updated)}
+        onSaved={(saved) => {
+          setActiveLocation(makeLocation(saved));
+        }}
+        savePending={saveMutation.isPending}
+        onEdit={(workflow) => {
+          setActiveLocation((current) => ({
+            workflow,
+            savedWorkflow: current?.workflow.id === workflow.id ? current.savedWorkflow : workflow,
+            mode: 'edit',
+          }));
+        }}
+        onCancelEdit={() =>
+          setActiveLocation((current) =>
+            current
+              ? {
+                  workflow: current.savedWorkflow,
+                  savedWorkflow: current.savedWorkflow,
+                  mode: 'view',
+                }
+              : current,
+          )
+        }
+        onRefreshPersona={(workflow, alias) =>
+          saveMutation.mutate(
+            { ...workflow, refreshPersonas: [alias] },
+            {
+              onSuccess: (saved) =>
+                setActiveLocation((current) => ({
+                  workflow: saved,
+                  savedWorkflow: saved,
+                  mode: current?.mode ?? 'view',
+                })),
+            },
+          )
+        }
+        onExport={handleExport}
+        exportPending={exportMutation.isPending}
+      />
+
+      {saveMutation.error ||
+      exportMutation.error ||
+      versionsQuery.error ||
+      loadVersionMutation.error ? (
+        <div
+          role="alert"
+          className="niuu:border-t niuu:border-critical niuu:bg-bg-secondary niuu:px-4 niuu:py-2 niuu:text-xs niuu:text-critical"
+        >
+          {
+            (
+              saveMutation.error ??
+              exportMutation.error ??
+              versionsQuery.error ??
+              loadVersionMutation.error
+            )?.message
+          }
         </div>
-        <div className="niuu:px-4 niuu:pb-2 niuu:flex niuu:items-end niuu:justify-between niuu:gap-3">
-          <p className="niuu:text-[10px] niuu:text-text-faint niuu:font-mono niuu:m-0 niuu:leading-snug">
-            Reusable saga pipelines.{'\n'}Versioned, used by dispatch.
-          </p>
-          <span className="niuu:text-[10px] niuu:text-text-faint niuu:font-mono niuu:shrink-0">
-            {activeCount} total
-          </span>
-        </div>
+      ) : null}
 
-        {/* Template list */}
-        <div className="niuu:flex-1 niuu:overflow-y-auto niuu:px-2.5 niuu:pb-3">
-          {isLoading && (
-            <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-text-secondary niuu:text-xs niuu:px-2 niuu:py-3">
-              <StateDot state="processing" pulse />
-              <span>Loading…</span>
-            </div>
-          )}
+      <WorkflowLaunchModal
+        loadBranches={repoCatalog.getBranches}
+        open={showLaunchModal}
+        onOpenChange={setShowLaunchModal}
+        workflow={displayed}
+        repos={reposQuery.data ?? []}
+        launching={launchMutation.isPending}
+        onLaunch={handleLaunch}
+      />
 
-          {isError && (
-            <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-critical niuu:text-xs niuu:px-2 niuu:py-3">
-              <StateDot state="failed" />
-              <span>{error instanceof Error ? error.message : 'Load failed'}</span>
-            </div>
-          )}
-
-          {workflows?.map((wf: Workflow) => {
-            const isActive = displayed?.id === wf.id;
-            return (
-              <button
-                key={wf.id}
-                data-testid={`workflow-tab-${wf.id}`}
-                onClick={() => setActiveWorkflow(wf)}
-                className={cn(
-                  'niuu:flex niuu:items-start niuu:gap-2.5 niuu:w-full niuu:px-3 niuu:py-2.5 niuu:rounded-md niuu:border niuu:text-left niuu:font-sans niuu:text-xs niuu:cursor-pointer niuu:transition-colors',
-                  isActive
-                    ? 'niuu:bg-bg-elevated niuu:border-border niuu:text-text-primary'
-                    : 'niuu:bg-transparent niuu:border-transparent niuu:text-text-secondary niuu:hover:bg-bg-tertiary niuu:hover:border-border-subtle',
-                )}
-              >
-                <span className="niuu:text-brand niuu:text-sm niuu:leading-none niuu:mt-0.5">
-                  ◇
-                </span>
-                <span className="niuu:flex-1 niuu:min-w-0 niuu:flex niuu:flex-col niuu:gap-1">
-                  <span className="niuu:truncate niuu:font-semibold niuu:text-text-primary">
-                    {wf.name.length > 22 ? wf.name.slice(0, 20) + '…' : wf.name}
-                  </span>
-                  <span className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-[10px] niuu:font-mono niuu:text-text-faint">
-                    {wf.version && <span className="niuu:shrink-0">v{wf.version}</span>}
-                    <span className="niuu:shrink-0">{wf.nodes.length} nodes</span>
-                    <span className="niuu:shrink-0">{wf.edges.length} edges</span>
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Working copy */}
-        <div className="niuu:border-t niuu:border-border niuu:px-4 niuu:py-2.5">
-          <span className="niuu:text-[10px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.24em] niuu:text-text-muted niuu:font-sans">
-            Working Copy
-          </span>
-          <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:mt-1.5">
-            <span className="niuu:text-brand niuu:text-xs">◆</span>
-            <span className="niuu:text-xs niuu:text-text-primary niuu:font-sans niuu:font-semibold">
-              Current draft
-            </span>
-            <span className="niuu:text-[10px] niuu:text-text-faint niuu:font-mono niuu:ml-auto niuu:uppercase niuu:tracking-wide">
-              unsaved
-            </span>
-          </div>
-        </div>
-
-        {/* Delete active */}
-        {displayed && (
-          <div className="niuu:border-t niuu:border-border niuu:px-4 niuu:py-2">
-            <button
-              data-testid={`delete-workflow-${displayed.id}`}
-              onClick={() => handleDelete(displayed.id)}
-              className="niuu:text-[10px] niuu:text-text-faint niuu:bg-transparent niuu:border-none niuu:cursor-pointer niuu:p-0 niuu:hover:text-critical niuu:transition-colors niuu:font-sans"
-            >
-              Delete workflow
-            </button>
-          </div>
-        )}
-      </aside>
-
-      {/* Workflow builder */}
-      {displayed && (
-        <div className="niuu:flex-1 niuu:flex niuu:flex-col niuu:min-h-0 niuu:min-w-0">
-          <WorkflowBuilder
-            key={displayed.id}
-            initialWorkflow={displayed}
-            personas={workflowPersonas}
-            models={workflowModels}
-            registryMounts={registryMounts}
-            onLaunch={() => setShowLaunchModal(true)}
-            launchPending={launchMutation.isPending}
-            onSave={(updated) =>
-              saveMutation.mutate(updated, {
-                onSuccess: (saved) => setActiveWorkflow(saved),
-              })
-            }
-          />
-          <WorkflowLaunchModal
-            loadBranches={repoCatalog.getBranches}
-            open={showLaunchModal}
-            onOpenChange={setShowLaunchModal}
-            workflow={displayed}
-            repos={reposQuery.data ?? []}
-            launching={launchMutation.isPending}
-            onLaunch={handleLaunch}
-          />
-        </div>
-      )}
-
-      {!isLoading && !isError && !displayed && (
-        <div className="niuu:flex-1 niuu:flex niuu:items-center niuu:justify-center niuu:text-text-muted niuu:text-sm">
-          No workflows found.
-        </div>
-      )}
+      {showImportDialog ? (
+        <WorkflowImportDialog
+          open
+          workflows={workflows ?? []}
+          personas={personas ?? []}
+          registryMounts={registryMounts}
+          onClose={() => setShowImportDialog(false)}
+          onImported={(workflow) => {
+            setActiveLocation(makeLocation(workflow));
+            setAncestry([]);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

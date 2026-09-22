@@ -166,6 +166,65 @@ async def test_dynamic_composition_rejects_non_provider(config):
         cli.build_provider(config)
 
 
+async def test_build_provider_never_mutates_configuration(config, monkeypatch):
+    before = config.model_dump(mode="json")
+    fingerprint = cli.provider_fingerprint(config)
+    real_import = cli.import_class
+    provider_path = config.provider.adapter
+
+    def importing(adapter):
+        imported = real_import(adapter)
+        if adapter != provider_path:
+            return imported
+
+        def mutating_constructor(**kwargs):
+            kwargs["profiles"]["small"]["cpu"] = 99
+            return imported(**kwargs)
+
+        return mutating_constructor
+
+    monkeypatch.setattr(cli, "import_class", importing)
+    provider = cli.build_provider(config)
+    try:
+        assert config.model_dump(mode="json") == before
+        assert cli.provider_fingerprint(config) == fingerprint
+    finally:
+        await provider.close()
+
+
+async def test_run_validates_external_modules_before_provider_construction(
+    config, tmp_path, monkeypatch
+):
+    path = tmp_path / "compute.yaml"
+    path.write_text(yaml.safe_dump(config.model_dump()))
+    provider = AsyncMock()
+    provider.list.return_value = []
+    events: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(
+        cli,
+        "load_external_module_manifests",
+        lambda paths: events.append(("modules", paths)) or [],
+    )
+    monkeypatch.setattr(
+        cli,
+        "build_provider",
+        lambda loaded: events.append(("provider", loaded)) or provider,
+    )
+
+    await cli.run(
+        Namespace(
+            config=path,
+            module_manifest=["/private/niuu-module.yaml"],
+            command="inventory",
+        )
+    )
+
+    assert [event for event, _value in events] == ["modules", "provider"]
+    assert events[0][1] == ["/private/niuu-module.yaml"]
+    provider.close.assert_awaited_once()
+
+
 @pytest.mark.parametrize("command", ["inventory", "leases", "release", "reconcile", "prove"])
 async def test_commands_close_provider(config, lease, tmp_path, monkeypatch, capsys, command):
     path = tmp_path / "compute.yaml"
