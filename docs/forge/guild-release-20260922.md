@@ -73,15 +73,11 @@ runtime versions and a full retained archive item. No ledger data was deleted.
 - Candidate and rollback each passed four real-process API restart cases on both
   Thor and Spark. Remote operators additionally qualified their actual Supervisor
   stop/signal paths and host-specific preservation guards.
-- Migration `000067_session_read_state` retains deployed SQL unchanged;
-  coordination revision is `000068_session_coordination_revision`, with an
-  immutable alias for its prior `000067` filename. Existing ledger entries were
-  preserved. BuildBro's additive migrations remained after rollback; no destructive
-  downgrade was attempted. (Numbers above are this fork's own sequence at the time
-  of that deployment. On `dev`, the session-coordination-revision migration
-  already shipped as `000074_session_coordination_revision`, so the inbox
-  migration merged into `dev` as `000075_session_read_state` with identical SQL;
-  the fork's `000068` rename was not carried forward since it duplicated `000074`.)
+- Migration `000075_session_read_state` retains deployed SQL unchanged; the
+  session-coordination-revision migration is `000074_session_coordination_revision`,
+  already shipped on `dev` with its own immutable alias to its pre-renumbering
+  filename. Existing ledger entries were preserved. BuildBro's additive
+  migrations remained after rollback; no destructive downgrade was attempted.
 
 The native companion is pushed to
 [xteo/lexi-ios:feat/forge-grok-guild](https://github.com/xteo/lexi-ios/tree/feat/forge-grok-guild)
