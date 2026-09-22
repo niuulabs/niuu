@@ -1,5 +1,5 @@
 # Stage 1: Build the next-generation Niuu web UI
-FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS build
+FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS build
 
 WORKDIR /app
 
@@ -23,7 +23,7 @@ ENV VITE_APP_VERSION=${APP_VERSION}
 RUN pnpm build
 
 # Stage 2: Serve with nginx
-FROM nginx:1.31.3-alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752
+FROM nginx:1.31.6-alpine@sha256:adad2ae9204d0fd7a34f40299bc838c3782be1293b10005eac4315ff5a1abf4e
 
 # Apply security updates to all packages inherited from the pinned base.
 RUN apk upgrade --no-cache

@@ -1,6 +1,6 @@
 # BuildKit keeps the native wheel in its existing per-platform CI cache.
 # Only the installed Python environment reaches the final image.
-FROM rust:1.96.1-slim-trixie@sha256:31ee7fc65186be7e0e0ccb3f2ca305f14e4739e7642a1ae65753aa5d7b874523 AS rust-toolchain
+FROM rust:1.98.0-slim-trixie@sha256:17d1ba895198f9934c6314ec5346a0d5115372f3243390c3d731e242f35c2f27 AS rust-toolchain
 
 FROM python:3.14-slim-trixie@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS python-build
 
@@ -39,7 +39,7 @@ RUN python build_switchyard.py
 
 # Web UI assets are baked into the platform image so one container serves the
 # API and the SPA on a single port (spark mode). Same build as containers/niuu-web.
-FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS web-build
+FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS web-build
 WORKDIR /app
 RUN corepack enable
 ENV NODE_OPTIONS="--max-old-space-size=4096"
