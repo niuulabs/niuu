@@ -1517,7 +1517,7 @@ def test_session_stream_scopes_visible_hosts_and_stamps_owning_instance(
     )
     captured = []
 
-    async def finite_merge(sources):
+    async def finite_merge(sources, **_kwargs):
         captured.extend(sources)
         for source in sources.values():
             reader = source()

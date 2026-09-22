@@ -145,6 +145,31 @@ class TestSettings:
             "https://agents.example.test"
         ]
 
+    def test_forge_stream_defaults_match_the_merged_session_stream(self):
+        """Guild's merged /sessions/stream timing is configured, not hardcoded."""
+        settings = Settings()
+
+        assert settings.forge_stream_remote_timeout_seconds == 45.0
+        assert settings.forge_stream_remote_connect_timeout_seconds == 5.0
+        assert settings.forge_stream_retry_seconds == 5.0
+        assert settings.forge_stream_keepalive_seconds == 15.0
+        assert settings.forge_stream_queue_maxsize == 256
+
+    def test_forge_stream_settings_are_configurable(self):
+        settings = Settings(
+            forge_stream_remote_timeout_seconds=60.0,
+            forge_stream_remote_connect_timeout_seconds=2.0,
+            forge_stream_retry_seconds=1.0,
+            forge_stream_keepalive_seconds=10.0,
+            forge_stream_queue_maxsize=64,
+        )
+
+        assert settings.forge_stream_remote_timeout_seconds == 60.0
+        assert settings.forge_stream_remote_connect_timeout_seconds == 2.0
+        assert settings.forge_stream_retry_seconds == 1.0
+        assert settings.forge_stream_keepalive_seconds == 10.0
+        assert settings.forge_stream_queue_maxsize == 64
+
 
 class TestGitHubConfig:
     """Tests for GitHubConfig."""

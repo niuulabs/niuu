@@ -156,7 +156,7 @@ def test_local_stream_uses_embedded_broadcaster_not_remote_default(monkeypatch):
 
     from niuu.adapters.inbound import rest_volundr
 
-    async def finite_merge(sources):
+    async def finite_merge(sources, **_kwargs):
         assert list(sources) == ["local"]
         for source in sources.values():
             async for name, data in source():

@@ -224,6 +224,19 @@ directory:
   # -- Card origins explicitly trusted to receive forwarded caller authentication.
   authenticatedCardOrigins: []
 
+# Guild's merged /sessions/stream SSE fan-in across visible Forge instances.
+forgeStream:
+  # -- Total httpx timeout reading a remote Guild member's session SSE stream
+  remoteTimeoutSeconds: 45.0
+  # -- Connect timeout opening a remote Guild member's session SSE stream
+  remoteConnectTimeoutSeconds: 5.0
+  # -- Delay before retrying a disconnected host in the merged session stream
+  retrySeconds: 5.0
+  # -- Idle interval before the merged session stream sends a keepalive comment
+  keepaliveSeconds: 15.0
+  # -- Bound on the in-memory queue merging per-host session stream events
+  queueMaxsize: 256
+
 nodeSelector: {}
 tolerations: []
 affinity: {}

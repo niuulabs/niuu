@@ -85,3 +85,50 @@ async def test_remote_rejects_http_errors_instead_of_hanging_on_an_empty_stream(
     respx.get("http://build/stream").mock(return_value=httpx.Response(503))
     with pytest.raises(httpx.HTTPStatusError):
         await anext(remote_events("http://build/stream", {}))
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_remote_events_honors_configured_timeouts(monkeypatch):
+    """The timeout/connect_timeout kwargs (Settings-backed) reach the httpx client."""
+    captured: dict[str, httpx.Timeout] = {}
+    original_init = httpx.AsyncClient.__init__
+
+    def capture_init(self, *args, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", capture_init)
+    respx.get("http://build/stream").mock(return_value=httpx.Response(200, text=""))
+
+    async for _ in remote_events(
+        "http://build/stream", {}, timeout_seconds=1.0, connect_timeout_seconds=0.25
+    ):
+        pass  # pragma: no cover - empty body, loop never iterates
+
+    timeout = captured["timeout"]
+    assert timeout.connect == 0.25
+    assert timeout.read == 1.0
+
+
+@pytest.mark.asyncio
+async def test_merge_events_honors_configured_queue_maxsize(monkeypatch):
+    """The queue_maxsize kwarg (Settings-backed) reaches the merge queue."""
+    captured: dict[str, int] = {}
+    original_queue_init = asyncio.Queue.__init__
+
+    def capture_init(self, maxsize=0, **kwargs):
+        captured["maxsize"] = maxsize
+        return original_queue_init(self, maxsize=maxsize, **kwargs)
+
+    monkeypatch.setattr(asyncio.Queue, "__init__", capture_init)
+
+    async def source():
+        yield "session_activity", {"state": "active"}
+        await asyncio.Event().wait()
+
+    stream = merge_events({"host": source}, queue_maxsize=7)
+    assert b"active" in await anext(stream)
+    await stream.aclose()
+
+    assert captured["maxsize"] == 7

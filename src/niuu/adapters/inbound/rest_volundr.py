@@ -571,6 +571,11 @@ def create_volundr_router(
     service: InstanceService,
     *,
     embedded_forge_app: ASGIApp | None = None,
+    forge_stream_remote_timeout_seconds: float = 45.0,
+    forge_stream_remote_connect_timeout_seconds: float = 5.0,
+    forge_stream_retry_seconds: float = 5.0,
+    forge_stream_keepalive_seconds: float = 15.0,
+    forge_stream_queue_maxsize: int = 256,
 ) -> APIRouter:
     """Create a registry-aware Forge runtime router."""
     router = APIRouter(prefix="/api/v1/forge", tags=["Forge"])
@@ -1176,12 +1181,20 @@ def create_volundr_router(
                     yield event.type.value, _with_instance(event.data, instance)
             else:
                 url = build_remote_url(instance.base_url, "/api/v1/forge", "/sessions/stream")
-                async for name, payload in remote_events(url, headers):
+                async for name, payload in remote_events(
+                    url,
+                    headers,
+                    timeout_seconds=forge_stream_remote_timeout_seconds,
+                    connect_timeout_seconds=forge_stream_remote_connect_timeout_seconds,
+                ):
                     yield name, _with_instance(payload, instance)
 
         return StreamingResponse(
             merge_events(
-                {instance.id: lambda item=instance: events(item) for instance in instances}
+                {instance.id: lambda item=instance: events(item) for instance in instances},
+                retry_seconds=forge_stream_retry_seconds,
+                keepalive_seconds=forge_stream_keepalive_seconds,
+                queue_maxsize=forge_stream_queue_maxsize,
             ),
             media_type="text/event-stream",
             headers={

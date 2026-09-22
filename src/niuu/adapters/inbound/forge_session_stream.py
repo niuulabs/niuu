@@ -15,9 +15,15 @@ Event = tuple[str, dict[str, Any]]
 Source = Callable[[], AsyncIterator[Event]]
 
 
-async def remote_events(url: str, headers: Mapping[str, str]) -> AsyncIterator[Event]:
+async def remote_events(
+    url: str,
+    headers: Mapping[str, str],
+    *,
+    timeout_seconds: float = 45.0,
+    connect_timeout_seconds: float = 5.0,
+) -> AsyncIterator[Event]:
     """Decode complete SSE records (including multi-line data) from one host."""
-    timeout = httpx.Timeout(45, connect=5)
+    timeout = httpx.Timeout(timeout_seconds, connect=connect_timeout_seconds)
     async with httpx.AsyncClient(timeout=timeout) as client:
         async with client.stream("GET", url, headers=headers) as response:
             response.raise_for_status()
@@ -40,10 +46,14 @@ async def remote_events(url: str, headers: Mapping[str, str]) -> AsyncIterator[E
 
 
 async def merge_events(
-    sources: Mapping[str, Source], *, retry_seconds: float = 5, keepalive_seconds: float = 15
+    sources: Mapping[str, Source],
+    *,
+    retry_seconds: float = 5,
+    keepalive_seconds: float = 15,
+    queue_maxsize: int = 256,
 ) -> AsyncIterator[bytes]:
     """A missing host cannot stall others; disconnect cancels every reader."""
-    queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=256)
+    queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=queue_maxsize)
 
     async def read(host: str, source: Source) -> None:
         while True:
