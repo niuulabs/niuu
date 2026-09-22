@@ -49,6 +49,16 @@ import {
   portAnchor,
   type WorkflowSize,
 } from '../../domain/workflowGeometry';
+import {
+  exceedsDragThreshold,
+  includeCardSubtitle,
+  resolveNodeCardVisuals,
+  resolveNodeMouseDownAction,
+  resourceModeVisuals,
+  triggerCardSubtitle,
+  triggerOutputEvent,
+  truncateLabel,
+} from '../../domain/graphViewLogic';
 import type { WorkflowBuilderActions } from './useWorkflowBuilder';
 import { LibraryPanel, type PersonaEntry } from './LibraryPanel';
 import {
@@ -140,12 +150,13 @@ function useDragNode({
 
   function handleMouseDown(e: React.MouseEvent) {
     e.stopPropagation();
-    if (e.button !== 0 || e.ctrlKey) return;
-    if (isConnectingMode) {
+    const action = resolveNodeMouseDownAction(e.button, e.ctrlKey, isConnectingMode, readOnly);
+    if (action === 'ignore') return;
+    if (action === 'complete-connect') {
       onCompleteConnect();
       return;
     }
-    if (readOnly) {
+    if (action === 'select-only') {
       onSelect();
       return;
     }
@@ -164,7 +175,7 @@ function useDragNode({
     if (!dragRef.current) return;
     const dx = (e.clientX - dragRef.current.startX) / canvasScale;
     const dy = (e.clientY - dragRef.current.startY) / canvasScale;
-    if (Math.abs(dx) <= 4 && Math.abs(dy) <= 4) return;
+    if (!exceedsDragThreshold(dx, dy)) return;
     dragRef.current.dx = dx;
     dragRef.current.dy = dy;
     onDragPreview({ x: dragRef.current.nx + dx, y: dragRef.current.ny + dy });
@@ -174,7 +185,7 @@ function useDragNode({
     const drag = dragRef.current;
     dragRef.current = null;
     if (!drag) return;
-    if (drag.dx === 0 && drag.dy === 0) return;
+    if (!exceedsDragThreshold(drag.dx, drag.dy)) return;
     onDragEnd({ x: drag.nx + drag.dx, y: drag.ny + drag.dy });
   }
 
@@ -296,16 +307,16 @@ function StageNode({
     canvasScale,
     readOnly,
   });
-  const borderColor = selected
-    ? C.nodeStrokeSelected
-    : issueLevel === 'error'
-      ? C.errorStroke
-      : issueLevel === 'warning'
-        ? C.warnStroke
-        : C.nodeStroke;
-  const background =
-    issueLevel === 'error' ? C.errorFill : issueLevel === 'warning' ? C.warnFill : C.nodeFill;
-  const title = node.label.length > 18 ? `${node.label.slice(0, 16)}…` : node.label;
+  const { background, borderColor, borderWidth } = resolveNodeCardVisuals(selected, issueLevel, {
+    defaultBackground: C.nodeFill,
+    defaultBorder: C.nodeStroke,
+    errorBackground: C.errorFill,
+    errorBorder: C.errorStroke,
+    warningBackground: C.warnFill,
+    warningBorder: C.warnStroke,
+    selectedBorder: C.nodeStrokeSelected,
+  });
+  const title = truncateLabel(node.label, 18, 16);
 
   return (
     <g
@@ -337,7 +348,7 @@ function StageNode({
           style={{
             background,
             borderColor,
-            borderWidth: selected || issueLevel ? 2 : 1,
+            borderWidth,
             borderLeftColor: 'var(--node-accent)',
             borderLeftWidth: 3,
           }}
@@ -428,7 +439,7 @@ function StageNode({
                     className="niuu:select-none niuu:truncate niuu:font-mono niuu:text-[6.5px]"
                     style={{ color: C.textMuted, maxWidth: STAGE_WIDTH / 2 - 20 }}
                   >
-                    {input.length > 14 ? `${input.slice(0, 13)}…` : input}
+                    {truncateLabel(input, 14, 13)}
                   </span>
                 </div>
               ))}
@@ -442,7 +453,7 @@ function StageNode({
                     className="niuu:select-none niuu:truncate niuu:text-right niuu:font-mono niuu:text-[6.5px]"
                     style={{ color: C.text, maxWidth: STAGE_WIDTH / 2 - 20 }}
                   >
-                    {output.length > 14 ? `${output.slice(0, 13)}…` : output}
+                    {truncateLabel(output, 14, 13)}
                   </span>
                   <button
                     type="button"
@@ -503,16 +514,16 @@ function GateNode({
     canvasScale,
     readOnly,
   });
-  const background =
-    issueLevel === 'error' ? C.errorFill : issueLevel === 'warning' ? C.warnFill : C.gate;
-  const borderColor = selected
-    ? C.nodeStrokeSelected
-    : issueLevel === 'error'
-      ? C.errorStroke
-      : issueLevel === 'warning'
-        ? C.warnStroke
-        : C.gateStroke;
-  const title = node.label.length > 8 ? `${node.label.slice(0, 7)}…` : node.label;
+  const { background, borderColor, borderWidth } = resolveNodeCardVisuals(selected, issueLevel, {
+    defaultBackground: C.gate,
+    defaultBorder: C.gateStroke,
+    errorBackground: C.errorFill,
+    errorBorder: C.errorStroke,
+    warningBackground: C.warnFill,
+    warningBorder: C.warnStroke,
+    selectedBorder: C.nodeStrokeSelected,
+  });
+  const title = truncateLabel(node.label, 8, 7);
 
   return (
     <g
@@ -544,7 +555,7 @@ function GateNode({
           style={{
             background,
             borderColor,
-            borderWidth: selected || issueLevel ? 2 : 1,
+            borderWidth,
             borderTopColor: 'var(--node-accent)',
             borderTopWidth: 3,
           }}
@@ -602,16 +613,16 @@ function CondNode({
     readOnly,
   });
   const size = COND_RADIUS * 2;
-  const background =
-    issueLevel === 'error' ? C.errorFill : issueLevel === 'warning' ? C.warnFill : C.cond;
-  const borderColor = selected
-    ? C.nodeStrokeSelected
-    : issueLevel === 'error'
-      ? C.errorStroke
-      : issueLevel === 'warning'
-        ? C.warnStroke
-        : C.condStroke;
-  const title = node.label.length > 6 ? `${node.label.slice(0, 5)}…` : node.label;
+  const { background, borderColor, borderWidth } = resolveNodeCardVisuals(selected, issueLevel, {
+    defaultBackground: C.cond,
+    defaultBorder: C.condStroke,
+    errorBackground: C.errorFill,
+    errorBorder: C.errorStroke,
+    warningBackground: C.warnFill,
+    warningBorder: C.warnStroke,
+    selectedBorder: C.nodeStrokeSelected,
+  });
+  const title = truncateLabel(node.label, 6, 5);
 
   return (
     <g
@@ -643,7 +654,7 @@ function CondNode({
           style={{
             background,
             borderColor,
-            borderWidth: selected || issueLevel ? 2 : 1,
+            borderWidth,
             borderTopColor: 'var(--node-accent)',
             borderTopWidth: 3,
           }}
@@ -670,22 +681,6 @@ function CondNode({
   );
 }
 
-/** Summarize a subworkflow node's offered templates for its card subtitle:
- *  the sole child workflow's alias when there is exactly one template, a
- *  short name list for a couple more, and a compact count once the list
- *  would no longer fit the card. */
-function subworkflowTemplatesSummary(node: WorkflowSubworkflowNode): string {
-  const entries = Object.entries(node.templates ?? {});
-  if (entries.length === 0) return 'choose a child workflow';
-  if (entries.length === 1) {
-    const [templateName, alias] = entries[0]!;
-    return alias || `${templateName}: choose a child workflow`;
-  }
-  const names = entries.map(([templateName]) => templateName).sort();
-  const joined = names.join(', ');
-  return joined.length <= 24 ? joined : `${names.length} child workflows`;
-}
-
 /** TriggerNode — handles both `trigger` and `subworkflow` kinds. Same
  *  recipe; one output port (no input — a trigger/subworkflow root has
  *  nothing feeding it). */
@@ -703,8 +698,7 @@ function TriggerNode({
   canvasScale,
   readOnly,
 }: BaseNodeProps<WorkflowTriggerNode | WorkflowSubworkflowNode>) {
-  const outputEvent =
-    node.kind === 'subworkflow' ? 'children.completed' : (node.dispatchEvent ?? 'code.requested');
+  const outputEvent = triggerOutputEvent(node);
   const { x, y } = node.position;
   const { handleMouseDown, handleMouseMove, handleMouseUp } = useDragNode({
     x,
@@ -717,25 +711,18 @@ function TriggerNode({
     canvasScale,
     readOnly,
   });
-  const background = selected
-    ? 'var(--color-bg-elevated)'
-    : issueLevel === 'error'
-      ? C.errorFill
-      : issueLevel === 'warning'
-        ? C.warnFill
-        : 'color-mix(in srgb, var(--color-brand) 14%, var(--color-bg-secondary))';
-  const borderColor = selected
-    ? C.nodeStrokeSelected
-    : issueLevel === 'error'
-      ? C.errorStroke
-      : issueLevel === 'warning'
-        ? C.warnStroke
-        : 'var(--color-brand)';
-  const title = node.label.length > 20 ? `${node.label.slice(0, 18)}…` : node.label;
-  const subtitle =
-    node.kind === 'subworkflow'
-      ? `1–${node.maxChildren} · ${subworkflowTemplatesSummary(node)}`
-      : outputEvent;
+  const { background, borderColor, borderWidth } = resolveNodeCardVisuals(selected, issueLevel, {
+    defaultBackground: 'color-mix(in srgb, var(--color-brand) 14%, var(--color-bg-secondary))',
+    defaultBorder: 'var(--color-brand)',
+    errorBackground: C.errorFill,
+    errorBorder: C.errorStroke,
+    warningBackground: C.warnFill,
+    warningBorder: C.warnStroke,
+    selectedBorder: C.nodeStrokeSelected,
+    selectedBackground: 'var(--color-bg-elevated)',
+  });
+  const title = truncateLabel(node.label, 20, 18);
+  const subtitle = triggerCardSubtitle(node, outputEvent);
 
   return (
     <g
@@ -767,7 +754,7 @@ function TriggerNode({
           style={{
             background,
             borderColor,
-            borderWidth: selected || issueLevel ? 2 : 1,
+            borderWidth,
             borderLeftColor: 'var(--node-accent)',
             borderLeftWidth: 3,
           }}
@@ -890,21 +877,18 @@ function WaitNode({
     canvasScale,
     readOnly,
   });
-  const background = selected
-    ? 'var(--color-bg-elevated)'
-    : issueLevel === 'error'
-      ? C.errorFill
-      : issueLevel === 'warning'
-        ? C.warnFill
-        : 'color-mix(in srgb, var(--color-accent-amber) 12%, var(--color-bg-secondary))';
-  const borderColor = selected
-    ? C.nodeStrokeSelected
-    : issueLevel === 'error'
-      ? C.errorStroke
-      : issueLevel === 'warning'
-        ? C.warnStroke
-        : 'var(--color-accent-amber)';
-  const title = node.label.length > 20 ? `${node.label.slice(0, 18)}…` : node.label;
+  const { background, borderColor, borderWidth } = resolveNodeCardVisuals(selected, issueLevel, {
+    defaultBackground:
+      'color-mix(in srgb, var(--color-accent-amber) 12%, var(--color-bg-secondary))',
+    defaultBorder: 'var(--color-accent-amber)',
+    errorBackground: C.errorFill,
+    errorBorder: C.errorStroke,
+    warningBackground: C.warnFill,
+    warningBorder: C.warnStroke,
+    selectedBorder: C.nodeStrokeSelected,
+    selectedBackground: 'var(--color-bg-elevated)',
+  });
+  const title = truncateLabel(node.label, 20, 18);
 
   return (
     <g
@@ -936,7 +920,7 @@ function WaitNode({
           style={{
             background,
             borderColor,
-            borderWidth: selected || issueLevel ? 2 : 1,
+            borderWidth,
             borderLeftColor: 'var(--node-accent)',
             borderLeftWidth: 3,
           }}
@@ -997,7 +981,7 @@ function WaitNode({
                     className="niuu:select-none niuu:truncate niuu:font-mono niuu:text-[6.5px]"
                     style={{ color: C.textMuted, maxWidth: WAIT_WIDTH / 2 - 20 }}
                   >
-                    {eventType.length > 14 ? `${eventType.slice(0, 13)}…` : eventType}
+                    {truncateLabel(eventType, 14, 13)}
                   </span>
                 </div>
               ))}
@@ -1011,7 +995,7 @@ function WaitNode({
                     className="niuu:select-none niuu:truncate niuu:text-right niuu:font-mono niuu:text-[6.5px]"
                     style={{ color: C.text, maxWidth: WAIT_WIDTH / 2 - 20 }}
                   >
-                    {eventType.length > 14 ? `${eventType.slice(0, 13)}…` : eventType}
+                    {truncateLabel(eventType, 14, 13)}
                   </span>
                   <button
                     type="button"
@@ -1129,21 +1113,17 @@ function EndNode({
     canvasScale,
     readOnly,
   });
-  const background = selected
-    ? 'var(--color-bg-elevated)'
-    : issueLevel === 'error'
-      ? C.errorFill
-      : issueLevel === 'warning'
-        ? C.warnFill
-        : 'color-mix(in srgb, var(--status-emerald) 14%, var(--color-bg-secondary))';
-  const borderColor = selected
-    ? C.nodeStrokeSelected
-    : issueLevel === 'error'
-      ? C.errorStroke
-      : issueLevel === 'warning'
-        ? C.warnStroke
-        : 'var(--status-emerald)';
-  const title = node.label.length > 10 ? `${node.label.slice(0, 8)}…` : node.label;
+  const { background, borderColor, borderWidth } = resolveNodeCardVisuals(selected, issueLevel, {
+    defaultBackground: 'color-mix(in srgb, var(--status-emerald) 14%, var(--color-bg-secondary))',
+    defaultBorder: 'var(--status-emerald)',
+    errorBackground: C.errorFill,
+    errorBorder: C.errorStroke,
+    warningBackground: C.warnFill,
+    warningBorder: C.warnStroke,
+    selectedBorder: C.nodeStrokeSelected,
+    selectedBackground: 'var(--color-bg-elevated)',
+  });
+  const title = truncateLabel(node.label, 10, 8);
 
   return (
     <g
@@ -1172,7 +1152,7 @@ function EndNode({
       <foreignObject x={x} y={y} width={END_RADIUS * 2} height={END_RADIUS * 2}>
         <div
           className="workflow-end-card niuu:flex niuu:h-full niuu:w-full niuu:select-none niuu:flex-col niuu:items-center niuu:justify-center niuu:overflow-hidden niuu:rounded-full niuu:border niuu:text-center niuu:font-sans niuu:shadow-md"
-          style={{ background, borderColor, borderWidth: selected || issueLevel ? 2 : 1 }}
+          style={{ background, borderColor, borderWidth }}
         >
           <span className="niuu:leading-none" style={{ color: C.text, fontSize: 16 }}>
             ●
@@ -1222,28 +1202,18 @@ function ResourceNode({
     canvasScale,
     readOnly,
   });
-  const background = selected
-    ? 'var(--color-bg-elevated)'
-    : issueLevel === 'error'
-      ? C.errorFill
-      : issueLevel === 'warning'
-        ? C.warnFill
-        : 'color-mix(in srgb, var(--color-brand) 16%, var(--color-bg-secondary))';
-  const borderColor = selected
-    ? C.nodeStrokeSelected
-    : issueLevel === 'error'
-      ? C.errorStroke
-      : issueLevel === 'warning'
-        ? C.warnStroke
-        : 'var(--color-brand)';
-  const modeLabel = node.bindingMode === 'ephemeral_local' ? 'EPHEMERAL' : 'REGISTRY';
-  const modeStroke =
-    node.bindingMode === 'ephemeral_local' ? 'var(--status-emerald)' : 'var(--color-brand)';
-  const modeFill =
-    node.bindingMode === 'ephemeral_local'
-      ? 'color-mix(in srgb, var(--status-emerald) 14%, var(--color-bg-primary))'
-      : 'color-mix(in srgb, var(--color-brand) 14%, var(--color-bg-primary))';
-  const title = node.label.length > 20 ? `${node.label.slice(0, 18)}…` : node.label;
+  const { background, borderColor, borderWidth } = resolveNodeCardVisuals(selected, issueLevel, {
+    defaultBackground: 'color-mix(in srgb, var(--color-brand) 16%, var(--color-bg-secondary))',
+    defaultBorder: 'var(--color-brand)',
+    errorBackground: C.errorFill,
+    errorBorder: C.errorStroke,
+    warningBackground: C.warnFill,
+    warningBorder: C.warnStroke,
+    selectedBorder: C.nodeStrokeSelected,
+    selectedBackground: 'var(--color-bg-elevated)',
+  });
+  const { modeLabel, modeStroke, modeFill } = resourceModeVisuals(node.bindingMode);
+  const title = truncateLabel(node.label, 20, 18);
 
   return (
     <g
@@ -1275,7 +1245,7 @@ function ResourceNode({
           style={{
             background,
             borderColor,
-            borderWidth: selected || issueLevel ? 2 : 1,
+            borderWidth,
             borderLeftColor: 'var(--node-accent)',
             borderLeftWidth: 3,
           }}
@@ -1345,23 +1315,20 @@ function IncludeNode({
     canvasScale,
     readOnly,
   });
-  const background = selected
-    ? 'var(--color-bg-elevated)'
-    : issueLevel === 'error'
-      ? C.errorFill
-      : issueLevel === 'warning'
-        ? C.warnFill
-        : 'color-mix(in srgb, var(--color-accent-violet) 16%, var(--color-bg-secondary))';
-  const borderColor = selected
-    ? C.nodeStrokeSelected
-    : issueLevel === 'error'
-      ? C.errorStroke
-      : issueLevel === 'warning'
-        ? C.warnStroke
-        : 'var(--color-accent-violet)';
-  const title = node.label.length > 20 ? `${node.label.slice(0, 18)}…` : node.label;
+  const { background, borderColor, borderWidth } = resolveNodeCardVisuals(selected, issueLevel, {
+    defaultBackground:
+      'color-mix(in srgb, var(--color-accent-violet) 16%, var(--color-bg-secondary))',
+    defaultBorder: 'var(--color-accent-violet)',
+    errorBackground: C.errorFill,
+    errorBorder: C.errorStroke,
+    warningBackground: C.warnFill,
+    warningBorder: C.warnStroke,
+    selectedBorder: C.nodeStrokeSelected,
+    selectedBackground: 'var(--color-bg-elevated)',
+  });
+  const title = truncateLabel(node.label, 20, 18);
   const nodeCount = Object.keys(node.nodes ?? {}).length;
-  const subtitle = `${node.workflow || 'choose a workflow'} · ${nodeCount} node${nodeCount === 1 ? '' : 's'}`;
+  const subtitle = includeCardSubtitle(node.workflow, nodeCount);
 
   return (
     <g
@@ -1393,7 +1360,7 @@ function IncludeNode({
           style={{
             background,
             borderColor,
-            borderWidth: selected || issueLevel ? 2 : 1,
+            borderWidth,
             borderLeftColor: 'var(--node-accent)',
             borderLeftWidth: 3,
           }}

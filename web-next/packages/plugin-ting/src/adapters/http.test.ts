@@ -373,6 +373,21 @@ describe('buildTingHttpAdapter', () => {
       const result = await buildTingHttpAdapter(client).getSaga('missing');
       expect(result).toBeNull();
     });
+
+    it('maps target_match "any" and defaults phase totals when both counts are absent', async () => {
+      const client = makeClient();
+      client.get.mockResolvedValue({
+        ...rawSaga,
+        phase_summary: undefined,
+        run_count: undefined,
+        target_match: 'any',
+      });
+
+      const saga = await buildTingHttpAdapter(client).getSaga('saga-1');
+
+      expect(saga?.targetMatch).toBe('any');
+      expect(saga?.phaseSummary).toEqual({ total: 0, completed: 0 });
+    });
   });
 
   describe('deleteSaga', () => {
@@ -450,6 +465,34 @@ describe('buildTingHttpAdapter', () => {
         sessionId: 'sess-abc',
         sender: 'user',
         kind: 'message',
+      });
+    });
+
+    it('defaults help-request fields and infers kind=help_request when kind is absent', async () => {
+      const client = makeClient();
+      client.get.mockResolvedValue([
+        {
+          id: 'msg-2',
+          session_id: 'sess-abc',
+          content: '{"summary":"Need your call","reason":"needs_feedback"}',
+          sender: 'help_needed',
+          created_at: '2026-05-11T12:00:00Z',
+          help_request: {
+            summary: 'Need your call.',
+            reason: 'needs_feedback',
+          },
+        },
+      ]);
+
+      const [message] = await buildTingHttpAdapter(client).listRunMessages('run-1');
+
+      expect(message).toMatchObject({ kind: 'help_request' });
+      expect(message?.helpRequest).toMatchObject({
+        attempted: [],
+        recommendation: undefined,
+        context: {},
+        targetPeerId: undefined,
+        persona: undefined,
       });
     });
   });
@@ -578,6 +621,39 @@ describe('buildTingHttpAdapter', () => {
       expect(result?.stageState?.[0]?.label).toBe('Draft saga breakdown');
     });
 
+    it('defaults stageState to an empty array and stageId to an empty string when omitted', async () => {
+      const client = makeClient();
+      client.get.mockResolvedValue({
+        session_id: 'sess-1',
+        chat_endpoint: null,
+        campaign_slug: 'plan-auth',
+        workflow_name: 'Saga Planning',
+        status: 'running',
+        active_stage_id: null,
+      });
+
+      const result = await buildTingHttpAdapter(client).getPlanSession?.('plan-auth');
+
+      expect(result?.stageState).toEqual([]);
+    });
+
+    it('defaults a stage state entry stageId to an empty string when both spellings are absent', async () => {
+      const client = makeClient();
+      client.get.mockResolvedValue({
+        session_id: 'sess-1',
+        chat_endpoint: null,
+        campaign_slug: 'plan-auth',
+        workflow_name: 'Saga Planning',
+        status: 'running',
+        active_stage_id: 'plan-breakdown',
+        stage_state: [{ label: 'Draft saga breakdown', status: 'active' }],
+      });
+
+      const result = await buildTingHttpAdapter(client).getPlanSession?.('plan-auth');
+
+      expect(result?.stageState?.[0]?.stageId).toBe('');
+    });
+
     it('fetches a workflow-backed plan draft', async () => {
       const client = makeClient();
       client.get.mockResolvedValue({
@@ -630,6 +706,17 @@ describe('buildTingHttpAdapter', () => {
       });
     });
 
+    it('omits decision from plan feedback when the caller does not provide one', async () => {
+      const client = makeClient();
+      client.post.mockResolvedValue({ status: 'sent' });
+
+      await buildTingHttpAdapter(client).sendPlanFeedback?.('plan-auth', 'no decision yet');
+
+      expect(client.post).toHaveBeenCalledWith('/sagas/plan/plan-auth/feedback', {
+        content: 'no decision yet',
+      });
+    });
+
     it('cancels a plan session', async () => {
       const client = makeClient();
 
@@ -668,6 +755,77 @@ describe('buildTingHttpAdapter', () => {
       expect(client.post).toHaveBeenCalledWith('/sagas/extract-structure', { text: 'some text' });
       expect(result.structure?.phases[0]?.runs[0]?.declaredFiles).toEqual(['src/auth/refresh.ts']);
       expect(result.structure?.risks?.[0]?.message).toBe('Touches auth dispatch.');
+    });
+
+    it('returns a null structure when nothing was found', async () => {
+      const client = makeClient();
+      client.post.mockResolvedValue({ found: false, structure: null });
+
+      const result = await buildTingHttpAdapter(client).extractStructure('unrelated text');
+
+      expect(result).toEqual({ found: false, structure: null });
+    });
+
+    it('defaults run fields and risks when the structure omits them', async () => {
+      const client = makeClient();
+      client.post.mockResolvedValue({
+        found: true,
+        structure: {
+          name: 'Auth Saga',
+          phases: [
+            {
+              name: 'Build',
+              runs: [{ name: 'JWT refresh' }],
+            },
+          ],
+        },
+      });
+
+      const result = await buildTingHttpAdapter(client).extractStructure('some text');
+
+      expect(result.structure?.risks).toEqual([]);
+      expect(result.structure?.phases[0]?.runs[0]).toMatchObject({
+        name: 'JWT refresh',
+        description: '',
+        acceptanceCriteria: [],
+        declaredFiles: [],
+        estimateHours: 0,
+        confidence: 0,
+      });
+    });
+
+    it('prefers camelCase run fields over snake_case when both are present', async () => {
+      const client = makeClient();
+      client.post.mockResolvedValue({
+        found: true,
+        structure: {
+          name: 'Auth Saga',
+          phases: [
+            {
+              name: 'Build',
+              runs: [
+                {
+                  name: 'JWT refresh',
+                  acceptanceCriteria: ['camelCase wins'],
+                  acceptance_criteria: ['snake_case loses'],
+                  declaredFiles: ['camel.ts'],
+                  declared_files: ['snake.ts'],
+                  estimateHours: 2,
+                  estimate_hours: 9,
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      const result = await buildTingHttpAdapter(client).extractStructure('some text');
+
+      expect(result.structure?.phases[0]?.runs[0]).toMatchObject({
+        acceptanceCriteria: ['camelCase wins'],
+        declaredFiles: ['camel.ts'],
+        estimateHours: 2,
+      });
     });
   });
 
@@ -804,6 +962,22 @@ describe('buildTingHttpAdapter', () => {
       expect(saga.targetTags).toEqual(['gpu', 'valhalla']);
     });
 
+    it('defaults tag target match to "all" when the caller omits it', async () => {
+      const client = makeClient();
+      client.put.mockResolvedValue({ ...rawSaga, target_tags: ['gpu'], target_match: 'all' });
+
+      await buildTingHttpAdapter(client).assignTarget('saga-1', {
+        mode: 'tags',
+        tags: ['gpu'],
+      });
+
+      expect(client.put).toHaveBeenCalledWith('/sagas/saga-1/target', {
+        instance_id: null,
+        target_tags: ['gpu'],
+        target_match: 'all',
+      });
+    });
+
     it('assigns saga repositories with per-repo branches', async () => {
       const client = makeClient();
       client.put.mockResolvedValue({
@@ -881,6 +1055,55 @@ describe('buildWorkflowHttpAdapter', () => {
     });
   });
 
+  it('defaults resourceBindings to an empty array when the server omits both spellings', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([{ ...rawWorkflow, resourceBindings: undefined }]);
+
+    const [workflow] = await buildWorkflowHttpAdapter(client).listWorkflows();
+
+    expect(workflow.resourceBindings).toEqual([]);
+  });
+
+  it('defaults an edge to a horizontal control-point direction when an endpoint position is unresolved', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      {
+        ...rawWorkflow,
+        nodes: [{ id: 'stage-1', kind: 'stage', label: 'Review', position: { x: 0, y: 0 } }],
+        edges: [{ id: 'edge-1', source: 'stage-1', target: 'missing-node' }],
+      },
+    ]);
+
+    const [workflow] = await buildWorkflowHttpAdapter(client).listWorkflows();
+
+    // The target node is absent from `nodes`, so its position can't be resolved;
+    // the mapper falls back to treating the edge as horizontal rather than crashing.
+    expect(workflow.edges[0]).toMatchObject({
+      cp1: { x: 92, y: 0 },
+      cp2: { x: -92, y: 0 },
+    });
+  });
+
+  it('defaults origin to bundled for system-scope workflows and derives canEdit from camelCase readOnly', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      {
+        ...rawWorkflow,
+        scope: 'system' as const,
+        origin: undefined,
+        can_edit: undefined,
+        readOnly: true,
+        read_only: undefined,
+      },
+    ]);
+
+    const [workflow] = await buildWorkflowHttpAdapter(client).listWorkflows();
+
+    expect(workflow.origin).toBe('bundled');
+    expect(workflow.readOnly).toBe(true);
+    expect(workflow.canEdit).toBe(false);
+  });
+
   it('maps immutable version metadata and loads an exact historical version', async () => {
     const client = makeClient();
     const historical = {
@@ -941,6 +1164,45 @@ describe('buildWorkflowHttpAdapter', () => {
         origin: 'authored',
       },
     ]);
+  });
+
+  it('defaults basedOnRevision to null for the first workflow version', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      {
+        version: '1.0.0',
+        document_revision: 'sha256:document-1',
+        created_at: '2026-09-01T12:00:00Z',
+        is_head: false,
+        origin: 'authored',
+      },
+    ]);
+
+    const [version] = await buildWorkflowHttpAdapter(client).listWorkflowVersions(rawWorkflow.id);
+
+    expect(version?.basedOnRevision).toBeNull();
+  });
+
+  it('returns null when a specific workflow version is not found', async () => {
+    const client = makeClient();
+    client.get.mockRejectedValue(new ApiClientError('not found', 404));
+
+    const workflow = await buildWorkflowHttpAdapter(client).getWorkflowVersion(
+      rawWorkflow.id,
+      '9.9.9',
+    );
+
+    expect(workflow).toBeNull();
+  });
+
+  it('surfaces non-404 failures when loading a workflow version', async () => {
+    const client = makeClient();
+    const forbidden = new ApiClientError('forbidden', 403);
+    client.get.mockRejectedValue(forbidden);
+
+    await expect(
+      buildWorkflowHttpAdapter(client).getWorkflowVersion(rawWorkflow.id, '1.0.0'),
+    ).rejects.toBe(forbidden);
   });
 
   it('maps resource bindings from the API payload', async () => {
@@ -1252,6 +1514,21 @@ describe('buildWorkflowHttpAdapter', () => {
     );
   });
 
+  it('refuses to save a workflow the caller cannot edit', async () => {
+    const client = makeClient();
+
+    await expect(
+      buildWorkflowHttpAdapter(client).saveWorkflow({
+        id: rawWorkflow.id,
+        name: rawWorkflow.name,
+        nodes: rawWorkflow.nodes,
+        edges: rawWorkflow.edges,
+        canEdit: false,
+      } as Workflow),
+    ).rejects.toThrow('You do not have permission to create a new workflow version.');
+    expect(client.get).not.toHaveBeenCalled();
+  });
+
   it('does not silently copy a system workflow when an update is forbidden', async () => {
     const client = makeClient();
     const systemWorkflow = { ...rawWorkflow, scope: 'system' as const, owner_id: null };
@@ -1403,6 +1680,57 @@ describe('buildWorkflowHttpAdapter', () => {
     );
   });
 
+  it('defaults import body fields and maps a bundle preview with camelCase result fields', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      workflows: [{ id: rawWorkflow.id, name: rawWorkflow.name, version: '1.0.0' }],
+      workflow: { id: rawWorkflow.id, name: rawWorkflow.name, version: '1.0.0' },
+      personas: [],
+      requirements: [],
+      errors: [],
+      canApply: false,
+      previewDigest: 'preview-bundle',
+    });
+
+    const preview = await buildWorkflowHttpAdapter(client).previewWorkflowImport({
+      content: 'Ym9keQ==',
+      filename: 'bundle.zip',
+      workflowId: rawWorkflow.id,
+    });
+
+    expect(client.post).toHaveBeenCalledWith(
+      '/workflows/imports/preview',
+      expect.objectContaining({ mappings: {}, bindings: {}, mode: 'copy' }),
+    );
+    expect(preview).toMatchObject({
+      canApply: false,
+      previewDigest: 'preview-bundle',
+      workflows: [{ id: rawWorkflow.id, name: rawWorkflow.name, version: '1.0.0' }],
+    });
+  });
+
+  it('defaults import preview fields the server omits entirely', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      workflow: { id: rawWorkflow.id, name: rawWorkflow.name, version: '1.0.0' },
+      personas: [],
+    });
+
+    const preview = await buildWorkflowHttpAdapter(client).previewWorkflowImport({
+      content: 'Ym9keQ==',
+      filename: 'workflow.yaml',
+    });
+
+    expect(preview).toEqual({
+      workflow: { id: rawWorkflow.id, name: rawWorkflow.name, version: '1.0.0' },
+      personas: [],
+      requirements: [],
+      errors: [],
+      canApply: false,
+      previewDigest: '',
+    });
+  });
+
   it('downloads workflow YAML with the server filename', async () => {
     const client = { ...makeClient(), basePath: '/api/v1/ting' };
     vi.stubGlobal(
@@ -1429,6 +1757,104 @@ describe('buildWorkflowHttpAdapter', () => {
     );
     expect(exported.filename).toBe('review.yaml');
     expect(exported.mediaType).toBe('application/yaml');
+    vi.unstubAllGlobals();
+  });
+
+  it('decodes a UTF-8 encoded filename from Content-Disposition', async () => {
+    const client = { ...makeClient(), basePath: '/api/v1/ting' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('schema_version: 1', {
+          headers: {
+            'Content-Type': 'application/yaml',
+            'Content-Disposition': "attachment; filename*=UTF-8''review%20final.yaml",
+          },
+        }),
+      ),
+    );
+
+    const exported = await buildWorkflowHttpAdapter(client).exportWorkflow(rawWorkflow.id, 'yaml');
+
+    expect(exported.filename).toBe('review final.yaml');
+    vi.unstubAllGlobals();
+  });
+
+  it('falls back to a generated bundle filename when no Content-Disposition is sent', async () => {
+    const client = { ...makeClient(), basePath: '/api/v1/ting' };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('binary', { headers: {} })));
+
+    const exported = await buildWorkflowHttpAdapter(client).exportWorkflow(
+      rawWorkflow.id,
+      'bundle',
+    );
+
+    expect(exported.filename).toBe(`${rawWorkflow.id}.zip`);
+    vi.unstubAllGlobals();
+  });
+
+  it('falls back to a generated yaml filename for non-bundle exports without a disposition', async () => {
+    const client = { ...makeClient(), basePath: '/api/v1/ting' };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('body', { headers: {} })));
+
+    const exported = await buildWorkflowHttpAdapter(client).exportWorkflow(rawWorkflow.id, 'yaml');
+
+    expect(exported.filename).toBe(`${rawWorkflow.id}.yaml`);
+    vi.unstubAllGlobals();
+  });
+
+  it('falls back to the blob media type when the response has no Content-Type header', async () => {
+    const client = { ...makeClient(), basePath: '/api/v1/ting' };
+    const blob = { type: 'application/x-custom-blob' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        headers: { get: () => null },
+        blob: () => Promise.resolve(blob),
+      }),
+    );
+
+    const exported = await buildWorkflowHttpAdapter(client).exportWorkflow(rawWorkflow.id, 'yaml');
+
+    expect(exported.mediaType).toBe('application/x-custom-blob');
+    vi.unstubAllGlobals();
+  });
+
+  it('throws when the client has no basePath to export from', async () => {
+    const client = makeClient();
+
+    await expect(
+      buildWorkflowHttpAdapter(client).exportWorkflow(rawWorkflow.id, 'yaml'),
+    ).rejects.toThrow('Workflow export requires an HTTP client with a basePath.');
+  });
+
+  it('surfaces the response body as detail when export fails', async () => {
+    const client = { ...makeClient(), basePath: '/api/v1/ting' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('workflow not found', { status: 404 })),
+    );
+
+    await expect(
+      buildWorkflowHttpAdapter(client).exportWorkflow(rawWorkflow.id, 'yaml'),
+    ).rejects.toMatchObject({
+      status: 404,
+      detail: 'workflow not found',
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it('falls back to statusText as detail when the export failure body is empty', async () => {
+    const client = { ...makeClient(), basePath: '/api/v1/ting' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('', { status: 500, statusText: 'Server Error' })),
+    );
+
+    await expect(
+      buildWorkflowHttpAdapter(client).exportWorkflow(rawWorkflow.id, 'yaml'),
+    ).rejects.toMatchObject({ detail: 'Server Error' });
     vi.unstubAllGlobals();
   });
 
@@ -1551,6 +1977,34 @@ describe('buildWorkflowHttpAdapter', () => {
       chatEndpoint: null,
       workflowVersion: '1.1.0',
       documentRevision: 'sha256:workflow-11',
+    });
+  });
+
+  it('defaults workflow launch fields the server omits entirely', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      slug: 'knowledge-flow',
+      status: 'queued',
+    });
+
+    const result = await buildWorkflowHttpAdapter(client).launchWorkflow(rawWorkflow.id, {
+      prompt: 'Launch',
+      sessionName: 'knowledge-flow',
+      repo: 'https://github.com/niuulabs/volundr.git',
+      branch: 'feat/launch',
+    });
+
+    expect(result).toEqual({
+      workflowId: '',
+      workflowName: '',
+      slug: 'knowledge-flow',
+      sessionId: '',
+      sessionName: '',
+      status: 'queued',
+      clusterName: '',
+      chatEndpoint: null,
+      workflowVersion: '',
+      documentRevision: '',
     });
   });
 });
@@ -1742,6 +2196,15 @@ describe('buildTrackerHttpAdapter', () => {
     expect(client.get).toHaveBeenCalledWith('/tracker/projects/proj-1');
   });
 
+  it('appends tracker_connection_id when fetching a single project', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(rawProject);
+    await buildTrackerHttpAdapter(client).getProject('proj-1', 'tracker-main');
+    expect(client.get).toHaveBeenCalledWith(
+      '/tracker/projects/proj-1?tracker_connection_id=tracker-main',
+    );
+  });
+
   it('calls GET /tracker/projects/:id/milestones', async () => {
     const client = makeClient();
     client.get.mockResolvedValue([rawMilestone]);
@@ -1749,6 +2212,15 @@ describe('buildTrackerHttpAdapter', () => {
     expect(client.get).toHaveBeenCalledWith('/tracker/projects/proj-1/milestones');
     expect(ms?.sortOrder).toBe(1);
     expect(ms?.projectId).toBe('proj-1');
+  });
+
+  it('appends tracker_connection_id when listing milestones', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([rawMilestone]);
+    await buildTrackerHttpAdapter(client).listMilestones('proj-1', 'tracker-main');
+    expect(client.get).toHaveBeenCalledWith(
+      '/tracker/projects/proj-1/milestones?tracker_connection_id=tracker-main',
+    );
   });
 
   it('calls GET /tracker/projects/:id/issues without milestone filter', async () => {
@@ -1763,6 +2235,15 @@ describe('buildTrackerHttpAdapter', () => {
     client.get.mockResolvedValue([rawIssue]);
     await buildTrackerHttpAdapter(client).listIssues('proj-1', 'ms-1');
     expect(client.get).toHaveBeenCalledWith('/tracker/projects/proj-1/issues?milestone_id=ms-1');
+  });
+
+  it('appends tracker_connection_id without a milestone filter', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([rawIssue]);
+    await buildTrackerHttpAdapter(client).listIssues('proj-1', undefined, 'tracker-main');
+    expect(client.get).toHaveBeenCalledWith(
+      '/tracker/projects/proj-1/issues?tracker_connection_id=tracker-main',
+    );
   });
 
   it('transforms tracker issue camelCase', async () => {
@@ -1830,6 +2311,50 @@ describe('buildTrackerHttpAdapter', () => {
     });
   });
 
+  it('targets a specific instance when the import target mode is "instance"', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue(rawSaga);
+
+    await buildTrackerHttpAdapter(client).importProject(
+      'proj-1',
+      ['niuulabs/volundr'],
+      'main',
+      null,
+      { target: { mode: 'instance', instanceId: 'instance-42' } },
+    );
+
+    expect(client.post).toHaveBeenCalledWith(
+      '/tracker/import',
+      expect.objectContaining({
+        instance_id: 'instance-42',
+        target_tags: [],
+        target_match: 'all',
+      }),
+    );
+  });
+
+  it('defaults tag target match to "all" when the caller omits it', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue(rawSaga);
+
+    await buildTrackerHttpAdapter(client).importProject(
+      'proj-1',
+      ['niuulabs/volundr'],
+      'main',
+      null,
+      { target: { mode: 'tags', tags: ['gpu'] } },
+    );
+
+    expect(client.post).toHaveBeenCalledWith(
+      '/tracker/import',
+      expect.objectContaining({
+        instance_id: null,
+        target_tags: ['gpu'],
+        target_match: 'all',
+      }),
+    );
+  });
+
   it('normalizes lightweight tracker import responses without phase_summary', async () => {
     const client = makeClient();
     client.post.mockResolvedValue({
@@ -1884,6 +2409,20 @@ describe('buildDispatchBusHttpAdapter', () => {
     expect(item?.sagaId).toBe(rawDispatchQueueItem.saga_id);
     expect(item?.phaseName).toBe(rawDispatchQueueItem.phase_name);
     expect(item?.priorityLabel).toBe(rawDispatchQueueItem.priority_label);
+    expect(item?.targetMatch).toBeUndefined();
+  });
+
+  it('maps queue item target_match "any" and "all"', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      { ...rawDispatchQueueItem, target_match: 'any' },
+      { ...rawDispatchQueueItem, target_match: 'all' },
+    ]);
+
+    const items = await buildDispatchBusHttpAdapter(client).getQueue();
+
+    expect(items[0]?.targetMatch).toBe('any');
+    expect(items[1]?.targetMatch).toBe('all');
   });
 
   it('calls GET /dispatch/targets and camelizes cluster items', async () => {
@@ -2209,6 +2748,57 @@ describe('buildSpecsHttpAdapter', () => {
       connectionId: 'forge-main',
     });
   });
+
+  it('calls GET /specs/campaigns for listCampaigns', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([rawResearchCampaign]);
+
+    const [campaign] = await buildSpecsHttpAdapter(client).listCampaigns();
+
+    expect(client.get).toHaveBeenCalledWith('/specs/campaigns');
+    expect(campaign.ownerId).toBe('user-1');
+  });
+
+  it('gets a spec campaign and an artifact successfully', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce({ ...rawResearchCampaign, artifacts: [rawArtifact] });
+    client.get.mockResolvedValueOnce({ ...rawArtifact, content: 'Full artifact body' });
+
+    const service = buildSpecsHttpAdapter(client);
+    const campaign = await service.getCampaign('spec/release-notes');
+    const artifact = await service.getArtifact('spec/release-notes', 'reports/final.md');
+
+    expect(campaign?.artifacts[0]?.path).toBe('reports/final.md');
+    expect(artifact?.content).toBe('Full artifact body');
+  });
+
+  it('calls DELETE /specs/campaigns/:slug for deleteCampaign', async () => {
+    const client = makeClient();
+
+    await buildSpecsHttpAdapter(client).deleteCampaign('spec/release-notes');
+
+    expect(client.delete).toHaveBeenCalledWith('/specs/campaigns/spec%2Frelease-notes');
+  });
+
+  it('reviews a spec campaign gate and returns the updated campaign', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue(rawResearchCampaign);
+
+    const campaign = await buildSpecsHttpAdapter(client).reviewCampaign('spec/release-notes', {
+      decision: 'approve',
+      notes: 'Looks good.',
+      gateId: 'gate-1',
+      nodeId: 'node-1',
+    });
+
+    expect(client.post).toHaveBeenCalledWith('/specs/campaigns/spec%2Frelease-notes/review', {
+      decision: 'approve',
+      notes: 'Looks good.',
+      gateId: 'gate-1',
+      nodeId: 'node-1',
+    });
+    expect(campaign.ownerId).toBe('user-1');
+  });
 });
 
 describe('buildTingSettingsHttpAdapter', () => {
@@ -2478,6 +3068,89 @@ describe('research campaign artifact summary', () => {
     // Null reads as "not summarised", which the cards show as unknown rather
     // than as a campaign with no artifacts.
     expect(campaign?.artifactSummary).toBeNull();
+  });
+
+  it('defaults artifact summary counters that the service omits', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([{ ...rawResearchCampaign, artifact_summary: {} }]);
+
+    const [campaign] = await buildResearchHttpAdapter(client).listCampaigns();
+
+    expect(campaign?.artifactSummary).toEqual({
+      artifactCount: 0,
+      sourceCount: 0,
+      critiqueCount: 0,
+      learningCount: 0,
+      followUpCount: 0,
+      published: false,
+      known: true,
+    });
+  });
+});
+
+describe('research campaign field defaults', () => {
+  it('defaults every dual-named field when the service sends only required fields', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      {
+        id: 'campaign-min',
+        slug: 'campaign-min',
+        name: 'Minimal Campaign',
+        status: 'running',
+      },
+    ]);
+
+    const [campaign] = await buildResearchHttpAdapter(client).listCampaigns();
+
+    expect(campaign).toMatchObject({
+      ownerId: '',
+      workflowId: '',
+      workflowVersion: '',
+      workflowName: '',
+      sessionId: '',
+      sessionName: '',
+      activeStageId: undefined,
+      stageState: [],
+      metadata: {},
+      createdAt: '',
+      updatedAt: '',
+      lastActivityAt: null,
+      completedAt: null,
+      artifactSummary: null,
+    });
+  });
+
+  it('defaults campaign artifact fields the service omits', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      ...rawResearchCampaign,
+      artifacts: [{ path: 'notes/scratch.md', title: 'Scratch notes' }],
+    });
+
+    const detail = await buildResearchHttpAdapter(client).getCampaign('research/council-human-v1');
+
+    expect(detail?.artifacts[0]).toEqual({
+      path: 'notes/scratch.md',
+      title: 'Scratch notes',
+      updatedAt: '',
+      kind: undefined,
+      publishState: 'unknown',
+      sourceIds: [],
+      summary: null,
+    });
+    expect(detail?.canonicalArtifacts).toEqual({});
+  });
+
+  it('maps camelCase canonicalArtifacts when the service sends that spelling', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      ...rawResearchCampaign,
+      canonicalArtifacts: { brief: 'reports/final.md' },
+    });
+
+    const detail = await buildResearchHttpAdapter(client).getCampaign('research/council-human-v1');
+
+    expect(detail?.canonicalArtifacts).toEqual({ brief: 'reports/final.md' });
   });
 });
 

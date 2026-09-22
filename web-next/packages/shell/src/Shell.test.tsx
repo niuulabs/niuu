@@ -1,11 +1,18 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { useState } from 'react';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryHistory, createRoute } from '@tanstack/react-router';
-import { ConfigProvider, FeatureCatalogProvider, definePlugin } from '@niuulabs/plugin-sdk';
+import {
+  ConfigProvider,
+  FeatureCatalogProvider,
+  ServicesProvider,
+  definePlugin,
+  type IFeatureCatalogService,
+} from '@niuulabs/plugin-sdk';
 import { Shell } from './Shell';
 import { PluginSlot } from './ShellLayout';
+import { UI_MODE_STORAGE_KEY } from './uiMode';
 
 // Plugins that use render() (no routes) — cover the render-fallback path.
 const pluginA = definePlugin({
@@ -84,6 +91,91 @@ const pluginNoSubnav = definePlugin({
   title: 'Flat',
   subtitle: 'no subnav',
   render: () => <div data-testid="flat-content">flat-rendered</div>,
+});
+
+// Top plugin with an icon and an empty subtitle — covers the icon rail-item class
+// and the tooltip's no-subtitle branch.
+const pluginTopIcon = definePlugin({
+  id: 'topicon',
+  rune: 'ᛏ'.replace('ᛏ', 'T'),
+  icon: <span data-testid="topicon-icon">TI</span>,
+  title: 'TopIcon',
+  subtitle: '',
+  render: () => <div data-testid="topicon-content">topicon-rendered</div>,
+});
+
+// Bottom-pinned plugin with an icon — covers the rail-footer section entirely.
+const pluginBottomIcon = definePlugin({
+  id: 'bikon',
+  rune: 'B',
+  icon: <span data-testid="bikon-icon">BI</span>,
+  title: 'BottomIcon',
+  subtitle: 'pinned below',
+  position: 'bottom',
+  render: () => <div data-testid="bikon-content">bikon-rendered</div>,
+});
+
+// Plugin whose tabs carry an explicit activeTab override and a rune glyph.
+const pluginWithActiveTabOverride = definePlugin({
+  id: 'override',
+  rune: 'O',
+  title: 'Override',
+  subtitle: 'active tab override',
+  activeTab: 'y',
+  tabs: [
+    { id: 'x', label: 'X' },
+    { id: 'y', label: 'Y', rune: 'ᚱ' },
+  ],
+  render: () => <div data-testid="override-content">override-rendered</div>,
+});
+
+// Plugin with a tab whose path equals the plugin's own base route.
+const pluginWithBaseTab = definePlugin({
+  id: 'dash',
+  rune: 'D',
+  title: 'Dash',
+  subtitle: 'base tab',
+  tabs: [{ id: 'home', label: 'Home', path: '/dash' }],
+  render: () => <div data-testid="dash-content">dash-rendered</div>,
+});
+
+// Plugin with two clickable tabs and an onTab callback — covers the tab onClick handler.
+const pluginTabClick = definePlugin({
+  id: 'tabclick',
+  rune: 'C',
+  title: 'TabClick',
+  subtitle: 'click test',
+  tabs: [
+    { id: 'one', label: 'One' },
+    { id: 'two', label: 'Two' },
+  ],
+  render: () => <div data-testid="tabclick-content">tabclick-rendered</div>,
+});
+
+// Plugin with two nested tab routes, neither of which equals the plugin's own base
+// path — covers the "prefer the longer matching tab" exclusion logic (a shorter tab
+// path that is a prefix of another, also-matching, longer tab path).
+const pluginWithNestedTabs = definePlugin({
+  id: 'nest',
+  rune: 'N',
+  title: 'Nest',
+  subtitle: 'nested tabs',
+  tabs: [
+    { id: 'over', label: 'Over', path: '/nest/over', rune: 'ᚾ' },
+    { id: 'under', label: 'Under', path: '/nest/over/under' },
+  ],
+  routes: (rootRoute) => [
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/nest/over',
+      component: () => <div data-testid="nest-over-content">nest-over</div>,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/nest/over/under',
+      component: () => <div data-testid="nest-under-content">nest-under</div>,
+    }),
+  ],
 });
 
 function HookFooter() {
@@ -349,5 +441,185 @@ describe('Shell', () => {
     await waitFor(() => {
       expect(document.querySelector('.niuu-shell__subnav--collapsed')).toBeInTheDocument();
     });
+  });
+
+  it('renders bottom-pinned plugins with icons in the rail, and hides an empty tooltip subtitle', async () => {
+    const user = userEvent.setup({ delay: null });
+    wrap(
+      <Shell plugins={[pluginTopIcon, pluginBottomIcon]} _testHistory={memHistory('/topicon')} />,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('topicon-content')).toBeInTheDocument();
+    });
+
+    // Active top plugin: rendered with both the icon and active rail-item classes.
+    const topItem = screen.getByTestId('rail-item-topicon');
+    expect(topItem.className).toContain('niuu-shell__rail-item--icon');
+    expect(topItem.className).toContain('niuu-shell__rail-item--active');
+
+    // Bottom-pinned plugin: rendered below the spacer, with its icon class, inactive.
+    const bottomItem = screen.getByTestId('rail-item-bikon');
+    expect(bottomItem).toBeInTheDocument();
+    expect(bottomItem.className).toContain('niuu-shell__rail-item--icon');
+    expect(bottomItem.className).not.toContain('niuu-shell__rail-item--active');
+
+    // Empty subtitle on the active plugin means the tooltip renders only the title.
+    await user.hover(topItem);
+    await waitFor(() => {
+      expect(screen.getByRole('tooltip')).toBeInTheDocument();
+    });
+    const tooltip = screen.getByRole('tooltip');
+    expect(tooltip).toHaveTextContent('TopIcon');
+    expect(tooltip.querySelector('.niuu-shell__rail-tooltip')?.querySelector('span')).toBeNull();
+
+    // Clicking a bottom-pinned rail item navigates to it, same as a top rail item.
+    fireEvent.click(bottomItem);
+    await waitFor(() => {
+      expect(screen.getByTestId('bikon-content')).toBeInTheDocument();
+    });
+  });
+
+  it('falls through an earlier plugin whose default tab paths do not match the route', async () => {
+    // pluginWithTabs (checked first) has no explicit tab paths, so activePluginId
+    // must compute the default `/${pluginId}/${tabId}` path for each of its tabs
+    // before concluding none of them match and moving on to pluginA.
+    wrap(<Shell plugins={[pluginWithTabs, pluginA]} _testHistory={memHistory('/alpha')} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('alpha-content')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('tabbed-content')).not.toBeInTheDocument();
+  });
+
+  it('renders no active plugin chrome when the route matches no plugin', async () => {
+    wrap(<Shell plugins={[]} _testHistory={memHistory('/missing')} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('404')).toBeInTheDocument();
+    });
+
+    // No active plugin: no title, no tabs, no footer plugin badge.
+    expect(screen.queryByRole('heading', { level: 1 })).not.toBeInTheDocument();
+    expect(document.querySelector('.niuu-shell__footer-left code')).not.toBeInTheDocument();
+    expect(screen.getByTestId('footer-status')).toBeEmptyDOMElement();
+    expect(screen.getByText('0 plugins loaded')).toBeInTheDocument();
+    // Nothing was persisted to localStorage since there is no active plugin id.
+    expect(localStorage.getItem('niuu.active')).toBeNull();
+  });
+
+  it('keeps a plugin visible when its route is active even though simple mode hides it', async () => {
+    localStorage.setItem(UI_MODE_STORAGE_KEY, 'simple');
+    wrap(<Shell plugins={[pluginWithSimpleMode, pluginA]} _testHistory={memHistory('/alpha')} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('alpha-content')).toBeInTheDocument();
+    });
+    // Alpha declares no `simple` config, so simple mode would normally hide it —
+    // but it stays in the rail because it is the plugin the current route is on.
+    expect(screen.getByTestId('rail-item-alpha')).toBeInTheDocument();
+  });
+
+  it('switches the color theme from the topbar select', async () => {
+    wrap(<Shell plugins={[pluginA]} _testHistory={memHistory('/alpha')} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('alpha-content')).toBeInTheDocument();
+    });
+
+    const select = screen.getByRole('combobox', { name: 'Color theme' });
+    fireEvent.change(select, { target: { value: 'amber' } });
+
+    await waitFor(() => {
+      expect(document.querySelector('.niuu-shell')).toHaveAttribute('data-theme', 'amber');
+    });
+  });
+
+  it('switches plugins from the command palette', async () => {
+    wrap(<Shell plugins={[pluginA, pluginB]} _testHistory={memHistory('/alpha')} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('alpha-content')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open command palette' }));
+    const option = await screen.findByRole('option', { name: /Beta/i });
+    fireEvent.pointerDown(option);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('beta-content')).toBeInTheDocument();
+    });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('navigates and fires onTab when a topbar tab is clicked', async () => {
+    const onTab = vi.fn();
+    const history = memHistory('/tabclick');
+    wrap(<Shell plugins={[{ ...pluginTabClick, onTab }]} _testHistory={history} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('tabclick-content')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('tabclick-tab-two'));
+
+    expect(onTab).toHaveBeenCalledWith('two');
+    await waitFor(() => {
+      expect(history.location.pathname).toBe('/tabclick/two');
+    });
+  });
+
+  it('honors an explicit activeTab override, rendering its rune glyph', async () => {
+    wrap(<Shell plugins={[pluginWithActiveTabOverride]} _testHistory={memHistory('/override')} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('override-content')).toBeInTheDocument();
+    });
+
+    // Explicit activeTab='y' wins regardless of the current route.
+    expect(screen.getByTestId('override-tab-y').className).toContain('niuu-shell__tab--active');
+    expect(screen.getByTestId('override-tab-x').className).not.toContain('niuu-shell__tab--active');
+    expect(screen.getByTestId('override-tab-y')).toHaveTextContent('ᚱ');
+  });
+
+  it('marks a tab active when its path equals the plugin base route', async () => {
+    wrap(<Shell plugins={[pluginWithBaseTab]} _testHistory={memHistory('/dash')} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('dash-content')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('dash-tab-home').className).toContain('niuu-shell__tab--active');
+  });
+
+  it('prefers the longer, more specific matching tab path over a shorter prefix', async () => {
+    wrap(<Shell plugins={[pluginWithNestedTabs]} _testHistory={memHistory('/nest/over/under')} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('nest-under-content')).toBeInTheDocument();
+    });
+
+    // '/nest/over/under' matches both tab paths as a prefix, but 'under' is the more
+    // specific match, so 'over' must not also claim to be active.
+    expect(screen.getByTestId('nest-tab-under').className).toContain('niuu-shell__tab--active');
+    expect(screen.getByTestId('nest-tab-over').className).not.toContain('niuu-shell__tab--active');
+    expect(screen.getByTestId('nest-tab-over')).toHaveTextContent('ᚾ');
+  });
+
+  it('surfaces a mode-preference sync error in the footer', async () => {
+    const features: IFeatureCatalogService = {
+      getFeatureModules: vi.fn().mockResolvedValue([]),
+      getUserFeaturePreferences: vi.fn().mockRejectedValue(new Error('preferences unreachable')),
+      updateUserFeaturePreferences: vi.fn(),
+      toggleFeature: vi.fn(),
+    };
+    render(
+      <ConfigProvider value={{ demoMode: false, theme: 'ice', plugins: {}, services: {} }}>
+        <ServicesProvider services={{ features }}>
+          <FeatureCatalogProvider>
+            <Shell plugins={[pluginA]} _testHistory={memHistory('/alpha')} />
+          </FeatureCatalogProvider>
+        </ServicesProvider>
+      </ConfigProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('alpha-content')).toBeInTheDocument();
+    });
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('interface preference unavailable');
+    expect(alert).toHaveAttribute('title', 'preferences unreachable');
   });
 });

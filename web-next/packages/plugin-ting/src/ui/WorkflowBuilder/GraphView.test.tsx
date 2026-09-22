@@ -95,6 +95,15 @@ const includeNode: WorkflowNode = {
   position: { x: 400, y: 320 },
 };
 
+const subworkflowNode: WorkflowNode = {
+  id: 'subworkflow-1',
+  kind: 'subworkflow',
+  label: 'Research thread',
+  maxChildren: 3,
+  templates: { research: 'Research' },
+  position: { x: 860, y: 80 },
+} as WorkflowNode;
+
 const edge: WorkflowEdge = {
   id: 'e1',
   source: 'stage-1',
@@ -1622,5 +1631,188 @@ describe('GraphView', () => {
     expect(screen.getByTestId('zoom-level')).toHaveTextContent('115%');
     fireEvent.click(screen.getByTestId('zoom-fit'));
     expect(screen.getByTestId('zoom-level')).toHaveTextContent('100%');
+  });
+
+  it('resets the one-to-one zoom safely when the workflow has no nodes', () => {
+    render(<GraphView {...defaultProps()} nodes={[]} edges={[]} />);
+    fireEvent.click(screen.getByTestId('zoom-in'));
+    expect(screen.getByTestId('zoom-level')).toHaveTextContent('115%');
+    fireEvent.click(screen.getByTestId('zoom-one-to-one'));
+    expect(screen.getByTestId('zoom-level')).toHaveTextContent('100%');
+  });
+
+  it('supports keyboard selection, inspection, and context-menu on gate, cond, wait, end, include, and subworkflow cards', () => {
+    const props = {
+      ...defaultProps(),
+      nodes: [gateNode, condNode, waitNode, endNode, includeNode, subworkflowNode],
+      edges: [],
+    };
+    render(<GraphView {...props} />);
+    for (const node of [gateNode, condNode, waitNode, endNode, includeNode, subworkflowNode]) {
+      const el = screen.getByTestId(`workflow-node-${node.id}`);
+      fireEvent.keyDown(el, { key: ' ' });
+      expect(props.onSelectNode).toHaveBeenCalledWith(node.id);
+      fireEvent.keyDown(el, { key: 'Enter' });
+      expect(props.onInspectNode).toHaveBeenCalledWith(node.id);
+      // A key that is neither Enter nor Space is a no-op — exercises the
+      // early-return branch of each card's onKeyDown handler.
+      props.onSelectNode.mockClear();
+      props.onInspectNode.mockClear();
+      fireEvent.keyDown(el, { key: 'a' });
+      expect(props.onSelectNode).not.toHaveBeenCalled();
+      expect(props.onInspectNode).not.toHaveBeenCalled();
+
+      fireEvent.contextMenu(el);
+      expect(props.onInspectNode).toHaveBeenCalledWith(node.id);
+      props.onInspectNode.mockClear();
+    }
+  });
+
+  it('shows data-selected and the delete button on every selectable card kind when selected, and hides the delete button while connecting or read-only', () => {
+    const props = {
+      ...defaultProps(),
+      nodes: [gateNode, condNode, waitNode, endNode, includeNode, subworkflowNode],
+      edges: [],
+    };
+    for (const node of [gateNode, condNode, waitNode, endNode, includeNode, subworkflowNode]) {
+      const { unmount } = render(<GraphView {...props} selectedNodeId={node.id} />);
+      expect(screen.getByTestId(`workflow-node-${node.id}`)).toHaveAttribute(
+        'data-selected',
+        'true',
+      );
+      expect(screen.getByTestId(`delete-btn-${node.id}`)).toBeInTheDocument();
+      unmount();
+    }
+
+    const { rerender } = render(
+      <GraphView {...props} selectedNodeId="gate-1" connectingFromId="stage-1" />,
+    );
+    expect(screen.queryByTestId('delete-btn-gate-1')).not.toBeInTheDocument();
+
+    rerender(<GraphView {...props} selectedNodeId="gate-1" readOnly />);
+    expect(screen.queryByTestId('delete-btn-gate-1')).not.toBeInTheDocument();
+  });
+
+  it('shows a crosshair cursor on gate/cond/wait/end/include/subworkflow cards while connecting', () => {
+    const props = {
+      ...defaultProps(),
+      nodes: [gateNode, condNode, waitNode, endNode, includeNode, subworkflowNode],
+      edges: [],
+    };
+    const { rerender } = render(<GraphView {...props} />);
+    for (const node of [gateNode, condNode, waitNode, endNode, includeNode, subworkflowNode]) {
+      expect(screen.getByTestId(`workflow-node-${node.id}`)).toHaveStyle({ cursor: 'grab' });
+    }
+    rerender(<GraphView {...props} connectingFromId="stage-1" />);
+    for (const node of [gateNode, condNode, waitNode, endNode, includeNode, subworkflowNode]) {
+      expect(screen.getByTestId(`workflow-node-${node.id}`)).toHaveStyle({ cursor: 'crosshair' });
+    }
+  });
+
+  it('leaves an unconfigured wait node untouched when its incoming ports are already configured', () => {
+    const configuredWait: WorkflowEdge = {
+      id: 'wait-configured-in',
+      source: 'stage-1',
+      target: 'wait-1',
+      label: 'notes->waiting.for.notes',
+      cp1: { x: 80, y: 0 },
+      cp2: { x: -80, y: 0 },
+    };
+    const prompt = vi.spyOn(window, 'prompt');
+    const props = {
+      ...defaultProps(),
+      nodes: [stageNode, waitNode],
+      edges: [configuredWait],
+      connectingFromId: 'stage-1',
+      connectingFromLabel: 'notes',
+    };
+    render(<GraphView {...props} />);
+    // Mouse-down-to-complete-connect on the card body (not a specific port)
+    // routes through `completeUnconfiguredConnection`, which no-ops once an
+    // incoming port already exists instead of prompting again.
+    fireEvent.mouseDown(screen.getByTestId('workflow-node-wait-1'), { button: 0 });
+    expect(prompt).not.toHaveBeenCalled();
+    prompt.mockRestore();
+  });
+
+  it('does not start an outgoing wait connection when the continuation prompt is dismissed', () => {
+    const prompt = vi.spyOn(window, 'prompt').mockReturnValue(null);
+    const props = { ...defaultProps(), nodes: [waitNode], edges: [] };
+    render(<GraphView {...props} />);
+    fireEvent.click(screen.getByTestId('wait-output-wait-1'));
+    expect(props.onStartConnect).not.toHaveBeenCalled();
+    prompt.mockRestore();
+  });
+
+  it('activates the incoming/outgoing wait circle via keyboard and ignores non-activation keys', () => {
+    const prompt = vi
+      .spyOn(window, 'prompt')
+      .mockReturnValueOnce('custom.in')
+      .mockReturnValueOnce('custom.out');
+    const props = { ...defaultProps(), nodes: [waitNode], edges: [] };
+    const { rerender } = render(<GraphView {...props} />);
+    const outputCircle = screen.getByTestId('wait-output-wait-1');
+    fireEvent.keyDown(outputCircle, { key: 'a' });
+    expect(props.onStartConnect).not.toHaveBeenCalled();
+    fireEvent.keyDown(outputCircle, { key: 'Enter' });
+    expect(props.onStartConnect).toHaveBeenCalledWith('wait-1', 'custom.in');
+
+    rerender(<GraphView {...props} connectingFromId="stage-1" connectingFromLabel="x" />);
+    const inputCircle = screen.getByTestId('wait-input-wait-1');
+    fireEvent.keyDown(inputCircle, { key: 'a' });
+    expect(props.onCompleteConnect).not.toHaveBeenCalled();
+    fireEvent.keyDown(inputCircle, { key: ' ' });
+    expect(props.onCompleteConnect).toHaveBeenCalledWith('wait-1', 'custom.out');
+    prompt.mockRestore();
+  });
+
+  it('derives an empty port list when a stage member references a persona that is not in the catalog', () => {
+    const stageWithMissingPersona: WorkflowNode = {
+      ...stageNode,
+      personaIds: ['unknown-persona'],
+    };
+    expect(stagePortLists(stageWithMissingPersona as never, personaFixtures as never)).toEqual({
+      knownInputs: [],
+      knownOutputs: [],
+    });
+  });
+
+  it('returns null from edgeAnchor when no port label is given', () => {
+    expect(edgeAnchor(stageNode, 'source', null, [])).toBeNull();
+  });
+
+  it('anchors a wait node with configured ports above its port-row footer', () => {
+    const waitEdges: WorkflowEdge[] = [
+      {
+        id: 'wait-in',
+        source: 'stage-1',
+        target: 'wait-1',
+        label: 'notes->waiting.for.notes',
+        cp1: { x: 80, y: 0 },
+        cp2: { x: -80, y: 0 },
+      },
+    ];
+    const anchor = edgeAnchor(waitNode, 'target', 'waiting.for.notes', [], waitEdges);
+    expect(anchor).not.toBeNull();
+    expect(anchor!.y).toBeGreaterThan(waitNode.position.y);
+  });
+
+  it('ignores an ambiguous socket click on an include node when the prompt is dismissed', () => {
+    const promptedIncludeNode: WorkflowNode = {
+      ...includeNode,
+      id: 'include-ambiguous',
+      nodes: { a: 'child-a', b: 'child-b' },
+    };
+    const prompt = vi.spyOn(window, 'prompt').mockReturnValue(null);
+    const props = {
+      ...defaultProps(),
+      nodes: [promptedIncludeNode],
+      edges: [],
+      selectedNodeId: 'include-ambiguous',
+    };
+    render(<GraphView {...props} />);
+    fireEvent.mouseDown(screen.getByTestId('workflow-node-include-ambiguous'), { button: 0 });
+    expect(props.onStartConnect).not.toHaveBeenCalled();
+    prompt.mockRestore();
   });
 });
