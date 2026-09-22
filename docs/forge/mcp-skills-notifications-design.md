@@ -66,6 +66,10 @@ must not mint its own claimed sender or inherit the operator's unrestricted PAT.
 Reuse Niuu workload identity/credential services, audience validation, expiry,
 revocation and audit. Guild routing uses registered node identities and configured
 credentials; advertising a node does not authorize access to its sessions.
+Distinguish the caller's registry entry ID from the owning node's stable identity:
+resolve the former locally, strip that routing selector before forwarding, and
+stamp events with the authenticated owner's canonical node identity. A registry
+UUID copied from Thor must not be interpreted as BuildBro's local registry UUID.
 
 The desired agent-message envelope is `origin: agent`, authenticated sender node /
 session, target node / session, request ID and correlation ID. Current user-role
@@ -161,6 +165,11 @@ remain distinct, even if one user action can update both.
 
 ## Maintenance and refresh
 
+The proposed artifact-based fleet path is detailed in
+[fleet-container-deployment-design.md](fleet-container-deployment-design.md).
+It separates API replacement, per-session runtime adoption and database/engine
+maintenance, with a node updater that remains available during API replacement.
+
 A Forge API update can preserve live gateways only through the qualified local
 release path in [local-api-release.md](local-api-release.md): isolated immutable
 candidate and rollback environments, compatible migrations, process identity
@@ -175,7 +184,11 @@ idle/stopped. It checks session access and the broker's reported session ID and
 routes through the owning node. Other deployment backends report no candidate until
 they can identify their actual deployable runtime image. The web title bar exposes
 the comparison. This is visibility, not automatic migration or proof of ordering
-between Git revisions.
+between Git revisions. A missing registered chat endpoint currently returns
+`not_running`; that describes Forge's endpoint registration, not proof that no OS
+process remains. Historical terminal rows with live stray gateways are preserved
+by the release inventory and require separate owner-led reconciliation. Never use
+this endpoint alone as authorization to stop a process or automatically refresh.
 
 Existing explicit stop/resume controls remain the manual route after a saved turn
 boundary; stopped sessions use the selected source when next started. No existing
