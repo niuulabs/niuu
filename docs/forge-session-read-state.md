@@ -44,7 +44,7 @@ methods to the owning instance using the existing authenticated proxy path.
 
 ## Persistence and completion
 
-Migration `000067_session_read_state` adds the latest-final projection to `sessions`
+Migration `000075_session_read_state` adds the latest-final projection to `sessions`
 and a `(session_id, user_id)` reader table. Up/down SQL is mirrored in the Helm
 migration ConfigMap inside its enabled guard. Session deletion cascades markers.
 
