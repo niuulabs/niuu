@@ -68,11 +68,5 @@
       "filename": "000067_session_coordination_revision.up.sql",
       "sha256": "2e82f5a71bf5f14422d775f2a65b907bb58c863ea677c60bb7a5b2b0d6531e36"
     }
-  ],
-  "000068_session_coordination_revision.up.sql": [
-    {
-      "filename": "000067_session_coordination_revision.up.sql",
-      "sha256": "2e82f5a71bf5f14422d775f2a65b907bb58c863ea677c60bb7a5b2b0d6531e36"
-    }
   ]
 }
