@@ -1599,3 +1599,41 @@ def test_native_history_import_preserves_conflict_response() -> None:
     )
     assert response.status_code == 409
     assert "stopped" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("method,status_code", [("GET", 200), ("PATCH", 200), ("PATCH", 409)])
+def test_read_state_is_forwarded_to_owning_instance(method, status_code):
+    instance = _instance("local", base_url="https://forge.example.test", is_default=True)
+    client = _client([instance])
+    state = {
+        "latest_output_seq": 20,
+        "read_through_seq": 10,
+        "revision": 1,
+        "manually_unread": False,
+        "is_unread": True,
+    }
+    body = {"state": "read", "through_seq": 10, "expected_revision": 0}
+    with respx.mock:
+        respx.get("https://forge.example.test/api/v1/forge/sessions/s1").mock(
+            return_value=Response(200, json={"id": "s1", "name": "Session", "status": "running"})
+        )
+        route = respx.route(
+            method=method, url="https://forge.example.test/api/v1/forge/sessions/s1/read-state"
+        ).mock(
+            return_value=Response(
+                status_code, json=state if status_code == 200 else {"detail": "Read state changed"}
+            )
+        )
+        response = client.request(
+            method,
+            "/api/v1/forge/sessions/s1/read-state",
+            headers=_headers(),
+            **({"json": body} if method == "PATCH" else {}),
+        )
+    assert response.status_code == status_code
+    assert route.called
+    assert route.calls[0].request.headers["x-auth-user-id"] == "user-a"
+    if method == "PATCH":
+        import json
+
+        assert json.loads(route.calls[0].request.content) == body

@@ -49,6 +49,7 @@ from volundr.domain.ports import (
     StoragePort,
 )
 from volundr.domain.projects import SessionCoordination
+from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 
 if TYPE_CHECKING:
     from volundr.adapters.outbound.git_registry import GitProviderRegistry
@@ -352,6 +353,66 @@ class SessionService:
     async def get_session(self, session_id: UUID) -> Session | None:
         """Get a session by ID."""
         return await self._repository.get(session_id)
+
+    async def with_read_states(
+        self, sessions: list[Session], principal: Principal | None
+    ) -> list[Session]:
+        if principal is None or not sessions:
+            return sessions
+        states = await self._repository.get_read_states([s.id for s in sessions], principal.user_id)
+        return [s.model_copy(update={"read_state": states.get(s.id)}) for s in sessions]
+
+    async def get_read_state(self, session_id: UUID, principal: Principal) -> SessionReadState:
+        session = await self._repository.get(session_id)
+        if session is None:
+            raise SessionNotFoundError(session_id)
+        await self._check_access(session, principal, "read")
+        states = await self._repository.get_read_states([session_id], principal.user_id)
+        if session_id not in states:
+            raise SessionNotFoundError(session_id)
+        return states[session_id]
+
+    async def change_read_state(
+        self,
+        session_id: UUID,
+        change: SessionReadStateChange,
+        principal: Principal,
+    ) -> SessionReadState:
+        session = await self._repository.get(session_id)
+        if session is None:
+            raise SessionNotFoundError(session_id)
+        await self._check_access(session, principal, "read")
+        state = await self._repository.change_read_state(session_id, principal.user_id, change)
+        await self.notify_read_state_changed(session_id, reader_id=principal.user_id)
+        return state
+
+    async def notify_read_state_changed(
+        self, session_id: UUID, *, reader_id: str | None = None
+    ) -> None:
+        if self._broadcaster is None:
+            return
+        try:
+            session = await self._repository.get(session_id)
+            if session is None:
+                return
+            # Hint only: no reader's private marker is exposed to another reader. Consumers
+            # re-read the authorized projection. Finals use the owner-scoped fleet route.
+            await self._broadcaster.publish(
+                RealtimeEvent(
+                    type=EventType.SESSION_READ_STATE,
+                    data={
+                        "session_id": str(session_id),
+                        "owner_id": reader_id or session.owner_id or "",
+                    },
+                    timestamp=datetime.now(UTC),
+                )
+            )
+        except Exception:
+            # The durable commit is authoritative. A missed hint is recovered by fleet relisting;
+            # never turn an already-committed CAS mutation into an ambiguous HTTP failure.
+            logger.warning(
+                "Could not publish read-state refresh hint for %s", session_id, exc_info=True
+            )
 
     async def update_activity(
         self,

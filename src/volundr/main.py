@@ -17,6 +17,7 @@ from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.adapters.inbound.rest_realms import create_realms_router
 from niuu.adapters.postgres_credential_refresh_lock import PostgresCredentialRefreshLock
 from niuu.adapters.postgres_realms import PostgresRealmRepository
+from niuu.build_identity import build_identity
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.pat import PATService
 from niuu.domain.services.realm import RealmService
@@ -958,6 +959,10 @@ def create_app(
                 server_public_host=settings.server_public_host,
                 openshell_internal_gateway_url=settings.openshell_internal_gateway_url,
                 project_service=project_service,
+                runtime_build=build_identity()
+                if pod_manager.runtime_backend == "process"
+                else None,
+                runtime_health_timeout=settings.runtime_health_timeout_seconds,
                 history_max_turns=settings.conversation_recent_max_turns,
                 history_max_bytes=settings.conversation_recent_max_bytes,
             )

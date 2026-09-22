@@ -1,5 +1,7 @@
 """PostgreSQL adapter for session repository."""
 
+from __future__ import annotations
+
 import json
 from datetime import UTC, datetime
 from uuid import UUID
@@ -15,6 +17,11 @@ from volundr.domain.models import (
 )
 from volundr.domain.ports import SessionRepository
 from volundr.domain.projects import SessionCoordination
+from volundr.domain.session_read_state import (
+    SessionReadState,
+    SessionReadStateChange,
+    SessionReadStateConflictError,
+)
 
 
 class PostgresSessionRepository(SessionRepository):
@@ -229,7 +236,7 @@ class PostgresSessionRepository(SessionRepository):
         )
         return self._row_to_session(row) if row is not None else None
 
-    async def list_stale_running(self, older_than: datetime) -> "list[Session]":
+    async def list_stale_running(self, older_than: datetime) -> list[Session]:
         """Return RUNNING sessions whose last_active is at/before older_than."""
         rows = await self._pool.fetch(
             """SELECT * FROM sessions
@@ -240,6 +247,80 @@ class PostgresSessionRepository(SessionRepository):
             older_than,
         )
         return [self._row_to_session(row) for row in rows]
+
+    async def get_read_states(
+        self, session_ids: list[UUID], user_id: str
+    ) -> dict[UUID, SessionReadState]:
+        if not session_ids:
+            return {}
+        rows = await self._pool.fetch(
+            """SELECT s.id, s.latest_final_seq AS latest_output_seq,
+                s.latest_final_turn_id AS latest_output_turn_id,
+                s.latest_final_at AS latest_output_at,
+                COALESCE(r.read_through_seq, 0) AS read_through_seq,
+                COALESCE(r.manually_unread, FALSE) AS manually_unread,
+                COALESCE(r.revision, 0) AS revision
+            FROM sessions s LEFT JOIN session_read_states r
+                ON r.session_id = s.id AND r.user_id = $2
+            WHERE s.id = ANY($1::uuid[])""",
+            session_ids,
+            user_id,
+        )
+        return {row["id"]: SessionReadState.model_validate(dict(row)) for row in rows}
+
+    async def change_read_state(
+        self,
+        session_id: UUID,
+        user_id: str,
+        change: SessionReadStateChange,
+    ) -> SessionReadState:
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                # Serializes both completion projection and reader mutations. Generic lifecycle
+                # updates deliberately do not write these columns or this separate reader table.
+                session = await conn.fetchrow(
+                    "SELECT latest_final_seq, latest_final_turn_id, latest_final_at "
+                    "FROM sessions WHERE id=$1 FOR UPDATE",
+                    session_id,
+                )
+                if session is None:
+                    raise ValueError("Session no longer exists")
+                current = await conn.fetchrow(
+                    "SELECT * FROM session_read_states WHERE session_id=$1 AND user_id=$2",
+                    session_id,
+                    user_id,
+                )
+                revision = current["revision"] if current else 0
+                if change.expected_revision != revision:
+                    raise SessionReadStateConflictError(
+                        "Read state changed; refresh before changing it"
+                    )
+                if change.through_seq > session["latest_final_seq"]:
+                    raise ValueError("Cannot mark unseen future output as read")
+                through = current["read_through_seq"] if current else 0
+                if change.state == "read":
+                    through = max(through, change.through_seq)
+                forced = change.state == "unread"
+                await conn.execute(
+                    """INSERT INTO session_read_states
+                        (session_id, user_id, read_through_seq, manually_unread, revision)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (session_id, user_id) DO UPDATE
+                    SET read_through_seq=$3, manually_unread=$4, revision=$5""",
+                    session_id,
+                    user_id,
+                    through,
+                    forced,
+                    revision + 1,
+                )
+                return SessionReadState(
+                    latest_output_seq=session["latest_final_seq"],
+                    latest_output_turn_id=session["latest_final_turn_id"],
+                    latest_output_at=session["latest_final_at"],
+                    read_through_seq=through,
+                    manually_unread=forced,
+                    revision=revision + 1,
+                )
 
     async def delete(self, session_id: UUID) -> bool:
         """Delete a session by ID."""

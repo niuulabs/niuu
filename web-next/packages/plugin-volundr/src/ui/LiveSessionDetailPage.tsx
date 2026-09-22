@@ -71,6 +71,7 @@ import { useSessionTabs } from './ForgeSessionSettings';
 import { useForgePreference } from './useForgePreference';
 import { SessionResources } from './SessionResources';
 import { SessionEnvironment } from './SessionEnvironment';
+import { SessionRuntimeVersion } from './SessionRuntimeVersion';
 import { sessionModelLabel } from '../domain/sessionModelLabel';
 
 export type LiveSessionTab =
@@ -3888,6 +3889,7 @@ function LiveSessionDetailPageInner({
                 <>
                   <HeaderDivider />
                   <SourceMeta session={liveSession} />
+                  {liveSession && <SessionRuntimeVersion session={liveSession} service={volundr} />}
                 </>
               ) : null}
               {forgeBadgeLabel ? (

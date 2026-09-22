@@ -1623,6 +1623,11 @@ export function buildVolundrHttpAdapter(
     },
     getSessions: (options) => loadSessions('/sessions', options),
     getSession: (id) => loadSession(id),
+    getRuntimeVersion: (id, instanceId) => {
+      const owner = instanceId ?? sessionCache.get(id)?.instanceId ?? archivedSessionOwners.get(id);
+      const suffix = owner ? `?instance_id=${encodeURIComponent(owner)}` : '';
+      return forgeClient.get(`/sessions/${encodeURIComponent(id)}/runtime-version${suffix}`);
+    },
     getActiveSessions: () => loadSessions('/sessions?active=true'),
     getStats: (options) =>
       options?.instanceId

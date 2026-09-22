@@ -40,5 +40,11 @@
       "filename": "000055_startup_schema_history.up.sql",
       "sha256": "d691bdc83fa0257005ff511431ddd78ea4ec1e828a1fa1cbe3565146306cf3e7"
     }
+  ],
+  "000068_session_coordination_revision.up.sql": [
+    {
+      "filename": "000067_session_coordination_revision.up.sql",
+      "sha256": "2e82f5a71bf5f14422d775f2a65b907bb58c863ea677c60bb7a5b2b0d6531e36"
+    }
   ]
 }

@@ -1640,6 +1640,7 @@ class Settings(BaseSettings):
 
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     projects: ProjectsConfig = Field(default_factory=ProjectsConfig)
+    runtime_health_timeout_seconds: float = Field(default=3.0, gt=0)
     conversation_recent_max_turns: int = Field(default=15, gt=0)
     conversation_recent_max_bytes: int = Field(default=256 * 1024, ge=4096)
     server_host: str = Field(

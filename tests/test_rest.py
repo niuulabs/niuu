@@ -251,11 +251,12 @@ class TestSSEEndpoint:
         from httpx import ASGITransport, AsyncClient
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.get("/api/v1/forge/sessions/stream")
+            response = await client.get("/api/v1/forge/sessions/stream?scope=local")
 
         assert response.status_code == 200
         assert "text/event-stream" in response.headers["content-type"]
         assert response.headers.get("cache-control") == "no-cache"
+        assert response.headers["X-Forge-Session-Scope"] == "local"
         lines = [line for line in response.text.splitlines() if line]
         assert any("event: heartbeat" in line for line in lines)
 
@@ -313,6 +314,15 @@ class TestSessionEndpoints:
 
         # Verify events were published (created + updated for starting + updated for provisioning)
         assert len(mock_broadcaster.session_created_events) == 1
+
+    @pytest.mark.parametrize("query", ["scope=local", "scope=local&status=archived", "scope=guild"])
+    def test_direct_session_scope_acknowledged(self, client, query):
+        response = client.get("/api/v1/forge/sessions?" + query)
+        assert response.status_code == 200
+        assert response.headers["X-Forge-Session-Scope"] == "local"
+
+    def test_direct_session_scope_rejects_typo(self, client):
+        assert client.get("/api/v1/forge/sessions?scope=locla").status_code == 422
 
     def test_list_sessions(self, client):
         """List sessions endpoint returns empty list initially."""

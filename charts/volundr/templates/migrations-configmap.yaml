@@ -1734,6 +1734,25 @@ data:
     DROP INDEX IF EXISTS idx_sessions_project;
     ALTER TABLE sessions DROP COLUMN IF EXISTS coordination;
     DROP TABLE IF EXISTS forge_projects;
+  000067_session_read_state.up.sql: |
+    -- Inbox attention is independent of lifecycle, and is scoped to the authenticated reader.
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS latest_final_seq BIGINT NOT NULL DEFAULT 0;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS latest_final_turn_id TEXT;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS latest_final_at TIMESTAMPTZ;
+    CREATE TABLE IF NOT EXISTS session_read_states (
+        session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL,
+        read_through_seq BIGINT NOT NULL DEFAULT 0 CHECK (read_through_seq >= 0),
+        manually_unread BOOLEAN NOT NULL DEFAULT FALSE,
+        revision BIGINT NOT NULL DEFAULT 0 CHECK (revision >= 0),
+        PRIMARY KEY (session_id, user_id)
+    );
+
+  000067_session_read_state.down.sql: |
+    DROP TABLE IF EXISTS session_read_states;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS latest_final_at;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS latest_final_turn_id;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS latest_final_seq;
   lineage-aliases.json: |
     {
       "000050_session_definition.up.sql": [
@@ -1777,11 +1796,18 @@ data:
           "filename": "000055_startup_schema_history.up.sql",
           "sha256": "d691bdc83fa0257005ff511431ddd78ea4ec1e828a1fa1cbe3565146306cf3e7"
         }
+      ],
+      "000068_session_coordination_revision.up.sql": [
+        {
+          "filename": "000067_session_coordination_revision.up.sql",
+          "sha256": "2e82f5a71bf5f14422d775f2a65b907bb58c863ea677c60bb7a5b2b0d6531e36"
+        }
       ]
     }
-  000067_session_coordination_revision.up.sql: |
+
+  000068_session_coordination_revision.up.sql: |
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS coordination_revision BIGINT NOT NULL DEFAULT 0;
 
-  000067_session_coordination_revision.down.sql: |
+  000068_session_coordination_revision.down.sql: |
     ALTER TABLE sessions DROP COLUMN IF EXISTS coordination_revision;
 {{- end }}
