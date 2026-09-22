@@ -158,11 +158,13 @@ def test_invalid_or_future_mutation_is_not_committed(inbox, body):
     assert client.get(path).json()["revision"] == 0
 
 
-def test_hint_failure_does_not_turn_committed_mutation_into_http_error(inbox):
-    client, _, session, _, _, broadcaster, _ = inbox
+def test_hint_publish_failure_raises_instead_of_being_swallowed(inbox):
+    client, repo, session, _, _, broadcaster, _ = inbox
     broadcaster.publish.side_effect = RuntimeError("hint transport unavailable")
-    response = client.patch(
-        f"/api/v1/forge/sessions/{session.id}/read-state",
-        json={"state": "read", "through_seq": 20, "expected_revision": 0},
-    )
-    assert response.status_code == 200 and not response.json()["is_unread"]
+    with pytest.raises(RuntimeError, match="hint transport unavailable"):
+        client.patch(
+            f"/api/v1/forge/sessions/{session.id}/read-state",
+            json={"state": "read", "through_seq": 20, "expected_revision": 0},
+        )
+    # The durable CAS mutation already committed before the hint publish raised.
+    assert not repo.read_markers[(session.id, "reader-a")].is_unread

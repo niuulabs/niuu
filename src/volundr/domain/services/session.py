@@ -372,28 +372,21 @@ class SessionService:
     ) -> None:
         if self._broadcaster is None:
             return
-        try:
-            session = await self._repository.get(session_id)
-            if session is None:
-                return
-            # Hint only: no reader's private marker is exposed to another reader. Consumers
-            # re-read the authorized projection. Finals use the owner-scoped fleet route.
-            await self._broadcaster.publish(
-                RealtimeEvent(
-                    type=EventType.SESSION_READ_STATE,
-                    data={
-                        "session_id": str(session_id),
-                        "owner_id": reader_id or session.owner_id or "",
-                    },
-                    timestamp=datetime.now(UTC),
-                )
+        session = await self._repository.get(session_id)
+        if session is None:
+            return
+        # Hint only: no reader's private marker is exposed to another reader. Consumers
+        # re-read the authorized projection. Finals use the owner-scoped fleet route.
+        await self._broadcaster.publish(
+            RealtimeEvent(
+                type=EventType.SESSION_READ_STATE,
+                data={
+                    "session_id": str(session_id),
+                    "owner_id": reader_id or session.owner_id or "",
+                },
+                timestamp=datetime.now(UTC),
             )
-        except Exception:
-            # The durable commit is authoritative. A missed hint is recovered by fleet relisting;
-            # never turn an already-committed CAS mutation into an ambiguous HTTP failure.
-            logger.warning(
-                "Could not publish read-state refresh hint for %s", session_id, exc_info=True
-            )
+        )
 
     async def update_activity(
         self,
