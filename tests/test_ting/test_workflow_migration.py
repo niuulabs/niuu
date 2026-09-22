@@ -18,7 +18,10 @@ from ravn.domain.persona_document import (
 )
 from ting.adapters.filesystem_workflows import FilesystemWorkflowRepository
 from ting.domain.models import WorkflowDefinition, WorkflowScope
-from ting.domain.services.workflow_migration import migrate_workflow_catalog
+from ting.domain.services.workflow_migration import (
+    WorkflowMigrationReport,
+    migrate_workflow_catalog,
+)
 from ting.migrate_workflows import _registry_source_for_workflow
 from ting.system_workflows import load_system_workflows
 
@@ -333,3 +336,234 @@ async def test_registry_source_hydrates_workflow_owner_only() -> None:
 
     registry.get_current_portable_persona.assert_awaited_once_with("alice", "reviewer")
     assert source.load_current_portable("reviewer") == portable
+
+
+def test_migration_report_to_dict() -> None:
+    report = WorkflowMigrationReport(
+        source_count=3,
+        referenced_count=1,
+        bundled_matches=1,
+        create_count=1,
+        unchanged_count=0,
+        errors=("boom",),
+        applied=False,
+    )
+
+    assert report.to_dict() == {
+        "source_count": 3,
+        "referenced_count": 1,
+        "bundled_matches": 1,
+        "create_count": 1,
+        "unchanged_count": 0,
+        "errors": ["boom"],
+        "can_apply": False,
+        "applied": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_workflow_migration_reports_reference_to_missing_workflow_row(tmp_path) -> None:
+    missing_id = uuid4()
+
+    report = await migrate_workflow_catalog(
+        source=_Source([], {missing_id}),
+        target=FilesystemWorkflowRepository(str(tmp_path)),
+        persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
+        bundled_workflows=load_system_workflows(),
+    )
+
+    assert report.can_apply is False
+    assert "Database references missing workflow row(s)" in report.errors[0]
+    assert str(missing_id) in report.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_workflow_migration_counts_exact_bundled_match(tmp_path) -> None:
+    packaged = load_system_workflows()[0]
+
+    report = await migrate_workflow_catalog(
+        source=_Source([packaged]),
+        target=FilesystemWorkflowRepository(str(tmp_path)),
+        persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
+        bundled_workflows=load_system_workflows(),
+    )
+
+    assert report.can_apply is True
+    assert report.bundled_matches == 1
+    assert report.create_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_workflow_migration_raises_when_referenced_identity_is_lost(tmp_path) -> None:
+    del tmp_path
+    packaged = load_system_workflows()[0]
+
+    class _EmptyTarget:
+        async def get_workflow(self, workflow_id: UUID) -> WorkflowDefinition | None:
+            del workflow_id
+            return None
+
+        async def save_workflow(self, workflow: WorkflowDefinition) -> WorkflowDefinition:
+            return workflow
+
+        async def authorize_bundled_replacements(self, workflow_ids: set[UUID]) -> None:
+            del workflow_ids
+
+        async def mark_migration_complete(self, metadata: dict) -> None:
+            del metadata
+
+    with pytest.raises(RuntimeError, match="lost referenced workflow identity"):
+        await migrate_workflow_catalog(
+            source=_Source([packaged], {packaged.id}),
+            target=_EmptyTarget(),
+            persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
+            bundled_workflows=[packaged],
+            apply=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_workflow_migration_raises_when_save_does_not_verify(tmp_path) -> None:
+    del tmp_path
+
+    class _CorruptingTarget:
+        def __init__(self) -> None:
+            self._store: dict[UUID, WorkflowDefinition] = {}
+
+        async def get_workflow(self, workflow_id: UUID) -> WorkflowDefinition | None:
+            return self._store.get(workflow_id)
+
+        async def save_workflow(self, workflow: WorkflowDefinition) -> WorkflowDefinition:
+            corrupted = replace(workflow, description="corrupted-on-save")
+            self._store[workflow.id] = corrupted
+            return corrupted
+
+        async def authorize_bundled_replacements(self, workflow_ids: set[UUID]) -> None:
+            del workflow_ids
+
+        async def mark_migration_complete(self, metadata: dict) -> None:
+            del metadata
+
+    workflow = _workflow()
+
+    with pytest.raises(RuntimeError, match="Workflow migration verification failed"):
+        await migrate_workflow_catalog(
+            source=_Source([workflow]),
+            target=_CorruptingTarget(),
+            persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
+            bundled_workflows=[],
+            apply=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_workflow_migration_rejects_divergent_bundled_replacement_over_existing(
+    tmp_path,
+) -> None:
+    packaged = load_system_workflows()[0]
+    target = FilesystemWorkflowRepository(str(tmp_path))
+    first_replacement = replace(
+        packaged,
+        description="Admin-owned divergent v1",
+        read_only=False,
+        source="postgres",
+    )
+    await migrate_workflow_catalog(
+        source=_Source([first_replacement]),
+        target=target,
+        persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
+        bundled_workflows=[packaged],
+        apply=True,
+        replace_divergent_bundled=True,
+    )
+
+    second_replacement = replace(
+        packaged,
+        description="Admin-owned divergent v2 (different content)",
+        read_only=False,
+        source="postgres",
+    )
+    report = await migrate_workflow_catalog(
+        source=_Source([second_replacement]),
+        target=target,
+        persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
+        bundled_workflows=[packaged],
+        replace_divergent_bundled=True,
+    )
+
+    assert report.can_apply is False
+    assert "already exists with different content or ownership" in report.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_workflow_migration_rejects_non_bundled_workflow_with_conflicting_existing(
+    tmp_path,
+) -> None:
+    workflow_v1 = _workflow()
+    target = FilesystemWorkflowRepository(str(tmp_path))
+    await migrate_workflow_catalog(
+        source=_Source([workflow_v1]),
+        target=target,
+        persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
+        bundled_workflows=[],
+        apply=True,
+    )
+
+    workflow_v2 = replace(workflow_v1, description="a completely different description")
+    report = await migrate_workflow_catalog(
+        source=_Source([workflow_v2]),
+        target=target,
+        persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
+        bundled_workflows=[],
+    )
+
+    assert report.can_apply is False
+    assert "already exists with different content or ownership" in report.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_workflow_migration_reports_invalid_graph_shape(tmp_path) -> None:
+    workflow = replace(_workflow(), graph={"nodes": "not-a-list", "edges": []})
+
+    report = await migrate_workflow_catalog(
+        source=_Source([workflow]),
+        target=FilesystemWorkflowRepository(str(tmp_path)),
+        persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
+        bundled_workflows=[],
+    )
+
+    assert report.can_apply is False
+    assert "has an invalid graph" in report.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_workflow_migration_upgrades_content_matched_legacy_revision(tmp_path) -> None:
+    base = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load_current_portable(
+        "coder"
+    )
+    assert base is not None
+    current = PortablePersonaDefinition(
+        id="coder",
+        revision="legacy-mutable-tag",
+        definition=base.definition,
+    )
+    collection = PortablePersonaCollection([current])
+    existing_dependency = PersonaDependency(
+        id="coder",
+        revision="old-pinned-revision-label",
+        digest=current.digest,
+    )
+    workflow = replace(_workflow(), persona_dependencies={"coder": existing_dependency})
+
+    report = await migrate_workflow_catalog(
+        source=_Source([workflow]),
+        target=FilesystemWorkflowRepository(str(tmp_path)),
+        persona_source_for_workflow=_resolver(collection),
+        bundled_workflows=[],
+        apply=True,
+    )
+
+    assert report.applied is True
+    assert report.errors == ()
+    assert report.create_count == 1

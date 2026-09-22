@@ -1,8 +1,8 @@
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import jwt
 from fastapi import FastAPI
@@ -858,3 +858,766 @@ def test_real_service_routes_expand_reconcile_retry_and_cancel_for_generic_child
     assert canceled.status_code == 200, canceled.text
     assert canceled.json()["state"] == "canceled"
     assert gateway.cancelled
+
+
+def test_default_repository_resolver_is_unconfigured_by_default() -> None:
+    """No override -> the module's own resolver raises a 503, not a bare crash."""
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_workflow_executions_router())
+    client = TestClient(app)
+
+    response = client.get("/api/v1/ting/workflow-executions", headers=_headers())
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Workflow execution repository not configured"
+
+
+def test_default_service_resolver_is_unconfigured_by_default() -> None:
+    """Repository is wired but the service resolver is left at its unconfigured default."""
+    execution = _execution(state=ExecutionState.RUNNING)
+    repository = InMemoryWorkflowRepository(execution)
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/ting/workflow-executions/{execution.id}/cancel",
+        headers=_headers(execution),
+        json={},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Workflow execution service not configured"
+
+
+def test_launch_requires_an_idempotency_key() -> None:
+    workflow = _generic_workflow_definition()
+    repository = InMemoryWorkflowRepository(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/workflow-executions",
+        headers=_headers(),
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "commission-translations",
+            "prompt": "Translate the handbook",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Idempotency-Key" in response.json()["detail"]
+
+
+def test_launch_reports_missing_workflow() -> None:
+    repository = InMemoryWorkflowRepository(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return None
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/workflow-executions",
+        headers={**_headers(), "idempotency-key": "missing-workflow"},
+        json={
+            "workflowId": str(uuid4()),
+            "parentNodeId": "commission-translations",
+            "prompt": "Translate the handbook",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Workflow not found"
+
+
+def test_launch_rejects_a_schema_v1_workflow() -> None:
+    workflow = replace(_generic_workflow_definition(), schema_version=1)
+    repository = InMemoryWorkflowRepository(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/workflow-executions",
+        headers={**_headers(), "idempotency-key": "schema-v1"},
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "commission-translations",
+            "prompt": "Translate the handbook",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Workflow requires schema v2"
+
+
+def test_launch_reports_an_invalid_parent_node() -> None:
+    workflow = _generic_workflow_definition()
+    repository = InMemoryWorkflowRepository(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/workflow-executions",
+        headers={**_headers(), "idempotency-key": "bad-node"},
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "no-such-node",
+            "prompt": "Translate the handbook",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "does not declare a subworkflow node" in response.json()["detail"]
+
+
+def test_launch_rejects_a_naive_deadline() -> None:
+    workflow = _generic_workflow_definition()
+    repository = InMemoryWorkflowRepository(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/workflow-executions",
+        headers={**_headers(), "idempotency-key": "naive-deadline"},
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "commission-translations",
+            "prompt": "Translate the handbook",
+            "deadline": "2999-01-01T00:00:00",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "deadline must include a timezone"
+
+
+def test_launch_rejects_a_deadline_in_the_past() -> None:
+    workflow = _generic_workflow_definition()
+    repository = InMemoryWorkflowRepository(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+    past_deadline = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/workflow-executions",
+        headers={**_headers(), "idempotency-key": "past-deadline"},
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "commission-translations",
+            "prompt": "Translate the handbook",
+            "deadline": past_deadline,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "deadline must be in the future"
+
+
+def test_launch_reports_a_conflicting_reservation(monkeypatch) -> None:
+    workflow = _generic_workflow_definition()
+    monkeypatch.setattr(
+        execution_api, "build_workflow_snapshot", lambda workflow, persona_source=None: {}
+    )
+
+    class ConflictingRepo(InMemoryWorkflowRepository):
+        async def reserve_parent_launch(self, execution):
+            raise execution_api.ExecutionConflictError("launch key already claimed differently")
+
+    repository = ConflictingRepo(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/workflow-executions",
+        headers={**_headers(), "idempotency-key": "conflict"},
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "commission-translations",
+            "prompt": "Translate the handbook",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "launch key already claimed differently"
+
+
+def test_launch_is_idempotent_once_a_parent_session_is_already_attached(monkeypatch) -> None:
+    workflow = _generic_workflow_definition()
+    monkeypatch.setattr(
+        execution_api, "build_workflow_snapshot", lambda workflow, persona_source=None: {}
+    )
+    already_launched = _execution(parent_session_id="already-there")
+
+    class AlreadyAttachedRepo(InMemoryWorkflowRepository):
+        async def reserve_parent_launch(self, execution):
+            self.execution = already_launched
+            return already_launched, False
+
+    repository = AlreadyAttachedRepo(already_launched)
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow
+
+    class Factory:
+        async def primary_for_owner(self, owner_id):
+            raise AssertionError("must not reach out to Volundr when already attached")
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/workflow-executions",
+        headers={**_headers(), "idempotency-key": "already-attached"},
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "commission-translations",
+            "prompt": "Translate the handbook",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["executionId"] == str(already_launched.id)
+
+
+def test_launch_recovers_an_existing_tracked_session(monkeypatch) -> None:
+    workflow = _generic_workflow_definition()
+    fixed_id = uuid4()
+    monkeypatch.setattr(execution_api, "uuid4", lambda: fixed_id)
+    monkeypatch.setattr(
+        execution_api, "build_workflow_snapshot", lambda workflow, persona_source=None: {}
+    )
+    session_key = f"workflow:execution-{fixed_id.hex}"
+
+    repository = InMemoryWorkflowRepository(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow
+
+    class Adapter:
+        target_id = "conn-recovered"
+
+        async def list_sessions(self, **kwargs):
+            return [SimpleNamespace(id="recovered-session-1", tracker_issue_id=session_key)]
+
+    class Factory:
+        async def primary_for_owner(self, owner_id):
+            return Adapter()
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/workflow-executions",
+        headers={**_headers(), "idempotency-key": "recovered"},
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "commission-translations",
+            "prompt": "Translate the handbook",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["executionId"] == str(fixed_id)
+    assert repository.execution.parent_session_id == "recovered-session-1"
+    assert repository.execution.connection_id == "conn-recovered"
+
+
+def test_launch_holds_its_lease_when_not_yet_created_and_not_expired(monkeypatch) -> None:
+    workflow = _generic_workflow_definition()
+    fixed_id = uuid4()
+    monkeypatch.setattr(execution_api, "uuid4", lambda: fixed_id)
+    monkeypatch.setattr(
+        execution_api, "build_workflow_snapshot", lambda workflow, persona_source=None: {}
+    )
+
+    class LeasedRepo(InMemoryWorkflowRepository):
+        async def reserve_parent_launch(self, execution):
+            leased = replace(execution, updated_at=datetime.now(UTC))
+            self.execution = leased
+            return leased, False
+
+    repository = LeasedRepo(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow
+
+    class Adapter:
+        target_id = "conn-1"
+
+        async def list_sessions(self, **kwargs):
+            return []
+
+    class Factory:
+        async def primary_for_owner(self, owner_id):
+            return Adapter()
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/workflow-executions",
+        headers={**_headers(), "idempotency-key": "leased"},
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "commission-translations",
+            "prompt": "Translate the handbook",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["executionId"] == str(fixed_id)
+    assert repository.execution.parent_session_id == ""
+
+
+def test_list_executions_reports_an_invalid_filter() -> None:
+    execution = _execution()
+
+    class RaisingRepo(InMemoryWorkflowRepository):
+        async def list(self, **kwargs):
+            raise ValueError("state must be one of the known execution states")
+
+    repository = RaisingRepo(execution)
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/v1/ting/workflow-executions?state=not-a-real-state",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "state must be one of the known execution states"
+
+
+def test_trace_reports_unknown_child_id() -> None:
+    execution = _execution(
+        workflow_snapshot={"name": "Parent", "graph": {"nodes": [], "edges": []}}
+    )
+    repository = InMemoryWorkflowRepository(execution)
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+    client = TestClient(app)
+
+    response = client.get(
+        f"/api/v1/ting/workflow-executions/{execution.id}/trace?childId={uuid4()}",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Workflow execution child not found"
+
+
+def test_trace_requires_a_campaign_repository_for_a_child_view() -> None:
+    execution = _execution(
+        workflow_snapshot={
+            "name": "Parent",
+            "graph": {"nodes": [], "edges": []},
+            "workflow_definitions": {
+                "translation-assignment": {
+                    "document": {
+                        "id": str(uuid4()),
+                        "name": "Frozen workstream",
+                        "graph": {"nodes": [], "edges": []},
+                    },
+                    "persona_definitions": {},
+                }
+            },
+        }
+    )
+    child = replace(
+        make_children(execution, 1, (_proposal(execution, "api"),))[0],
+        state=ChildExecutionState.RUNNING,
+        task_id="a2a-task-no-campaign",
+    )
+    repository = InMemoryWorkflowRepository(execution)
+    repository.children = [child]
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+    client = TestClient(app)
+
+    response = client.get(
+        f"/api/v1/ting/workflow-executions/{execution.id}/trace?childId={child.id}",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Workflow campaign repository not configured"
+
+
+def test_trace_child_without_task_id_has_no_session_to_query() -> None:
+    execution = _execution(
+        workflow_snapshot={
+            "name": "Parent",
+            "graph": {"nodes": [], "edges": []},
+            "workflow_definitions": {
+                "translation-assignment": {
+                    "document": {
+                        "id": str(uuid4()),
+                        "name": "Frozen workstream",
+                        "graph": {"nodes": [{"id": "implement", "kind": "stage"}], "edges": []},
+                    },
+                    "persona_definitions": {},
+                }
+            },
+        }
+    )
+    child = replace(
+        make_children(execution, 1, (_proposal(execution, "api"),))[0],
+        state=ChildExecutionState.LAUNCHING,
+    )
+    repository = InMemoryWorkflowRepository(execution)
+    repository.children = [child]
+
+    class CampaignRepository:
+        async def get_campaign_by_slug(self, slug, *, owner_id=None):
+            raise AssertionError("must not be queried without a child task id")
+
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.state.workflow_campaign_repo = CampaignRepository()
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+    client = TestClient(app)
+
+    response = client.get(
+        f"/api/v1/ting/workflow-executions/{execution.id}/trace?childId={child.id}",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["selectedSessionId"] is None
+
+
+def test_trace_child_campaign_lookup_returning_none_leaves_no_session() -> None:
+    execution = _execution(
+        workflow_snapshot={
+            "name": "Parent",
+            "graph": {"nodes": [], "edges": []},
+            "workflow_definitions": {
+                "translation-assignment": {
+                    "document": {
+                        "id": str(uuid4()),
+                        "name": "Frozen workstream",
+                        "graph": {"nodes": [{"id": "implement", "kind": "stage"}], "edges": []},
+                    },
+                    "persona_definitions": {},
+                }
+            },
+        }
+    )
+    child = replace(
+        make_children(execution, 1, (_proposal(execution, "api"),))[0],
+        state=ChildExecutionState.RUNNING,
+        task_id="a2a-task-orphaned",
+    )
+    repository = InMemoryWorkflowRepository(execution)
+    repository.children = [child]
+
+    class CampaignRepository:
+        async def get_campaign_by_slug(self, slug, *, owner_id=None):
+            return None
+
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.state.workflow_campaign_repo = CampaignRepository()
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+    client = TestClient(app)
+
+    response = client.get(
+        f"/api/v1/ting/workflow-executions/{execution.id}/trace?childId={child.id}",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["selectedSessionId"] is None
+
+
+def test_cancel_reports_a_service_conflict() -> None:
+    execution = _execution(state=ExecutionState.RUNNING)
+    repository = InMemoryWorkflowRepository(execution)
+    service = SimpleNamespace(
+        cancel=AsyncMock(side_effect=execution_api.WorkflowExecutionError("already completed")),
+    )
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_workflow_execution_service] = lambda: service
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/ting/workflow-executions/{execution.id}/cancel",
+        headers=_headers(execution),
+        json={},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "already completed"
+
+
+def _expansion_headers_and_url(execution):
+    return _headers(execution), f"/api/v1/ting/workflow-executions/{execution.id}/expansions"
+
+
+def test_expand_rejects_a_mismatched_campaign_or_parent_node() -> None:
+    execution = _execution(state=ExecutionState.RUNNING)
+    repository = InMemoryWorkflowRepository(execution)
+    service = SimpleNamespace(expand=AsyncMock())
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_workflow_execution_service] = lambda: service
+    client = TestClient(app)
+    headers, url = _expansion_headers_and_url(execution)
+    base_body = {
+        "generation": 1,
+        "plan_revision": "plan-1",
+        "children": [{"key": "a"}],
+    }
+
+    mismatched_campaign = client.post(
+        url, headers=headers, json={**base_body, "campaign_id": str(uuid4())}
+    )
+    mismatched_node = client.post(
+        url, headers=headers, json={**base_body, "parent_node_id": "not-the-parent-node"}
+    )
+
+    assert mismatched_campaign.status_code == 409
+    assert mismatched_campaign.json()["detail"] == "campaign_id does not match route"
+    assert mismatched_node.status_code == 409
+    assert mismatched_node.json()["detail"] == "parent_node_id does not match execution"
+    service.expand.assert_not_awaited()
+
+
+def test_expand_reports_a_service_conflict() -> None:
+    execution = _execution(state=ExecutionState.RUNNING)
+    repository = InMemoryWorkflowRepository(execution)
+    service = SimpleNamespace(
+        expand=AsyncMock(
+            side_effect=execution_api.ExecutionConflictError("generation already sealed")
+        )
+    )
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_workflow_execution_service] = lambda: service
+    client = TestClient(app)
+    headers, url = _expansion_headers_and_url(execution)
+
+    response = client.post(
+        url,
+        headers=headers,
+        json={
+            "generation": 1,
+            "plan_revision": "plan-1",
+            "children": [
+                {
+                    "key": "a",
+                    "objective": "Translate the a edition",
+                    "budgetUnits": 10,
+                    "deadline": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "agentId": "translator-1",
+                    "skillId": str(execution.policy.sole_template.id),
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "generation already sealed"
+
+
+def test_message_child_rejects_a_mismatched_campaign_or_parent_node() -> None:
+    execution = _execution(state=ExecutionState.RUNNING)
+    repository = InMemoryWorkflowRepository(execution)
+    service = SimpleNamespace(message=AsyncMock())
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_workflow_execution_service] = lambda: service
+    client = TestClient(app)
+    headers = _headers(execution)
+    url = f"/api/v1/ting/workflow-executions/{execution.id}/messages"
+    base_body = {
+        "child_key": "api",
+        "attempt_id": str(uuid4()),
+        "answer": "Use the main branch",
+        "message_id": "message-1",
+    }
+
+    mismatched_campaign = client.post(
+        url, headers=headers, json={**base_body, "campaign_id": str(uuid4())}
+    )
+    mismatched_node = client.post(
+        url, headers=headers, json={**base_body, "parent_node_id": "not-the-parent-node"}
+    )
+
+    assert mismatched_campaign.status_code == 409
+    assert mismatched_campaign.json()["detail"] == "campaign_id does not match route"
+    assert mismatched_node.status_code == 409
+    assert mismatched_node.json()["detail"] == "parent_node_id does not match execution"
+    service.message.assert_not_awaited()
+
+
+def test_message_child_delivers_and_reports_a_service_conflict() -> None:
+    execution = _execution(state=ExecutionState.RUNNING)
+    repository = InMemoryWorkflowRepository(execution)
+    service = SimpleNamespace(message=AsyncMock())
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_workflow_execution_service] = lambda: service
+    client = TestClient(app)
+    headers = _headers(execution)
+    url = f"/api/v1/ting/workflow-executions/{execution.id}/messages"
+    body = {
+        "child_key": "api",
+        "attempt_id": str(uuid4()),
+        "answer": "Use the main branch",
+        "message_id": "message-1",
+        "metadata": {"requestId": "request-1"},
+    }
+
+    ok = client.post(url, headers=headers, json=body)
+
+    assert ok.status_code == 200, ok.text
+    service.message.assert_awaited_once_with(
+        execution.id,
+        owner_id=execution.owner_id,
+        tenant_id=execution.tenant_id,
+        child_key="api",
+        attempt_id=UUID(body["attempt_id"]),
+        answer="Use the main branch",
+        metadata={"requestId": "request-1"},
+        message_id="message-1",
+    )
+
+    service.message = AsyncMock(
+        side_effect=execution_api.WorkflowExecutionError("attempt is no longer current")
+    )
+    conflict = client.post(url, headers=headers, json={**body, "message_id": "message-2"})
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == "attempt is no longer current"
+
+
+def test_retry_child_reports_a_service_conflict() -> None:
+    execution = _execution(state=ExecutionState.RUNNING)
+    repository = InMemoryWorkflowRepository(execution)
+    service = SimpleNamespace(
+        retry=AsyncMock(
+            side_effect=execution_api.WorkflowExecutionError("attempt is not retryable")
+        ),
+        launch_ready=AsyncMock(),
+    )
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_workflow_execution_service] = lambda: service
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/ting/workflow-executions/{execution.id}/children/api/retry",
+        headers=_headers(execution),
+        json={"attempt_id": str(uuid4())},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "attempt is not retryable"
+    service.launch_ready.assert_not_awaited()

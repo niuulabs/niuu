@@ -107,4 +107,98 @@ describe('LibraryPanel', () => {
     const ids = DEFAULT_PERSONAS.map((p) => p.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
+
+  it('sets drag payloads for flow-control blocks, mounts and personas', () => {
+    render(<LibraryPanel personas={DEFAULT_PERSONAS} registryMounts={[REGISTRY_MOUNT]} />);
+    const setData = vi.fn();
+    const dataTransfer = { setData, effectAllowed: '' };
+
+    fireEvent.dragStart(screen.getByTestId('library-add-wait'), { dataTransfer });
+    expect(setData).toHaveBeenCalledWith('application/niuu-node-kind', 'wait');
+
+    fireEvent.dragStart(screen.getByTestId('mimir-mount-shared-mimir'), { dataTransfer });
+    expect(setData).toHaveBeenCalledWith(
+      'application/niuu-mimir-mount',
+      expect.stringContaining('shared-mimir'),
+    );
+
+    fireEvent.dragStart(screen.getByTestId(`persona-chip-${DEFAULT_PERSONAS[0]!.id}`), {
+      dataTransfer,
+    });
+    expect(setData).toHaveBeenCalledWith('application/niuu-persona-id', DEFAULT_PERSONAS[0]!.id);
+  });
+
+  it('renders the triangle glyph for a verify-role persona', () => {
+    render(<LibraryPanel personas={[{ id: 'verifier-1', label: 'Verifier', role: 'verify' }]} />);
+    expect(screen.getByText('V')).toBeInTheDocument();
+    expect(screen.getByText('△')).toBeInTheDocument();
+  });
+
+  it('renders the dashed-circle glyph for a plan-role persona', () => {
+    render(<LibraryPanel personas={[{ id: 'planner-1', label: 'Planner', role: 'plan' }]} />);
+    expect(screen.getByText('D')).toBeInTheDocument();
+  });
+
+  it('renders the hex glyph for a gate-role persona', () => {
+    render(<LibraryPanel personas={[{ id: 'gatekeeper-1', label: 'Gatekeeper', role: 'gate' }]} />);
+    expect(screen.getByText('I')).toBeInTheDocument();
+  });
+
+  it('adds a registered Mimir resource and closes when a handler is set', () => {
+    const onAddMimirResource = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <LibraryPanel
+        personas={DEFAULT_PERSONAS}
+        registryMounts={[REGISTRY_MOUNT]}
+        onAddMimirResource={onAddMimirResource}
+        onClose={onClose}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('mimir-mount-shared-mimir'));
+    expect(onAddMimirResource).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'shared-mimir' }),
+    );
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the panel from the close control and on Escape in search', () => {
+    const onClose = vi.fn();
+    render(<LibraryPanel personas={DEFAULT_PERSONAS} onClose={onClose} />);
+    fireEvent.keyDown(screen.getByTestId('library-search'), { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('library-panel-close'));
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not render a close control when no handler is given', () => {
+    render(<LibraryPanel personas={DEFAULT_PERSONAS} />);
+    expect(screen.queryByTestId('library-panel-close')).not.toBeInTheDocument();
+  });
+
+  it('hides the resource section entirely when embedded without a Mimir handler', () => {
+    render(<LibraryPanel embedded personas={DEFAULT_PERSONAS} registryMounts={[REGISTRY_MOUNT]} />);
+    expect(screen.queryByText('Ephemeral Local Mimir')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('mimir-mount-shared-mimir')).not.toBeInTheDocument();
+  });
+
+  it('shows resources when embedded with a Mimir handler wired up', () => {
+    render(
+      <LibraryPanel
+        embedded
+        personas={DEFAULT_PERSONAS}
+        registryMounts={[REGISTRY_MOUNT]}
+        onAddMimirResource={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Ephemeral Local Mimir')).toBeInTheDocument();
+  });
+
+  it('filters resources by category and hides flow control when nothing matches', () => {
+    render(<LibraryPanel personas={DEFAULT_PERSONAS} registryMounts={[REGISTRY_MOUNT]} />);
+    fireEvent.change(screen.getByTestId('library-search'), { target: { value: 'decision' } });
+    expect(screen.getByTestId('mimir-mount-shared-mimir')).toBeInTheDocument();
+    expect(screen.queryByTestId('library-add-wait')).not.toBeInTheDocument();
+  });
 });

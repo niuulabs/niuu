@@ -29,6 +29,7 @@ describe('mergeWorkPages', () => {
   it('returns null without a fetched page', () => {
     expect(mergeWorkPages(undefined)).toBeNull();
     expect(mergeWorkPages([])).toBeNull();
+    expect(mergeWorkPages([undefined as unknown as WorkCollection])).toBeNull();
   });
 
   it('keeps unpaged sections from the first response and paging state from the latest', () => {

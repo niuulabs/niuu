@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
-import { VolundrSessionRoute, VolundrArchivedRoute } from './routes';
+import { VolundrSessionRoute, VolundrArchivedRoute, VolundrSessionsRoute } from './routes';
 import {
   createMockVolundrService,
   createMockSessionStore,
@@ -55,6 +55,17 @@ vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => routeState.navigate,
   useParams: vi.fn().mockReturnValue({ sessionId: 'sess-route-test' }),
   useSearch: () => routeState.search,
+  Link: ({ children, to, ...rest }: { children?: React.ReactNode; to?: string }) => (
+    <a href={to} {...rest}>
+      {children}
+    </a>
+  ),
+}));
+
+const uiModeState = vi.hoisted(() => ({ mode: 'advanced' as 'simple' | 'advanced' }));
+
+vi.mock('@niuulabs/shell', () => ({
+  useUiMode: () => uiModeState.mode,
 }));
 
 // ---------------------------------------------------------------------------
@@ -104,6 +115,21 @@ beforeEach(() => {
   localStorage.clear();
   routeState.search = {};
   routeState.navigate.mockReset();
+  uiModeState.mode = 'advanced';
+});
+
+describe('VolundrSessionsRoute', () => {
+  it('renders the full forge console in advanced mode', () => {
+    uiModeState.mode = 'advanced';
+    wrap(<VolundrSessionsRoute />);
+    expect(screen.getByTestId('sessions-page')).toBeInTheDocument();
+  });
+
+  it('renders the calm simple list in simple mode', () => {
+    uiModeState.mode = 'simple';
+    wrap(<VolundrSessionsRoute />);
+    expect(screen.getByTestId('simple-sessions-page')).toBeInTheDocument();
+  });
 });
 
 describe('VolundrSessionRoute', () => {
@@ -159,5 +185,30 @@ describe('VolundrArchivedRoute', () => {
     await waitFor(() => {
       expect(screen.getByText('Archived')).toBeInTheDocument();
     });
+  });
+
+  it('consumes a source-qualified Work return route', async () => {
+    routeState.search = {
+      instance_id: 'forge-east',
+      returnTo: '/ting/work/campaign%3Acampaign-1',
+    };
+    wrap(<VolundrArchivedRoute />);
+
+    const back = await screen.findByRole('button', { name: 'Back to Work' });
+    fireEvent.click(back);
+    expect(routeState.navigate).toHaveBeenCalledWith({
+      to: '/ting/work/campaign%3Acampaign-1',
+    });
+  });
+
+  it('does not render navigation for an external return target', async () => {
+    routeState.search = {
+      instance_id: 'forge-east',
+      returnTo: 'https://malicious.example/ting/work/campaign-1',
+    };
+    wrap(<VolundrArchivedRoute />);
+
+    await screen.findByTestId('live-session-detail-page');
+    expect(screen.queryByRole('button', { name: 'Back to Work' })).not.toBeInTheDocument();
   });
 });

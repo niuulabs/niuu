@@ -82,6 +82,38 @@ describe('UiModeSwitch', () => {
     expect(readUiMode()).toBe('simple');
   });
 
+  it('does nothing when the currently active mode is clicked again', async () => {
+    const user = userEvent.setup();
+    const { service, update } = fakeFeatures();
+    render(
+      <ServicesProvider services={{ features: service }}>
+        <UiModeSwitch plugins={plugins} />
+      </ServicesProvider>,
+    );
+    await user.click(screen.getByRole('button', { name: 'Simple' }));
+    expect(update).not.toHaveBeenCalled();
+    expect(readUiMode()).toBe('simple');
+  });
+
+  it('renders a message from a non-Error rejection', async () => {
+    const user = userEvent.setup();
+    const service = {
+      getFeatureModules: async () => [],
+      toggleFeature: async () => {
+        throw new Error('not used');
+      },
+      getUserFeaturePreferences: vi.fn().mockResolvedValue([]),
+      updateUserFeaturePreferences: vi.fn().mockRejectedValue('offline'),
+    };
+    render(
+      <ServicesProvider services={{ features: service }}>
+        <UiModeSwitch plugins={plugins} />
+      </ServicesProvider>,
+    );
+    await user.click(screen.getByRole('button', { name: 'Advanced' }));
+    expect(await screen.findByRole('alert')).toHaveAttribute('title', 'offline');
+  });
+
   it('keeps the mode in the browser when the host wires no preferences service', async () => {
     const user = userEvent.setup();
     render(

@@ -10,9 +10,11 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from uuid import uuid4
 
 import jwt
-from fastapi import FastAPI
+import pytest
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import ting.delivery.api as delivery_api
@@ -46,7 +48,9 @@ from ting.delivery.api import (
 from ting.delivery.domain import make_children
 from ting.domain.workflow_execution import (
     ChildExecutionState,
+    ExecutionConflictError,
     ExecutionState,
+    WorkflowExecutionError,
 )
 from ting.system_workflows import load_system_workflows
 
@@ -959,3 +963,1064 @@ def test_delivery_router_denies_scoped_token_missing_coordinate_scope() -> None:
 
     assert response.status_code == 403
     assert "missing the required scope" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Coverage for the default (unconfigured) dependency stubs.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_delivery_execution_repo_default_raises_503() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_delivery_execution_repo()
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "Delivery execution repository not configured"
+
+
+@pytest.mark.asyncio
+async def test_resolve_delivery_execution_service_default_raises_503() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_delivery_execution_service()
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "Delivery execution service not configured"
+
+
+# ---------------------------------------------------------------------------
+# launch_execution() validation and reservation branches
+# ---------------------------------------------------------------------------
+
+
+def test_launch_requires_idempotency_key_header() -> None:
+    workflow = _developer_workflow()
+    repository = MemoryRepository(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow if workflow_id == workflow.id else None
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/delivery-executions",
+        headers=_headers(),
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "delivery-workstreams",
+            "prompt": "Implement ticket 123",
+            "repo": "https://gitlab.example/org/repo",
+            "baseBranch": "main",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert "Idempotency-Key" in response.json()["detail"]
+
+
+def test_launch_returns_404_when_workflow_not_found() -> None:
+    workflow = _developer_workflow()
+    repository = MemoryRepository(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return None
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/delivery-executions",
+        headers={**_headers(), "idempotency-key": "missing-workflow"},
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "delivery-workstreams",
+            "prompt": "Implement ticket 123",
+            "repo": "https://gitlab.example/org/repo",
+            "baseBranch": "main",
+        },
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"] == "Developer workflow not found"
+
+
+def test_launch_rejects_schema_version_below_2() -> None:
+    workflow = _developer_workflow()
+    repository = MemoryRepository(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return SimpleNamespace(schema_version=1)
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/delivery-executions",
+        headers={**_headers(), "idempotency-key": "old-schema"},
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "delivery-workstreams",
+            "prompt": "Implement ticket 123",
+            "repo": "https://gitlab.example/org/repo",
+            "baseBranch": "main",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "Developer workflow requires schema v2"
+
+
+def test_launch_rejects_connection_that_cannot_resolve_delivery_ref() -> None:
+    workflow = _developer_workflow()
+    repository = MemoryRepository(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow
+
+    class Adapter:
+        target_id = "forge-1"
+
+        async def resolve_delivery_ref(self, repository_url, ref, **kwargs):
+            raise NotImplementedError("no immutable refs here")
+
+    class Factory:
+        async def primary_for_owner(self, owner_id):
+            return Adapter()
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/delivery-executions",
+        headers={**_headers(), "idempotency-key": "no-immutable-refs"},
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "delivery-workstreams",
+            "prompt": "Implement ticket 123",
+            "repo": "https://gitlab.example/org/repo",
+            "baseBranch": "main",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert "cannot resolve immutable delivery refs" in response.json()["detail"]
+
+
+def test_launch_rejects_deadline_without_timezone() -> None:
+    workflow = _developer_workflow()
+    repository = MemoryRepository(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow
+
+    class Adapter:
+        target_id = "forge-1"
+
+        async def resolve_delivery_ref(self, repository_url, ref, **kwargs):
+            return ResolvedRef(
+                provider="gitlab",
+                repository=repository_url,
+                ref=ref,
+                sha="a" * 40,
+                observed_at=datetime.now(UTC),
+            )
+
+    class Factory:
+        async def primary_for_owner(self, owner_id):
+            return Adapter()
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/delivery-executions",
+        headers={**_headers(), "idempotency-key": "naive-deadline"},
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "delivery-workstreams",
+            "prompt": "Implement ticket 123",
+            "repo": "https://gitlab.example/org/repo",
+            "baseBranch": "main",
+            "deadline": "2030-01-01T00:00:00",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "deadline must include a timezone"
+
+
+def test_launch_rejects_deadline_in_the_past() -> None:
+    workflow = _developer_workflow()
+    repository = MemoryRepository(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow
+
+    class Adapter:
+        target_id = "forge-1"
+
+        async def resolve_delivery_ref(self, repository_url, ref, **kwargs):
+            return ResolvedRef(
+                provider="gitlab",
+                repository=repository_url,
+                ref=ref,
+                sha="a" * 40,
+                observed_at=datetime.now(UTC),
+            )
+
+    class Factory:
+        async def primary_for_owner(self, owner_id):
+            return Adapter()
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/delivery-executions",
+        headers={**_headers(), "idempotency-key": "past-deadline"},
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "delivery-workstreams",
+            "prompt": "Implement ticket 123",
+            "repo": "https://gitlab.example/org/repo",
+            "baseBranch": "main",
+            "deadline": "2020-01-01T00:00:00Z",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "deadline must be in the future"
+
+
+def test_launch_reports_conflict_when_launch_key_digest_differs() -> None:
+    workflow = _developer_workflow()
+
+    class Repository(MemoryRepository):
+        async def reserve_parent_launch(self, execution):
+            raise ExecutionConflictError("Idempotency-Key already used with a different request")
+
+    repository = Repository(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow
+
+    class Adapter:
+        target_id = "forge-1"
+
+        async def resolve_delivery_ref(self, repository_url, ref, **kwargs):
+            return ResolvedRef(
+                provider="gitlab",
+                repository=repository_url,
+                ref=ref,
+                sha="a" * 40,
+                observed_at=datetime.now(UTC),
+            )
+
+    class Factory:
+        async def primary_for_owner(self, owner_id):
+            return Adapter()
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/delivery-executions",
+        headers={**_headers(), "idempotency-key": "conflicting-key"},
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "delivery-workstreams",
+            "prompt": "Implement ticket 123",
+            "repo": "https://gitlab.example/org/repo",
+            "baseBranch": "main",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert "different request" in response.json()["detail"]
+
+
+def test_launch_returns_existing_detail_when_parent_session_already_attached() -> None:
+    """When the reservation already carries a parent session, launch dedups
+    without attempting session recovery or spawning a new one."""
+    workflow = _developer_workflow()
+    already_launched = _execution(parent_session_id="already-running")
+
+    class Repository(MemoryRepository):
+        async def reserve_parent_launch(self, execution):
+            return already_launched, False
+
+    repository = Repository(already_launched)
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow
+
+    class Adapter:
+        target_id = "forge-1"
+
+        async def resolve_delivery_ref(self, repository_url, ref, **kwargs):
+            return ResolvedRef(
+                provider="gitlab",
+                repository=repository_url,
+                ref=ref,
+                sha="a" * 40,
+                observed_at=datetime.now(UTC),
+            )
+
+    class Factory:
+        async def primary_for_owner(self, owner_id):
+            return Adapter()
+
+    async def duplicate_launch(**kwargs):
+        raise AssertionError("must not attempt to launch when already attached")
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+
+    import ting.delivery.api as delivery_api_module
+
+    original_launch = delivery_api_module.launch_workflow_execution
+    delivery_api_module.launch_workflow_execution = duplicate_launch
+    try:
+        response = TestClient(app).post(
+            "/api/v1/ting/delivery-executions",
+            headers={**_headers(), "idempotency-key": "already-attached"},
+            json={
+                "workflowId": str(workflow.id),
+                "parentNodeId": "delivery-workstreams",
+                "prompt": "Implement ticket 123",
+                "repo": "https://gitlab.example/org/repo",
+                "baseBranch": "main",
+            },
+        )
+    finally:
+        delivery_api_module.launch_workflow_execution = original_launch
+
+    assert response.status_code == 201, response.text
+    assert response.json()["executionId"] == str(already_launched.id)
+
+
+def test_launch_returns_existing_detail_when_within_lease_and_unrecovered() -> None:
+    """A concurrent in-flight reservation with no matching recoverable Forge
+    session and a fresh lease returns the current state instead of racing a
+    second launch."""
+    workflow = _developer_workflow()
+
+    class Repository(MemoryRepository):
+        async def reserve_parent_launch(self, execution):
+            self.execution = replace(execution, updated_at=datetime.now(UTC))
+            return self.execution, False
+
+    repository = Repository(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow
+
+    class Adapter:
+        target_id = "forge-1"
+
+        async def resolve_delivery_ref(self, repository_url, ref, **kwargs):
+            return ResolvedRef(
+                provider="gitlab",
+                repository=repository_url,
+                ref=ref,
+                sha="a" * 40,
+                observed_at=datetime.now(UTC),
+            )
+
+        async def list_sessions(self, **kwargs):
+            return []
+
+    class Factory:
+        async def primary_for_owner(self, owner_id):
+            return Adapter()
+
+    async def duplicate_launch(**kwargs):
+        raise AssertionError("must not launch while a fresh reservation is in flight")
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+
+    import ting.delivery.api as delivery_api_module
+
+    original_launch = delivery_api_module.launch_workflow_execution
+    delivery_api_module.launch_workflow_execution = duplicate_launch
+    try:
+        response = TestClient(app).post(
+            "/api/v1/ting/delivery-executions",
+            headers={**_headers(), "idempotency-key": "in-flight"},
+            json={
+                "workflowId": str(workflow.id),
+                "parentNodeId": "delivery-workstreams",
+                "prompt": "Implement ticket 123",
+                "repo": "https://gitlab.example/org/repo",
+                "baseBranch": "main",
+            },
+        )
+    finally:
+        delivery_api_module.launch_workflow_execution = original_launch
+
+    assert response.status_code == 201, response.text
+    assert response.json()["executionId"] == str(repository.execution.id)
+
+
+# ---------------------------------------------------------------------------
+# get_execution()
+# ---------------------------------------------------------------------------
+
+
+def test_get_execution_returns_detail_for_owner() -> None:
+    execution = _execution()
+    repository = MemoryRepository(execution)
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+
+    response = TestClient(app).get(
+        f"/api/v1/ting/delivery-executions/{execution.id}",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["executionId"] == str(execution.id)
+
+
+# ---------------------------------------------------------------------------
+# complete_execution()
+# ---------------------------------------------------------------------------
+
+
+def _completion_body(execution) -> dict:
+    return {
+        "merge": {
+            "campaign_id": str(execution.id),
+            "repository": execution.repository,
+            "review_number": 1,
+            "expected_head_sha": "b" * 40,
+            "expected_base_sha": execution.base_sha,
+            "expected_target_branch": execution.base_ref,
+            "method": "squash",
+        },
+        "evidence": {
+            "campaign_id": str(execution.id),
+            "workstream_key": "api",
+            "attempt_id": "attempt-1",
+            "worker_id": "worker-1",
+            "repository": execution.repository,
+            "base_sha": execution.base_sha,
+            "candidate_sha": "b" * 40,
+            "candidate_tree": "c" * 40,
+            "requirements": [
+                {
+                    "requirement_id": "REQ-1",
+                    "implementation_paths": ["src/api.py"],
+                    "verification_contract_ids": ["contract-1"],
+                }
+            ],
+        },
+    }
+
+
+def test_complete_execution_returns_detail_on_success(monkeypatch) -> None:
+    execution = _execution(state=ExecutionState.RUNNING)
+    repository = MemoryRepository(execution)
+
+    class FakeCompletionService:
+        def __init__(self, **kwargs):
+            pass
+
+        async def complete(self, execution, **kwargs):
+            completed = replace(execution, state=ExecutionState.COMPLETED)
+            repository.execution = completed
+            return completed
+
+    monkeypatch.setattr(delivery_api, "DeliveryCompletionService", FakeCompletionService)
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+
+    response = TestClient(app).post(
+        f"/api/v1/ting/delivery-executions/{execution.id}/complete",
+        headers=_headers(execution),
+        json=_completion_body(execution),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "completed"
+
+
+def test_complete_execution_reports_service_conflict_as_409(monkeypatch) -> None:
+    execution = _execution(state=ExecutionState.RUNNING)
+    repository = MemoryRepository(execution)
+
+    class FakeCompletionService:
+        def __init__(self, **kwargs):
+            pass
+
+        async def complete(self, execution, **kwargs):
+            raise WorkflowExecutionError("Execution cannot complete in its current state")
+
+    monkeypatch.setattr(delivery_api, "DeliveryCompletionService", FakeCompletionService)
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+
+    response = TestClient(app).post(
+        f"/api/v1/ting/delivery-executions/{execution.id}/complete",
+        headers=_headers(execution),
+        json=_completion_body(execution),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "Execution cannot complete in its current state"
+
+
+# ---------------------------------------------------------------------------
+# record_integration_candidate() branches
+# ---------------------------------------------------------------------------
+
+
+def test_record_integration_requires_a_sealed_generation_before_join_check() -> None:
+    execution, repository, allocation, receipt, _ = _context()
+    repository.execution = replace(execution, current_generation=0)
+
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(
+        auth=SimpleNamespace(allow_anonymous_dev=False),
+        workflow_execution=SimpleNamespace(
+            delivery=SimpleNamespace(integration_policy_id="developer-integration")
+        ),
+    )
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: None
+
+    response = TestClient(app).post(
+        f"/api/v1/ting/delivery-executions/{execution.id}/integration-candidate",
+        headers={
+            "authorization": f"Bearer {_token(execution)}",
+            "x-auth-user-id": execution.owner_id,
+            "x-auth-tenant": execution.tenant_id,
+        },
+        json={
+            "integration_receipts": [receipt.model_dump(mode="json")],
+            "integration_allocation": allocation.model_dump(mode="json"),
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "Integration requires a sealed successful child generation"
+
+
+def test_record_integration_rejects_receipt_identity_mismatch() -> None:
+    execution, repository, allocation, receipt, _ = _context()
+    mismatched_receipt = receipt.model_copy(update={"campaign_id": "some-other-campaign"})
+
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(
+        auth=SimpleNamespace(allow_anonymous_dev=False),
+        workflow_execution=SimpleNamespace(
+            delivery=SimpleNamespace(integration_policy_id="developer-integration")
+        ),
+    )
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: None
+
+    response = TestClient(app).post(
+        f"/api/v1/ting/delivery-executions/{execution.id}/integration-candidate",
+        headers={
+            "authorization": f"Bearer {_token(execution)}",
+            "x-auth-user-id": execution.owner_id,
+            "x-auth-tenant": execution.tenant_id,
+        },
+        json={
+            "integration_receipts": [mismatched_receipt.model_dump(mode="json")],
+            "integration_allocation": allocation.model_dump(mode="json"),
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert (
+        response.json()["detail"]
+        == "Integration receipt and allocation do not match this execution"
+    )
+
+
+def test_record_integration_skips_children_from_other_generations() -> None:
+    """A stale child from an earlier generation must not affect the accepted
+    set built from the current generation's children."""
+    execution, repository, allocation, receipt, inspection = _context()
+    stale_child = replace(
+        repository.children[0],
+        id=uuid4(),
+        generation=execution.current_generation - 0 + 99,
+        key="stale",
+    )
+    repository.children = [stale_child, *repository.children]
+
+    class Adapter:
+        async def inspect_delivery_integration_chain(self, *args, **kwargs):
+            return inspection
+
+    class Factory:
+        async def for_connection(self, owner_id, connection_id):
+            return Adapter()
+
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(
+        auth=SimpleNamespace(allow_anonymous_dev=False),
+        workflow_execution=SimpleNamespace(
+            delivery=SimpleNamespace(integration_policy_id="developer-integration")
+        ),
+    )
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+
+    response = TestClient(app).post(
+        f"/api/v1/ting/delivery-executions/{execution.id}/integration-candidate",
+        headers={
+            "authorization": f"Bearer {_token(execution)}",
+            "x-auth-user-id": execution.owner_id,
+            "x-auth-tenant": execution.tenant_id,
+        },
+        json={
+            "integration_receipts": [receipt.model_dump(mode="json")],
+            "integration_allocation": allocation.model_dump(mode="json"),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["integrationCandidate"]["candidate_sha"] == "b" * 40
+
+
+def test_record_integration_rejects_when_a_current_child_is_not_accepted() -> None:
+    """The candidate a child actually produced must exactly match what the
+    inspected integration chain says it integrated."""
+    execution, repository, allocation, receipt, inspection = _context()
+    repository.children = [
+        replace(
+            repository.children[0],
+            result={"candidateSha": "f" * 40, "candidateTree": "e" * 40},
+        )
+    ]
+
+    class Adapter:
+        async def inspect_delivery_integration_chain(self, *args, **kwargs):
+            return inspection
+
+    class Factory:
+        async def for_connection(self, owner_id, connection_id):
+            return Adapter()
+
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(
+        auth=SimpleNamespace(allow_anonymous_dev=False),
+        workflow_execution=SimpleNamespace(
+            delivery=SimpleNamespace(integration_policy_id="developer-integration")
+        ),
+    )
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+
+    response = TestClient(app).post(
+        f"/api/v1/ting/delivery-executions/{execution.id}/integration-candidate",
+        headers={
+            "authorization": f"Bearer {_token(execution)}",
+            "x-auth-user-id": execution.owner_id,
+            "x-auth-tenant": execution.tenant_id,
+        },
+        json={
+            "integration_receipts": [receipt.model_dump(mode="json")],
+            "integration_allocation": allocation.model_dump(mode="json"),
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert (
+        response.json()["detail"]
+        == "Inspected integration chain does not exactly cover accepted children"
+    )
+
+
+def test_record_integration_reports_repository_conflict_as_409() -> None:
+    execution, repository, allocation, receipt, inspection = _context()
+
+    class ConflictingRepository(type(repository)):
+        async def record_integration_candidate(self, *args, **kwargs):
+            raise ExecutionConflictError("execution revision changed underneath this write")
+
+    repository.__class__ = ConflictingRepository
+
+    class Adapter:
+        async def inspect_delivery_integration_chain(self, *args, **kwargs):
+            return inspection
+
+    class Factory:
+        async def for_connection(self, owner_id, connection_id):
+            return Adapter()
+
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(
+        auth=SimpleNamespace(allow_anonymous_dev=False),
+        workflow_execution=SimpleNamespace(
+            delivery=SimpleNamespace(integration_policy_id="developer-integration")
+        ),
+    )
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
+
+    response = TestClient(app).post(
+        f"/api/v1/ting/delivery-executions/{execution.id}/integration-candidate",
+        headers={
+            "authorization": f"Bearer {_token(execution)}",
+            "x-auth-user-id": execution.owner_id,
+            "x-auth-tenant": execution.tenant_id,
+        },
+        json={
+            "integration_receipts": [receipt.model_dump(mode="json")],
+            "integration_allocation": allocation.model_dump(mode="json"),
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert "execution revision changed underneath this write" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# expand_execution()
+# ---------------------------------------------------------------------------
+
+
+def test_expand_execution_rejects_campaign_id_mismatch() -> None:
+    execution = _execution(state=ExecutionState.RUNNING)
+    repository = MemoryRepository(execution)
+    service = _service(repository)
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_delivery_execution_service] = lambda: service
+
+    response = TestClient(app).post(
+        f"/api/v1/ting/delivery-executions/{execution.id}/expansions",
+        headers=_headers(execution),
+        json={
+            "campaign_id": str(uuid4()),
+            "generation": 1,
+            "plan_revision": "approved-v1",
+            "workstreams": [{"key": "api"}],
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "campaign_id does not match route"
+
+
+def test_expand_execution_rejects_parent_node_id_mismatch() -> None:
+    execution = _execution(state=ExecutionState.RUNNING)
+    repository = MemoryRepository(execution)
+    service = _service(repository)
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_delivery_execution_service] = lambda: service
+
+    response = TestClient(app).post(
+        f"/api/v1/ting/delivery-executions/{execution.id}/expansions",
+        headers=_headers(execution),
+        json={
+            "parent_node_id": "not-the-real-node",
+            "generation": 1,
+            "plan_revision": "approved-v1",
+            "workstreams": [{"key": "api"}],
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "parent_node_id does not match execution"
+
+
+def test_expand_execution_reports_coordinator_conflict_as_409() -> None:
+    execution = _execution(state=ExecutionState.RUNNING)
+    repository = MemoryRepository(execution)
+    service = _service(repository)
+    proposal = _proposal(execution, "api")
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_delivery_execution_service] = lambda: service
+
+    workstream = {
+        "key": proposal.key,
+        "objective": proposal.objective,
+        "requirementIds": list(proposal.requirement_ids),
+        "dependencies": list(proposal.dependencies),
+        "input": proposal.input,
+        "repository": proposal.repository,
+        "baseSha": proposal.base_sha,
+        "budgetUnits": proposal.budget_units,
+        "deadline": proposal.deadline.isoformat(),
+        "agentId": proposal.agent_id,
+        "skillId": proposal.skill_id,
+        "workspace": proposal.workspace,
+    }
+
+    response = TestClient(app).post(
+        f"/api/v1/ting/delivery-executions/{execution.id}/expansions",
+        headers=_headers(execution),
+        json={
+            "generation": 2,
+            "plan_revision": "approved-v1",
+            "workstreams": [workstream],
+        },
+    )
+
+    assert response.status_code == 409, response.text
+
+
+# ---------------------------------------------------------------------------
+# authorize_delivery_operation() branches
+# ---------------------------------------------------------------------------
+
+
+def test_authorize_rejects_repository_outside_execution() -> None:
+    execution, repository, _, _, _ = _context()
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(
+        auth=SimpleNamespace(allow_anonymous_dev=False),
+        workflow_execution=SimpleNamespace(
+            delivery=SimpleNamespace(integration_policy_id="developer-integration")
+        ),
+    )
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+
+    response = TestClient(app).post(
+        f"/api/v1/ting/delivery-executions/{execution.id}/delivery-authorizations",
+        headers={
+            "authorization": f"Bearer {_token(execution)}",
+            "x-auth-user-id": execution.owner_id,
+            "x-auth-tenant": execution.tenant_id,
+        },
+        json={
+            "operation": "inspect_candidate",
+            "repository": "https://example.test/some-other-repo.git",
+            "base_sha": execution.base_sha,
+        },
+    )
+
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"] == "Delivery repository is outside execution"
+
+
+def test_authorize_rejects_base_sha_outside_execution() -> None:
+    execution, repository, _, _, _ = _context()
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(
+        auth=SimpleNamespace(allow_anonymous_dev=False),
+        workflow_execution=SimpleNamespace(
+            delivery=SimpleNamespace(integration_policy_id="developer-integration")
+        ),
+    )
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+
+    response = TestClient(app).post(
+        f"/api/v1/ting/delivery-executions/{execution.id}/delivery-authorizations",
+        headers={
+            "authorization": f"Bearer {_token(execution)}",
+            "x-auth-user-id": execution.owner_id,
+            "x-auth-tenant": execution.tenant_id,
+        },
+        json={
+            "operation": "inspect_candidate",
+            "repository": execution.repository,
+            "base_sha": "f" * 40,
+        },
+    )
+
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"] == "Delivery base SHA is outside execution"
+
+
+def test_authorize_rejects_when_execution_state_disallows_the_operation() -> None:
+    execution, repository, _, _, _ = _context()
+    repository.execution = replace(execution, cancel_requested=True)
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(
+        auth=SimpleNamespace(allow_anonymous_dev=False),
+        workflow_execution=SimpleNamespace(
+            delivery=SimpleNamespace(integration_policy_id="developer-integration")
+        ),
+    )
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+
+    response = TestClient(app).post(
+        f"/api/v1/ting/delivery-executions/{execution.id}/delivery-authorizations",
+        headers={
+            "authorization": f"Bearer {_token(execution)}",
+            "x-auth-user-id": execution.owner_id,
+            "x-auth-tenant": execution.tenant_id,
+        },
+        json={
+            "operation": "inspect_candidate",
+            "repository": execution.repository,
+            "base_sha": execution.base_sha,
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert "not allowed while execution is" in response.json()["detail"]
+
+
+def test_authorize_open_review_requires_target_and_exact_candidate() -> None:
+    execution, repository, _, _, inspection = _context()
+    repository.execution = replace(
+        execution,
+        integration_candidate=inspection.model_dump(mode="json"),
+    )
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(
+        auth=SimpleNamespace(allow_anonymous_dev=False),
+        workflow_execution=SimpleNamespace(
+            delivery=SimpleNamespace(integration_policy_id="developer-integration")
+        ),
+    )
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+    client = TestClient(app)
+    headers = {
+        "authorization": f"Bearer {_token(execution)}",
+        "x-auth-user-id": execution.owner_id,
+        "x-auth-tenant": execution.tenant_id,
+    }
+    url = f"/api/v1/ting/delivery-executions/{execution.id}/delivery-authorizations"
+
+    accepted = client.post(
+        url,
+        headers=headers,
+        json={
+            "operation": "open_review",
+            "repository": execution.repository,
+            "base_sha": execution.base_sha,
+            "candidate_sha": inspection.candidate_sha,
+            "candidate_tree": inspection.candidate_tree,
+            "target_branch": execution.base_ref,
+        },
+    )
+    wrong_target = client.post(
+        url,
+        headers=headers,
+        json={
+            "operation": "open_review",
+            "repository": execution.repository,
+            "base_sha": execution.base_sha,
+            "candidate_sha": inspection.candidate_sha,
+            "candidate_tree": inspection.candidate_tree,
+            "target_branch": "not-base",
+        },
+    )
+    wrong_candidate = client.post(
+        url,
+        headers=headers,
+        json={
+            "operation": "open_review",
+            "repository": execution.repository,
+            "base_sha": execution.base_sha,
+            "candidate_sha": "d" * 40,
+            "candidate_tree": inspection.candidate_tree,
+            "target_branch": execution.base_ref,
+        },
+    )
+
+    assert accepted.status_code == 204, accepted.text
+    assert wrong_target.status_code == 409
+    assert "Review publication requires" in wrong_target.json()["detail"]
+    assert wrong_candidate.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# execution_evidence()
+# ---------------------------------------------------------------------------
+
+
+def test_execution_evidence_skips_children_from_other_generations() -> None:
+    execution, repository, _, _, _ = _context()
+    stale_child = replace(
+        repository.children[0],
+        id=uuid4(),
+        generation=execution.current_generation + 5,
+        key="stale",
+        gate_report={"accepted": False, "blocking_reasons": ["stale generation"]},
+    )
+    repository.children = [stale_child, *repository.children]
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.include_router(create_delivery_executions_router())
+    app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
+
+    response = TestClient(app).get(
+        f"/api/v1/ting/delivery-executions/{execution.id}/evidence",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    assert "stale generation" not in response.json()["verification"]["blockingReasons"]
+    assert len(response.json()["children"]) == 2

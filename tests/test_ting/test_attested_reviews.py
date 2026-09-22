@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -6,9 +7,9 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from niuu.adapters.evidence_signing import RsaEvidenceAuthenticator
-from niuu.domain.delivery import ReviewReceipt, evidence_payload
+from niuu.domain.delivery import FindingDisposition, ReviewReceipt, ReviewVerdict, evidence_payload
 from tests.test_ting.test_delivery_execution import _execution, _proposal
-from ting.delivery.attested_reviews import TrustedChildReviewAttestor
+from ting.delivery.attested_reviews import TrustedChildReviewAttestor, _finding
 from ting.delivery.domain import make_children
 from ting.domain.workflow_execution import WorkflowExecutionError
 
@@ -265,3 +266,204 @@ async def test_rejects_untrusted_or_malformed_review_bindings(mutation: str) -> 
 
     with pytest.raises(WorkflowExecutionError):
         await attestor.attest(execution, child, result)
+
+
+# ---------------------------------------------------------------------------
+# TrustedChildReviewAttestor construction and defensive branches
+# ---------------------------------------------------------------------------
+
+
+def test_constructor_rejects_empty_role_producers() -> None:
+    _, _, authenticator, _, _ = _context()
+
+    with pytest.raises(ValueError, match="non-empty role producers"):
+        TrustedChildReviewAttestor(authenticator=authenticator, role_producers={})
+
+
+@pytest.mark.parametrize(
+    "role_producers",
+    [
+        {"": "code-producer"},
+        {"code": ""},
+        {"  ": "code-producer"},
+        {"code": "  "},
+    ],
+)
+def test_constructor_rejects_blank_role_or_producer(role_producers) -> None:
+    _, _, authenticator, _, _ = _context()
+
+    with pytest.raises(ValueError, match="non-empty role producers"):
+        TrustedChildReviewAttestor(authenticator=authenticator, role_producers=role_producers)
+
+
+@pytest.mark.asyncio
+async def test_attest_raises_when_no_producer_is_configured_for_a_pinned_role() -> None:
+    execution, child, authenticator, _, result = _context()
+    attestor = TrustedChildReviewAttestor(
+        authenticator=authenticator,
+        role_producers={"code": "code-producer", "security": "security-producer"},
+        workflow_resolver=lambda *_args: SimpleNamespace(
+            graph={
+                "reviewAttestation": {
+                    "version": 1,
+                    "scope": "workstream",
+                    "eventType": "developer.review.completed",
+                    "roles": {
+                        "code": "developer-code-reviewer",
+                        "security": "developer-security-reviewer",
+                        "adversarial": "developer-adversarial-reviewer",
+                    },
+                },
+                "nodes": [
+                    {
+                        "kind": "stage",
+                        "joinMode": "all",
+                        "stageMembers": [
+                            {"personaId": "developer-code-reviewer"},
+                            {"personaId": "developer-security-reviewer"},
+                            {"personaId": "developer-adversarial-reviewer"},
+                        ],
+                    }
+                ],
+            },
+            persona_dependencies={
+                "developer-code-reviewer": object(),
+                "developer-security-reviewer": object(),
+                "developer-adversarial-reviewer": object(),
+            },
+        ),
+    )
+
+    with pytest.raises(
+        WorkflowExecutionError,
+        match="no configured producer for role.*adversarial",
+    ):
+        await attestor.attest(execution, child, result)
+
+
+@pytest.mark.asyncio
+async def test_attest_raises_when_envelope_is_missing() -> None:
+    execution, child, _, attestor, result = _context()
+    del result["_trustedReviewEnvelope"]
+
+    with pytest.raises(WorkflowExecutionError, match="no trusted reviewer envelope"):
+        await attestor.attest(execution, child, result)
+
+
+@pytest.mark.asyncio
+async def test_attest_raises_when_envelope_is_not_a_mapping() -> None:
+    execution, child, _, attestor, result = _context()
+    result["_trustedReviewEnvelope"] = "not-a-mapping"
+
+    with pytest.raises(WorkflowExecutionError, match="no trusted reviewer envelope"):
+        await attestor.attest(execution, child, result)
+
+
+@pytest.mark.asyncio
+async def test_attest_raises_when_result_already_carries_review_receipts() -> None:
+    execution, child, _, attestor, result = _context()
+    result["reviewReceipts"] = [{"already": "supplied"}]
+
+    with pytest.raises(WorkflowExecutionError, match="must not supply its own review receipts"):
+        await attestor.attest(execution, child, result)
+
+
+@pytest.mark.asyncio
+async def test_attest_raises_when_worker_id_is_missing() -> None:
+    execution, child, _, attestor, result = _context()
+    child = replace(child, workspace={**child.workspace, "worker_id": ""})
+
+    with pytest.raises(WorkflowExecutionError, match="envelope is incomplete"):
+        await attestor.attest(execution, child, result)
+
+
+@pytest.mark.asyncio
+async def test_attest_raises_when_reviews_is_not_a_list() -> None:
+    execution, child, _, attestor, result = _context()
+    result["_trustedReviewEnvelope"]["reviews"] = {"not": "a list"}
+
+    with pytest.raises(WorkflowExecutionError, match="envelope is incomplete"):
+        await attestor.attest(execution, child, result)
+
+
+@pytest.mark.asyncio
+async def test_attest_raises_when_a_review_verdict_is_unrecognized() -> None:
+    execution, child, _, attestor, result = _context()
+    result["_trustedReviewEnvelope"]["reviews"][0]["verdict"] = "unsure"
+
+    with pytest.raises(WorkflowExecutionError, match="review verdict is invalid"):
+        await attestor.attest(execution, child, result)
+
+
+@pytest.mark.asyncio
+async def test_review_binding_translates_document_errors() -> None:
+    """A malformed `reviewAttestation` block (caught by the workflow-document
+    parser) must surface as a WorkflowExecutionError, not leak the internal
+    WorkflowDocumentError type across the port boundary."""
+    execution, child, authenticator, _, result = _context()
+    attestor = TrustedChildReviewAttestor(
+        authenticator=authenticator,
+        role_producers={"code": "code-producer"},
+        workflow_resolver=lambda *_args: SimpleNamespace(
+            graph={
+                "reviewAttestation": {
+                    "version": 1,
+                    "scope": "workstream",
+                    # "eventType" and "roles" are both required; both are
+                    # missing here to force the parser itself to fail.
+                },
+                "nodes": [],
+            },
+            persona_dependencies={},
+        ),
+    )
+
+    with pytest.raises(WorkflowExecutionError, match="frozen child review attestation is invalid"):
+        await attestor.attest(execution, child, result)
+
+
+# ---------------------------------------------------------------------------
+# _finding() helper
+# ---------------------------------------------------------------------------
+
+
+class TestFindingHelper:
+    def test_defaults_blocking_from_a_failing_verdict(self) -> None:
+        finding = _finding("event-1", 0, {"evidence": "stack trace here"}, ReviewVerdict.FAIL)
+
+        assert finding.blocking is True
+        assert finding.disposition == FindingDisposition.OPEN
+        assert finding.finding_id == "event-1:0"
+        assert finding.evidence == "stack trace here"
+
+    def test_defaults_non_blocking_from_a_passing_verdict(self) -> None:
+        finding = _finding("event-1", 1, {"evidence": "minor nit"}, ReviewVerdict.PASS)
+
+        assert finding.blocking is False
+        assert finding.disposition == FindingDisposition.RESOLVED
+
+    def test_explicit_blocking_overrides_the_verdict_default(self) -> None:
+        finding = _finding(
+            "event-1", 0, {"evidence": "minor nit", "blocking": True}, ReviewVerdict.PASS
+        )
+
+        assert finding.blocking is True
+        assert finding.disposition == FindingDisposition.OPEN
+
+    def test_falls_back_to_summary_when_evidence_is_absent(self) -> None:
+        finding = _finding(
+            "event-1", 0, {"summary": "used the summary instead"}, ReviewVerdict.FAIL
+        )
+
+        assert finding.evidence == "used the summary instead"
+
+    def test_falls_back_to_a_json_dump_when_evidence_and_summary_are_absent(self) -> None:
+        raw = {"role": "code", "verdict": "fail"}
+        finding = _finding("event-1", 0, raw, ReviewVerdict.FAIL)
+
+        assert finding.evidence == json.dumps(raw, sort_keys=True, default=str)[:4096]
+
+    def test_truncates_oversized_evidence_to_4096_characters(self) -> None:
+        finding = _finding("event-1", 0, {"evidence": "x" * 5000}, ReviewVerdict.FAIL)
+
+        assert len(finding.evidence) == 4096

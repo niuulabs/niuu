@@ -39,6 +39,24 @@ vi.mock('./WorkCampaignResults', () => ({
   WorkCampaignResults: () => <section>Campaign results</section>,
 }));
 
+vi.mock('./TrackerWorkImportDialog', () => ({
+  TrackerWorkImportDialog: ({
+    open,
+    onImported,
+  }: {
+    open: boolean;
+    onImported: (saga: { id: string }) => void;
+  }) =>
+    open ? (
+      <section>
+        Tracker import dialog
+        <button type="button" onClick={() => onImported({ id: 'imported-1' })}>
+          Simulate import
+        </button>
+      </section>
+    ) : null,
+}));
+
 function summary(
   id: WorkSummary['id'],
   kind: WorkSummary['kind'],
@@ -229,6 +247,23 @@ describe('WorkPage', () => {
       'href',
       '/ting/specs/new',
     );
+  });
+
+  it('closes New work when a brief flow link is followed', async () => {
+    renderPage();
+    await screen.findByText('Define usage-based billing');
+
+    fireEvent.click(screen.getByRole('button', { name: /new work/i }));
+    fireEvent.click(screen.getByRole('link', { name: 'Plan delivery' }));
+    expect(screen.queryByRole('dialog', { name: 'Start new work' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /new work/i }));
+    fireEvent.click(screen.getByRole('link', { name: 'Start research' }));
+    expect(screen.queryByRole('dialog', { name: 'Start new work' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /new work/i }));
+    fireEvent.click(screen.getByRole('link', { name: 'Create specification' }));
+    expect(screen.queryByRole('dialog', { name: 'Start new work' })).not.toBeInTheDocument();
   });
 
   it('keeps filter and search context when opening source-qualified work', async () => {
@@ -434,5 +469,351 @@ describe('WorkPage', () => {
 
     expect(await screen.findByText('No work yet')).toBeInTheDocument();
     expect(screen.getByText('Start work from a tracker or brief.')).toBeInTheDocument();
+  });
+
+  it('gives a waiting item a quiet condition tone and counts it as active', async () => {
+    const waiting = summary('campaign:waiting-1', 'research', 'waiting', 'Waiting on review');
+    renderPage(
+      makeWorkService({
+        list: vi.fn().mockResolvedValue({ ...collection, campaigns: [specification, waiting] }),
+      }),
+    );
+
+    await screen.findByText('Waiting on review');
+    const badge = screen.getByText('Waiting').closest('.ting-work-condition');
+    expect(badge).toHaveClass('ting-work-condition--quiet');
+  });
+
+  it('narrows the overview list to only completed work under the Completed filter', async () => {
+    routerState.search = { filter: 'completed' };
+    renderPage();
+    await screen.findByText('Ship workspace invitations');
+
+    const main = screen.getByTestId('work-overview');
+    expect(within(main).getByRole('heading', { level: 1, name: 'Completed' })).toBeInTheDocument();
+    expect(within(main).queryByText('Define usage-based billing')).not.toBeInTheDocument();
+  });
+
+  it('narrows the overview list to in-progress work under the Active filter', async () => {
+    const waiting = summary('campaign:waiting-1', 'research', 'waiting', 'Waiting on review');
+    routerState.search = { filter: 'active' };
+    renderPage(
+      makeWorkService({
+        list: vi.fn().mockResolvedValue({ ...collection, campaigns: [specification, waiting] }),
+      }),
+    );
+    await screen.findByText('Waiting on review');
+
+    const main = screen.getByTestId('work-overview');
+    expect(within(main).queryByText('Define usage-based billing')).not.toBeInTheDocument();
+    expect(within(main).queryByText('Ship workspace invitations')).not.toBeInTheDocument();
+  });
+
+  it('shows no connected projects placeholder in the sidebar when there are none', async () => {
+    renderPage(
+      makeWorkService({
+        list: vi.fn().mockResolvedValue({ ...collection, projects: [] }),
+      }),
+    );
+
+    await screen.findByText('Define usage-based billing');
+    expect(screen.getByText('No connected projects')).toBeInTheDocument();
+  });
+
+  it('opens the real tracker import dialog and closes New work when From tracker is used', async () => {
+    renderPage();
+    await screen.findByText('Define usage-based billing');
+
+    fireEvent.click(screen.getByRole('button', { name: /new work/i }));
+    fireEvent.click(screen.getByTestId('new-work-from-tracker'));
+
+    expect(screen.queryByRole('dialog', { name: 'Start new work' })).not.toBeInTheDocument();
+    expect(screen.getByText('Tracker import dialog')).toBeInTheDocument();
+  });
+
+  it('navigates to the newly imported project once the tracker import finishes', async () => {
+    renderPage();
+    await screen.findByText('Define usage-based billing');
+
+    fireEvent.click(screen.getByRole('button', { name: /new work/i }));
+    fireEvent.click(screen.getByTestId('new-work-from-tracker'));
+    fireEvent.click(screen.getByRole('button', { name: 'Simulate import' }));
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: '/ting/work/$workId',
+        params: { workId: 'project:imported-1' },
+      }),
+    );
+  });
+
+  it('opens a connected project from the sidebar list', async () => {
+    renderPage();
+    await screen.findByText('Define usage-based billing');
+
+    fireEvent.click(
+      within(screen.getByLabelText('Work workspace')).getByRole('button', {
+        name: /Niuu Platform/i,
+      }),
+    );
+    expect(mockNavigate).toHaveBeenCalledWith(
+      expect.objectContaining({ params: { workId: 'project:project-1' } }),
+    );
+  });
+
+  it('filters through the overview panel controls as well as the sidebar nav', async () => {
+    renderPage();
+    await screen.findByText('Define usage-based billing');
+
+    fireEvent.click(
+      within(screen.getByLabelText('Work filters')).getByRole('button', { name: 'Active' }),
+    );
+    expect(mockNavigate).toHaveBeenCalledWith(
+      expect.objectContaining({ to: '/ting/work', search: { filter: 'active' } }),
+    );
+  });
+
+  it('opens New work from the detail view secondary action', async () => {
+    routerState.params = { workId: 'project:project-1' };
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: /new work/i }));
+    expect(screen.getByRole('dialog', { name: 'Start new work' })).toBeInTheDocument();
+  });
+
+  it('navigates back to the overview preserving filter and search from the detail view', async () => {
+    routerState.params = { workId: 'project:project-1' };
+    routerState.search = { filter: 'active', q: 'niuu' };
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Back to work' }));
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/ting/work',
+      search: { filter: 'active', q: 'niuu' },
+    });
+  });
+
+  it('filters to needs-attention and completed work through the sidebar nav', async () => {
+    renderPage();
+    await screen.findByText('Define usage-based billing');
+
+    const nav = within(screen.getByRole('navigation', { name: 'Work views' }));
+    fireEvent.click(nav.getByRole('button', { name: 'Needs attention' }));
+    expect(mockNavigate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ to: '/ting/work', search: { filter: 'attention' } }),
+    );
+
+    fireEvent.click(nav.getByRole('button', { name: 'Completed' }));
+    expect(mockNavigate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ to: '/ting/work', search: { filter: 'completed' } }),
+    );
+  });
+
+  it('updates the search query as the operator types', async () => {
+    renderPage();
+    await screen.findByText('Define usage-based billing');
+
+    fireEvent.change(screen.getByPlaceholderText('Search loaded work'), {
+      target: { value: 'billing' },
+    });
+    expect(mockNavigate).toHaveBeenCalledWith(
+      expect.objectContaining({ to: '/ting/work', search: { q: 'billing' } }),
+    );
+  });
+
+  it('prefixes a bare id with its backend kind before navigating to detail', async () => {
+    const bare = summary('research-77', 'research', 'active', 'Bare id research');
+    renderPage(
+      makeWorkService({
+        list: vi.fn().mockResolvedValue({ ...collection, campaigns: [specification, bare] }),
+      }),
+    );
+
+    fireEvent.click(await screen.findByText('Bare id research'));
+    expect(mockNavigate).toHaveBeenCalledWith(
+      expect.objectContaining({ params: { workId: 'campaign:research-77' } }),
+    );
+  });
+
+  it('shows an unfilled current step distinct from tracker status and condition label', async () => {
+    routerState.params = { workId: 'execution:execution-1' };
+    const active = summary(
+      'execution:execution-1',
+      'workflowExecution',
+      'active',
+      'Ship workspace invitations',
+    );
+    const detail: WorkDetail = {
+      item: { ...active, attention: null, currentStep: 'Deploying to staging' },
+      tasks: [],
+      coverage: [],
+    };
+    renderPage(makeWorkService({ get: vi.fn().mockResolvedValue(detail) }));
+
+    expect(await screen.findByText('Current step')).toBeInTheDocument();
+    expect(screen.getByText('Deploying to staging')).toBeInTheDocument();
+  });
+
+  it('offers session and workflow-definition links, and full provenance, from the detail header', async () => {
+    routerState.params = { workId: 'project:project-1' };
+    const withLinks: WorkDetail = {
+      ...projectDetail,
+      item: {
+        ...project,
+        session: { id: 'session-9', connectionId: 'forge-local' },
+        actions: ['open', 'openDefinition', 'openSession'],
+      },
+    };
+    renderPage(makeWorkService({ get: vi.fn().mockResolvedValue(withLinks) }));
+
+    await screen.findByTestId('work-detail');
+    expect(screen.getByRole('link', { name: 'Open session' })).toHaveAttribute(
+      'href',
+      '/volundr/session/$sessionId',
+    );
+    expect(screen.getByRole('link', { name: 'Open definition' })).toHaveAttribute(
+      'href',
+      '/ting/workflows/build',
+    );
+
+    const provenance = screen.getByText('Provenance').closest('details') as HTMLElement;
+    expect(provenance.textContent).toContain('Connected project');
+    expect(provenance.textContent).toContain('started');
+    expect(provenance.textContent).toContain('1.2.0');
+    expect(within(provenance).getByRole('link', { name: /open source/i })).toHaveAttribute(
+      'href',
+      'https://tracker.example/niu',
+    );
+  });
+
+  it('reports the tracker task open session link and non-not-started run state', async () => {
+    routerState.params = { workId: 'project:project-1' };
+    const withRun: WorkDetail = {
+      ...projectDetail,
+      tasks: [
+        {
+          ...task,
+          operationalRun: {
+            id: 'run-77',
+            status: 'Running',
+            sessionId: 'session-77',
+            reviewerSessionId: null,
+            branch: null,
+            prUrl: null,
+            updatedAt: null,
+          },
+        },
+      ],
+    };
+    renderPage(makeWorkService({ get: vi.fn().mockResolvedValue(withRun) }));
+
+    const ticket = (await screen.findByText('NIU-142')).closest('article') as HTMLElement;
+    expect(within(ticket).getByText('Running')).toBeInTheDocument();
+    expect(within(ticket).getByRole('link', { name: 'Open session' })).toHaveAttribute(
+      'href',
+      '/volundr/sessions/session-77',
+    );
+  });
+
+  it('starts a ticket that has no connection or workflow id bound to the dispatch', async () => {
+    routerState.params = { workId: 'project:project-1' };
+    const bareTask: WorkTask = {
+      ...task,
+      dispatch: { sagaId: 'project-1', issueId: 'issue-142', repo: 'niuulabs/volundr' },
+    };
+    const approve = vi.fn().mockResolvedValue([
+      {
+        issueId: 'issue-142',
+        sessionId: 'session-1',
+        sessionName: 'NIU-142',
+        status: 'spawned',
+        clusterName: 'local',
+      },
+    ]);
+    renderPage(
+      makeWorkService({ get: vi.fn().mockResolvedValue({ ...projectDetail, tasks: [bareTask] }) }),
+      makeDispatchService({ approve }),
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Start eligible work' }));
+    await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
+    expect(approve).toHaveBeenCalledWith(
+      [{ sagaId: 'project-1', issueId: 'issue-142', repo: 'niuulabs/volundr' }],
+      undefined,
+    );
+  });
+
+  it('labels the specialist link by work kind', async () => {
+    routerState.params = { workId: 'campaign:research-1' };
+    const research = summary('campaign:research-1', 'research', 'active', 'Explore billing');
+    const detail: WorkDetail = {
+      item: { ...research, attention: null, campaignSlug: null },
+      tasks: [],
+      coverage: [],
+    };
+    renderPage(makeWorkService({ get: vi.fn().mockResolvedValue(detail) }));
+
+    expect(await screen.findByRole('link', { name: /open research/i })).toBeInTheDocument();
+  });
+
+  it('labels the specialist link for a workflow execution', async () => {
+    routerState.params = { workId: 'execution:execution-1' };
+    const detail: WorkDetail = { item: { ...execution, attention: null }, tasks: [], coverage: [] };
+    renderPage(makeWorkService({ get: vi.fn().mockResolvedValue(detail) }));
+
+    expect(await screen.findByRole('link', { name: /inspect execution/i })).toBeInTheDocument();
+  });
+
+  it('falls back to a generic details label for an unrecognised work kind', async () => {
+    routerState.params = { workId: 'campaign:launch-1' };
+    const launch = summary('campaign:launch-1', 'workflowLaunch', 'active', 'Queued launch');
+    const detail: WorkDetail = { item: { ...launch, attention: null }, tasks: [], coverage: [] };
+    renderPage(makeWorkService({ get: vi.fn().mockResolvedValue(detail) }));
+
+    expect(await screen.findByRole('link', { name: /open details/i })).toBeInTheDocument();
+  });
+
+  it('retries the source from the detail view coverage notice', async () => {
+    routerState.params = { workId: 'project:project-1' };
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ...projectDetail,
+        coverage: [
+          {
+            source: 'tracker',
+            connectionId: null,
+            status: 'unavailable',
+            error: { code: 'offline', message: 'Tracker is offline' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce(projectDetail);
+    renderPage(makeWorkService({ get }));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+  });
+
+  it('shows a partial coverage notice without an error message', async () => {
+    routerState.params = { workId: 'project:project-1' };
+    const partial: WorkDetail = {
+      ...projectDetail,
+      coverage: [{ source: 'tracker', connectionId: null, status: 'partial', error: null }],
+    };
+    renderPage(makeWorkService({ get: vi.fn().mockResolvedValue(partial) }));
+
+    expect(await screen.findByText(/returned partial results/i)).toBeInTheDocument();
+  });
+
+  it('shows an unavailable coverage notice without an error message', async () => {
+    routerState.params = { workId: 'project:project-1' };
+    const unavailable: WorkDetail = {
+      ...projectDetail,
+      coverage: [{ source: 'tracker', connectionId: null, status: 'unavailable', error: null }],
+    };
+    renderPage(makeWorkService({ get: vi.fn().mockResolvedValue(unavailable) }));
+
+    expect(await screen.findByText(/is currently unavailable/i)).toBeInTheDocument();
   });
 });
