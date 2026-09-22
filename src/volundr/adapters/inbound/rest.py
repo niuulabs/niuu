@@ -1577,17 +1577,23 @@ def create_router(
             detail="OpenShell workload token is not bound to this session",
         )
 
-    async def _optional_principal(request: Request) -> Principal | None:
+    async def _optional_principal(request: Request, *, strict: bool = False) -> Principal | None:
         """Extract principal if identity is configured, else return None.
 
         Allows dev mode (no IDP) to work without auth headers while
         production deployments enforce tenant/ownership scoping.
+
+        ``strict`` is for endpoints where an unidentified reader is meaningless
+        (e.g. per-reader inbox state): even a dev-mode deployment with no IDP
+        configured must still 401 rather than silently pick a reader.
 
         When a principal is found, also ensures the user row exists
         via the identity adapter's JIT provisioning.
         """
         identity = getattr(request.app.state, "identity", None)
         if identity is None:
+            if strict:
+                raise HTTPException(status_code=401, detail="Reader identity is required")
             return None
 
         from volundr.adapters.inbound.auth import extract_principal
