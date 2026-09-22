@@ -161,6 +161,10 @@ type SessionPayload = {
   issue_tracker_url?: string | null;
   activityState?: VolundrSession['activityState'];
   activity_state?: VolundrSession['activityState'];
+  activityStateSince?: string | null;
+  activity_state_since?: string | null;
+  turnStartedAt?: string | null;
+  turn_started_at?: string | null;
   needsAttention?: boolean;
   needs_attention?: boolean;
   ownerId?: string | null;
@@ -556,6 +560,8 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     archivedAt: toDate(session.archivedAt ?? session.archived_at),
     trackerIssue,
     activityState: session.activityState ?? session.activity_state ?? undefined,
+    activityStateSince: session.activityStateSince ?? session.activity_state_since ?? null,
+    turnStartedAt: session.turnStartedAt ?? session.turn_started_at ?? null,
     needsAttention:
       session.needsAttention ??
       session.needs_attention ??
@@ -1304,6 +1310,27 @@ export function buildVolundrHttpAdapter(
     for (const subscriber of chronicleSubscribers.get(sessionId) ?? []) subscriber(chronicle);
   }
 
+  function keepNewerActivity(fresh: VolundrSession): VolundrSession {
+    const prior = sessionCache.get(fresh.id);
+    if (
+      !prior ||
+      prior.instanceId !== fresh.instanceId ||
+      prior.status !== 'running' ||
+      fresh.status !== 'running'
+    )
+      return fresh;
+    const previous = Date.parse(prior.activityStateSince ?? '');
+    const next = Date.parse(fresh.activityStateSince ?? '');
+    if (!Number.isFinite(previous) || (Number.isFinite(next) && next >= previous)) return fresh;
+    return {
+      ...fresh,
+      activityState: prior.activityState,
+      activityStateSince: prior.activityStateSince,
+      turnStartedAt: prior.turnStartedAt,
+      needsAttention: prior.needsAttention,
+    };
+  }
+
   function updateSessionCache(sessions: VolundrSession[]): void {
     sessionCache.clear();
     for (const session of sessions) sessionCache.set(session.id, session);
@@ -1322,7 +1349,9 @@ export function buildVolundrHttpAdapter(
     const scoped = options?.instanceId
       ? `${endpoint}${endpoint.includes('?') ? '&' : '?'}instance_id=${encodeURIComponent(options.instanceId)}`
       : endpoint;
-    const sessions = (await readSessionList(scoped, options?.signal)).map(normalizeSession);
+    const sessions = (await readSessionList(scoped, options?.signal))
+      .map(normalizeSession)
+      .map(keepNewerActivity);
     if (options?.instanceId) {
       for (const [id, session] of sessionCache) {
         if (session.instanceId === options.instanceId) sessionCache.delete(id);
@@ -1356,19 +1385,16 @@ export function buildVolundrHttpAdapter(
       publishSessions();
       return null;
     }
-    const normalized = normalizeSession(session);
-    if (
-      options?.instanceId &&
-      normalized.instanceId &&
-      normalized.instanceId !== options.instanceId
-    ) {
+    const fetched = normalizeSession(session);
+    if (options?.instanceId && fetched.instanceId && fetched.instanceId !== options.instanceId) {
       throw new Error(
-        `Session ${id} was returned by ${normalized.instanceId}, expected ${options.instanceId}`,
+        `Session ${id} was returned by ${fetched.instanceId}, expected ${options.instanceId}`,
       );
     }
-    if (options?.instanceId && !normalized.instanceId) {
-      normalized.instanceId = options.instanceId;
+    if (options?.instanceId && !fetched.instanceId) {
+      fetched.instanceId = options.instanceId;
     }
+    const normalized = keepNewerActivity(fetched);
     sessionCache.set(normalized.id, normalized);
     publishSessions();
     return normalized;
@@ -1487,14 +1513,14 @@ export function buildVolundrHttpAdapter(
 
   function ensureStream(): void {
     if (streamHandle || !forgeClient.basePath) return;
-    streamHandle = openStream(`${forgeClient.basePath}/sessions/stream`, {
+    streamHandle = openStream(`${forgeClient.basePath}/sessions/stream?all_instances=true`, {
       onMessage: () => {},
       onEvent: ({ event, data }) => {
         try {
           const payload = JSON.parse(data) as SessionPayload | StatsPayload | { id?: string };
           const eventType = event ?? inferEventType(payload);
           if (eventType === 'session_created' || eventType === 'session_updated') {
-            const session = normalizeSession(payload as SessionPayload);
+            const session = keepNewerActivity(normalizeSession(payload as SessionPayload));
             sessionCache.set(session.id, session);
             publishSessions();
             return;
@@ -1515,11 +1541,22 @@ export function buildVolundrHttpAdapter(
             const activity = payload as {
               session_id?: string;
               state?: VolundrSession['activityState'];
+              instance_id?: string;
+              activity_state_since?: string | null;
+              turn_started_at?: string | null;
             };
             const sessionId = activity.session_id;
             if (typeof sessionId !== 'string') return;
             const existing = sessionCache.get(sessionId);
-            if (!existing) return;
+            if (
+              !existing ||
+              existing.status !== 'running' ||
+              (activity.instance_id && activity.instance_id !== existing.instanceId)
+            )
+              return;
+            const previous = Date.parse(existing.activityStateSince ?? '');
+            const next = Date.parse(activity.activity_state_since ?? '');
+            if (Number.isFinite(previous) && (!Number.isFinite(next) || next < previous)) return;
             const state =
               eventType === 'session_needs_input'
                 ? 'awaiting_input'
@@ -1527,12 +1564,20 @@ export function buildVolundrHttpAdapter(
             sessionCache.set(sessionId, {
               ...existing,
               activityState: state,
+              activityStateSince: activity.activity_state_since ?? null,
+              turnStartedAt: ['idle', 'stopped', 'error'].includes(state ?? '')
+                ? null
+                : 'turn_started_at' in activity
+                  ? activity.turn_started_at
+                  : existing.turnStartedAt,
               needsAttention: state === 'awaiting_input',
             });
             publishSessions();
             return;
           }
           if (eventType === 'stats_updated') {
+            // A per-host counter from the fleet feed is not an aggregate snapshot.
+            if ('instance_id' in payload) return;
             statsCache = normalizeStats(payload as StatsPayload);
             publishStats();
             return;
@@ -1615,6 +1660,11 @@ export function buildVolundrHttpAdapter(
     },
     getSessions: (options) => loadSessions('/sessions', options),
     getSession: (id, options) => loadSession(id, options),
+    getRuntimeVersion: (id, instanceId) => {
+      const owner = instanceId ?? sessionCache.get(id)?.instanceId ?? archivedSessionOwners.get(id);
+      const suffix = owner ? `?instance_id=${encodeURIComponent(owner)}` : '';
+      return forgeClient.get(`/sessions/${encodeURIComponent(id)}/runtime-version${suffix}`);
+    },
     getActiveSessions: () => loadSessions('/sessions?active=true'),
     getStats: (options) =>
       options?.instanceId
@@ -1678,12 +1728,12 @@ export function buildVolundrHttpAdapter(
       return payload.map(normalizeTarget);
     },
 
-    subscribe: (callback) => {
+    subscribe: (callback, options) => {
       sessionSubscribers.add(callback);
       ensureStream();
       if (sessionCache.size > 0) {
         callback(Array.from(sessionCache.values()));
-      } else {
+      } else if (options?.hydrate !== false) {
         hydrateSessions();
       }
       return () => {

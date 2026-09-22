@@ -110,6 +110,9 @@ def test_successful_empty_result_still_does_not_create_a_phantom_turn():
         "cost": None,
         "model": None,
         "stop_reason": "end_turn",
+        # Completion also applies to previously streamed text. The reducer must
+        # still avoid inventing a turn when neither source contains any text.
+        "final_output": True,
     }
 
 

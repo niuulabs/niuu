@@ -2062,6 +2062,32 @@ class Settings(BaseSettings):
     compute: ComputeConfig | None = None
 
     projects: ProjectsConfig = Field(default_factory=ProjectsConfig)
+    runtime_health_timeout_seconds: float = Field(default=3.0, gt=0)
+    forge_stream_remote_timeout_seconds: float = Field(
+        default=45.0,
+        gt=0,
+        description="Total httpx timeout for reading a remote Guild member's session SSE stream.",
+    )
+    forge_stream_remote_connect_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description="Connect timeout for opening a remote Guild member's session SSE stream.",
+    )
+    forge_stream_retry_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description="Delay before retrying a disconnected host in the merged session stream.",
+    )
+    forge_stream_keepalive_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        description="Idle interval before the merged session stream sends a keepalive comment.",
+    )
+    forge_stream_queue_maxsize: int = Field(
+        default=256,
+        gt=0,
+        description="Bound on the in-memory queue merging per-host session stream events.",
+    )
     conversation_recent_max_turns: int = Field(default=15, gt=0)
     conversation_recent_max_bytes: int = Field(default=256 * 1024, ge=4096)
     server_host: str = Field(

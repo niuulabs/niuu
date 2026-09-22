@@ -1,6 +1,7 @@
 """Tests for domain services."""
 
 import asyncio
+from uuid import uuid4
 
 import pytest
 
@@ -172,6 +173,52 @@ class TestSessionServiceBroadcaster:
         # Should have starting + failed updates
         assert broadcaster.session_updated_events[0].status == SessionStatus.STARTING
         assert any(e.status == SessionStatus.FAILED for e in broadcaster.session_updated_events)
+
+    @pytest.mark.asyncio
+    async def test_notify_read_state_changed_propagates_repository_failure(
+        self, service, repository, monkeypatch
+    ):
+        """A failed repository read is a bug and must raise, never be swallowed."""
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+
+        async def failing_get(session_id):
+            raise RuntimeError("repository unavailable")
+
+        monkeypatch.setattr(repository, "get", failing_get)
+
+        with pytest.raises(RuntimeError, match="repository unavailable"):
+            await service.notify_read_state_changed(session.id)
+
+    @pytest.mark.asyncio
+    async def test_notify_read_state_changed_propagates_publish_failure(
+        self, service, broadcaster, monkeypatch
+    ):
+        """A failed broadcast is a bug (in-process pub/sub), never a swallowed hint."""
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+
+        async def failing_publish(event):
+            raise RuntimeError("broadcaster unavailable")
+
+        monkeypatch.setattr(broadcaster, "publish", failing_publish)
+
+        with pytest.raises(RuntimeError, match="broadcaster unavailable"):
+            await service.notify_read_state_changed(session.id)
+
+    @pytest.mark.asyncio
+    async def test_notify_read_state_changed_is_a_noop_for_unknown_session(
+        self, service, broadcaster
+    ):
+        """The 404-style early return stays: an unknown session is not an error."""
+        await service.notify_read_state_changed(uuid4())
+        assert broadcaster.events == []
 
 
 class TestSessionServiceWithoutBroadcaster:

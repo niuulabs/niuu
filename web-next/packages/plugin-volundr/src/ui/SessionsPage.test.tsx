@@ -345,9 +345,9 @@ describe('SessionsPage', () => {
     );
   });
 
-  it('renders ACTIVE group with running sessions', async () => {
+  it('renders WORKING group with running sessions', async () => {
     wrap();
-    await waitFor(() => expect(screen.getByTestId('pod-group-active')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('pod-group-working')).toBeInTheDocument());
   });
 
   it('renders BOOTING group with provisioning sessions', async () => {
@@ -462,7 +462,7 @@ describe('SessionsPage', () => {
     await waitFor(() => expect(screen.getByTestId('pod-group-alpha')).toBeInTheDocument());
     expect(screen.getByTestId('pod-group-alpha-count')).toHaveTextContent('2');
     expect(screen.getByTestId('pod-group-beta')).toBeInTheDocument();
-    expect(screen.queryByTestId('pod-group-active')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pod-group-working')).not.toBeInTheDocument();
   });
 
   it('can group sessions by forge', async () => {
@@ -498,7 +498,7 @@ describe('SessionsPage', () => {
     await waitFor(() => expect(screen.getByTestId('pod-group-guild-alpha')).toBeInTheDocument());
     expect(screen.getByTestId('pod-group-guild-alpha-count')).toHaveTextContent('2');
     expect(screen.getByTestId('pod-group-guild-beta')).toBeInTheDocument();
-    expect(screen.queryByTestId('pod-group-active')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pod-group-working')).not.toBeInTheDocument();
   });
 
   it('shows loading state initially', async () => {
@@ -520,7 +520,7 @@ describe('SessionsPage', () => {
     );
     const row = screen.getByTestId('pod-entry-laptop-volundr-local');
     expect(row).toHaveTextContent(/reading volundr/i);
-    expect(row).toHaveTextContent(/ago/i);
+    expect(row).toHaveTextContent('Working');
   });
 
   it('renders the forge label when a session has an instance name', async () => {
@@ -789,10 +789,10 @@ describe('Forge session review controls', () => {
     fireEvent.doubleClick(separator);
     expect(separator).toHaveAttribute('aria-valuenow', '340');
     fireEvent.click(
-      within(screen.getByTestId('pod-group-active')).getByRole('button', { expanded: true }),
+      within(screen.getByTestId('pod-group-working')).getByRole('button', { expanded: true }),
     );
     expect(screen.queryByTestId('pod-entry-working')).not.toBeInTheDocument();
-    expect(localStorage.getItem('niuu.forge.group.state:ACTIVE')).toBe('1');
+    expect(localStorage.getItem('niuu.forge.group.state:WORKING')).toBe('1');
   });
   it('reports a failed stop and does not proceed to archive or change selection', async () => {
     const service = createMockVolundrService();

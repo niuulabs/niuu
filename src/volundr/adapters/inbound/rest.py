@@ -9,7 +9,7 @@ import re
 import time
 from datetime import UTC, datetime
 from pathlib import Path as FilePath
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
@@ -108,6 +108,11 @@ from volundr.domain.services import (
 )
 from volundr.domain.services.permission_auto_approval import (
     evaluate_permission_auto_approval,
+)
+from volundr.domain.session_read_state import (
+    SessionReadState,
+    SessionReadStateChange,
+    SessionReadStateConflictError,
 )
 from volundr.log_aggregate import aggregate_workspace_logs
 from volundr.session_archive import load_workspace_transcript
@@ -846,6 +851,8 @@ class DeviceResponse(BaseModel):
 class SessionResponse(BaseModel):
     """Response model for a session."""
 
+    read_state: SessionReadState | None = None
+
     coordination: SessionCoordination | None = None
 
     id: UUID = Field(description="Unique session identifier")
@@ -1002,6 +1009,7 @@ class SessionResponse(BaseModel):
     ) -> "SessionResponse":
         """Create response from domain model."""
         return cls(
+            read_state=session.read_state,
             id=session.id,
             coordination=session.coordination,
             name=session.name,
@@ -1546,6 +1554,8 @@ def create_router(
     openshell_internal_gateway_url: str = DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL,
     preview_cache: PreviewCache | None = None,
     project_service=None,
+    runtime_build: dict | None = None,
+    runtime_health_timeout: float = 3.0,
     history_max_turns: int = 15,
     history_max_bytes: int = 256 * 1024,
 ) -> APIRouter:
@@ -1566,9 +1576,8 @@ def create_router(
     @router.get("/version", tags=["Forge"])
     async def forge_version() -> dict:
         """Identify the running Forge API build (git sha / branch) so an operator
-        can confirm which version is live. Skuld brokers run from the same
-        checkout, so the same sha applies to the broker (which also reports it in
-        its ``system/init`` event)."""
+        can confirm which version is live. Existing Skuld brokers may still run an older
+        build; inspect /sessions/{id}/runtime-version for their loaded identity."""
         from niuu.build_info import build_info
 
         return {"service": "forge-api", **build_info()}
@@ -1594,17 +1603,23 @@ def create_router(
             detail="OpenShell workload token is not bound to this session",
         )
 
-    async def _optional_principal(request: Request) -> Principal | None:
+    async def _optional_principal(request: Request, *, strict: bool = False) -> Principal | None:
         """Extract principal if identity is configured, else return None.
 
         Allows dev mode (no IDP) to work without auth headers while
         production deployments enforce tenant/ownership scoping.
+
+        ``strict`` is for endpoints where an unidentified reader is meaningless
+        (e.g. per-reader inbox state): even a dev-mode deployment with no IDP
+        configured must still 401 rather than silently pick a reader.
 
         When a principal is found, also ensures the user row exists
         via the identity adapter's JIT provisioning.
         """
         identity = getattr(request.app.state, "identity", None)
         if identity is None:
+            if strict:
+                raise HTTPException(status_code=401, detail="Reader identity is required")
             return None
 
         from volundr.adapters.inbound.auth import extract_principal
@@ -1656,6 +1671,7 @@ def create_router(
             "home_volumes_supported": storage.supports_home_volumes,
             "mini_mode": settings.local_mounts.mini_mode,
             "local_mounts_allowed_prefixes": settings.local_mounts.allowed_prefixes,
+            "capabilities": {"local_session_scope": True},
             "projects_enabled": project_service is not None,
             "project_assignment_enabled": project_service is not None,
             "project_contract_version": 1 if project_service is not None else 0,
@@ -1703,6 +1719,10 @@ def create_router(
     @router.get("/sessions", response_model=list[SessionResponse], tags=["Sessions"])
     async def list_sessions(
         request: Request,
+        response: Response,
+        scope: Literal["local", "guild"] = Query(
+            default="local", description="Standalone Forge always serves its own local sessions"
+        ),
         status_filter: SessionStatus | None = Query(
             default=None, alias="status", description="Filter by session status"
         ),
@@ -1715,6 +1735,7 @@ def create_router(
         parent_instance_id: str | None = Query(default=None),
     ) -> list[SessionResponse]:
         """List all sessions. Archived sessions are excluded by default."""
+        response.headers["X-Forge-Session-Scope"] = "local"
         principal = await _optional_principal(request)
         if principal is None and _strict_identity_enabled(request):
             return []
@@ -1744,6 +1765,7 @@ def create_router(
                     or s.coordination.parent.instance_id == parent_instance_id
                 )
             ]
+        sessions = await forge.with_read_states(sessions, principal)
         return [_session_response(s) for s in sessions]
 
     @router.get(
@@ -1751,7 +1773,10 @@ def create_router(
         responses={503: {"model": ErrorResponse}},
         tags=["Sessions"],
     )
-    async def stream_sessions(request: Request) -> StreamingResponse:
+    async def stream_sessions(
+        request: Request,
+        scope: Literal["local", "guild"] = Query(default="local"),
+    ) -> StreamingResponse:
         """Stream real-time session updates via Server-Sent Events (SSE).
 
         This endpoint provides a real-time stream of session events including:
@@ -1815,6 +1840,7 @@ def create_router(
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
                 "X-Accel-Buffering": "no",
+                "X-Forge-Session-Scope": "local",
             },
         )
 
@@ -2025,7 +2051,86 @@ def create_router(
                 detail=f"Access denied to session {session_id}",
             )
 
+        session = (await forge.with_read_states([session], principal))[0]
         return _session_response(session)
+
+    @router.get("/sessions/{session_id}/runtime-version", tags=["Sessions"])
+    async def get_runtime_version(request: Request, session_id: UUID) -> dict:
+        """Inspect the loaded gateway, without restarting it or trusting stored activity."""
+        session = await forge.get_session(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        principal = await _optional_principal(request)
+        try:
+            await forge.ensure_access(session, principal)
+        except SessionAccessDeniedError:
+            raise HTTPException(status_code=403, detail="Access denied") from None
+        result = {"available": runtime_build, "current": None, "state": "unavailable"}
+        if not session.chat_endpoint:
+            result["state"] = "not_running"
+            return result
+        _, base_url = await forge.get_session_proxy_target(session_id)
+        url, headers = _http_proxy_target(_session_proxy_url(base_url, "health"))
+        if auth := request.headers.get("authorization"):
+            headers["Authorization"] = auth
+        try:
+            async with httpx.AsyncClient(timeout=runtime_health_timeout) as client:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                health = response.json()
+            if not isinstance(health, dict) or health.get("session_id") != str(session_id):
+                raise HTTPException(
+                    status_code=502, detail="Gateway identity does not match session"
+                )
+            result["current"] = {
+                key: health.get(key) for key in ("revision", "build", "source_sha256", "dirty")
+            }
+            current_hash = health.get("source_sha256")
+            available_hash = (runtime_build or {}).get("source_sha256")
+            if current_hash and available_hash:
+                result["state"] = "current" if current_hash == available_hash else "different"
+            else:
+                result["state"] = "unknown"
+        except (httpx.HTTPError, ValueError):
+            # A failed probe is explicitly unknown, never evidence that a gateway stopped.
+            result["state"] = "unavailable"
+        return result
+
+    @router.get(
+        "/sessions/{session_id}/read-state", response_model=SessionReadState, tags=["Sessions"]
+    )
+    async def get_session_read_state(request: Request, session_id: UUID) -> SessionReadState:
+        principal = await _optional_principal(request, strict=True)
+        if principal is None:
+            raise HTTPException(status_code=401, detail="Reader identity is required")
+        try:
+            return await forge.get_read_state(session_id, principal)
+        except SessionNotFoundError:
+            raise HTTPException(status_code=404, detail="Session not found") from None
+        except SessionAccessDeniedError:
+            raise HTTPException(status_code=403, detail="Access denied") from None
+
+    @router.patch(
+        "/sessions/{session_id}/read-state", response_model=SessionReadState, tags=["Sessions"]
+    )
+    async def change_session_read_state(
+        request: Request,
+        session_id: UUID,
+        change: SessionReadStateChange,
+    ) -> SessionReadState:
+        principal = await _optional_principal(request, strict=True)
+        if principal is None:
+            raise HTTPException(status_code=401, detail="Reader identity is required")
+        try:
+            return await forge.change_read_state(session_id, change, principal)
+        except SessionNotFoundError:
+            raise HTTPException(status_code=404, detail="Session not found") from None
+        except SessionAccessDeniedError:
+            raise HTTPException(status_code=403, detail="Access denied") from None
+        except SessionReadStateConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
 
     @router.post(
         "/sessions/{session_id}/permissions/auto-approval/evaluate",

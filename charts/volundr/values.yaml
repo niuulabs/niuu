@@ -1000,6 +1000,8 @@ config:
     dispatch_poll_seconds: 0.05
   conversationRecentMaxTurns: 15
   conversationRecentMaxBytes: 262144
+  # -- Timeout (seconds) for the runtime-version health probe against a session's runtime
+  runtimeHealthTimeoutSeconds: 3.0
   # -- Log level (debug, info, warning, error)
   logLevel: info
   # -- Log format (json, text)

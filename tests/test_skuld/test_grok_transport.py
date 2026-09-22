@@ -34,16 +34,16 @@ class TestGrokACPTransport:
     stop, capabilities, error paths, and timeout.
     """
 
-    @pytest.fixture
-    def transport(self, tmp_path):
-        return GrokACPTransport(str(tmp_path), model="grok-4.6")
+    @pytest.fixture(params=["grok-4.7", "grok-4.6"])
+    def transport(self, tmp_path, request):
+        return GrokACPTransport(str(tmp_path), model=request.param)
 
     def test_init_defaults_and_caps(self, tmp_path):
         t = GrokACPTransport(str(tmp_path))
         assert t.workspace_dir == str(tmp_path)
         # The default MUST be a real `grok models` id — "grok-build" never was, and the
         # CLI rejects an unknown id while exiting 0, so the breakage was silent.
-        assert t.model == "grok-4.6"
+        assert t.model == "grok-4.7"
         assert t.session_id is None
         assert t.last_result is None
         assert t.is_alive is False
@@ -391,12 +391,13 @@ class TestGrokACPTransport:
         2026-08-16 — 0 messages, never active). The server knows the catalogue and the
         client cannot, so a retired id is upgraded rather than fatal.
         """
-        assert GrokACPTransport(str(tmp_path), model="grok-build")._model == "grok-4.6"
-        assert GrokACPTransport(str(tmp_path), model="GROK-BUILD")._model == "grok-4.6"
-        assert GrokACPTransport(str(tmp_path), model="")._model == "grok-4.6"
+        assert GrokACPTransport(str(tmp_path), model="grok-build")._model == "grok-4.7"
+        assert GrokACPTransport(str(tmp_path), model="GROK-BUILD")._model == "grok-4.7"
+        assert GrokACPTransport(str(tmp_path), model="")._model == "grok-4.7"
         # Real ids are never rewritten.
         assert GrokACPTransport(str(tmp_path), model="grok-4.5")._model == "grok-4.5"
         assert GrokACPTransport(str(tmp_path), model="grok-4.6")._model == "grok-4.6"
+        assert GrokACPTransport(str(tmp_path), model="grok-4.7")._model == "grok-4.7"
 
     def test_start_is_idempotent_under_concurrency(self, tmp_path):
         """Two concurrent start() calls must spawn ONE agent.
@@ -485,13 +486,13 @@ class TestGrokACPTransport:
             mock_exec.return_value = mock_process
             await transport.start()
 
-            # Verify command (grok agent --always-approve -m grok-4.6 stdio)
+            # Both supported versions must reach the CLI unchanged.
             call_args = mock_exec.call_args[0]
             assert call_args[0].endswith("grok")  # resolved via shutil.which, or "grok" default
             assert "agent" in call_args
             assert "--always-approve" in call_args
             assert "-m" in call_args
-            assert "grok-4.6" in call_args
+            assert call_args[call_args.index("-m") + 1] == transport.model
             assert "stdio" in call_args
             # ORDERING IS LOAD-BEARING: agent-level flags must precede the `stdio`
             # subcommand or clap rejects them ("unexpected argument '--always-approve'").

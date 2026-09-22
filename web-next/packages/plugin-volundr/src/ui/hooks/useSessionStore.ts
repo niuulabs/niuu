@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 import { readForgeSource } from './readForgeSource';
 import { useQueries, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
@@ -22,6 +22,40 @@ export function useSessionList(filters?: SessionFilters) {
   const store = useService<ISessionStore>('sessionStore');
   const cache = useQueryClient();
   const federated = Boolean(store.listSources);
+  useEffect(
+    () =>
+      store.subscribe((sessions) => {
+        // Patch existing inventories immediately. Discovery/polling still owns membership,
+        // archives and errors, so one host's event cannot clear another host's rows.
+        const updates = new Map(sessions.map((session) => [session.id, session]));
+        const changed = (row: Session, update: Session | undefined): update is Session =>
+          Boolean(
+            update &&
+            update.clusterId === row.clusterId &&
+            JSON.stringify(update) !== JSON.stringify(row),
+          );
+        for (const [key, rows] of cache.getQueriesData<Session[]>({
+          queryKey: ['volundr', 'domain-sessions'],
+        })) {
+          if (!rows?.some((row) => changed(row, updates.get(row.id)))) continue;
+          // No-op writes reset polling deadlines and clear source errors. Only the
+          // inventory whose actual data changed may be touched by this event.
+          cache.setQueryData(
+            key,
+            rows.map((row) => {
+              const update = updates.get(row.id);
+              return changed(row, update) ? update : row;
+            }),
+          );
+        }
+        for (const session of sessions) {
+          const key = ['volundr', 'domain-session', session.id];
+          const old = cache.getQueryData<Session>(key);
+          if (old && changed(old, session)) cache.setQueryData(key, session);
+        }
+      }),
+    [store, cache],
+  );
   const discovery = useQuery({
     queryKey: ['volundr', 'targets', 'session-sources'],
     queryFn: () => store.listSources!(),

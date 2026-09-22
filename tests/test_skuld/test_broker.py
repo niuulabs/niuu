@@ -5183,6 +5183,7 @@ class TestShutdownEdgeCases:
         response.status_code = 200
         response.json.return_value = {"latest_seq": 41}
         client.get.return_value = response
+        client.post.return_value = MagicMock(status_code=204)
         with patch.object(test_broker, "_get_http_client", AsyncMock(return_value=client)):
             try:
                 await test_broker.startup()

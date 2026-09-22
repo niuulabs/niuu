@@ -194,20 +194,32 @@ class TestActivityStateReporting:
             )
         )
         await first_started.wait()
-        await test_broker._report_activity_state(
-            "idle",
-            extra_metadata={
-                "completion_source": "ravn_flock",
-                "completion_event_type": "newer.completed",
-            },
+        # Posts are serialised, so the newer report registers itself as the
+        # pending terminal payload and then queues behind the in-flight one.
+        second = asyncio.create_task(
+            test_broker._report_activity_state(
+                "idle",
+                extra_metadata={
+                    "completion_source": "ravn_flock",
+                    "completion_event_type": "newer.completed",
+                },
+            )
         )
+        async with asyncio.timeout(1):
+            while (test_broker._pending_terminal_activity or {}).get("payload", {}).get(
+                "metadata", {}
+            ).get("completion_event_type") != ("newer.completed"):
+                await asyncio.sleep(0)
         newer = test_broker._pending_terminal_activity
         release_first.set()
-        await first
+        assert await first is True
 
         assert test_broker._pending_terminal_activity is newer
         assert newer["payload"]["metadata"]["completion_event_type"] == "newer.completed"
         assert test_broker._flock_completion_reported is False
+
+        assert await second is False
+        assert test_broker._pending_terminal_activity is newer
 
 
 class TestCliEventActivityIntegration:
@@ -242,6 +254,23 @@ class TestCliEventActivityIntegration:
             # Check that active was reported
             active_calls = [c for c in mock_report.call_args_list if c[0][0] == "active"]
             assert len(active_calls) >= 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("blocked", [False, True])
+    async def test_streamed_deltas_mean_working_unless_waiting_for_a_human(
+        self, test_broker, blocked
+    ):
+        if blocked:
+            test_broker._pending_attention["question"] = "question"
+        with patch.object(test_broker, "_report_activity_state", new_callable=AsyncMock) as report:
+            test_broker._channels = MagicMock()
+            test_broker._channels.count = 0
+            test_broker._channels.broadcast = AsyncMock()
+            await test_broker._handle_cli_event(
+                {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Working"}}
+            )
+            await asyncio.sleep(0)
+            assert any(call.args == ("active",) for call in report.call_args_list) is not blocked
 
     @pytest.mark.asyncio
     async def test_result_event_triggers_idle(self, test_broker):
@@ -524,6 +553,32 @@ class TestAttentionAndHeartbeat:
             await asyncio.gather(task, return_exceptions=True)
 
         assert retry.await_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_failed_idle_report_is_retried_with_its_original_anchor(self, test_broker):
+        response = MagicMock(status_code=204)
+        client = AsyncMock()
+        client.post.side_effect = [ConnectionError("offline"), response]
+        test_broker._http_client = client
+        test_broker._http_client_jwt = None
+        test_broker._settings.activity_heartbeat.interval_seconds = 0.005
+        test_broker._set_activity_state("active")
+        await test_broker._report_activity_state("idle")
+        assert test_broker._activity_report_pending
+        anchor = client.post.call_args.kwargs["json"]["state_since"]
+        task = asyncio.create_task(test_broker._activity_heartbeat_loop())
+        try:
+            async with asyncio.timeout(1):
+                while test_broker._activity_report_pending:
+                    await asyncio.sleep(0.005)
+            await asyncio.sleep(0.02)
+            assert client.post.call_count == 2
+            assert client.post.call_args.kwargs["json"]["state"] == "idle"
+            assert client.post.call_args.kwargs["json"]["state_since"] == anchor
+            assert client.post.call_args.kwargs["json"]["turn_started_at"] is None
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 class TestActivityStateSinceTimestamp:
@@ -819,3 +874,35 @@ class TestTurnStartActive:
 
         active_calls = [c for c in mock_report.call_args_list if c[0][0] == "active"]
         assert active_calls == []
+
+
+@pytest.mark.asyncio
+async def test_report_snapshots_timestamps_before_credentials_await(tmp_path):
+    broker = Broker(
+        settings=SkuldSettings(session={"id": "snapshot", "workspace_dir": str(tmp_path)})
+    )
+    broker.volundr_api_url = "http://forge.invalid"
+    entered, release = asyncio.Event(), asyncio.Event()
+    client = MagicMock()
+    client.post = AsyncMock(return_value=MagicMock(status_code=204))
+
+    async def get_client():
+        entered.set()
+        await release.wait()
+        return client
+
+    with patch.object(broker, "_get_http_client", side_effect=get_client):
+        active = asyncio.create_task(broker._report_activity_state("active"))
+        await entered.wait()
+        active_since = broker._state_since_iso(broker._activity_state_since)
+        idle = asyncio.create_task(broker._report_activity_state("idle"))
+        await asyncio.sleep(0)
+        idle_since = broker._state_since_iso(broker._activity_state_since)
+        release.set()
+        await asyncio.gather(active, idle)
+    reports = [call.kwargs["json"] for call in client.post.call_args_list]
+    assert [(r["state"], r["state_since"]) for r in reports] == [
+        ("active", active_since),
+        ("idle", idle_since),
+    ]
+    assert reports[0]["turn_started_at"] is not None and reports[1]["turn_started_at"] is None

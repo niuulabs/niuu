@@ -15,7 +15,7 @@ class ActivityReportingMixin:
     """Broker behavior for activity transitions and attention state."""
 
     _RUNNING_RAW_STATES = ("active", "tool_executing")
-    _TURN_END_RAW_STATES = ("idle", "stopped")
+    _TURN_END_RAW_STATES = ("idle", "stopped", "error")
 
     async def _report_session_start(self) -> None:
         """Report the session start timeline event (once)."""
@@ -86,7 +86,11 @@ class ActivityReportingMixin:
         ALWAYS carries ``state`` and ``state_since`` so a transition (including
         ``idle``) is never reported without its entered-at timestamp.
         """
-        if state == self._activity_state and not extra_metadata:
+        if (
+            state == self._activity_state
+            and not extra_metadata
+            and not self._activity_report_pending
+        ):
             return True
 
         # Remember the rich context of a "real" (non-heartbeat) report so the
@@ -115,6 +119,8 @@ class ActivityReportingMixin:
         if extra_metadata:
             metadata.update(extra_metadata)
 
+        # Capture the state and its anchors together BEFORE any await. Another CLI
+        # event can advance the broker while credentials or the HTTP request waits.
         payload = {
             "state": state,
             "state_since": self._state_since_iso(self._activity_state_since),
@@ -134,9 +140,18 @@ class ActivityReportingMixin:
         if not self.volundr_api_url:
             return False
 
+        # Stays set until Forge acknowledges a report for the state the broker is
+        # still in, so the heartbeat retries a failed transition (including idle)
+        # with its original anchors instead of dropping it.
+        self._activity_report_pending = True
         delivered = await self._post_activity_payload(payload)
         if delivered and pending is not None:
             self._acknowledge_terminal_activity(pending)
+        if delivered and (state, payload["state_since"]) == (
+            self._activity_state,
+            self._state_since_iso(self._activity_state_since),
+        ):
+            self._activity_report_pending = False
         return delivered
 
     @staticmethod
@@ -151,11 +166,12 @@ class ActivityReportingMixin:
         """Post one exact activity payload and report whether Forge acknowledged it."""
 
         try:
-            client = await self._get_http_client()
-            resp = await client.post(
-                f"{FORGE_SESSIONS_PATH}/{self.session_id}/activity",
-                json=payload,
-            )
+            async with self._activity_report_lock:
+                client = await self._get_http_client()
+                resp = await client.post(
+                    f"{FORGE_SESSIONS_PATH}/{self.session_id}/activity",
+                    json=payload,
+                )
             logger.info(
                 "Activity report: state=%s status=%d url=%s",
                 payload["state"],
@@ -259,7 +275,8 @@ class ActivityReportingMixin:
         ``last_active`` fresh so Volundr's liveness reaper does not stop a
         genuinely-busy or input-blocked session. Idle sessions are not
         heartbeated (an idle session that goes stale is exactly what the reaper
-        is meant to catch).
+        is meant to catch). A failed transition, including idle, is retried
+        until acknowledged; retries preserve its original state/turn anchors.
         """
         interval = self._settings.activity_heartbeat.interval_seconds
         while True:
@@ -268,7 +285,10 @@ class ActivityReportingMixin:
                 await self._retry_pending_terminal_activity()
                 continue
             state = self._activity_state
-            if state not in ("active", "tool_executing", "awaiting_input"):
+            if (
+                state not in ("active", "tool_executing", "awaiting_input")
+                and not self._activity_report_pending
+            ):
                 continue
             await self._report_activity_state(
                 state,

@@ -35,6 +35,7 @@ beforeEach(() => {
       { id: 'remote', name: 'Remote' },
     ]),
     listSessions: vi.fn(async () => []),
+    subscribe: vi.fn(() => () => {}),
   } as unknown as ISessionStore;
 });
 
@@ -219,4 +220,65 @@ it('retains single-source store support with cancellation and explicit refresh',
     await result.current.refetch();
   });
   expect(store.listSessions).toHaveBeenCalledTimes(2);
+});
+
+it('applies live activity to its host immediately without clearing other inventories and unsubscribes', async () => {
+  let emit!: (sessions: Session[]) => void;
+  const unsubscribe = vi.fn();
+  store.subscribe = (callback) => {
+    emit = callback;
+    return unsubscribe;
+  };
+  store.listSessions = async (filter) =>
+    filter?.archivedOnly
+      ? []
+      : [
+          {
+            ...row(filter!.instanceId!),
+            clusterId: filter!.instanceId!,
+            state: 'running',
+          },
+        ];
+  const { result, unmount } = mount();
+  await waitFor(() => expect(result.current.data).toHaveLength(2));
+  act(() => emit([{ ...row('remote'), clusterId: 'wrong-host', state: 'idle' }]));
+  expect(result.current.data?.find((session) => session.id === 'remote')?.state).toBe('running');
+  act(() =>
+    emit([
+      {
+        ...row('remote'),
+        clusterId: 'remote',
+        state: 'idle',
+        activityStateSince: '2026-09-19T12:00:00Z',
+      },
+    ]),
+  );
+  await waitFor(() =>
+    expect(result.current.data?.find((session) => session.id === 'remote')?.state).toBe('idle'),
+  );
+  expect(result.current.data?.find((session) => session.id === 'thor')?.state).toBe('running');
+  unmount();
+  expect(unsubscribe).toHaveBeenCalledOnce();
+});
+
+it('unchanged stream snapshots do not reset polling or clear failed source errors', async () => {
+  let emit!: (sessions: Session[]) => void;
+  store.subscribe = (callback) => {
+    emit = callback;
+    return () => {};
+  };
+  store.listSessions = async (filters) =>
+    filters?.archivedOnly
+      ? []
+      : [{ ...row(filters!.instanceId!), clusterId: filters!.instanceId!, state: 'idle' }];
+  const { cache, result } = mount();
+  await waitFor(() => expect(result.current.data).toHaveLength(2));
+  const query = cache
+    .getQueryCache()
+    .findAll({ queryKey: ['volundr', 'domain-sessions', 'source', 'remote', false] })[0]!;
+  const before = query.state.dataUpdatedAt;
+  act(() => query.setState({ status: 'error', error: new Error('List unavailable') }));
+  act(() => emit(result.current.data!.map((session) => ({ ...session }))));
+  expect(query.state.dataUpdatedAt).toBe(before);
+  expect(query.state.error?.message).toBe('List unavailable');
 });

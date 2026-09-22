@@ -37,6 +37,7 @@ data:
       {{- .Values.config.projects | toYaml | nindent 6 }}
     conversation_recent_max_turns: {{ .Values.config.conversationRecentMaxTurns | default 15 }}
     conversation_recent_max_bytes: {{ .Values.config.conversationRecentMaxBytes | default 262144 }}
+    runtime_health_timeout_seconds: {{ .Values.config.runtimeHealthTimeoutSeconds | default 3.0 }}
     openshell_internal_gateway_url: {{ .Values.config.openshellInternalGatewayUrl | default "http://openshell.openshell.svc.cluster.local:8080" | quote }}
 
     cors:
