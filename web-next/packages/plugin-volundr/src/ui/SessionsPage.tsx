@@ -7,7 +7,6 @@ import {
   ErrorState,
   EmptyState,
   StateDot,
-  relTime,
   cn,
   Dialog,
   DialogContent,
@@ -34,6 +33,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { LaunchWizard } from './LaunchWizard';
+import { SessionActivityElapsed } from './SessionActivityElapsed';
 import { RenameSession } from './RenameSession';
 import { AssignSessionProject } from './AssignSessionProject';
 import { PinSession } from './PinSession';
@@ -79,7 +79,7 @@ interface SessionSection {
 
 const POD_GROUPS: PodGroupDef[] = [
   { label: 'NEEDS YOU', states: ['awaiting_input'] },
-  { label: 'ACTIVE', states: ['running'] },
+  { label: 'WORKING', states: ['running'] },
   { label: 'IDLE', states: ['idle', 'ready'] },
   { label: 'BOOTING', states: ['provisioning', 'requested'] },
   { label: 'ERROR', states: ['failed'] },
@@ -235,7 +235,6 @@ function PodEntry({
   onAction?: (session: Session, action: RowAction) => void;
   busy?: boolean;
 }) {
-  const ageLabel = relTime(new Date(session.lastActivityAt ?? session.startedAt).getTime());
   const primaryLabel = session.name || session.personaName || session.id;
   const trackerLabel = session.sagaId ?? session.runId ?? session.trackerIssue?.identifier;
   const previewLabel = session.preview;
@@ -347,8 +346,8 @@ function PodEntry({
                   <span>{sourceLabel.replace(/^\/home\/[^/]+(?:\/|$)/, '~/')}</span>
                 </span>
               )}
-              <span className="forge-session-row__age" title="Last session activity">
-                {ageLabel}
+              <span className="forge-session-row__age">
+                <SessionActivityElapsed session={session} />
               </span>
             </div>
             {showDetails && (

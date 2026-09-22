@@ -68,6 +68,8 @@ export interface Session {
   startedAt: string;
   readyAt?: string;
   lastActivityAt?: string;
+  activityStateSince?: string | null;
+  turnStartedAt?: string | null;
   terminatedAt?: string;
   resources: SessionResources;
   env: Record<string, string>;

@@ -14,7 +14,7 @@ export type SessionFilter = (typeof SESSION_FILTERS)[number];
 export const FILTER_LABELS: Record<SessionFilter, string> = {
   live: 'Live',
   all: 'All',
-  active: 'Active',
+  active: 'Working',
   idle: 'Idle',
   attention: 'Needs you',
   stopped: 'Stopped',
@@ -24,8 +24,8 @@ export const FILTER_LABELS: Record<SessionFilter, string> = {
 export const SESSION_STATE_LABELS: Record<SessionState, string> = {
   requested: 'Queued',
   provisioning: 'Starting',
-  ready: 'Ready',
-  running: 'Active',
+  ready: 'Connected',
+  running: 'Working',
   idle: 'Idle',
   awaiting_input: 'Needs you',
   terminating: 'Stopping',

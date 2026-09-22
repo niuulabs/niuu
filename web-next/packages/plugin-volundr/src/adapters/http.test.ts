@@ -1998,7 +1998,7 @@ describe('buildVolundrHttpAdapter', () => {
 
     expect(openStream).toHaveBeenCalledTimes(1);
     expect(openStream).toHaveBeenCalledWith(
-      'http://localhost:8080/api/v1/forge/sessions/stream',
+      'http://localhost:8080/api/v1/forge/sessions/stream?all_instances=true',
       expect.objectContaining({ onEvent: expect.any(Function) }),
     );
 
@@ -2085,6 +2085,56 @@ describe('buildVolundrHttpAdapter', () => {
       activityState: 'awaiting_input',
       needsAttention: true,
     });
+  });
+
+  it('keeps remote state timestamps through SSE and stale REST responses, and rejects wrong-host events', async () => {
+    const client = makeClient();
+    const row = {
+      id: 'remote',
+      name: 'Remote',
+      instance_id: 'bro',
+      status: 'running',
+      model: 'codex',
+      activity_state: 'active',
+      activity_state_since: '2026-09-19T12:00:00Z',
+      turn_started_at: '2026-09-19T12:00:00Z',
+    };
+    client.get.mockResolvedValue([row]);
+    let onEvent!: (frame: { event?: string; data: string }) => void;
+    const open = vi.fn((_url: string, options: { onEvent?: typeof onEvent }) => {
+      onEvent = options.onEvent!;
+      return { close: vi.fn() };
+    });
+    const svc = buildVolundrHttpAdapter(client, open as never);
+    const seen = vi.fn();
+    const stop = svc.subscribe(seen, { hydrate: false });
+    expect(client.get).not.toHaveBeenCalled();
+    await svc.getSessions({ instanceId: 'bro' });
+    const send = (state: string, since: string, instance_id = 'bro') =>
+      onEvent({
+        event: 'session_activity',
+        data: JSON.stringify({
+          session_id: 'remote',
+          instance_id,
+          state,
+          activity_state_since: since,
+          turn_started_at: null,
+        }),
+      });
+    send('idle', '2026-09-19T12:02:00Z');
+    expect(seen.mock.lastCall?.[0][0]).toMatchObject({
+      activityState: 'idle',
+      activityStateSince: '2026-09-19T12:02:00Z',
+      turnStartedAt: null,
+    });
+    send('active', '2026-09-19T12:00:00Z');
+    send('active', '2026-09-19T12:03:00Z', 'thor');
+    expect(seen.mock.lastCall?.[0][0].activityState).toBe('idle');
+    expect((await svc.getSessions({ instanceId: 'bro' }))[0]).toMatchObject({
+      activityState: 'idle',
+      turnStartedAt: null,
+    });
+    stop();
   });
 
   it('streams chronicle updates for a specific session from the shared SSE feed', async () => {

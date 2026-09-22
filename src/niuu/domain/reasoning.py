@@ -21,6 +21,7 @@ MODEL_EFFORTS: dict[str, tuple[str, ...]] = {
     "gpt-5.6-luna": CLAUDE_EFFORTS,
     "gpt-5.5": ("none", "low", "medium", "high", "xhigh"),
     "gpt-5.4": ("none", "low", "medium", "high", "xhigh"),
+    "grok-4.7": ("low", "medium", "high", "xhigh"),
     "grok-4.6": ("low", "medium", "high", "xhigh"),
     "grok-4.5": ("low", "medium", "high"),
     "muse-spark-1.3": MUSE_EFFORTS,

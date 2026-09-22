@@ -844,7 +844,11 @@ function toSessionState(session: VolundrSession): Session['state'] {
       if (session.needsAttention || session.activityState === 'awaiting_input')
         return 'awaiting_input';
       if (session.activityState === 'error') return 'failed';
-      return session.activityState === 'idle' ? 'idle' : 'running';
+      if (session.activityState === 'provisioning') return 'provisioning';
+      if (session.activityState === 'stopped') return 'terminated';
+      if (session.activityState === 'active' || session.activityState === 'tool_executing')
+        return 'running';
+      return session.activityState === 'idle' ? 'idle' : 'ready';
     case 'stopping':
       return 'terminating';
     case 'stopped':
@@ -924,6 +928,8 @@ function toDomainSession(session: VolundrSession): Session {
     startedAt,
     readyAt,
     lastActivityAt,
+    activityStateSince: session.activityStateSince,
+    turnStartedAt: session.turnStartedAt,
     terminatedAt,
     resources: EMPTY_SESSION_RESOURCES,
     env: {},
@@ -958,7 +964,7 @@ function buildSplitVolundrService(
     getTargets: () => Promise.resolve(forge.getTargets?.() ?? []),
     listUserHome: (instanceId, path) => forge.listUserHome(instanceId, path),
     deleteUserHomePath: (instanceId, path) => forge.deleteUserHomePath(instanceId, path),
-    subscribe: (callback) => forge.subscribe(callback),
+    subscribe: (callback, options) => forge.subscribe(callback, options),
     subscribeStats: (callback) => forge.subscribeStats(callback),
     getAvailableMcpServers: () => forge.getAvailableMcpServers(),
     getAvailableSecrets: () => forge.getAvailableSecrets(),
@@ -1052,25 +1058,9 @@ function buildVolundrSessionStore(
       await volundr.deleteSession(id);
     },
     subscribe(callback: (sessions: Session[]) => void) {
-      let active = true;
-      const emit = async (sessions?: VolundrSession[]) => {
-        const current = sessions?.map(toDomainSession) ?? [];
-        const archived = await volundr.listArchivedSessions().catch(() => []);
-        if (!active) return;
-        const byId = new Map<string, Session>();
-        for (const session of [...current, ...archived.map(toDomainSession)]) {
-          byId.set(session.id, session);
-        }
-        callback(Array.from(byId.values()));
-      };
-      void emit();
-      const unsubscribe = volundr.subscribe((sessions: VolundrSession[]) => {
-        void emit(sessions);
+      return volundr.subscribe((sessions) => callback(sessions.map(toDomainSession)), {
+        hydrate: false,
       });
-      return () => {
-        active = false;
-        unsubscribe();
-      };
     },
   };
 }

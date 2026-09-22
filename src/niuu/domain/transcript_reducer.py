@@ -679,7 +679,7 @@ def result_metadata(payload: dict) -> dict:
     Accepts either the live wire key ``modelUsage`` or a pre-normalised ``usage`` and always
     emits ``{usage, cost, model}`` — the names the UI reads — plus ``stop_reason`` when present.
     Errors remain errors even after prose streamed, and intentional interruption remains
-    distinguishable from a provider failure. Successful results keep their existing shape.
+    distinguishable from a provider failure. Successful results add the inbox final-output marker.
     """
     usage = payload.get("modelUsage")
     if not isinstance(usage, dict):
@@ -701,6 +701,8 @@ def result_metadata(payload: dict) -> dict:
         md["is_error"] = True
     if status == "error":
         md.update(is_error=True, error=_result_error_text(payload), messageType="error")
+    if status not in {"error", "interrupted"}:
+        md["final_output"] = True
     return md
 
 

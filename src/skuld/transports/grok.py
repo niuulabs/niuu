@@ -10,7 +10,8 @@ Authentication: relies on the grok CLI (XAI_API_KEY or cached auth.json).
 Install via the official xAI CLI installer so `grok` is on PATH inside the
 Skuld container/pod (or mount the binary).
 
-Model ids come from `grok models` — currently "grok-4.6" (default) and "grok-4.5".
+Forge offers "grok-4.7" (default) and "grok-4.6".
+Hosts must use a Grok CLI that lists the selected model (update with `grok update`).
 Pass via Skuld session.model. An unknown id is fatal: the CLI answers
 `Couldn't set model '<id>': Invalid params: "unknown model id"` and exits non-zero.
 "grok-build" was such an id for months, which is why every Grok session died on
@@ -50,7 +51,7 @@ _CHARS_PER_TOKEN = 4
 
 # Default model id. MUST be one of `grok models`; an unknown id kills the session at
 # its first prompt. Overridden per session via Skuld session.model.
-GROK_DEFAULT_MODEL = "grok-4.6"
+GROK_DEFAULT_MODEL = "grok-4.7"
 
 # Model ids clients may still be sending. A client is deployed separately from this
 # server — an iOS build in the field keeps sending whatever id it shipped with — so a

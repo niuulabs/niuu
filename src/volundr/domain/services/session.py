@@ -51,6 +51,7 @@ from volundr.domain.ports import (
     StoragePort,
 )
 from volundr.domain.projects import SessionCoordination
+from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 
 if TYPE_CHECKING:
     from niuu.ports.user_integration import UserIntegrationPort
@@ -334,6 +335,66 @@ class SessionService:
         """Get a session by ID."""
         return await self._repository.get(session_id)
 
+    async def with_read_states(
+        self, sessions: list[Session], principal: Principal | None
+    ) -> list[Session]:
+        if principal is None or not sessions:
+            return sessions
+        states = await self._repository.get_read_states([s.id for s in sessions], principal.user_id)
+        return [s.model_copy(update={"read_state": states.get(s.id)}) for s in sessions]
+
+    async def get_read_state(self, session_id: UUID, principal: Principal) -> SessionReadState:
+        session = await self._repository.get(session_id)
+        if session is None:
+            raise SessionNotFoundError(session_id)
+        await self._check_access(session, principal, "read")
+        states = await self._repository.get_read_states([session_id], principal.user_id)
+        if session_id not in states:
+            raise SessionNotFoundError(session_id)
+        return states[session_id]
+
+    async def change_read_state(
+        self,
+        session_id: UUID,
+        change: SessionReadStateChange,
+        principal: Principal,
+    ) -> SessionReadState:
+        session = await self._repository.get(session_id)
+        if session is None:
+            raise SessionNotFoundError(session_id)
+        await self._check_access(session, principal, "read")
+        state = await self._repository.change_read_state(session_id, principal.user_id, change)
+        await self.notify_read_state_changed(session_id, reader_id=principal.user_id)
+        return state
+
+    async def notify_read_state_changed(
+        self, session_id: UUID, *, reader_id: str | None = None
+    ) -> None:
+        if self._broadcaster is None:
+            return
+        try:
+            session = await self._repository.get(session_id)
+            if session is None:
+                return
+            # Hint only: no reader's private marker is exposed to another reader. Consumers
+            # re-read the authorized projection. Finals use the owner-scoped fleet route.
+            await self._broadcaster.publish(
+                RealtimeEvent(
+                    type=EventType.SESSION_READ_STATE,
+                    data={
+                        "session_id": str(session_id),
+                        "owner_id": reader_id or session.owner_id or "",
+                    },
+                    timestamp=datetime.now(UTC),
+                )
+            )
+        except Exception:
+            # The durable commit is authoritative. A missed hint is recovered by fleet relisting;
+            # never turn an already-committed CAS mutation into an ambiguous HTTP failure.
+            logger.warning(
+                "Could not publish read-state refresh hint for %s", session_id, exc_info=True
+            )
+
     async def update_activity(
         self,
         session_id: UUID,
@@ -352,9 +413,9 @@ class SessionService:
         ``turn_started_at`` is the broker-stamped UTC timestamp of when the
         CURRENT turn started (the prompt instant), stable across intra-turn
         state flips; None when no turn is in flight OR the broker is too old to
-        report it. Unlike ``state_since`` it is persisted VERBATIM (no now()
-        fallback) — a null is meaningful ("no turn / unknown"), and clients then
-        fall back to ``state_since`` for the running elapsed.
+        report it. An unstamped heartbeat retains the known current turn;
+        idle/stopped/error always clear it. No artificial turn start is invented;
+        clients use ``state_since`` when the turn start is unknown.
 
         Raises SessionNotFoundError if the session doesn't exist.
         """
@@ -374,14 +435,32 @@ class SessionService:
         previous_state = session.activity_state
         previous_request_id = (session.activity_metadata or {}).get("request_id")
 
+        # Ignore delayed reports before mutating any fields or emitting an SSE event.
+        if (
+            state_since
+            and session.activity_state_since
+            and state_since < session.activity_state_since
+        ):
+            return session
+        same_bucket = previous_state == state or (
+            previous_state is not None and previous_state.is_busy and state.is_busy
+        )
+        previous_since = session.activity_state_since
+        previous_turn = session.turn_started_at
         session.activity_state = state
         # The broker stamps state_since only on a real change; fall back to "now"
         # when an older broker omits it so the field is never null for a live
         # session that just transitioned.
-        session.activity_state_since = state_since or datetime.now(UTC)
-        # Persisted VERBATIM (incl. None) — a null turn anchor is meaningful
-        # (no turn in flight / old broker), and clients fall back to state_since.
-        session.turn_started_at = turn_started_at
+        session.activity_state_since = (
+            state_since or (previous_since if same_bucket else None) or datetime.now(UTC)
+        )
+        # Preserve a known anchor on old-broker heartbeats, clear it on turn end.
+        session.turn_started_at = (
+            None
+            if state
+            in (SessionActivityState.IDLE, SessionActivityState.STOPPED, SessionActivityState.ERROR)
+            else turn_started_at or (previous_turn if same_bucket else None)
+        )
         session.activity_metadata = metadata
         if state is SessionActivityState.ERROR:
             message = str(metadata.get("error") or metadata.get("message") or "").strip()
@@ -395,6 +474,13 @@ class SessionService:
         if session.error and session.error.startswith("liveness:"):
             session.error = None
         updated = await self._repository.update(session)
+        # A concurrent newer activity report may have won the database comparison.
+        # Never publish the stale caller's state/timing pair over that winner.
+        if (updated.activity_state, updated.activity_state_since) != (
+            state,
+            session.activity_state_since,
+        ):
+            return updated
 
         is_new_attention = self._is_new_attention_request(
             state, previous_state, metadata, previous_request_id

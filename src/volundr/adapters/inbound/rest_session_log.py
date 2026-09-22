@@ -36,6 +36,7 @@ from skuld.channels import filter_internal_blocks
 from volundr.domain.models import SessionLogEntry
 from volundr.domain.ports import SessionEventLogRepository
 from volundr.domain.services.session import SessionAccessDeniedError, SessionService
+from volundr.domain.session_read_state import is_final_output
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +262,11 @@ def create_session_log_router(
             await _append_conflict_sentinel(
                 log_repository, session_id=session_id, conflicting_seqs=conflicts, ts=now
             )
+        # Projection is committed atomically with the durable insert; this is only a refresh hint.
+        if session_service is not None and any(
+            entry.seq not in conflicts and is_final_output(entry.payload) for entry in entries
+        ):
+            await session_service.notify_read_state_changed(session_id)
         latest = await log_repository.latest_seq(session_id)
         return LogAppendResponse(submitted=submitted, latest_seq=latest, conflicts=conflicts)
 

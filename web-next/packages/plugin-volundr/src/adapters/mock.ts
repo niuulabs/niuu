@@ -1244,6 +1244,7 @@ export function createMockVolundrService(): IVolundrService {
     getSessions: async () => sessions,
 
     getSession: async (id) => sessions.find((s) => s.id === id) ?? null,
+    getRuntimeVersion: async () => ({ state: 'unknown', current: null, available: null }),
 
     getActiveSessions: async () =>
       sessions.filter((s) => ['starting', 'provisioning', 'running'].includes(s.status)),

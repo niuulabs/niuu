@@ -33,12 +33,29 @@ logger = logging.getLogger(__name__)
 
 _INSERT_SQL = """WITH locked_session AS MATERIALIZED (
            SELECT id FROM sessions WHERE id = $1 FOR UPDATE
+       ), inserted AS (
+           INSERT INTO session_event_log
+           (session_id, seq, kind, role, request_id, payload, ts)
+           SELECT $1, $2, $3, $4, $5, $6, $7
+           FROM (SELECT COUNT(*) FROM locked_session) AS lock_guard
+           ON CONFLICT (session_id, seq) DO NOTHING
+           RETURNING session_id, seq, kind, payload, ts
        )
-       INSERT INTO session_event_log
-       (session_id, seq, kind, role, request_id, payload, ts)
-       SELECT $1, $2, $3, $4, $5, $6, $7
-       FROM (SELECT COUNT(*) FROM locked_session) AS lock_guard
-       ON CONFLICT (session_id, seq) DO NOTHING"""
+       UPDATE sessions s
+       SET latest_final_seq = i.seq,
+           latest_final_turn_id = i.payload->'turn'->>'id', latest_final_at = i.ts
+       FROM inserted i
+       WHERE s.id = i.session_id AND i.seq > s.latest_final_seq
+           AND i.kind = 'conversation.turn' AND i.payload->>'type' = 'conversation.turn'
+           AND i.payload->'turn'->>'role' = 'assistant'
+           AND COALESCE(i.payload->'turn'->>'visibility', 'public') = 'public'
+           AND i.payload->'turn'->'metadata'->'final_output' = 'true'::jsonb
+           AND COALESCE(i.payload->'turn'->'metadata'->>'status', '')
+               NOT IN ('error', 'interrupted')
+           AND COALESCE(i.payload->'turn'->'metadata'->>'is_error', 'false') = 'false'
+           AND jsonb_typeof(i.payload->'turn'->'content') = 'string'
+           AND LENGTH(BTRIM(COALESCE(i.payload->'turn'->>'content', ''))) > 0
+           AND LENGTH(COALESCE(i.payload->'turn'->>'id', '')) > 0"""
 
 _IMPORT_INSERT_SQL = """INSERT INTO session_event_log
        (session_id, seq, kind, role, request_id, payload, ts)

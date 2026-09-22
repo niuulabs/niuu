@@ -171,6 +171,7 @@ class TransportLifecycleMixin:
         # ``idle`` (see _handle_cli_event). Fire-and-forget so a slow/absent
         # Volundr never blocks the lifespan from binding the HTTP listener.
         self._set_activity_state("provisioning")
+        self._activity_report_pending = True
         if self.volundr_api_url:
             asyncio.create_task(self._report_activity_state("provisioning"))
 

@@ -91,3 +91,7 @@
   white-space: nowrap;
   color: var(--color-text-secondary);
 }
+.forge-environment-popover button.forge-runtime-check {
+  width: auto;
+  padding: 4px 10px;
+}

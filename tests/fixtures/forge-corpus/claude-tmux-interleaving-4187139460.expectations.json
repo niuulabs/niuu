@@ -237,7 +237,8 @@
         },
         "cost": null,
         "model": "claude-fable-5-1",
-        "stop_reason": "stop"
+        "stop_reason": "stop",
+        "final_output": true
       },
       "visibility": "public"
     }
@@ -304,5 +305,18 @@
       "assistant": 5,
       "result": 1
     }
+  },
+  "projection_review": {
+    "status": "accepted",
+    "reviewer": "internal-worker thor:c8103dc7-a834-5e32-a06d-1a98d7a8e2b5",
+    "notes": [
+      "Code-contract review, not new user or live-provider acceptance. Only successful-completion metadata.final_output=true was added; removing exactly that new field reproduces every original turn byte-for-value. Original source frames, IDs, text, parts, order, timestamps, partial state and initial review remain unchanged."
+    ],
+    "source_frames_sha256": "41871394608208ef4dc32f547d6c60aa264c3800450acbdf70de207fef578bcb",
+    "projection_sha256": "ef53d31bb61ac5d74457d7507805f1e20f4e3bed7ee8332f84079e32f245e744",
+    "reviewed_at": "2026-09-21",
+    "additive_marker_turn_indices": [
+      1
+    ]
   }
 }
