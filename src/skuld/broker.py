@@ -516,6 +516,8 @@ class Broker(
         # states and clears only when the turn becomes idle or stops.
         self._turn_started_at: float | None = None
         self._last_activity_report: float = 0.0
+        self._activity_report_lock = asyncio.Lock()
+        self._activity_report_pending = False
         # Rich context for the CURRENT activity state (e.g. the pending question's
         # kind/request_id/prompt for awaiting_input). Re-sent verbatim by the
         # heartbeat so a heartbeat never strips the question detail or looks like
@@ -3304,6 +3306,8 @@ class Broker(
 
         # HTTP streaming format: accumulate deltas
         if event_type == "content_block_delta":
+            if not self._pending_attention:
+                asyncio.create_task(self._report_activity_state("active"))
             delta = data.get("delta", {})
             delta_type = delta.get("type", "")
             # SHARED reducer delta transitions (same fold a later log rebuild applies).
@@ -3322,7 +3326,7 @@ class Broker(
         # Accumulate artifacts from assistant tool_use events
         if event_type == "assistant":
             tool_events = self._artifacts.record_tool_use(data)
-            if tool_events:
+            if tool_events and not self._pending_attention:
                 asyncio.create_task(self._report_activity_state("tool_executing"))
             # Enrich tool events with tool_result data (exit codes, git info)
             self._artifacts.enrich_from_tool_result(data, tool_events)

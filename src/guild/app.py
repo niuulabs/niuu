@@ -140,6 +140,15 @@ def create_app(
                 create_volundr_router(
                     instance_service,
                     embedded_forge_app=embedded_forge_app,
+                    forge_stream_remote_timeout_seconds=(
+                        loaded_settings.forge_stream_remote_timeout_seconds
+                    ),
+                    forge_stream_remote_connect_timeout_seconds=(
+                        loaded_settings.forge_stream_remote_connect_timeout_seconds
+                    ),
+                    forge_stream_retry_seconds=loaded_settings.forge_stream_retry_seconds,
+                    forge_stream_keepalive_seconds=loaded_settings.forge_stream_keepalive_seconds,
+                    forge_stream_queue_maxsize=loaded_settings.forge_stream_queue_maxsize,
                 )
             )
             app.include_router(

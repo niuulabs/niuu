@@ -120,6 +120,12 @@ export interface SessionReadOptions {
   signal?: AbortSignal;
 }
 
+export interface RuntimeVersion {
+  state: 'current' | 'different' | 'unknown' | 'unavailable' | 'not_running';
+  current: { revision?: string; build?: string; source_sha256?: string; dirty?: boolean } | null;
+  available: { revision?: string; build?: string; source_sha256?: string; dirty?: boolean } | null;
+}
+
 export interface IVolundrService {
   // Feature flags
   getFeatures(instanceId?: string): Promise<VolundrFeatures>;
@@ -148,7 +154,10 @@ export interface IVolundrService {
   ): Promise<SessionProjectMembership>;
 
   /** Subscribe to live session updates via SSE. Returns an unsubscribe function. */
-  subscribe(callback: (sessions: VolundrSession[]) => void): () => void;
+  subscribe(
+    callback: (sessions: VolundrSession[]) => void,
+    options?: { hydrate?: boolean },
+  ): () => void;
   /** Subscribe to live stats updates via SSE. Returns an unsubscribe function. */
   subscribeStats(callback: (stats: VolundrStats) => void): () => void;
 
@@ -201,6 +210,7 @@ export interface IVolundrService {
     sessionId: string,
     updates: { name?: string; model?: string; branch?: string; tracker_issue_id?: string },
   ): Promise<VolundrSession>;
+  getRuntimeVersion(sessionId: string, instanceId?: string): Promise<RuntimeVersion>;
   stopSession(sessionId: string): Promise<void>;
   resumeSession(sessionId: string): Promise<void>;
   deleteSession(sessionId: string, cleanup?: string[]): Promise<void>;

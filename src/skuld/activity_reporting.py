@@ -15,7 +15,7 @@ class ActivityReportingMixin:
     """Broker behavior for activity transitions and attention state."""
 
     _RUNNING_RAW_STATES = ("active", "tool_executing")
-    _TURN_END_RAW_STATES = ("idle", "stopped")
+    _TURN_END_RAW_STATES = ("idle", "stopped", "error")
 
     async def _report_session_start(self) -> None:
         """Report the session start timeline event (once)."""
@@ -86,7 +86,11 @@ class ActivityReportingMixin:
         ALWAYS carries ``state`` and ``state_since`` so a transition (including
         ``idle``) is never reported without its entered-at timestamp.
         """
-        if state == self._activity_state and not extra_metadata:
+        if (
+            state == self._activity_state
+            and not extra_metadata
+            and not self._activity_report_pending
+        ):
             return
 
         # Remember the rich context of a "real" (non-heartbeat) report so the
@@ -118,21 +122,32 @@ class ActivityReportingMixin:
         if extra_metadata:
             metadata.update(extra_metadata)
 
+        # Capture the state and its anchors together BEFORE any await. Another CLI
+        # event can advance the broker while credentials or the HTTP request waits.
+        payload = {
+            "state": state,
+            "state_since": self._state_since_iso(self._activity_state_since),
+            "turn_started_at": (
+                self._state_since_iso(self._turn_started_at)
+                if self._turn_started_at is not None
+                else None
+            ),
+            "metadata": metadata,
+        }
+        self._activity_report_pending = True
         try:
-            client = await self._get_http_client()
-            resp = await client.post(
-                f"{FORGE_SESSIONS_PATH}/{self.session_id}/activity",
-                json={
-                    "state": state,
-                    "state_since": self._state_since_iso(self._activity_state_since),
-                    "turn_started_at": (
-                        self._state_since_iso(self._turn_started_at)
-                        if self._turn_started_at is not None
-                        else None
-                    ),
-                    "metadata": metadata,
-                },
-            )
+            async with self._activity_report_lock:
+                client = await self._get_http_client()
+                resp = await client.post(
+                    f"{FORGE_SESSIONS_PATH}/{self.session_id}/activity",
+                    json=payload,
+                )
+                resp.raise_for_status()
+                if (state, payload["state_since"]) == (
+                    self._activity_state,
+                    self._state_since_iso(self._activity_state_since),
+                ):
+                    self._activity_report_pending = False
             logger.info(
                 "Activity report: state=%s status=%d url=%s",
                 state,
@@ -208,13 +223,17 @@ class ActivityReportingMixin:
         ``last_active`` fresh so Volundr's liveness reaper does not stop a
         genuinely-busy or input-blocked session. Idle sessions are not
         heartbeated (an idle session that goes stale is exactly what the reaper
-        is meant to catch).
+        is meant to catch). A failed transition, including idle, is retried
+        until acknowledged; retries preserve its original state/turn anchors.
         """
         interval = self._settings.activity_heartbeat.interval_seconds
         while True:
             await asyncio.sleep(interval)
             state = self._activity_state
-            if state not in ("active", "tool_executing", "awaiting_input"):
+            if (
+                state not in ("active", "tool_executing", "awaiting_input")
+                and not self._activity_report_pending
+            ):
                 continue
             await self._report_activity_state(
                 state,

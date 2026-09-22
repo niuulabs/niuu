@@ -24,6 +24,7 @@ Run them explicitly:
 
 import asyncio
 import os
+import re
 import shutil
 import subprocess
 
@@ -62,15 +63,18 @@ def grok_preflight():
     return detail
 
 
-def test_the_configured_default_model_actually_exists(grok_preflight):
+@pytest.mark.parametrize("model_id", ["grok-4.7", "grok-4.6"])
+def test_the_configured_models_actually_exist(grok_preflight, model_id):
     """The regression that took Grok down, asserted against the live catalogue.
 
-    `grok models` is the only authority on model ids. Our default must appear in
+    `grok models` is the only authority on model ids. Both catalog choices must appear in
     it — a wrong id fails at session start with `unknown model id` and, because
     the CLI still exits 0, reads as a clean run all the way up the stack.
     """
-    assert GROK_DEFAULT_MODEL in grok_preflight, (
-        f"default model {GROK_DEFAULT_MODEL!r} is not in `grok models`:\n{grok_preflight}"
+    available = re.findall(r"^\s*[-*]\s+(\S+)", grok_preflight, re.MULTILINE)
+    assert model_id in available, (
+        f"catalog model {model_id!r} is not in `grok models`; authenticate and update the "
+        f"host CLI before launching it:\n{grok_preflight}"
     )
 
 
@@ -81,7 +85,7 @@ def test_an_unknown_model_id_is_rejected_with_a_nonzero_exit():
     deep inside the ACP handshake, where the failure is far less legible.
     """
     out = subprocess.run(
-        ["grok", "-p", "hi", "-m", "grok-build", "--output-format", "json"],
+        ["grok", "-p", "hi", "-m", "niuu-invalid-model", "--output-format", "json"],
         capture_output=True,
         text=True,
         timeout=180,
