@@ -241,6 +241,7 @@ async def test_rotation_loop_survives_a_bare_repository_exception() -> None:
     credential_service = service(repository, issuer, projection)
     original = credential_service._reconcile_active_cycle
     calls = 0
+    survived_fault = asyncio.Event()
 
     async def flaky() -> None:
         nonlocal calls
@@ -248,11 +249,17 @@ async def test_rotation_loop_survives_a_bare_repository_exception() -> None:
         if calls == 2:
             raise ConnectionError("connection to server was lost")
         await original()
+        if calls >= 3:
+            survived_fault.set()
 
     credential_service._reconcile_active_cycle = flaky  # type: ignore[method-assign]
     await credential_service.start()
-    await asyncio.sleep(0.035)
-    await credential_service.stop()
+    try:
+        # Wait for the cycle after the fault rather than a wall-clock guess, so a
+        # loaded CI worker cannot starve the loop of its third tick.
+        await asyncio.wait_for(survived_fault.wait(), timeout=5)
+    finally:
+        await credential_service.stop()
 
     assert calls >= 3
     assert len(projection.projected) >= 2
