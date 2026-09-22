@@ -1,8 +1,8 @@
 # BuildKit keeps the native wheel in its existing per-platform CI cache.
 # Only the installed Python environment reaches the final image.
-FROM rust:1.96.1-slim-trixie@sha256:31ee7fc65186be7e0e0ccb3f2ca305f14e4739e7642a1ae65753aa5d7b874523 AS rust-toolchain
+FROM rust:1.98.1-slim-trixie@sha256:f47a8de237dcbb0b0ce1099901e60a89728e3d51f24e664b40e947171538ade7 AS rust-toolchain
 
-FROM python:3.14-slim-trixie@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS python-build
+FROM python:3.14-slim-trixie@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2 AS python-build
 
 ARG TARGETARCH
 
@@ -39,7 +39,7 @@ RUN python build_switchyard.py
 
 # Web UI assets are baked into the platform image so one container serves the
 # API and the SPA on a single port (spark mode). Same build as containers/niuu-web.
-FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS web-build
+FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS web-build
 WORKDIR /app
 RUN corepack enable
 ENV NODE_OPTIONS="--max-old-space-size=4096"
@@ -89,7 +89,7 @@ RUN --mount=type=bind,from=switchyard-wheel,source=/wheels,target=/wheels \
     && /opt/venv/bin/python -m pytest tests/test_bifrost -q \
     && touch /switchyard-tests-passed
 
-FROM python:3.14-slim-trixie@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6
+FROM python:3.14-slim-trixie@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2
 
 
 # git: the platform clones session workspaces before a sandbox container starts.
