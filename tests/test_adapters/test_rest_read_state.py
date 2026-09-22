@@ -36,7 +36,10 @@ def inbox():
         )
         for reader in ["reader-a", "reader-b"]
     }
-    authz = SimpleNamespace(is_allowed=AsyncMock(return_value=True))
+    authz = SimpleNamespace(
+        is_allowed=AsyncMock(return_value=True),
+        filter_allowed=AsyncMock(side_effect=lambda principal, action, resources: resources),
+    )
     broadcaster = SimpleNamespace(publish=AsyncMock())
     service = SessionService(repo, MockPodManager(), authorization=authz, broadcaster=broadcaster)
     app = FastAPI()

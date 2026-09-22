@@ -432,7 +432,7 @@ class TestInboxHints:
         from unittest.mock import AsyncMock, patch
 
         service = AsyncMock()
-        service.get_session.return_value = None
+        service.get_session.return_value = object()
         log = InMemoryLog()
         app = FastAPI()
         app.include_router(create_session_log_router(log, session_service=service))
