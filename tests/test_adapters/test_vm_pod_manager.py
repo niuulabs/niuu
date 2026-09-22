@@ -1,5 +1,6 @@
 """VM lifecycle tests with explicit in-memory infrastructure ports."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -537,13 +538,17 @@ async def test_stop_keeps_capacity_until_provider_deletion_retry_deadline(setup)
     manager.configure_compute(
         service, repository, runtime, MachineBootstrap(), pool_id="pool", max_machines=1
     )
-    manager._cleanup_timeout = 0.01
+    # Room for a retry on a loaded runner; after the retry the provider hangs so
+    # the cleanup deadline, not a wall-clock race, is what ends stop().
+    manager._cleanup_timeout = 0.5
     await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
     attempts = 0
 
     async def persistent_failure(allocation_id):
         nonlocal attempts
         attempts += 1
+        if attempts > 1:
+            await asyncio.Event().wait()
         raise MachineProviderError("provider delete conflict")
 
     provider.delete = persistent_failure
