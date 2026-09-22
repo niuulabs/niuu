@@ -26,7 +26,7 @@
     "dev": "tsup --watch"
   },
   "peerDependencies": {
-    "react": "^19.2.8"
+    "react": "^19.3.0"
   },
   "dependencies": {
     "@niuulabs/domain": "workspace:*",
@@ -38,9 +38,9 @@
     "@radix-ui/react-tooltip": "^1.2.16",
     "clsx": "^2.1.1",
     "dompurify": "^3",
-    "katex": "^0.16",
-    "lucide-react": "^1.43.0",
-    "mermaid": "^11",
+    "katex": "^0.18",
+    "lucide-react": "^1.47.0",
+    "mermaid": "^12",
     "react-markdown": "^10",
     "rehype-katex": "^7",
     "remark-breaks": "^4",
@@ -50,11 +50,11 @@
   },
   "devDependencies": {
     "@niuulabs/design-tokens": "workspace:*",
-    "@types/react": "^19.2.18",
-    "autoprefixer": "^10.5.5",
+    "@types/react": "^19.3.0",
+    "autoprefixer": "^10.6.1",
     "postcss": "^8.5.28",
     "postcss-import": "^17.0.0",
-    "react": "^19.2.8",
+    "react": "^19.3.0",
     "tailwindcss": "^4.3.3",
     "tsup": "^8.3.5",
     "typescript": "^6.0.3"
