@@ -33,12 +33,13 @@ SSE_URL = f"{API}/sessions/stream"
 # ------------------------------------------------------------------
 
 
-async def test_sse_stream_connects(volundr_app: object) -> None:
+async def test_sse_stream_connects(volundr_app: object, auth_headers: object) -> None:
     """GET /sessions/stream returns 200 with SSE content-type headers.
 
     Publishes a heartbeat so the stream has at least one event to yield,
     then verifies response headers and that data is received.
     """
+    headers = auth_headers("sse-user", "sse@test.com", "default")  # type: ignore[operator]
     broadcaster = volundr_app.state.broadcaster  # type: ignore[union-attr]
     server, base_url = await start_server(volundr_app)
 
@@ -51,7 +52,7 @@ async def test_sse_stream_connects(volundr_app: object) -> None:
         publish_task = asyncio.create_task(_publish_heartbeat())
 
         events = await asyncio.wait_for(
-            collect_sse(base_url, SSE_URL, n=1),
+            collect_sse(base_url, SSE_URL, n=1, headers=headers),
             timeout=SSE_TIMEOUT,
         )
         _ = await publish_task
@@ -95,7 +96,7 @@ async def test_sse_receives_session_created_event(
         create_task = asyncio.create_task(_create_session())
 
         events = await asyncio.wait_for(
-            collect_sse(base_url, SSE_URL, n=1),
+            collect_sse(base_url, SSE_URL, n=1, headers=headers),
             timeout=SSE_TIMEOUT,
         )
         _ = await create_task
@@ -112,10 +113,11 @@ async def test_sse_receives_session_created_event(
         await asyncio.sleep(0.1)
 
 
-async def test_sse_receives_stats_update(volundr_app: object) -> None:
+async def test_sse_receives_stats_update(volundr_app: object, auth_headers: object) -> None:
     """Publish a stats event through the broadcaster, verify SSE delivers it."""
     from datetime import UTC, datetime
 
+    headers = auth_headers("sse-user", "sse@test.com", "default")  # type: ignore[operator]
     broadcaster = volundr_app.state.broadcaster  # type: ignore[union-attr]
     server, base_url = await start_server(volundr_app)
 
@@ -140,7 +142,7 @@ async def test_sse_receives_stats_update(volundr_app: object) -> None:
         publish_task = asyncio.create_task(_publish_stats())
 
         events = await asyncio.wait_for(
-            collect_sse(base_url, SSE_URL, n=1),
+            collect_sse(base_url, SSE_URL, n=1, headers=headers),
             timeout=SSE_TIMEOUT,
         )
         _ = await publish_task
@@ -153,6 +155,65 @@ async def test_sse_receives_stats_update(volundr_app: object) -> None:
         assert data["tokens_today"] == 5000
         assert data["active_sessions"] == 3
         assert data["cost_today"] == 1.25
+    finally:
+        server.should_exit = True
+        await asyncio.sleep(0.1)
+
+
+async def test_sse_rejects_an_unauthenticated_subscriber(volundr_app: object) -> None:
+    """The stream is part of the session data plane: no identity, no events."""
+    server, base_url = await start_server(volundr_app)
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{base_url}{SSE_URL}", timeout=SSE_TIMEOUT)
+        assert response.status_code == 401
+    finally:
+        server.should_exit = True
+        await asyncio.sleep(0.1)
+
+
+async def test_sse_hides_another_users_session_from_a_non_owner(
+    volundr_app: object,
+    auth_headers: object,
+) -> None:
+    """A same-tenant developer never sees events for someone else's session."""
+    owner = auth_headers("sse-owner", "owner@test.com", "default")  # type: ignore[operator]
+    other = auth_headers("sse-other", "other@test.com", "default")  # type: ignore[operator]
+    broadcaster = volundr_app.state.broadcaster  # type: ignore[union-attr]
+    server, base_url = await start_server(volundr_app)
+
+    try:
+
+        async def _create_then_heartbeat() -> None:
+            await asyncio.sleep(0.3)
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{base_url}{API}/sessions",
+                    json={
+                        "name": "owner-only-session",
+                        "model": "claude-sonnet-4-6",
+                        "source": {
+                            "type": "git",
+                            "repo": "github.com/acme/demo",
+                            "branch": "main",
+                        },
+                    },
+                    headers=owner,
+                )
+                assert resp.status_code == 201, resp.text
+            # Published after the session events, so it is the first event a
+            # subscriber who cannot see the session receives.
+            await broadcaster.publish_heartbeat()
+
+        task = asyncio.create_task(_create_then_heartbeat())
+
+        events = await asyncio.wait_for(
+            collect_sse(base_url, SSE_URL, n=1, headers=other),
+            timeout=SSE_TIMEOUT,
+        )
+        _ = await task
+
+        assert [e["event"] for e in events] == [EventType.HEARTBEAT.value]
     finally:
         server.should_exit = True
         await asyncio.sleep(0.1)

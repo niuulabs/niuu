@@ -35,8 +35,11 @@ def test_guild_plugin_create_api_app() -> None:
     plugin = GuildPlugin()
     sentinel = object()
 
-    with patch("guild.app.create_app", return_value=sentinel):
+    with patch("guild.app.create_app", return_value=sentinel) as create_app:
         assert plugin.create_api_app() is sentinel
+        assert plugin.create_api_app(dev_identity=True) is sentinel
+
+    assert [call.kwargs["dev_identity"] for call in create_app.call_args_list] == [False, True]
 
 
 def test_guild_plugin_route_domains_are_stable_without_configured_workers() -> None:

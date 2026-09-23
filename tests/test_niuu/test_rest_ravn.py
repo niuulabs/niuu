@@ -94,6 +94,7 @@ def _client(
     instances: list[RegisteredInstance],
     *,
     embedded_forge_app: FastAPI | None = None,
+    dev_identity: bool = False,
 ) -> TestClient:
     app = FastAPI()
     app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
@@ -108,6 +109,7 @@ def _client(
         create_ravn_session_proxy_router(
             service,
             embedded_forge_app=embedded_forge_app,
+            dev_identity=dev_identity,
         )
     )
     return TestClient(app)
@@ -207,8 +209,13 @@ def test_ravn_session_proxy_finds_owner_and_relays_browser_auth() -> None:
 
 
 @respx.mock
-def test_resident_session_proxy_promotes_query_token_to_upstream_authorization() -> None:
-    client = _client([_instance("noatun", base_url="https://niuu.noatun.test")])
+@pytest.mark.parametrize("dev_identity", [False, True])
+def test_resident_session_proxy_promotes_query_token_to_upstream_authorization(
+    dev_identity: bool,
+) -> None:
+    client = _client(
+        [_instance("noatun", base_url="https://niuu.noatun.test")], dev_identity=dev_identity
+    )
     owner = respx.get("https://niuu.noatun.test/api/v1/ravn/ravens/resident-id").mock(
         return_value=Response(200, json={"id": "resident-id"})
     )
@@ -227,12 +234,17 @@ def test_resident_session_proxy_promotes_query_token_to_upstream_authorization()
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
 
+    # Outside dev identity the asserted dev params never reach the target; it is
+    # told only the identity this router resolved (here via the dev adapter).
+    dev_query = "&devUserId=user-a&devTenantId=tenant-a" if dev_identity else ""
     assert captured["url"] == (
         "wss://niuu.noatun.test/api/v1/forge/resident-runtimes/"
-        "resident-id/sessions/session-id/chat?token=machine-jwt"
-        "&devUserId=user-a&devTenantId=tenant-a"
+        f"resident-id/sessions/session-id/chat?token=machine-jwt{dev_query}"
     )
-    assert captured["kwargs"]["additional_headers"]["authorization"] == "Bearer machine-jwt"
+    upstream = captured["kwargs"]["additional_headers"]
+    assert upstream["authorization"] == "Bearer machine-jwt"
+    assert upstream["x-auth-user-id"] == "user-a"
+    assert upstream["x-auth-tenant"] == "tenant-a"
     assert owner.calls.last.request.headers["authorization"] == "Bearer machine-jwt"
 
 

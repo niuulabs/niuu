@@ -153,6 +153,7 @@ from volundr.domain.services.resident_runtime import (
     ResidentRuntimeNotFoundError,
     ResidentRuntimeService,
 )
+from volundr.domain.services.session_events import SessionEventStream
 from volundr.domain.services.telegram_ingress import TelegramIngressService
 from volundr.domain.services.tracker import TrackerService
 from volundr.domain.services.tracker_factory import TrackerFactory
@@ -1503,6 +1504,9 @@ def create_app(
             app.state.pricing_provider = pricing_provider
             app.state.git_registry = git_registry
             app.state.broadcaster = broadcaster
+            # Principal-scoped view of the broadcaster; the Niuu host's embedded
+            # Forge stream subscribes through this, never the raw broadcaster.
+            app.state.session_event_stream = SessionEventStream(broadcaster, session_service)
             app.state.chronicle_service = chronicle_service
             app.state.launch_spec_service = catalog.launch_spec_service
             app.state.git_workflow_service = git_workflow_service

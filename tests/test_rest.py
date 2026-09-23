@@ -261,6 +261,99 @@ class TestSSEEndpoint:
         lines = [line for line in response.text.splitlines() if line]
         assert any("event: heartbeat" in line for line in lines)
 
+    @staticmethod
+    def _scoped_stream_app(repository, pod_manager, stats_repository, pricing_provider, events):
+        from collections.abc import AsyncGenerator
+
+        from volundr.adapters.outbound.authorization import SimpleRoleAuthorizationAdapter
+
+        class _PresetBroadcaster(InMemoryEventBroadcaster):
+            async def subscribe(self) -> AsyncGenerator[RealtimeEvent, None]:
+                for event in events:
+                    yield event
+
+        broadcaster = _PresetBroadcaster()
+        session_service = SessionService(
+            repository=repository,
+            pod_manager=pod_manager,
+            broadcaster=broadcaster,
+            authorization=SimpleRoleAuthorizationAdapter(),
+        )
+        app = FastAPI()
+        app.include_router(
+            create_router(
+                session_service=session_service,
+                stats_service=StatsService(stats_repository),
+                pricing_provider=pricing_provider,
+                broadcaster=broadcaster,
+            )
+        )
+        return app
+
+    @pytest.mark.asyncio
+    async def test_sse_stream_hides_other_users_sessions(
+        self, repository, pod_manager, stats_repository, pricing_provider
+    ):
+        """A non-owner receives no events for another user's session."""
+        from datetime import datetime
+
+        from httpx import ASGITransport, AsyncClient
+
+        def event(event_type: EventType, **data) -> RealtimeEvent:
+            return RealtimeEvent(type=event_type, data=data, timestamp=datetime.now(UTC))
+
+        alice = {"owner_id": "alice", "tenant_id": "t1"}
+        events = [
+            event(EventType.SESSION_UPDATED, id="alice-session", **alice),
+            event(EventType.SESSION_ACTIVITY, session_id="alice-session", state="idle", **alice),
+            event(EventType.SESSION_NEEDS_INPUT, session_id="alice-session", **alice),
+            event(EventType.SESSION_DELETED, id="alice-session", **alice),
+            event(EventType.SESSION_UPDATED, id="bob-session", owner_id="bob", tenant_id="t1"),
+            event(EventType.HEARTBEAT),
+        ]
+        app = self._scoped_stream_app(
+            repository, pod_manager, stats_repository, pricing_provider, events
+        )
+        app.state.identity = _StubIdentity()
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                "/api/v1/forge/sessions/stream",
+                headers={
+                    "x-auth-user-id": "bob",
+                    "x-auth-tenant": "t1",
+                    "x-auth-roles": "volundr:developer",
+                },
+            )
+
+        assert response.status_code == 200
+        assert "alice-session" not in response.text
+        assert "bob-session" in response.text
+        assert "event: heartbeat" in response.text
+
+    def test_sse_stream_rejects_guild_scope(
+        self, repository, pod_manager, stats_repository, pricing_provider
+    ):
+        """A standalone Forge cannot serve guild scope and says so."""
+        app = self._scoped_stream_app(
+            repository, pod_manager, stats_repository, pricing_provider, []
+        )
+        app.state.identity = _StubIdentity()
+        response = TestClient(app).get(
+            "/api/v1/forge/sessions/stream?scope=guild",
+            headers={"x-auth-user-id": "bob", "x-auth-tenant": "t1"},
+        )
+        assert response.status_code == 422
+
+    def test_sse_stream_requires_a_principal_when_authorization_is_configured(
+        self, repository, pod_manager, stats_repository, pricing_provider
+    ):
+        app = self._scoped_stream_app(
+            repository, pod_manager, stats_repository, pricing_provider, []
+        )
+        response = TestClient(app).get("/api/v1/forge/sessions/stream")
+        assert response.status_code == 401
+
 
 class TestSessionEndpoints:
     """Tests for session CRUD endpoints."""

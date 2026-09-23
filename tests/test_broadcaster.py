@@ -219,13 +219,17 @@ class TestInMemoryEventBroadcaster:
         task = asyncio.create_task(collect())
         await asyncio.sleep(0.01)
 
-        await broadcaster.publish_session_deleted(session_id)
+        await broadcaster.publish_session_deleted(session_id, owner_id="alice", tenant_id="t1")
 
         await asyncio.wait_for(task, timeout=1.0)
 
         assert len(received) == 1
         assert received[0].type == EventType.SESSION_DELETED
         assert received[0].data["id"] == str(session_id)
+        # The session row is gone by now, so the event itself must carry the
+        # owner and tenant the stream scopes it by.
+        assert received[0].data["owner_id"] == "alice"
+        assert received[0].data["tenant_id"] == "t1"
 
     @pytest.mark.asyncio
     async def test_publish_stats(
@@ -467,7 +471,9 @@ class TestInMemoryEventBroadcaster:
         task = asyncio.create_task(collect())
         await asyncio.sleep(0.01)
 
-        await broadcaster.publish_chronicle_event(session_id, timeline_event, timeline)
+        await broadcaster.publish_chronicle_event(
+            session_id, timeline_event, timeline, owner_id="alice", tenant_id="t1"
+        )
 
         await asyncio.wait_for(task, timeout=1.0)
 
@@ -475,6 +481,8 @@ class TestInMemoryEventBroadcaster:
         evt = received[0]
         assert evt.type == EventType.CHRONICLE_EVENT
         assert evt.data["session_id"] == str(session_id)
+        assert evt.data["owner_id"] == "alice"
+        assert evt.data["tenant_id"] == "t1"
 
         # Verify event data includes all optional fields
         event_data = evt.data["event"]
@@ -547,7 +555,9 @@ class TestInMemoryEventBroadcaster:
         task = asyncio.create_task(collect())
         await asyncio.sleep(0.01)
 
-        await broadcaster.publish_chronicle_event(session_id, timeline_event, timeline)
+        await broadcaster.publish_chronicle_event(
+            session_id, timeline_event, timeline, owner_id=None, tenant_id=None
+        )
 
         await asyncio.wait_for(task, timeout=1.0)
 
@@ -592,6 +602,8 @@ class TestInMemoryEventBroadcaster:
                 session_id,
                 timeline_event,
                 timeline,  # type: ignore[arg-type]
+                owner_id=None,
+                tenant_id=None,
             )
 
         message = next(
