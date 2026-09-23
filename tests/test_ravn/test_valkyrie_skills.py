@@ -313,14 +313,17 @@ async def test_telemetry_handle_feeds_skill_mirror() -> None:
 
 
 @pytest.mark.asyncio
-async def test_telemetry_handle_survives_skill_ingest_failure() -> None:
+async def test_telemetry_handle_propagates_skill_ingest_failure() -> None:
+    """The failure reaches the transport so it naks rather than acks the event."""
+
     async def broken_ingest(event: Any) -> None:
         del event
         raise RuntimeError("mirror down")
 
     subscription = _subscription(broken_ingest)
 
-    await subscription._handle(_activation_sleipnir_event())
+    with pytest.raises(RuntimeError, match="mirror down"):
+        await subscription._handle(_activation_sleipnir_event())
 
 
 # ---------------------------------------------------------------------------

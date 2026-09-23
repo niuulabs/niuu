@@ -11,7 +11,13 @@ from fastapi.testclient import TestClient
 
 from ravn.adapters.review import FileReviewQueueStore, PostgresReviewQueueStore
 from ravn.api.odin_reviews import create_odin_review_router
-from ravn.odin.review import ReviewItem, ReviewKind, review_requested_event, review_resolved_event
+from ravn.odin.review import (
+    ReviewItem,
+    ReviewKind,
+    review_decided_event,
+    review_requested_event,
+    review_resolved_event,
+)
 from ravn.odin.review_service import OdinReviewService, ReviewDecisionError
 from sleipnir.domain.events import SleipnirEvent
 
@@ -143,6 +149,27 @@ async def test_resolved_events_close_the_loop(tmp_path) -> None:
     stored = await service.get(item.item_id)
     assert stored.status == "applied"
     assert stored.apply_detail == "installed probe"
+
+
+async def test_redelivered_decided_event_never_regresses_a_resolved_item(tmp_path) -> None:
+    service, publisher = _service(tmp_path)
+    item = _item()
+    await service.ingest_event(review_requested_event(item, source="v"))
+    await service.decide(item.item_id, decision="approved", operator_id="op")
+    decided = review_decided_event(publisher.items[0], source="odin")
+    await service.ingest_event(decided)
+
+    resident_copy = publisher.items[0]
+    resident_copy.resolve(outcome="applied", detail="installed probe")
+    await service.ingest_event(review_resolved_event(resident_copy, source="v"))
+    # At-least-once delivery hands the decided event over again after the
+    # resolution already landed.
+    await service.ingest_event(decided)
+
+    stored = await service.get(item.item_id)
+    assert stored.status == "applied"
+    assert stored.apply_outcome == "applied"
+    assert stored.decided_by == "op"
 
 
 async def test_reject_requires_a_reason_and_settled_items_conflict(tmp_path) -> None:

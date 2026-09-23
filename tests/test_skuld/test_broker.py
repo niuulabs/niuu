@@ -19,6 +19,7 @@ from niuu.domain.workflow_kickoff import (
     WORKFLOW_KICKOFF_ID_KEY,
     WORKFLOW_KICKOFF_REDELIVERY_KEY,
 )
+from niuu.mesh.transport_builder import TransportBuildError
 from ravn.feedback import EnvironmentFeedbackRecorder
 from skuld.broker import (
     Broker,
@@ -785,9 +786,12 @@ class TestBroker:
         )
 
         with (
-            patch("niuu.mesh.transport_builder.build_nng_transport", return_value=None),
+            patch.dict(
+                "niuu.mesh.transport_builder.TRANSPORT_ALIASES",
+                {"nng": "sleipnir.adapters.missing_nng.NngTransport"},
+            ),
             patch("niuu.mesh.build_in_process_mesh") as in_process,
-            pytest.raises(RuntimeError, match="configured mesh transport 'nng' could not be built"),
+            pytest.raises(TransportBuildError, match="mesh transport 'nng' could not be imported"),
         ):
             await broker._start_mesh_adapter()
 

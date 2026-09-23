@@ -72,8 +72,9 @@ def build_mesh_from_adapters_list(
     discovery:
         Optional discovery adapter passed to non-Sleipnir adapters.
     sleipnir_transport_builder:
-        Optional callable(adapter_entry) -> (publisher, subscriber) for
-        Sleipnir adapters that need transport injection. If None, Sleipnir
+        Optional callable(adapter_entry) -> transport (publisher and
+        subscriber) for Sleipnir adapters that need transport injection. It
+        raises when the entry's transport cannot be built. If None, Sleipnir
         adapters are instantiated with kwargs only.
     environment_id:
         Flock/realm identifier used to isolate Sleipnir subjects.
@@ -111,9 +112,6 @@ def build_mesh_from_adapters_list(
         # Sleipnir adapters need publisher/subscriber injection
         if is_sleipnir and sleipnir_transport_builder is not None:
             transport = sleipnir_transport_builder(entry)
-            if transport is None:
-                logger.warning("mesh: failed to build Sleipnir transport, skipping")
-                continue
             kwargs["publisher"] = transport
             kwargs["subscriber"] = transport
             kwargs.pop("discovery", None)

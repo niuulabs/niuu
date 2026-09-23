@@ -2259,10 +2259,6 @@ class MeshConfig(BaseModel):
     nng: NngMeshConfig = Field(default_factory=NngMeshConfig)
     sleipnir: MeshSleipnirConfig = Field(default_factory=MeshSleipnirConfig)
     nats: MeshNatsConfig = Field(default_factory=MeshNatsConfig)
-    redis_url_env: str = Field(
-        default="REDIS_URL",
-        description="Environment variable containing the credential-bearing Redis URL.",
-    )
 
 
 class BuriConfig(BaseModel):
