@@ -123,3 +123,28 @@ def test_create_app_seeds_embedded_forge_when_no_workers_configured(monkeypatch)
     seed_instances.assert_not_awaited()
     seed_embedded.assert_awaited_once()
     instance_repo.ensure_schema.assert_awaited_once()
+
+
+def test_create_app_threads_dev_identity_to_the_ravn_session_proxy(monkeypatch) -> None:
+    from fastapi import APIRouter
+
+    received: list[bool] = []
+
+    def _router(_service, *, embedded_forge_app=None, dev_identity=False):
+        received.append(dev_identity)
+        return APIRouter()
+
+    monkeypatch.setattr(guild_app, "database_pool", _fake_database_pool)
+    monkeypatch.setattr(
+        guild_app, "PostgresInstanceRepository", lambda _pool: _DummyInstanceRepository()
+    )
+    monkeypatch.setattr(guild_app, "PostgresPATRepository", lambda _pool: object())
+    monkeypatch.setattr(guild_app, "create_pat_validator", lambda *_args: _DummyPATValidator())
+    monkeypatch.setattr(guild_app, "seed_configured_instances", AsyncMock(return_value=0))
+    monkeypatch.setattr(guild_app, "create_ravn_session_proxy_router", _router)
+
+    for dev_identity in (False, True):
+        with TestClient(guild_app.create_app(settings=Settings(), dev_identity=dev_identity)):
+            pass
+
+    assert received == [False, True]

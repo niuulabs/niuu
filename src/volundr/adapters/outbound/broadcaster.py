@@ -269,18 +269,31 @@ class InMemoryEventBroadcaster(EventBroadcaster):
             timestamp=datetime.now(UTC),
         )
 
-    def create_session_deleted_event(self, session_id: UUID) -> RealtimeEvent:
+    def create_session_deleted_event(
+        self,
+        session_id: UUID,
+        *,
+        owner_id: str | None,
+        tenant_id: str | None,
+    ) -> RealtimeEvent:
         """Create a session deleted event.
 
         Args:
             session_id: The ID of the deleted session.
+            owner_id: Owner of the deleted session, so the stream can scope it.
+            tenant_id: Tenant of the deleted session, so the stream can scope it.
 
         Returns:
             A RealtimeEvent for the deleted session.
         """
         return RealtimeEvent(
             type=EventType.SESSION_DELETED,
-            data={"id": str(session_id), "status": "deleted"},
+            data={
+                "id": str(session_id),
+                "status": "deleted",
+                "owner_id": owner_id or None,
+                "tenant_id": tenant_id or None,
+            },
             timestamp=datetime.now(UTC),
         )
 
@@ -344,13 +357,23 @@ class InMemoryEventBroadcaster(EventBroadcaster):
         event = self.create_session_event(EventType.SESSION_UPDATED, session)
         await self.publish(event)
 
-    async def publish_session_deleted(self, session_id: UUID) -> None:
+    async def publish_session_deleted(
+        self,
+        session_id: UUID,
+        *,
+        owner_id: str | None,
+        tenant_id: str | None,
+    ) -> None:
         """Publish a session deleted event.
 
         Args:
             session_id: The ID of the deleted session.
+            owner_id: Owner of the deleted session.
+            tenant_id: Tenant of the deleted session.
         """
-        event = self.create_session_deleted_event(session_id)
+        event = self.create_session_deleted_event(
+            session_id, owner_id=owner_id, tenant_id=tenant_id
+        )
         await self.publish(event)
 
     async def publish_stats(self, stats: Stats) -> None:
@@ -379,6 +402,9 @@ class InMemoryEventBroadcaster(EventBroadcaster):
         session_id: UUID,
         event: TimelineEvent,
         timeline: TimelineResponse,
+        *,
+        owner_id: str | None,
+        tenant_id: str | None,
     ) -> None:
         """Publish a chronicle timeline event.
 
@@ -386,6 +412,8 @@ class InMemoryEventBroadcaster(EventBroadcaster):
             session_id: The session this event belongs to.
             event: The new timeline event to append.
             timeline: The full aggregated timeline (files, commits, token_burn).
+            owner_id: Owner of the session, so the stream can scope the event.
+            tenant_id: Tenant of the session, so the stream can scope the event.
         """
         event_data: dict = {
             "t": event.t,
@@ -418,6 +446,8 @@ class InMemoryEventBroadcaster(EventBroadcaster):
                     {"hash": c.hash, "msg": c.msg, "time": c.time} for c in timeline.commits
                 ],
                 "token_burn": timeline.token_burn,
+                "owner_id": owner_id or None,
+                "tenant_id": tenant_id or None,
             },
             timestamp=datetime.now(UTC),
         )

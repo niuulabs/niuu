@@ -207,6 +207,8 @@ class GitWorkflowService:
                         "pr_number": pr.number,
                         "pr_url": pr.url,
                         "repo_url": session.repo,
+                        "owner_id": session.owner_id or None,
+                        "tenant_id": session.tenant_id or None,
                     },
                     timestamp=datetime.now(UTC),
                 )

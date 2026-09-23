@@ -50,6 +50,7 @@ import yaml as _yaml
 
 from niuu.domain.outcome import OutcomeField, OutcomeSchema, generate_outcome_instruction
 from ravn.config import ProjectConfig, _safe_int
+from ravn.domain.permission_mode import PermissionMode, parse_optional_permission_mode
 from ravn.domain.persona_document import (
     PortablePersonaDefinition,
     portable_persona_from_config,
@@ -127,6 +128,12 @@ class PersonaConfig:
     Fields left at their zero-value (empty string, empty list, 0) are
     considered "unset" and will not override Settings defaults when the persona
     is applied.
+
+    ``permission_mode`` keeps the spelling the persona was authored with
+    (``read-only`` or ``read_only``) because persona content digests — and the
+    workflow pins built on them — are computed from it.  Enforcement must read
+    ``parsed_permission_mode``, which is parsed once at construction; an
+    unrecognised mode raises here, so no persona can exist with one.
     """
 
     name: str
@@ -134,6 +141,7 @@ class PersonaConfig:
     allowed_tools: list[str] = field(default_factory=list)
     forbidden_tools: list[str] = field(default_factory=list)
     permission_mode: str = ""
+    parsed_permission_mode: PermissionMode | None = field(init=False, default=None, compare=False)
     executor: PersonaExecutorConfig = field(default_factory=PersonaExecutorConfig)
     llm: PersonaLLMConfig = field(default_factory=PersonaLLMConfig)
     iteration_budget: int = 0
@@ -152,6 +160,12 @@ class PersonaConfig:
     # delivery_workspace tool but declares no actions here gets none.
     delivery_workspace_actions: list[str] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        try:
+            self.parsed_permission_mode = parse_optional_permission_mode(self.permission_mode)
+        except ValueError as exc:
+            raise ValueError(f"Persona {self.name!r}: {exc}") from exc
+
     def to_dict(self) -> dict:
         """Serialize to a dict compatible with :meth:`FilesystemPersonaAdapter.parse`.
 
@@ -168,7 +182,7 @@ class PersonaConfig:
         if self.forbidden_tools:
             d["forbidden_tools"] = list(self.forbidden_tools)
         if self.permission_mode:
-            d["permission_mode"] = self.permission_mode
+            d["permission_mode"] = str(self.permission_mode)
         if self.executor.adapter or self.executor.kwargs:
             executor_dict: dict[str, Any] = {}
             if self.executor.adapter:
@@ -1042,7 +1056,9 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
         """Parse a persona YAML file without injecting outcome instructions.
 
         Returns ``None`` when the file is unreadable or malformed rather than
-        raising, so callers can treat missing personas as a soft error.
+        raising, so callers can treat missing personas as a soft error.  An
+        unrecognised ``permission_mode`` is not malformed-and-skippable: it
+        raises :class:`ValueError` naming the file.
 
         Note: outcome instruction injection happens in :meth:`load` and
         :meth:`load_path`, not here.
@@ -1051,7 +1067,10 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return None
-        return self.parse(text)
+        try:
+            return self.parse(text)
+        except ValueError as exc:
+            raise ValueError(f"{path}: {exc}") from exc
 
     def list_names(self) -> list[str]:
         """Return a sorted list of all resolvable persona names.
@@ -1213,6 +1232,7 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
 
         Returns ``None`` on empty input or parse failure.
         Handles ``produces``, ``consumes``, and ``fan_in`` sections.
+        Raises :class:`ValueError` when ``permission_mode`` is not a known mode.
         """
         if not text.strip():
             return None
@@ -1255,13 +1275,14 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
         allowed = raw.get("allowed_tools", [])
         forbidden = raw.get("forbidden_tools", [])
         delivery_workspace_actions = raw.get("delivery_workspace_actions", [])
+        raw_permission_mode = raw.get("permission_mode")
 
         return PersonaConfig(
             name=name,
             system_prompt_template=str(raw.get("system_prompt_template", "")),
             allowed_tools=list(allowed) if isinstance(allowed, list) else [],
             forbidden_tools=list(forbidden) if isinstance(forbidden, list) else [],
-            permission_mode=str(raw.get("permission_mode", "")),
+            permission_mode="" if raw_permission_mode is None else str(raw_permission_mode),
             executor=executor,
             llm=llm,
             iteration_budget=_safe_int(raw.get("iteration_budget", 0)),

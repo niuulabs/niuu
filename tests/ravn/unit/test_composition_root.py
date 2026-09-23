@@ -8,8 +8,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ravn.adapters.personas.loader import PersonaExecutorConfig
+from ravn.adapters.personas.loader import PersonaConfig, PersonaExecutorConfig
 from ravn.config import Settings
+from ravn.domain.permission_mode import PermissionMode
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -254,18 +255,203 @@ class TestBuildPermission:
         perm = _build_permission(settings, tmp_path, no_tools=True, persona_config=None)
         assert isinstance(perm, DenyAllPermission)
 
-    def test_read_only_persona_overrides_to_enforcer(
+    @pytest.mark.parametrize("spelling", ["read-only", "read_only"])
+    async def test_read_only_persona_overrides_to_enforcer(
         self,
+        settings: Settings,
+        tmp_path: Path,
+        spelling: str,
+    ) -> None:
+        """Both spellings must produce an enforcer that actually denies mutation.
+
+        Regression: ``read-only`` reached the enforcer verbatim, matched none of
+        its underscore branches and fell through to "allow by default".
+        """
+        from ravn.adapters.permission.enforcer import PermissionEnforcer
+        from ravn.adapters.personas.loader import PersonaConfig
+        from ravn.cli.commands import _build_permission
+
+        persona = PersonaConfig(name="auditor", permission_mode=spelling)
+        settings.permission.mode = "allow_all"
+        perm = _build_permission(settings, tmp_path, no_tools=False, persona_config=persona)
+
+        assert isinstance(perm, PermissionEnforcer)
+        await _assert_denies_write_and_execute(perm, tmp_path)
+        assert await perm.check("file:read")
+
+    async def test_workspace_write_persona_allows_writes(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        """Control for the read-only assertions: the same probes pass when writes are allowed."""
+        from ravn.adapters.personas.loader import PersonaConfig
+        from ravn.adapters.tools.file_tools import WriteFileTool
+        from ravn.cli.commands import _build_permission
+        from ravn.ports.permission import Allow
+
+        persona = PersonaConfig(name="coder", permission_mode="workspace-write")
+        perm = _build_permission(settings, tmp_path, no_tools=False, persona_config=persona)
+
+        assert await perm.check(WriteFileTool(tmp_path).required_permission)
+        decision = await perm.evaluate("write_file", {"path": "out.txt", "content": "x"})
+        assert isinstance(decision, Allow)
+        assert isinstance(await perm.evaluate("bash", {"command": "touch out.txt"}), Allow)
+
+    def test_unknown_settings_mode_raises(self, settings: Settings, tmp_path: Path) -> None:
+        """A mode that bypassed validation still cannot reach an enforcer."""
+        from ravn.cli.commands import _build_permission
+        from ravn.config import PermissionConfig
+
+        settings.permission = PermissionConfig.model_construct(mode="superuser")
+        with pytest.raises(ValueError, match="Unknown permission_mode 'superuser'"):
+            _build_permission(settings, tmp_path, no_tools=False, persona_config=None)
+
+    def test_persona_without_mode_defers_to_settings(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.adapters.permission.allow_deny import DenyAllPermission
+        from ravn.adapters.personas.loader import PersonaConfig
+        from ravn.cli.commands import _build_permission
+
+        settings.permission.mode = "deny_all"
+        persona = PersonaConfig(name="unset")
+        perm = _build_permission(settings, tmp_path, no_tools=False, persona_config=persona)
+        assert isinstance(perm, DenyAllPermission)
+
+    def test_enforcer_keeps_settings_rules_with_persona_mode(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        """The effective config is re-validated from Settings, not rebuilt from scratch."""
+        from ravn.adapters.personas.loader import PersonaConfig
+        from ravn.cli.commands import _build_permission
+
+        settings.permission.deny = ["web:*"]
+        persona = PersonaConfig(name="auditor", permission_mode="read-only")
+        perm = _build_permission(settings, tmp_path, no_tools=False, persona_config=persona)
+        assert perm._config.deny == ["web:*"]
+        assert perm._config.mode is PermissionMode.READ_ONLY
+
+
+class TestEffectivePermissionMode:
+    def test_persona_mode_wins(self, settings: Settings) -> None:
+        from ravn.adapters.personas.loader import PersonaConfig
+        from ravn.cli.commands import _effective_permission_mode
+
+        settings.permission.mode = "full_access"
+        persona = PersonaConfig(name="auditor", permission_mode="read-only")
+        assert _effective_permission_mode(settings, persona) is PermissionMode.READ_ONLY
+
+    def test_settings_mode_without_persona(self, settings: Settings) -> None:
+        from ravn.cli.commands import _effective_permission_mode
+
+        settings.permission.mode = "workspace-write"
+        assert _effective_permission_mode(settings, None) is PermissionMode.WORKSPACE_WRITE
+
+    def test_persona_with_unparsed_mode_raises(self, settings: Settings) -> None:
+        """A persona-shaped object that skipped PersonaConfig parsing is rejected."""
+        from ravn.cli.commands import _effective_permission_mode
+
+        persona = MagicMock(parsed_permission_mode="superuser")
+        with pytest.raises(ValueError, match="Unknown permission_mode 'superuser'"):
+            _effective_permission_mode(settings, persona)
+
+
+# ---------------------------------------------------------------------------
+# Built-in read-only personas — end to end through _build_permission
+# ---------------------------------------------------------------------------
+
+
+def _builtin_read_only_personas() -> list[tuple[str, PersonaConfig]]:
+    """Every shipped persona (bundled, archived, in-code) whose mode is read-only."""
+    from ravn.adapters.personas.loader import (
+        _ARCHIVED_BUILTIN_PERSONAS_DIR,
+        _BUILTIN_PERSONAS,
+        _BUILTIN_PERSONAS_DIR,
+        FilesystemPersonaAdapter,
+    )
+
+    adapter = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
+    candidates: list[tuple[str, PersonaConfig | None]] = [
+        (f"bundled:{path.stem}", adapter.load_from_file(path))
+        for path in sorted(_BUILTIN_PERSONAS_DIR.glob("*.yaml"))
+    ]
+    candidates += [
+        (f"archived:{path.stem}", adapter.load_from_file(path))
+        for path in sorted(_ARCHIVED_BUILTIN_PERSONAS_DIR.glob("*.yaml"))
+    ]
+    candidates += [(f"in-code:{name}", persona) for name, persona in _BUILTIN_PERSONAS.items()]
+    return [
+        (label, persona)
+        for label, persona in candidates
+        if persona is not None and persona.parsed_permission_mode is PermissionMode.READ_ONLY
+    ]
+
+
+_READ_ONLY_BUILTINS = _builtin_read_only_personas()
+
+
+async def _assert_denies_write_and_execute(perm: object, workspace: Path) -> None:
+    """Probe both enforcement paths with mutating file and shell operations."""
+    from ravn.adapters.tools.bash import BashTool
+    from ravn.adapters.tools.file_tools import EditFileTool, WriteFileTool
+    from ravn.adapters.tools.terminal import TerminalTool
+    from ravn.ports.permission import Deny
+
+    # Agent dispatch path: agent.py checks tool.required_permission.
+    for tool in (
+        WriteFileTool(workspace),
+        EditFileTool(workspace),
+        BashTool(workspace_root=workspace),
+        TerminalTool(),
+    ):
+        assert not await perm.check(tool.required_permission), tool.name
+
+    # Enforcer path: full tool-name + argument evaluation.
+    probes = [
+        ("write_file", {"path": "out.txt", "content": "x"}),
+        ("edit_file", {"path": "out.txt", "old_string": "a", "new_string": "b"}),
+        ("bash", {"command": "touch out.txt"}),
+        ("terminal", {"command": "touch out.txt"}),
+    ]
+    for tool_name, args in probes:
+        decision = await perm.evaluate(tool_name, args)
+        assert isinstance(decision, Deny), (tool_name, decision)
+        assert "read_only" in decision.reason, (tool_name, decision.reason)
+
+
+class TestBuiltinReadOnlyPersonas:
+    def test_hyphenated_builtins_are_covered(self) -> None:
+        """Guard the fixture: the regression lived in the hyphenated personas."""
+        labels = {label for label, _ in _READ_ONLY_BUILTINS}
+        assert "bundled:security-auditor" in labels
+        assert any(persona.permission_mode == "read-only" for _, persona in _READ_ONLY_BUILTINS)
+        assert any(persona.permission_mode == "read_only" for _, persona in _READ_ONLY_BUILTINS)
+
+    @pytest.mark.parametrize(
+        "persona",
+        [persona for _, persona in _READ_ONLY_BUILTINS],
+        ids=[label for label, _ in _READ_ONLY_BUILTINS],
+    )
+    async def test_denies_write_and_execute(
+        self,
+        persona: PersonaConfig,
         settings: Settings,
         tmp_path: Path,
     ) -> None:
         from ravn.adapters.permission.enforcer import PermissionEnforcer
         from ravn.cli.commands import _build_permission
 
-        persona = MagicMock(permission_mode="read-only")
+        # Most permissive default, so only the persona can be what restricts.
         settings.permission.mode = "allow_all"
         perm = _build_permission(settings, tmp_path, no_tools=False, persona_config=persona)
+
         assert isinstance(perm, PermissionEnforcer)
+        await _assert_denies_write_and_execute(perm, tmp_path)
 
 
 # ---------------------------------------------------------------------------

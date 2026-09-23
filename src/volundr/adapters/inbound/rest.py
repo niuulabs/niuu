@@ -99,6 +99,7 @@ from volundr.domain.services import (
     SessionAccessDeniedError,
     SessionArchiveNotAvailableError,
     SessionCapacityError,
+    SessionEventStream,
     SessionNotFoundError,
     SessionNotRunningError,
     SessionService,
@@ -1563,6 +1564,9 @@ def create_router(
     router = APIRouter(prefix=prefix)
     if preview_cache is None:
         preview_cache = PreviewCache(_PREVIEW_CACHE_ROOT)
+    event_stream = (
+        SessionEventStream(broadcaster, session_service) if broadcaster is not None else None
+    )
 
     def _session_response(session: Session) -> SessionResponse:
         return SessionResponse.from_session(session, public_host=server_public_host)
@@ -1775,7 +1779,13 @@ def create_router(
     )
     async def stream_sessions(
         request: Request,
-        scope: Literal["local", "guild"] = Query(default="local"),
+        scope: Literal["local"] = Query(
+            default="local",
+            description=(
+                "A standalone Forge streams only its own sessions. Guild aggregation "
+                "is served by the Niuu host's /api/v1/forge/sessions/stream."
+            ),
+        ),
     ) -> StreamingResponse:
         """Stream real-time session updates via Server-Sent Events (SSE).
 
@@ -1786,6 +1796,10 @@ def create_router(
         - stats_updated: Periodic stats updates (every 30s)
         - heartbeat: Keep-alive signal (every 30s)
 
+        Session events are scoped like ``GET /sessions``: a caller receives
+        events for its own sessions, or for its tenant's sessions as a tenant
+        admin.
+
         Events are formatted as SSE:
         ```
         event: session_updated
@@ -1793,12 +1807,18 @@ def create_router(
 
         ```
         """
-        if broadcaster is None:
+        if event_stream is None:
             logger.warning("SSE stream requested but broadcaster is None")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Event streaming not available",
             )
+
+        principal = await _optional_principal(request)
+        try:
+            event_stream.authorize(principal)
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
 
         client_host = request.client.host if request.client else "unknown"
         logger.info("SSE stream: client connected from %s", client_host)
@@ -1806,7 +1826,7 @@ def create_router(
         async def event_generator():
             event_count = 0
             try:
-                async for event in broadcaster.subscribe():
+                async for event in event_stream.subscribe(principal):
                     # Check if client disconnected
                     if await request.is_disconnected():
                         logger.info(

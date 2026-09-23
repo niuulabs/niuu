@@ -35,6 +35,7 @@ from .session import (
     SessionStateError,
 )
 from .session_archive import SessionArchiveNotAvailableError, SessionArchiveService
+from .session_events import SessionEventStream
 from .stats import StatsService
 from .tenant import TenantAlreadyExistsError, TenantNotFoundError, TenantService
 from .token import SessionNotRunningError, TokenService
@@ -77,6 +78,7 @@ __all__ = [
     "RepoService",
     "SessionArchiveNotAvailableError",
     "SessionArchiveService",
+    "SessionEventStream",
     "SessionService",
     "StatsService",
     "TenantService",

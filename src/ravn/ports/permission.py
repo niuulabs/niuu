@@ -8,18 +8,6 @@ from enum import StrEnum
 from pathlib import Path
 
 
-class PermissionMode(StrEnum):
-    """Built-in permission modes."""
-
-    READ_ONLY = "read_only"
-    WORKSPACE_WRITE = "workspace_write"
-    FULL_ACCESS = "full_access"
-    PROMPT = "prompt"
-    # Legacy aliases
-    ALLOW_ALL = "allow_all"
-    DENY_ALL = "deny_all"
-
-
 class CommandIntent(StrEnum):
     """Classification of a shell command's intent."""
 

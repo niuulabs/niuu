@@ -509,6 +509,7 @@ class SessionService:
                         ),
                         "metadata": metadata,
                         "owner_id": session.owner_id or "",
+                        "tenant_id": session.tenant_id or "",
                     },
                     timestamp=updated.updated_at,
                 )
@@ -694,12 +695,7 @@ class SessionService:
                 to the principal's tenant. Non-admin users see only their own
                 sessions.
         """
-        if self._authorization is not None and principal is None:
-            raise PermissionError("An authenticated principal is required to list sessions")
-        tenant_id = principal.tenant_id if principal else None
-        owner_id = None
-        if principal and TenantRole.ADMIN not in principal.roles:
-            owner_id = principal.user_id
+        tenant_id, owner_id = self.visibility_scope(principal)
 
         sessions = await self._repository.list(
             status=status,
@@ -724,6 +720,56 @@ class SessionService:
             allowed_ids = {r.id for r in allowed if r.kind == "session"}
             sessions = [s for s in sessions if str(s.id) in allowed_ids]
         return sessions
+
+    def visibility_scope(self, principal: Principal | None) -> tuple[str | None, str | None]:
+        """Return the ``(tenant_id, owner_id)`` bounds of what *principal* may list.
+
+        ``None`` means unbounded. Every principal is bounded to its own tenant;
+        only a tenant admin sees other owners' sessions in that tenant. With
+        authorization configured, an absent principal is refused, never unbounded.
+
+        Raises:
+            PermissionError: Authorization is configured and no principal was given.
+        """
+        if self._authorization is not None and principal is None:
+            raise PermissionError("An authenticated principal is required to list sessions")
+        if principal is None:
+            return None, None
+        if TenantRole.ADMIN in principal.roles:
+            return principal.tenant_id, None
+        return principal.tenant_id, principal.user_id
+
+    async def may_observe(
+        self,
+        principal: Principal | None,
+        *,
+        session_id: str,
+        owner_id: str | None,
+        tenant_id: str | None,
+    ) -> bool:
+        """Return whether ``list_sessions`` would show this session to *principal*.
+
+        The realtime event stream uses this so a subscriber receives events for
+        exactly the sessions the list endpoint shows it. Missing owner or tenant
+        never widens visibility: an unowned session is visible only to a tenant
+        admin, and an untenanted one to no bounded principal.
+        """
+        tenant_scope, owner_scope = self.visibility_scope(principal)
+        if tenant_scope is not None and (tenant_id or None) != tenant_scope:
+            return False
+        if owner_scope is not None and (owner_id or None) != owner_scope:
+            return False
+        if principal is None or self._authorization is None:
+            return True
+        return await self._authorization.is_allowed(
+            principal,
+            "list",
+            Resource(
+                kind="session",
+                id=session_id,
+                attr={"owner_id": owner_id or None, "tenant_id": tenant_id or None},
+            ),
+        )
 
     async def update_session(
         self,
@@ -835,7 +881,11 @@ class SessionService:
             await self._run_targeted_cleanup(session_id, targets)
 
         if deleted and self._broadcaster is not None:
-            await self._broadcaster.publish_session_deleted(session_id)
+            await self._broadcaster.publish_session_deleted(
+                session_id,
+                owner_id=session.owner_id,
+                tenant_id=session.tenant_id,
+            )
 
         return deleted
 

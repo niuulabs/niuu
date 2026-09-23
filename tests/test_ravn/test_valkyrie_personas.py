@@ -360,8 +360,17 @@ async def test_valkyrie_outcomes_publish_over_existing_mesh_path() -> None:
         subscriber=transport,
         own_peer_id="action-router",
     )
-    await court_mesh.subscribe(registry.VALKYRIE_JUDGMENT_PROPOSED, received_judgments.append)
-    await action_mesh.subscribe(registry.VALKYRIE_ACTION_PROPOSED, received_actions.append)
+
+    # Mesh handlers are awaited; a sync handler used to fail inside the mesh
+    # wrapper and the failure was swallowed.
+    async def _record_judgment(event: RavnEvent) -> None:
+        received_judgments.append(event)
+
+    async def _record_action(event: RavnEvent) -> None:
+        received_actions.append(event)
+
+    await court_mesh.subscribe(registry.VALKYRIE_JUDGMENT_PROPOSED, _record_judgment)
+    await action_mesh.subscribe(registry.VALKYRIE_ACTION_PROPOSED, _record_action)
 
     for name, decision in [
         ("k8s-valkyrie", "propose_action"),

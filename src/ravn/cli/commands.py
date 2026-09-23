@@ -182,6 +182,7 @@ from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _build_mimir_auth,
     _build_permission,
     _build_tool_build_backend,
+    _effective_permission_mode,
     _constructor_accepts_kwarg,
     _get_tool_group,
     _with_mimir_fact_capture,
@@ -508,9 +509,7 @@ def _build_agent(
     resolved_model = _resolve_persona_model(settings, persona_config)
 
     workspace = _resolve_workspace(settings)
-    permission_mode = settings.permission.mode
-    if persona_config is not None and persona_config.permission_mode:
-        permission_mode = persona_config.permission_mode
+    permission_mode = _effective_permission_mode(settings, persona_config)
     cli_transport_executor = _uses_cli_transport_executor(persona_config)
     llm = None if cli_transport_executor else _build_llm(settings)
     session = session or Session()
@@ -1440,9 +1439,7 @@ async def _run_gateway(
         # Per-session: fresh session, budget, and tools
         session = Session()
         budget = _build_iteration_budget(settings, max_iterations)
-        permission_mode = settings.permission.mode
-        if persona_config is not None and persona_config.permission_mode:
-            permission_mode = persona_config.permission_mode
+        permission_mode = _effective_permission_mode(settings, persona_config)
         permission = _build_permission(
             settings,
             workspace,
