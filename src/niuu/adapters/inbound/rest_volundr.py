@@ -1233,15 +1233,24 @@ def create_volundr_router(
             else [await _resolve_target_instance(service, principal, selected)]
         )
         headers = _forward_headers(request)
-        broadcaster = getattr(getattr(embedded_forge_app, "state", None), "broadcaster", None)
-        if not fleet and _uses_embedded_transport(instances[0]) and broadcaster is None:
+        # The embedded Forge's principal-scoped stream, never its raw broadcaster:
+        # a subscriber only receives events for sessions it may list.
+        local_stream = getattr(
+            getattr(embedded_forge_app, "state", None), "session_event_stream", None
+        )
+        if not fleet and _uses_embedded_transport(instances[0]) and local_stream is None:
             raise HTTPException(status_code=503, detail="Session event stream unavailable")
+        if local_stream is not None and any(map(_uses_embedded_transport, instances)):
+            try:
+                local_stream.authorize(principal)
+            except PermissionError as exc:
+                raise HTTPException(status_code=401, detail=str(exc)) from exc
 
         async def events(instance: RegisteredInstance) -> Any:
             if _uses_embedded_transport(instance):
-                if broadcaster is None:
+                if local_stream is None:
                     raise RuntimeError("Session event stream unavailable")
-                async for event in broadcaster.subscribe():
+                async for event in local_stream.subscribe(principal):
                     yield event.type.value, _with_instance(event.data, instance)
             else:
                 url = build_remote_url(instance.base_url, "/api/v1/forge", "/sessions/stream")

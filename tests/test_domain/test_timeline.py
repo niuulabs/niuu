@@ -192,6 +192,43 @@ class TestAddTimelineEvent:
         assert len(chronicle_events) == 1
         assert chronicle_events[0].data["session_id"] == str(session.id)
 
+    async def test_sse_event_carries_session_owner_and_tenant(
+        self,
+        chronicle_svc: ChronicleService,
+        session_service: SessionService,
+        broadcaster: MockEventBroadcaster,
+    ):
+        """The stream scopes chronicle events by the session's owner and tenant."""
+        from volundr.domain.models import Principal
+
+        session = await session_service.create_session(
+            name="Scoped",
+            model="sonnet",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            principal=Principal(user_id="alice", email="", tenant_id="t1", roles=[]),
+        )
+        chronicle = await chronicle_svc.create_chronicle(session.id)
+
+        await chronicle_svc.add_timeline_event(
+            session.id, _make_event(chronicle.id, session.id, t=0)
+        )
+
+        (published,) = [e for e in broadcaster.events if e.type.value == "chronicle_event"]
+        assert (published.data["owner_id"], published.data["tenant_id"]) == ("alice", "t1")
+
+    async def test_unknown_session_is_refused_before_storing(
+        self,
+        chronicle_svc: ChronicleService,
+        timeline_repository: InMemoryTimelineRepository,
+    ):
+        """An event that cannot be scoped for the stream is not persisted either."""
+        from volundr.domain.services import SessionNotFoundError
+
+        chronicle_id = uuid4()
+        with pytest.raises(SessionNotFoundError):
+            await chronicle_svc.add_timeline_event(uuid4(), _make_event(chronicle_id, uuid4(), t=0))
+        assert await timeline_repository.get_events(chronicle_id) == []
+
     async def test_raises_when_no_timeline_repo(
         self,
         chronicle_svc_no_timeline: ChronicleService,

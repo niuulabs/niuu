@@ -779,7 +779,11 @@ class MockEventBroadcaster(EventBroadcaster):
         await self.publish(
             RealtimeEvent(
                 type=EventType.SESSION_CREATED,
-                data={"id": str(session.id)},
+                data={
+                    "id": str(session.id),
+                    "owner_id": session.owner_id,
+                    "tenant_id": session.tenant_id,
+                },
                 timestamp=datetime.now(UTC),
             )
         )
@@ -790,18 +794,28 @@ class MockEventBroadcaster(EventBroadcaster):
         await self.publish(
             RealtimeEvent(
                 type=EventType.SESSION_UPDATED,
-                data={"id": str(session.id)},
+                data={
+                    "id": str(session.id),
+                    "owner_id": session.owner_id,
+                    "tenant_id": session.tenant_id,
+                },
                 timestamp=datetime.now(UTC),
             )
         )
 
-    async def publish_session_deleted(self, session_id: UUID) -> None:
+    async def publish_session_deleted(
+        self,
+        session_id: UUID,
+        *,
+        owner_id: str | None,
+        tenant_id: str | None,
+    ) -> None:
         """Record a session deleted event."""
         self._session_deleted_events.append(session_id)
         await self.publish(
             RealtimeEvent(
                 type=EventType.SESSION_DELETED,
-                data={"id": str(session_id)},
+                data={"id": str(session_id), "owner_id": owner_id, "tenant_id": tenant_id},
                 timestamp=datetime.now(UTC),
             )
         )
@@ -833,6 +847,9 @@ class MockEventBroadcaster(EventBroadcaster):
         session_id: UUID,
         event: TimelineEvent,
         timeline: TimelineResponse,
+        *,
+        owner_id: str | None,
+        tenant_id: str | None,
     ) -> None:
         """Record a chronicle event."""
         await self.publish(
@@ -841,6 +858,8 @@ class MockEventBroadcaster(EventBroadcaster):
                 data={
                     "session_id": str(session_id),
                     "event": {"t": event.t, "type": event.type.value},
+                    "owner_id": owner_id,
+                    "tenant_id": tenant_id,
                 },
                 timestamp=datetime.now(UTC),
             )

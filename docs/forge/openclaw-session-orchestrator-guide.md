@@ -548,6 +548,18 @@ Subscribe here:
 
 This stream is for platform-level events, not chat token streaming.
 
+The stream is scoped to the caller the same way `GET /sessions` is: you receive
+events for your own sessions, or for your tenant's sessions if you hold
+`volundr:admin` in that tenant, and never another tenant's. Authenticate the
+subscription like any other session route; with identity configured, an
+unauthenticated subscriber gets `401`. `heartbeat` and `stats_updated` reach every
+subscriber. `session_read_state` reaches only the reader it names. `pr_merged`
+names no session, so it is only delivered when the deployment runs without
+identity. Session-scoped payloads carry `owner_id` and `tenant_id`.
+
+On a standalone Forge the only accepted `scope` is `local` (the default);
+`scope=guild` returns `422`. Guild aggregation is served by the Niuu host.
+
 ### Event types you should handle
 
 Documented session-stream events:
