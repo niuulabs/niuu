@@ -459,7 +459,7 @@ class SessionArchiveService:
     async def _load_timeline_payload(self, session_id: UUID) -> dict[str, Any] | None:
         if self._chronicle_service is None:
             return None
-        timeline = await self._chronicle_service.get_timeline(session_id)
+        timeline = await self._chronicle_service.session_timeline(session_id)
         if timeline is None:
             return None
         return {
