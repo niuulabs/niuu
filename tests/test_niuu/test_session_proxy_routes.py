@@ -18,16 +18,49 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.datastructures import Headers
 
+from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from niuu.app import SkuldPortRegistry, register_session_proxy_routes
 from niuu.ports.session_proxy import SessionProxyTarget
-from niuu.session_proxy import bridge_websocket
+from niuu.session_proxy import SessionProxyGuardMissingError, bridge_websocket
 
 
-def _bare_app(tmp_path) -> tuple[FastAPI, SkuldPortRegistry]:
-    reg = SkuldPortRegistry(state_file=tmp_path / "forge-state.json")
+async def _allow_attach(session_id, user_id, tenant_id, roles) -> bool:
+    return True
+
+
+def _bare_app(
+    tmp_path, *, guard=_allow_attach, dev_identity: bool = False
+) -> tuple[FastAPI, SkuldPortRegistry]:
+    # The standalone composition root always wires the ownership guard; tests
+    # that are not about authorization use an allow-all one.
+    reg = SkuldPortRegistry(state_file=tmp_path / "forge-state.json", dev_identity=dev_identity)
+    if guard is not None:
+        reg.set_ownership_guard(guard)
     app = FastAPI()
     register_session_proxy_routes(app, reg)
     return app, reg
+
+
+def _verifying_identity() -> EnvoyHeaderAuthenticationAdapter:
+    """An identity adapter that verifies credentials other than client x-auth-*."""
+    return EnvoyHeaderAuthenticationAdapter(
+        user_id_header="x-verified-user",
+        email_header="x-verified-email",
+        tenant_header="x-verified-tenant",
+        roles_header="x-verified-roles",
+    )
+
+
+# A caller verified as alice who also asserts someone else's identity.
+_IMPERSONATION_HEADERS = {
+    "x-verified-user": "alice",
+    "x-verified-tenant": "t1",
+    "x-verified-roles": "volundr:developer",
+    "x-auth-user-id": "victim",
+    "x-auth-tenant": "victim-tenant",
+    "x-auth-roles": "volundr:admin",
+}
+_IMPERSONATION_QUERY = "devUserId=victim&devTenantId=victim-tenant&devRoles=volundr:admin"
 
 
 def _external_target() -> SessionProxyTarget:
@@ -134,6 +167,130 @@ class TestStandaloneSessionProxyRoutes:
         assert captured["kwargs"]["proxy"] is None
 
 
+def _mock_http_client(mock_client_cls) -> AsyncMock:
+    response = MagicMock()
+    response.content = b"{}"
+    response.status_code = 200
+    response.headers = {"content-type": "application/json"}
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(return_value=response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client_cls.return_value = mock_client
+    return mock_client
+
+
+def _capture_ws_dial(captured: dict):
+    def _connect(url, **kwargs):
+        captured["url"] = url
+        captured["headers"] = kwargs["additional_headers"]
+        raise OSError("broker unreachable")
+
+    return _connect
+
+
+class TestSessionProxyIdentityPolicy:
+    """Outside dev identity the session only sees identity the proxy verified."""
+
+    def test_ws_ignores_dev_params_and_strips_client_identity(self, tmp_path) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        seen: list[tuple] = []
+
+        async def guard(session_id, user_id, tenant_id, roles) -> bool:
+            seen.append((user_id, tenant_id, roles))
+            return True
+
+        app, reg = _bare_app(tmp_path, guard=guard)
+        app.state.identity = _verifying_identity()
+        reg.register("sess", 9123)
+        captured: dict = {}
+
+        with patch("websockets.asyncio.client.connect", side_effect=_capture_ws_dial(captured)):
+            with pytest.raises(WebSocketDisconnect):
+                with TestClient(app).websocket_connect(
+                    f"/s/sess/session?{_IMPERSONATION_QUERY}",
+                    headers=_IMPERSONATION_HEADERS,
+                ) as ws:
+                    ws.receive_text()
+
+        assert seen == [("alice", "t1", ("volundr:developer",))]
+        assert captured["url"] == "ws://127.0.0.1:9123/session"
+        identity = {k: v for k, v in captured["headers"].items() if k.startswith("x-auth-")}
+        assert identity == {
+            "x-auth-user-id": "alice",
+            "x-auth-tenant": "t1",
+            "x-auth-roles": "volundr:developer",
+        }
+
+    def test_ws_forwards_no_identity_when_the_proxy_verified_none(self, tmp_path) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        captured: dict = {}
+
+        with patch("websockets.asyncio.client.connect", side_effect=_capture_ws_dial(captured)):
+            with pytest.raises(WebSocketDisconnect):
+                with TestClient(app).websocket_connect(
+                    f"/s/sess/session?{_IMPERSONATION_QUERY}",
+                    headers=_IMPERSONATION_HEADERS,
+                ) as ws:
+                    ws.receive_text()
+
+        assert not [k for k in captured["headers"] if k.lower().startswith("x-auth-")]
+
+    def test_http_ignores_dev_params_and_strips_client_identity(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path)
+        app.state.identity = _verifying_identity()
+        reg.register("sess", 9123)
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get(
+                f"/s/sess/api/conversation/history?limit=5&{_IMPERSONATION_QUERY}",
+                headers=_IMPERSONATION_HEADERS,
+            )
+
+        assert resp.status_code == 200
+        request = mock_client.request.await_args.kwargs
+        assert request["params"] == {"limit": "5"}
+        identity = {k: v for k, v in request["headers"].items() if k.startswith("x-auth-")}
+        assert identity == {
+            "x-auth-user-id": "alice",
+            "x-auth-tenant": "t1",
+            "x-auth-roles": "volundr:developer",
+        }
+
+    def test_dev_identity_forwards_the_asserted_dev_identity(self, tmp_path) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path, dev_identity=True)
+        reg.register("sess", 9123)
+        captured: dict = {}
+
+        with patch("websockets.asyncio.client.connect", side_effect=_capture_ws_dial(captured)):
+            with pytest.raises(WebSocketDisconnect):
+                with TestClient(app).websocket_connect(
+                    "/s/sess/session?devUserId=dev-user&devTenantId=dev-tenant"
+                ) as ws:
+                    ws.receive_text()
+
+        assert captured["headers"]["x-auth-user-id"] == "dev-user"
+        assert captured["headers"]["x-auth-tenant"] == "dev-tenant"
+
+    def test_ws_refuses_to_attach_without_a_guard_outside_dev(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path, guard=None)
+        reg.register("sess", 9123)
+
+        with patch("websockets.asyncio.client.connect") as connect:
+            with pytest.raises(SessionProxyGuardMissingError):
+                with TestClient(app).websocket_connect("/s/sess/session") as ws:
+                    ws.receive_text()
+
+        connect.assert_not_called()
+
+
 class _SocketDouble:
     """In-memory transport only; no provider, gateway, or listening socket."""
 
@@ -202,12 +359,15 @@ async def test_bridge_delivers_once_and_closes_both_pumps(end, transport_error, 
     control = '{"type":"history_gap","history_protocol":2,"recovery":"recent"}'
     await browser.incoming.put(steering)
     await broker.incoming.put(control)
+    upstream_headers = {
+        "authorization": "Bearer synthetic-test-token",
+        "x-auth-user-id": "verified-user",
+    }
     task = asyncio.create_task(
         bridge_websocket(
             browser,
             "ws://synthetic.invalid/session?history=recent&history_protocol=2",
-            include_cookie=transport_error,
-            forward_dev_params=transport_error,
+            headers=upstream_headers,
             on_connected=connected,
         )
     )
@@ -232,11 +392,9 @@ async def test_bridge_delivers_once_and_closes_both_pumps(end, transport_error, 
         assert upstream_closed.is_set()
         browser.accept.assert_awaited_once()
         connected.assert_called_once_with()
-        headers = captured["additional_headers"]
-        assert headers["authorization"] == "Bearer synthetic-test-token"
-        assert ("cookie" in headers) is transport_error
-        assert ("x-auth-user-id" in headers) is transport_error
-        assert "x-unrelated" not in headers
+        # The bridge sends exactly the header set its caller built; identity
+        # policy lives in _proxy_forward_headers, not here.
+        assert captured["additional_headers"] == upstream_headers
         assert captured["max_size"] > 0
     finally:
         # Also clean up on regression: failed cancellation assertions must not

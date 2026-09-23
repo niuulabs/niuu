@@ -49,7 +49,13 @@ class RootServer(Service):
         public_host: str | None = None,
         host_profile: str = DEFAULT_HOST_PROFILE,
         enabled_mounts: set[str] | None = None,
+        dev_identity: bool = False,
     ) -> None:
+        """``dev_identity``: local dev without an identity provider (mini mode).
+
+        Only then does the session proxy forward browser-asserted dev identity
+        and attach without an ownership guard.
+        """
         self._registry = registry
         self._host = host
         self._public_host = (public_host or host).strip() or host
@@ -60,7 +66,7 @@ class RootServer(Service):
         self._task: asyncio.Task[None] | None = None
         self._embedded_db: EmbeddedDatabasePort | None = None
         self._external_db: ConnectionInfo | None = None
-        self.skuld_registry = SkuldPortRegistry()
+        self.skuld_registry = SkuldPortRegistry(dev_identity=dev_identity)
         _install_skuld_registry(self.skuld_registry)
 
     async def _prepare_external_db(self, host_config: object) -> None:
