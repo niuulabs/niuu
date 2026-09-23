@@ -389,13 +389,15 @@ class SleipnirMeshAdapter:
     # ------------------------------------------------------------------
 
     def _assert_peer_trusted(self, peer_id: str) -> None:
-        """Raise PeerNotFoundError if peer is not in discovery table."""
+        """Raise PeerNotFoundError if peer is not in discovery table.
+
+        A discovery failure propagates as itself: reported as "peer not found",
+        it would read as a routing answer and a composite mesh would route the
+        request elsewhere.
+        """
         if self._discovery is None:
             return  # No discovery = trust all
-        try:
-            peers = self._discovery.peers()  # type: ignore[attr-defined]
-        except Exception:
-            peers = {}
+        peers = self._discovery.peers()  # type: ignore[attr-defined]
         if peer_id not in peers:
             raise PeerNotFoundError(peer_id)
 

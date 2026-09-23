@@ -71,56 +71,58 @@ class MeshParticipant:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Start mesh and discovery adapters."""
+        """Start discovery, then the mesh.
+
+        Raises whatever failed to start. When the mesh fails, the discovery
+        adapter that already started is stopped again, so a participant never
+        announces itself to peers while its mesh is down.
+        """
         if self._running:
             return
 
         if self._discovery is not None:
-            try:
-                await self._discovery.start()
-                logger.debug("participant(%s): discovery started", self._peer_id)
-            except Exception as exc:
-                logger.error(
-                    "participant(%s): discovery start failed: %r",
-                    self._peer_id,
-                    exc,
-                    exc_info=True,
-                )
+            await self._discovery.start()
+            logger.debug("participant(%s): discovery started", self._peer_id)
 
         if self._mesh is not None:
             try:
                 await self._mesh.start()
-                logger.debug("participant(%s): mesh started", self._peer_id)
-            except Exception as exc:
-                logger.error(
-                    "participant(%s): mesh start failed: %r",
-                    self._peer_id,
-                    exc,
-                    exc_info=True,
-                )
+            except Exception:
+                if self._discovery is not None:
+                    await self._discovery.stop()
+                raise
+            logger.debug("participant(%s): mesh started", self._peer_id)
 
         self._running = True
 
     async def stop(self) -> None:
-        """Stop mesh and discovery adapters."""
+        """Stop the mesh, then discovery; raise if either failed to stop.
+
+        Both are always attempted, so a mesh that fails to stop does not leave
+        discovery announcing a departed participant.
+        """
         if not self._running:
             return
+
+        self._running = False
+        failures: list[Exception] = []
 
         if self._mesh is not None:
             try:
                 await self._mesh.stop()
                 logger.debug("participant(%s): mesh stopped", self._peer_id)
             except Exception as exc:
-                logger.warning("participant(%s): mesh stop error: %r", self._peer_id, exc)
+                failures.append(exc)
 
         if self._discovery is not None:
             try:
                 await self._discovery.stop()
                 logger.debug("participant(%s): discovery stopped", self._peer_id)
             except Exception as exc:
-                logger.warning("participant(%s): discovery stop error: %r", self._peer_id, exc)
+                failures.append(exc)
 
-        self._running = False
+        if failures:
+            raise ExceptionGroup(f"participant({self._peer_id}): stop failed", failures)
 
     # ------------------------------------------------------------------
     # Mesh operations

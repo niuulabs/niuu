@@ -16,7 +16,9 @@ def _build_mesh(settings: Settings, discovery: Any = None) -> Any:
     All adapters run simultaneously via CompositeMeshAdapter:
     - publish() fans out to ALL transports
     - subscribe() registers on ALL transports
-    - send() tries transports in order until success
+    - send() routes to the first transport that knows the peer
+
+    Raises when a configured adapter or transport cannot be built.
     """
     import socket
 
