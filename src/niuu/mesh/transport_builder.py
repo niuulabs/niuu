@@ -1,8 +1,8 @@
 """Shared Sleipnir transport builder (NIU-631).
 
 Extracted from ``ravn.cli.commands._build_sleipnir_transport`` so both Ravn
-and Skuld can build NNG / RabbitMQ / NATS / Redis transports without
-duplicating the import + instantiate pattern.
+and Skuld can build NNG / NATS / in-process transports without duplicating
+the import + instantiate pattern.
 
 Callers are responsible for resolving transport kwargs from their own
 settings objects — this module only handles the alias resolution, import, and
@@ -11,58 +11,72 @@ instantiation steps.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from niuu.utils import import_class, resolve_secret_kwargs
 
-logger = logging.getLogger("niuu.mesh.transport")
-
 TRANSPORT_ALIASES: dict[str, str] = {
     "nng": "sleipnir.adapters.nng_transport.NngTransport",
-    "sleipnir": "sleipnir.adapters.rabbitmq.RabbitMQTransport",
-    "rabbitmq": "sleipnir.adapters.rabbitmq.RabbitMQTransport",
     "nats": "sleipnir.adapters.nats_transport.NatsTransport",
-    "redis": "sleipnir.adapters.redis_streams.RedisStreamsTransport",
     "in_process": "sleipnir.adapters.in_process.InProcessBus",
 }
 
 
-def build_transport(adapter: str, **kwargs: Any) -> Any | None:
+class TransportBuildError(RuntimeError):
+    """The configured Sleipnir transport cannot be imported or constructed."""
+
+
+def build_transport(adapter: str, **kwargs: Any) -> Any:
     """Import and instantiate a Sleipnir transport adapter.
 
     Parameters
     ----------
     adapter:
-        Short name (e.g. ``"nng"``, ``"rabbitmq"``) or fully-qualified class
+        Short name (e.g. ``"nng"``, ``"nats"``) or fully-qualified class
         path.  Short names are resolved via :data:`TRANSPORT_ALIASES`.
     **kwargs:
         Constructor arguments forwarded to the transport class.
 
     Returns
     -------
-    The transport instance, or ``None`` if import or instantiation fails.
+    The transport instance.
+
+    Raises
+    ------
+    TransportBuildError
+        The name is neither an alias nor a class path, the class cannot be
+        imported, or its constructor rejects *kwargs*.  A configured
+        transport that cannot be built is fatal, never a disabled mesh.
     """
     fq_class = TRANSPORT_ALIASES.get(adapter, adapter)
+    if "." not in fq_class:
+        raise TransportBuildError(
+            f"unknown mesh transport {adapter!r}: set it to one of "
+            f"{', '.join(sorted(TRANSPORT_ALIASES))} or a fully-qualified transport class path"
+        )
 
     try:
         cls = import_class(fq_class)
-    except Exception:
-        logger.warning("Configured transport could not be imported")
-        return None
+    except (ImportError, AttributeError) as exc:
+        raise TransportBuildError(
+            f"mesh transport {adapter!r} could not be imported from {fq_class}: {exc}. "
+            "Install the package that provides it, or configure a different transport"
+        ) from exc
 
     try:
         return cls(**kwargs)
-    except Exception:
-        logger.warning("Configured transport could not be initialized")
-        return None
+    except Exception as exc:
+        raise TransportBuildError(
+            f"mesh transport {adapter!r} ({fq_class}) could not be constructed: {exc}. "
+            "Fix the transport's settings under mesh (for example mesh.nng or mesh.nats)"
+        ) from exc
 
 
 def build_nng_transport(
     address: str,
     service_id: str,
     peer_addresses: list[str] | None = None,
-) -> Any | None:
+) -> Any:
     """Build an NNG pub/sub transport.
 
     Convenience wrapper around :func:`build_transport` for the common NNG case.
@@ -116,15 +130,6 @@ def resolve_transport_kwargs(
             "service_id": f"{service_prefix}:{peer_id}",
             "peer_addresses": _peer_addresses,
         }
-
-    if adapter in ("sleipnir", "rabbitmq"):
-        sleipnir = getattr(settings, "sleipnir", None)
-        amqp_url_env = getattr(sleipnir, "amqp_url_env", "SLEIPNIR_AMQP_URL")
-        amqp_url = resolve_secret_kwargs({}, {"amqp_url": amqp_url_env}).get("amqp_url", "")
-        if not amqp_url:
-            logger.warning("mesh: %s not set, rabbitmq transport unavailable", amqp_url_env)
-            return {}
-        return {"amqp_url": amqp_url}
 
     if adapter == "nats":
         nats = mesh.nats
@@ -188,11 +193,5 @@ def resolve_transport_kwargs(
                 }.items()
                 if env_name
             },
-        )
-
-    if adapter == "redis":
-        return resolve_secret_kwargs(
-            {"redis_url": "redis://localhost:6379"},
-            {"redis_url": getattr(mesh, "redis_url_env", "REDIS_URL")},
         )
     return {}

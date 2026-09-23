@@ -30,10 +30,7 @@ def _build_mesh(settings: Settings, discovery: Any = None) -> Any:
 
         def _sleipnir_tb(entry: dict[str, Any]) -> Any:
             adapter = entry.get("transport", mesh_cfg.adapter or "nng")
-            kwargs = _resolve_transport_kwargs(settings, adapter)
-            if adapter in ("sleipnir", "rabbitmq") and not kwargs:
-                return None
-            return build_transport(adapter, **kwargs)
+            return build_transport(adapter, **_resolve_transport_kwargs(settings, adapter))
 
         return build_mesh_from_adapters_list(
             adapters=mesh_cfg.adapters,
@@ -50,16 +47,9 @@ def _build_mesh(settings: Settings, discovery: Any = None) -> Any:
     from niuu.mesh.transport_builder import build_transport  # noqa: PLC0415
     from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter  # noqa: PLC0415
 
-    kwargs = _resolve_transport_kwargs(settings, legacy_adapter)
-    if legacy_adapter in ("sleipnir", "rabbitmq") and not kwargs:
-        logger.warning("mesh: failed to build transport, mesh disabled")
-        return None
-
-    transport = build_transport(legacy_adapter, **kwargs)
-    if transport is None:
-        logger.warning("mesh: failed to build transport, mesh disabled")
-        return None
-
+    transport = build_transport(
+        legacy_adapter, **_resolve_transport_kwargs(settings, legacy_adapter)
+    )
     return SleipnirMeshAdapter(
         publisher=transport,
         subscriber=transport,
@@ -138,7 +128,7 @@ def _build_discovery(
     def _event_bus_transport(entry: dict[str, Any]) -> Any:
         transport_name = str(entry.get("transport") or "nats")
         kwargs = _resolve_transport_kwargs(settings, transport_name)
-        return build_transport(transport_name, **kwargs) if kwargs else None
+        return build_transport(transport_name, **kwargs)
 
     return build_discovery_adapters(
         adapters_config=list(getattr(settings.discovery, "adapters", [])),

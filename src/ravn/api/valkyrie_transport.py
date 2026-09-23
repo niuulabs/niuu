@@ -98,32 +98,22 @@ class ValkyrieTelemetrySubscription:
             logger.warning("valkyrie_dashboard: no telemetry streams subscribed yet")
 
     async def _handle(self, event: SleipnirEvent) -> None:
+        """Project one telemetry event and route it into every ingest.
+
+        Ingest failures propagate. The NATS subscriber acks only when this
+        returns, so a raise naks the event for redelivery and, once
+        redeliveries run out, dead-letters it; swallowing here would ack an
+        event nothing stored. A redelivery re-runs every step, so each one
+        must be idempotent on ``event_id``: the projection skips ids it has
+        seen, and the ingests upsert by keys derived from the event.
+        """
         self._projection.record_event(event)
         if self._history_ingest is not None:
-            try:
-                await self._history_ingest(event)
-            except Exception:
-                logger.exception(
-                    "valkyrie_dashboard: history ingest failed for %s",
-                    event.event_type,
-                )
+            await self._history_ingest(event)
         if self._skills_ingest is not None:
-            try:
-                await self._skills_ingest(event)
-            except Exception:
-                logger.exception(
-                    "valkyrie_dashboard: skill mirror ingest failed for %s",
-                    event.event_type,
-                )
-        if self._review_ingest is None:
-            return
-        try:
+            await self._skills_ingest(event)
+        if self._review_ingest is not None:
             await self._review_ingest(event)
-        except Exception:
-            logger.exception(
-                "valkyrie_dashboard: review queue ingest failed for %s",
-                event.event_type,
-            )
 
     async def _start_subscriber(self, label: str, subscriber: Any) -> bool:
         if label in self._started_labels:
