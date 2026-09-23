@@ -73,10 +73,10 @@ async def test_another_owners_chronicle_is_not_found(volundr_client, auth_header
     chronicle_id = await _chronicle(txn_pool, "chron-dave", "chron-t3")
     url = f"{API}/chronicles/{chronicle_id}"
 
-    assert (await volundr_client.get(url, headers=other)).status_code == 404
+    read = await volundr_client.get(url, headers=other)
     patched = await volundr_client.patch(url, json={"summary": "hijacked"}, headers=other)
-    assert patched.status_code == 404
-    assert (await volundr_client.delete(url, headers=other)).status_code == 404
+    deleted = await volundr_client.delete(url, headers=other)
+    assert [r.status_code for r in (read, patched, deleted)] == [404, 404, 404]
 
     mine = await volundr_client.get(url, headers=owner)
     assert mine.status_code == 200, mine.text

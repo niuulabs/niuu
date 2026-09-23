@@ -240,13 +240,14 @@ class TestWritesAreAuthorized:
     async def test_a_viewer_sees_its_history_but_cannot_change_it(self, world, seeded):
         vera = seeded["vera"]
         assert await world.service.get_chronicle(vera.id, principal=VERA) == vera
-        for action, call in (
-            ("update", world.service.update_chronicle(vera.id, principal=VERA, summary="x")),
-            ("delete", world.service.delete_chronicle(vera.id, principal=VERA)),
-            ("start", world.service.reforge(vera.id, principal=VERA)),
-        ):
+        attempts = {
+            "update": lambda: world.service.update_chronicle(vera.id, principal=VERA, summary="x"),
+            "delete": lambda: world.service.delete_chronicle(vera.id, principal=VERA),
+            "start": lambda: world.service.reforge(vera.id, principal=VERA),
+        }
+        for action, attempt in attempts.items():
             with pytest.raises(ChronicleAccessDeniedError) as denied:
-                await call
+                await attempt()
             assert denied.value.action == action
         assert world.chronicles._chronicles[vera.id] == vera
         assert world.sessions._sessions == {}
