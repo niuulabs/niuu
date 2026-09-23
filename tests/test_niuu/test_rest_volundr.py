@@ -1642,14 +1642,18 @@ def test_session_stream_scopes_visible_hosts_and_stamps_owning_instance(
     from niuu.adapters.inbound import rest_volundr
 
     embedded = FastAPI()
+    subscribers = []
 
-    async def subscribe():
+    async def subscribe(principal):
+        subscribers.append(principal.user_id)
         yield SimpleNamespace(
             type=SimpleNamespace(value="session_activity"),
             data={"session_id": "local-session", "state": "idle"},
         )
 
-    embedded.state.broadcaster = SimpleNamespace(subscribe=subscribe)
+    embedded.state.session_event_stream = SimpleNamespace(
+        authorize=lambda principal: None, subscribe=subscribe
+    )
     remote = respx.get("http://bro/api/v1/forge/sessions/stream").mock(
         return_value=Response(
             200,
@@ -1688,6 +1692,8 @@ def test_session_stream_scopes_visible_hosts_and_stamps_owning_instance(
     assert captured == expected
     for host in expected:
         assert f"session_activity:{host}:{host}-session" in response.text
+    # The embedded Forge is subscribed as the caller, so it can scope events.
+    assert subscribers == (["user-a"] if "local" in expected else [])
     if "bro" in expected:
         assert remote.calls[0].request.url.query == b""  # No recursive fleet fan-out.
         assert remote.calls[0].request.headers["x-auth-user-id"] == "user-a"

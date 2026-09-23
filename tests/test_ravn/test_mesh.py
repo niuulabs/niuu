@@ -288,9 +288,10 @@ class TestSleipnirMeshAdapterUnit:
         assert received_events[0].trace_context == event.trace_context
 
     @pytest.mark.asyncio
-    async def test_handler_failure_logs_environment_context(
+    async def test_handler_failure_logs_environment_context_and_propagates(
         self, transport: _FakeSleipnirTransport, caplog
     ) -> None:
+        """The failure reaches the Sleipnir transport so it can nak and redeliver."""
         adapter = SleipnirMeshAdapter(
             publisher=transport,
             subscriber=transport,
@@ -313,8 +314,17 @@ class TestSleipnirMeshAdapterUnit:
             root_correlation_id="root-handler",
         )
 
-        with caplog.at_level(logging.WARNING, logger="ravn.adapters.mesh.sleipnir_mesh"):
-            await adapter.publish(event, "signal.kubernetes.pod")
+        # Capture the wire event without the fake's inline dispatch, then hand it
+        # to the subscribed handler the way a Sleipnir transport would.
+        subscription = transport.subscriptions[0]
+        subscription.active = False
+        await adapter.publish(event, "signal.kubernetes.pod")
+
+        with (
+            caplog.at_level(logging.WARNING, logger="ravn.adapters.mesh.sleipnir_mesh"),
+            pytest.raises(ValueError, match="bad handler"),
+        ):
+            await subscription.handler(transport.published[0])
 
         assert "handler failed" in caplog.text
         assert "peer=valkyrie-b" in caplog.text

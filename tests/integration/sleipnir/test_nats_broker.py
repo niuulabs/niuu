@@ -7,6 +7,7 @@ Set ``TEST_NATS_URL`` to override the default ``nats://localhost:4222``.
 from __future__ import annotations
 
 import asyncio
+import base64
 import uuid
 from datetime import UTC, datetime
 
@@ -15,6 +16,7 @@ import pytest
 from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
 from ravn.domain.events import RavnEvent, RavnEventType
 from sleipnir.adapters.nats_transport import NatsTransport
+from sleipnir.adapters.serialization import deserialize
 from sleipnir.domain.events import SleipnirEvent
 
 from .conftest import (
@@ -33,6 +35,7 @@ def _nats_transport(
     *,
     consumer_group: str | None = None,
     replay_from_sequence: int | None = None,
+    **delivery: object,
 ) -> NatsTransport:
     return NatsTransport(
         servers=[NATS_URL],
@@ -44,6 +47,7 @@ def _nats_transport(
         connect_timeout_s=5.0,
         max_bytes=TEST_NATS_MAX_BYTES,
         max_age_seconds=TEST_NATS_MAX_AGE_SECONDS,
+        **delivery,
     )
 
 
@@ -550,3 +554,134 @@ async def test_nats_consumer_group_keeps_distinct_subscription_filters():
 
     assert [event.event_id for event in rpc_received] == ["rpc-event"]
     assert [event.event_id for event in judgment_received] == ["judgment-event"]
+
+
+# ---------------------------------------------------------------------------
+# At-least-once delivery: ack after handling, redelivery, DLQ, crash recovery
+# ---------------------------------------------------------------------------
+
+
+async def test_failing_handler_gets_the_event_redelivered():
+    """A handler that raises is retried by JetStream until it succeeds."""
+    transport = _nats_transport(f"sleipnir_redeliver_{uuid.uuid4().hex[:8]}", nak_backoff_s=[0.1])
+    attempts: list[str] = []
+
+    async def flaky_handler(event: SleipnirEvent) -> None:
+        attempts.append(event.event_id)
+        if len(attempts) == 1:
+            raise RuntimeError("transient failure")
+
+    async with transport:
+        await transport.subscribe(["ravn.*"], flaky_handler)
+        event = make_event()
+        await transport.publish(event)
+        await collect_events(2, attempts)
+        await asyncio.sleep(0.5)
+
+        stats = transport.stats()
+
+    assert attempts == [event.event_id, event.event_id]
+    assert stats["handler_failures"] == 1
+    assert stats["ack_failures"] == 0
+    assert stats["nak_failures"] == 0
+
+
+async def test_exhausted_event_is_dead_lettered_once():
+    """After max_deliver failed deliveries the event lands in the DLQ and stops retrying."""
+    transport = _nats_transport(
+        f"sleipnir_dlq_{uuid.uuid4().hex[:8]}",
+        max_deliver=2,
+        nak_backoff_s=[0.1],
+    )
+    attempts: list[str] = []
+    dead_letters: list[SleipnirEvent] = []
+
+    async def poison_handler(event: SleipnirEvent) -> None:
+        attempts.append(event.event_id)
+        raise RuntimeError("cannot process")
+
+    async def dlq_handler(event: SleipnirEvent) -> None:
+        dead_letters.append(event)
+
+    async with transport:
+        await transport.subscribe(["ravn.*"], poison_handler)
+        await transport.subscribe(["system.dlq.message"], dlq_handler)
+        event = make_event()
+        await transport.publish(event)
+        await collect_events(1, dead_letters, timeout=10.0)
+        await asyncio.sleep(1.0)
+
+    assert attempts == [event.event_id, event.event_id]
+    assert len(dead_letters) == 1
+    record = dead_letters[0].payload
+    assert record["deliveries"] == 2
+    assert "cannot process" in record["reason"]
+    assert deserialize(base64.b64decode(record["raw_base64"])).event_id == event.event_id
+
+
+async def test_event_unacked_by_a_crashed_worker_goes_to_its_group_peer():
+    """A worker that dies mid-handler never acked, so JetStream redelivers to the group."""
+    stream_name = f"sleipnir_crash_{uuid.uuid4().hex[:8]}"
+    publisher = _nats_transport(stream_name)
+    delivery = {"ack_wait_s": 1.0, "ack_progress_interval_s": 0.3}
+    crashed = _nats_transport(stream_name, consumer_group="workers", **delivery)
+    survivor = _nats_transport(stream_name, consumer_group="workers", **delivery)
+    started = asyncio.Event()
+    recovered: list[SleipnirEvent] = []
+
+    async def dies_mid_handler(event: SleipnirEvent) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    async def survivor_handler(event: SleipnirEvent) -> None:
+        recovered.append(event)
+
+    async with publisher:
+        await crashed.start()
+        try:
+            await crashed.subscribe(["ravn.*"], dies_mid_handler)
+            event = make_event()
+            await publisher.publish(event)
+            await asyncio.wait_for(started.wait(), timeout=5.0)
+
+            # Crash: the connection goes away with no ack, nak or progress ping.
+            await crashed._subscriber._client.close()
+
+            async with survivor:
+                await survivor.subscribe(["ravn.*"], survivor_handler)
+                await collect_events(1, recovered, timeout=10.0)
+        finally:
+            await crashed.stop()
+
+    assert [e.event_id for e in recovered] == [event.event_id]
+
+
+async def test_stopping_worker_hands_unhandled_event_to_its_group_peer():
+    """stop() naks what it did not finish, so a peer gets it without waiting ack_wait."""
+    stream_name = f"sleipnir_handoff_{uuid.uuid4().hex[:8]}"
+    publisher = _nats_transport(stream_name)
+    leaving = _nats_transport(stream_name, consumer_group="workers", ack_wait_s=60.0)
+    staying = _nats_transport(stream_name, consumer_group="workers", ack_wait_s=60.0)
+    started = asyncio.Event()
+    handed_over: list[SleipnirEvent] = []
+
+    async def unfinished_handler(event: SleipnirEvent) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    async def staying_handler(event: SleipnirEvent) -> None:
+        handed_over.append(event)
+
+    async with publisher:
+        await leaving.start()
+        await leaving.subscribe(["ravn.*"], unfinished_handler)
+        event = make_event()
+        await publisher.publish(event)
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+
+        async with staying:
+            await staying.subscribe(["ravn.*"], staying_handler)
+            await leaving.stop()
+            await collect_events(1, handed_over, timeout=10.0)
+
+    assert [e.event_id for e in handed_over] == [event.event_id]

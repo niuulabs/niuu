@@ -7,7 +7,9 @@ from collections.abc import Awaitable, Callable
 
 from sleipnir.domain.events import SleipnirEvent
 
-#: Type alias for an async event handler.
+#: Type alias for an async event handler.  Returning acknowledges the event;
+#: raising asks for redelivery.  Handlers must be idempotent (at-least-once);
+#: see :class:`SleipnirSubscriber`.
 EventHandler = Callable[[SleipnirEvent], Awaitable[None]]
 
 
@@ -42,7 +44,32 @@ class SleipnirPublisher(ABC):
 
 
 class SleipnirSubscriber(ABC):
-    """Port for subscribing to events on the Sleipnir event bus."""
+    """Port for subscribing to events on the Sleipnir event bus.
+
+    Delivery guarantee
+    ------------------
+    A handler *returning* is the acknowledgement.  Transports backed by a
+    durable broker log (NATS JetStream) acknowledge an event to the broker
+    only after its handler has returned.  A handler that *raises* asks for
+    redelivery with backoff; once the transport's max-deliver limit is spent
+    the event is dead-lettered as a ``system.dlq.message`` event instead of
+    being dropped.  A process that dies before the ack gets the event
+    redelivered, to itself on restart or to another consumer-group member.
+
+    Delivery is therefore **at-least-once**, never exactly-once: the same
+    event (same ``event_id``) can reach a handler more than once — after a
+    handler failure, a crash between handling and ack, a lost ack, or a
+    consumer-group handoff.  **Handlers must be idempotent**, keyed on
+    ``event_id``.  Events for one subscription are handled one at a time, and
+    a full subscription queue withholds acks (backpressure) rather than
+    discarding events.
+
+    Transports without a broker-side log — in-process, nng, webhook, CLI
+    command, and core (non-JetStream) NATS subjects — cannot redeliver.  They
+    are at-most-once: an event whose handler raises is logged and not retried,
+    and the broker-less transports drop their oldest queued event on overflow
+    so that publishers never block.
+    """
 
     @abstractmethod
     async def subscribe(
@@ -59,6 +86,9 @@ class SleipnirSubscriber(ABC):
         - ``"*"`` — all events
 
         :param event_types: One or more patterns to subscribe to.
-        :param handler: Async callable invoked for each matching event.
+        :param handler: Async callable invoked for each matching event.  It
+            must be idempotent: see the class docstring for the at-least-once
+            contract.  Returning acknowledges the event; raising requests
+            redelivery on transports that can redeliver.
         :returns: A :class:`Subscription` handle; call ``unsubscribe()`` to cancel.
         """

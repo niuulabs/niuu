@@ -17,6 +17,7 @@ from starlette.responses import JSONResponse, Response
 
 from identity.adapters.http_auth import extract_principal
 from niuu.config import NiuuSettings
+from niuu.domain.models import Principal
 from niuu.ports.session_proxy import SessionProxyTarget
 
 logger = logging.getLogger(__name__)
@@ -33,12 +34,25 @@ def _sanitize_log(value: object) -> str:
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
 
-class SkuldPortRegistry:
-    """Maps session IDs to their Skuld subprocess ports."""
+class SessionProxyGuardMissingError(RuntimeError):
+    """A non-dev session proxy was asked to attach without an ownership guard."""
 
-    def __init__(self, state_file: Path | None = None) -> None:
+
+class SkuldPortRegistry:
+    """Maps session IDs to their Skuld subprocess ports.
+
+    ``dev_identity`` is set only by a local-dev composition root that runs
+    without an identity provider. There the browser's asserted dev identity
+    (``devUserId``/``devTenantId``/``devRoles`` query params and ``x-auth-*``
+    headers) IS the identity contract, and the proxy may attach without an
+    ownership guard. Everywhere else it stays ``False``: the proxy forwards
+    only identity it verified itself and refuses to attach without a guard.
+    """
+
+    def __init__(self, state_file: Path | None = None, *, dev_identity: bool = False) -> None:
         self._ports: dict[str, int] = {}
         self._state_file = state_file or Path(NiuuSettings().host.forge_state_file).expanduser()
+        self._dev_identity = dev_identity
         # Optional async hook invoked when the WS proxy cannot reach a live pod,
         # so the persisted Session row self-heals (status corrected, endpoint
         # cleared) instead of leaving a stale RUNNING tombstone. Set by the host
@@ -58,6 +72,11 @@ class SkuldPortRegistry:
             Callable[[str, str | None, str | None, tuple[str, ...]], Awaitable[bool]] | None
         ) = None
         self._target_resolver: Callable[[str], Awaitable[SessionProxyTarget | None]] | None = None
+
+    @property
+    def dev_identity(self) -> bool:
+        """Whether client-asserted dev identity is honoured (local dev only)."""
+        return self._dev_identity
 
     def set_reconcile_hook(self, hook: Callable[[str], Awaitable[bool]]) -> None:
         """Inject the session-row reconcile callback used on a dead-pod proxy.
@@ -100,13 +119,21 @@ class SkuldPortRegistry:
     ) -> bool:
         """Return True when the caller may attach to *session_id*'s chat.
 
-        Fail-closed only when a guard is configured; with no guard (pure
-        local dev without a session store) the proxy stays permissive so the
-        existing single-user flow is unaffected.
+        Without a guard only a dev-identity registry (local dev without a
+        session store) attaches freely; any other registry refuses, loudly.
+
+        Raises:
+            SessionProxyGuardMissingError: No guard is wired and dev identity is off.
         """
-        if self._ownership_guard is None:
+        if self._ownership_guard is not None:
+            return await self._ownership_guard(session_id, user_id, tenant_id, roles)
+        if self._dev_identity:
             return True
-        return await self._ownership_guard(session_id, user_id, tenant_id, roles)
+        raise SessionProxyGuardMissingError(
+            "Session proxy has no ownership guard: the composition root must call "
+            "SkuldPortRegistry.set_ownership_guard(), or construct the registry with "
+            "dev_identity=True for a local-dev host without an identity provider"
+        )
 
     async def reconcile_dead(self, session_id: str) -> bool:
         """Reconcile a session whose pod the proxy could not reach (best effort).
@@ -189,21 +216,27 @@ def _bearer_token_from_ws(websocket: WebSocket) -> str:
     ).strip()
 
 
+async def _proxy_principal(websocket: WebSocket | Request) -> Principal | None:
+    """Resolve the caller through the configured identity adapter, or None."""
+    try:
+        return await extract_principal(websocket)
+    except HTTPException:
+        return None
+
+
 async def _proxy_ws_identity(
     websocket: WebSocket,
 ) -> tuple[str | None, str | None, tuple[str, ...]]:
     """Use the configured identity adapter, including explicit no-auth mode."""
-    try:
-        principal = await extract_principal(websocket)
-    except HTTPException:
+    principal = await _proxy_principal(websocket)
+    if principal is None:
         return (None, None, ())
     return (principal.user_id, principal.tenant_id, tuple(principal.roles))
 
 
-# Auth headers forwarded verbatim from the browser leg to the broker leg.
-_FORWARDED_AUTH_HEADERS = frozenset(
+# Identity headers the downstream session trusts as proxy-verified.
+_IDENTITY_HEADERS = frozenset(
     {
-        "authorization",
         "x-auth-user-id",
         "x-auth-email",
         "x-auth-tenant",
@@ -217,47 +250,78 @@ _DEV_QUERY_TO_HEADER = (
     ("devTenantId", "x-auth-tenant"),
     ("devRoles", "x-auth-roles"),
 )
+_DEV_QUERY_PARAMS = frozenset(query_key for query_key, _ in _DEV_QUERY_TO_HEADER)
+
+
+def _verified_identity_headers(principal: Principal | None) -> dict[str, str]:
+    """Project a principal the proxy resolved itself onto ``x-auth-*`` headers."""
+    if principal is None or not principal.user_id:
+        return {}
+    headers = {
+        "x-auth-user-id": principal.user_id,
+        "x-auth-tenant": principal.tenant_id,
+        "x-auth-roles": ",".join(principal.roles),
+    }
+    if principal.email:
+        headers["x-auth-email"] = principal.email
+    return headers
 
 
 def _proxy_forward_headers(
     websocket: WebSocket,
     *,
     include_cookie: bool,
-    forward_dev_params: bool,
+    dev_identity: bool,
+    principal: Principal | None,
 ) -> dict[str, str]:
-    """Build the header set forwarded from the browser leg to the broker leg."""
-    allow = set(_FORWARDED_AUTH_HEADERS)
+    """Build the header set forwarded from the browser leg to the broker leg.
+
+    The downstream session treats ``x-auth-*`` as identity verified by a
+    trusted proxy, so outside local dev the client's own ``x-auth-*`` headers
+    and dev query params are dropped and *principal* (resolved by the
+    configured identity adapter) is projected instead. With ``dev_identity``
+    the browser-asserted dev identity is forwarded as-is.
+    """
+    allow = {"authorization"}
     if include_cookie:
         allow.add("cookie")
-    headers = {
-        k.decode(): v.decode() for k, v in websocket.headers.raw if k.decode().lower() in allow
-    }
-    if forward_dev_params:
-        for query_key, header in _DEV_QUERY_TO_HEADER:
-            if value := websocket.query_params.get(query_key):
-                headers[header] = value
+    if dev_identity:
+        allow |= _IDENTITY_HEADERS
+    headers = {k: v for k, v in websocket.headers.items() if k.lower() in allow}
+    if not dev_identity:
+        headers.update(_verified_identity_headers(principal))
+        return headers
+    for query_key, header in _DEV_QUERY_TO_HEADER:
+        if value := websocket.query_params.get(query_key):
+            headers[header] = value
     return headers
+
+
+def _without_dev_params(
+    params: list[tuple[str, str]], *, dev_identity: bool
+) -> list[tuple[str, str]]:
+    """Drop dev-identity query params unless dev identity is honoured."""
+    if dev_identity:
+        return params
+    return [(key, value) for key, value in params if key not in _DEV_QUERY_PARAMS]
 
 
 async def bridge_websocket(
     websocket: WebSocket,
     connect_url: str,
     *,
+    headers: Mapping[str, str],
     connect_kwargs: dict[str, object] | None = None,
-    additional_headers: Mapping[str, str] | None = None,
-    include_cookie: bool = False,
-    forward_dev_params: bool = False,
     on_connected: Callable[[], None] | None = None,
 ) -> None:
-    """Bridge one accepted browser socket to a resolved session endpoint."""
+    """Bridge one accepted browser socket to a resolved session endpoint.
+
+    *headers* is the complete upstream header set; build it with
+    ``_proxy_forward_headers`` so identity policy is applied in one place.
+    """
     import websockets.asyncio.client as ws_client
 
-    forwarded_headers = _proxy_forward_headers(
-        websocket,
-        include_cookie=include_cookie,
-        forward_dev_params=forward_dev_params,
-    )
-    forwarded_headers.update(additional_headers or {})
+    forwarded_headers = dict(headers)
     await websocket.accept()
     async with ws_client.connect(
         connect_url,
@@ -303,17 +367,21 @@ async def _proxy_ws(
     *,
     log_label: str,
     include_cookie: bool = False,
-    forward_dev_params: bool = False,
 ) -> None:
     """Proxy a WebSocket to a session's Skuld broker (ownership-guarded).
 
     Shared by the browser ``/session`` and the ravn ``/ws/ravn/{peer}`` legs:
     identity guard → port lookup → bidirectional pump → M-8 self-heal on a
     never-connected broker leg. The only per-route differences are the broker
-    path, whether the browser cookie / dev query params are forwarded, and the
-    log label.
+    path, whether the browser cookie is forwarded, and the log label. Identity
+    forwarding follows the registry's ``dev_identity`` policy.
     """
-    user_id, tenant_id, roles = await _proxy_ws_identity(websocket)
+    principal = await _proxy_principal(websocket)
+    user_id, tenant_id, roles = (
+        (principal.user_id, principal.tenant_id, tuple(principal.roles))
+        if principal is not None
+        else (None, None, ())
+    )
     if not await skuld_reg.may_attach(session_id, user_id, tenant_id, roles):
         await websocket.close(code=1008, reason="Not authorized for this session")
         return
@@ -366,9 +434,13 @@ async def _proxy_ws(
         await bridge_websocket(
             websocket,
             connect_url,
+            headers=_proxy_forward_headers(
+                websocket,
+                include_cookie=include_cookie,
+                dev_identity=skuld_reg.dev_identity,
+                principal=principal,
+            ),
             connect_kwargs=connect_kwargs,
-            include_cookie=include_cookie,
-            forward_dev_params=forward_dev_params,
             on_connected=_mark_connected,
         )
     except Exception:
@@ -454,7 +526,6 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
             "/session",
             log_label="Skuld WS proxy",
             include_cookie=True,
-            forward_dev_params=True,
         )
 
     @app.websocket("/s/{session_id}/ws/ravn/{peer_id}")
@@ -509,12 +580,19 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
         sanitized_path = "/".join(quote(seg, safe="") for seg in normalized_segments)
         proxy_path = f"/api/{sanitized_path}"
         url = f"http://127.0.0.1:{port}{proxy_path}"
-        params = dict(request.query_params)
-        headers = {
-            k: v
-            for k, v in request.headers.items()
-            if k.lower() not in ("host", "content-length", "transfer-encoding")
-        }
+        params = dict(
+            _without_dev_params(
+                request.query_params.multi_items(), dev_identity=skuld_reg.dev_identity
+            )
+        )
+        # Same identity policy as the WebSocket legs: outside local dev the
+        # session only ever sees x-auth-* the proxy resolved itself.
+        dropped = {"host", "content-length", "transfer-encoding"}
+        if not skuld_reg.dev_identity:
+            dropped |= _IDENTITY_HEADERS
+        headers = {k: v for k, v in request.headers.items() if k.lower() not in dropped}
+        if not skuld_reg.dev_identity:
+            headers.update(_verified_identity_headers(await _proxy_principal(request)))
         if target is not None:
             url, service_host = _session_http_connect_url(target, proxy_path)
             headers["Host"] = service_host

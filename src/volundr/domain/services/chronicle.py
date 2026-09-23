@@ -308,6 +308,15 @@ class ChronicleService:
         if self._timeline_repository is None:
             raise RuntimeError("Timeline repository not configured")
 
+        # The realtime event is scoped to the session's owner and tenant, so
+        # resolve them before persisting rather than store an event we cannot
+        # publish.
+        session = None
+        if self._broadcaster is not None:
+            session = await self._session_service.get_session(session_id)
+            if session is None:
+                raise SessionNotFoundError(session_id)
+
         stored = await self._timeline_repository.add_event(event)
         logger.info(
             "Timeline event added: session=%s, type=%s, t=%d",
@@ -316,12 +325,14 @@ class ChronicleService:
             event.t,
         )
 
-        if self._broadcaster is not None:
+        if self._broadcaster is not None and session is not None:
             timeline = await self._build_timeline(event.chronicle_id, session_id)
             await self._broadcaster.publish_chronicle_event(
                 session_id=session_id,
                 event=stored,
                 timeline=timeline,
+                owner_id=session.owner_id,
+                tenant_id=session.tenant_id,
             )
 
         return stored

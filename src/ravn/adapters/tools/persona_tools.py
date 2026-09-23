@@ -22,11 +22,11 @@ import yaml as _yaml
 
 from ravn.adapters.personas.loader import _VALID_FAN_IN_STRATEGIES
 from ravn.domain.models import ToolResult
+from ravn.domain.permission_mode import parse_optional_permission_mode
 from ravn.ports.tool import ToolPort
 
 logger = logging.getLogger(__name__)
 
-_VALID_PERMISSION_MODES = {"read-only", "workspace-write", "full-access"}
 _VALID_LLM_ALIASES = {"balanced", "powerful", "fast"}
 _VALID_OUTCOME_FIELD_TYPES = {"string", "number", "boolean", "enum"}
 
@@ -75,12 +75,12 @@ def _validate_yaml(yaml_content: str) -> tuple[list[str], list[str], dict | None
     if not system_prompt:
         warnings.append("'system_prompt_template' is empty — the agent will have no identity.")
 
-    permission_mode = str(raw.get("permission_mode", "")).strip()
-    if permission_mode and permission_mode not in _VALID_PERMISSION_MODES:
-        warnings.append(
-            f"Unknown 'permission_mode': {permission_mode!r}. "
-            f"Known modes: {sorted(_VALID_PERMISSION_MODES)}."
-        )
+    # Loading rejects an unknown permission_mode, so validation reports it as
+    # an error rather than a warning the persona would then fail on.
+    try:
+        parse_optional_permission_mode(raw.get("permission_mode"))
+    except ValueError as exc:
+        errors.append(str(exc))
 
     llm_raw = raw.get("llm")
     if isinstance(llm_raw, dict):

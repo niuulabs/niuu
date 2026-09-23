@@ -59,7 +59,8 @@ from niuu.domain.services.instances import InstanceService
 from niuu.session_proxy import (
     _bearer_token_from_ws,
     _proxy_forward_headers,
-    _proxy_ws_identity,
+    _proxy_principal,
+    _without_dev_params,
     bridge_websocket,
 )
 
@@ -83,23 +84,54 @@ def create_ravn_session_proxy_router(
     service: InstanceService,
     *,
     embedded_forge_app: ASGIApp | None = None,
+    dev_identity: bool = False,
 ) -> APIRouter:
-    """Proxy Yggdrasil Ravn chat sockets to their registry-owned target."""
+    """Proxy Yggdrasil Ravn chat sockets to their registry-owned target.
+
+    ``dev_identity`` is for a local-dev host without an identity provider: only
+    then is the browser's asserted dev identity (params and ``x-auth-*``
+    headers) forwarded. Otherwise targets receive the identity this router
+    resolved through its configured identity adapter, never the client's own.
+    """
     router = APIRouter(tags=["Ravn"])
+
+    def _upstream_headers(websocket: WebSocket, principal: Principal) -> dict[str, str]:
+        headers = _proxy_forward_headers(
+            websocket,
+            include_cookie=False,
+            dev_identity=dev_identity,
+            principal=principal,
+        )
+        token = _bearer_token_from_ws(websocket)
+        if token and not any(key.lower() == "authorization" for key in headers):
+            headers["authorization"] = f"Bearer {token}"
+        return headers
+
+    def _upstream_query(websocket: WebSocket) -> str:
+        return urlencode(
+            _without_dev_params(
+                [
+                    (key, value)
+                    for key, value in websocket.query_params.multi_items()
+                    if key != "instance_id"
+                ],
+                dev_identity=dev_identity,
+            )
+        )
+
+    async def _caller(websocket: WebSocket) -> Principal | None:
+        principal = await _proxy_principal(websocket)
+        if principal is None or not principal.user_id:
+            return None
+        return principal
 
     @router.websocket("/s/{session_id}/session")
     async def proxy_ravn_session(websocket: WebSocket, session_id: str) -> None:
-        user_id, tenant_id, roles = await _proxy_ws_identity(websocket)
-        if not user_id:
+        principal = await _caller(websocket)
+        if principal is None:
             await websocket.close(code=1008, reason="Not authorized for this session")
             return
 
-        principal = Principal(
-            user_id=user_id,
-            email="",
-            tenant_id=tenant_id or "",
-            roles=list(roles),
-        )
         instance_hint = str(websocket.query_params.get("instance_id") or "").strip()
         if instance_hint:
             try:
@@ -110,14 +142,7 @@ def create_ravn_session_proxy_router(
         else:
             instances = await _visible_instances(service, principal)
 
-        headers = _proxy_forward_headers(
-            websocket,
-            include_cookie=False,
-            forward_dev_params=True,
-        )
-        token = _bearer_token_from_ws(websocket)
-        if token and not any(key.lower() == "authorization" for key in headers):
-            headers["authorization"] = f"Bearer {token}"
+        headers = _upstream_headers(websocket, principal)
 
         owner: RegisteredInstance | None = None
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -146,30 +171,17 @@ def create_ravn_session_proxy_router(
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             await websocket.close(code=1011, reason="Target has no public endpoint")
             return
-        query = urlencode(
-            [
-                (key, value)
-                for key, value in websocket.query_params.multi_items()
-                if key != "instance_id"
-            ]
-        )
         connect_url = urlunsplit(
             (
                 "wss" if parsed.scheme == "https" else "ws",
                 parsed.netloc,
                 f"/s/{quote(session_id, safe='')}/session",
-                query,
+                _upstream_query(websocket),
                 "",
             )
         )
         try:
-            await bridge_websocket(
-                websocket,
-                connect_url,
-                additional_headers=headers,
-                include_cookie=False,
-                forward_dev_params=True,
-            )
+            await bridge_websocket(websocket, connect_url, headers=headers)
         except Exception:
             logger.debug("Remote Ravn socket ended for %s", _safe_log_value(session_id))
         finally:
@@ -182,16 +194,10 @@ def create_ravn_session_proxy_router(
         ravn_id: str,
         session_id: str,
     ) -> None:
-        user_id, tenant_id, roles = await _proxy_ws_identity(websocket)
-        if not user_id:
+        principal = await _caller(websocket)
+        if principal is None:
             await websocket.close(code=1008, reason="Not authorized for this resident")
             return
-        principal = Principal(
-            user_id=user_id,
-            email="",
-            tenant_id=tenant_id or "",
-            roles=list(roles),
-        )
         instance_hint = str(websocket.query_params.get("instance_id") or "").strip()
         if instance_hint:
             try:
@@ -202,14 +208,7 @@ def create_ravn_session_proxy_router(
         else:
             instances = await _visible_instances(service, principal)
 
-        headers = _proxy_forward_headers(
-            websocket,
-            include_cookie=False,
-            forward_dev_params=True,
-        )
-        token = _bearer_token_from_ws(websocket)
-        if token and not any(key.lower() == "authorization" for key in headers):
-            headers["authorization"] = f"Bearer {token}"
+        headers = _upstream_headers(websocket, principal)
 
         owner: RegisteredInstance | None = None
         embedded_connection: Any | None = None
@@ -284,31 +283,18 @@ def create_ravn_session_proxy_router(
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             await websocket.close(code=1011, reason="Target has no public endpoint")
             return
-        query = urlencode(
-            [
-                (key, value)
-                for key, value in websocket.query_params.multi_items()
-                if key != "instance_id"
-            ]
-        )
         connect_url = urlunsplit(
             (
                 "wss" if parsed.scheme == "https" else "ws",
                 parsed.netloc,
                 "/api/v1/forge/resident-runtimes/"
                 f"{quote(ravn_id, safe='')}/sessions/{quote(session_id, safe='')}/chat",
-                query,
+                _upstream_query(websocket),
                 "",
             )
         )
         try:
-            await bridge_websocket(
-                websocket,
-                connect_url,
-                additional_headers=headers,
-                include_cookie=False,
-                forward_dev_params=True,
-            )
+            await bridge_websocket(websocket, connect_url, headers=headers)
         except Exception:
             logger.debug(
                 "Remote resident socket ended for %s/%s",

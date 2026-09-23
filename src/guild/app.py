@@ -69,8 +69,13 @@ def create_app(
     settings: Settings | None = None,
     *,
     embedded_forge_app: ASGIApp | None = None,
+    dev_identity: bool = False,
 ) -> FastAPI:
-    """Create the Guild FastAPI application."""
+    """Create the Guild FastAPI application.
+
+    ``dev_identity`` is set only by a local-dev host without an identity
+    provider; it lets the Ravn session proxy forward browser-asserted identity.
+    """
     loaded_settings = apply_service_database_settings(settings or _load_settings(), "guild")
     configure_logging(loaded_settings.logging)
     directory_cfg = loaded_settings.observatory.directory
@@ -161,6 +166,7 @@ def create_app(
                 create_ravn_session_proxy_router(
                     instance_service,
                     embedded_forge_app=embedded_forge_app,
+                    dev_identity=dev_identity,
                 )
             )
             app.include_router(create_workload_identity_jwks_router())
