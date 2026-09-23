@@ -27,9 +27,9 @@ class PostgresChronicleRepository(ChronicleRepository):
                 (id, session_id, status, project, repo, branch, model,
                  config_snapshot, summary, key_changes, unfinished_work,
                  token_usage, cost, duration_seconds, tags,
-                 parent_chronicle_id, created_at, updated_at)
+                 parent_chronicle_id, created_at, updated_at, owner_id, tenant_id)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                    $13, $14, $15, $16, $17, $18)
+                    $13, $14, $15, $16, $17, $18, $19, $20)
             """,
             chronicle.id,
             chronicle.session_id,
@@ -49,6 +49,8 @@ class PostgresChronicleRepository(ChronicleRepository):
             chronicle.parent_chronicle_id,
             chronicle.created_at,
             chronicle.updated_at,
+            chronicle.owner_id,
+            chronicle.tenant_id,
         )
         return chronicle
 
@@ -222,6 +224,8 @@ class PostgresChronicleRepository(ChronicleRepository):
             duration_seconds=row["duration_seconds"],
             tags=tags,
             parent_chronicle_id=row["parent_chronicle_id"],
+            owner_id=row["owner_id"],
+            tenant_id=row["tenant_id"],
             created_at=created_at,
             updated_at=updated_at,
         )

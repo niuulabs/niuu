@@ -52,6 +52,8 @@ def sample_chronicle() -> Chronicle:
         duration_seconds=300,
         tags=["python", "testing"],
         parent_chronicle_id=None,
+        owner_id="alice",
+        tenant_id="t1",
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
     )
@@ -77,6 +79,8 @@ def sample_row(sample_chronicle: Chronicle) -> dict:
         "duration_seconds": sample_chronicle.duration_seconds,
         "tags": sample_chronicle.tags,
         "parent_chronicle_id": sample_chronicle.parent_chronicle_id,
+        "owner_id": sample_chronicle.owner_id,
+        "tenant_id": sample_chronicle.tenant_id,
         "created_at": sample_chronicle.created_at,
         "updated_at": sample_chronicle.updated_at,
     }
@@ -101,6 +105,8 @@ class TestPostgresChronicleRepositoryCreate:
         assert call_args[0][1] == sample_chronicle.id
         assert call_args[0][2] == sample_chronicle.session_id
         assert call_args[0][3] == sample_chronicle.status.value
+        assert "owner_id, tenant_id" in sql
+        assert call_args[0][19:] == ("alice", "t1")
 
     async def test_create_returns_chronicle(
         self,
@@ -131,6 +137,7 @@ class TestPostgresChronicleRepositoryGet:
         assert result.id == sample_chronicle.id
         assert result.project == sample_chronicle.project
         assert result.model == sample_chronicle.model
+        assert (result.owner_id, result.tenant_id) == ("alice", "t1")
 
     async def test_get_returns_none_when_not_found(
         self, repository: PostgresChronicleRepository, mock_pool
@@ -291,6 +298,8 @@ class TestPostgresChronicleRepositoryUpdate:
         sql = call_args[0][0]
         assert "UPDATE chronicles" in sql
         assert "WHERE id = $1" in sql
+        # Attribution is the producing session's and never changes.
+        assert "owner_id" not in sql and "tenant_id" not in sql
 
     async def test_update_returns_chronicle(
         self,

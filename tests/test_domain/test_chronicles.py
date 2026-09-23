@@ -9,7 +9,7 @@ from tests.conftest import (
     InMemorySessionRepository,
     MockPodManager,
 )
-from volundr.domain.models import ChronicleStatus, GitSource, SessionStatus
+from volundr.domain.models import ChronicleStatus, GitSource, Principal, SessionStatus
 from volundr.domain.services import (
     ChronicleNotFoundError,
     ChronicleService,
@@ -57,6 +57,28 @@ class TestChronicleServiceCreate:
         stored = await chronicle_repository.get(chronicle.id)
         assert stored is not None
         assert stored.id == chronicle.id
+
+    async def test_create_chronicle_carries_the_sessions_owner_and_tenant(
+        self,
+        chronicle_repository: ChronRepo,
+        repository: SessRepo,
+        pod_manager: Pods,
+    ):
+        """History outlives the session, so it keeps the session's attribution."""
+        session_service = SessionService(repository, pod_manager)
+        chronicle_service = ChronicleService(chronicle_repository, session_service)
+        session = await session_service.create_session(
+            name="my-session",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            principal=Principal(
+                user_id="alice", email="", tenant_id="t1", roles=["volundr:developer"]
+            ),
+        )
+
+        chronicle = await chronicle_service.create_chronicle(session.id)
+
+        assert (chronicle.owner_id, chronicle.tenant_id) == ("alice", "t1")
 
     async def test_create_chronicle_nonexistent_session(
         self,
