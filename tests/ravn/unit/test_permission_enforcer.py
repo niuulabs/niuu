@@ -756,6 +756,69 @@ class TestPermissionConfigIntegration:
 
 
 # ---------------------------------------------------------------------------
+# Hyphenated / unknown modes — never read as a permissive default
+# ---------------------------------------------------------------------------
+
+
+class TestModeSpellingAndUnknownModes:
+    async def test_hyphenated_read_only_denies_writes_and_execution(self) -> None:
+        e = _enforcer("read-only")
+        assert not await e.check("file:write")
+        assert not await e.check("bash:execute")
+        assert not await e.check("shell:execute")
+        assert isinstance(await e.evaluate("write_file", {"path": "/workspace/f.txt"}), Deny)
+        assert isinstance(await e.evaluate("bash", {"command": "touch f.txt"}), Deny)
+
+    def test_unvalidated_unknown_mode_rejected_at_construction(self) -> None:
+        cfg = PermissionConfig.model_construct(mode="superuser")
+        with pytest.raises(ValueError, match="Unknown permission_mode 'superuser'"):
+            PermissionEnforcer(cfg, workspace_root=Path("/workspace"))
+
+    def test_bash_validator_rejects_unknown_mode(self) -> None:
+        with pytest.raises(ValueError, match="Unknown permission_mode 'superuser'"):
+            BashValidator().validate("ls", "superuser")
+
+    def test_bash_validator_accepts_hyphenated_mode(self) -> None:
+        assert isinstance(BashValidator().validate("touch f.txt", "read-only"), Deny)
+        assert isinstance(BashValidator().validate("sed -i s/a/b/ f.txt", "read-only"), Deny)
+
+    # A parsed mode with no policy branch must raise, not allow.  The branches
+    # are unreachable through the public API, so force the private mode.
+
+    @pytest.fixture
+    def unhandled(self) -> PermissionEnforcer:
+        e = _enforcer("workspace_write")
+        e._mode = "future_mode"  # type: ignore[assignment]
+        return e
+
+    async def test_unhandled_mode_raises_for_permission_check(
+        self, unhandled: PermissionEnforcer
+    ) -> None:
+        with pytest.raises(ValueError, match="no enforcement policy"):
+            await unhandled.check("file:write")
+
+    async def test_unhandled_mode_raises_for_file_write(
+        self, unhandled: PermissionEnforcer
+    ) -> None:
+        with pytest.raises(ValueError, match="no enforcement policy"):
+            await unhandled.evaluate("write_file", {"path": "/workspace/f.txt"})
+
+    async def test_unhandled_mode_raises_for_other_tools(
+        self, unhandled: PermissionEnforcer
+    ) -> None:
+        with pytest.raises(ValueError, match="no enforcement policy"):
+            await unhandled.evaluate("web_fetch", {"url": "https://example.com"})
+
+    def test_unhandled_mode_raises_for_bash_policy(self) -> None:
+        with pytest.raises(ValueError, match="no enforcement policy"):
+            BashValidator()._apply_mode_policy(
+                CommandIntent.WRITE,
+                "future_mode",  # type: ignore[arg-type]
+                "touch f.txt",
+            )
+
+
+# ---------------------------------------------------------------------------
 # Fix 1: _file_write_for_mode handles deny_all and prompt explicitly
 # ---------------------------------------------------------------------------
 

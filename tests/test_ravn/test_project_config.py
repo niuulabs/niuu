@@ -5,7 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from ravn.config import _VALID_PERMISSION_MODES, _VALID_PERSONAS, ProjectConfig
+import pytest
+
+from ravn.config import _VALID_PERSONAS, ProjectConfig
+from ravn.domain.permission_mode import valid_permission_mode_spellings
 
 _FULL_RAVN_MD = """\
 # RAVN Project: my-service
@@ -271,12 +274,13 @@ class TestProjectConfigNewFields:
 
 
 class TestProjectConfigValidation:
-    def test_invalid_permission_mode_produces_warning(self) -> None:
-        cfg = ProjectConfig.from_text("# RAVN Project: x\n\npermission_mode: fly-mode\n")
-        assert any("permission_mode" in w for w in cfg.warnings)
+    def test_invalid_permission_mode_raises(self) -> None:
+        """A permission boundary is never downgraded to a warning."""
+        with pytest.raises(ValueError, match="Unknown permission_mode 'fly-mode'"):
+            ProjectConfig.from_text("# RAVN Project: x\n\npermission_mode: fly-mode\n")
 
     def test_valid_permission_modes_no_warning(self) -> None:
-        for mode in _VALID_PERMISSION_MODES:
+        for mode in valid_permission_mode_spellings():
             cfg = ProjectConfig.from_text(f"# RAVN Project: x\n\npermission_mode: {mode}\n")
             assert not any("permission_mode" in w for w in cfg.warnings), (
                 f"Unexpected warning for valid mode {mode!r}"
@@ -307,11 +311,8 @@ class TestProjectConfigValidation:
         assert not any("persona" in w for w in cfg.warnings)
 
     def test_multiple_warnings_accumulated(self) -> None:
-        cfg = ProjectConfig.from_text(
-            "# RAVN Project: x\n\npermission_mode: bad\npersona: robot\niteration_budget: -1\n"
-        )
-        assert len(cfg.warnings) >= 3
+        cfg = ProjectConfig.from_text("# RAVN Project: x\n\npersona: robot\niteration_budget: -1\n")
+        assert len(cfg.warnings) >= 2
 
     def test_valid_schema_constants_non_empty(self) -> None:
-        assert len(_VALID_PERMISSION_MODES) > 0
         assert len(_VALID_PERSONAS) > 0

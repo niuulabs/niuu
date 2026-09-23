@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from ravn.adapters.personas.loader import (
     _ARCHIVED_BUILTIN_PERSONAS_DIR,
@@ -14,6 +17,7 @@ from ravn.adapters.personas.loader import (
     _safe_bool,
 )
 from ravn.config import ProjectConfig, _safe_int
+from ravn.domain.permission_mode import PermissionMode
 
 # ---------------------------------------------------------------------------
 # Helper fixtures
@@ -205,6 +209,34 @@ class TestFilesystemPersonaAdapterParse:
         assert cfg.executor.adapter == "ravn.adapters.executors.agent.AgentExecutor"
         assert cfg.executor.kwargs == {"mode": "default"}
 
+    @pytest.mark.parametrize("spelling", ["read-only", "read_only"])
+    def test_permission_mode_is_parsed_at_load(self, spelling: str) -> None:
+        cfg = FilesystemPersonaAdapter.parse(f"name: x\npermission_mode: {spelling}\n")
+        assert cfg is not None
+        assert cfg.parsed_permission_mode is PermissionMode.READ_ONLY
+        # The authored spelling is kept: persona content digests hash it.
+        assert cfg.permission_mode == spelling
+        assert cfg.to_dict()["permission_mode"] == spelling
+
+    def test_unset_permission_mode_parses_to_none(self) -> None:
+        cfg = FilesystemPersonaAdapter.parse(_MINIMAL_PERSONA_YAML)
+        assert cfg is not None
+        assert cfg.parsed_permission_mode is None
+
+    def test_null_permission_mode_is_unset(self) -> None:
+        cfg = FilesystemPersonaAdapter.parse("name: x\npermission_mode:\n")
+        assert cfg is not None
+        assert cfg.permission_mode == ""
+        assert cfg.parsed_permission_mode is None
+
+    def test_unknown_permission_mode_raises(self) -> None:
+        with pytest.raises(ValueError, match="Persona 'x': Unknown permission_mode 'superuser'"):
+            FilesystemPersonaAdapter.parse("name: x\npermission_mode: superuser\n")
+
+    def test_non_string_permission_mode_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown permission_mode '5'"):
+            FilesystemPersonaAdapter.parse("name: x\npermission_mode: 5\n")
+
 
 # ---------------------------------------------------------------------------
 # FilesystemPersonaAdapter.load_from_file
@@ -237,6 +269,38 @@ class TestFilesystemPersonaAdapterLoadFromFile:
         loader = FilesystemPersonaAdapter([str(tmp_path)])
         result = loader.load_from_file(p)
         assert result is None
+
+    def test_unknown_permission_mode_raises_naming_the_file(self, tmp_path: Path) -> None:
+        """Not a soft miss: skipping it would silently drop the persona's boundary."""
+        p = tmp_path / "rogue.yaml"
+        p.write_text("name: rogue\npermission_mode: read-onyl\n", encoding="utf-8")
+        loader = FilesystemPersonaAdapter([str(tmp_path)], include_builtin=False)
+        with pytest.raises(ValueError, match="rogue.yaml") as exc_info:
+            loader.load("rogue")
+        assert "read-onyl" in str(exc_info.value)
+        assert "read-only" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# PersonaConfig permission mode
+# ---------------------------------------------------------------------------
+
+
+class TestPersonaConfigPermissionMode:
+    def test_direct_construction_parses(self) -> None:
+        cfg = PersonaConfig(name="x", permission_mode="full-access")
+        assert cfg.parsed_permission_mode is PermissionMode.FULL_ACCESS
+
+    def test_direct_construction_rejects_unknown(self) -> None:
+        with pytest.raises(ValueError, match="Unknown permission_mode 'workspace-read'"):
+            PersonaConfig(name="x", permission_mode="workspace-read")
+
+    def test_replace_reparses(self) -> None:
+        cfg = PersonaConfig(name="x", permission_mode="read-only")
+        replaced = dataclasses.replace(cfg, permission_mode="workspace_write")
+        assert replaced.parsed_permission_mode is PermissionMode.WORKSPACE_WRITE
+        kept = dataclasses.replace(cfg, iteration_budget=3)
+        assert kept.parsed_permission_mode is PermissionMode.READ_ONLY
 
 
 # ---------------------------------------------------------------------------
@@ -725,6 +789,7 @@ class TestFilesystemPersonaAdapterMerge:
         project = self._make_project(permission_mode="read-only")
         merged = FilesystemPersonaAdapter.merge(persona, project)
         assert merged.permission_mode == "read-only"
+        assert merged.parsed_permission_mode is PermissionMode.READ_ONLY
 
     def test_project_iteration_budget_override(self) -> None:
         persona = self._make_persona(iteration_budget=40)

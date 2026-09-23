@@ -23,13 +23,13 @@ _SAMPLE_YAML = """\
 name: reviewer
 system_prompt_template: |
   You are a code reviewer.
-permission_mode: workspace-read
+permission_mode: read-only
 """
 
 _SAMPLE_CONFIG = PersonaConfig(
     name="reviewer",
     system_prompt_template="You are a code reviewer.\n",
-    permission_mode="workspace-read",
+    permission_mode="read-only",
 )
 
 
@@ -360,7 +360,7 @@ class TestPersonaRegistryPortCompliance:
         config = PersonaConfig(
             name="test-persona",
             system_prompt_template="You are a test agent.",
-            permission_mode="workspace-read",
+            permission_mode="read-only",
             llm=PersonaLLMConfig(thinking_enabled=True, max_tokens=1024),
         )
 
@@ -369,7 +369,7 @@ class TestPersonaRegistryPortCompliance:
 
         assert loaded is not None
         assert loaded.name == "test-persona"
-        assert loaded.permission_mode == "workspace-read"
+        assert loaded.permission_mode == "read-only"
         assert loaded.llm.primary_alias == ""
         assert loaded.llm.thinking_enabled is True
         assert loaded.llm.max_tokens == 1024

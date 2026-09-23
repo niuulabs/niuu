@@ -7,17 +7,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-
-class PermissionMode(StrEnum):
-    """Built-in permission modes."""
-
-    READ_ONLY = "read_only"
-    WORKSPACE_WRITE = "workspace_write"
-    FULL_ACCESS = "full_access"
-    PROMPT = "prompt"
-    # Legacy aliases
-    ALLOW_ALL = "allow_all"
-    DENY_ALL = "deny_all"
+# Re-exported: the permission port and its callers share the one domain enum.
+from ravn.domain.permission_mode import PermissionMode as PermissionMode
 
 
 class CommandIntent(StrEnum):
