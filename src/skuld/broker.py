@@ -895,8 +895,6 @@ class Broker(
                 transport_name,
                 service_prefix="skuld",
             )
-            if transport_name in ("sleipnir", "rabbitmq") and not kwargs:
-                return None
             return build_transport(transport_name, **kwargs)
 
         # New configs select transport and discovery independently. Legacy
@@ -927,12 +925,11 @@ class Broker(
                     else "tcp://127.0.0.1:0"
                 )
                 peer_addresses = read_cluster_pub_addresses(mesh_cfg.adapters)
-                nng = build_nng_transport(
+                transport = build_nng_transport(
                     address=address,
                     service_id=f"skuld:{own_peer_id}",
                     peer_addresses=peer_addresses or None,
                 )
-                transport = nng
             else:
                 transport = build_transport(
                     mesh_cfg.transport,
@@ -941,10 +938,6 @@ class Broker(
                         mesh_cfg.transport,
                         service_prefix="skuld",
                     ),
-                )
-            if transport is None:
-                raise RuntimeError(
-                    f"configured mesh transport {mesh_cfg.transport!r} could not be built"
                 )
             mesh = SleipnirMeshAdapter(
                 publisher=transport,

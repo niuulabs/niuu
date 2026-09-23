@@ -155,6 +155,17 @@ def test_validate_invalid_fan_in_strategy(client: TestClient) -> None:
     assert any("fan_in_strategy" in e for e in data["errors"])
 
 
+def test_validate_unknown_permission_mode(client: TestClient) -> None:
+    resp = client.post(
+        "/api/v1/ravn/personas/validate",
+        json={"name": "my-agent", "permission_mode": "superuser"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["valid"] is False
+    assert any("Unknown permission_mode 'superuser'" in e for e in data["errors"])
+
+
 def test_validate_does_not_save(client: TestClient, loader: FilesystemPersonaAdapter) -> None:
     client.post(
         "/api/v1/ravn/personas/validate",
@@ -262,6 +273,16 @@ def test_create_persona_returns_201(client_no_builtin: TestClient) -> None:
     assert data["permission_mode"] == "read-only"
 
 
+def test_create_persona_rejects_unknown_permission_mode(
+    client_no_builtin: TestClient, loader_no_builtin: FilesystemPersonaAdapter
+) -> None:
+    payload = {**_CREATE_PAYLOAD, "permission_mode": "read-onyl"}
+    resp = client_no_builtin.post("/api/v1/ravn/personas", json=payload)
+    assert resp.status_code == 422
+    assert "Unknown permission_mode 'read-onyl'" in resp.json()["detail"]
+    assert loader_no_builtin.load("test-agent") is None
+
+
 def test_create_persona_conflict_for_duplicate(
     client_no_builtin: TestClient, tmp_persona_dir: Path
 ) -> None:
@@ -291,6 +312,15 @@ def test_replace_custom_persona(
     resp = client_no_builtin.put("/api/v1/ravn/personas/test-agent", json=updated)
     assert resp.status_code == 200
     assert resp.json()["iteration_budget"] == 99
+
+
+def test_replace_rejects_unknown_permission_mode(client_no_builtin: TestClient) -> None:
+    client_no_builtin.post("/api/v1/ravn/personas", json=_CREATE_PAYLOAD)
+
+    updated = {**_CREATE_PAYLOAD, "permission_mode": "superuser"}
+    resp = client_no_builtin.put("/api/v1/ravn/personas/test-agent", json=updated)
+    assert resp.status_code == 422
+    assert "Unknown permission_mode 'superuser'" in resp.json()["detail"]
 
 
 def test_replace_nonexistent_returns_404(client_no_builtin: TestClient) -> None:

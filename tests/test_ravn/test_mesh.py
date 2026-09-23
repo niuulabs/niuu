@@ -209,7 +209,8 @@ class TestSleipnirMeshAdapterUnit:
         assert mesh_event_prefix(" Flock/A:B ") == "ravn.mesh.realm_flock_a_b"
 
     @pytest.mark.asyncio
-    async def test_publish_failure_logs_environment_context(self, caplog) -> None:
+    async def test_publish_failure_logs_environment_context_and_propagates(self, caplog) -> None:
+        """An event that never left the peer must not read as published."""
         transport = _FailingSleipnirTransport()
         adapter = SleipnirMeshAdapter(
             publisher=transport,
@@ -228,7 +229,10 @@ class TestSleipnirMeshAdapterUnit:
             root_correlation_id="root-env",
         )
 
-        with caplog.at_level(logging.WARNING, logger="ravn.adapters.mesh.sleipnir_mesh"):
+        with (
+            caplog.at_level(logging.WARNING, logger="ravn.adapters.mesh.sleipnir_mesh"),
+            pytest.raises(RuntimeError, match="broker unavailable"),
+        ):
             await adapter.publish(event, "signal.kubernetes.pod")
 
         assert "publish failed" in caplog.text
@@ -284,9 +288,10 @@ class TestSleipnirMeshAdapterUnit:
         assert received_events[0].trace_context == event.trace_context
 
     @pytest.mark.asyncio
-    async def test_handler_failure_logs_environment_context(
+    async def test_handler_failure_logs_environment_context_and_propagates(
         self, transport: _FakeSleipnirTransport, caplog
     ) -> None:
+        """The failure reaches the Sleipnir transport so it can nak and redeliver."""
         adapter = SleipnirMeshAdapter(
             publisher=transport,
             subscriber=transport,
@@ -309,8 +314,17 @@ class TestSleipnirMeshAdapterUnit:
             root_correlation_id="root-handler",
         )
 
-        with caplog.at_level(logging.WARNING, logger="ravn.adapters.mesh.sleipnir_mesh"):
-            await adapter.publish(event, "signal.kubernetes.pod")
+        # Capture the wire event without the fake's inline dispatch, then hand it
+        # to the subscribed handler the way a Sleipnir transport would.
+        subscription = transport.subscriptions[0]
+        subscription.active = False
+        await adapter.publish(event, "signal.kubernetes.pod")
+
+        with (
+            caplog.at_level(logging.WARNING, logger="ravn.adapters.mesh.sleipnir_mesh"),
+            pytest.raises(ValueError, match="bad handler"),
+        ):
+            await subscription.handler(transport.published[0])
 
         assert "handler failed" in caplog.text
         assert "peer=valkyrie-b" in caplog.text
@@ -405,6 +419,66 @@ class TestSleipnirMeshAdapterUnit:
         handler.assert_called_once_with({"action": "test"})
 
         await adapter.stop()
+
+    @pytest.mark.asyncio
+    async def test_rpc_reply_failure_propagates_to_transport(self, caplog) -> None:
+        """An unsent reply leaves the request unhandled, so the transport can redeliver it."""
+        subscriber = _FakeSleipnirTransport()
+        adapter = SleipnirMeshAdapter(
+            publisher=_FailingSleipnirTransport(),
+            subscriber=subscriber,
+            own_peer_id="test-peer",
+        )
+        handler = AsyncMock(return_value={"result": "handled"})
+        adapter.set_rpc_handler(handler)
+        await adapter.start()
+
+        from sleipnir.domain.events import SleipnirEvent
+
+        request = SleipnirEvent(
+            event_type="ravn.mesh.rpc.test_peer",
+            source="other_peer",
+            payload={
+                "rpc_request": {"action": "test"},
+                "reply_topic": "ravn.mesh.rpc.reply.other_peer.nabc1234",
+            },
+            summary="rpc request",
+            urgency=0.5,
+            domain="code",
+            timestamp=datetime.now(UTC),
+            correlation_id="corr-reply",
+        )
+        rpc_subscription = subscriber.subscriptions[0]
+
+        with (
+            caplog.at_level(logging.WARNING, logger="ravn.adapters.mesh.sleipnir_mesh"),
+            pytest.raises(RuntimeError, match="broker unavailable"),
+        ):
+            await rpc_subscription.handler(request)
+
+        handler.assert_awaited_once_with({"action": "test"})
+        assert "failed to send RPC reply" in caplog.text
+        assert "reply_topic=ravn.mesh.rpc.reply.other_peer.nabc1234" in caplog.text
+        assert "correlation_id=corr-reply" in caplog.text
+
+        await adapter.stop()
+
+    @pytest.mark.asyncio
+    async def test_send_propagates_request_publish_failure(self) -> None:
+        subscriber = _FakeSleipnirTransport()
+        adapter = SleipnirMeshAdapter(
+            publisher=_FailingSleipnirTransport(),
+            subscriber=subscriber,
+            own_peer_id="test-peer",
+        )
+
+        with pytest.raises(RuntimeError, match="broker unavailable"):
+            await adapter.send("other-peer", {"msg": "hello"}, timeout_s=1.0)
+
+        reply_subscription = subscriber.subscriptions[0]
+        assert "rpc.reply" in reply_subscription.topic
+        assert not reply_subscription.active
+        assert adapter._pending_rpc == {}
 
     @pytest.mark.asyncio
     async def test_start_and_stop(

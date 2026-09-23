@@ -502,15 +502,7 @@ def _build_environment_signal_publisher(settings: Settings) -> Any | None:
     else:
         adapter = settings.mesh.adapter or "nng"
 
-    kwargs = _resolve_transport_kwargs(settings, adapter)
-    if adapter in ("sleipnir", "rabbitmq") and not kwargs:
-        logger.warning("environment_signals: %s transport unavailable", adapter)
-        return None
-
-    publisher = build_transport(adapter, **kwargs)
-    if publisher is None:
-        logger.warning("environment_signals: failed to build %s transport", adapter)
-        return None
+    publisher = build_transport(adapter, **_resolve_transport_kwargs(settings, adapter))
     if settings.observability.enabled:
         from ravn.adapters.observability import ObservedSleipnirBus  # noqa: PLC0415
 

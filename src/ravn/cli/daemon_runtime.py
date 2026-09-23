@@ -154,9 +154,7 @@ async def _run_daemon(
             no_tools=False,
             persona_config=resolved_persona,
         )
-        permission_mode = settings.permission.mode
-        if resolved_persona is not None and resolved_persona.permission_mode:
-            permission_mode = resolved_persona.permission_mode
+        permission_mode = _effective_permission_mode(settings, resolved_persona)
 
         # Determine the profile for this task:
         #   - Anonymous cascade subtasks (no persona, no task_persona) → "worker" (core only)

@@ -162,7 +162,11 @@ class SleipnirMeshAdapter:
     # ------------------------------------------------------------------
 
     async def publish(self, event: RavnEvent, topic: str) -> None:
-        """Broadcast *event* to all subscribers of *topic*."""
+        """Broadcast *event* to all subscribers of *topic*.
+
+        Raises whatever the transport raised: an event that never left this
+        peer must not read as published.
+        """
         sleipnir_event = _ravn_to_sleipnir(
             event,
             topic,
@@ -184,6 +188,7 @@ class SleipnirMeshAdapter:
                 event.root_correlation_id,
                 exc,
             )
+            raise
 
     async def subscribe(
         self,
@@ -209,6 +214,10 @@ class SleipnirMeshAdapter:
                     getattr(sleipnir_event, "payload", {}).get("ravn_root_correlation_id", ""),
                     exc,
                 )
+                # The transport decides what a failure means: a durable one
+                # redelivers and eventually dead-letters; swallowing it here
+                # would ack the event as handled.
+                raise
 
         subscription = await self._subscriber.subscribe([event_type_pattern], _wrapped_handler)
         self._subscriptions[topic] = subscription
@@ -455,3 +464,7 @@ class SleipnirMeshAdapter:
                 correlation_id,
                 exc,
             )
+            # The request is not handled until its reply is out. Raising leaves
+            # it unacked, so a durable transport redelivers it (and eventually
+            # dead-letters it) instead of recording it as answered.
+            raise

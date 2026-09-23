@@ -88,9 +88,6 @@ def build_discovery_adapters(
         kwargs.setdefault("peer_ttl_s", peer_ttl_s)
         if getattr(cls, "requires_sleipnir_transport", False) and sleipnir_transport_builder:
             transport = sleipnir_transport_builder(entry)
-            if transport is None:
-                logger.warning("discovery: failed to build event bus transport, skipping")
-                continue
             kwargs["publisher"] = transport
             kwargs["subscriber"] = transport
             kwargs.pop("transport", None)

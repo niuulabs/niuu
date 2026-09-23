@@ -57,7 +57,30 @@ class MeshNatsConfig(BaseSettings):
     retention: str = Field(default="limits")
     max_age_seconds: int = Field(default=7 * 24 * 3600)
     max_bytes: int = Field(default=1024 * 1024 * 1024)
-    ring_buffer_depth: int = Field(default=1000)
+    ring_buffer_depth: int = Field(
+        default=1000,
+        description="Events queued per subscription before acks are withheld (backpressure).",
+    )
+    max_deliver: int = Field(
+        default=5,
+        description="JetStream deliveries of one event before it is dead-lettered.",
+    )
+    ack_wait_s: float = Field(
+        default=30.0,
+        description="Seconds without an ack or progress ping before JetStream redelivers.",
+    )
+    ack_progress_interval_s: float = Field(
+        default=10.0,
+        description="Seconds between progress pings for unsettled events (< ack_wait_s).",
+    )
+    max_ack_pending: int | None = Field(
+        default=None,
+        description="Unacked events JetStream may push per consumer; unset = ring_buffer_depth.",
+    )
+    nak_backoff_s: list[float] = Field(
+        default_factory=lambda: [1.0, 5.0, 30.0, 60.0],
+        description="Redelivery delay after each failed handler attempt; last entry repeats.",
+    )
     connect_timeout_s: float = Field(default=10.0)
     max_reconnect_attempts: int = Field(default=60)
     ensure_stream: bool = Field(default=True)
