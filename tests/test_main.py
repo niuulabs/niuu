@@ -702,7 +702,9 @@ async def test_periodic_broadcast_sends_a_figure_less_stats_tick_then_a_heartbea
     tick = await asyncio.wait_for(first, timeout=1.0)
     heartbeat = await asyncio.wait_for(anext(events), timeout=1.0)
     task.cancel()
-    await task
+    # The loop handles its own cancellation and returns, so shutdown is clean.
+    assert await asyncio.wait_for(task, timeout=1.0) is None
+    assert not task.cancelled()
     await events.aclose()
 
     assert (tick.type, tick.data) == (EventType.STATS_UPDATED, {})
