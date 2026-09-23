@@ -209,6 +209,10 @@ class SleipnirMeshAdapter:
                     getattr(sleipnir_event, "payload", {}).get("ravn_root_correlation_id", ""),
                     exc,
                 )
+                # The transport decides what a failure means: a durable one
+                # redelivers and eventually dead-letters; swallowing it here
+                # would ack the event as handled.
+                raise
 
         subscription = await self._subscriber.subscribe([event_type_pattern], _wrapped_handler)
         self._subscriptions[topic] = subscription
