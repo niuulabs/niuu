@@ -15,20 +15,27 @@ Skip all tests if nats-py is not installed.
 from __future__ import annotations
 
 import asyncio
+import base64
+import logging
 import ssl
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
 
 import pytest
 
 from sleipnir.adapters.nats_transport import (
+    DEFAULT_ACK_PROGRESS_INTERVAL_S,
+    DEFAULT_ACK_WAIT_S,
     DEFAULT_CONNECT_TIMEOUT_S,
     DEFAULT_DEDUP_CACHE_SIZE,
     DEFAULT_MAX_AGE_SECONDS,
     DEFAULT_MAX_BYTES,
+    DEFAULT_MAX_DELIVER,
     DEFAULT_MAX_RECONNECT_ATTEMPTS,
+    DEFAULT_NAK_BACKOFF_S,
     DEFAULT_RETENTION,
     DEFAULT_RING_BUFFER_DEPTH,
     DEFAULT_SERVERS,
@@ -53,7 +60,7 @@ from sleipnir.adapters.nats_transport import (
     _sandbox_proxy_url,
     nats_available,
 )
-from sleipnir.adapters.serialization import serialize
+from sleipnir.adapters.serialization import deserialize, serialize
 from sleipnir.domain.events import SleipnirEvent
 from tests.test_sleipnir.conftest import make_event
 
@@ -747,6 +754,20 @@ async def test_subscriber_core_stream_uses_live_core_nats_only(mock_nats):
     await sub.stop()
 
 
+async def test_subscriber_disables_nats_py_auto_ack(mock_nats):
+    """nats-py acks when the callback returns unless manual_ack is set.
+
+    The callback only queues the message, so auto-ack would acknowledge it
+    before the handler runs: exactly the at-most-once bug this guards.
+    """
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber(consumer_group="my-service")
+    await sub.start()
+    await sub.subscribe(["ravn.*"], AsyncMock())
+    assert js.subscribe.call_args.kwargs["manual_ack"] is True
+    await sub.stop()
+
+
 async def test_subscriber_consumer_group_sets_durable_and_queue(mock_nats):
     mock_module, client, js, _ = mock_nats
     sub = NatsSubscriber(consumer_group="my-service")
@@ -776,28 +797,19 @@ async def test_subscriber_no_consumer_group_no_durable_or_queue(mock_nats):
 
 
 def test_build_consumer_config_default_is_new():
-    sub = NatsSubscriber.__new__(NatsSubscriber)
-    sub._replay_from_sequence = None
-    sub._replay_from_time = None
-    config = sub._build_consumer_config()
+    config = NatsSubscriber()._build_consumer_config()
     assert config.deliver_policy == js_api.DeliverPolicy.NEW
 
 
 def test_build_consumer_config_replay_from_sequence():
-    sub = NatsSubscriber.__new__(NatsSubscriber)
-    sub._replay_from_sequence = 42
-    sub._replay_from_time = None
-    config = sub._build_consumer_config()
+    config = NatsSubscriber(replay_from_sequence=42)._build_consumer_config()
     assert config.deliver_policy == js_api.DeliverPolicy.BY_START_SEQUENCE
     assert config.opt_start_seq == 42
 
 
 def test_build_consumer_config_replay_from_time():
     ts = datetime(2026, 1, 1, tzinfo=UTC)
-    sub = NatsSubscriber.__new__(NatsSubscriber)
-    sub._replay_from_sequence = None
-    sub._replay_from_time = ts
-    config = sub._build_consumer_config()
+    config = NatsSubscriber(replay_from_time=ts)._build_consumer_config()
     assert config.deliver_policy == js_api.DeliverPolicy.BY_START_TIME
     assert config.opt_start_time == ts
 
@@ -805,11 +817,53 @@ def test_build_consumer_config_replay_from_time():
 def test_build_consumer_config_sequence_takes_priority_over_time():
     """When both replay options are set, sequence takes priority."""
     ts = datetime(2026, 1, 1, tzinfo=UTC)
-    sub = NatsSubscriber.__new__(NatsSubscriber)
-    sub._replay_from_sequence = 10
-    sub._replay_from_time = ts
-    config = sub._build_consumer_config()
+    config = NatsSubscriber(replay_from_sequence=10, replay_from_time=ts)._build_consumer_config()
     assert config.deliver_policy == js_api.DeliverPolicy.BY_START_SEQUENCE
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},
+        {"replay_from_sequence": 3},
+        {"replay_from_time": datetime(2026, 1, 1, tzinfo=UTC)},
+    ],
+)
+def test_build_consumer_config_sets_explicit_ack_and_redelivery_limits(kwargs):
+    sub = NatsSubscriber(
+        max_deliver=4,
+        ack_wait_s=12.0,
+        ack_progress_interval_s=3.0,
+        ring_buffer_depth=64,
+        **kwargs,
+    )
+    config = sub._build_consumer_config()
+    assert config.ack_policy == js_api.AckPolicy.EXPLICIT
+    assert config.ack_wait == 12.0
+    assert config.max_deliver == 4
+    assert config.max_ack_pending == 64, "max_ack_pending defaults to the queue depth"
+
+
+def test_build_consumer_config_uses_explicit_max_ack_pending():
+    config = NatsSubscriber(max_ack_pending=10)._build_consumer_config()
+    assert config.max_ack_pending == 10
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"max_deliver": 0}, "max_deliver"),
+        ({"ack_wait_s": 0}, "ack_wait_s"),
+        ({"ack_wait_s": 5.0, "ack_progress_interval_s": 5.0}, "ack_progress_interval_s"),
+        ({"ack_progress_interval_s": 0}, "ack_progress_interval_s"),
+        ({"max_ack_pending": 0}, "max_ack_pending"),
+        ({"nak_backoff_s": []}, "nak_backoff_s"),
+        ({"nak_backoff_s": [1.0, -1.0]}, "nak_backoff_s"),
+    ],
+)
+def test_subscriber_rejects_invalid_delivery_settings(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        NatsSubscriber(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -817,8 +871,62 @@ def test_build_consumer_config_sequence_takes_priority_over_time():
 # ---------------------------------------------------------------------------
 
 
+class _FakeMsg:
+    """A JetStream message double that records every acknowledgement it is sent."""
+
+    def __init__(
+        self,
+        data: bytes,
+        subject: str = "sleipnir.test.event",
+        *,
+        num_delivered: int = 1,
+        stream_seq: int = 7,
+        log: list[str] | None = None,
+    ) -> None:
+        self.data = data
+        self.subject = subject
+        self.metadata = SimpleNamespace(
+            num_delivered=num_delivered,
+            sequence=SimpleNamespace(stream=stream_seq, consumer=num_delivered),
+        )
+        self.calls: list[str] = []
+        self.nak_delays: list[float | None] = []
+        self.errors: dict[str, Exception] = {}
+        self._log = log
+
+    def _record(self, op: str) -> None:
+        if op in self.errors:
+            raise self.errors[op]
+        self.calls.append(op)
+        if self._log is not None:
+            self._log.append(op)
+
+    async def ack(self) -> None:
+        self._record("ack")
+
+    async def nak(self, delay: float | None = None) -> None:
+        self._record("nak")
+        self.nak_delays.append(delay)
+
+    async def term(self) -> None:
+        self._record("term")
+
+    async def in_progress(self) -> None:
+        self._record("in_progress")
+
+
+def _event_bytes(n: int = 0, event_type: str = "test.event") -> bytes:
+    return serialize(make_event(event_id=f"evt-{n}", event_type=event_type, payload={"n": n}))
+
+
+async def _drain(sub: NatsSubscriber) -> None:
+    """Wait until every queued delivery has been handled and settled."""
+    for subscription in list(sub._subscriptions):
+        await asyncio.wait_for(subscription._queue.join(), timeout=2.0)
+
+
 async def test_subscriber_on_message_delivers_to_handler(mock_nats):
-    """The _on_message callback dispatches a valid event to the handler."""
+    """The _on_message callback dispatches a valid event to the handler, then acks."""
     mock_module, client, js, _ = mock_nats
     sub = NatsSubscriber(ring_buffer_depth=10)
     await sub.start()
@@ -832,53 +940,181 @@ async def test_subscriber_on_message_delivers_to_handler(mock_nats):
     # Extract the callback registered with nats-py
     on_message = js.subscribe.call_args[1]["cb"]
     event = make_event(event_type="ravn.tool.complete")
-    mock_msg = MagicMock()
-    mock_msg.data = serialize(event)
-    mock_msg.ack = AsyncMock()
+    msg = _FakeMsg(serialize(event), subject="sleipnir.ravn.tool.complete")
 
-    await on_message(mock_msg)
-    await asyncio.sleep(0.05)
+    await on_message(msg)
+    await _drain(sub)
 
-    assert len(received) == 1
-    assert received[0].event_id == event.event_id
-    # ack must fire (in the finally block) even for processed messages
-    mock_msg.ack.assert_called_once()
+    assert [evt.event_id for evt in received] == [event.event_id]
+    assert msg.calls == ["ack"]
     await sub.stop()
 
 
 async def test_subscriber_on_message_acks_after_processing(mock_nats):
-    """ack fires in finally — after enqueue, preserving at-least-once delivery."""
+    """The ack is sent only after the handler has returned — never on receipt."""
     mock_module, client, js, _ = mock_nats
     sub = NatsSubscriber()
     await sub.start()
-    ack_call_order: list[str] = []
+    order: list[str] = []
+    handler_started = asyncio.Event()
+    release_handler = asyncio.Event()
 
     async def handler(evt: SleipnirEvent) -> None:
-        ack_call_order.append("handler")
+        order.append("handler-start")
+        handler_started.set()
+        await release_handler.wait()
+        order.append("handler-done")
 
     await sub.subscribe(["ravn.*"], handler)
     on_message = js.subscribe.call_args[1]["cb"]
+    msg = _FakeMsg(serialize(make_event(event_type="ravn.tool.complete")), log=order)
 
-    event = make_event(event_type="ravn.tool.complete")
-    mock_msg = MagicMock()
-    mock_msg.data = serialize(event)
+    await on_message(msg)
+    await asyncio.wait_for(handler_started.wait(), timeout=1.0)
+    assert msg.calls == [], "the message must not be acked while its handler is running"
 
-    async def _ack() -> None:
-        ack_call_order.append("ack")
+    release_handler.set()
+    await _drain(sub)
 
-    mock_msg.ack = _ack
+    assert order == ["handler-start", "handler-done", "ack"]
+    await sub.stop()
 
-    await on_message(mock_msg)
-    await asyncio.sleep(0.05)
 
-    # ack must come after the event is enqueued (handler runs async, but ack
-    # fires from the finally block in _on_message, before the handler task runs)
-    assert "ack" in ack_call_order
+async def test_subscriber_naks_with_backoff_when_handler_raises(mock_nats):
+    """A failing handler gets its message nak'd with the configured delay, never acked."""
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber(nak_backoff_s=[2.0, 7.0])
+    await sub.start()
+
+    async def handler(evt: SleipnirEvent) -> None:
+        raise RuntimeError("downstream unavailable")
+
+    await sub.subscribe(["test.*"], handler)
+    on_message = js.subscribe.call_args[1]["cb"]
+    attempts = [_FakeMsg(_event_bytes(), num_delivered=n) for n in (1, 2, 3)]
+
+    for msg in attempts:
+        await on_message(msg)
+    await _drain(sub)
+
+    assert [msg.calls for msg in attempts] == [["nak"], ["nak"], ["nak"]]
+    # The last backoff entry repeats for attempts beyond the list.
+    assert [msg.nak_delays for msg in attempts] == [[2.0], [7.0], [7.0]]
+    assert sub.stats()["handler_failures"] == 3
+    js.publish.assert_not_called()
+    await sub.stop()
+
+
+async def test_subscriber_redelivery_is_acked_once_handler_succeeds(mock_nats):
+    """The redelivery that follows a nak reaches the handler again and is then acked."""
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber()
+    await sub.start()
+    handled: list[str] = []
+
+    async def flaky_handler(evt: SleipnirEvent) -> None:
+        handled.append(evt.event_id)
+        if len(handled) == 1:
+            raise RuntimeError("transient")
+
+    await sub.subscribe(["test.*"], flaky_handler)
+    on_message = js.subscribe.call_args[1]["cb"]
+    first = _FakeMsg(_event_bytes(), num_delivered=1)
+    redelivery = _FakeMsg(_event_bytes(), num_delivered=2)
+
+    await on_message(first)
+    await _drain(sub)
+    await on_message(redelivery)
+    await _drain(sub)
+
+    assert handled == ["evt-0", "evt-0"]
+    assert first.calls == ["nak"]
+    assert redelivery.calls == ["ack"]
+    await sub.stop()
+
+
+async def test_subscriber_dead_letters_after_max_deliver(mock_nats):
+    """The final failed delivery is published to the DLQ and terminated, not nak'd."""
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber(max_deliver=3)
+    await sub.start()
+
+    async def handler(evt: SleipnirEvent) -> None:
+        raise ValueError("poison payload")
+
+    await sub.subscribe(["test.*"], handler)
+    on_message = js.subscribe.call_args[1]["cb"]
+    js.publish.reset_mock()
+    msg = _FakeMsg(_event_bytes(), num_delivered=3, stream_seq=42)
+
+    await on_message(msg)
+    await _drain(sub)
+
+    assert msg.calls == ["term"]
+    dlq_subject, dlq_payload = js.publish.call_args[0]
+    assert dlq_subject == "sleipnir.system.dlq.message"
+    record = deserialize(dlq_payload)
+    assert record.event_type == "system.dlq.message"
+    assert record.payload["deliveries"] == 3
+    assert record.payload["stream_sequence"] == 42
+    assert "poison payload" in record.payload["reason"]
+    original = deserialize(base64.b64decode(record.payload["raw_base64"]))
+    assert original.event_id == "evt-0"
+    assert sub.stats()["dlq_published"] == 1
+    await sub.stop()
+
+
+async def test_subscriber_keeps_exhausted_message_when_dlq_publish_fails(mock_nats):
+    """A message that could not be dead-lettered is nak'd again, never acked or terminated."""
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber(max_deliver=1, nak_backoff_s=[4.0])
+    await sub.start()
+
+    async def handler(evt: SleipnirEvent) -> None:
+        raise ValueError("poison payload")
+
+    await sub.subscribe(["test.*"], handler)
+    on_message = js.subscribe.call_args[1]["cb"]
+    js.publish.side_effect = RuntimeError("broker down")
+    msg = _FakeMsg(_event_bytes(), num_delivered=1)
+
+    await on_message(msg)
+    await _drain(sub)
+
+    assert msg.calls == ["nak"]
+    assert msg.nak_delays == [4.0]
+    assert sub.stats()["dlq_publish_failures"] == 1
+    assert sub.stats()["dlq_published"] == 0
+    await sub.stop()
+
+
+async def test_failing_dlq_record_is_terminated_without_another_dlq_record(mock_nats):
+    """Dead-lettering a DLQ record would loop, so an exhausted one is only terminated."""
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber(max_deliver=1)
+    await sub.start()
+
+    async def handler(evt: SleipnirEvent) -> None:
+        raise RuntimeError("cannot archive")
+
+    await sub.subscribe(["system.dlq.message"], handler)
+    on_message = js.subscribe.call_args[1]["cb"]
+    js.publish.reset_mock()
+    msg = _FakeMsg(
+        _event_bytes(event_type="system.dlq.message"),
+        subject="sleipnir.system.dlq.message",
+    )
+
+    await on_message(msg)
+    await _drain(sub)
+
+    assert msg.calls == ["term"]
+    js.publish.assert_not_called()
     await sub.stop()
 
 
 async def test_subscriber_on_message_drops_expired_ttl(mock_nats):
-    """Expired TTL events are not dispatched; ack still fires."""
+    """Expired TTL events are not dispatched; they are acked as deliberately skipped."""
     mock_module, client, js, _ = mock_nats
     sub = NatsSubscriber()
     await sub.start()
@@ -886,20 +1122,17 @@ async def test_subscriber_on_message_drops_expired_ttl(mock_nats):
     await sub.subscribe(["*"], lambda evt: received.append(evt))
 
     on_message = js.subscribe.call_args[1]["cb"]
-    event = make_event(ttl=0)
-    mock_msg = MagicMock()
-    mock_msg.data = serialize(event)
-    mock_msg.ack = AsyncMock()
+    msg = _FakeMsg(serialize(make_event(ttl=0)))
 
-    await on_message(mock_msg)
+    await on_message(msg)
     await asyncio.sleep(0.02)
     assert len(received) == 0
-    mock_msg.ack.assert_called_once()
+    assert msg.calls == ["ack"]
     await sub.stop()
 
 
 async def test_subscriber_on_message_drops_pattern_mismatch(mock_nats):
-    """Pattern-mismatched events are not dispatched; ack still fires."""
+    """Pattern-mismatched events are not dispatched; they are acked as not ours."""
     mock_module, client, js, _ = mock_nats
     sub = NatsSubscriber()
     await sub.start()
@@ -908,19 +1141,17 @@ async def test_subscriber_on_message_drops_pattern_mismatch(mock_nats):
 
     on_message = js.subscribe.call_args[1]["cb"]
     event = make_event(event_type="ravn.tool.complete")  # won't match "ting.*"
-    mock_msg = MagicMock()
-    mock_msg.data = serialize(event)
-    mock_msg.ack = AsyncMock()
+    msg = _FakeMsg(serialize(event))
 
-    await on_message(mock_msg)
+    await on_message(msg)
     await asyncio.sleep(0.02)
     assert len(received) == 0
-    mock_msg.ack.assert_called_once()
+    assert msg.calls == ["ack"]
     await sub.stop()
 
 
-async def test_subscriber_on_message_drops_bad_payload(mock_nats):
-    """Malformed payloads are dropped; ack still fires."""
+async def test_subscriber_on_message_dead_letters_bad_payload(mock_nats):
+    """Malformed payloads are dead-lettered and terminated; the handler never sees them."""
     mock_module, client, js, _ = mock_nats
     sub = NatsSubscriber()
     await sub.start()
@@ -928,19 +1159,18 @@ async def test_subscriber_on_message_drops_bad_payload(mock_nats):
     await sub.subscribe(["*"], lambda evt: received.append(evt))
 
     on_message = js.subscribe.call_args[1]["cb"]
-    mock_msg = MagicMock()
-    mock_msg.data = b"\xff\xfe\xfd"  # malformed
-    mock_msg.ack = AsyncMock()
+    msg = _FakeMsg(b"\xff\xfe\xfd")  # malformed
 
-    await on_message(mock_msg)
+    await on_message(msg)
     await asyncio.sleep(0.02)
     assert len(received) == 0
-    mock_msg.ack.assert_called_once()
+    assert msg.calls == ["term"]
+    assert sub.stats()["dlq_published"] == 1
     await sub.stop()
 
 
 async def test_subscriber_on_message_skips_when_not_running(mock_nats):
-    """Messages received after stop() are ignored; ack still fires."""
+    """Messages received after stop() are left unacked so JetStream redelivers them."""
     mock_module, client, js, _ = mock_nats
     sub = NatsSubscriber()
     await sub.start()
@@ -950,15 +1180,194 @@ async def test_subscriber_on_message_skips_when_not_running(mock_nats):
     on_message = js.subscribe.call_args[1]["cb"]
     sub._running = False  # simulate stopped state
 
-    event = make_event()
-    mock_msg = MagicMock()
-    mock_msg.data = serialize(event)
-    mock_msg.ack = AsyncMock()
+    msg = _FakeMsg(serialize(make_event()))
 
-    await on_message(mock_msg)
+    await on_message(msg)
     await asyncio.sleep(0.02)
     assert len(received) == 0
-    mock_msg.ack.assert_called_once()
+    assert msg.calls == []
+    await sub.stop()
+
+
+async def test_full_queue_blocks_the_callback_instead_of_dropping(mock_nats):
+    """Backpressure: a full queue blocks the NATS callback and withholds acks."""
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber(ring_buffer_depth=1)
+    await sub.start()
+    gate = asyncio.Event()
+    handled: list[int] = []
+
+    async def slow_handler(evt: SleipnirEvent) -> None:
+        await gate.wait()
+        handled.append(evt.payload["n"])
+
+    handle = await sub.subscribe(["test.*"], slow_handler)
+    on_message = js.subscribe.call_args[1]["cb"]
+    msgs = [_FakeMsg(_event_bytes(n)) for n in range(3)]
+
+    await on_message(msgs[0])
+    while not handle._queue.empty():  # the consumer takes msg 0 into the handler
+        await asyncio.sleep(0)
+    await on_message(msgs[1])  # fills the depth-1 queue
+    blocked = asyncio.create_task(on_message(msgs[2]))
+    await asyncio.sleep(0.05)
+
+    assert not blocked.done(), "a full queue must block the callback, not drop an event"
+    assert [msg.calls for msg in msgs] == [[], [], []]
+
+    gate.set()
+    await asyncio.wait_for(blocked, timeout=1.0)
+    await _drain(sub)
+
+    assert handled == [0, 1, 2]
+    assert [msg.calls for msg in msgs] == [["ack"], ["ack"], ["ack"]]
+    await sub.stop()
+
+
+async def test_unsettled_messages_get_in_progress_pings(mock_nats):
+    """Queued and in-handler messages are kept alive; settled ones are not pinged."""
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber(ack_wait_s=1.0, ack_progress_interval_s=0.02)
+    await sub.start()
+    gate = asyncio.Event()
+
+    async def slow_handler(evt: SleipnirEvent) -> None:
+        await gate.wait()
+
+    await sub.subscribe(["test.*"], slow_handler)
+    on_message = js.subscribe.call_args[1]["cb"]
+    in_handler = _FakeMsg(_event_bytes(0))
+    queued = _FakeMsg(_event_bytes(1))
+
+    await on_message(in_handler)
+    await on_message(queued)
+    await asyncio.sleep(0.1)
+
+    assert in_handler.calls.count("in_progress") >= 2
+    assert queued.calls.count("in_progress") >= 2
+    assert "ack" not in in_handler.calls + queued.calls
+
+    gate.set()
+    await _drain(sub)
+    pings = in_handler.calls.count("in_progress")
+    await asyncio.sleep(0.1)
+
+    assert in_handler.calls.count("in_progress") == pings
+    assert in_handler.calls[-1] == "ack"
+    assert queued.calls[-1] == "ack"
+    await sub.stop()
+
+
+async def test_unsubscribe_releases_unsettled_messages(mock_nats):
+    """Unsubscribing stops the NATS subscriptions and naks what was not handled."""
+    mock_module, client, js, nats_sub = mock_nats
+    sub = NatsSubscriber()
+    await sub.start()
+    handler_started = asyncio.Event()
+
+    async def stuck_handler(evt: SleipnirEvent) -> None:
+        handler_started.set()
+        await asyncio.Event().wait()
+
+    handle = await sub.subscribe(["test.*"], stuck_handler)
+    on_message = js.subscribe.call_args[1]["cb"]
+    in_handler = _FakeMsg(_event_bytes(0))
+    queued = _FakeMsg(_event_bytes(1))
+    await on_message(in_handler)
+    await asyncio.wait_for(handler_started.wait(), timeout=1.0)
+    await on_message(queued)
+
+    await handle.unsubscribe()
+
+    nats_sub.unsubscribe.assert_awaited_once()
+    assert in_handler.calls == ["nak"]
+    assert queued.calls == ["nak"]
+    assert in_handler.nak_delays == [None], "released messages are redelivered immediately"
+    assert sub._subscriptions == []
+
+    late = _FakeMsg(_event_bytes(2))
+    await on_message(late)
+    assert late.calls == [], "an inactive subscription leaves late messages for redelivery"
+    await sub.stop()
+
+
+async def test_stop_releases_in_flight_message(mock_nats):
+    """stop() hands the message a handler was still working on back to JetStream."""
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber()
+    await sub.start()
+    handler_started = asyncio.Event()
+
+    async def stuck_handler(evt: SleipnirEvent) -> None:
+        handler_started.set()
+        await asyncio.Event().wait()
+
+    await sub.subscribe(["test.*"], stuck_handler)
+    on_message = js.subscribe.call_args[1]["cb"]
+    msg = _FakeMsg(_event_bytes())
+    await on_message(msg)
+    await asyncio.wait_for(handler_started.wait(), timeout=1.0)
+
+    await sub.stop()
+
+    assert msg.calls == ["nak"]
+    client.drain.assert_awaited_once()
+
+
+async def test_settle_failure_is_counted_and_logged(mock_nats, caplog):
+    """A nak that cannot be sent is counted; JetStream redelivers after ack_wait."""
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber()
+    await sub.start()
+
+    async def handler(evt: SleipnirEvent) -> None:
+        raise RuntimeError("boom")
+
+    await sub.subscribe(["test.*"], handler)
+    on_message = js.subscribe.call_args[1]["cb"]
+    msg = _FakeMsg(_event_bytes())
+    msg.errors["nak"] = RuntimeError("connection closed")
+
+    with caplog.at_level(logging.WARNING, logger="sleipnir.adapters.nats_transport"):
+        await on_message(msg)
+        await _drain(sub)
+
+    assert sub.stats()["nak_failures"] == 1
+    assert any("nak failed" in record.message for record in caplog.records)
+    await sub.stop()
+
+
+async def test_core_subscription_handler_failure_is_not_redelivered(mock_nats, caplog):
+    """Core NATS has no acks: a failing handler is logged and counted (at-most-once)."""
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber(subject_prefix="obs.workshop", stream_name="core")
+    await sub.start()
+
+    async def handler(evt: SleipnirEvent) -> None:
+        raise RuntimeError("boom")
+
+    await sub.subscribe(["*"], handler)
+    on_message = client.subscribe.call_args.kwargs["cb"]
+
+    with caplog.at_level(logging.ERROR, logger="sleipnir.adapters.nats_transport"):
+        await on_message(SimpleNamespace(data=serialize(make_event())))
+        await _drain(sub)
+
+    assert sub.stats()["handler_failures"] == 1
+    assert any("at-most-once" in record.message for record in caplog.records)
+    await sub.stop()
+
+
+async def test_subscribe_failure_tears_down_the_partial_subscription(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    js.subscribe.side_effect = RuntimeError("consumer create denied")
+    sub = NatsSubscriber()
+    await sub.start()
+
+    with pytest.raises(RuntimeError, match="consumer create denied"):
+        await sub.subscribe(["ravn.*"], AsyncMock())
+
+    assert sub._subscriptions == []
     await sub.stop()
 
 
@@ -1047,6 +1456,22 @@ async def test_transport_consumer_group_forwarded(mock_nats):
     assert kwargs["durable"].startswith("workers-")
     assert kwargs["queue"] == kwargs["durable"]
     await transport.stop()
+
+
+async def test_transport_forwards_delivery_settings_to_subscriber(mock_nats):
+    transport = NatsTransport(
+        max_deliver=3,
+        ack_wait_s=9.0,
+        ack_progress_interval_s=2.0,
+        max_ack_pending=7,
+        nak_backoff_s=[0.5],
+    )
+    subscriber = transport._subscriber
+    assert subscriber._max_deliver == 3
+    assert subscriber._ack_wait_s == 9.0
+    assert subscriber._ack_progress_interval_s == 2.0
+    assert subscriber._max_ack_pending == 7
+    assert subscriber._nak_backoff_s == [0.5]
 
 
 async def test_transport_jetstream_domain_forwarded_to_publisher_and_subscriber(mock_nats):
@@ -1206,6 +1631,42 @@ async def test_bridge_different_event_ids_both_delivered():
     assert len(delivered) == 2
 
 
+async def test_bridge_failed_handling_does_not_suppress_redelivery():
+    """Only a successful handling marks an event seen; the retry must reach the handler."""
+    captured_handlers: list = []
+
+    async def _capture_subscribe(event_types, handler):
+        captured_handlers.append(handler)
+        return AsyncMock()
+
+    local_sub = AsyncMock()
+    nats_sub = AsyncMock()
+    local_sub.subscribe = _capture_subscribe
+    nats_sub.subscribe = _capture_subscribe
+    bridge = NatsBridgeAdapter(
+        local_publisher=AsyncMock(),
+        local_subscriber=local_sub,
+        nats_publisher=AsyncMock(),
+        nats_subscriber=nats_sub,
+    )
+    attempts: list[str] = []
+
+    async def flaky_handler(evt: SleipnirEvent) -> None:
+        attempts.append(evt.event_id)
+        if len(attempts) == 1:
+            raise RuntimeError("transient")
+
+    await bridge.subscribe(["*"], flaky_handler)
+    event = make_event(event_id="evt-retry")
+
+    with pytest.raises(RuntimeError, match="transient"):
+        await captured_handlers[1](event)  # NATS copy fails → transport naks it
+    await captured_handlers[1](event)  # the redelivery is handled
+    await captured_handlers[0](event)  # the local copy is now a duplicate
+
+    assert attempts == ["evt-retry", "evt-retry"]
+
+
 # ---------------------------------------------------------------------------
 # _BridgeSubscription tests
 # ---------------------------------------------------------------------------
@@ -1318,6 +1779,10 @@ def test_defaults_are_sane():
     assert DEFAULT_MAX_BYTES == 1024 * 1024 * 1024
     assert DEFAULT_RING_BUFFER_DEPTH == 1000
     assert DEFAULT_DEDUP_CACHE_SIZE == 10_000
+    assert DEFAULT_MAX_DELIVER == 5
+    assert DEFAULT_ACK_WAIT_S == 30.0
+    assert 0 < DEFAULT_ACK_PROGRESS_INTERVAL_S < DEFAULT_ACK_WAIT_S
+    assert DEFAULT_NAK_BACKOFF_S == (1.0, 5.0, 30.0, 60.0)
 
 
 async def test_each_js_subscription_gets_a_fresh_consumer_config(mock_nats):
@@ -1344,19 +1809,6 @@ async def test_each_js_subscription_gets_a_fresh_consumer_config(mock_nats):
 # ---------------------------------------------------------------------------
 
 
-class _FakeMsg:
-    def __init__(self, data: bytes, subject: str = "sleipnir.test.event") -> None:
-        self.data = data
-        self.subject = subject
-        self.acked = False
-        self.ack_error: Exception | None = None
-
-    async def ack(self) -> None:
-        if self.ack_error is not None:
-            raise self.ack_error
-        self.acked = True
-
-
 async def _subscribed_callback(sub: NatsSubscriber, js, patterns: list[str]):
     handler = AsyncMock()
     await sub.subscribe(patterns, handler)
@@ -1369,25 +1821,11 @@ async def test_ack_failure_is_counted_and_logged(mock_nats, caplog) -> None:
     await sub.start()
     callback = await _subscribed_callback(sub, js, ["test.*"])
 
-    from datetime import UTC as _UTC
-    from datetime import datetime as _dt
-
-    from sleipnir.adapters.serialization import serialize as _serialize
-    from sleipnir.domain.events import SleipnirEvent as _Event
-
-    event = _Event(
-        event_type="test.event",
-        source="t",
-        payload={},
-        summary="t",
-        urgency=0.1,
-        domain="infrastructure",
-        timestamp=_dt.now(_UTC),
-    )
-    msg = _FakeMsg(_serialize(event))
-    msg.ack_error = RuntimeError("ack broke")
+    msg = _FakeMsg(_event_bytes())
+    msg.errors["ack"] = RuntimeError("ack broke")
     with caplog.at_level("WARNING"):
         await callback(msg)
+        await _drain(sub)
     assert sub.stats()["ack_failures"] == 1
     assert any("ack failed" in record.message for record in caplog.records)
     await sub.stop()
@@ -1400,24 +1838,21 @@ async def test_decode_failure_publishes_dlq_record(mock_nats) -> None:
     callback = await _subscribed_callback(sub, js, ["test.*"])
     js.publish.reset_mock()
 
-    msg = _FakeMsg(b"\x00not-msgpack-garbage")
+    msg = _FakeMsg(b"\x00not-msgpack-garbage", stream_seq=11)
     await callback(msg)
 
     stats = sub.stats()
     assert stats["decode_failures"] == 1
     assert stats["dlq_published"] == 1
-    assert msg.acked, "poison message must still be acked after dead-lettering"
+    assert msg.calls == ["term"], "a dead-lettered message is terminated, not acked"
 
     dlq_subject, dlq_payload = js.publish.call_args[0]
     assert dlq_subject == "sleipnir.system.dlq.message"
-    from sleipnir.adapters.serialization import deserialize as _deserialize
-
-    record = _deserialize(dlq_payload)
+    record = deserialize(dlq_payload)
     assert record.event_type == "system.dlq.message"
     assert record.payload["original_subject"] == "sleipnir.test.event"
-    import base64 as _base64
-
-    assert _base64.b64decode(record.payload["raw_base64"]) == b"\x00not-msgpack-garbage"
+    assert record.payload["stream_sequence"] == 11
+    assert base64.b64decode(record.payload["raw_base64"]) == b"\x00not-msgpack-garbage"
     await sub.stop()
 
 
@@ -1434,13 +1869,15 @@ async def test_poison_dlq_record_is_not_dead_lettered_again(mock_nats) -> None:
     stats = sub.stats()
     assert stats["decode_failures"] == 1
     assert stats["dlq_published"] == 0
+    assert msg.calls == ["term"]
     js.publish.assert_not_called()
     await sub.stop()
 
 
-async def test_dlq_publish_failure_is_counted_not_raised(mock_nats) -> None:
+async def test_dlq_publish_failure_leaves_message_for_redelivery(mock_nats) -> None:
+    """If the DLQ record cannot be published, the message is nak'd — never acked."""
     mock_module, client, js, nats_sub = mock_nats
-    sub = NatsSubscriber()
+    sub = NatsSubscriber(nak_backoff_s=[3.0])
     await sub.start()
     callback = await _subscribed_callback(sub, js, ["test.*"])
     js.publish.side_effect = RuntimeError("broker down")
@@ -1451,49 +1888,8 @@ async def test_dlq_publish_failure_is_counted_not_raised(mock_nats) -> None:
     stats = sub.stats()
     assert stats["dlq_publish_failures"] == 1
     assert stats["dlq_published"] == 0
-    assert msg.acked
-    await sub.stop()
-
-
-async def test_ring_buffer_overflow_is_counted(mock_nats) -> None:
-    mock_module, client, js, nats_sub = mock_nats
-    sub = NatsSubscriber(ring_buffer_depth=1)
-    await sub.start()
-    # Block the consumer so the queue cannot drain between deliveries.
-    import asyncio as _asyncio
-
-    gate = _asyncio.Event()
-
-    async def _slow_handler(event):
-        await gate.wait()
-
-    await sub.subscribe(["test.*"], _slow_handler)
-    callback = js.subscribe.call_args_list[0].kwargs["cb"]
-
-    from datetime import UTC as _UTC
-    from datetime import datetime as _dt
-
-    from sleipnir.adapters.serialization import serialize as _serialize
-    from sleipnir.domain.events import SleipnirEvent as _Event
-
-    def _event(n: int) -> bytes:
-        return _serialize(
-            _Event(
-                event_type="test.event",
-                source="t",
-                payload={"n": n},
-                summary="t",
-                urgency=0.1,
-                domain="infrastructure",
-                timestamp=_dt.now(_UTC),
-            )
-        )
-
-    await callback(_FakeMsg(_event(1)))
-    await callback(_FakeMsg(_event(2)))
-    await callback(_FakeMsg(_event(3)))
-    assert sub.stats()["ring_buffer_overflows"] >= 1
-    gate.set()
+    assert msg.calls == ["nak"]
+    assert msg.nak_delays == [3.0]
     await sub.stop()
 
 
