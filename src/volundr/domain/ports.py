@@ -532,8 +532,14 @@ class StatsRepository(ABC):
     """Port for retrieving aggregate statistics."""
 
     @abstractmethod
-    async def get_stats(self) -> Stats:
+    async def get_stats(self, *, tenant_id: str | None, owner_id: str | None) -> Stats:
         """Retrieve aggregate statistics for the dashboard.
+
+        Args:
+            tenant_id: Count only sessions and history of this tenant. ``None``
+                is unbounded; a bound never matches untenanted rows.
+            owner_id: Count only sessions and history of this owner. ``None``
+                is unbounded; a bound never matches unowned rows.
 
         Returns:
             Stats containing session counts, token usage, and cost for today.

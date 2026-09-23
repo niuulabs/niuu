@@ -231,15 +231,14 @@ async def _bootstrap_startup_schema(settings: Settings) -> None:
         await conn.close()
 
 
-async def _broadcast_periodic_updates(
-    broadcaster: InMemoryEventBroadcaster,
-    stats_service: StatsService,
-) -> None:
-    """Background task to broadcast periodic stats and heartbeat updates.
+async def _broadcast_periodic_updates(broadcaster: InMemoryEventBroadcaster) -> None:
+    """Background task to broadcast periodic stats ticks and heartbeats.
+
+    The stats tick carries no figures: the session event stream computes them
+    for each subscriber over the sessions it may list.
 
     Args:
         broadcaster: The event broadcaster to publish events to.
-        stats_service: The stats service to fetch current statistics.
     """
     logger.info("SSE periodic broadcast task started, interval=%ds", BROADCAST_INTERVAL)
     while True:
@@ -252,17 +251,8 @@ async def _broadcast_periodic_updates(
                 logger.debug("SSE periodic: no subscribers, skipping broadcast")
                 continue
 
-            # Broadcast current stats
-            logger.info("SSE periodic: broadcasting stats to %d subscriber(s)", sub_count)
-            stats = await stats_service.get_stats()
-            logger.info(
-                "SSE periodic: stats fetched - tokens_today=%d, cloud=%d, local=%d, cost=%.4f",
-                stats.tokens_today,
-                stats.cloud_tokens,
-                stats.local_tokens,
-                float(stats.cost_today),
-            )
-            await broadcaster.publish_stats(stats)
+            logger.info("SSE periodic: stats tick to %d subscriber(s)", sub_count)
+            await broadcaster.publish_stats_tick()
 
             # Broadcast heartbeat
             await broadcaster.publish_heartbeat()
@@ -1073,7 +1063,7 @@ def create_app(
 
                 skuld_reg.set_ownership_guard(_may_attach)
 
-            stats_service = StatsService(stats_repository)
+            stats_service = StatsService(stats_repository, session_service)
             token_service = TokenService(
                 token_tracker, repository, pricing_provider, broadcaster=broadcaster
             )
@@ -1506,7 +1496,9 @@ def create_app(
             app.state.broadcaster = broadcaster
             # Principal-scoped view of the broadcaster; the Niuu host's embedded
             # Forge stream subscribes through this, never the raw broadcaster.
-            app.state.session_event_stream = SessionEventStream(broadcaster, session_service)
+            app.state.session_event_stream = SessionEventStream(
+                broadcaster, session_service, stats_service
+            )
             app.state.chronicle_service = chronicle_service
             app.state.launch_spec_service = catalog.launch_spec_service
             app.state.git_workflow_service = git_workflow_service
@@ -1519,9 +1511,7 @@ def create_app(
             app.state.storage = storage_adapter
 
             # Start background task for periodic stats and heartbeat broadcasts
-            background_task = asyncio.create_task(
-                _broadcast_periodic_updates(broadcaster, stats_service)
-            )
+            background_task = asyncio.create_task(_broadcast_periodic_updates(broadcaster))
 
             # Start liveness reconciliation: expire running sessions whose broker
             # has gone silent so clients stop dialing dead chat endpoints.

@@ -493,10 +493,10 @@ class ForgeService:
             query=query,
         )
 
-    async def get_stats(self):
+    async def get_stats(self, principal: Principal | None):
         if self._stats_service is None:
             raise RuntimeError("Stats service not available")
-        return await self._stats_service.get_stats()
+        return await self._stats_service.get_stats(principal)
 
     async def record_usage(
         self,

@@ -158,9 +158,10 @@ def test_local_stream_uses_embedded_scoped_stream_not_remote_default(
     from datetime import UTC, datetime
 
     from niuu.adapters.inbound import rest_volundr
+    from tests.conftest import InMemoryStatsRepository
     from volundr.adapters.outbound.authorization import SimpleRoleAuthorizationAdapter
     from volundr.domain.models import EventType, RealtimeEvent
-    from volundr.domain.services import SessionEventStream, SessionService
+    from volundr.domain.services import SessionEventStream, SessionService, StatsService
 
     async def finite_merge(sources, **_kwargs):
         assert list(sources) == ["local"]
@@ -181,6 +182,11 @@ def test_local_stream_uses_embedded_scoped_stream_not_remote_default(
         async def subscribe(self):
             yield updated("foreign", "user-b")
             yield updated("own", "user-a")
+            yield RealtimeEvent(
+                type=EventType.STATS_UPDATED,
+                data={"active_sessions": 1000},
+                timestamp=datetime.now(UTC),
+            )
 
     sessions = SessionService(
         repository=repository,
@@ -188,7 +194,10 @@ def test_local_stream_uses_embedded_scoped_stream_not_remote_default(
         authorization=SimpleRoleAuthorizationAdapter(),
     )
     embedded = FastAPI()
-    embedded.state.session_event_stream = SessionEventStream(Broadcaster(), sessions)
+    stats = InMemoryStatsRepository(active_sessions=2)
+    embedded.state.session_event_stream = SessionEventStream(
+        Broadcaster(), sessions, StatsService(stats, sessions)
+    )
     client = _client([remote(is_default=True), local()], embedded_forge_app=embedded)
     response = client.get("/api/v1/forge/sessions/stream?scope=local", headers=_headers())
     assert response.status_code == 200
@@ -196,6 +205,9 @@ def test_local_stream_uses_embedded_scoped_stream_not_remote_default(
     assert '"id": "own"' in response.text
     # The embedded path is not a way around the Forge's own scoping.
     assert '"id": "foreign"' not in response.text
+    assert "event: stats_updated" in response.text
+    assert '"active_sessions": 2' in response.text
+    assert stats.scopes == [("tenant-a", "user-a")]
     assert not respx.calls
 
 

@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from volundr.domain.models import EventType, RealtimeEvent, Stats, TimelineResponse
+from volundr.domain.models import EventType, RealtimeEvent, TimelineResponse
 from volundr.domain.ports import EventBroadcaster
 
 if TYPE_CHECKING:
@@ -35,7 +35,8 @@ def _build_realtime_sleipnir_map() -> dict[str, str]:
         # (active/idle/tool_executing) is deliberately NOT forwarded — it is
         # high-frequency SSE-only state and would flood the bus.
         EventType.SESSION_NEEDS_INPUT.value: registry.VOLUNDR_SESSION_NEEDS_INPUT,
-        EventType.STATS_UPDATED.value: registry.VOLUNDR_STATS_UPDATED,
+        # stats_updated is not forwarded: it is a figure-less tick, and the
+        # figures are computed per SSE subscriber over what that caller may list.
         EventType.CHRONICLE_CREATED.value: registry.VOLUNDR_CHRONICLE_CREATED,
         EventType.CHRONICLE_UPDATED.value: registry.VOLUNDR_CHRONICLE_UPDATED,
         EventType.CHRONICLE_DELETED.value: registry.VOLUNDR_CHRONICLE_DELETED,
@@ -297,30 +298,6 @@ class InMemoryEventBroadcaster(EventBroadcaster):
             timestamp=datetime.now(UTC),
         )
 
-    def create_stats_event(self, stats: Stats) -> RealtimeEvent:
-        """Create a stats update event.
-
-        Args:
-            stats: The current statistics.
-
-        Returns:
-            A RealtimeEvent with the stats data.
-        """
-        return RealtimeEvent(
-            type=EventType.STATS_UPDATED,
-            data={
-                "active_sessions": stats.active_sessions,
-                "total_sessions": stats.total_sessions,
-                "sessions_today": stats.sessions_today,
-                "tokens_today": stats.tokens_today,
-                "local_tokens": stats.local_tokens,
-                "cloud_tokens": stats.cloud_tokens,
-                "cost_today": float(stats.cost_today),
-                "sparklines": stats.sparklines or {},
-            },
-            timestamp=datetime.now(UTC),
-        )
-
     def create_heartbeat_event(self) -> RealtimeEvent:
         """Create a heartbeat event to keep connections alive.
 
@@ -376,21 +353,15 @@ class InMemoryEventBroadcaster(EventBroadcaster):
         )
         await self.publish(event)
 
-    async def publish_stats(self, stats: Stats) -> None:
-        """Publish a stats update event.
+    async def publish_stats_tick(self) -> None:
+        """Publish a figure-less ``stats_updated`` tick.
 
-        Args:
-            stats: The current statistics.
+        Aggregate figures differ per caller, so the principal-scoped session
+        event stream computes them for each subscriber when the tick arrives.
         """
-        logger.info(
-            "SSE broadcast stats_updated: tokens_today=%d, cloud=%d, local=%d, cost=%.4f",
-            stats.tokens_today,
-            stats.cloud_tokens,
-            stats.local_tokens,
-            float(stats.cost_today),
+        await self.publish(
+            RealtimeEvent(type=EventType.STATS_UPDATED, data={}, timestamp=datetime.now(UTC))
         )
-        event = self.create_stats_event(stats)
-        await self.publish(event)
 
     async def publish_heartbeat(self) -> None:
         """Publish a heartbeat event."""

@@ -75,9 +75,9 @@ def stats_repo() -> InMemoryStatsRepository:
 
 
 @pytest.fixture
-def stats_service(stats_repo: InMemoryStatsRepository) -> StatsService:
+def stats_service(stats_repo: InMemoryStatsRepository, service: SessionService) -> StatsService:
     """Create a stats service with test repository."""
-    return StatsService(stats_repo)
+    return StatsService(stats_repo, service)
 
 
 @pytest.fixture
@@ -1940,7 +1940,7 @@ class TestGetStats:
     def test_get_stats_with_zero_values(self, service: SessionService):
         """Returns stats with zero values."""
         stats_repo = InMemoryStatsRepository()
-        stats_svc = StatsService(stats_repo)
+        stats_svc = StatsService(stats_repo, service)
         app = FastAPI()
         router = create_router(service, stats_svc)
         app.include_router(router)
