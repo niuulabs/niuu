@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     EnvSettingsSource,
@@ -45,6 +45,11 @@ from pydantic_settings import (
 from niuu.config_models import WorkloadIdentityVerifierConfig
 from niuu.domain.observability import ObservabilityConfig
 from niuu.mesh.config import MeshNatsConfig
+from ravn.domain.permission_mode import (
+    PermissionMode,
+    parse_optional_permission_mode,
+    parse_permission_mode,
+)
 
 # ---------------------------------------------------------------------------
 # Config file resolution
@@ -585,22 +590,20 @@ class PermissionRuleConfig(BaseModel):
 class PermissionConfig(BaseModel):
     """Permission enforcement configuration."""
 
-    mode: Literal[
-        "read_only",
-        "workspace_write",
-        "full_access",
-        "prompt",
-        # Legacy aliases kept for backwards compatibility
-        "allow_all",
-        "deny_all",
-    ] = Field(
-        default="workspace_write",
+    # Assignment is validated too, so ``permission.mode = "read-only"`` parses
+    # into the enum instead of storing a string no enforcer branch matches.
+    model_config = ConfigDict(validate_assignment=True)
+
+    mode: PermissionMode = Field(
+        default=PermissionMode.WORKSPACE_WRITE,
         description=(
             "Permission mode: "
             "'read_only' (no mutations), "
             "'workspace_write' (writes within workspace only), "
             "'full_access' (unrestricted, explicit opt-in), "
-            "'prompt' (interactive confirmation per action)."
+            "'prompt' (interactive confirmation per action). "
+            "Hyphenated spellings ('read-only') are accepted; "
+            "legacy 'allow_all' / 'deny_all' remain supported."
         ),
     )
     workspace_root: str = Field(
@@ -626,6 +629,11 @@ class PermissionConfig(BaseModel):
         default_factory=list,
         description="Ordered rules evaluated before the default mode.",
     )
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _parse_mode(cls, value: object) -> PermissionMode:
+        return parse_permission_mode(value)
 
 
 class MCPAuthConfig(BaseModel):
@@ -4762,20 +4770,6 @@ def _safe_bool(val: object, default: bool = False) -> bool:
 # Valid schema values
 # ---------------------------------------------------------------------------
 
-_VALID_PERMISSION_MODES: frozenset[str] = frozenset(
-    {
-        "read_only",
-        "workspace_write",
-        "workspace-write",
-        "full_access",
-        "full-access",
-        "prompt",
-        # Legacy aliases
-        "allow_all",
-        "deny_all",
-    }
-)
-
 _VALID_PERSONAS: frozenset[str] = frozenset(
     {
         "coding-agent",
@@ -4836,6 +4830,8 @@ class ProjectConfig:
         ProjectConfig rather than raising.
 
         Schema validation warnings are stored in ``ProjectConfig.warnings``.
+        An unrecognised ``permission_mode`` raises :class:`ValueError` instead:
+        a permission boundary is never downgraded to a warning.
         """
         import yaml  # PyYAML — present via pydantic-settings[yaml]
 
@@ -4860,12 +4856,12 @@ class ProjectConfig:
 
         warnings: list[str] = []
 
-        permission_mode = str(raw.get("permission_mode", ""))
-        if permission_mode and permission_mode not in _VALID_PERMISSION_MODES:
-            warnings.append(
-                f"Unknown permission_mode {permission_mode!r}. "
-                f"Valid values: {sorted(_VALID_PERMISSION_MODES)}"
-            )
+        # A permission mode that cannot be parsed is fatal, never a warning:
+        # carrying an unrecognised mode forward is how a read-only boundary
+        # silently became writable.
+        raw_permission_mode = raw.get("permission_mode")
+        parse_optional_permission_mode(raw_permission_mode)
+        permission_mode = "" if raw_permission_mode is None else str(raw_permission_mode)
 
         persona = str(raw.get("persona", ""))
         if persona and persona not in _VALID_PERSONAS:
