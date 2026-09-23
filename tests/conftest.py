@@ -449,8 +449,10 @@ class InMemoryStatsRepository(StatsRepository):
             sessions_today=sessions_today,
             sparklines=sparklines,
         )
+        self.scopes: list[tuple[str | None, str | None]] = []
 
-    async def get_stats(self) -> Stats:
+    async def get_stats(self, *, tenant_id: str | None, owner_id: str | None) -> Stats:
+        self.scopes.append((tenant_id, owner_id))
         return self._stats
 
     def set_stats(
@@ -761,7 +763,7 @@ class MockEventBroadcaster(EventBroadcaster):
         self._session_created_events: list[Session] = []
         self._session_updated_events: list[Session] = []
         self._session_deleted_events: list[UUID] = []
-        self._stats_events: list[Stats] = []
+        self._stats_tick_count: int = 0
         self._heartbeat_count: int = 0
 
     async def publish(self, event: RealtimeEvent) -> None:
@@ -820,15 +822,11 @@ class MockEventBroadcaster(EventBroadcaster):
             )
         )
 
-    async def publish_stats(self, stats: Stats) -> None:
-        """Record a stats event."""
-        self._stats_events.append(stats)
+    async def publish_stats_tick(self) -> None:
+        """Record a figure-less stats tick."""
+        self._stats_tick_count += 1
         await self.publish(
-            RealtimeEvent(
-                type=EventType.STATS_UPDATED,
-                data={"active_sessions": stats.active_sessions},
-                timestamp=datetime.now(UTC),
-            )
+            RealtimeEvent(type=EventType.STATS_UPDATED, data={}, timestamp=datetime.now(UTC))
         )
 
     async def publish_heartbeat(self) -> None:

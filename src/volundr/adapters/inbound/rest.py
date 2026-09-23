@@ -1564,9 +1564,14 @@ def create_router(
     router = APIRouter(prefix=prefix)
     if preview_cache is None:
         preview_cache = PreviewCache(_PREVIEW_CACHE_ROOT)
-    event_stream = (
-        SessionEventStream(broadcaster, session_service) if broadcaster is not None else None
-    )
+    event_stream = None
+    if broadcaster is not None:
+        if stats_service is None:
+            raise ValueError(
+                "The session event stream computes stats_updated per subscriber; "
+                "pass stats_service together with broadcaster"
+            )
+        event_stream = SessionEventStream(broadcaster, session_service, stats_service)
 
     def _session_response(session: Session) -> SessionResponse:
         return SessionResponse.from_session(session, public_host=server_public_host)
@@ -1798,7 +1803,8 @@ def create_router(
 
         Session events are scoped like ``GET /sessions``: a caller receives
         events for its own sessions, or for its tenant's sessions as a tenant
-        admin.
+        admin. ``stats_updated`` carries the figures ``GET /stats`` returns to
+        the same caller.
 
         Events are formatted as SSE:
         ```
@@ -2598,13 +2604,16 @@ def create_router(
 
     @router.get("/stats", response_model=StatsResponse, tags=["Models & Stats"])
     async def get_stats(request: Request) -> StatsResponse:
-        """Get aggregate statistics for the dashboard."""
-        if _strict_identity_enabled(request):
-            principal = await _optional_principal(request)
-            if principal is None:
-                return StatsResponse()
+        """Get aggregate statistics over the sessions the caller may list.
+
+        Scoped like ``GET /sessions``: the caller's own sessions, or its
+        tenant's sessions as a tenant admin.
+        """
+        principal = await _optional_principal(request)
         try:
-            stats = await forge.get_stats()
+            stats = await forge.get_stats(principal)
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

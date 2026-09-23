@@ -62,7 +62,7 @@ class TestPostgresStatsRepository:
         )
         mock_conn.fetch = AsyncMock(return_value=[{"count": 0.0}, {"count": 2.0}])
 
-        stats = await stats_repo.get_stats()
+        stats = await stats_repo.get_stats(tenant_id=None, owner_id=None)
 
         assert isinstance(stats, Stats)
         assert stats.active_sessions == 5
@@ -107,7 +107,7 @@ class TestPostgresStatsRepository:
         )
         mock_conn.fetch = AsyncMock(return_value=[])
 
-        stats = await stats_repo.get_stats()
+        stats = await stats_repo.get_stats(tenant_id=None, owner_id=None)
 
         assert stats.active_sessions == 0
         assert stats.total_sessions == 0
@@ -145,7 +145,7 @@ class TestPostgresStatsRepository:
         )
         mock_conn.fetch = AsyncMock(return_value=[])
 
-        await stats_repo.get_stats()
+        await stats_repo.get_stats(tenant_id=None, owner_id=None)
 
         # Verify fetchrow was called for session counts, token stats, and chronicle fallback.
         assert mock_conn.fetchrow.call_count == 3
@@ -200,7 +200,7 @@ class TestPostgresStatsRepository:
         )
         mock_conn.fetch = AsyncMock(return_value=[])
 
-        stats = await stats_repo.get_stats()
+        stats = await stats_repo.get_stats(tenant_id=None, owner_id=None)
 
         assert stats.active_sessions == 1
         assert stats.total_sessions == 3
@@ -209,3 +209,47 @@ class TestPostgresStatsRepository:
         assert stats.local_tokens == 40
         assert stats.cloud_tokens == 960
         assert stats.cost_today == Decimal("0.20")
+
+    async def test_every_query_is_bounded_by_tenant_and_owner(
+        self, stats_repo: PostgresStatsRepository, mock_pool: MagicMock
+    ) -> None:
+        """The caller's bounds reach every query as $1 (tenant) and $2 (owner)."""
+        mock_conn = AsyncMock()
+        mock_context = AsyncMock()
+        mock_context.__aenter__.return_value = mock_conn
+        mock_context.__aexit__.return_value = None
+        mock_pool.acquire.return_value = mock_context
+        mock_conn.fetchrow = AsyncMock(
+            side_effect=[
+                {"active_sessions": 0, "total_sessions": 0, "sessions_today": 0},
+                {
+                    "tokens_today": 0,
+                    "local_tokens": 0,
+                    "cloud_tokens": 0,
+                    "cost_today": Decimal("0"),
+                },
+                {"tokens_today": 0, "cost_today": Decimal("0")},
+            ]
+        )
+        mock_conn.fetch = AsyncMock(return_value=[])
+
+        await stats_repo.get_stats(tenant_id="t1", owner_id="alice")
+
+        calls = [*mock_conn.fetchrow.call_args_list, *mock_conn.fetch.call_args_list]
+        assert len(calls) == 4
+        session_bound = "($1::text IS NULL OR s.tenant_id = $1) AND "
+        session_bound += "($2::text IS NULL OR s.owner_id = $2)"
+        chronicle_bound = session_bound.replace("s.", "c.")
+        for call in calls:
+            sql, *params = call.args
+            assert params == ["t1", "alice"]
+            assert session_bound in sql or chronicle_bound in sql
+        counts_sql, tokens_sql, fallback_sql = (c.args[0] for c in calls[:3])
+        sparkline_sql = calls[3].args[0]
+        # Session starts span live sessions and durable chronicles, both bounded.
+        for sql in (counts_sql, sparkline_sql):
+            assert session_bound in sql and chronicle_bound in sql
+        # Token rows are attributed through their session.
+        assert "JOIN sessions s ON s.id = t.session_id" in tokens_sql
+        assert session_bound in tokens_sql
+        assert chronicle_bound in fallback_sql

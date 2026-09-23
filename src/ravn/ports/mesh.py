@@ -32,9 +32,9 @@ class MeshPort(Protocol):
     """Point-to-point and broadcast transport between Ravn peers.
 
     Implementations:
-    - ``NngMeshAdapter``      — Pi mode, nng PUB/SUB + REQ/REP, no broker
-    - ``SleipnirMeshAdapter`` — infra mode, RabbitMQ topic exchange + RPC
-    - ``CompositeMeshAdapter``— tries infra first, falls back to nng
+    - ``SleipnirMeshAdapter``  — pub/sub + RPC over a Sleipnir transport (nng, NATS)
+    - ``WebhookMeshAdapter``   — HTTP for cross-network/serverless environments
+    - ``CompositeMeshAdapter`` — all-active: every configured transport at once
     """
 
     async def publish(self, event: RavnEvent, topic: str) -> None:

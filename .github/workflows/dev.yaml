@@ -4,6 +4,12 @@
 # 3. Determines next version from conventional commits and creates a v*-dev.N prerelease tag
 # 4. Packages Helm charts with the dev version
 #
+# Steps 2-4 publish, so they are gated on step 1: a failed or cancelled test
+# job means no :dev images, no v*-dev.N tag and no charts. The gates use
+# `!failure() && !cancelled()` rather than the implicit success() so that a
+# test job skipped by a future path filter does not block publishing, and so
+# that a skip does not cascade transitively into build-charts.
+#
 # CLI/ravn binaries are release-only (release.yaml) — too slow for dev.
 #
 # The dev prerelease tags (v*-dev.N) are skipped by release.yaml so they
@@ -130,10 +136,17 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Containers — build multi-arch (amd64 + arm64) for the published containers.
-  # Delegated to reusable workflow.
+  # Delegated to reusable workflow. Pushes :dev, so only after every test job.
   # ---------------------------------------------------------------------------
   containers:
     name: Containers
+    needs:
+      - python
+      - python-integration-test-volundr
+      - python-integration-test-ting
+      - web-next
+      - helm-lint
+    if: ${{ !failure() && !cancelled() }}
     permissions:
       contents: read
       packages: write
@@ -158,6 +171,7 @@ jobs:
   scan:
     name: Scan
     needs: containers
+    if: ${{ !failure() && !cancelled() }}
     permissions:
       contents: read
       packages: read
@@ -168,10 +182,20 @@ jobs:
       tag: dev
 
   # ---------------------------------------------------------------------------
-  # Version tagging — prerelease dev tags
+  # Version tagging — prerelease dev tags. Waits for containers as well as the
+  # tests: the charts published under this tag reference dev-<sha> images, so a
+  # tag must never exist for a commit whose images failed to build.
   # ---------------------------------------------------------------------------
   tag:
     name: Determine Version & Tag
+    needs:
+      - python
+      - python-integration-test-volundr
+      - python-integration-test-ting
+      - web-next
+      - helm-lint
+      - containers
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.new_version }}
@@ -204,7 +228,7 @@ jobs:
           if [ "$LAST_TAG" = "v0.0.0" ]; then
             COMMIT_MSGS=$(git log --pretty=%B HEAD)
           else
-            COMMIT_MSGS=$(git log --pretty=%B ${LAST_TAG}..HEAD)
+            COMMIT_MSGS=$(git log --pretty=%B "${LAST_TAG}..HEAD")
           fi
 
           echo "Last production version: $LAST_VERSION"
@@ -222,7 +246,7 @@ jobs:
           echo "Version bump type: $VERSION_TYPE"
 
           if [ "$VERSION_TYPE" = "none" ]; then
-            echo "should_release=false" >> $GITHUB_OUTPUT
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -240,8 +264,8 @@ jobs:
           NEW_VERSION="${NEW_BASE}-dev.${DEV_N}"
 
           echo "New dev version: $NEW_VERSION"
-          echo "should_release=true" >> $GITHUB_OUTPUT
-          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Create and push tag
         if: steps.version.outputs.should_release == 'true'
@@ -260,7 +284,7 @@ jobs:
   build-charts:
     name: Build Helm Charts
     needs: [tag]
-    if: needs.tag.outputs.should_release == 'true'
+    if: ${{ !failure() && !cancelled() && needs.tag.outputs.should_release == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

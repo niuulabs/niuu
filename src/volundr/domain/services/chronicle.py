@@ -121,6 +121,8 @@ class ChronicleService:
             model=session.model,
             config_snapshot=config_snapshot,
             token_usage=session.tokens_used,
+            owner_id=session.owner_id,
+            tenant_id=session.tenant_id,
         )
 
         created = await self._chronicle_repository.create(chronicle)

@@ -3,7 +3,6 @@
 import asyncio
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -18,7 +17,6 @@ from volundr.domain.models import (
     RealtimeEvent,
     Session,
     SessionStatus,
-    Stats,
     TimelineEvent,
     TimelineEventType,
     TimelineResponse,
@@ -40,21 +38,6 @@ def sample_session() -> Session:
         model="claude-sonnet-4-20250514",
         source=GitSource(repo="https://github.com/test/repo", branch="main"),
         status=SessionStatus.RUNNING,
-    )
-
-
-@pytest.fixture
-def sample_stats() -> Stats:
-    """Create sample stats for testing."""
-    return Stats(
-        active_sessions=5,
-        total_sessions=10,
-        tokens_today=1000,
-        local_tokens=200,
-        cloud_tokens=800,
-        cost_today=Decimal("0.50"),
-        sessions_today=3,
-        sparklines={"sessionsToday": [1.0, 2.0, 3.0]},
     )
 
 
@@ -232,12 +215,10 @@ class TestInMemoryEventBroadcaster:
         assert received[0].data["tenant_id"] == "t1"
 
     @pytest.mark.asyncio
-    async def test_publish_stats(
-        self,
-        broadcaster: InMemoryEventBroadcaster,
-        sample_stats: Stats,
+    async def test_publish_stats_tick_carries_no_figures(
+        self, broadcaster: InMemoryEventBroadcaster
     ):
-        """Test publishing stats update event."""
+        """The tick names no figures; the scoped stream computes them per subscriber."""
         received: list[RealtimeEvent] = []
 
         async def collect():
@@ -248,15 +229,13 @@ class TestInMemoryEventBroadcaster:
         task = asyncio.create_task(collect())
         await asyncio.sleep(0.01)
 
-        await broadcaster.publish_stats(sample_stats)
+        await broadcaster.publish_stats_tick()
 
         await asyncio.wait_for(task, timeout=1.0)
 
         assert len(received) == 1
         assert received[0].type == EventType.STATS_UPDATED
-        assert received[0].data["active_sessions"] == sample_stats.active_sessions
-        assert received[0].data["total_sessions"] == sample_stats.total_sessions
-        assert received[0].data["tokens_today"] == sample_stats.tokens_today
+        assert received[0].data == {}
 
     @pytest.mark.asyncio
     async def test_publish_heartbeat(self, broadcaster: InMemoryEventBroadcaster):
@@ -346,21 +325,6 @@ class TestInMemoryEventBroadcaster:
         blocked = broadcaster.create_session_event(EventType.SESSION_UPDATED, sample_session)
         assert blocked.data["needs_attention"] is True
         assert blocked.data["activity_state"] == "awaiting_input"
-
-    @pytest.mark.asyncio
-    async def test_create_stats_event(
-        self,
-        broadcaster: InMemoryEventBroadcaster,
-        sample_stats: Stats,
-    ):
-        """Test creating a stats event."""
-        event = broadcaster.create_stats_event(sample_stats)
-
-        assert event.type == EventType.STATS_UPDATED
-        assert event.data["active_sessions"] == sample_stats.active_sessions
-        assert event.data["sessions_today"] == sample_stats.sessions_today
-        assert event.data["cost_today"] == float(sample_stats.cost_today)
-        assert event.data["sparklines"] == sample_stats.sparklines
 
     @pytest.mark.asyncio
     async def test_create_heartbeat_event(self, broadcaster: InMemoryEventBroadcaster):
@@ -668,6 +632,17 @@ class TestInMemoryEventBroadcasterSleipnirForwarding:
         )
 
         await b.publish(event)
+
+        publisher.publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sleipnir_not_called_for_stats_tick(self):
+        """Aggregate figures are per caller, so the platform bus never carries them."""
+        publisher = AsyncMock()
+        publisher.publish = AsyncMock()
+        b = InMemoryEventBroadcaster(max_queue_size=10, sleipnir_publisher=publisher)
+
+        await b.publish_stats_tick()
 
         publisher.publish.assert_not_called()
 

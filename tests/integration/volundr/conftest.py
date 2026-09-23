@@ -162,7 +162,7 @@ async def volundr_app(
         provisioning_timeout=2.0,
         provisioning_initial_delay=0.0,
     )
-    stats_service = StatsService(stats_repo)
+    stats_service = StatsService(stats_repo, session_service)
     token_service = TokenService(token_tracker, session_repo, pricing, broadcaster=broadcaster)
     prompt_service = PromptService(prompt_repo)
 

@@ -42,9 +42,9 @@ def session_service(session_repository: InMemorySessionRepository) -> SessionSer
 
 
 @pytest.fixture
-def stats_service() -> StatsService:
+def stats_service(session_service: SessionService) -> StatsService:
     """Create a stats service."""
-    return StatsService(InMemoryStatsRepository())
+    return StatsService(InMemoryStatsRepository(), session_service)
 
 
 @pytest.fixture
