@@ -29,7 +29,7 @@ from pydantic_settings import (
 from identity.authz_config import AuthorizationAdapterConfig
 from niuu.config import DynamicAdapterConfig
 from niuu.domain.observability import ObservabilityConfig
-from niuu.mesh.config import MeshNatsConfig
+from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE, MeshNatsConfig
 
 
 class SkuldObservabilityConfig(ObservabilityConfig):
@@ -106,6 +106,7 @@ class MeshConfig(BaseModel):
     discovery_adapters: list[dict[str, Any]] = Field(default_factory=list)
     nats: MeshNatsConfig = Field(default_factory=MeshNatsConfig)
     rpc_timeout_s: float = Field(default=10.0)
+    rpc_reply_cache_size: int = Field(default=DEFAULT_RPC_REPLY_CACHE_SIZE, ge=1)
     default_work_timeout_s: float = Field(default=120.0)
     default_response_urgency: float = Field(default=0.3)
     diff_max_bytes: int = Field(default=8192)

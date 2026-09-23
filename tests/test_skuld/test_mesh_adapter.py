@@ -884,8 +884,9 @@ class TestNiuuMeshBuilder:
     def test_build_in_process_mesh(self):
         from niuu.mesh import build_in_process_mesh
 
-        mesh = build_in_process_mesh("test-peer", rpc_timeout_s=5.0)
+        mesh = build_in_process_mesh("test-peer", rpc_timeout_s=5.0, rpc_reply_cache_size=4)
         assert mesh is not None
+        assert mesh._rpc_reply_cache_size == 4
 
     def test_build_mesh_from_adapters_list_empty(self):
         from niuu.mesh import build_mesh_from_adapters_list
@@ -894,6 +895,7 @@ class TestNiuuMeshBuilder:
             adapters=[],
             own_peer_id="test",
             rpc_timeout_s=5.0,
+            rpc_reply_cache_size=4,
         )
         assert result is None
 
@@ -904,6 +906,7 @@ class TestNiuuMeshBuilder:
             adapters=[{"adapter": "nonexistent.module.Class"}],
             own_peer_id="test",
             rpc_timeout_s=5.0,
+            rpc_reply_cache_size=4,
         )
         assert result is None
 
@@ -914,8 +917,31 @@ class TestNiuuMeshBuilder:
             adapters=[{"not_adapter": "foo"}],
             own_peer_id="test",
             rpc_timeout_s=5.0,
+            rpc_reply_cache_size=4,
         )
         assert result is None
+
+    @pytest.mark.parametrize(
+        ("entry", "expected"),
+        [
+            ({"adapter": "sleipnir", "transport": "in_process"}, 4),
+            ({"adapter": "sleipnir", "transport": "in_process", "rpc_reply_cache_size": 9}, 9),
+        ],
+    )
+    def test_build_mesh_from_adapters_list_sets_sleipnir_reply_cache_size(self, entry, expected):
+        """The configured size applies to Sleipnir entries unless the entry sets its own."""
+        from niuu.mesh import build_mesh_from_adapters_list
+        from sleipnir.adapters.in_process import InProcessBus
+
+        mesh = build_mesh_from_adapters_list(
+            adapters=[entry],
+            own_peer_id="test",
+            rpc_timeout_s=5.0,
+            rpc_reply_cache_size=4,
+            sleipnir_transport_builder=lambda _entry: InProcessBus(),
+        )
+
+        assert mesh._rpc_reply_cache_size == expected
 
     def test_mesh_aliases_resolve(self):
         from niuu.mesh import MESH_ALIASES
@@ -966,7 +992,12 @@ class TestBrokerMeshIntegration:
         settings = SkuldSettings(
             session={"id": "s1", "workspace_dir": str(tmp_path)},
             transport="subprocess",
-            mesh={"enabled": True, "peer_id": "test-skuld", "transport": "in_process"},
+            mesh={
+                "enabled": True,
+                "peer_id": "test-skuld",
+                "transport": "in_process",
+                "rpc_reply_cache_size": 3,
+            },
         )
         b = Broker(settings=settings)
 
@@ -984,6 +1015,7 @@ class TestBrokerMeshIntegration:
 
         assert b._mesh_adapter is not None
         assert b._mesh_adapter.is_running is True
+        assert b._mesh_adapter._mesh._rpc_reply_cache_size == 3
 
         await b._mesh_adapter.stop()
 
@@ -995,7 +1027,12 @@ class TestBrokerMeshIntegration:
         settings = SkuldSettings(
             session={"id": "s1", "workspace_dir": str(tmp_path)},
             transport="subprocess",
-            mesh={"enabled": True, "peer_id": "test-peer", "transport": "nng"},
+            mesh={
+                "enabled": True,
+                "peer_id": "test-peer",
+                "transport": "nng",
+                "rpc_reply_cache_size": 3,
+            },
         )
         b = Broker(settings=settings)
         b._transport = MagicMock()
@@ -1015,7 +1052,7 @@ class TestBrokerMeshIntegration:
             patch(
                 "ravn.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter",
                 return_value=mock_mesh,
-            ),
+            ) as mock_mesh_cls,
             patch("skuld.broker.build_discovery_adapters", return_value=None),
             patch("niuu.mesh.cluster.read_cluster_pub_addresses", return_value=[]),
         ):
@@ -1023,6 +1060,42 @@ class TestBrokerMeshIntegration:
 
         assert b._mesh_adapter is not None
         assert b._mesh_adapter.is_running is True
+        assert mock_mesh_cls.call_args.kwargs["rpc_reply_cache_size"] == 3
+        await b._mesh_adapter.stop()
+
+    @pytest.mark.asyncio
+    async def test_start_mesh_adapter_adapters_list_passes_reply_cache_size(self, tmp_path):
+        """The adapters-list path hands the configured reply cache size to the builder."""
+        from skuld.broker import Broker
+
+        settings = SkuldSettings(
+            session={"id": "s1", "workspace_dir": str(tmp_path)},
+            transport="subprocess",
+            mesh={
+                "enabled": True,
+                "peer_id": "test-peer",
+                "adapters": [{"adapter": "sleipnir", "transport": "nats"}],
+                "discovery_adapters": [{"adapter": "static"}],
+                "rpc_reply_cache_size": 3,
+            },
+        )
+        b = Broker(settings=settings)
+        b._transport = MagicMock()
+
+        mock_mesh = MagicMock()
+        mock_mesh.start = AsyncMock()
+        mock_mesh.stop = AsyncMock()
+        mock_mesh.subscribe = AsyncMock()
+        mock_mesh.unsubscribe = AsyncMock()
+
+        with (
+            patch("niuu.mesh.build_mesh_from_adapters_list", return_value=mock_mesh) as build,
+            patch("skuld.broker.build_discovery_adapters", return_value=None),
+        ):
+            await b._start_mesh_adapter()
+
+        assert build.call_args.kwargs["rpc_reply_cache_size"] == 3
+        assert b._mesh_adapter is not None
         await b._mesh_adapter.stop()
 
     @pytest.mark.asyncio

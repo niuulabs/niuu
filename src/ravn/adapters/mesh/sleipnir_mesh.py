@@ -12,6 +12,44 @@ Uses Sleipnir's publisher/subscriber ports, so the underlying transport
 4. Unsubscribes from reply topic
 
 This works regardless of underlying transport.
+
+**RPC (handle)** — requests for this peer arrive on
+``ravn.mesh.rpc.<own_peer_id>``; the registered handler's reply is published
+to the request's ``reply_topic``.  A request is handled only once its reply is
+out: a failed reply publish raises, so a JetStream transport naks the request
+and redelivers it.
+
+Sleipnir delivery is at-least-once, so handlers must be idempotent on the
+event's ``event_id`` (see :class:`~sleipnir.ports.events.SleipnirSubscriber`),
+and the RPC handler may run a whole agent turn.  The adapter therefore keeps
+each completed reply keyed on the request's ``event_id``, which is the same on
+every redelivery.  A redelivered request whose handler already completed gets
+the stored reply re-published and does not reach the handler again.  A handler
+that raised has completed too; its ``{"error": ...}`` reply is what gets stored.
+
+The store is bounded by a count (``rpc_reply_cache_size``, oldest evicted
+first), not by the RPC timeout.  JetStream keeps redelivering a nak'd request
+for its whole nak backoff (96 s across the default five deliveries), long after
+a 10 s RPC timeout.  Entries that expired with the timeout would let those late
+redeliveries run the handler again.
+
+The store is in memory on purpose.  It covers the redeliveries that come back
+to this process: after a failed reply publish (nak, then the backoff) and after
+a lost ack (``ack_wait``).  A durable store would not make a crash before the
+ack safe:
+
+- Without a ``consumer_group`` the RPC subscription is an ephemeral JetStream
+  consumer.  It dies with the process, and the restarted peer's consumer starts
+  at new messages (unless ``replay_from_sequence`` is set), so the request is
+  not redelivered.
+- With a ``consumer_group`` the redelivery can go to any member of the group,
+  and a store in the crashed process would not be consulted.
+- A crash almost always lands inside the handler, where there is no reply yet
+  to replay, rather than in the short gap between the reply and the ack.
+  Running the handler again is then the at-least-once contract doing its job.
+
+Only completed replies are stored.  A redelivery cannot overlap the handler run
+of an earlier delivery, because a subscription handles one event at a time.
 """
 
 from __future__ import annotations
@@ -19,11 +57,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
 from niuu.mesh import mesh_event_prefix
+from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE
 from ravn.adapters.collaboration import project_ravn_event
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.ports.mesh import PeerNotFoundError
@@ -127,6 +167,9 @@ class SleipnirMeshAdapter:
         Injected DiscoveryPort for peer verification.
     rpc_timeout_s:
         Default timeout for RPC calls.
+    rpc_reply_cache_size:
+        Completed RPC replies kept for redelivered requests (see the module
+        docstring).  Must be at least 1.
     """
 
     def __init__(
@@ -138,7 +181,14 @@ class SleipnirMeshAdapter:
         rpc_timeout_s: float = 10.0,
         environment_id: str = "",
         manage_transport_lifecycle: bool = True,
+        rpc_reply_cache_size: int = DEFAULT_RPC_REPLY_CACHE_SIZE,
     ) -> None:
+        if rpc_reply_cache_size < 1:
+            raise ValueError(
+                f"rpc_reply_cache_size must be >= 1, got {rpc_reply_cache_size}: "
+                "set mesh.rpc_reply_cache_size to the number of completed RPC "
+                "replies to keep for redelivered requests"
+            )
         self._publisher = publisher
         self._subscriber = subscriber
         self._own_peer_id = own_peer_id
@@ -156,6 +206,12 @@ class SleipnirMeshAdapter:
         # Pending RPC responses: correlation_id -> (event, response_dict)
         self._pending_rpc: dict[str, asyncio.Future[dict]] = {}
         self._rpc_subscription: Subscription | None = None
+
+        # Completed replies to incoming RPC requests: request event_id ->
+        # response, least recently used first.  Kept across stop()/start(): a
+        # durable consumer redelivers earlier requests to the new subscription.
+        self._rpc_replies: OrderedDict[str, dict] = OrderedDict()
+        self._rpc_reply_cache_size = rpc_reply_cache_size
 
     # ------------------------------------------------------------------
     # MeshPort interface
@@ -403,8 +459,61 @@ class SleipnirMeshAdapter:
         if peer_id not in peers:
             raise PeerNotFoundError(peer_id)
 
+    async def _rpc_response(self, sleipnir_event: Any, request: dict) -> dict:
+        """Return the reply to *request*, running the handler at most once per event_id."""
+        event_id = sleipnir_event.event_id
+        source = getattr(sleipnir_event, "source", "-")
+        correlation_id = sleipnir_event.correlation_id
+        if not event_id:
+            # An empty key would hand one requester another request's reply.
+            raise ValueError(
+                f"sleipnir_mesh: RPC request without an event_id (source={source} "
+                f"correlation_id={correlation_id}) cannot be told apart from its "
+                "redeliveries; publish RPC requests with SleipnirMeshAdapter.send()"
+            )
+
+        if event_id in self._rpc_replies:
+            self._rpc_replies.move_to_end(event_id)
+            logger.info(
+                "sleipnir_mesh: redelivered RPC request, re-publishing its stored reply "
+                "peer=%s environment=%s source=%s event_id=%s correlation_id=%s",
+                self._own_peer_id,
+                self._environment_id,
+                source,
+                event_id,
+                correlation_id,
+            )
+            return self._rpc_replies[event_id]
+
+        if self._rpc_handler is None:
+            # Not stored: no handler ran, so a redelivery after set_rpc_handler()
+            # must still reach the handler.
+            return {"error": "no rpc handler registered"}
+
+        try:
+            response = await self._rpc_handler(request)
+        except Exception as exc:
+            logger.warning(
+                "sleipnir_mesh: RPC handler failed peer=%s environment=%s "
+                "source=%s correlation_id=%s error=%s",
+                self._own_peer_id,
+                self._environment_id,
+                source,
+                correlation_id,
+                exc,
+            )
+            response = {"error": str(exc)}
+
+        self._rpc_replies[event_id] = response
+        if len(self._rpc_replies) > self._rpc_reply_cache_size:
+            self._rpc_replies.popitem(last=False)
+        return response
+
     async def _handle_rpc_request(self, sleipnir_event: Any) -> None:
-        """Handle incoming RPC request and send reply."""
+        """Handle incoming RPC request and send reply.
+
+        Idempotent on the request's ``event_id``: see the module docstring.
+        """
         payload = sleipnir_event.payload
         request = payload.get("rpc_request", {})
         reply_topic = payload.get("reply_topic")
@@ -421,23 +530,7 @@ class SleipnirMeshAdapter:
             )
             return
 
-        # Process request
-        if self._rpc_handler is not None:
-            try:
-                response = await self._rpc_handler(request)
-            except Exception as exc:
-                logger.warning(
-                    "sleipnir_mesh: RPC handler failed peer=%s environment=%s "
-                    "source=%s correlation_id=%s error=%s",
-                    self._own_peer_id,
-                    self._environment_id,
-                    getattr(sleipnir_event, "source", "-"),
-                    correlation_id,
-                    exc,
-                )
-                response = {"error": str(exc)}
-        else:
-            response = {"error": "no rpc handler registered"}
+        response = await self._rpc_response(sleipnir_event, request)
 
         # Send reply
         from sleipnir.domain.events import SleipnirEvent

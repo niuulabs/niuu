@@ -54,6 +54,7 @@ def build_mesh_from_adapters_list(
     own_peer_id: str,
     rpc_timeout_s: float,
     *,
+    rpc_reply_cache_size: int,
     discovery: Any | None = None,
     sleipnir_transport_builder: Any | None = None,
     environment_id: str = "",
@@ -69,6 +70,9 @@ def build_mesh_from_adapters_list(
         This peer's identity for mesh routing.
     rpc_timeout_s:
         Default RPC timeout applied to each adapter.
+    rpc_reply_cache_size:
+        Completed RPC replies each Sleipnir adapter keeps for redelivered
+        requests, unless the entry sets its own.
     discovery:
         Optional discovery adapter passed to non-Sleipnir adapters.
     sleipnir_transport_builder:
@@ -108,6 +112,7 @@ def build_mesh_from_adapters_list(
         is_sleipnir = "sleipnir" in fq_class.lower()
         if is_sleipnir:
             kwargs.setdefault("environment_id", environment_id)
+            kwargs.setdefault("rpc_reply_cache_size", rpc_reply_cache_size)
 
         # Sleipnir adapters need publisher/subscriber injection
         if is_sleipnir and sleipnir_transport_builder is not None:
@@ -137,6 +142,7 @@ def build_in_process_mesh(
     own_peer_id: str,
     rpc_timeout_s: float,
     *,
+    rpc_reply_cache_size: int,
     environment_id: str = "",
 ) -> Any:
     """Build a SleipnirMeshAdapter backed by InProcessBus (local/test mode)."""
@@ -150,6 +156,7 @@ def build_in_process_mesh(
         own_peer_id=own_peer_id,
         rpc_timeout_s=rpc_timeout_s,
         environment_id=environment_id,
+        rpc_reply_cache_size=rpc_reply_cache_size,
     )
 
 
