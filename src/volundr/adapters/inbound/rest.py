@@ -2070,7 +2070,7 @@ def create_router(
 
         principal = await _optional_principal(request)
         try:
-            await forge.ensure_access(session, principal)
+            await forge.ensure_access(session, principal, "read")
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -2088,7 +2088,7 @@ def create_router(
             raise HTTPException(status_code=404, detail="Session not found")
         principal = await _optional_principal(request)
         try:
-            await forge.ensure_access(session, principal)
+            await forge.ensure_access(session, principal, "read")
         except SessionAccessDeniedError:
             raise HTTPException(status_code=403, detail="Access denied") from None
         result = {"available": runtime_build, "current": None, "state": "unavailable"}
@@ -3462,7 +3462,7 @@ def create_router(
 
         principal = await _optional_principal(request)
         try:
-            await forge.ensure_access(session, principal)
+            await forge.ensure_access(session, principal, "read")
         except SessionAccessDeniedError as exc:
             raise HTTPException(403, f"Access denied to session {session_id}") from exc
 

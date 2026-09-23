@@ -6,6 +6,9 @@ Exercises the auth check paths added to:
 - POST /chronicles/{id}/timeline (report_timeline)
 - POST /events (emit_event)
 - POST /events/batch (emit_event)
+
+and the read-action check on session read routes (GET /sessions/{id},
+/runtime-version, /conversation) under the bundled Cedar policy.
 """
 
 from datetime import UTC, datetime
@@ -294,6 +297,113 @@ def _build_events_app(identity, authz, session_repo):
     app.state.identity = identity
     app.state.authorization = authz
     return app, sink
+
+
+# ---------------------------------------------------------------------------
+# Tests: Session read routes authorize the "read" action
+# ---------------------------------------------------------------------------
+
+
+class RecordingDenyAuthorizationAdapter(DenyAllAuthorizationAdapter):
+    """Denies everything and records the actions it was asked about."""
+
+    def __init__(self) -> None:
+        self.actions: list[str] = []
+
+    async def is_allowed(self, principal: Principal, action: str, resource: Resource) -> bool:
+        self.actions.append(action)
+        return False
+
+
+FOREIGN_TENANT_PRINCIPAL = Principal(
+    user_id="foreign-user",
+    email="foreign@test.com",
+    tenant_id="other-tenant",
+    roles=["volundr:developer"],
+)
+
+FOREIGN_TENANT_ADMIN = Principal(
+    user_id="foreign-admin",
+    email="foreign-admin@test.com",
+    tenant_id="other-tenant",
+    roles=["volundr:admin"],
+)
+
+TENANT_VIEWER = Principal(
+    user_id="viewer-user",
+    email="viewer@test.com",
+    tenant_id="test-tenant",
+    roles=["volundr:viewer"],
+)
+
+READ_ROUTES = ["", "/runtime-version", "/conversation"]
+
+
+@pytest.mark.parametrize("suffix", READ_ROUTES)
+def test_session_read_routes_authorize_read_action(session_repo, suffix):
+    session = _make_session()
+    _seed_session(session_repo, session)
+    authz = RecordingDenyAuthorizationAdapter()
+
+    app = _build_rest_app(session_repo, StubIdentityAdapter(OWNER_PRINCIPAL), authz)
+    with TestClient(app) as client:
+        resp = client.get(f"/api/v1/forge/sessions/{session.id}{suffix}")
+
+    assert resp.status_code == 403
+    assert authz.actions == ["read"]
+
+
+class TestSessionReadUnderCedar:
+    """The bundled Cedar policy has no "view" action; read routes must use "read"."""
+
+    @pytest.fixture
+    def cedar_authz(self):
+        from identity.adapters.cedar import CedarAuthorizationAdapter
+
+        return CedarAuthorizationAdapter()
+
+    @pytest.mark.parametrize("suffix", ["", "/runtime-version"])
+    def test_owner_can_read_session(self, session_repo, cedar_authz, suffix):
+        session = _make_session()
+        _seed_session(session_repo, session)
+
+        app = _build_rest_app(session_repo, StubIdentityAdapter(OWNER_PRINCIPAL), cedar_authz)
+        with TestClient(app) as client:
+            resp = client.get(f"/api/v1/forge/sessions/{session.id}{suffix}")
+
+        assert resp.status_code == 200
+
+    def test_owner_gets_session_body(self, session_repo, cedar_authz):
+        session = _make_session()
+        _seed_session(session_repo, session)
+
+        app = _build_rest_app(session_repo, StubIdentityAdapter(OWNER_PRINCIPAL), cedar_authz)
+        with TestClient(app) as client:
+            resp = client.get(f"/api/v1/forge/sessions/{session.id}")
+
+        assert resp.json()["id"] == str(session.id)
+
+    def test_tenant_viewer_can_read_session(self, session_repo, cedar_authz):
+        session = _make_session()
+        _seed_session(session_repo, session)
+
+        app = _build_rest_app(session_repo, StubIdentityAdapter(TENANT_VIEWER), cedar_authz)
+        with TestClient(app) as client:
+            resp = client.get(f"/api/v1/forge/sessions/{session.id}")
+
+        assert resp.status_code == 200
+
+    @pytest.mark.parametrize("principal", [FOREIGN_TENANT_PRINCIPAL, FOREIGN_TENANT_ADMIN])
+    @pytest.mark.parametrize("suffix", READ_ROUTES)
+    def test_other_tenant_is_denied(self, session_repo, cedar_authz, principal, suffix):
+        session = _make_session()
+        _seed_session(session_repo, session)
+
+        app = _build_rest_app(session_repo, StubIdentityAdapter(principal), cedar_authz)
+        with TestClient(app) as client:
+            resp = client.get(f"/api/v1/forge/sessions/{session.id}{suffix}")
+
+        assert resp.status_code == 403
 
 
 # ---------------------------------------------------------------------------

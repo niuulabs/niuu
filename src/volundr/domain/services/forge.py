@@ -186,7 +186,7 @@ class ForgeService:
         self,
         session: Session,
         principal: Principal | None,
-        action: str = "view",
+        action: str,
     ) -> None:
         await self._session_service._check_access(session, principal, action)
 
