@@ -8,8 +8,9 @@ settle-after-handling loop :func:`consume_deliveries`.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
+
+import pytest
 
 from sleipnir.adapters._subscriber_support import (
     DEFAULT_RING_BUFFER_DEPTH,
@@ -290,7 +291,8 @@ async def test_consume_deliveries_leaves_cancelled_delivery_unsettled():
     await queue.put(_RecordingDelivery(make_event(event_id="in-flight"), log))
     await asyncio.wait_for(started.wait(), timeout=1.0)
     task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
+    # The loop must propagate cancellation, not swallow it and settle anyway.
+    with pytest.raises(asyncio.CancelledError):
         await task
 
     assert log == []
