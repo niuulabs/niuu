@@ -15,6 +15,7 @@ from ravn.adapters.permission.enforcer import (
 from ravn.adapters.tools.hooks import EnforcerHook
 from ravn.config import PermissionConfig, PermissionRuleConfig
 from ravn.domain.exceptions import PermissionDeniedError
+from ravn.domain.permission_mode import PermissionMode
 from ravn.ports.permission import (
     Allow,
     CommandIntent,
@@ -22,7 +23,6 @@ from ravn.ports.permission import (
     NeedsApproval,
     PermissionDecision,
     PermissionEnforcerPort,
-    PermissionMode,
     PermissionPort,
 )
 

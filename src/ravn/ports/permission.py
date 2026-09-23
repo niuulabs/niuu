@@ -7,9 +7,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-# Re-exported: the permission port and its callers share the one domain enum.
-from ravn.domain.permission_mode import PermissionMode as PermissionMode
-
 
 class CommandIntent(StrEnum):
     """Classification of a shell command's intent."""
