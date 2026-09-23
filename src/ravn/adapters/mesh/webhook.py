@@ -381,11 +381,15 @@ class WebhookMeshAdapter:
     # ------------------------------------------------------------------
 
     def _get_peers(self) -> dict:
-        """Get all known peers from discovery."""
-        try:
-            return self._discovery.peers()  # type: ignore[attr-defined]
-        except Exception:
+        """Get all known peers from discovery.
+
+        Without discovery this adapter knows no peers. A discovery failure
+        propagates: reported as "no peers", ``send`` would raise
+        ``PeerNotFoundError`` and a composite mesh would route elsewhere.
+        """
+        if self._discovery is None:
             return {}
+        return self._discovery.peers()  # type: ignore[attr-defined]
 
     def _get_peer(self, peer_id: str) -> object | None:
         """Get a specific peer from discovery."""

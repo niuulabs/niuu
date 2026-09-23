@@ -887,35 +887,37 @@ class TestNiuuMeshBuilder:
         mesh = build_in_process_mesh("test-peer", rpc_timeout_s=5.0)
         assert mesh is not None
 
-    def test_build_mesh_from_adapters_list_empty(self):
-        from niuu.mesh import build_mesh_from_adapters_list
+    def test_build_mesh_from_adapters_list_empty_raises(self):
+        from niuu.mesh import MeshBuildError, build_mesh_from_adapters_list
 
-        result = build_mesh_from_adapters_list(
-            adapters=[],
-            own_peer_id="test",
-            rpc_timeout_s=5.0,
-        )
-        assert result is None
+        with pytest.raises(MeshBuildError, match="no mesh adapters configured"):
+            build_mesh_from_adapters_list(
+                adapters=[],
+                own_peer_id="test",
+                rpc_timeout_s=5.0,
+            )
 
-    def test_build_mesh_from_adapters_list_bad_import(self):
-        from niuu.mesh import build_mesh_from_adapters_list
+    def test_build_mesh_from_adapters_list_bad_import_raises(self):
+        from niuu.mesh import MeshBuildError, build_mesh_from_adapters_list
 
-        result = build_mesh_from_adapters_list(
-            adapters=[{"adapter": "nonexistent.module.Class"}],
-            own_peer_id="test",
-            rpc_timeout_s=5.0,
-        )
-        assert result is None
+        with pytest.raises(MeshBuildError, match="could not be imported") as excinfo:
+            build_mesh_from_adapters_list(
+                adapters=[{"adapter": "nonexistent.module.Class"}],
+                own_peer_id="test",
+                rpc_timeout_s=5.0,
+            )
 
-    def test_build_mesh_from_adapters_list_missing_adapter_key(self):
-        from niuu.mesh import build_mesh_from_adapters_list
+        assert isinstance(excinfo.value.__cause__, ImportError)
 
-        result = build_mesh_from_adapters_list(
-            adapters=[{"not_adapter": "foo"}],
-            own_peer_id="test",
-            rpc_timeout_s=5.0,
-        )
-        assert result is None
+    def test_build_mesh_from_adapters_list_missing_adapter_key_raises(self):
+        from niuu.mesh import MeshBuildError, build_mesh_from_adapters_list
+
+        with pytest.raises(MeshBuildError, match=r"mesh.adapters\[0\] has no 'adapter' key"):
+            build_mesh_from_adapters_list(
+                adapters=[{"not_adapter": "foo"}],
+                own_peer_id="test",
+                rpc_timeout_s=5.0,
+            )
 
     def test_mesh_aliases_resolve(self):
         from niuu.mesh import MESH_ALIASES
@@ -1048,4 +1050,65 @@ class TestBrokerMeshIntegration:
             with pytest.raises(ImportError, match="nng not available"):
                 await b._start_mesh_adapter()
 
+        assert b._mesh_adapter is None
+
+    @pytest.mark.asyncio
+    async def test_start_mesh_adapter_unbuildable_list_entry_fails_closed(self, tmp_path):
+        """A configured mesh adapter that cannot be imported stops mesh startup."""
+        from niuu.mesh import MeshBuildError
+        from skuld.broker import Broker
+
+        settings = SkuldSettings(
+            session={"id": "s1", "workspace_dir": str(tmp_path)},
+            transport="subprocess",
+            mesh={
+                "enabled": True,
+                "peer_id": "test-peer",
+                "adapters": [{"adapter": "nonexistent.module.MeshAdapter"}],
+                "discovery_adapters": [{"adapter": "static", "peers": []}],
+            },
+        )
+        b = Broker(settings=settings)
+        b._transport = MagicMock()
+
+        with patch("skuld.broker.build_discovery_adapters") as build_discovery:
+            with pytest.raises(MeshBuildError, match="nonexistent.module.MeshAdapter"):
+                await b._start_mesh_adapter()
+
+        build_discovery.assert_not_called()
+        assert b._mesh_adapter is None
+
+    @pytest.mark.asyncio
+    async def test_start_mesh_adapter_mesh_start_failure_fails_closed(self, tmp_path):
+        """A mesh that fails to start is raised to the broker, not logged and run."""
+        from skuld.broker import Broker
+
+        settings = SkuldSettings(
+            session={"id": "s1", "workspace_dir": str(tmp_path)},
+            transport="subprocess",
+            mesh={"enabled": True, "peer_id": "test-peer", "transport": "nng"},
+        )
+        b = Broker(settings=settings)
+        b._transport = MagicMock()
+
+        mock_mesh = MagicMock()
+        mock_mesh.start = AsyncMock(side_effect=OSError("address already in use"))
+        mock_discovery = MagicMock()
+        mock_discovery.start = AsyncMock()
+        mock_discovery.stop = AsyncMock()
+        mock_discovery.watch = AsyncMock()
+
+        with (
+            patch("niuu.mesh.transport_builder.build_nng_transport", return_value=MagicMock()),
+            patch(
+                "ravn.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter",
+                return_value=mock_mesh,
+            ),
+            patch("skuld.broker.build_discovery_adapters", return_value=mock_discovery),
+            patch("niuu.mesh.cluster.read_cluster_pub_addresses", return_value=[]),
+        ):
+            with pytest.raises(OSError, match="address already in use"):
+                await b._start_mesh_adapter()
+
+        mock_discovery.stop.assert_awaited_once()
         assert b._mesh_adapter is None
