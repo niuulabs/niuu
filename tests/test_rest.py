@@ -90,7 +90,7 @@ class TestDeviceEndpoints:
         session_service = SessionService(repository=repository, pod_manager=pod_manager)
         router = create_router(
             session_service=session_service,
-            stats_service=StatsService(stats_repository),
+            stats_service=StatsService(stats_repository, session_service),
             pricing_provider=pricing_provider,
             device_repository=device_repo,
         )
@@ -157,9 +157,10 @@ class TestDeviceEndpoints:
     ):
         app = FastAPI()
         app.state.identity = _StubIdentity()
+        session_service = SessionService(repository=repository, pod_manager=pod_manager)
         router = create_router(
-            session_service=SessionService(repository=repository, pod_manager=pod_manager),
-            stats_service=StatsService(stats_repository),
+            session_service=session_service,
+            stats_service=StatsService(stats_repository, session_service),
             pricing_provider=pricing_provider,
         )
         app.include_router(router)
@@ -185,7 +186,7 @@ class TestSSEEndpoint:
             repository=repository,
             pod_manager=pod_manager,
         )
-        stats_service = StatsService(stats_repository)
+        stats_service = StatsService(stats_repository, session_service)
 
         # Create router without broadcaster
         router = create_router(
@@ -239,7 +240,7 @@ class TestSSEEndpoint:
             pod_manager=pod_manager,
             broadcaster=broadcaster,
         )
-        stats_service = StatsService(stats_repository)
+        stats_service = StatsService(stats_repository, session_service)
 
         router = create_router(
             session_service=session_service,
@@ -283,7 +284,7 @@ class TestSSEEndpoint:
         app.include_router(
             create_router(
                 session_service=session_service,
-                stats_service=StatsService(stats_repository),
+                stats_service=StatsService(stats_repository, session_service),
                 pricing_provider=pricing_provider,
                 broadcaster=broadcaster,
             )
@@ -354,6 +355,99 @@ class TestSSEEndpoint:
         response = TestClient(app).get("/api/v1/forge/sessions/stream")
         assert response.status_code == 401
 
+    @pytest.mark.asyncio
+    async def test_sse_stream_stats_cover_only_the_subscribers_sessions(
+        self, repository, pod_manager, stats_repository, pricing_provider
+    ):
+        """A stats tick reaches the subscriber as its own figures, never the publisher's."""
+        from datetime import datetime
+
+        from httpx import ASGITransport, AsyncClient
+
+        tick = RealtimeEvent(
+            type=EventType.STATS_UPDATED,
+            data={"active_sessions": 1000},
+            timestamp=datetime.now(UTC),
+        )
+        stats_repository.set_stats(active_sessions=2)
+        app = self._scoped_stream_app(
+            repository, pod_manager, stats_repository, pricing_provider, [tick]
+        )
+        app.state.identity = _StubIdentity()
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                "/api/v1/forge/sessions/stream",
+                headers={
+                    "x-auth-user-id": "bob",
+                    "x-auth-tenant": "t1",
+                    "x-auth-roles": "volundr:developer",
+                },
+            )
+
+        assert response.status_code == 200
+        assert "event: stats_updated" in response.text
+        assert '"active_sessions": 2' in response.text
+        assert "1000" not in response.text
+        assert stats_repository.scopes == [("t1", "bob")]
+
+    def test_router_refuses_a_stream_without_stats(self, repository, pod_manager, pricing_provider):
+        """The stream cannot serve stats_updated without a stats service, so say so."""
+        broadcaster = InMemoryEventBroadcaster()
+        with pytest.raises(ValueError, match="stats_service"):
+            create_router(
+                session_service=SessionService(repository=repository, pod_manager=pod_manager),
+                pricing_provider=pricing_provider,
+                broadcaster=broadcaster,
+            )
+
+
+class TestStatsScope:
+    """GET /stats is bounded like GET /sessions."""
+
+    @staticmethod
+    def _client(repository, pod_manager, stats_repository, *, identity: bool) -> TestClient:
+        from volundr.adapters.outbound.authorization import SimpleRoleAuthorizationAdapter
+
+        session_service = SessionService(
+            repository=repository,
+            pod_manager=pod_manager,
+            authorization=SimpleRoleAuthorizationAdapter(),
+        )
+        app = FastAPI()
+        if identity:
+            app.state.identity = _StubIdentity()
+        app.include_router(
+            create_router(
+                session_service=session_service,
+                stats_service=StatsService(stats_repository, session_service),
+            )
+        )
+        return TestClient(app)
+
+    @pytest.mark.parametrize(
+        ("roles", "scope"),
+        [("volundr:developer", ("t1", "bob")), ("volundr:admin", ("t1", None))],
+    )
+    def test_stats_are_bounded_to_the_callers_sessions(
+        self, repository, pod_manager, stats_repository, roles, scope
+    ):
+        client = self._client(repository, pod_manager, stats_repository, identity=True)
+        response = client.get(
+            "/api/v1/forge/stats",
+            headers={"x-auth-user-id": "bob", "x-auth-tenant": "t1", "x-auth-roles": roles},
+        )
+        assert response.status_code == 200
+        assert stats_repository.scopes == [scope]
+
+    def test_stats_require_a_principal_when_authorization_is_configured(
+        self, repository, pod_manager, stats_repository
+    ):
+        client = self._client(repository, pod_manager, stats_repository, identity=False)
+        response = client.get("/api/v1/forge/stats")
+        assert response.status_code == 401
+        assert stats_repository.scopes == []
+
 
 class TestSessionEndpoints:
     """Tests for session CRUD endpoints."""
@@ -373,7 +467,7 @@ class TestSessionEndpoints:
             pod_manager=pod_manager,
             broadcaster=mock_broadcaster,
         )
-        stats_service = StatsService(stats_repository)
+        stats_service = StatsService(stats_repository, session_service)
 
         router = create_router(
             session_service=session_service,
@@ -495,7 +589,7 @@ class TestStatsEndpoint:
             repository=repository,
             pod_manager=pod_manager,
         )
-        stats_service = StatsService(stats_repository)
+        stats_service = StatsService(stats_repository, session_service)
 
         router = create_router(
             session_service=session_service,

@@ -552,8 +552,10 @@ The stream is scoped to the caller the same way `GET /sessions` is: you receive
 events for your own sessions, or for your tenant's sessions if you hold
 `volundr:admin` in that tenant, and never another tenant's. Authenticate the
 subscription like any other session route; with identity configured, an
-unauthenticated subscriber gets `401`. `heartbeat` and `stats_updated` reach every
-subscriber. `session_read_state` reaches only the reader it names. `pr_merged`
+unauthenticated subscriber gets `401`. `heartbeat` reaches every subscriber.
+`stats_updated` also reaches every subscriber, but its figures cover only the
+sessions that subscriber may list, the same figures `GET /stats` returns to it.
+`session_read_state` reaches only the reader it names. `pr_merged`
 names no session, so it is only delivered when the deployment runs without
 identity. Session-scoped payloads carry `owner_id` and `tenant_id`.
 
