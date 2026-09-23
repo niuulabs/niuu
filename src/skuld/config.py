@@ -105,7 +105,6 @@ class MeshConfig(BaseModel):
     adapters: list[dict[str, Any]] = Field(default_factory=list)
     discovery_adapters: list[dict[str, Any]] = Field(default_factory=list)
     nats: MeshNatsConfig = Field(default_factory=MeshNatsConfig)
-    redis_url_env: str = Field(default="REDIS_URL")
     rpc_timeout_s: float = Field(default=10.0)
     default_work_timeout_s: float = Field(default=120.0)
     default_response_urgency: float = Field(default=0.3)

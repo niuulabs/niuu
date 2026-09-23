@@ -895,13 +895,11 @@ class Broker(
                 transport_name,
                 service_prefix="skuld",
             )
-            if transport_name in ("sleipnir", "rabbitmq") and not kwargs:
-                return None
             return build_transport(transport_name, **kwargs)
 
         # New configs select transport and discovery independently. Legacy
         # configs keep adapters as discovery entries and use local NNG.
-        mesh = None
+        # Every branch raises when the configured mesh cannot be built.
         if mesh_cfg.discovery_adapters and mesh_cfg.adapters:
             mesh = build_mesh_from_adapters_list(
                 adapters=list(mesh_cfg.adapters),
@@ -927,12 +925,11 @@ class Broker(
                     else "tcp://127.0.0.1:0"
                 )
                 peer_addresses = read_cluster_pub_addresses(mesh_cfg.adapters)
-                nng = build_nng_transport(
+                transport = build_nng_transport(
                     address=address,
                     service_id=f"skuld:{own_peer_id}",
                     peer_addresses=peer_addresses or None,
                 )
-                transport = nng
             else:
                 transport = build_transport(
                     mesh_cfg.transport,
@@ -942,22 +939,12 @@ class Broker(
                         service_prefix="skuld",
                     ),
                 )
-            if transport is None:
-                raise RuntimeError(
-                    f"configured mesh transport {mesh_cfg.transport!r} could not be built"
-                )
             mesh = SleipnirMeshAdapter(
                 publisher=transport,
                 subscriber=transport,
                 own_peer_id=own_peer_id,
                 rpc_timeout_s=mesh_cfg.rpc_timeout_s,
                 environment_id=mesh_cfg.realm_id,
-            )
-
-        if mesh is None:
-            raise RuntimeError(
-                "configured mesh adapters could not be built; select transport='in_process' "
-                "explicitly for local-only delivery"
             )
 
         # Build discovery adapter using shared niuu.mesh.discovery_builder

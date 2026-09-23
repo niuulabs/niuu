@@ -8,6 +8,16 @@ others.
 Suitable for deployments where Redis is already in the stack and replay from
 offset is required (new services can catch up on historical events at startup).
 
+Delivery guarantee
+------------------
+**At-most-once.**  :meth:`RedisStreamsTransport._handle_message` runs ``XACK``
+on each entry before its handler runs, and the per-subscription queue drops
+its oldest event on overflow.  A handler failure, a crash, or a slow consumer
+loses events, and the consumer group cannot redeliver them.  This adapter does
+not meet the at-least-once contract of
+:class:`~sleipnir.ports.events.SleipnirSubscriber`.  No chart or deployment
+uses it; use :mod:`sleipnir.adapters.nats_transport` when delivery matters.
+
 Example config::
 
     sleipnir:

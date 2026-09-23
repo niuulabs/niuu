@@ -30,6 +30,10 @@ MESH_ALIASES: dict[str, str] = {
 }
 
 
+class MeshBuildError(RuntimeError):
+    """A configured mesh adapter entry cannot be imported or constructed."""
+
+
 def mesh_event_prefix(environment_id: str = "") -> str:
     """Return the event namespace for one isolated mesh environment."""
     normalized = re.sub(r"[^a-z0-9_]", "_", environment_id.strip().lower()).strip("_")
@@ -72,32 +76,58 @@ def build_mesh_from_adapters_list(
     discovery:
         Optional discovery adapter passed to non-Sleipnir adapters.
     sleipnir_transport_builder:
-        Optional callable(adapter_entry) -> (publisher, subscriber) for
-        Sleipnir adapters that need transport injection. If None, Sleipnir
+        Optional callable(adapter_entry) -> transport (publisher and
+        subscriber) for Sleipnir adapters that need transport injection. It
+        raises when the entry's transport cannot be built. If None, Sleipnir
         adapters are instantiated with kwargs only.
     environment_id:
         Flock/realm identifier used to isolate Sleipnir subjects.
 
     Returns
     -------
-    A MeshPort implementation, or None if no adapters could be loaded.
+    A MeshPort implementation: the single adapter, or a
+    ``CompositeMeshAdapter`` over all of them.
+
+    Raises
+    ------
+    MeshBuildError
+        *adapters* is empty, an entry has no ``adapter`` key, or an entry's
+        class cannot be imported or constructed. A configured adapter that
+        cannot be built is fatal, never skipped.
+    TransportBuildError
+        *sleipnir_transport_builder* could not build an entry's transport.
     """
+    if not adapters:
+        raise MeshBuildError(
+            "no mesh adapters configured: add an entry to mesh.adapters, or disable the mesh"
+        )
+
     CompositeMeshAdapter = import_class("ravn.adapters.mesh.composite.CompositeMeshAdapter")  # noqa: N806
 
     transports: list[Any] = []
-    for entry in adapters:
+    for index, entry in enumerate(adapters):
         adapter_class = entry.get("adapter", "")
         if not adapter_class:
-            logger.warning("mesh: adapter entry missing 'adapter' field, skipping")
-            continue
+            raise MeshBuildError(
+                f"mesh.adapters[{index}] has no 'adapter' key: set it to one of "
+                f"{', '.join(sorted(MESH_ALIASES))} or a fully-qualified mesh adapter class path"
+            )
 
         fq_class = MESH_ALIASES.get(adapter_class, adapter_class)
+        if "." not in fq_class:
+            raise MeshBuildError(
+                f"unknown mesh adapter {adapter_class!r} in mesh.adapters[{index}]: set it to "
+                f"one of {', '.join(sorted(MESH_ALIASES))} or a fully-qualified class path"
+            )
 
         try:
             cls = import_class(fq_class)
-        except Exception as exc:
-            logger.warning("mesh: failed to import %s: %s", fq_class, exc)
-            continue
+        except (ImportError, AttributeError) as exc:
+            raise MeshBuildError(
+                f"mesh adapter {adapter_class!r} in mesh.adapters[{index}] could not be "
+                f"imported from {fq_class}: {exc}. Install the package that provides it, "
+                "or remove the entry"
+            ) from exc
 
         kwargs = {k: v for k, v in entry.items() if k != "adapter"}
         kwargs["own_peer_id"] = own_peer_id
@@ -111,9 +141,6 @@ def build_mesh_from_adapters_list(
         # Sleipnir adapters need publisher/subscriber injection
         if is_sleipnir and sleipnir_transport_builder is not None:
             transport = sleipnir_transport_builder(entry)
-            if transport is None:
-                logger.warning("mesh: failed to build Sleipnir transport, skipping")
-                continue
             kwargs["publisher"] = transport
             kwargs["subscriber"] = transport
             kwargs.pop("discovery", None)
@@ -121,13 +148,12 @@ def build_mesh_from_adapters_list(
 
         try:
             transports.append(cls(**kwargs))
-            logger.debug("mesh: loaded adapter %s", fq_class)
         except Exception as exc:
-            logger.warning("mesh: failed to instantiate %s: %s", fq_class, exc)
-
-    if not transports:
-        logger.warning("mesh: no adapters loaded from config")
-        return None
+            raise MeshBuildError(
+                f"mesh adapter {adapter_class!r} in mesh.adapters[{index}] ({fq_class}) "
+                f"could not be constructed: {exc}. Fix that entry's settings"
+            ) from exc
+        logger.debug("mesh: loaded adapter %s", fq_class)
 
     if len(transports) == 1:
         return transports[0]

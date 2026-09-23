@@ -38,6 +38,14 @@ _SETTLED_STATUSES = frozenset(
     }
 )
 
+#: Statuses recording the resident's apply outcome, which a decision precedes.
+_RESOLVED_STATUSES = frozenset(
+    {
+        ReviewStatus.APPLIED.value,
+        ReviewStatus.APPLY_FAILED.value,
+    }
+)
+
 
 class ReviewDecisionPublisher(Protocol):
     """The command channel review decisions ride back to residents on."""
@@ -99,7 +107,12 @@ class OdinReviewService:
         if existing is not None:
             # Keep the richer original evidence; adopt only what the event
             # actually carries — the decision, or the resident's resolution.
-            if item.status != ReviewStatus.PENDING.value:
+            # A decided event redelivered after the resolution landed must not
+            # walk the status back from applied/apply_failed to approved.
+            stale_decision = (
+                event_type == registry.ODIN_REVIEW_DECIDED and existing.status in _RESOLVED_STATUSES
+            )
+            if item.status != ReviewStatus.PENDING.value and not stale_decision:
                 existing.status = item.status
             if event_type == registry.ODIN_REVIEW_DECIDED or item.decided_by:
                 existing.decided_by = item.decided_by

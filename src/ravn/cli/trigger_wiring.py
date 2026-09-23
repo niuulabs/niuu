@@ -239,21 +239,17 @@ def _wire_cascade(
     """
     from ravn.adapters.tools.cascade_tools import build_cascade_tools  # noqa: PLC0415
 
-    # Build optional mesh and discovery adapters (discovery first — mesh needs it)
+    # Build optional mesh and discovery adapters (discovery first — mesh needs it).
+    # Enabled-but-unbuildable is fatal: a cascade without its configured mesh
+    # would run as a lone peer while every indicator reads healthy.
     mesh: Any = None
     discovery: Any = None
 
     if settings.discovery.enabled:
-        try:
-            discovery = _build_discovery(settings, persona_config, profile_name)
-        except Exception as exc:
-            logger.warning("cascade: failed to build discovery adapter: %s", exc)
+        discovery = _build_discovery(settings, persona_config, profile_name)
 
     if settings.mesh.enabled:
-        try:
-            mesh = _build_mesh(settings, discovery)
-        except Exception as exc:
-            logger.warning("cascade: failed to build mesh adapter: %s", exc)
+        mesh = _build_mesh(settings, discovery)
 
     # Build cascade tools (Mode 1 always; Mode 2/3 when mesh/discovery available)
     allowed_target_personas = None
