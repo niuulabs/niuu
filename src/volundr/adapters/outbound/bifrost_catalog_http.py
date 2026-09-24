@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -57,7 +58,7 @@ class HttpBifrostCatalogAdapter(BifrostCatalogPort):
         async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
             response = await client.get(
                 f"{self._base_url}/api/v1/bifrost/models",
-                headers=self._auth.headers(),
+                headers=await asyncio.to_thread(self._auth.headers),
             )
             response.raise_for_status()
         payload = response.json()
