@@ -404,25 +404,14 @@ Controls access control decisions. Uses the [dynamic adapter pattern](#architect
 |---------|-------|-------------|
 | AllowAll (default) | `volundr.adapters.outbound.authorization.AllowAllAuthorizationAdapter` | Development mode -- all actions are permitted |
 | SimpleRole | `volundr.adapters.outbound.authorization.SimpleRoleAuthorizationAdapter` | Role-based access control using the identity role mapping |
-| Cerbos | `volundr.adapters.outbound.cerbos.CerbosAuthorizationAdapter` | Delegates authorization to a [Cerbos PDP](https://cerbos.dev/) via HTTP. Scalable, policy-as-code authorization |
+
+Production deployments enforce authorization via Cedar at the Envoy layer
+(`src/identity/adapters/cedar.py`), not through this per-request port.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `authorization.adapter` | string | `"volundr.adapters.outbound.authorization.AllowAllAuthorizationAdapter"` | Fully-qualified class path for the AuthorizationPort adapter |
 | `authorization.kwargs` | object | `{}` | All kwargs forwarded to the adapter constructor |
-
-<details>
-<summary>CerbosAuthorizationAdapter kwargs</summary>
-
-```yaml
-authorization:
-  adapter: "volundr.adapters.outbound.cerbos.CerbosAuthorizationAdapter"
-  kwargs:
-    url: "http://cerbos:3592"
-    timeout: 5
-```
-
-</details>
 
 ### Credential Store Adapter
 

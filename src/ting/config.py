@@ -490,12 +490,6 @@ class DispatchConfig(BaseModel):
     )
 
 
-class CerbosConfig(BaseModel):
-    """Cerbos authorization service configuration."""
-
-    url: str = Field(default="http://localhost:3592")
-
-
 class PATConfig(BaseModel):
     """Personal access token configuration (matches Volundr's PATConfig)."""
 
@@ -1259,7 +1253,6 @@ class Settings(BaseSettings):
     pat: PATConfig = Field(default_factory=PATConfig)
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
-    cerbos: CerbosConfig = Field(default_factory=CerbosConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     watcher: WatcherConfig = Field(default_factory=WatcherConfig)
     event_bus: EventBusConfig = Field(default_factory=EventBusConfig)
