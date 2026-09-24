@@ -19,11 +19,12 @@
 
 ```
 tests/
-├── __init__.py
 ├── conftest.py          # Shared fixtures
-├── test_regions/
-├── test_ports/
-└── test_adapters/
+├── test_<package>/      # Per-package tests (test_ravn/, test_ting/, test_skuld/, …)
+├── test_adapters/       # Völundr adapter tests
+├── test_domain/         # Völundr domain tests
+├── test_charts/         # Helm chart rendering tests
+└── integration/         # Real-infrastructure tests (run in CI)
 ```
 
 ### Backend Commands

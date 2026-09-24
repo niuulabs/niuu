@@ -2,39 +2,42 @@
 
 ## Hexagonal Architecture
 
-All infrastructure is abstracted behind **shared ports** (interfaces). Adapters implement these ports. Business logic (regions) never imports infrastructure directly.
+Every package under `src/` (`volundr`, `skuld`, `ravn`, `ting`, `niuu`,
+`bifrost`, `mimir`, `sleipnir`, `observatory`, …) follows the same shape.
+Domain logic depends on **ports** (interfaces), adapters implement them, and
+each package's composition root wires the implementations together.
 
 ```
-src/buri/
-├── ports/      # Interfaces (abstract base classes)
-├── adapters/   # Implementations of ports
-└── regions/    # Business logic (the six regions)
+src/<package>/
+├── domain/     # Models and services (business logic)
+├── ports/      # Interfaces (abstract base classes / protocols)
+├── adapters/   # Implementations of ports (inbound: REST, WebSocket; outbound: DB, HTTP, K8s…)
+└── main.py     # Composition root (some packages use app.py)
 ```
 
 ## Layer Rules
 
-- **Regions** import from `ports/` only, NEVER from `adapters/`
-- **Adapters** import from `ports/` for interfaces they implement
-- **CLI/main** imports from everywhere (it's the composition root)
-
-## The Six Regions
-
-| Region | Function | Cycle Time | Model Size |
-|--------|----------|------------|------------|
-| **Sköll** | Rapid perception, threat detection, interrupts | ~1s | Nano |
-| **Hati** | Pattern recognition, analysis, classification | ~5s | Medium |
-| **Sága** | Memory, continuity, keeper of self (Minni) | ~10s | Medium + Vector |
-| **Móði** | Deliberate reasoning, planning, decisions | ~30s | Large |
-| **Váli** | Creative thinking, alternatives, dreaming | ~5min | Large (high temp) |
-| **Víðarr** | Meta-cognition, self-observation, calibration | ~5s | Medium |
+- **Domain** imports from `ports/` only, never from `adapters/`
+- **Adapters** import from `ports/` for the interfaces they implement
+- **Composition roots** (`main.py`, `app.py`, CLI builders) import from everywhere
+- Package-to-package imports follow `module-boundaries.md` and
+  `ravn-niuu-boundary.md`
+- New adapters are selected dynamically from configuration
+  (`dynamic-adapters.md`)
 
 ## Communication
 
-- **Synapses (nng)** — All inter-region communication (~10-50μs latency)
-- **Distributed Blackboard** — Shared state (attention, felt sense, working memory)
-- **Files** — Persistence only (Minni YAML, PID files, logs)
+The mechanisms are distinct; see `ravn-niuu-boundary.md` for ownership:
 
-No Redis. No external state store. Just nng for communication and files for persistence.
+- **Service APIs** (REST, WebSocket, SSE) between services and clients
+- **Event bus** (Sleipnir) for events between services, over configured
+  transports
+- **Collaboration rooms** for shared conversation among agents and humans
+- **Flokk mesh** for direct communication among members of a flock
+- **A2A** for discovery and task interaction with external agents and workflows
+
+Persistence is PostgreSQL through raw SQL (`database.md`), plus files where a
+component owns durable file-backed state (for example Mímir sources and pages).
 
 ## Authentication & Authorization
 
