@@ -11,7 +11,7 @@ from cli.tui.app import NiuuTUI
 from cli.tui.widgets.metric_card import MetricCard
 from cli.tui.widgets.tabs import NiuuTabs
 from niuu.ports.plugin import TUIPageSpec
-from ting.tui._helpers import format_confidence, format_confidence_history
+from ting.tui._helpers import format_confidence
 from ting.tui.pages.dispatch import ActivityEntry, DispatchPage, QueueItem
 from ting.tui.pages.review import _CONFIDENCE_HIGH, _CONFIDENCE_MED, ReviewPage, ReviewRow
 from ting.tui.pages.runs import RunRow, RunsPage
@@ -42,7 +42,6 @@ def _run(name: str = "test-run", status: str = "RUNNING", **kwargs: object) -> d
         "reviewer_session_id": kwargs.get("reviewer_session_id"),
         "review_round": kwargs.get("review_round", 0),
         "auto_approved": kwargs.get("auto_approved", False),
-        "confidence_history": kwargs.get("confidence_history", []),
     }
 
 
@@ -98,25 +97,6 @@ class TestHelpers:
 
     def test_format_confidence_int(self) -> None:
         assert format_confidence(85) == "85"
-
-    def test_format_confidence_history_empty(self) -> None:
-        assert format_confidence_history([], "#71717a") == ""
-
-    def test_format_confidence_history_single(self) -> None:
-        result = format_confidence_history([{"delta": 0.1}], "#71717a")
-        assert "delta" in result
-        assert "+10%" in result
-
-    def test_format_confidence_history_negative(self) -> None:
-        result = format_confidence_history([{"delta": -0.05}], "#71717a")
-        assert "-5%" in result
-
-    def test_format_confidence_history_limits_to_5(self) -> None:
-        history = [{"delta": 0.01 * i} for i in range(10)]
-        result = format_confidence_history(history, "#71717a")
-        # Should only include last 5
-        assert "+5%" in result
-        assert "+9%" in result
 
     def test_confidence_thresholds_are_sensible(self) -> None:
         assert _CONFIDENCE_HIGH > _CONFIDENCE_MED
@@ -670,21 +650,6 @@ class TestReviewPage:
         page = ReviewPage()
         page._runs = []
         assert len(page.filtered_runs) == 0
-
-    def test_confidence_history(self) -> None:
-        runs = [
-            _run(
-                "hist-run",
-                "REVIEW",
-                confidence_history=[
-                    {"delta": 0.1, "score_after": 0.8},
-                    {"delta": -0.05, "score_after": 0.75},
-                ],
-            ),
-        ]
-        page = ReviewPage()
-        page._runs = runs
-        assert len(page.filtered_runs) == 1
 
 
 # ── TingPlugin.tui_pages() tests ──────────────────────────────
