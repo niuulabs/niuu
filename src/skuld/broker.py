@@ -899,12 +899,13 @@ class Broker(
 
         # New configs select transport and discovery independently. Legacy
         # configs keep adapters as discovery entries and use local NNG.
-        mesh = None
+        # Every branch raises when the configured mesh cannot be built.
         if mesh_cfg.discovery_adapters and mesh_cfg.adapters:
             mesh = build_mesh_from_adapters_list(
                 adapters=list(mesh_cfg.adapters),
                 own_peer_id=own_peer_id,
                 rpc_timeout_s=mesh_cfg.rpc_timeout_s,
+                rpc_reply_cache_size=mesh_cfg.rpc_reply_cache_size,
                 sleipnir_transport_builder=_sleipnir_transport,
                 environment_id=mesh_cfg.realm_id,
             )
@@ -912,6 +913,7 @@ class Broker(
             mesh = build_in_process_mesh(
                 own_peer_id,
                 mesh_cfg.rpc_timeout_s,
+                rpc_reply_cache_size=mesh_cfg.rpc_reply_cache_size,
                 environment_id=mesh_cfg.realm_id,
             )
         else:
@@ -945,12 +947,7 @@ class Broker(
                 own_peer_id=own_peer_id,
                 rpc_timeout_s=mesh_cfg.rpc_timeout_s,
                 environment_id=mesh_cfg.realm_id,
-            )
-
-        if mesh is None:
-            raise RuntimeError(
-                "configured mesh adapters could not be built; select transport='in_process' "
-                "explicitly for local-only delivery"
+                rpc_reply_cache_size=mesh_cfg.rpc_reply_cache_size,
             )
 
         # Build discovery adapter using shared niuu.mesh.discovery_builder

@@ -460,17 +460,32 @@ class TestChronicleEndpointAuth:
             )
         assert resp.status_code == 201
 
-    def test_denied_user_gets_403_on_chronicle(self, session_repo, other_identity, deny_authz):
+    def test_denied_owner_gets_403_on_chronicle(self, session_repo, owner_identity, deny_authz):
         session = _make_session()
         _seed_session(session_repo, session)
 
-        app = _build_rest_app(session_repo, other_identity, deny_authz)
+        app = _build_rest_app(session_repo, owner_identity, deny_authz)
         with TestClient(app) as client:
             resp = client.post(
                 f"/api/v1/forge/sessions/{session.id}/chronicle",
                 json={"duration_seconds": 120, "key_changes": ["file.py: added tests"]},
             )
         assert resp.status_code == 403
+
+    def test_other_user_cannot_see_the_session_to_report(
+        self, session_repo, other_identity, allow_authz
+    ):
+        """Another developer's history is outside the caller's scope: not found."""
+        session = _make_session()
+        _seed_session(session_repo, session)
+
+        app = _build_rest_app(session_repo, other_identity, allow_authz)
+        with TestClient(app) as client:
+            resp = client.post(
+                f"/api/v1/forge/sessions/{session.id}/chronicle",
+                json={"duration_seconds": 120, "key_changes": ["file.py: added tests"]},
+            )
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -493,17 +508,32 @@ class TestTimelineEndpointAuth:
             )
         assert resp.status_code == 201
 
-    def test_denied_user_gets_403_on_timeline(self, session_repo, other_identity, deny_authz):
+    def test_denied_owner_gets_403_on_timeline(self, session_repo, owner_identity, deny_authz):
         session = _make_session()
         _seed_session(session_repo, session)
 
-        app = _build_rest_app(session_repo, other_identity, deny_authz)
+        app = _build_rest_app(session_repo, owner_identity, deny_authz)
         with TestClient(app) as client:
             resp = client.post(
                 f"/api/v1/forge/chronicles/{session.id}/timeline",
                 json={"t": 10, "type": "file", "label": "main.py", "action": "modified"},
             )
         assert resp.status_code == 403
+
+    def test_other_user_cannot_see_the_session_to_append(
+        self, session_repo, other_identity, allow_authz
+    ):
+        """Another developer's history is outside the caller's scope: not found."""
+        session = _make_session()
+        _seed_session(session_repo, session)
+
+        app = _build_rest_app(session_repo, other_identity, allow_authz)
+        with TestClient(app) as client:
+            resp = client.post(
+                f"/api/v1/forge/chronicles/{session.id}/timeline",
+                json={"t": 10, "type": "file", "label": "main.py", "action": "modified"},
+            )
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------

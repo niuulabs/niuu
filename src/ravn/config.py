@@ -44,7 +44,7 @@ from pydantic_settings import (
 
 from niuu.config_models import WorkloadIdentityVerifierConfig
 from niuu.domain.observability import ObservabilityConfig
-from niuu.mesh.config import MeshNatsConfig
+from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE, MeshNatsConfig
 from ravn.domain.permission_mode import (
     PermissionMode,
     parse_optional_permission_mode,
@@ -2254,6 +2254,17 @@ class MeshConfig(BaseModel):
     rpc_timeout_s: float = Field(
         default=10.0,
         description="Default RPC reply timeout in seconds.",
+    )
+    rpc_reply_cache_size: int = Field(
+        default=DEFAULT_RPC_REPLY_CACHE_SIZE,
+        ge=1,
+        description=(
+            "Completed RPC replies a Sleipnir mesh adapter keeps, keyed on the request "
+            "event_id, so a redelivered request gets its stored reply instead of "
+            "running the handler again. Keep it above the number of RPC requests this "
+            "peer completes within the transport's redelivery window (JetStream: the "
+            "nak backoff across max_deliver deliveries, and ack_wait)."
+        ),
     )
     own_peer_id: str = Field(
         default="",

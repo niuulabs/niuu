@@ -99,6 +99,41 @@ as-is.  The subscriber enforces `max_deliver` and the DLQ itself either way.
 Apply the rest with `nats consumer edit`.  `core_subscriptions` use core NATS,
 which has no acks or replay, so they stay at-most-once.
 
+### Mesh RPC requests
+
+An RPC request (`MeshPort.send`, for example a `work_request` that runs an
+agent turn) is handled only once its reply is published.  If the reply publish
+fails, the request is nak'd and redelivered.  `SleipnirMeshAdapter` keeps each
+completed reply keyed on the request's `event_id`.  A redelivered request gets
+that stored reply again, and the Ravn or Skuld handler does not run a second
+time.  This also applies when the handler raised: its error reply is what gets
+stored and re-sent.
+
+The store keeps up to `mesh.rpc_reply_cache_size` replies (default 1024) in the
+peer's memory, and evicts the least recently used reply first:
+
+```yaml
+mesh:
+  rpc_reply_cache_size: 1024
+```
+
+Keep it above the number of RPC requests one peer completes within the
+redelivery window.  That window is the nak backoff across `max_deliver`
+deliveries (96 s with the defaults above) plus `ack_wait_s`.  The RPC timeout is
+not a safe bound: a nak'd request keeps coming back long after a 10 s timeout.
+
+The store covers redeliveries to the same process: a failed reply publish and a
+lost ack.  After a crash before the ack:
+
+- **No `consumer_group` (the default):** the request is not redelivered.  The
+  RPC subscription is an ephemeral consumer, and the restarted peer's new
+  consumer starts at new messages.  `replay_from_sequence` changes that: it
+  replays old RPC requests too, and their handlers run again.
+- **With a `consumer_group`:** JetStream redelivers the request to any member of
+  the group, and the handler runs again.  A crash almost always interrupts the
+  handler itself, before there is a reply to replay, so this is the
+  at-least-once contract doing its job.
+
 ## Replay After Restart
 
 Set `replay_from_sequence` when recovering a resident Valkyrie from a known

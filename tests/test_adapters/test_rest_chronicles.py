@@ -1,19 +1,29 @@
 """Tests for Chronicle REST endpoints."""
 
-from uuid import uuid4
+from unittest.mock import AsyncMock
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.cedar import CedarAuthorizationAdapter
 from tests.conftest import (
     InMemoryChronicleRepository,
     InMemorySessionRepository,
+    InMemoryTimelineRepository,
     MockPodManager,
 )
 from volundr.adapters.inbound.rest import create_router
-from volundr.domain.models import GitSource
-from volundr.domain.services import ChronicleService, SessionService
+from volundr.adapters.outbound.identity import AllowAllIdentityAdapter
+from volundr.domain.models import Chronicle, GitSource, Session
+from volundr.domain.ports import SessionCapacity
+from volundr.domain.services import (
+    ChronicleService,
+    RepoValidationError,
+    SessionCapacityError,
+    SessionService,
+)
 
 
 @pytest.fixture
@@ -114,7 +124,7 @@ class TestChronicleEndpointGet:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        chronicle = await chronicle_svc.create_chronicle(session.id)
+        chronicle = await chronicle_svc.create_chronicle(session.id, principal=None)
 
         response = client.get(f"/api/v1/forge/chronicles/{chronicle.id}")
 
@@ -157,8 +167,8 @@ class TestChronicleEndpointList:
             model="claude-opus-4-20250514",
             source=GitSource(repo="https://github.com/org/repo2", branch="dev"),
         )
-        await chronicle_svc.create_chronicle(s1.id)
-        await chronicle_svc.create_chronicle(s2.id)
+        await chronicle_svc.create_chronicle(s1.id, principal=None)
+        await chronicle_svc.create_chronicle(s2.id, principal=None)
 
         response = client.get("/api/v1/forge/chronicles")
 
@@ -182,7 +192,7 @@ class TestChronicleEndpointUpdate:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        chronicle = await chronicle_svc.create_chronicle(session.id)
+        chronicle = await chronicle_svc.create_chronicle(session.id, principal=None)
 
         response = client.patch(
             f"/api/v1/forge/chronicles/{chronicle.id}",
@@ -224,7 +234,7 @@ class TestChronicleEndpointDelete:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        chronicle = await chronicle_svc.create_chronicle(session.id)
+        chronicle = await chronicle_svc.create_chronicle(session.id, principal=None)
 
         response = client.delete(f"/api/v1/forge/chronicles/{chronicle.id}")
 
@@ -256,7 +266,7 @@ class TestChronicleEndpointReforge:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        chronicle = await chronicle_svc.create_chronicle(session.id)
+        chronicle = await chronicle_svc.create_chronicle(session.id, principal=None)
 
         response = client.post(f"/api/v1/forge/chronicles/{chronicle.id}/reforge")
 
@@ -274,6 +284,32 @@ class TestChronicleEndpointReforge:
         response = client.post(f"/api/v1/forge/chronicles/{fake_id}/reforge")
         assert response.status_code == 404
 
+    @pytest.mark.parametrize("failure", ["repo", "capacity"])
+    async def test_reforge_reports_why_the_session_was_refused(
+        self,
+        client: TestClient,
+        session_service: SessionService,
+        chronicle_svc: ChronicleService,
+        failure: str,
+    ):
+        """A relaunch the session service refuses maps like POST /sessions does."""
+        session = await session_service.create_session(
+            name="Original",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        chronicle = await chronicle_svc.create_chronicle(session.id, principal=None)
+        errors = {
+            "repo": (RepoValidationError("https://github.com/org/repo", "gone"), 422),
+            "capacity": (SessionCapacityError(SessionCapacity(1, 1, "raise the cap")), 409),
+        }
+        error, expected = errors[failure]
+        session_service.create_session = AsyncMock(side_effect=error)
+
+        response = client.post(f"/api/v1/forge/chronicles/{chronicle.id}/reforge")
+
+        assert response.status_code == expected
+
 
 class TestChronicleEndpointChain:
     """Tests for GET /api/v1/forge/chronicles/{id}/chain."""
@@ -290,7 +326,7 @@ class TestChronicleEndpointChain:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        chronicle = await chronicle_svc.create_chronicle(session.id)
+        chronicle = await chronicle_svc.create_chronicle(session.id, principal=None)
 
         response = client.get(f"/api/v1/forge/chronicles/{chronicle.id}/chain")
 
@@ -322,7 +358,7 @@ class TestChronicleEndpointGetBySession:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        chronicle = await chronicle_svc.create_chronicle(session.id)
+        chronicle = await chronicle_svc.create_chronicle(session.id, principal=None)
 
         response = client.get(f"/api/v1/forge/sessions/{session.id}/chronicle")
 
@@ -383,7 +419,7 @@ class TestChronicleEndpointBrokerReport:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        existing = await chronicle_svc.create_chronicle(session.id)
+        existing = await chronicle_svc.create_chronicle(session.id, principal=None)
 
         response = client.post(
             f"/api/v1/forge/sessions/{session.id}/chronicle",
@@ -487,3 +523,219 @@ class TestChronicleServiceUnavailable:
         response = client_no_chronicles.get(f"/api/v1/forge/sessions/{uuid4()}/chronicle")
         assert response.status_code == 503
         assert "not available" in response.json()["detail"].lower()
+
+
+# --- Principal scoping --------------------------------------------------------
+
+_ALICE = {"x-auth-user-id": "alice", "x-auth-tenant": "t1", "x-auth-roles": "volundr:developer"}
+_BOB = {"x-auth-user-id": "bob", "x-auth-tenant": "t1", "x-auth-roles": "volundr:developer"}
+_VERA = {"x-auth-user-id": "vera", "x-auth-tenant": "t1", "x-auth-roles": "volundr:viewer"}
+_T2_ADMIN = {"x-auth-user-id": "root", "x-auth-tenant": "t2", "x-auth-roles": "volundr:admin"}
+
+
+class _ScopedForge:
+    """A Forge with the bundled Cedar policy and header-selected principals."""
+
+    def __init__(self, *, identity: bool = True) -> None:
+        self.sessions = InMemorySessionRepository()
+        self.chronicles = InMemoryChronicleRepository()
+        self.timeline = InMemoryTimelineRepository()
+        session_service = SessionService(
+            self.sessions, MockPodManager(), authorization=CedarAuthorizationAdapter()
+        )
+        chronicle_service = ChronicleService(
+            self.chronicles, session_service, timeline_repository=self.timeline
+        )
+        app = FastAPI()
+        if identity:
+            app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
+        app.include_router(create_router(session_service, chronicle_service=chronicle_service))
+        self.client = TestClient(app)
+
+    def session(self, owner_id: str, tenant_id: str = "t1"):
+        session = Session(
+            name=f"{owner_id}-session",
+            model="sonnet",
+            owner_id=owner_id,
+            tenant_id=tenant_id,
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        self.sessions._sessions[session.id] = session
+        return session
+
+    def chronicle(self, owner_id: str, tenant_id: str = "t1"):
+        session = self.session(owner_id, tenant_id)
+        chronicle = Chronicle(
+            session_id=session.id,
+            project=f"{owner_id}-project",
+            repo="https://github.com/org/repo",
+            branch="main",
+            model="sonnet",
+            config_snapshot={"name": session.name, "model": "sonnet"},
+            owner_id=owner_id,
+            tenant_id=tenant_id,
+        )
+        self.chronicles._chronicles[chronicle.id] = chronicle
+        return chronicle
+
+
+_BASE = "/api/v1/forge"
+
+
+class TestChronicleEndpointsAreScoped:
+    def test_list_returns_only_the_callers_history(self):
+        forge = _ScopedForge()
+        alices = forge.chronicle("alice")
+        forge.chronicle("bob")
+        forge.chronicle("carol", "t2")
+
+        response = forge.client.get(f"{_BASE}/chronicles", headers=_ALICE)
+
+        assert response.status_code == 200
+        assert [c["id"] for c in response.json()] == [str(alices.id)]
+
+    def test_another_tenant_sees_nothing(self):
+        forge = _ScopedForge()
+        forge.chronicle("alice")
+
+        response = forge.client.get(f"{_BASE}/chronicles", headers=_T2_ADMIN)
+
+        assert response.json() == []
+
+    @pytest.mark.parametrize("headers", [_BOB, _T2_ADMIN])
+    def test_reads_outside_the_scope_are_not_found(self, headers):
+        forge = _ScopedForge()
+        alices = forge.chronicle("alice")
+        sid = alices.session_id
+
+        for path in (
+            f"/chronicles/{alices.id}",
+            f"/sessions/{sid}/chronicle",
+            f"/chronicles/{sid}/timeline",
+            f"/chronicles/{sid}/diff?file=a.py",
+        ):
+            assert forge.client.get(_BASE + path, headers=headers).status_code == 404, path
+        chain = forge.client.get(f"{_BASE}/chronicles/{alices.id}/chain", headers=headers)
+        assert chain.json() == []
+
+    @pytest.mark.parametrize("headers", [_BOB, _T2_ADMIN])
+    def test_writes_outside_the_scope_are_not_found_and_change_nothing(self, headers):
+        forge = _ScopedForge()
+        alices = forge.chronicle("alice")
+        fresh = forge.session("alice")
+        client = forge.client
+
+        responses = [
+            client.patch(f"{_BASE}/chronicles/{alices.id}", json={"summary": "x"}, headers=headers),
+            client.delete(f"{_BASE}/chronicles/{alices.id}", headers=headers),
+            client.post(f"{_BASE}/chronicles/{alices.id}/reforge", headers=headers),
+            client.post(f"{_BASE}/chronicles", json={"session_id": str(fresh.id)}, headers=headers),
+            client.post(
+                f"{_BASE}/chronicles/{fresh.id}/timeline",
+                json={"t": 1, "type": "message", "label": "x"},
+                headers=headers,
+            ),
+            client.post(
+                f"{_BASE}/sessions/{alices.session_id}/chronicle",
+                json={"summary": "hijacked"},
+                headers=headers,
+            ),
+        ]
+
+        assert [r.status_code for r in responses] == [404] * len(responses)
+        assert forge.chronicles._chronicles == {alices.id: alices}
+        assert set(forge.sessions._sessions) == {alices.session_id, fresh.id}
+
+    def test_a_viewer_is_forbidden_to_change_its_history(self):
+        forge = _ScopedForge()
+        veras = forge.chronicle("vera")
+        client = forge.client
+
+        assert client.get(f"{_BASE}/chronicles/{veras.id}", headers=_VERA).status_code == 200
+        responses = [
+            client.patch(f"{_BASE}/chronicles/{veras.id}", json={"summary": "x"}, headers=_VERA),
+            client.delete(f"{_BASE}/chronicles/{veras.id}", headers=_VERA),
+            client.post(f"{_BASE}/chronicles/{veras.id}/reforge", headers=_VERA),
+            client.post(
+                f"{_BASE}/chronicles/{veras.session_id}/timeline",
+                json={"t": 1, "type": "message", "label": "x"},
+                headers=_VERA,
+            ),
+        ]
+
+        assert [r.status_code for r in responses] == [403] * len(responses)
+        assert forge.chronicles._chronicles == {veras.id: veras}
+        assert forge.timeline._events == []
+
+    def test_the_owner_can_change_and_reforge_its_history(self):
+        forge = _ScopedForge()
+        alices = forge.chronicle("alice")
+        client = forge.client
+
+        patched = client.patch(
+            f"{_BASE}/chronicles/{alices.id}", json={"summary": "done"}, headers=_ALICE
+        )
+        reforged = client.post(f"{_BASE}/chronicles/{alices.id}/reforge", headers=_ALICE)
+        appended = client.post(
+            f"{_BASE}/chronicles/{alices.session_id}/timeline",
+            json={"t": 1, "type": "message", "label": "hi"},
+            headers=_ALICE,
+        )
+        deleted = client.delete(f"{_BASE}/chronicles/{alices.id}", headers=_ALICE)
+
+        assert patched.json()["summary"] == "done"
+        assert reforged.status_code == 200
+        new_session = forge.sessions._sessions[UUID(reforged.json()["id"])]
+        assert (new_session.owner_id, new_session.tenant_id) == ("alice", "t1")
+        assert appended.status_code == 201
+        assert deleted.status_code == 204
+        assert alices.id not in forge.chronicles._chronicles
+
+    def test_the_diff_is_proxied_only_for_a_readable_session(self):
+        forge = _ScopedForge()
+        alices = forge.session("alice")
+
+        response = forge.client.get(
+            f"{_BASE}/chronicles/{alices.id}/diff?file=a.py", headers=_ALICE
+        )
+
+        # Authorized, so the lookup proceeds to the (absent) session endpoint.
+        assert response.status_code == 404
+        assert "no active endpoint" in response.json()["detail"]
+
+
+_ROUTES = [
+    ("GET", "/chronicles", None),
+    ("POST", "/chronicles", {"session_id": "{sid}"}),
+    ("GET", "/chronicles/{cid}", None),
+    ("PATCH", "/chronicles/{cid}", {"summary": "x"}),
+    ("DELETE", "/chronicles/{cid}", None),
+    ("POST", "/chronicles/{cid}/reforge", None),
+    ("GET", "/chronicles/{cid}/chain", None),
+    ("GET", "/sessions/{sid}/chronicle", None),
+    ("POST", "/sessions/{sid}/chronicle", {"summary": "x"}),
+    ("GET", "/chronicles/{sid}/timeline", None),
+    ("POST", "/chronicles/{sid}/timeline", {"t": 1, "type": "message", "label": "x"}),
+    ("GET", "/chronicles/{sid}/diff?file=a.py", None),
+]
+
+
+class TestChronicleEndpointsRequireAPrincipal:
+    @pytest.mark.parametrize(("method", "path", "body"), _ROUTES)
+    @pytest.mark.parametrize("existing", [True, False])
+    def test_authorization_without_a_principal_is_401(self, method, path, body, existing):
+        """No principal with authorization configured is 401, whether or not the
+        target exists, and nothing is written."""
+        forge = _ScopedForge(identity=False)
+        alices = forge.chronicle("alice")
+        cid, sid = (alices.id, alices.session_id) if existing else (uuid4(), uuid4())
+        url = _BASE + path.format(cid=cid, sid=sid)
+        json_body = None
+        if body is not None:
+            json_body = {k: v.format(sid=sid) if isinstance(v, str) else v for k, v in body.items()}
+
+        response = forge.client.request(method, url, json=json_body)
+
+        assert response.status_code == 401
+        assert forge.chronicles._chronicles == {alices.id: alices}
+        assert forge.timeline._events == []

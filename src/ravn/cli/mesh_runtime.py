@@ -16,7 +16,9 @@ def _build_mesh(settings: Settings, discovery: Any = None) -> Any:
     All adapters run simultaneously via CompositeMeshAdapter:
     - publish() fans out to ALL transports
     - subscribe() registers on ALL transports
-    - send() tries transports in order until success
+    - send() routes to the first transport that knows the peer
+
+    Raises when a configured adapter or transport cannot be built.
     """
     import socket
 
@@ -36,6 +38,7 @@ def _build_mesh(settings: Settings, discovery: Any = None) -> Any:
             adapters=mesh_cfg.adapters,
             own_peer_id=own_peer_id,
             rpc_timeout_s=mesh_cfg.rpc_timeout_s,
+            rpc_reply_cache_size=mesh_cfg.rpc_reply_cache_size,
             discovery=discovery,
             sleipnir_transport_builder=_sleipnir_tb,
             environment_id=settings.discovery.realm_id,
@@ -57,6 +60,7 @@ def _build_mesh(settings: Settings, discovery: Any = None) -> Any:
         discovery=discovery,
         rpc_timeout_s=mesh_cfg.rpc_timeout_s,
         environment_id=settings.discovery.realm_id,
+        rpc_reply_cache_size=mesh_cfg.rpc_reply_cache_size,
     )
 
 

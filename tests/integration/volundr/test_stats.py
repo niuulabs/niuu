@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -34,12 +35,15 @@ async def _session(client, headers) -> UUID:
     return UUID(resp.json()["id"])
 
 
-async def _usage(txn_pool, session_id: UUID, tokens: int) -> None:
+async def _usage(
+    txn_pool, session_id: UUID, tokens: int, recorded_at: datetime | None = None
+) -> None:
     await txn_pool.execute(
-        "INSERT INTO token_usage (id, session_id, tokens, provider, model, cost) "
-        "VALUES ($1, $2, $3, 'cloud', 'claude-sonnet-4-6', 0)",
+        "INSERT INTO token_usage (id, session_id, recorded_at, tokens, provider, model, cost) "
+        "VALUES ($1, $2, $3, $4, 'cloud', 'claude-sonnet-4-6', 0)",
         uuid4(),
         session_id,
+        recorded_at or datetime.now(UTC),
         tokens,
     )
 
@@ -71,9 +75,6 @@ async def test_forge_does_not_serve_model_catalog(volundr_client, auth_headers):
 
 async def test_stats_cover_only_what_the_caller_may_list(volundr_client, auth_headers, txn_pool):
     """Figures follow GET /sessions bounds: own sessions, or the tenant for an admin."""
-    # The sparkline's day buckets follow the database clock; pin it so this
-    # test checks scoping, not the server's timezone.
-    await txn_pool.execute("SET LOCAL TIME ZONE 'UTC'")
     await _tenant(txn_pool, "stats-t1")
     await _tenant(txn_pool, "stats-t2")
     alice = auth_headers("stats-alice", "stats-alice@test.com", "stats-t1")
@@ -119,6 +120,48 @@ async def test_stats_cover_only_what_the_caller_may_list(volundr_client, auth_he
     assert sum(figures["alice"]["sparklines"]["sessionsToday"]) == 3.0
     assert sum(figures["t1_admin"]["sparklines"]["sessionsToday"]) == 4.0
     assert sum(figures["t2_admin"]["sparklines"]["sessionsToday"]) == 1.0
+
+
+async def test_stats_days_are_utc_days_whatever_the_session_timezone(
+    volundr_client, auth_headers, txn_pool
+):
+    """Today's figures and the sparkline's days are UTC days, not the database's local ones."""
+    now = datetime.now(UTC)
+    # Pick a zone whose calendar date differs from UTC's right now: UTC-12 is
+    # still on the previous day before 12:00 UTC, UTC+14 is on the next one
+    # from 10:00 UTC. POSIX ``Etc/`` names invert the sign.
+    zone = "Etc/GMT+12" if now.hour < 11 else "Etc/GMT-14"
+    await txn_pool.execute(f"SET LOCAL TIME ZONE '{zone}'")
+    assert await txn_pool.fetchval("SELECT CURRENT_DATE") != now.date()
+
+    await _tenant(txn_pool, "stats-tz")
+    headers = auth_headers("stats-erin", "stats-erin@test.com", "stats-tz")
+    yesterday = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=1)
+
+    await _usage(txn_pool, await _session(volundr_client, headers), 100)
+    earlier = await _session(volundr_client, headers)
+    await txn_pool.execute("UPDATE sessions SET created_at = $2 WHERE id = $1", earlier, yesterday)
+    await _usage(txn_pool, earlier, 10, recorded_at=yesterday)
+    # A since-deleted session whose chronicle was last written yesterday.
+    await txn_pool.execute(
+        "INSERT INTO chronicles (id, session_id, project, repo, branch, model, "
+        "token_usage, owner_id, tenant_id, created_at, updated_at) "
+        "VALUES ($1, $2, 'demo', 'github.com/acme/demo', 'main', 'claude-sonnet-4-6', "
+        "50, 'stats-erin', 'stats-tz', $3, $3)",
+        uuid4(),
+        uuid4(),
+        yesterday,
+    )
+
+    body = await _stats(volundr_client, headers)
+
+    assert body["total_sessions"] == 3
+    assert body["sessions_today"] == 1
+    assert body["tokens_today"] == 100
+    sparkline = body["sparklines"]["sessionsToday"]
+    assert len(sparkline) == 30
+    assert sparkline[-2:] == [2.0, 1.0]
+    assert sum(sparkline) == 3.0
 
 
 async def test_migration_attributes_existing_chronicles(volundr_client, auth_headers, txn_pool):
