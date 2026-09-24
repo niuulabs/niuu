@@ -164,15 +164,11 @@ dispatch:
     sleipnir_publish_urls: []
 
 review:
-  auto_approve_threshold: 0.70
   max_retries: 3
-  reviewer_session_enabled: false
-  ravn_arbiter_enabled: false
 
 ravn_outcome:
   enabled: true
   owner_id: dev-user
-  scope_adherence_threshold: 0.7
 
 sleipnir:
   enabled: true

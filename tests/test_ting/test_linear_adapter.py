@@ -17,8 +17,6 @@ from ting.adapters.linear import (
     _parse_progress,
 )
 from ting.domain.models import (
-    ConfidenceEvent,
-    ConfidenceEventType,
     Phase,
     PhaseStatus,
     Run,
@@ -1437,76 +1435,6 @@ class TestGetRunById:
 
         assert result is not None
         assert result.tracker_id == "issue-1"
-
-
-# ---------------------------------------------------------------------------
-# add_confidence_event
-# ---------------------------------------------------------------------------
-
-
-class TestAddConfidenceEvent:
-    async def test_no_pool_raises(self):
-        adapter = _make_adapter()
-        event = ConfidenceEvent(
-            id=uuid4(),
-            run_id=uuid4(),
-            event_type=ConfidenceEventType.CI_PASS,
-            delta=0.05,
-            score_after=0.75,
-            created_at=datetime.now(UTC),
-        )
-        with pytest.raises(RuntimeError, match="pool is required for add_confidence_event"):
-            await adapter.add_confidence_event("t-1", event)
-
-    async def test_with_pool_inserts_event(self):
-        adapter, pool = _make_adapter_with_pool()
-        event = ConfidenceEvent(
-            id=uuid4(),
-            run_id=uuid4(),
-            event_type=ConfidenceEventType.CI_PASS,
-            delta=0.05,
-            score_after=0.75,
-            created_at=datetime.now(UTC),
-        )
-
-        await adapter.add_confidence_event("t-1", event)
-
-        assert pool.execute.call_count == 2
-        insert_sql = pool.execute.call_args_list[0][0][0]
-        assert "INSERT INTO run_confidence_events" in insert_sql
-        update_sql = pool.execute.call_args_list[1][0][0]
-        assert "UPDATE run_progress SET confidence" in update_sql
-
-
-# ---------------------------------------------------------------------------
-# get_confidence_events
-# ---------------------------------------------------------------------------
-
-
-class TestGetConfidenceEvents:
-    async def test_no_pool_returns_empty(self):
-        adapter = _make_adapter()
-        result = await adapter.get_confidence_events("t-1")
-        assert result == []
-
-    async def test_with_pool_returns_events(self):
-        adapter, pool = _make_adapter_with_pool()
-        run_id = uuid4()
-        pool.fetch.return_value = [
-            {
-                "id": uuid4(),
-                "run_id": run_id,
-                "event_type": "ci_pass",
-                "delta": 0.05,
-                "score_after": 0.8,
-                "created_at": datetime.now(UTC),
-            }
-        ]
-
-        result = await adapter.get_confidence_events("t-1")
-
-        assert len(result) == 1
-        assert result[0].event_type == ConfidenceEventType.CI_PASS
 
 
 # ---------------------------------------------------------------------------

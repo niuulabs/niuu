@@ -19,7 +19,6 @@ from tests.test_ting.stubs import InMemorySagaRepository
 from ting.adapters.memory_event_bus import InMemoryEventBus
 from ting.config import ReviewConfig
 from ting.domain.models import (
-    ConfidenceEvent,
     Phase,
     PhaseStatus,
     PRStatus,
@@ -51,8 +50,6 @@ class StubTracker(TrackerPort):
     def __init__(self) -> None:
         # runs keyed by tracker_id (str)
         self.runs: dict[str, Run] = {}
-        # confidence events keyed by tracker_id (str)
-        self.events: dict[str, list[ConfidenceEvent]] = {}
         self.saga: Saga | None = None
         self.phase: Phase | None = None
         self.phases: list[Phase] = []
@@ -183,14 +180,6 @@ class StubTracker(TrackerPort):
 
     async def get_run_by_id(self, run_id: UUID) -> Run | None:
         return next((r for r in self.runs.values() if r.id == run_id), None)
-
-    # -- Confidence events --
-
-    async def add_confidence_event(self, tracker_id: str, event: ConfidenceEvent) -> None:
-        self.events.setdefault(tracker_id, []).append(event)
-
-    async def get_confidence_events(self, tracker_id: str) -> list[ConfidenceEvent]:
-        return self.events.get(tracker_id, [])
 
     # -- Phase gate management --
 

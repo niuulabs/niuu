@@ -14,8 +14,6 @@ from uuid import UUID
 import asyncpg
 
 from ting.domain.models import (
-    ConfidenceEvent,
-    ConfidenceEventType,
     Phase,
     PhaseStatus,
     Run,
@@ -433,60 +431,6 @@ class NativeTrackerAdapter(TrackerPort):
         if row is None:
             return None
         return self._row_to_run(row)
-
-    # -- Confidence events --
-
-    async def add_confidence_event(self, tracker_id: str, event: ConfidenceEvent) -> None:
-        await self._pool.execute(
-            """
-            INSERT INTO confidence_events (id, run_id, event_type, delta, score_after, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            """,
-            event.id,
-            event.run_id,
-            event.event_type.value,
-            event.delta,
-            event.score_after,
-            event.created_at,
-        )
-        await self._pool.execute(
-            """
-            UPDATE runs SET confidence = $2, updated_at = $3
-            WHERE tracker_id = $1
-              AND EXISTS (
-                  SELECT 1 FROM phases p
-                  JOIN sagas s ON s.id = p.saga_id
-                  WHERE p.id = runs.phase_id AND s.tracker_type = 'native'
-              )
-            """,
-            tracker_id,
-            event.score_after,
-            event.created_at,
-        )
-
-    async def get_confidence_events(self, tracker_id: str) -> list[ConfidenceEvent]:
-        rows = await self._pool.fetch(
-            """
-            SELECT ce.* FROM confidence_events ce
-            JOIN runs r ON r.id = ce.run_id
-            JOIN phases p ON p.id = r.phase_id
-            JOIN sagas s ON s.id = p.saga_id
-            WHERE r.tracker_id = $1 AND s.tracker_type = 'native'
-            ORDER BY ce.created_at
-            """,
-            tracker_id,
-        )
-        return [
-            ConfidenceEvent(
-                id=r["id"],
-                run_id=r["run_id"],
-                event_type=ConfidenceEventType(r["event_type"]),
-                delta=r["delta"],
-                score_after=r["score_after"],
-                created_at=r["created_at"],
-            )
-            for r in rows
-        ]
 
     # -- Phase gate management --
 

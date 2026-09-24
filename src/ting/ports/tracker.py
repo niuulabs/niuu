@@ -8,7 +8,6 @@ from typing import Protocol
 from uuid import UUID
 
 from ting.domain.models import (
-    ConfidenceEvent,
     Phase,
     PhaseStatus,
     Run,
@@ -217,16 +216,6 @@ class TrackerPort(ABC):
 
     @abstractmethod
     async def get_run_by_id(self, run_id: UUID) -> Run | None:
-        raise NotImplementedError
-
-    # -- Confidence events --
-
-    @abstractmethod
-    async def add_confidence_event(self, tracker_id: str, event: ConfidenceEvent) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def get_confidence_events(self, tracker_id: str) -> list[ConfidenceEvent]:
         raise NotImplementedError
 
     # -- Phase gate management --

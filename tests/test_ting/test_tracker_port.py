@@ -47,8 +47,6 @@ class TestTrackerPortAbstract:
             "get_run_by_session",
             "list_runs_by_status",
             "get_run_by_id",
-            "add_confidence_event",
-            "get_confidence_events",
             "all_runs_merged",
             "list_phases_for_saga",
             "update_phase_status",
@@ -171,12 +169,6 @@ class ConcreteTracker(TrackerPort):
 
     async def get_run_by_id(self, run_id: UUID) -> Run | None:
         return None
-
-    async def add_confidence_event(self, tracker_id: str, event: object) -> None:
-        pass
-
-    async def get_confidence_events(self, tracker_id: str) -> list:
-        return []
 
     async def all_runs_merged(self, phase_tracker_id: str) -> bool:
         return False

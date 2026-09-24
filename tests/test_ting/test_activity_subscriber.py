@@ -292,10 +292,6 @@ def _default_config(**overrides: object) -> WatcherConfig:
         "completion_check_delay": 0.0,  # No delay for tests
         "require_pr": False,
         "require_ci": False,
-        "confidence_base": 0.5,
-        "confidence_pr_bonus": 0.2,
-        "confidence_ci_bonus": 0.2,
-        "confidence_idle_bonus": 0.1,
         "reconnect_delay": 0.1,
     }
     defaults.update(overrides)
@@ -387,18 +383,15 @@ def _make_subscriber(
 
 class TestCompletionEvaluation:
     def test_defaults(self) -> None:
-        ce = CompletionEvaluation(is_complete=False, signals={}, confidence=0.0)
+        ce = CompletionEvaluation(is_complete=False, signals={})
         assert ce.is_complete is False
-        assert ce.confidence == 0.0
 
     def test_complete_with_signals(self) -> None:
         ce = CompletionEvaluation(
             is_complete=True,
             signals={"session_idle": True, "has_turns": True},
-            confidence=0.7,
         )
         assert ce.is_complete is True
-        assert ce.confidence == 0.7
 
 
 # ---------------------------------------------------------------------------
@@ -986,11 +979,10 @@ class TestCompletionEvaluationLogic:
         assert result.is_complete is True
         assert result.signals["session_idle"] is True
         assert result.signals["has_turns"] is True
-        assert result.confidence >= 0.5
 
     @pytest.mark.asyncio
-    async def test_pr_increases_confidence(self) -> None:
-        """PR existence should increase confidence."""
+    async def test_pr_exists_signal(self) -> None:
+        """PR existence should be reflected in the completion signals."""
         sub, volundr, _, _ = _make_subscriber()
         run = _make_run()
         volundr.pr_statuses[run.session_id] = PRStatus(
@@ -1007,7 +999,6 @@ class TestCompletionEvaluationLogic:
         assert result.is_complete is True
         assert result.signals["pr_exists"] is True
         assert result.signals["ci_passed"] is True
-        assert result.confidence >= 0.9
 
     @pytest.mark.asyncio
     async def test_require_pr_blocks_completion(self) -> None:
@@ -1042,8 +1033,8 @@ class TestCompletionEvaluationLogic:
         assert result.is_complete is False
 
     @pytest.mark.asyncio
-    async def test_extended_idle_increases_confidence(self) -> None:
-        """Duration above threshold should increase confidence."""
+    async def test_extended_idle_signal(self) -> None:
+        """Duration above threshold should set the extended_idle signal."""
         config = _default_config(idle_threshold=10.0)
         sub, volundr, _, _ = _make_subscriber(config=config)
         run = _make_run()
@@ -1053,7 +1044,6 @@ class TestCompletionEvaluationLogic:
             run, volundr, {"turn_count": 5, "duration_seconds": 120}
         )
         assert result.signals["extended_idle"] is True
-        assert result.confidence >= 0.6
 
     @pytest.mark.asyncio
     async def test_no_pr_still_evaluates(self) -> None:
@@ -1088,7 +1078,6 @@ class TestCompletionHandling:
                 "has_turns": True,
                 "pr_exists": True,
             },
-            confidence=0.9,
             pr_id="PR-42",
             pr_url="https://github.com/org/repo/pull/42",
         )
@@ -1116,7 +1105,6 @@ class TestCompletionHandling:
         evaluation = CompletionEvaluation(
             is_complete=True,
             signals={"session_idle": True, "has_turns": True},
-            confidence=0.5,
         )
 
         await sub._handle_completion(run, tracker, volundr, OWNER_ID, evaluation)
@@ -1388,10 +1376,6 @@ class TestWatcherConfigNewFields:
         assert cfg.completion_check_delay == 5.0
         assert cfg.require_pr is False
         assert cfg.require_ci is False
-        assert cfg.confidence_base == 0.5
-        assert cfg.confidence_pr_bonus == 0.2
-        assert cfg.confidence_ci_bonus == 0.2
-        assert cfg.confidence_idle_bonus == 0.1
         assert cfg.reconnect_delay == 5.0
 
     def test_custom(self) -> None:
@@ -1400,20 +1384,12 @@ class TestWatcherConfigNewFields:
             completion_check_delay=10.0,
             require_pr=True,
             require_ci=True,
-            confidence_base=0.6,
-            confidence_pr_bonus=0.15,
-            confidence_ci_bonus=0.15,
-            confidence_idle_bonus=0.05,
             reconnect_delay=3.0,
         )
         assert cfg.idle_threshold == 60.0
         assert cfg.completion_check_delay == 10.0
         assert cfg.require_pr is True
         assert cfg.require_ci is True
-        assert cfg.confidence_base == 0.6
-        assert cfg.confidence_pr_bonus == 0.15
-        assert cfg.confidence_ci_bonus == 0.15
-        assert cfg.confidence_idle_bonus == 0.05
         assert cfg.reconnect_delay == 3.0
 
 

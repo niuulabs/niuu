@@ -86,14 +86,7 @@ summary: Clean implementation
 
 async def test_retry_exhausted_transitions_to_failed() -> None:
     """Retry verdict when retry_count >= max_retries transitions run to FAILED."""
-    config = ReviewConfig(
-        auto_approve_threshold=0.70,
-        confidence_delta_ci_pass=0.30,
-        confidence_delta_ci_fail=-0.30,
-        confidence_delta_approved=0.10,
-        reviewer_session_enabled=False,
-        max_retries=2,
-    )
+    config = ReviewConfig(max_retries=2)
     async with FlockTestHarness(
         cli_responses=[OUTCOME_RETRY],
         review_config=config,
@@ -106,14 +99,7 @@ async def test_retry_exhausted_transitions_to_failed() -> None:
 
 async def test_retry_exhausted_one_below_then_exhausts() -> None:
     """First attempt retries (retry_count=0 < max=1), second exhausts → FAILED."""
-    config = ReviewConfig(
-        auto_approve_threshold=0.70,
-        confidence_delta_ci_pass=0.30,
-        confidence_delta_ci_fail=-0.30,
-        confidence_delta_approved=0.10,
-        reviewer_session_enabled=False,
-        max_retries=1,
-    )
+    config = ReviewConfig(max_retries=1)
     async with FlockTestHarness(
         cli_responses=[OUTCOME_RETRY, OUTCOME_RETRY],
         review_config=config,

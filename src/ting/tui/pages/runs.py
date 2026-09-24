@@ -25,7 +25,7 @@ from cli.tui.theme import (
 )
 from cli.tui.widgets.metric_card import MetricCard, MetricRow
 from cli.tui.widgets.tabs import NiuuTabs
-from ting.tui._helpers import format_confidence, format_confidence_history
+from ting.tui._helpers import format_confidence
 
 if TYPE_CHECKING:
     from niuu.cli_api_client import CLIAPIClient
@@ -76,10 +76,6 @@ class RunRow(Widget):
 
         color = _RUN_STATUS_COLORS.get(status, TEXT_MUTED)
         conf_pct = format_confidence(confidence)
-        history_str = format_confidence_history(
-            run.get("confidence_history", []),
-            TEXT_MUTED,
-        )
 
         retry_str = f"  [{TEXT_MUTED}]retries: {retry_count}[/]" if retry_count else ""
 
@@ -89,7 +85,7 @@ class RunRow(Widget):
             f"[{color}]{status}[/]  "
             f"[{ACCENT_AMBER}]{conf_pct}[/]  "
             f"[{TEXT_SECONDARY}]session: {session_id}[/]"
-            f"{retry_str}{history_str}",
+            f"{retry_str}",
             id="run-row-content",
         )
 

@@ -189,12 +189,6 @@ class MockTracker(TrackerPort):
     async def get_run_by_id(self, run_id: UUID) -> Run | None:
         return None
 
-    async def add_confidence_event(self, tracker_id: str, event: object) -> None:  # noqa: ANN001
-        pass
-
-    async def get_confidence_events(self, tracker_id: str) -> list:
-        return []
-
     async def all_runs_merged(self, phase_tracker_id: str) -> bool:
         return False
 

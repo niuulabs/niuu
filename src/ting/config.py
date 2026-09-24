@@ -151,16 +151,8 @@ class GuildRegistryConfig(BaseModel):
 
 
 class ReviewConfig(BaseModel):
-    """Run review projection settings.
+    """Run review projection settings."""
 
-    The confidence deltas here feed only the human review audit trail
-    (RunReviewService); the automated confidence gate they once tuned was
-    removed in favour of authoritative workflow outcomes.
-    """
-
-    confidence_delta_approved: float = Field(default=0.15)
-    confidence_delta_rejected: float = Field(default=-0.20)
-    confidence_delta_retry: float = Field(default=-0.05)
     initial_confidence: float = Field(
         default=0.5,
         description="Starting confidence score for newly committed sagas, phases, and runs.",
@@ -717,22 +709,6 @@ class WatcherConfig(BaseModel):
     require_ci: bool = Field(
         default=False,
         description="If true, CI must pass for completion.",
-    )
-    confidence_base: float = Field(
-        default=0.5,
-        description="Base confidence score when completion criteria are met.",
-    )
-    confidence_pr_bonus: float = Field(
-        default=0.2,
-        description="Confidence bonus when a PR exists.",
-    )
-    confidence_ci_bonus: float = Field(
-        default=0.2,
-        description="Confidence bonus when CI has passed.",
-    )
-    confidence_idle_bonus: float = Field(
-        default=0.1,
-        description="Confidence bonus for extended idle beyond threshold.",
     )
     reconnect_delay: float = Field(
         default=5.0,

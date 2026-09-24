@@ -17,8 +17,6 @@ import asyncpg
 from niuu.adapters.linear import GraphQLError, LinearGraphQLClient
 from niuu.domain.models import LINEAR_API_URL
 from ting.domain.models import (
-    ConfidenceEvent,
-    ConfidenceEventType,
     Phase,
     PhaseStatus,
     Run,
@@ -944,59 +942,6 @@ class LinearTrackerAdapter(TrackerPort):
             if uuid5(UUID(int=0), row["tracker_id"]) == run_id:
                 return await self.get_run(row["tracker_id"])
         return None
-
-    # -- Confidence events --
-
-    async def add_confidence_event(self, tracker_id: str, event: ConfidenceEvent) -> None:
-        if self._pool is None:
-            raise RuntimeError("pool is required for add_confidence_event")
-        await self._pool.execute(
-            """
-            INSERT INTO run_confidence_events
-                (id, run_id, tracker_id, event_type, delta, score_after, created_at,
-                 tracker_connection_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            """,
-            event.id,
-            event.run_id,
-            tracker_id,
-            event.event_type.value,
-            event.delta,
-            event.score_after,
-            event.created_at,
-            self.connection_id,
-        )
-        await self._pool.execute(
-            "UPDATE run_progress SET confidence = $2, updated_at = NOW() "
-            "WHERE tracker_id = $1 AND tracker_connection_id = $3",
-            tracker_id,
-            event.score_after,
-            self.connection_id,
-        )
-
-    async def get_confidence_events(self, tracker_id: str) -> list[ConfidenceEvent]:
-        if self._pool is None:
-            return []
-        rows = await self._pool.fetch(
-            """
-            SELECT ce.* FROM run_confidence_events ce
-            WHERE ce.tracker_id = $1 AND ce.tracker_connection_id = $2
-            ORDER BY ce.created_at
-            """,
-            tracker_id,
-            self.connection_id,
-        )
-        return [
-            ConfidenceEvent(
-                id=r["id"],
-                run_id=r["run_id"],
-                event_type=ConfidenceEventType(r["event_type"]),
-                delta=r["delta"],
-                score_after=r["score_after"],
-                created_at=r["created_at"],
-            )
-            for r in rows
-        ]
 
     # -- Phase gate management --
 

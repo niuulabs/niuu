@@ -21,8 +21,6 @@ from ting.api.runs import (
 )
 from ting.config import AuthConfig, ReviewConfig
 from ting.domain.models import (
-    ConfidenceEvent,
-    ConfidenceEventType,
     Phase,
     PhaseStatus,
     PRStatus,
@@ -63,8 +61,6 @@ class StatefulMockTracker(MockTracker):
     def __init__(self) -> None:
         super().__init__()
         self.runs: dict[UUID, Run] = {}
-        self.events: dict[str, list[ConfidenceEvent]] = {}  # keyed by tracker_id
-        self.events_by_run_id: dict[UUID, list[ConfidenceEvent]] = {}
         self.saga: Saga | None = None
         self.phase: Phase | None = None
         self._all_merged: bool = False
@@ -93,8 +89,6 @@ class StatefulMockTracker(MockTracker):
         now = datetime.now(UTC)
         status = kwargs.get("status", run.status)
         retry_count = kwargs.get("retry_count", run.retry_count)
-        events = self.events.get(tracker_id, [])
-        confidence = events[-1].score_after if events else run.confidence
         updated = Run(
             id=run.id,
             phase_id=run.phase_id,
@@ -105,7 +99,7 @@ class StatefulMockTracker(MockTracker):
             declared_files=run.declared_files,
             estimate_hours=run.estimate_hours,
             status=status,  # type: ignore[arg-type]
-            confidence=confidence,
+            confidence=run.confidence,
             session_id=run.session_id,
             branch=run.branch,
             chronicle_summary=run.chronicle_summary,
@@ -117,14 +111,6 @@ class StatefulMockTracker(MockTracker):
         )
         self.runs[run.id] = updated
         return updated
-
-    async def add_confidence_event(self, tracker_id: str, event: object) -> None:  # noqa: ANN001
-        self.events.setdefault(tracker_id, []).append(event)  # type: ignore[arg-type]
-        ce = event  # type: ignore[assignment]
-        self.events_by_run_id.setdefault(ce.run_id, []).append(ce)  # type: ignore[union-attr]
-
-    async def get_confidence_events(self, tracker_id: str) -> list:
-        return self.events.get(tracker_id, [])
 
     async def get_saga_for_run(self, tracker_id: str) -> Saga | None:
         return self.saga
@@ -399,27 +385,6 @@ class TestGetReview:
         assert data["chronicle_summary"] == "All tests pass, code looks clean"
         assert data["pr_url"] == "https://github.com/org/repo/pull/42"
         assert data["ci_passed"] is True
-        assert data["confidence"] == 0.5
-        assert data["confidence_events"] == []
-
-    def test_includes_confidence_events(self, client: TestClient, tracker: StatefulMockTracker):
-        run = _make_run()
-        tracker.runs[run.id] = run
-        event = ConfidenceEvent(
-            id=uuid4(),
-            run_id=run.id,
-            event_type=ConfidenceEventType.CI_PASS,
-            delta=0.1,
-            score_after=0.6,
-            created_at=datetime.now(UTC),
-        )
-        tracker.events[run.tracker_id] = [event]
-
-        resp = client.get(f"/api/v1/ting/runs/{run.id}/review")
-        data = resp.json()
-        assert len(data["confidence_events"]) == 1
-        assert data["confidence_events"][0]["event_type"] == "ci_pass"
-        assert data["confidence_events"][0]["delta"] == 0.1
 
     def test_not_found(self, client: TestClient):
         resp = client.get(f"/api/v1/ting/runs/{uuid4()}/review")
@@ -478,12 +443,6 @@ class TestApproveRun:
         assert git.merged[0] == ("org/repo", "run/test-branch", "feat/alpha")
         assert len(git.deleted) == 1
         assert git.deleted[0] == ("org/repo", "run/test-branch")
-
-        # Verify confidence event was added
-        events = tracker.events[run.tracker_id]
-        assert len(events) == 1
-        assert events[0].event_type == ConfidenceEventType.HUMAN_APPROVED
-        assert events[0].delta == REVIEW_CFG.confidence_delta_approved
 
     def test_approve_not_found(self, client: TestClient):
         resp = client.post(f"/api/v1/ting/runs/{uuid4()}/approve")
@@ -577,11 +536,6 @@ class TestRejectRun:
         assert data["status"] == "FAILED"
         assert data["reason"] is None
 
-        events = tracker.events[run.tracker_id]
-        assert len(events) == 1
-        assert events[0].event_type == ConfidenceEventType.HUMAN_REJECT
-        assert events[0].delta == REVIEW_CFG.confidence_delta_rejected
-
     def test_reject_with_reason(self, client: TestClient, tracker: StatefulMockTracker):
         run = _make_run()
         tracker.runs[run.id] = run
@@ -606,17 +560,6 @@ class TestRejectRun:
         resp = client.post(f"/api/v1/ting/runs/{run.id}/reject")
         assert resp.status_code == 409
 
-    def test_reject_confidence_clamped_at_zero(
-        self, client: TestClient, tracker: StatefulMockTracker
-    ):
-        run = _make_run(confidence=0.05)
-        tracker.runs[run.id] = run
-
-        resp = client.post(f"/api/v1/ting/runs/{run.id}/reject")
-        assert resp.status_code == 200
-        events = tracker.events[run.tracker_id]
-        assert events[0].score_after == 0.0
-
 
 # ---------------------------------------------------------------------------
 # POST /runs/{id}/retry
@@ -633,11 +576,6 @@ class TestRetryRun:
         data = resp.json()
         assert data["status"] == "PENDING"
         assert data["retry_count"] == 1
-
-        events = tracker.events[run.tracker_id]
-        assert len(events) == 1
-        assert events[0].event_type == ConfidenceEventType.RETRY
-        assert events[0].delta == REVIEW_CFG.confidence_delta_retry
 
     def test_retry_not_found(self, client: TestClient):
         resp = client.post(f"/api/v1/ting/runs/{uuid4()}/retry")

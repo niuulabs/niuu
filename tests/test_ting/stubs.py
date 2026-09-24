@@ -9,7 +9,6 @@ from uuid import UUID, uuid4
 
 from ting.domain.flock_flow import FlockFlowConfig
 from ting.domain.models import (
-    ConfidenceEvent,
     Phase,
     PhaseStatus,
     Run,
@@ -320,7 +319,6 @@ class StubTracker(TrackerPort):
                 self._runs_by_session[run.session_id] = run
         else:
             self._runs_by_id: dict[str, Run] = {}
-        self.confidence_events: dict[str, list[ConfidenceEvent]] = {}
         self.phase: Phase | None = None
         self.saga: Saga | None = None
         self._phases: list[Phase] = []
@@ -410,8 +408,6 @@ class StubTracker(TrackerPort):
         run = self._runs_by_id.get(tracker_id)
         if run is None:
             raise ValueError(f"Run not found: {tracker_id}")
-        events = self.confidence_events.get(tracker_id, [])
-        new_confidence = events[-1].score_after if events else run.confidence
         updated = Run(
             id=run.id,
             phase_id=run.phase_id,
@@ -422,7 +418,7 @@ class StubTracker(TrackerPort):
             declared_files=run.declared_files,
             estimate_hours=run.estimate_hours,
             status=status if status is not None else run.status,
-            confidence=confidence if confidence is not None else new_confidence,
+            confidence=confidence if confidence is not None else run.confidence,
             session_id=session_id if session_id is not None else run.session_id,
             branch=run.branch,
             chronicle_summary=run.chronicle_summary,
@@ -452,12 +448,6 @@ class StubTracker(TrackerPort):
 
     async def get_run_by_id(self, run_id: UUID) -> Run | None:
         return next((r for r in self._runs_by_id.values() if r.id == run_id), None)
-
-    async def add_confidence_event(self, tracker_id: str, event: ConfidenceEvent) -> None:
-        self.confidence_events.setdefault(tracker_id, []).append(event)
-
-    async def get_confidence_events(self, tracker_id: str) -> list[ConfidenceEvent]:
-        return self.confidence_events.get(tracker_id, [])
 
     async def all_runs_merged(self, phase_tracker_id: str) -> bool:
         return self._all_merged

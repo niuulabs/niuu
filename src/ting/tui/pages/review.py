@@ -23,7 +23,7 @@ from cli.tui.theme import (
 )
 from cli.tui.widgets.metric_card import MetricCard, MetricRow
 from cli.tui.widgets.tabs import NiuuTabs
-from ting.tui._helpers import format_confidence, format_confidence_history
+from ting.tui._helpers import format_confidence
 
 if TYPE_CHECKING:
     from niuu.cli_api_client import CLIAPIClient
@@ -83,19 +83,13 @@ class ReviewRow(Widget):
         else:
             status_color = ACCENT_PURPLE
 
-        history_str = format_confidence_history(
-            run.get("confidence_history", []),
-            TEXT_MUTED,
-        )
-
         yield Static(
             f"[bold {TEXT_PRIMARY}]{name}[/]  "
             f"[{TEXT_MUTED}]{run_id}[/]  "
             f"[{status_color}]{status_label}[/]  "
             f"[{conf_color}]{conf_pct}[/]  "
             f"[{TEXT_SECONDARY}]reviewer: {reviewer_session}[/]  "
-            f"[{TEXT_MUTED}]round: {review_round}[/]"
-            f"{history_str}",
+            f"[{TEXT_MUTED}]round: {review_round}[/]",
             id="review-row-content",
         )
 

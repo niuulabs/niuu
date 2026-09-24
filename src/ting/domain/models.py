@@ -39,20 +39,6 @@ class RunStatus(StrEnum):
     FAILED = "FAILED"
 
 
-class ConfidenceEventType(StrEnum):
-    CI_PASS = "ci_pass"
-    CI_FAIL = "ci_fail"
-    SCOPE_BREACH = "scope_breach"
-    RETRY = "retry"
-    HUMAN_REJECT = "human_reject"
-    HUMAN_APPROVED = "human_approved"
-    AUTO_APPROVED = "auto_approved"
-    PR_CONFLICT = "pr_conflict"
-    PR_MERGEABLE = "pr_mergeable"
-    MESSAGE_SENT = "message_sent"
-    REVIEWER_SCORE = "reviewer_score"
-
-
 class WorkflowScope(StrEnum):
     SYSTEM = "system"
     USER = "user"
@@ -163,16 +149,6 @@ class Run:
     review_round: int = 0
     structured_outcome: dict[str, Any] | None = None
     outcome_event_type: str | None = None
-
-
-@dataclass(frozen=True)
-class ConfidenceEvent:
-    id: UUID
-    run_id: UUID
-    event_type: ConfidenceEventType
-    delta: float
-    score_after: float
-    created_at: datetime
 
 
 @dataclass(frozen=True)

@@ -15,8 +15,6 @@ from ting.adapters.native import (
     NativeTrackerAdapter,
 )
 from ting.domain.models import (
-    ConfidenceEvent,
-    ConfidenceEventType,
     Phase,
     PhaseStatus,
     Run,
@@ -910,70 +908,6 @@ class TestGetRunById:
 
         result = await adapter.get_run_by_id(uuid4())
         assert result is None
-
-
-# ---------------------------------------------------------------------------
-# add_confidence_event
-# ---------------------------------------------------------------------------
-
-
-class TestAddConfidenceEvent:
-    async def test_inserts_event_and_updates_confidence(self):
-        pool = _make_pool()
-        adapter = _make_adapter(pool)
-        run = _make_run()
-        event = ConfidenceEvent(
-            id=uuid4(),
-            run_id=run.id,
-            event_type=ConfidenceEventType.CI_PASS,
-            delta=0.05,
-            score_after=0.75,
-            created_at=NOW,
-        )
-
-        await adapter.add_confidence_event("tracker-1", event)
-
-        assert pool.execute.call_count == 2
-        insert_sql = pool.execute.call_args_list[0][0][0]
-        assert "INSERT INTO confidence_events" in insert_sql
-        update_sql = pool.execute.call_args_list[1][0][0]
-        assert "UPDATE runs SET confidence" in update_sql
-
-
-# ---------------------------------------------------------------------------
-# get_confidence_events
-# ---------------------------------------------------------------------------
-
-
-class TestGetConfidenceEvents:
-    async def test_returns_events(self):
-        pool = _make_pool()
-        adapter = _make_adapter(pool)
-        run_id = uuid4()
-        pool.fetch.return_value = [
-            {
-                "id": uuid4(),
-                "run_id": run_id,
-                "event_type": "ci_pass",
-                "delta": 0.05,
-                "score_after": 0.75,
-                "created_at": NOW,
-            }
-        ]
-
-        result = await adapter.get_confidence_events("tracker-1")
-
-        assert len(result) == 1
-        assert result[0].event_type == ConfidenceEventType.CI_PASS
-        assert result[0].score_after == 0.75
-
-    async def test_empty(self):
-        pool = _make_pool()
-        pool.fetch.return_value = []
-        adapter = _make_adapter(pool)
-
-        result = await adapter.get_confidence_events("tracker-1")
-        assert result == []
 
 
 # ---------------------------------------------------------------------------

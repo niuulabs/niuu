@@ -8,8 +8,6 @@ import pytest
 from ting.domain.exceptions import InvalidStateTransitionError
 from ting.domain.models import (
     RUN_TRANSITIONS,
-    ConfidenceEvent,
-    ConfidenceEventType,
     DispatcherState,
     Phase,
     PhaseSpec,
@@ -63,24 +61,6 @@ class TestRunStatus:
 
     def test_member_count(self) -> None:
         assert len(RunStatus) == 7
-
-
-class TestConfidenceEventType:
-    def test_values(self) -> None:
-        assert ConfidenceEventType.CI_PASS == "ci_pass"
-        assert ConfidenceEventType.CI_FAIL == "ci_fail"
-        assert ConfidenceEventType.SCOPE_BREACH == "scope_breach"
-        assert ConfidenceEventType.RETRY == "retry"
-        assert ConfidenceEventType.HUMAN_REJECT == "human_reject"
-        assert ConfidenceEventType.HUMAN_APPROVED == "human_approved"
-        assert ConfidenceEventType.AUTO_APPROVED == "auto_approved"
-        assert ConfidenceEventType.PR_CONFLICT == "pr_conflict"
-        assert ConfidenceEventType.PR_MERGEABLE == "pr_mergeable"
-        assert ConfidenceEventType.MESSAGE_SENT == "message_sent"
-        assert ConfidenceEventType.REVIEWER_SCORE == "reviewer_score"
-
-    def test_member_count(self) -> None:
-        assert len(ConfidenceEventType) == 11
 
 
 # ---------------------------------------------------------------------------
@@ -242,20 +222,6 @@ class TestRun:
         assert run.declared_files == ["src/foo.py"]
         assert run.estimate_hours == 2.0
         assert run.session_id is None
-
-
-class TestConfidenceEvent:
-    def test_create(self) -> None:
-        event = ConfidenceEvent(
-            id=uuid4(),
-            run_id=uuid4(),
-            event_type=ConfidenceEventType.CI_PASS,
-            delta=0.1,
-            score_after=0.85,
-            created_at=NOW,
-        )
-        assert event.event_type == ConfidenceEventType.CI_PASS
-        assert event.delta == 0.1
 
 
 class TestDispatcherState:
