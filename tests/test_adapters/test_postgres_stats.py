@@ -1,5 +1,6 @@
 """Tests for PostgresStatsRepository adapter."""
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -241,8 +242,8 @@ class TestPostgresStatsRepository:
         session_bound += "($2::text IS NULL OR s.owner_id = $2)"
         chronicle_bound = session_bound.replace("s.", "c.")
         for call in calls:
-            sql, *params = call.args
-            assert params == ["t1", "alice"]
+            sql, tenant_id, owner_id, _day = call.args
+            assert (tenant_id, owner_id) == ("t1", "alice")
             assert session_bound in sql or chronicle_bound in sql
         counts_sql, tokens_sql, fallback_sql = (c.args[0] for c in calls[:3])
         sparkline_sql = calls[3].args[0]
@@ -253,3 +254,49 @@ class TestPostgresStatsRepository:
         assert "JOIN sessions s ON s.id = t.session_id" in tokens_sql
         assert session_bound in tokens_sql
         assert chronicle_bound in fallback_sql
+
+    async def test_every_query_counts_one_utc_day(
+        self, stats_repo: PostgresStatsRepository, mock_pool: MagicMock
+    ) -> None:
+        """Every query takes the same UTC date as $3 instead of the session's clock."""
+        mock_conn = AsyncMock()
+        mock_context = AsyncMock()
+        mock_context.__aenter__.return_value = mock_conn
+        mock_context.__aexit__.return_value = None
+        mock_pool.acquire.return_value = mock_context
+        mock_conn.fetchrow = AsyncMock(
+            side_effect=[
+                {"active_sessions": 0, "total_sessions": 0, "sessions_today": 0},
+                {
+                    "tokens_today": 0,
+                    "local_tokens": 0,
+                    "cloud_tokens": 0,
+                    "cost_today": Decimal("0"),
+                },
+                {"tokens_today": 0, "cost_today": Decimal("0")},
+            ]
+        )
+        mock_conn.fetch = AsyncMock(return_value=[])
+
+        before = datetime.now(UTC).date()
+        await stats_repo.get_stats(tenant_id=None, owner_id=None)
+        after = datetime.now(UTC).date()
+
+        calls = [*mock_conn.fetchrow.call_args_list, *mock_conn.fetch.call_args_list]
+        days = {call.args[3] for call in calls}
+        assert len(days) == 1
+        assert days <= {before, after}
+        today_start = "($3::date::timestamp AT TIME ZONE 'UTC')"
+        for call in calls:
+            sql = call.args[0]
+            assert "CURRENT_DATE" not in sql
+            assert "now()" not in sql.lower()
+        counts_sql, tokens_sql, fallback_sql = (c.args[0] for c in calls[:3])
+        assert f"started_at >= {today_start}" in counts_sql
+        assert f"t.recorded_at >= {today_start}" in tokens_sql
+        assert f"WHERE recorded_at >= {today_start}" in fallback_sql
+        assert f"c.updated_at >= {today_start}" in fallback_sql
+        # The sparkline's days and buckets are UTC dates ending on $3.
+        sparkline_sql = calls[3].args[0]
+        assert "$3::date - days_ago" in sparkline_sql
+        assert "(started_at AT TIME ZONE 'UTC')::date" in sparkline_sql

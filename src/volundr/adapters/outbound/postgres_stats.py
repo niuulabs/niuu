@@ -1,5 +1,6 @@
 """PostgreSQL adapter for statistics repository."""
 
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import asyncpg
@@ -39,6 +40,13 @@ _SESSION_STARTS = f"""
     )
 """
 
+# Every query also binds $3 to the dashboard's day, a UTC calendar date, and
+# derives its boundaries as UTC instants: a bare date or timestamp compared with
+# a timestamptz is read in the session TimeZone, which is not UTC in mini mode
+# or on a non-UTC server. The sparkline covers the 30 days ending on $3.
+_TODAY_START = "($3::date::timestamp AT TIME ZONE 'UTC')"
+_SPARKLINE_START = "(($3::date - 29)::timestamp AT TIME ZONE 'UTC')"
+
 
 class PostgresStatsRepository(StatsRepository):
     """PostgreSQL implementation of StatsRepository using raw SQL."""
@@ -48,6 +56,9 @@ class PostgresStatsRepository(StatsRepository):
 
     async def get_stats(self, *, tenant_id: str | None, owner_id: str | None) -> Stats:
         """Retrieve aggregate statistics for the dashboard within the given bounds."""
+        # Rows are stamped with the app's UTC clock; binding the day once keeps
+        # every figure on the same day even when the request straddles midnight.
+        today = datetime.now(UTC).date()
         async with self._pool.acquire() as conn:
             session_counts = await conn.fetchrow(
                 f"""
@@ -60,12 +71,13 @@ class PostgresStatsRepository(StatsRepository):
                     ) AS active_sessions,
                     COUNT(*) AS total_sessions,
                     COUNT(*) FILTER (
-                        WHERE started_at >= CURRENT_DATE AT TIME ZONE 'UTC'
+                        WHERE started_at >= {_TODAY_START}
                     ) AS sessions_today
                 FROM session_starts
                 """,
                 tenant_id,
                 owner_id,
+                today,
             )
 
             # Get token usage for today (UTC). Token rows are deleted with their
@@ -81,11 +93,12 @@ class PostgresStatsRepository(StatsRepository):
                     COALESCE(SUM(t.cost), 0) AS cost_today
                 FROM token_usage t
                 JOIN sessions s ON s.id = t.session_id
-                WHERE t.recorded_at >= CURRENT_DATE AT TIME ZONE 'UTC'
+                WHERE t.recorded_at >= {_TODAY_START}
                     AND {_SESSION_IN_SCOPE}
                 """,
                 tenant_id,
                 owner_id,
+                today,
             )
 
             # Some live sessions only persist final usage on their chronicle. Treat
@@ -95,7 +108,7 @@ class PostgresStatsRepository(StatsRepository):
                 WITH today_token_sessions AS (
                     SELECT DISTINCT session_id
                     FROM token_usage
-                    WHERE recorded_at >= CURRENT_DATE AT TIME ZONE 'UTC'
+                    WHERE recorded_at >= {_TODAY_START}
                 ),
                 latest_chronicles AS (
                     SELECT DISTINCT ON (c.session_id)
@@ -105,7 +118,7 @@ class PostgresStatsRepository(StatsRepository):
                     FROM chronicles c
                     WHERE
                         c.session_id IS NOT NULL
-                        AND c.updated_at >= CURRENT_DATE AT TIME ZONE 'UTC'
+                        AND c.updated_at >= {_TODAY_START}
                         AND {_CHRONICLE_IN_SCOPE}
                     ORDER BY c.session_id, c.updated_at DESC
                 )
@@ -117,6 +130,7 @@ class PostgresStatsRepository(StatsRepository):
                 """,
                 tenant_id,
                 owner_id,
+                today,
             )
 
             token_usage_tokens = int(token_stats["tokens_today"])
@@ -126,11 +140,8 @@ class PostgresStatsRepository(StatsRepository):
             sessions_by_day = await conn.fetch(
                 f"""
                 WITH days AS (
-                    SELECT generate_series(
-                        CURRENT_DATE - INTERVAL '29 days',
-                        CURRENT_DATE,
-                        INTERVAL '1 day'
-                    )::date AS day
+                    SELECT $3::date - days_ago AS day
+                    FROM generate_series(0, 29) AS days_ago
                 ),
                 {_SESSION_STARTS},
                 session_counts AS (
@@ -138,7 +149,7 @@ class PostgresStatsRepository(StatsRepository):
                         (started_at AT TIME ZONE 'UTC')::date AS day,
                         COUNT(*)::float AS count
                     FROM session_starts
-                    WHERE started_at >= (CURRENT_DATE - INTERVAL '29 days') AT TIME ZONE 'UTC'
+                    WHERE started_at >= {_SPARKLINE_START}
                     GROUP BY 1
                 )
                 SELECT COALESCE(session_counts.count, 0) AS count
@@ -148,6 +159,7 @@ class PostgresStatsRepository(StatsRepository):
                 """,
                 tenant_id,
                 owner_id,
+                today,
             )
 
             return Stats(
