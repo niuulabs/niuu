@@ -227,7 +227,7 @@ class TestMeshParticipantIntegration:
     async def test_publish_subscribe_round_trip(self):
         from niuu.mesh import build_in_process_mesh
 
-        mesh = build_in_process_mesh("int-peer", rpc_timeout_s=5.0)
+        mesh = build_in_process_mesh("int-peer", rpc_timeout_s=5.0, rpc_reply_cache_size=4)
         p = MeshParticipant(mesh=mesh, peer_id="int-peer")
 
         from datetime import UTC, datetime

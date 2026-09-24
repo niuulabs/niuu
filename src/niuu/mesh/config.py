@@ -1,4 +1,4 @@
-"""Shared configuration for Niuu NATS mesh transports."""
+"""Shared configuration for Niuu mesh peers and their NATS transports."""
 
 from __future__ import annotations
 
@@ -11,6 +11,12 @@ from pydantic_settings import (
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
+
+#: Completed mesh RPC replies a Sleipnir mesh peer keeps, keyed on the request
+#: ``event_id``, so a redelivered request gets its stored reply instead of a
+#: second handler run.  This is the default for the Ravn and Skuld
+#: ``mesh.rpc_reply_cache_size`` setting.
+DEFAULT_RPC_REPLY_CACHE_SIZE = 1024
 
 
 class MeshNatsExtraSubscriptionConfig(BaseModel):

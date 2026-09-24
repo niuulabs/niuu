@@ -905,6 +905,7 @@ class Broker(
                 adapters=list(mesh_cfg.adapters),
                 own_peer_id=own_peer_id,
                 rpc_timeout_s=mesh_cfg.rpc_timeout_s,
+                rpc_reply_cache_size=mesh_cfg.rpc_reply_cache_size,
                 sleipnir_transport_builder=_sleipnir_transport,
                 environment_id=mesh_cfg.realm_id,
             )
@@ -912,6 +913,7 @@ class Broker(
             mesh = build_in_process_mesh(
                 own_peer_id,
                 mesh_cfg.rpc_timeout_s,
+                rpc_reply_cache_size=mesh_cfg.rpc_reply_cache_size,
                 environment_id=mesh_cfg.realm_id,
             )
         else:
@@ -945,6 +947,7 @@ class Broker(
                 own_peer_id=own_peer_id,
                 rpc_timeout_s=mesh_cfg.rpc_timeout_s,
                 environment_id=mesh_cfg.realm_id,
+                rpc_reply_cache_size=mesh_cfg.rpc_reply_cache_size,
             )
 
         # Build discovery adapter using shared niuu.mesh.discovery_builder

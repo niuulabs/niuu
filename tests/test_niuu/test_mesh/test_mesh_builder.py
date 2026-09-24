@@ -55,6 +55,7 @@ def _build(adapters: list[dict[str, Any]], **kwargs: Any) -> Any:
         adapters=adapters,
         own_peer_id="peer-a",
         rpc_timeout_s=5.0,
+        rpc_reply_cache_size=4,
         **kwargs,
     )
 
@@ -97,6 +98,7 @@ class TestBuiltMesh:
         assert mesh.kwargs["listen_port"] == 7490
         assert mesh.kwargs["own_peer_id"] == "peer-a"
         assert mesh.kwargs["rpc_timeout_s"] == 5.0
+        assert "rpc_reply_cache_size" not in mesh.kwargs
 
     def test_sleipnir_entry_gets_the_built_transport(self):
         transport = object()
@@ -114,6 +116,7 @@ class TestBuiltMesh:
         assert mesh.kwargs["publisher"] is transport
         assert mesh.kwargs["subscriber"] is transport
         assert mesh.kwargs["environment_id"] == "realm-1"
+        assert mesh.kwargs["rpc_reply_cache_size"] == 4
         assert "discovery" not in mesh.kwargs
         assert "transport" not in mesh.kwargs
 

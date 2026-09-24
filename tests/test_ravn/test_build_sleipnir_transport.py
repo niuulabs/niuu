@@ -177,7 +177,7 @@ class TestBuildMesh:
         """Legacy nng adapter (default) → SleipnirMeshAdapter is constructed."""
         from ravn.cli.commands import _build_mesh
 
-        settings = _make_settings()
+        settings = _make_settings(**{"mesh.rpc_reply_cache_size": 7})
         with (
             patch("niuu.mesh.transport_builder.build_transport", return_value=MagicMock()),
             patch("ravn.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter") as mock_cls,
@@ -185,6 +185,7 @@ class TestBuildMesh:
         ):
             _build_mesh(settings)
         mock_cls.assert_called_once()
+        assert mock_cls.call_args.kwargs["rpc_reply_cache_size"] == 7
 
     def test_legacy_transport_that_cannot_be_built_is_fatal(self):
         """A configured transport that cannot be built raises; the mesh is never disabled."""
@@ -213,6 +214,7 @@ class TestBuildMesh:
 
         settings = _make_settings()
         settings.mesh.adapters = [{"role": "pub_sub", "transport": "nng"}]
+        settings.mesh.rpc_reply_cache_size = 7
         settings.discovery.realm_id = "flock-a"
 
         captured: list = []
@@ -221,11 +223,13 @@ class TestBuildMesh:
             adapters,
             own_peer_id,
             rpc_timeout_s,
+            rpc_reply_cache_size,
             discovery,
             sleipnir_transport_builder,
             environment_id,
         ):
             assert environment_id == "flock-a"
+            assert rpc_reply_cache_size == 7
             captured.append(sleipnir_transport_builder)
             return MagicMock()
 
@@ -252,6 +256,7 @@ class TestBuildMesh:
             adapters,
             own_peer_id,
             rpc_timeout_s,
+            rpc_reply_cache_size,
             discovery,
             sleipnir_transport_builder,
             environment_id,
