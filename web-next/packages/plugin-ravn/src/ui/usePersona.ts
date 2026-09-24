@@ -44,6 +44,18 @@ export function useCreatePersona() {
   });
 }
 
+export function useDeletePersona(name: string) {
+  const service = useService<IPersonaStore>('ravn.personas');
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => service.deletePersona(name),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['ravn', 'personas'] });
+    },
+  });
+}
+
 export function useForkPersona(name: string) {
   const service = useService<IPersonaStore>('ravn.personas');
   const queryClient = useQueryClient();
