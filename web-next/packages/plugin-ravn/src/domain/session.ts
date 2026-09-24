@@ -47,6 +47,8 @@ export const sessionSchema = z.object({
   chatEndpoint: z.string().nullish(),
   /** Opaque owning target used for resident commands and routing. */
   instanceId: z.string().optional(),
+  /** Display name of the owning target. */
+  instanceName: z.string().optional(),
   flockId: z.string().uuid().optional(),
   flockMemberId: z.string().uuid().optional(),
   flockRole: z.string().optional(),

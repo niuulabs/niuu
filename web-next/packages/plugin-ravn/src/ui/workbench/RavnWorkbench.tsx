@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearch } from '@tanstack/react-router';
 import { ErrorState, LoadingState } from '@niuulabs/ui';
 import type { Ravn } from '../../domain/ravn';
@@ -7,10 +7,14 @@ import {
   RAVN_FILTERS,
   RAVN_GROUPINGS,
   defaultRavn,
+  isSessionRavn,
+  ravnLifeState,
+  sessionBackedRavens,
   type RavnFilter,
   type RavnGrouping,
 } from '../../application/ravnWorkbench';
 import { useRavens } from '../hooks/useRavens';
+import { useSessions } from '../hooks/useSessions';
 import { loadStorage, saveStorage } from '../storage';
 import { ResidentFlockDeployDialog } from '../ResidentFlockDeployDialog';
 import { RavnList } from './RavnList';
@@ -19,6 +23,8 @@ import { DeployRavnDialog } from './DeployRavnDialog';
 import { errorText } from './errorText';
 import './workbench.css';
 
+/** How often the session list is re-read while a Forge-backed ravn starts. */
+const SESSION_START_POLL_MS = 2_000;
 const FILTER_KEY = 'ravn.workbench.filter';
 const GROUPING_KEY = 'ravn.workbench.grouping';
 
@@ -60,6 +66,7 @@ function storedChoice<T extends string>(key: string, allowed: Array<{ id: T }>, 
 
 export function RavnWorkbench() {
   const ravens = useRavens();
+  const sessions = useSessions();
   const navigate = useNavigate();
   const search = readSearch(useSearch({ strict: false }) as Record<string, unknown>);
   const [filter, setFilter] = useState<RavnFilter>(() =>
@@ -72,7 +79,23 @@ export function RavnWorkbench() {
   const [deployOpen, setDeployOpen] = useState(false);
   const [flockOpen, setFlockOpen] = useState(false);
 
-  const list = useMemo(() => ravens.data ?? [], [ravens.data]);
+  const list = useMemo(() => {
+    const residents = ravens.data ?? [];
+    return [...residents, ...sessionBackedRavens(sessions.data ?? [], residents)];
+  }, [ravens.data, sessions.data]);
+  const sessionStarting = list.some(
+    (ravn) => isSessionRavn(ravn) && ravnLifeState(ravn) === 'starting',
+  );
+  const refetchSessions = sessions.refetch;
+
+  // A flock session announces its chat endpoint before it is running, so the
+  // session list's own poll does not see it through; follow it here.
+  useEffect(() => {
+    if (!sessionStarting) return;
+    const timer = window.setInterval(() => void refetchSessions(), SESSION_START_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [sessionStarting, refetchSessions]);
+
   const requested = findRavn(list, search);
   const selected = requested ?? defaultRavn(list);
   const tab: RavnTab = search.tab ?? 'chat';
@@ -128,6 +151,7 @@ export function RavnWorkbench() {
         query={query}
         onQueryChange={setQuery}
         onDeploy={() => setDeployOpen(true)}
+        sessionsError={sessions.isError ? errorText(sessions.error, 'no answer') : null}
       />
 
       {selected ? (
@@ -160,6 +184,9 @@ export function RavnWorkbench() {
           }
           onOpenPersona={(name) =>
             void navigate({ to: '/ravn/personas' as never, search: { persona: name } as never })
+          }
+          onOpenForgeSession={(sessionId) =>
+            void navigate({ to: `/volundr/sessions/${encodeURIComponent(sessionId)}` as never })
           }
           onBack={() => go({})}
           onDeleted={() => go({}, true)}
@@ -195,7 +222,7 @@ export function RavnWorkbench() {
           setDeployOpen(open);
           if (!open && search.deploy) go({ ...search, deploy: undefined }, true);
         }}
-        onDeployed={(ravn) => go({ ravn: ravn.id, instance_id: ravn.instanceId, tab: 'activity' })}
+        onDeployed={(ravn) => go({ ravn: ravn.id, instance_id: ravn.instanceId, tab: 'chat' })}
         onDeployFlock={() => setFlockOpen(true)}
       />
       <ResidentFlockDeployDialog

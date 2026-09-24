@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, Search } from 'lucide-react';
 import { ErrorState, LoadingState } from '@niuulabs/ui';
+import { useOptionalService } from '@niuulabs/plugin-sdk';
+import { LiveLogsTab, type IVolundrService } from '@niuulabs/plugin-volundr';
 import type { Ravn } from '../../domain/ravn';
-import { ravnLifeState } from '../../application/ravnWorkbench';
+import { isSessionRavn, ravnLifeState } from '../../application/ravnWorkbench';
 import {
   LOG_SEVERITIES,
   filterResidentLogs,
@@ -149,11 +151,30 @@ function SessionActivity({ ravn }: { ravn: Ravn }) {
   );
 }
 
+function ForgeSessionLogs({ ravn }: { ravn: Ravn }) {
+  const volundr = useOptionalService<IVolundrService>('volundr');
+  if (!volundr) {
+    return (
+      <ErrorState
+        title="No session logs here"
+        message="This host wires no Forge service, and a session-backed ravn's logs live in Forge."
+      />
+    );
+  }
+  return (
+    <div className="rw-forge-logs" data-testid="ravn-activity-session-logs">
+      <LiveLogsTab sessionId={ravn.sessionId ?? ravn.id} volundr={volundr} />
+    </div>
+  );
+}
+
 /**
  * What a ravn has been doing. Managed runtimes that expose logs show their
- * log buffer; other ravens show the messages of their recorded sessions.
+ * log buffer, Forge-backed ravens show their session's logs, and other ravens
+ * show the messages of their recorded sessions.
  */
 export function ActivityTab({ ravn }: { ravn: Ravn }) {
+  if (isSessionRavn(ravn)) return <ForgeSessionLogs ravn={ravn} />;
   if (ravn.managed && ravn.capabilities?.includes('logs')) return <ResidentLogs ravn={ravn} />;
   if (ravn.managed) {
     return (

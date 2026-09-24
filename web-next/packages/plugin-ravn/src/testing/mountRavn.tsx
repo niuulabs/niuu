@@ -24,11 +24,18 @@ export interface RavnServiceOptions {
   ravens?: Ravn[];
   sessions?: Session[];
   residentSessions?: Session[];
+  /** Wire a Forge service, which offers ravns run as Forge sessions. */
+  withForge?: boolean;
 }
 
 export function ravnServices(options: RavnServiceOptions = {}) {
   const ravens = options.ravens ?? [makeRavn()];
   return {
+    ...(options.withForge && {
+      volundr: {
+        startSession: vi.fn().mockResolvedValue({ id: 'forge-session-1' }),
+      },
+    }),
     'ravn.ravens': {
       listRavens: vi.fn().mockResolvedValue(ravens),
       getRaven: vi.fn(),
@@ -67,6 +74,7 @@ export function ravnServices(options: RavnServiceOptions = {}) {
       listSessions: vi.fn().mockResolvedValue(options.sessions ?? []),
       getSession: vi.fn(),
       getMessages: vi.fn().mockResolvedValue([]),
+      stopSession: vi.fn().mockResolvedValue(undefined),
     },
     'ravn.personas': {
       listPersonas: vi.fn().mockResolvedValue([
@@ -116,8 +124,13 @@ export function mountRavn(path: string, services: Record<string, unknown>) {
     path: '/ravn/personas',
     component: PersonaLibrary,
   });
+  const forgeSession = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/volundr/sessions/$sessionId',
+    component: () => <div data-testid="forge-session-route" />,
+  });
   const router = createRouter({
-    routeTree: rootRoute.addChildren([workbench, personas]),
+    routeTree: rootRoute.addChildren([workbench, personas, forgeSession]),
     history: createMemoryHistory({ initialEntries: [path] }),
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

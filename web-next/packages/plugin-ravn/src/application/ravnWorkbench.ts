@@ -8,7 +8,9 @@
  */
 
 import type { Ravn, ResidentCondition } from '../domain/ravn';
+import type { Session } from '../domain/session';
 import { nameForRavn } from '../domain/residentActions';
+import { belongsToRavn } from './conversations';
 
 export type RavnLifeState =
   'running' | 'starting' | 'removing' | 'idle' | 'suspended' | 'stopped' | 'failed';
@@ -102,9 +104,57 @@ export function describeCondition(condition: Pick<ResidentCondition, 'type' | 'r
 
 /** Where the ravn runs, for people: the target's name, else its slug, else the backend. */
 export function ravnTarget(
-  ravn: Pick<Ravn, 'instanceName' | 'instanceSlug' | 'location' | 'backend'>,
+  ravn: Pick<Ravn, 'instanceName' | 'instanceSlug' | 'location' | 'backend' | 'kind'>,
 ): string {
-  return ravn.instanceName || ravn.instanceSlug || ravn.location || ravn.backend || 'unassigned';
+  const named = ravn.instanceName || ravn.instanceSlug || ravn.location || ravn.backend;
+  if (named) return named;
+  return ravn.kind === 'session' ? 'this Forge' : 'unassigned';
+}
+
+export function isSessionRavn(ravn: Pick<Ravn, 'kind'>): boolean {
+  return ravn.kind === 'session';
+}
+
+/**
+ * The fleet API lists residents; a Forge flock session is a ravn too — its
+ * ravn daemons run as processes on a Forge — but it is served only as a live
+ * session. Every live session no listed ravn owns becomes a ravn here, so the
+ * workbench shows everything you can talk to.
+ */
+export function sessionBackedRavens(sessions: Session[], ravens: Ravn[]): Ravn[] {
+  const owned = (session: Session) => ravens.some((ravn) => belongsToRavn(session, ravn));
+  const byRavn = new Map<string, Session>();
+  for (const session of sessions) {
+    if (owned(session)) continue;
+    const key = `${session.instanceId ?? ''}:${session.ravnId}`;
+    const current = byRavn.get(key);
+    if (!current || (session.status === 'running' && current.status !== 'running')) {
+      byRavn.set(key, session);
+    }
+  }
+  return [...byRavn.values()].map((session) => ({
+    id: session.ravnId,
+    // Forge names the session; which personas it runs is launch configuration.
+    personaName: '',
+    residentName: session.title || session.personaName,
+    kind: 'session',
+    managed: false,
+    engine: 'ravn',
+    status: session.status === 'running' ? 'active' : 'idle',
+    // A live flock session that is not running yet is still being created.
+    observedState: session.status === 'running' ? 'active' : 'pending',
+    model: session.model,
+    createdAt: session.createdAt,
+    chatEndpoint: session.chatEndpoint ?? null,
+    sessionId: session.id,
+    ...(session.instanceId && { instanceId: session.instanceId }),
+    ...(session.instanceName && { instanceName: session.instanceName }),
+    ...(session.flockId && { flockId: session.flockId }),
+    ...(session.flockRole && { flockRole: session.flockRole }),
+    ...(session.messageCount !== undefined && { messageCount: session.messageCount }),
+    ...(session.tokenCount !== undefined && { tokenCount: session.tokenCount }),
+    ...(session.costUsd !== undefined && { costUsd: session.costUsd }),
+  }));
 }
 
 /** The one line under a ravn's name in the list; null when there is nothing to add. */

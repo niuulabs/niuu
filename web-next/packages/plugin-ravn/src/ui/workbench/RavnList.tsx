@@ -15,6 +15,7 @@ import {
   matchesQuery,
   ravnLifeState,
   ravnReasonLine,
+  isSessionRavn,
   type RavnFilter,
   type RavnGrouping,
 } from '../../application/ravnWorkbench';
@@ -31,6 +32,8 @@ export interface RavnListProps {
   query: string;
   onQueryChange: (query: string) => void;
   onDeploy: () => void;
+  /** Why Forge-backed ravn sessions could not be listed, when they could not. */
+  sessionsError?: string | null;
 }
 
 function lastSeen(ravn: Ravn): string {
@@ -65,8 +68,18 @@ function RavnRow({
         <span className="rw-row__name">{nameForRavn(ravn)}</span>
         <span className="rw-row__meta">
           <EngineLabel engine={ravn.engine} />
-          <span className="rw-dot-sep">·</span>
-          <span>{ravn.model}</span>
+          {isSessionRavn(ravn) && (
+            <>
+              <span className="rw-dot-sep">·</span>
+              <span className="rw-row__kind">session</span>
+            </>
+          )}
+          {ravn.model && (
+            <>
+              <span className="rw-dot-sep">·</span>
+              <span>{ravn.model}</span>
+            </>
+          )}
         </span>
         {reason && (
           <span className="rw-row__why" data-tone={progress ? 'progress' : 'critical'}>
@@ -93,6 +106,7 @@ export function RavnList({
   query,
   onQueryChange,
   onDeploy,
+  sessionsError = null,
 }: RavnListProps) {
   const counts = useMemo(() => filterCounts(ravens), [ravens]);
   const groups = useMemo(
@@ -176,6 +190,11 @@ export function RavnList({
       </div>
 
       <div className="rw-rail__scroll">
+        {sessionsError && (
+          <p className="rw-inline-error" role="alert" data-testid="ravn-sessions-error">
+            Forge-backed ravens are missing — their sessions could not be listed: {sessionsError}
+          </p>
+        )}
         {groups.length === 0 ? (
           <p className="rw-rail__empty" data-testid="ravn-list-empty">
             {ravens.length === 0

@@ -288,7 +288,7 @@ describe('RavnWorkbench — deploy', () => {
     await waitFor(() =>
       expect(router.state.location.search).toMatchObject({
         ravn: '99999999-9999-4999-8999-999999999999',
-        tab: 'activity',
+        tab: 'chat',
       }),
     );
   });

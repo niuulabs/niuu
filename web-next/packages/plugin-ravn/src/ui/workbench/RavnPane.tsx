@@ -1,5 +1,14 @@
 import { useState, type KeyboardEvent } from 'react';
-import { ChevronLeft, MessageSquare, Pause, Play, RotateCw, Trash2 } from 'lucide-react';
+import {
+  ChevronLeft,
+  ExternalLink,
+  MessageSquare,
+  Pause,
+  Play,
+  RotateCw,
+  Square,
+  Trash2,
+} from 'lucide-react';
 import { Dialog, DialogContent, relTime } from '@niuulabs/ui';
 import type { Ravn } from '../../domain/ravn';
 import {
@@ -8,8 +17,9 @@ import {
   canSuspendResident,
   nameForRavn,
 } from '../../domain/residentActions';
-import { ravnLifeState, ravnTarget } from '../../application/ravnWorkbench';
+import { isSessionRavn, ravnLifeState, ravnTarget } from '../../application/ravnWorkbench';
 import { useDeleteResident, useResidentLifecycle } from '../hooks/useResidentControl';
+import { useStopRavnSession } from '../hooks/useSessions';
 import type { ResidentLifecycleAction } from '../../ports';
 import { EngineLabel, RavnMark, RavnStateBadge } from './RavnMark';
 import { HealthBanner } from './HealthBanner';
@@ -39,6 +49,7 @@ export interface RavnPaneProps {
   sessionId: string | null;
   onSessionChange: (sessionId: string | null) => void;
   onOpenPersona: (name: string) => void;
+  onOpenForgeSession: (sessionId: string) => void;
   onBack: () => void;
   onDeleted: () => void;
 }
@@ -101,6 +112,64 @@ function DeleteDialog({
   );
 }
 
+function StopDialog({
+  ravn,
+  open,
+  onOpenChange,
+  onStopped,
+}: {
+  ravn: Ravn;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onStopped: () => void;
+}) {
+  const stop = useStopRavnSession();
+  async function confirm() {
+    try {
+      await stop.mutateAsync({ id: ravn.sessionId ?? ravn.id, instanceId: ravn.instanceId });
+    } catch {
+      return;
+    }
+    onOpenChange(false);
+    onStopped();
+  }
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) stop.reset();
+        onOpenChange(next);
+      }}
+    >
+      <DialogContent
+        title={`Stop ${nameForRavn(ravn)}`}
+        description="Its ravn and chat room processes end. The session stays in Forge, where it can be resumed."
+      >
+        {stop.isError && (
+          <div className="rw-form-error" role="alert">
+            {errorText(stop.error, 'Stopping the session failed')}
+          </div>
+        )}
+        <div className="rw-dialog-foot">
+          <span className="rw-dialog-foot__sum" />
+          <button type="button" className="rw-btn" onClick={() => onOpenChange(false)}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="rw-btn rw-btn--danger"
+            onClick={() => void confirm()}
+            disabled={stop.isPending}
+            data-testid="ravn-stop-confirm"
+          >
+            {stop.isPending ? 'Stopping…' : 'Stop'}
+          </button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function RavnPane({
   ravn,
   tab,
@@ -108,10 +177,13 @@ export function RavnPane({
   sessionId,
   onSessionChange,
   onOpenPersona,
+  onOpenForgeSession,
   onBack,
   onDeleted,
 }: RavnPaneProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [stopOpen, setStopOpen] = useState(false);
+  const sessionBacked = isSessionRavn(ravn);
   const lifecycle = useResidentLifecycle();
   const state = ravnLifeState(ravn);
   const name = nameForRavn(ravn);
@@ -143,7 +215,19 @@ export function RavnPane({
             {name} <RavnStateBadge state={state} />
           </h1>
           <div className="rw-chips">
-            {ravn.personaName ? (
+            {sessionBacked ? (
+              <button
+                type="button"
+                className="rw-chip"
+                onClick={() => onOpenForgeSession(ravn.sessionId ?? ravn.id)}
+                title="Open the session in Forge"
+                data-testid="ravn-open-forge-session"
+              >
+                <span className="rw-chip__k">runs as</span>
+                Forge session
+                <ExternalLink size={11} aria-hidden="true" />
+              </button>
+            ) : ravn.personaName ? (
               <button
                 type="button"
                 className="rw-chip"
@@ -167,7 +251,7 @@ export function RavnPane({
                 </>
               )}
             </span>
-            <span className="rw-chip rw-chip--mono">{ravn.model}</span>
+            {ravn.model && <span className="rw-chip rw-chip--mono">{ravn.model}</span>}
             <span className="rw-chip">
               <span className="rw-chip__k">target</span>
               {ravnTarget(ravn)}
@@ -239,6 +323,18 @@ export function RavnPane({
               <RotateCw size={15} aria-hidden="true" />
             </button>
           )}
+          {sessionBacked && (state === 'running' || state === 'starting') && (
+            <button
+              type="button"
+              className="rw-icon-btn rw-icon-btn--danger"
+              onClick={() => setStopOpen(true)}
+              aria-label="Stop"
+              title="Stop"
+              data-testid="ravn-stop"
+            >
+              <Square size={14} aria-hidden="true" />
+            </button>
+          )}
           {ravn.managed && ravn.observedState !== 'deleting' && (
             <button
               type="button"
@@ -304,7 +400,13 @@ export function RavnPane({
           />
         )}
         {tab === 'activity' && <ActivityTab ravn={ravn} />}
-        {tab === 'setup' && <SetupTab ravn={ravn} onOpenPersona={onOpenPersona} />}
+        {tab === 'setup' && (
+          <SetupTab
+            ravn={ravn}
+            onOpenPersona={onOpenPersona}
+            onOpenForgeSession={onOpenForgeSession}
+          />
+        )}
         {tab === 'usage' && <UsageTab ravn={ravn} />}
       </div>
 
@@ -314,6 +416,9 @@ export function RavnPane({
         onOpenChange={setDeleteOpen}
         onDeleted={onDeleted}
       />
+      {sessionBacked && (
+        <StopDialog ravn={ravn} open={stopOpen} onOpenChange={setStopOpen} onStopped={onDeleted} />
+      )}
     </section>
   );
 }

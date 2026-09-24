@@ -6,7 +6,8 @@
  * header of chips and icon actions. Colours come from design tokens only.
  */
 
-.rw {
+/* On :root, not .rw — dialogs render in a portal outside the page. */
+:root {
   --rw-select: var(
     --color-selection-surface,
     color-mix(in srgb, var(--color-brand) 12%, var(--color-bg-secondary))
@@ -18,6 +19,9 @@
   --rw-eng-ravn: var(--color-brand);
   --rw-eng-openclaw: var(--color-accent-teal);
   --rw-eng-hermes: var(--color-accent-violet);
+}
+
+.rw {
   display: grid;
   grid-template-columns: minmax(300px, 340px) minmax(0, 1fr);
   height: 100%;
@@ -1347,6 +1351,8 @@ button.rw-chip:hover {
 .rw-form {
   display: grid;
   gap: 18px;
+  /* Dialogs render in a portal, outside the page's text colour. */
+  color: var(--color-text-primary);
 }
 
 .rw-stack {
@@ -1842,4 +1848,27 @@ button.rw-chip:hover {
 
 .rw-muted--pad {
   padding: 16px 20px;
+}
+
+.rw-field__note {
+  padding: 7px 0;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+
+.rw-forge-logs {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.rw-row__kind {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-faint);
+}
+
+.rw-rail__scroll > .rw-inline-error {
+  margin: 10px 12px 0;
 }

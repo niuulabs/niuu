@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Check, Minus } from 'lucide-react';
 import { PersonaAvatar, relTime } from '@niuulabs/ui';
 import { residentCapabilitySchema, type Ravn, type ResidentCapability } from '../../domain/ravn';
-import { ravnLifeState, ravnTarget } from '../../application/ravnWorkbench';
+import { isSessionRavn, ravnLifeState, ravnTarget } from '../../application/ravnWorkbench';
 import { usePersona } from '../usePersona';
 import { EngineLabel, RavnStateBadge } from './RavnMark';
 import { errorText } from './errorText';
@@ -106,12 +106,44 @@ function PersonaSection({
   );
 }
 
+function ForgeSessionSection({
+  ravn,
+  onOpenForgeSession,
+}: {
+  ravn: Ravn;
+  onOpenForgeSession: (sessionId: string) => void;
+}) {
+  const sessionId = ravn.sessionId ?? ravn.id;
+  return (
+    <Section
+      title="Runs as"
+      action={
+        <button type="button" onClick={() => onOpenForgeSession(sessionId)}>
+          Open in Forge →
+        </button>
+      }
+    >
+      <div className="rw-card" data-testid="ravn-setup-session">
+        <div>
+          <div className="rw-card__title">A Forge session on {ravnTarget(ravn)}</div>
+          <div className="rw-card__sub">
+            Its ravn and chat room run as processes on the Forge host — no container. The personas
+            it runs were chosen at launch; Forge shows the session&rsquo;s full configuration.
+          </div>
+        </div>
+      </div>
+    </Section>
+  );
+}
+
 export function SetupTab({
   ravn,
   onOpenPersona,
+  onOpenForgeSession,
 }: {
   ravn: Ravn;
   onOpenPersona: (name: string) => void;
+  onOpenForgeSession: (sessionId: string) => void;
 }) {
   const capabilities = new Set(ravn.capabilities ?? []);
   const conditions = ravn.conditions ?? [];
@@ -129,7 +161,11 @@ export function SetupTab({
 
   return (
     <div className="rw-sheet" data-testid="ravn-setup-tab">
-      <PersonaSection ravn={ravn} onOpenPersona={onOpenPersona} />
+      {isSessionRavn(ravn) ? (
+        <ForgeSessionSection ravn={ravn} onOpenForgeSession={onOpenForgeSession} />
+      ) : (
+        <PersonaSection ravn={ravn} onOpenPersona={onOpenPersona} />
+      )}
 
       <Section title="Runtime">
         <div className="rw-kv">
@@ -143,8 +179,8 @@ export function SetupTab({
             </Field>
           )}
           <Field label="Target">{ravnTarget(ravn)}</Field>
-          <Field label="Model" mono>
-            {ravn.model}
+          <Field label="Model" mono={Boolean(ravn.model)}>
+            {ravn.model || 'set by the Forge’s ravn configuration'}
           </Field>
           <Field label="State">
             <RavnStateBadge state={ravnLifeState(ravn)} />
