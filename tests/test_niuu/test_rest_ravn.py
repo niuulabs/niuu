@@ -22,7 +22,13 @@ from niuu.adapters.inbound.rest_ravn import (
     create_ravn_router,
     create_ravn_session_proxy_router,
 )
-from niuu.domain.models import InstanceKind, InstanceVisibility, Principal, RegisteredInstance
+from niuu.domain.models import (
+    InstanceKind,
+    InstanceVisibility,
+    Principal,
+    Realm,
+    RegisteredInstance,
+)
 
 
 def _instance(
@@ -653,6 +659,156 @@ def test_create_raven_uses_resident_command_timeout() -> None:
     assert result.status_code == 201
     assert request_remote.await_args.kwargs["timeout"] == 900.0
     assert sync_persona.await_args.args[3] == "reviewer"
+
+
+class _FakeRealmService:
+    def __init__(self, realm: Realm | None) -> None:
+        self.realm = realm
+        self.requested_ids: list[UUID] = []
+
+    async def get_realm(self, realm_ref: UUID) -> Realm | None:
+        self.requested_ids.append(realm_ref)
+        if self.realm is not None and realm_ref == self.realm.id:
+            return self.realm
+        return None
+
+
+def _realm(**overrides: object) -> Realm:
+    now = datetime.now(UTC)
+    values: dict[str, object] = {
+        "id": UUID("11111111-1111-1111-1111-111111111111"),
+        "slug": "workshop",
+        "name": "Workshop",
+        "sleipnir_domain": "code",
+        "owner_id": None,
+        "instance_id": "ymir",
+        "created_at": now,
+        "updated_at": now,
+        "autonomy_profile": "balanced",
+    }
+    values.update(overrides)
+    return Realm(**values)
+
+
+@respx.mock
+def test_create_raven_syncs_realm_to_remote_target_before_create() -> None:
+    """Guild routing a resident create to a remote Völundr must sync the
+    realm onto that target's own database first, then forward realm_id
+    unchanged — the target's ResidentRuntimeService validates realm_id
+    against ITS database, which otherwise has no row for it."""
+    realm = _realm()
+    embedded = FastAPI()
+    embedded.state.realm_service = _FakeRealmService(realm)
+    client = _client(
+        [_instance("noatun", base_url="http://noatun")],
+        embedded_forge_app=embedded,
+    )
+    calls: list[str] = []
+    sync_route = respx.put(f"http://noatun/api/v1/realms/by-id/{realm.id}").mock(
+        side_effect=lambda request: (calls.append("sync"), Response(200, json={}))[1]
+    )
+    create_route = respx.post("http://noatun/api/v1/ravn/ravens").mock(
+        side_effect=lambda request: (
+            calls.append("create"),
+            Response(201, json={"id": "resident-id", "managed": True}),
+        )[1]
+    )
+
+    response = client.post(
+        "/api/v1/ravn/ravens",
+        headers=_headers(),
+        json={
+            "instance_id": "noatun",
+            "profile_id": "ravn-openshell",
+            "name": "Muninn",
+            "realm_id": str(realm.id),
+        },
+    )
+
+    assert response.status_code == 201
+    assert calls == ["sync", "create"]
+    assert json.loads(sync_route.calls.last.request.read()) == {
+        "slug": realm.slug,
+        "name": realm.name,
+        "sleipnir_domain": realm.sleipnir_domain,
+        "owner_id": realm.owner_id,
+        "instance_id": realm.instance_id,
+        "autonomy_profile": realm.autonomy_profile,
+    }
+    create_body = json.loads(create_route.calls.last.request.read())
+    assert create_body["realm_id"] == str(realm.id)
+
+
+@respx.mock
+def test_create_raven_fails_when_realm_sync_fails() -> None:
+    """A realm_id was explicitly requested to be forwarded; if it cannot be
+    synced onto the target, the create must fail rather than silently
+    proceed without the link (no-fallbacks.md)."""
+    realm = _realm()
+    embedded = FastAPI()
+    embedded.state.realm_service = _FakeRealmService(realm)
+    client = _client(
+        [_instance("noatun", base_url="http://noatun")],
+        embedded_forge_app=embedded,
+    )
+    respx.put(f"http://noatun/api/v1/realms/by-id/{realm.id}").mock(
+        return_value=Response(500, json={"detail": "boom"})
+    )
+    create_route = respx.post("http://noatun/api/v1/ravn/ravens").mock(
+        return_value=Response(201, json={"id": "resident-id", "managed": True})
+    )
+
+    response = client.post(
+        "/api/v1/ravn/ravens",
+        headers=_headers(),
+        json={
+            "instance_id": "noatun",
+            "profile_id": "ravn-openshell",
+            "name": "Muninn",
+            "realm_id": str(realm.id),
+        },
+    )
+
+    assert response.status_code >= 400
+    assert not create_route.calls
+
+
+def test_create_raven_does_not_sync_realm_for_a_local_target() -> None:
+    """The embedded/local target already has the realm in its own database —
+    no cross-instance sync is needed or attempted."""
+    realm = _realm()
+    embedded = FastAPI()
+    realm_service = _FakeRealmService(realm)
+    embedded.state.realm_service = realm_service
+
+    @embedded.post("/api/v1/ravn/ravens")
+    async def _embedded_create(payload: dict[str, Any]) -> dict[str, Any]:
+        return {"id": "resident-id", "managed": True}
+
+    client = _client(
+        [
+            _instance(
+                "local",
+                base_url="embedded://local-forge",
+                config={"transport": "embedded"},
+            )
+        ],
+        embedded_forge_app=embedded,
+    )
+
+    response = client.post(
+        "/api/v1/ravn/ravens",
+        headers=_headers(),
+        json={
+            "instance_id": "local",
+            "profile_id": "ravn-openshell",
+            "name": "Muninn",
+            "realm_id": str(realm.id),
+        },
+    )
+
+    assert response.status_code == 201
+    assert realm_service.requested_ids == []
 
 
 @respx.mock

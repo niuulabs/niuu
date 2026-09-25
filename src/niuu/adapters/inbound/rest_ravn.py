@@ -51,6 +51,7 @@ from niuu.adapters.inbound.rest_volundr import (
     _resolve_target_instance,
     _strip_instance_hints,
     _sync_persona_to_instance,
+    _sync_realm_to_instance,
     _visible_instances,
     _with_instance,
 )
@@ -454,6 +455,12 @@ def create_ravn_router(
             request,
             principal,
             body.get("persona_name") or body.get("personaName"),
+            embedded_app=embedded_forge_app,
+        )
+        await _sync_realm_to_instance(
+            instance,
+            request,
+            body.get("realm_id") or body.get("realmId"),
             embedded_app=embedded_forge_app,
         )
         response = await _request_remote(

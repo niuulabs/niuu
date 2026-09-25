@@ -133,6 +133,36 @@ async def test_create_realm_with_all_fields(service: RealmService) -> None:
     assert realm.autonomy_profile == "autonomous"
 
 
+async def test_upsert_realm_creates_at_the_given_id(service: RealmService) -> None:
+    realm_id = uuid4()
+
+    realm = await service.upsert_realm(realm_id, slug="workshop", name="Workshop")
+
+    assert realm.id == realm_id
+    assert realm.slug == "workshop"
+    assert realm.created_at == realm.updated_at
+    assert await service.get_realm(realm_id) is not None
+
+
+async def test_upsert_realm_replaces_an_existing_row_without_changing_created_at(
+    service: RealmService,
+) -> None:
+    created = await service.upsert_realm(uuid4(), slug="workshop", name="Workshop")
+
+    updated = await service.upsert_realm(
+        created.id,
+        slug="workshop",
+        name="Workshop Renamed",
+        owner_id="user-9",
+    )
+
+    assert updated.id == created.id
+    assert updated.name == "Workshop Renamed"
+    assert updated.owner_id == "user-9"
+    assert updated.created_at == created.created_at
+    assert updated.updated_at >= created.updated_at
+
+
 async def test_get_realm_by_slug(service: RealmService) -> None:
     created = await service.create_realm(slug="scouts", name="Scouts")
 
