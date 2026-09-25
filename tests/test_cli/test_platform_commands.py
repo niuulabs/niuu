@@ -461,13 +461,29 @@ class TestCreatePlatformCommands:
         assert "status" in names
         assert "init" in names
 
-    def test_platform_ravn_runs_the_ravn_cli_for_compiled_residents(self) -> None:
+    def test_platform_ravn_runs_the_ravn_cli_for_compiled_residents(self, monkeypatch) -> None:
+        import ravn.cli.commands
+
+        calls: list[tuple[list[str], str]] = []
+        monkeypatch.setattr(
+            ravn.cli.commands,
+            "app",
+            lambda *, args, prog_name: calls.append((args, prog_name)),
+        )
         platform, *_ = self._make_platform()
 
-        result = runner.invoke(platform, ["ravn", "daemon", "--help"])
+        result = runner.invoke(
+            platform,
+            ["ravn", "daemon", "--config", "/r/ravn.yaml", "--persona", "steward", "--help"],
+        )
 
         assert result.exit_code == 0, result.output
-        assert "--persona" in result.output
+        assert calls == [
+            (
+                ["daemon", "--config", "/r/ravn.yaml", "--persona", "steward", "--help"],
+                "ravn",
+            )
+        ]
 
     def test_platform_down_command(self) -> None:
         platform, *_ = self._make_platform()
