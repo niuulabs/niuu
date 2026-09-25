@@ -152,6 +152,11 @@ class SkillManagementRegistry:
         meta.version += 1
         meta.status = "active"
         meta.archived_at = ""
+        # A revision is new code: it must not inherit the failure streak of
+        # whatever it replaced, or one more failure after a rollback/restore
+        # immediately re-triggers rollback without giving the revision the
+        # full regression threshold of fresh attempts.
+        meta.consecutive_failures = 0
         if source is not None:
             meta.source = source
         if source_environment_id is not None:
@@ -176,6 +181,9 @@ class SkillManagementRegistry:
         meta = self._metadata_for_name(name)
         meta.status = "active"
         meta.archived_at = ""
+        # Same reasoning as update(): a restored skill gets a clean slate,
+        # not the failure streak that caused the earlier archive/rollback.
+        meta.consecutive_failures = 0
         meta.updated_at = datetime.now(UTC).isoformat()
         self._save()
         return meta

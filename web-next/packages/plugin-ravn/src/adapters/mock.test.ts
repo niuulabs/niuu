@@ -240,6 +240,21 @@ describe('createMockSessionStream', () => {
     expect(session.personaName).toBe('sindri');
   });
 
+  it('stopSession stops only its own copy of a session', async () => {
+    const stream = createMockSessionStream();
+    await stream.stopSession('10000001-0000-4000-8000-000000000001');
+    expect((await stream.getSession('10000001-0000-4000-8000-000000000001')).status).toBe(
+      'stopped',
+    );
+    const fresh = createMockSessionStream();
+    expect((await fresh.getSession('10000001-0000-4000-8000-000000000001')).status).not.toBe(
+      'stopped',
+    );
+    await expect(stream.stopSession('ffffffff-ffff-4fff-bfff-ffffffffffff')).rejects.toThrow(
+      'Session not found',
+    );
+  });
+
   it('getSession throws for unknown id', async () => {
     const stream = createMockSessionStream();
     await expect(stream.getSession('ffffffff-ffff-4fff-bfff-ffffffffffff')).rejects.toThrow(

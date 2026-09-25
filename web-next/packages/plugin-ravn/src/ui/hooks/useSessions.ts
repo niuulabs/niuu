@@ -1,8 +1,22 @@
-import { useQuery, useQueries } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueries, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import type { ISessionStream } from '../../ports';
+import type { Session } from '../../domain/session';
 
 const SESSION_PROGRESS_POLL_MS = 2_000;
+
+/** Stop a Forge-backed ravn session; the live session list drops it once stopped. */
+export function useStopRavnSession() {
+  const service = useService<ISessionStream>('ravn.sessions');
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (session: Pick<Session, 'id' | 'instanceId'>) =>
+      service.stopSession(session.id, session.instanceId),
+    onSettled: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['ravn', 'sessions'] });
+    },
+  });
+}
 
 export function useSessions() {
   const service = useService<ISessionStream>('ravn.sessions');

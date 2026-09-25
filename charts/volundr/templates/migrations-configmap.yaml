@@ -1931,6 +1931,54 @@ data:
     ALTER TABLE niuu_instances DROP COLUMN IF EXISTS last_checked_at;
     ALTER TABLE niuu_instances DROP COLUMN IF EXISTS last_seen_at;
     ALTER TABLE niuu_instances DROP COLUMN IF EXISTS health;
+  000078_session_span_w3c_trace_id.up.sql: |
+    -- Forge session spans key on trace_id = the session UUID, a stable per-session
+    -- correlation id predating OTel adoption here. It is not a W3C trace id and
+    -- cannot become one without breaking every existing consumer of
+    -- GET /sessions/{id}/trace. Store the W3C trace id (32 lowercase hex chars)
+    -- alongside instead, when the span was recorded while a real OTel trace was
+    -- active, so a Forge span can be cross-referenced with the OTLP trace it
+    -- belongs to.
+    ALTER TABLE session_spans ADD COLUMN IF NOT EXISTS w3c_trace_id VARCHAR(32);
+
+    CREATE INDEX IF NOT EXISTS idx_session_spans_w3c_trace_id
+        ON session_spans(w3c_trace_id)
+        WHERE w3c_trace_id IS NOT NULL;
+  000078_session_span_w3c_trace_id.down.sql: |
+    DROP INDEX IF EXISTS idx_session_spans_w3c_trace_id;
+    ALTER TABLE session_spans DROP COLUMN IF EXISTS w3c_trace_id;
+  000079_resident_realm_binding.up.sql: |
+    -- Explicit realm<->resident link, by id, instead of the naming convention
+    -- the web join previously relied on (resident named after the realm slug).
+    --
+    -- ON DELETE RESTRICT, not SET NULL: the realms REST route's own contract
+    -- says the resident must be torn down first ("The realm's resident is a
+    -- Ravn fleet object and is removed through DELETE /api/v1/ravn/ravens/{id}"
+    -- in rest_realms.py), but nothing enforced it. SET NULL would silently
+    -- unbind an still-live resident from its realm on delete -- a fallback, not
+    -- an answer. RESTRICT makes an out-of-order delete fail loudly instead.
+    ALTER TABLE resident_runtimes
+        ADD COLUMN IF NOT EXISTS realm_id UUID REFERENCES realms(id) ON DELETE RESTRICT;
+
+    CREATE INDEX IF NOT EXISTS idx_resident_runtimes_realm
+        ON resident_runtimes (realm_id)
+        WHERE realm_id IS NOT NULL;
+
+    -- Backfill the explicit link for existing residents that were only ever
+    -- matched by the (now-secondary) naming convention: a resident's name
+    -- equals its realm's slug (web-next's residentNameFor). Only backfill an
+    -- UNAMBIGUOUS match -- one resident, one realm, same name/slug, resident
+    -- not already bound to some other realm -- so we never guess.
+    UPDATE resident_runtimes rr
+    SET realm_id = r.id
+    FROM realms r
+    WHERE rr.realm_id IS NULL
+      AND rr.name = r.slug
+      AND (SELECT COUNT(*) FROM resident_runtimes rr2 WHERE rr2.name = r.slug) = 1
+      AND (SELECT COUNT(*) FROM realms r2 WHERE r2.slug = rr.name) = 1;
+  000079_resident_realm_binding.down.sql: |
+    DROP INDEX IF EXISTS idx_resident_runtimes_realm;
+    ALTER TABLE resident_runtimes DROP COLUMN IF EXISTS realm_id;
   000081_ravn_trigger_store.up.sql: |
     -- Durable storage for the Ravn API's /triggers routes (POST /ravn/triggers
     -- was returning 503 because no store was wired). trigger_store is a dynamic

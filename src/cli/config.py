@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
@@ -13,7 +14,9 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from bifrost.auth import AuthMode as BifrostAuthMode
 from bifrost.config import BifrostConfig
+from niuu.domain.observability import ObservabilityConfig
 from volundr.compute.config import ComputeConfig
 
 DEFAULT_CONFIG_DIR = Path.home() / ".niuu"
@@ -453,6 +456,20 @@ class ServerConfig(BaseModel):
     )
 
 
+class ResidentsConfig(BaseModel):
+    """How mini mode hosts long-lived residents on this machine."""
+
+    runtime: Literal["process", "docker"] = Field(
+        default="process",
+        description=(
+            "'process' runs Ravn residents as Skuld and Ravn processes on this host and "
+            "needs no container engine. 'docker' runs resident images through the local "
+            "Docker Engine, which must be running, and also offers the NemoClaw and "
+            "NemoHermes profiles."
+        ),
+    )
+
+
 class ServiceConfig(BaseModel):
     """Service management configuration."""
 
@@ -477,6 +494,215 @@ class TUIConfig(BaseModel):
         default="textual-dark",
         description="Textual theme name.",
     )
+
+
+class CLIObservabilityConfig(ObservabilityConfig):
+    """OpenTelemetry settings for the mini-mode host's local stack.
+
+    The single place a `niuu platform up` user points the whole local stack
+    (Volundr, Ting, Bifröst, and the shared host) at an OTLP collector
+    (Tempo, Jaeger, etc.), instead of repeating ``observability:`` in every
+    per-service config file. Each service still owns its own
+    ``configure_observability`` call at its own composition root — see
+    ``docs/site/operations/observability.md``.
+    """
+
+    service_name: str = Field(default="niuu-mini")
+
+
+class OidcIssuerConfig(BaseModel):
+    """A single trusted OIDC issuer for in-process JWT verification.
+
+    ``jwks_uri`` may be left empty; the adapter then resolves it once via
+    OIDC discovery (``<issuer>/.well-known/openid-configuration``). Both
+    ``issuer`` and ``jwks_uri`` must be HTTPS, except localhost for dev.
+    """
+
+    issuer: str = Field(default="", description="OIDC issuer URL (the JWT 'iss' claim).")
+    audiences: list[str] = Field(
+        default_factory=list,
+        description="Accepted JWT audiences for this issuer.",
+    )
+    jwks_uri: str = Field(
+        default="",
+        description="JWKS endpoint. Empty = resolve via OIDC discovery.",
+    )
+
+
+class AuthOidcConfig(BaseModel):
+    """OIDC settings for in-process JWT verification (``auth.mode: oidc``).
+
+    Claim names default to the same claims Envoy's jwt_authn filter maps
+    today (see ``charts/volundr/values.yaml`` ``envoy.jwt.*``) so a token
+    accepted in Kubernetes carries the same identity here.
+    """
+
+    issuers: list[OidcIssuerConfig] = Field(
+        default_factory=list,
+        description="Trusted OIDC issuers. At least one is required when auth.mode: oidc.",
+    )
+    clock_leeway_seconds: int = Field(
+        default=60,
+        ge=0,
+        le=600,
+        description="Allowed clock skew when checking exp/nbf.",
+    )
+    jwks_cache_ttl_seconds: int = Field(
+        default=300,
+        ge=30,
+        le=86400,
+        description="How long a fetched JWKS is cached before a routine refresh.",
+    )
+    jwks_timeout_seconds: float = Field(
+        default=5.0,
+        ge=0.5,
+        le=60.0,
+        description="HTTP timeout for OIDC discovery and JWKS fetches.",
+    )
+    min_refresh_interval_seconds: float = Field(
+        default=5.0,
+        ge=1.0,
+        le=300.0,
+        description=(
+            "Minimum time between forced JWKS refreshes for the same issuer "
+            "(an unrecognised kid always forces one, but at most once per "
+            "window — bounds a probe of many forged kids to a handful of "
+            "fetches instead of one per request)."
+        ),
+    )
+    user_id_claim: str = Field(default="sub")
+    email_claim: str = Field(default="email")
+    tenant_claim: str = Field(default="tenant_id")
+    roles_claim: str = Field(default="resource_access.volundr.roles")
+
+
+class AuthConfig(BaseModel):
+    """Authentication mode for hosts without an Envoy JWT filter (mini, docker).
+
+    ``none`` is an explicit operator choice, not a silent fallback: every
+    caller is treated as admin, exactly like today. It is the default so
+    existing mini and docker installs keep working unchanged. ``oidc`` is a
+    claim that every inbound identity path on this host verifies a bearer
+    token's signature (``identity.adapters.jwks``) plus Cedar authorization,
+    matching how Kubernetes deployments behind Envoy work — see
+    ``docs/site/operations/security-and-permissions.md`` for exactly which
+    paths that covers today and which are still gated off.
+    """
+
+    mode: Literal["none", "oidc"] = Field(
+        default="none",
+        description="'none' (default, explicit no-auth) or 'oidc' (in-process JWT verification).",
+    )
+    oidc: AuthOidcConfig = Field(default_factory=AuthOidcConfig)
+
+    @model_validator(mode="after")
+    def _oidc_requires_issuers(self) -> AuthConfig:
+        if self.mode != "oidc":
+            return self
+        if not self.oidc.issuers:
+            raise ValueError(
+                "auth.mode: oidc requires at least one auth.oidc.issuers entry "
+                "(issuer + audiences), or set auth.mode: none to run without "
+                "authentication instead"
+            )
+        for entry in self.oidc.issuers:
+            if not entry.issuer:
+                raise ValueError("Each auth.oidc.issuers entry requires 'issuer'")
+            if not entry.audiences:
+                raise ValueError(
+                    f"auth.oidc issuer {entry.issuer!r} requires at least one audience"
+                )
+        return self
+
+
+#: The mapping Envoy's jwt_authn claim already carries in practice (raw
+#: Keycloak client roles) onto platform role names. Matches
+#: ``volundr.config.IdentityConfig.role_mapping``'s own default so a token
+#: accepted in Kubernetes maps to the same platform roles here. Völundr's own
+#: identity composition (``niuu.service_runtime.create_identity_adapter``)
+#: applies this automatically from ``identity.role_mapping``; services that
+#: compose their own identity adapter directly (Ravn's inbound API, Ting) do
+#: not, so it is threaded through explicitly below for those.
+_DEFAULT_OIDC_ROLE_MAPPING = {
+    "admin": "volundr:admin",
+    "developer": "volundr:developer",
+    "viewer": "volundr:viewer",
+}
+
+
+def _oidc_adapter_kwargs(oidc: AuthOidcConfig) -> dict[str, Any]:
+    issuer_kwargs = [
+        {"issuer": i.issuer, "audiences": list(i.audiences), "jwks_uri": i.jwks_uri}
+        for i in oidc.issuers
+    ]
+    return {
+        "issuers": issuer_kwargs,
+        "clock_leeway_seconds": oidc.clock_leeway_seconds,
+        "jwks_cache_ttl_seconds": oidc.jwks_cache_ttl_seconds,
+        "jwks_timeout_seconds": oidc.jwks_timeout_seconds,
+        "min_refresh_interval_seconds": oidc.min_refresh_interval_seconds,
+        "user_id_claim": oidc.user_id_claim,
+        "email_claim": oidc.email_claim,
+        "tenant_claim": oidc.tenant_claim,
+        "roles_claim": oidc.roles_claim,
+        "role_mapping": dict(_DEFAULT_OIDC_ROLE_MAPPING),
+    }
+
+
+def auth_adapter_env(auth: AuthConfig) -> dict[str, str]:
+    """Env vars selecting identity/authorization adapters from ``auth.mode``.
+
+    Shared by the mini host (``cli.commands.platform``) and docker mode
+    (``cli.services.compose_bundle``) so both compute the same adapter
+    selection from the same config, for every co-hosted service that reads
+    these env vars: Völundr/Identity's shared ``IDENTITY__ADAPTER`` /
+    ``AUTHORIZATION__ADAPTER`` slot, Ravn's own inbound API
+    (``RAVN_API_AUTH__*``), Ting's own inbound API (``AUTH__*``), and the
+    niuu root app's session-proxy identity (``HOST_IDENTITY__*``). ``none``
+    reproduces today's explicit allow-all wiring; ``oidc`` switches every one
+    of those slots to in-process JWT verification via JWKS plus the bundled
+    Cedar policies, matching Kubernetes. Paths that do not yet read one of
+    these slots (Mimir, Bifröst, the Guild knowledge-deployments router,
+    ...) are covered by the auth-mode guard elsewhere, not by this function.
+    """
+    if auth.mode == "none":
+        return {
+            "IDENTITY__ADAPTER": "identity.adapters.identity.AllowAllIdentityAdapter",
+            "AUTHORIZATION__ADAPTER": (
+                "identity.adapters.authorization.AllowAllAuthorizationAdapter"
+            ),
+            "RAVN_API_AUTH__ADAPTER": (
+                "identity.adapters.identity.AllowAllHeaderAuthenticationAdapter"
+            ),
+            # Ting's own default (EnvoyHeaderAuthenticationAdapter +
+            # allow_anonymous_dev) trusts caller-supplied x-auth-* headers
+            # whenever they're present, even with no Envoy in front of it.
+            # 'none' means every caller is admin, not "trust whatever the
+            # caller claims" — select the same explicit allow-all adapter
+            # every other co-hosted service gets.
+            "AUTH__ADAPTER": "identity.adapters.identity.AllowAllHeaderAuthenticationAdapter",
+            "HOST_IDENTITY__ADAPTER": (
+                "identity.adapters.identity.AllowAllHeaderAuthenticationAdapter"
+            ),
+            "AUTH__ALLOW_ANONYMOUS_DEV": "true",
+            "AUTH_MODE": "none",
+        }
+
+    oidc_kwargs = _oidc_adapter_kwargs(auth.oidc)
+    oidc_kwargs_json = json.dumps(oidc_kwargs)
+    return {
+        "IDENTITY__ADAPTER": "identity.adapters.jwks.JwksIdentityAdapter",
+        "IDENTITY__KWARGS": oidc_kwargs_json,
+        "AUTHORIZATION__ADAPTER": "identity.adapters.cedar.CedarAuthorizationAdapter",
+        "RAVN_API_AUTH__ADAPTER": "identity.adapters.jwks.JwksBearerAuthenticationAdapter",
+        "RAVN_API_AUTH__KWARGS": oidc_kwargs_json,
+        "AUTH__ADAPTER": "identity.adapters.jwks.JwksBearerAuthenticationAdapter",
+        "AUTH__KWARGS": oidc_kwargs_json,
+        "HOST_IDENTITY__ADAPTER": "identity.adapters.jwks.JwksBearerAuthenticationAdapter",
+        "HOST_IDENTITY__KWARGS": oidc_kwargs_json,
+        "AUTH__ALLOW_ANONYMOUS_DEV": "false",
+        "AUTH_MODE": "oidc",
+    }
 
 
 class CLISettings(BaseSettings):
@@ -510,12 +736,19 @@ class CLISettings(BaseSettings):
         description="Operating mode: 'mini', 'openshell', 'cluster', or 'docker'.",
     )
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    # Named host_auth, not auth: Ting's own Settings (src/ting/config.py) reads
+    # a top-level `auth:` key from this SAME config.yaml/NIUU_CONFIG file for
+    # its own, differently-shaped AuthConfig (adapter/kwargs/allow_anonymous_dev).
+    # A shared `auth:` key would silently collide between the two schemas.
+    host_auth: AuthConfig = Field(default_factory=AuthConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+    residents: ResidentsConfig = Field(default_factory=ResidentsConfig)
     docker: DockerConfig = Field(default_factory=DockerConfig)
     plugins: PluginConfig = Field(default_factory=PluginConfig)
     services: ServiceConfig = Field(default_factory=ServiceConfig)
     bifrost: BifrostConfig = Field(default_factory=BifrostConfig)
+    observability: CLIObservabilityConfig = Field(default_factory=CLIObservabilityConfig)
     compute: ComputeConfig | None = None
     service_overrides: dict[str, PerServiceConfig] = Field(
         default_factory=dict,
@@ -544,4 +777,43 @@ class CLISettings(BaseSettings):
             raise ValueError("Docker compute max_machines must match pod_manager.max_machines")
         if self.compute.runtime is None:
             raise ValueError("Docker compute requires a runtime adapter")
+        return self
+
+    #: Plugins that do not yet go through any auth.mode-aware identity check
+    #: (they trust x-auth-* headers, or accept requests unauthenticated,
+    #: independently of IDENTITY__ADAPTER/AUTH_MODE) but default to enabled.
+    #: An operator must explicitly disable each one to run auth.mode: oidc —
+    #: oidc must not claim coverage a host does not actually have. Hardening
+    #: any of these removes it from this list rather than adding an override.
+    _OIDC_UNCOVERED_PLUGINS: ClassVar[dict[str, str]] = {
+        "mimir": (
+            "Mímir's own auth checks (_require_deploy_auth, enforce_instance_tenant) "
+            "trust x-auth-* headers directly and do not go through auth.mode"
+        ),
+        "guild": (
+            "Guild's knowledge-deployments router forwards caller-supplied "
+            "x-auth-* headers to remote Mímir deployments unmodified"
+        ),
+    }
+
+    @model_validator(mode="after")
+    def _oidc_covers_every_enabled_mount(self) -> CLISettings:
+        if self.host_auth.mode != "oidc":
+            return self
+        for name, reason in self._OIDC_UNCOVERED_PLUGINS.items():
+            if self.plugins.enabled.get(name, True):
+                raise ValueError(
+                    f"auth.mode: oidc is not enabled while the {name!r} plugin is "
+                    f"active: {reason}. Set plugins.enabled.{name}: false until it is "
+                    "hardened, or set auth.mode: none to be honest that this host "
+                    "runs without authentication."
+                )
+        if self.bifrost.auth_mode == BifrostAuthMode.OPEN:
+            raise ValueError(
+                "auth.mode: oidc is not enabled while bifrost.auth_mode is 'open': "
+                "the Bifröst gateway trusts every caller's headers unconditionally "
+                "and does not yet verify JWTs via JWKS. Set bifrost.auth_mode: 'pat' "
+                "or 'mesh' as a partial mitigation (full JWKS support for Bifröst is "
+                "tracked as follow-up work), or set auth.mode: none."
+            )
         return self

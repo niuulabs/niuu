@@ -45,8 +45,8 @@ export const RECIPE_STEPS: RecipeStep[] = [
   { id: 'trust', label: 'grant trust', advancedPath: '/valkyrie' },
   { id: 'jobs', label: 'schedule standing jobs', advancedPath: '/ravn' },
   { id: 'board', label: 'import the tracker board', advancedPath: '/ting/sagas' },
-  { id: 'resident', label: 'start the resident', advancedPath: '/ravn/ravens' },
   { id: 'charter', label: 'write the charter to memory', advancedPath: '/mimir/pages' },
+  { id: 'resident', label: 'start the resident', advancedPath: '/ravn/ravens' },
 ];
 
 export type StepState = 'todo' | 'running' | 'done' | 'failed';
@@ -256,16 +256,12 @@ export function useCreateRealm() {
         );
       });
 
-      await step('resident', () =>
-        residents.deploy({
-          name: residentNameFor(draft.slug),
-          profileId: draft.profileId,
-          instanceId: draft.instanceId,
-          personaName,
-          model: draft.model || undefined,
-        }),
-      );
-
+      // The charter must exist in Mímir before the resident starts: the
+      // deployed resident resolves its charter from realm memory at
+      // startup and exits if that page is configured but missing (see
+      // resident_runtime_wiring.py's _resolve_environment_charter), and the
+      // local controller has no restart policy — so this step runs before
+      // 'resident', not after.
       await step('charter', async () => {
         const deadline = Date.now() + MOUNT_DISCOVERY_DEADLINE_MS;
         while (Date.now() < deadline) {
@@ -284,6 +280,17 @@ export function useCreateRealm() {
           `Realm memory ${mountName} did not appear within 60 s; the deployment is still starting. Check Mímir › Registry and write the charter from Settings once it is up.`,
         );
       });
+
+      await step('resident', () =>
+        residents.deploy({
+          name: residentNameFor(draft.slug),
+          profileId: draft.profileId,
+          instanceId: draft.instanceId,
+          personaName,
+          model: draft.model || undefined,
+          realmId: realm.id,
+        }),
+      );
 
       await queryClient.invalidateQueries({ queryKey: REALMS_QUERY_KEY });
       await queryClient.invalidateQueries({ queryKey: ['ravn'] });

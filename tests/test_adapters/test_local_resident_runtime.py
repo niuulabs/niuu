@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
 from niuu.adapters.memory_credential_store import MemoryCredentialStore
+from niuu.domain.models import Realm
 from volundr.adapters.outbound import local_resident_runtime as local_runtime
 from volundr.adapters.outbound.local_resident_runtime import (
     LocalContainerResidentRuntimeController,
@@ -153,7 +156,7 @@ def _runtime(engine: ResidentEngine = ResidentEngine.RAVN) -> ResidentRuntime:
 def docker_client(monkeypatch) -> _DockerClient:
     client = _DockerClient()
     monkeypatch.setattr(local_runtime.docker, "from_env", lambda: client)
-    monkeypatch.setattr(local_runtime, "_service_ready", lambda _port: True)
+    monkeypatch.setattr(local_runtime, "service_ready", lambda _port: True)
     return client
 
 
@@ -459,18 +462,7 @@ async def test_local_device_failure_and_missing_machine_store_are_explicit(
         )
 
 
-def test_local_runtime_helpers_cover_states_paths_and_log_filters(tmp_path) -> None:
-    root = tmp_path / "sandbox"
-    assert (
-        local_runtime._host_runtime_path(
-            root,
-            "/sandbox/workspace/project/file.txt",
-        )
-        == root / "workspace" / "project" / "file.txt"
-    )
-    with pytest.raises(RuntimeError, match="not backed"):
-        local_runtime._host_runtime_path(root, "/tmp/file")
-
+def test_local_runtime_helpers_cover_container_states() -> None:
     assert local_runtime._observed_state("running") is ResidentObservedState.ACTIVE
     assert local_runtime._observed_state("paused") is ResidentObservedState.SUSPENDED
     assert local_runtime._observed_state("created") is ResidentObservedState.DEPLOYING
@@ -478,24 +470,83 @@ def test_local_runtime_helpers_cover_states_paths_and_log_filters(tmp_path) -> N
     assert local_runtime._observed_state("unknown") is ResidentObservedState.PENDING
     assert local_runtime._published_port(SimpleNamespace(attrs={}), 9200) == 0
 
-    entries = local_runtime._parse_logs(
-        "\n".join(
-            [
-                "invalid-time [api] error details",
-                "2026-07-12T12:00:00Z [api] WARNING retrying",
-                "2026-07-12T12:00:01Z [api] fatal failure",
-                "2026-07-12T12:00:02Z [other] error ignored",
-            ]
-        ),
-        ("api",),
-        "warning",
+
+class _FakeRealmRepository:
+    def __init__(self, realms: dict) -> None:
+        self._realms = realms
+
+    async def get_realm(self, realm_ref):
+        return self._realms.get(realm_ref)
+
+
+def _realm(slug: str) -> Realm:
+    now = datetime.now(UTC)
+    return Realm(
+        id=uuid4(),
+        slug=slug,
+        name=slug.title(),
+        sleipnir_domain=None,
+        owner_id=None,
+        instance_id=None,
+        created_at=now,
+        updated_at=now,
     )
-    assert [(entry.level, entry.message) for entry in entries] == [
-        ("error", "error details"),
-        ("warning", "WARNING retrying"),
-        ("critical", "fatal failure"),
-    ]
-    assert local_runtime._log_level("exception raised") == "error"
-    assert local_runtime._log_level("warn soon") == "warning"
-    assert local_runtime._log_level("debug details") == "debug"
-    assert local_runtime._log_level("ready") == "info"
+
+
+async def test_resolve_realm_slug_is_empty_without_realm_id(tmp_path, docker_client) -> None:
+    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
+    runtime = _runtime()
+    assert await controller._resolve_realm_slug(runtime) == ""
+
+
+async def test_resolve_realm_slug_requires_a_configured_repository(tmp_path, docker_client) -> None:
+    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
+    runtime = _runtime().model_copy(update={"realm_id": uuid4()})
+    with pytest.raises(RuntimeError, match="no realm repository configured"):
+        await controller._resolve_realm_slug(runtime)
+
+
+async def test_resolve_realm_slug_fails_loudly_when_realm_is_gone(tmp_path, docker_client) -> None:
+    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
+    controller.set_realm_repository(_FakeRealmRepository({}))
+    runtime = _runtime().model_copy(update={"realm_id": uuid4()})
+    with pytest.raises(RuntimeError, match="no such realm exists"):
+        await controller._resolve_realm_slug(runtime)
+
+
+async def test_resolve_realm_slug_returns_the_bound_realms_slug(tmp_path, docker_client) -> None:
+    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
+    realm = _realm("workshop")
+    controller.set_realm_repository(_FakeRealmRepository({realm.id: realm}))
+    runtime = _runtime().model_copy(update={"realm_id": realm.id})
+    assert await controller._resolve_realm_slug(runtime) == "workshop"
+
+
+async def test_materialize_threads_the_resolved_realm_slug_into_the_container(
+    tmp_path,
+    docker_client,
+) -> None:
+    controller = LocalContainerResidentRuntimeController(
+        residents_dir=str(tmp_path), default_image="example.test/ravn"
+    )
+    realm = _realm("workshop")
+    controller.set_realm_repository(_FakeRealmRepository({realm.id: realm}))
+    runtime = _runtime().model_copy(update={"realm_id": realm.id})
+    spec = await controller._materialize(runtime, _profile())
+    import yaml
+
+    ravn_config = yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])
+    assert ravn_config["resident_evolution"]["realm_slug"] == "workshop"
+    assert ravn_config["environment"]["charter_mimir_page"] == "realms/workshop/charter.md"
+
+
+def test_unreachable_docker_engine_fails_with_a_remedy(tmp_path, monkeypatch) -> None:
+    def unreachable():
+        raise local_runtime.DockerException("Error while fetching server API version")
+
+    monkeypatch.setattr(local_runtime.docker, "from_env", unreachable)
+
+    with pytest.raises(RuntimeError, match="Start Docker") as raised:
+        LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
+
+    assert "residents.runtime: docker" in str(raised.value)

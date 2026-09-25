@@ -65,7 +65,7 @@ from bifrost.ports.events import BudgetDegradedEvent, CostEventEmitter
 from bifrost.ports.rules import RoutingContext
 from bifrost.ports.usage_store import UsageRecord, UsageStore
 from bifrost.pricing import ModelPricing, calculate_cost
-from bifrost.router import ModelRouter, RouterError
+from bifrost.router import ModelRouter, RouterError, record_genai_span_attributes
 from bifrost.translation.models import AnthropicRequest, AnthropicResponse
 from niuu.domain.model_catalog import ProviderHealthState
 from niuu.settings_schema import SettingsFieldSchema, SettingsProviderSchema, SettingsSectionSchema
@@ -196,6 +196,14 @@ async def _try_cache_hit(
         return None
     latency_ms = (time.monotonic() - start) * 1000
     await store.record(_cache_hit_record(request_id, identity, model, provider, latency_ms))
+    record_genai_span_attributes(
+        requested_model=model,
+        provider=provider,
+        failover_attempts=0,
+        cache_hit=True,
+        response_model=cached.model,
+        usage=cached.usage,
+    )
     content = response_transform(cached) if response_transform else cached.model_dump()
     return JSONResponse(content=content)
 

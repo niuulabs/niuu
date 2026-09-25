@@ -20,7 +20,7 @@ from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
 )
 from ravn.valkyrie_evolution.models import ToolReachGrant
-from ravn.valkyrie_evolution.tool_runtime import ToolRunResult
+from ravn.valkyrie_evolution.tool_runtime import HostCall, ToolRunResult
 
 NETWORK_DENIED_LABEL = "denied"
 NETWORK_ALLOWED_LABEL = "allowed"
@@ -63,6 +63,13 @@ class JobExecutor(Protocol):
 class KubernetesJobLearnedToolRunner:
     """Translate a learned-tool invocation into one verified Kubernetes Job."""
 
+    #: No route from an ephemeral Job pod back to this process.
+    supports_host_call = False
+    #: No verify() implementation yet — a Job-based verify would need its own
+    #: install+test harness bundle, not attempted here. _verify_peer_artifact
+    #: raises rather than silently falling back to host-side verification.
+    supports_verify = False
+
     def __init__(self, *, executor: JobExecutor, image: str = DEFAULT_TOOL_RUN_IMAGE) -> None:
         self._executor = executor
         self._image = image
@@ -80,7 +87,18 @@ class KubernetesJobLearnedToolRunner:
         timeout_seconds: float,
         requirements: Sequence[str] = (),
         declared_reach: Sequence[ToolReachGrant] = (),
+        host_call: HostCall | None = None,
     ) -> ToolRunResult:
+        if host_call is not None:
+            return ToolRunResult(
+                ok=False,
+                error=(
+                    "this execution backend cannot provide the host SDK: the tool asks to "
+                    "call the resident's own tools and there is no channel back from here. "
+                    "Run it on the local backend, or rebuild it self-contained."
+                ),
+                infrastructure=True,
+            )
         try:
             network_allowed = _network_reach(declared_reach)
             if requirements:
@@ -100,6 +118,7 @@ class KubernetesJobLearnedToolRunner:
                 ok=False,
                 error=str(exc),
                 enforcement=REACH_ENFORCEMENT_UNAVAILABLE,
+                infrastructure=True,
             )
 
         try:
@@ -118,6 +137,7 @@ class KubernetesJobLearnedToolRunner:
                 ok=False,
                 error=f"pod-per-run execution failed: {exc}",
                 enforcement=REACH_ENFORCEMENT_UNAVAILABLE,
+                infrastructure=True,
             )
 
         enforcement = (

@@ -133,6 +133,37 @@ class FluxPodManager(
             codex_auth_kwargs=codex_auth_kwargs,
         )
         self._api_client = None
+        self._realm_repository = None
+
+    def set_realm_repository(self, repository) -> None:
+        """Enable resolving a resident's realm slug for its Helm values.
+
+        Optional: without it, deploying a resident with ``realm_id`` set
+        raises in ``_resolve_realm_slug`` rather than silently deploying with
+        no realm/charter binding.
+        """
+        self._realm_repository = repository
+
+    async def _resolve_realm_slug(self, runtime: ResidentRuntime) -> str:
+        """Return the slug of the realm this resident is bound to, or "".
+
+        Mirrors LocalContainerResidentRuntimeController._resolve_realm_slug.
+        """
+        if runtime.realm_id is None:
+            return ""
+        if self._realm_repository is None:
+            raise RuntimeError(
+                f"resident {runtime.name!r} has realm_id={runtime.realm_id} but this "
+                "controller has no realm repository configured; call set_realm_repository "
+                "at composition time."
+            )
+        realm = await self._realm_repository.get_realm(runtime.realm_id)
+        if realm is None:
+            raise RuntimeError(
+                f"resident {runtime.name!r} names realm_id={runtime.realm_id}, but no "
+                "such realm exists; clear the resident's realm binding or restore the realm."
+            )
+        return realm.slug
 
     async def _get_api(self):
         """Lazy-load kubernetes_asyncio custom objects API."""
@@ -411,6 +442,7 @@ class FluxPodManager(
         self,
         runtime: ResidentRuntime,
         profile: ResidentDeploymentProfile,
+        realm_slug: str = "",
     ) -> dict[str, Any]:
         configured_values = profile.deployment.get("values") or {}
         if not isinstance(configured_values, dict):
@@ -456,6 +488,8 @@ class FluxPodManager(
                 "role": runtime.flock_role,
                 "peerId": runtime.flock_peer_id,
             }
+        if realm_slug:
+            resident_values["realm"] = {"slug": realm_slug}
 
         flock_labels = resident_flock_labels(runtime, prefix="niuu.world")
         mesh_labels, mesh_annotations = resident_mesh_pod_metadata(runtime)
@@ -502,9 +536,10 @@ class FluxPodManager(
         profile: ResidentDeploymentProfile,
     ) -> ResidentRuntimeObservation:
         release_name = self._resident_release_name(runtime)
+        realm_slug = await self._resolve_realm_slug(runtime)
         await self._apply_helmrelease(
             release_name,
-            self._resident_values(runtime, profile),
+            self._resident_values(runtime, profile, realm_slug),
             labels={
                 "niuu.world/kind": "resident",
                 "niuu.world/resident-id": str(runtime.id),

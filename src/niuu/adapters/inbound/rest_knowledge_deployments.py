@@ -11,7 +11,6 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from pydantic import BaseModel, ConfigDict
 
-from niuu.adapters.identity_headers import parse_roles_header
 from niuu.adapters.inbound.auth import extract_principal
 from niuu.adapters.inbound.remote_urls import build_remote_url, forward_identity_headers
 from niuu.domain.models import InstanceKind, Principal, RegisteredInstance
@@ -27,11 +26,11 @@ class _Target(BaseModel):
     releases: list[dict]
 
 
-def _require_admin(request: Request) -> None:
-    roles = parse_roles_header(request.headers.get("x-auth-roles", ""))
-    if not request.headers.get("x-auth-user-id") or not {"admin", "volundr:admin"}.intersection(
-        roles
-    ):
+def _require_admin(principal: Principal = Depends(extract_principal)) -> None:
+    """Require an authenticated administrator, via the configured identity
+    adapter — never read x-auth-* directly: on a host without Envoy those
+    headers are caller-supplied and unverified (see auth.mode: oidc)."""
+    if not principal.user_id or not {"admin", "volundr:admin"}.intersection(principal.roles):
         raise HTTPException(403, "Instance deployment requires an authenticated administrator")
 
 

@@ -140,14 +140,6 @@ class StubTracker(TrackerPort):
     async def get_run_by_id(self, run_id: Any) -> Any:
         return None
 
-    # -- Confidence events ------------------------------------------------
-
-    async def add_confidence_event(self, tracker_id: str, event: Any) -> None:
-        pass
-
-    async def get_confidence_events(self, tracker_id: str) -> list:
-        return []
-
     # -- Phase gates ------------------------------------------------------
 
     async def all_runs_merged(self, phase_tracker_id: str) -> bool:

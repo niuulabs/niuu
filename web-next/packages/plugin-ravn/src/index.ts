@@ -3,21 +3,18 @@ import { createRoute, redirect } from '@tanstack/react-router';
 import { Bot } from 'lucide-react';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { readUiMode } from '@niuulabs/shell';
-import { RavnPage } from './ui/RavnPage';
 import { ResidentsPage } from './ui/ResidentsPage';
-import { RavensPage } from './ui/RavensPage';
-import { PersonasPage } from './ui/PersonasPage';
-import { SessionsView } from './ui/SessionsView';
-import { BudgetView } from './ui/BudgetView';
-import { RavnSubnav } from './ui/RavnSubnav';
+import { RavnWorkbench } from './ui/workbench/RavnWorkbench';
+import { PersonaLibrary } from './ui/library/PersonaLibrary';
 import { RavnTopbar } from './ui/RavnTopbar';
 import { RavnFooter } from './ui/RavnFooter';
+import { legacySessionSearch } from './ui/workbench/legacyRoutes';
 
 export const ravnPlugin = definePlugin({
   id: 'ravn',
   rune: 'R',
   title: 'Ravn',
-  subtitle: 'personas · ravens · sessions',
+  subtitle: 'ravens · personas',
   simple: {
     // The agents themselves: residents and the personas they run with.
     tabs: ['residents', 'personas'],
@@ -26,23 +23,22 @@ export const ravnPlugin = definePlugin({
     icon: createElement(Bot, { size: 17, 'aria-hidden': true }),
   },
   tabs: [
-    { id: 'overview', label: 'Overview', path: '/ravn' },
+    { id: 'ravens', label: 'Ravens', path: '/ravn' },
     { id: 'residents', label: 'Residents', path: '/ravn/residents', simpleOnly: true },
-    { id: 'ravens', label: 'Ravens', path: '/ravn/ravens' },
     { id: 'personas', label: 'Personas', path: '/ravn/personas' },
-    { id: 'sessions', label: 'Sessions', path: '/ravn/sessions' },
-    { id: 'budget', label: 'Budget', path: '/ravn/budget' },
   ],
   routes: (rootRoute) => [
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ravn',
-      // Simple mode has no fleet overview; the board of who keeps what is the page.
+      // Simple mode's page is the Residents board; a link to one ravn (Talk) still opens it here.
       beforeLoad: ({ location }) => {
         if (readUiMode() !== 'simple') return;
+        const search = location.search as Record<string, unknown>;
+        if (search.ravn || search.deploy) return;
         throw redirect({ to: '/ravn/residents' as never, search: location.search as never });
       },
-      component: RavnPage,
+      component: RavnWorkbench,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -51,26 +47,35 @@ export const ravnPlugin = definePlugin({
     }),
     createRoute({
       getParentRoute: () => rootRoute,
-      path: '/ravn/ravens',
-      component: RavensPage,
+      path: '/ravn/personas',
+      component: PersonaLibrary,
     }),
+    // The fleet list, the sessions page and the budget page are now the workbench.
     createRoute({
       getParentRoute: () => rootRoute,
-      path: '/ravn/personas',
-      component: PersonasPage,
+      path: '/ravn/ravens',
+      beforeLoad: ({ location }) => {
+        throw redirect({ to: '/ravn' as never, search: location.search as never });
+      },
     }),
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ravn/sessions',
-      component: SessionsView,
+      beforeLoad: ({ location }) => {
+        throw redirect({
+          to: '/ravn' as never,
+          search: legacySessionSearch(location.search as Record<string, unknown>) as never,
+        });
+      },
     }),
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ravn/budget',
-      component: BudgetView,
+      beforeLoad: () => {
+        throw redirect({ to: '/ravn' as never, search: { tab: 'usage' } as never });
+      },
     }),
   ],
-  subnav: () => RavnSubnav(),
   topbarRight: () => RavnTopbar(),
   footer: () => RavnFooter(),
 });
@@ -192,7 +197,6 @@ export { PersonaForm, type PersonaFormProps } from './ui/PersonaForm';
 export { ResidentLogsView } from './ui/ResidentLogsView';
 export { MessageRow } from './ui/MessageRow';
 export { TriggersView } from './ui/TriggersView';
-export { HeroCard } from './ui/BudgetView';
 export {
   useResidentProfiles,
   useDeployResident,

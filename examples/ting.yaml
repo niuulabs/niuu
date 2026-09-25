@@ -192,14 +192,11 @@ planner:
 # ---------------------------------------------------------------------------
 
 # Run review projection.
-# These deltas feed only the human review audit trail (RunReviewService). The
-# automated reviewer session and its confidence gate were removed: a run's
-# outcome now comes from its workflow's gate/end nodes.
+# A run's outcome comes from its workflow's gate/end nodes; solo runs that
+# land in REVIEW with no authoritative workflow outcome always escalate to a
+# human (see RunReviewService).
 review:
-  initial_confidence: 0.5
-  confidence_delta_approved: 0.15
-  confidence_delta_rejected: -0.20
-  confidence_delta_retry: -0.05
+  max_retries: 3
 
 llm:
   adapter: ting.adapters.bifrost.BifrostAdapter

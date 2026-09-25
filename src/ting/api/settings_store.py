@@ -40,7 +40,6 @@ def _seed_settings_store(settings: Settings) -> dict[str, dict[str, Any]]:
             "updated_at": now_utc(),
         },
         "dispatch": {
-            "confidence_threshold": float(settings.notification.confidence_threshold),
             "max_concurrent_runs": 3,
             "auto_continue": False,
             "batch_size": int(settings.watcher.batch_size),

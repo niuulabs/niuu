@@ -10,8 +10,6 @@ import pytest
 
 from ting.adapters.jira import JiraAPIError, JiraTrackerAdapter
 from ting.domain.models import (
-    ConfidenceEvent,
-    ConfidenceEventType,
     PhaseStatus,
     RunStatus,
     SessionMessage,
@@ -214,7 +212,6 @@ async def test_run_scope_and_progress(adapter):
     adapter._pool.fetchrow.return_value = {
         "status": "REVIEW",
         "session_id": "session",
-        "confidence": 0.9,
     }
     assert (await adapter.get_run("PLATFORM-1")).status == RunStatus.REVIEW
     assert adapter._pool.fetchrow.call_args.args[-1] == "connection-a"
@@ -266,16 +263,11 @@ async def test_operational_state_queries_are_connection_scoped(adapter):
     assert await adapter.get_phase_for_run("missing") is None
 
 
-async def test_confidence_messages_and_phase_state(adapter):
+async def test_messages_and_phase_state(adapter):
     pool = AsyncMock()
     adapter._pool = pool
     now = datetime.now(UTC)
     run_id = uuid5(UUID(int=0), "PLATFORM-1")
-    event = ConfidenceEvent(uuid4(), run_id, ConfidenceEventType.CI_PASS, 0.1, 0.9, now)
-    await adapter.add_confidence_event("PLATFORM-1", event)
-    assert all(call.args[-1] == "connection-a" for call in pool.execute.call_args_list)
-    pool.fetch.return_value = [asdict(event)]
-    assert await adapter.get_confidence_events("PLATFORM-1") == [event]
     message = SessionMessage(uuid4(), run_id, "session", "continue", "user", now)
     pool.fetch.return_value = [{"tracker_id": "PLATFORM-1"}]
     await adapter.save_session_message(message)
@@ -303,7 +295,6 @@ async def test_optional_operational_reads_without_database(adapter):
     assert await adapter.get_run_by_session("x") is None
     assert await adapter.list_runs_by_status(RunStatus.RUNNING) == []
     assert await adapter.get_run_by_id(uuid4()) is None
-    assert await adapter.get_confidence_events("x") == []
     assert await adapter.all_runs_merged("x") is False
     assert await adapter.get_saga_for_run("x") is None
     assert await adapter.get_phase_for_run("x") is None
@@ -311,8 +302,6 @@ async def test_optional_operational_reads_without_database(adapter):
     assert await adapter.get_session_messages("x") == []
     with pytest.raises(RuntimeError, match="pool"):
         await adapter.update_run_progress("x")
-    with pytest.raises(RuntimeError, match="pool"):
-        await adapter.add_confidence_event("x", None)
     with pytest.raises(RuntimeError, match="pool"):
         await adapter.save_session_message(None)
 

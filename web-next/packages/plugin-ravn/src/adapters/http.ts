@@ -261,6 +261,7 @@ interface RawRavn {
   flock_member_id?: string;
   flock_role?: string;
   flock_peer_id?: string;
+  realm_id?: string;
   desired_state?: string;
   observed_state?: string;
   backend_ref?: Record<string, unknown>;
@@ -324,6 +325,7 @@ interface RawSession {
   cost?: number | string;
   chat_endpoint?: string | null;
   instance_id?: string;
+  instance_name?: string;
   flock_id?: string;
   flock_member_id?: string;
   flock_role?: string;
@@ -513,6 +515,7 @@ function toRavn(raw: RawRavn): Ravn {
     ...(raw.flock_member_id && { flockMemberId: raw.flock_member_id }),
     ...(raw.flock_role && { flockRole: raw.flock_role }),
     ...(raw.flock_peer_id && { flockPeerId: raw.flock_peer_id }),
+    ...(raw.realm_id && { realmId: raw.realm_id }),
     ...(raw.desired_state !== undefined && {
       desiredState: raw.desired_state as Ravn['desiredState'],
     }),
@@ -549,6 +552,7 @@ function toSession(raw: RawSession): Session {
     costUsd: raw.cost === undefined ? undefined : Number(raw.cost),
     chatEndpoint: withInstanceQuery(raw.chat_endpoint, raw.instance_id),
     instanceId: raw.instance_id,
+    ...(raw.instance_name && { instanceName: raw.instance_name }),
     flockId: raw.flock_id,
     flockMemberId: raw.flock_member_id,
     flockRole: raw.flock_role,
@@ -829,6 +833,7 @@ export function buildRavnResidentControlAdapter(client: ApiClient): IResidentCon
         ...(request.flockMemberId && { flock_member_id: request.flockMemberId }),
         ...(request.flockRole && { flock_role: request.flockRole }),
         ...(request.flockPeerId && { flock_peer_id: request.flockPeerId }),
+        ...(request.realmId && { realm_id: request.realmId }),
       });
       return toRavn(raw);
     },
@@ -905,6 +910,10 @@ export function buildRavnSessionAdapter(client: ApiClient): ISessionStream {
         `/sessions/${encodeURIComponent(sessionId)}/messages${query}`,
       );
       return raw.map(toMessage);
+    },
+    async stopSession(sessionId, instanceId) {
+      const query = instanceId ? `?instance_id=${encodeURIComponent(instanceId)}` : '';
+      await client.post<unknown>(`/sessions/${encodeURIComponent(sessionId)}/stop${query}`, {});
     },
   };
 }

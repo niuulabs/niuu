@@ -863,12 +863,8 @@ identity:
 #     adapter: "volundr.adapters.outbound.authorization.SimpleRoleAuthorizationAdapter"
 #     kwargs: {}
 #
-# ── Cerbos PDP ─────────────────────────────────────────────────
-#   authorization:
-#     adapter: "volundr.adapters.outbound.cerbos.CerbosAuthorizationAdapter"
-#     kwargs:
-#       url: "http://cerbos:3592"
-#       timeout: 5
+# Production deployments enforce authorization via Cedar at the Envoy layer,
+# not through this per-request adapter.
 #
 authorization:
   # -- Fully-qualified class path for the AuthorizationPort adapter
@@ -1118,6 +1114,14 @@ config:
   logLevel: info
   # -- Log format (json, text)
   logFormat: json
+  # -- OpenTelemetry trace/metric export. Empty (the default) means
+  # unconfigured — observability.enabled defaults to false, which is a
+  # decision, not a degraded fallback. Set fields to match
+  # niuu.domain.observability.ObservabilityConfig, e.g.:
+  #   enabled: true
+  #   trace_endpoint: "http://otel-collector.observability:4317"
+  #   metric_endpoint: "http://otel-collector.observability:4318/v1/metrics"
+  observability: {}
   # -- Host to bind to
   host: "0.0.0.0"
   # -- Internal shared-host address injected into local Skuld brokers

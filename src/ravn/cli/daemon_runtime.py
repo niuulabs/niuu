@@ -64,6 +64,19 @@ async def _run_daemon(
     # Build Mímir adapter early so _agent_factory closure can capture it.
     daemon_mimir = _build_mimir(settings)
     memory = _with_mimir_fact_capture(memory, daemon_mimir)
+
+    # Resolve the resident's charter once, before any consumer (this runtime,
+    # EnvironmentSignalRuntime's triage prompts, resident context, the HUD
+    # dashboard payload) reads settings.environment.charter — otherwise only
+    # some of them would see a Mímir-resolved charter and the rest would see
+    # the stale static one. Mutating settings here, not passing the resolved
+    # value around, is what makes every later reader consistent for free.
+    from ravn.cli.resident_runtime_wiring import (
+        _resolve_environment_charter,
+    )
+
+    settings.environment.charter = await _resolve_environment_charter(settings, daemon_mimir)
+
     drive_loop: Any | None = None
     resident_inbox: Any | None = None
     resident_state: Any | None = None

@@ -95,6 +95,55 @@ class TestGetMe:
         assert data["sections"][1]["resources"][0]["type"] == "tokens"
 
 
+class TestGetAuthConfig:
+    """Tests for GET /auth/config — the flag the web UI reads for a banner."""
+
+    def test_none_mode_returns_explicit_flag_not_404(self):
+        svc = AsyncMock(spec=TenantService)
+        app = _make_app(svc)
+        app.state.settings = SimpleNamespace(auth_mode="none")
+        client = TestClient(app)
+
+        resp = client.get("/api/v1/identity/auth/config", headers=AUTH)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["mode"] == "none"
+        assert data["device_authorization_supported"] is False
+
+    def test_oidc_mode_reports_issuer_and_mode(self):
+        svc = AsyncMock(spec=TenantService)
+        app = _make_app(svc)
+        app.state.settings = SimpleNamespace(
+            auth_mode="oidc",
+            auth_discovery=SimpleNamespace(
+                issuer="https://kc.example/realms/volundr",
+                cli_client_id="volundr-cli",
+                scopes="openid profile email",
+            ),
+        )
+        client = TestClient(app)
+
+        resp = client.get("/api/v1/identity/auth/config", headers=AUTH)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["mode"] == "oidc"
+        assert data["issuer"] == "https://kc.example/realms/volundr"
+        assert data["device_authorization_supported"] is True
+
+    def test_envoy_mode_without_issuer_still_404s(self):
+        svc = AsyncMock(spec=TenantService)
+        app = _make_app(svc)
+        app.state.settings = SimpleNamespace(
+            auth_mode="envoy",
+            auth_discovery=SimpleNamespace(issuer="", cli_client_id="", scopes=""),
+            gateway=SimpleNamespace(kwargs={}),
+        )
+        client = TestClient(app)
+
+        resp = client.get("/api/v1/identity/auth/config", headers=AUTH)
+        assert resp.status_code == 404
+
+
 class TestListTenants:
     """Tests for GET /tenants."""
 

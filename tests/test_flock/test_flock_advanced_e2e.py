@@ -4,7 +4,7 @@ Covers scenarios not in test_flock_e2e.py:
 
 1. Scope breach: outcome with low scope_adherence → SCOPE_BREACH signal
 2. Max retries exhaustion: retry verdict after retries exhausted → FAILED
-3. Approve with low confidence: approve verdict but score < threshold → ESCALATED
+3. Approve without workflow authority: approve verdict but no authoritative checks → ESCALATED
 4. Fan-in: two runs in same phase must both merge before phase gate unlocks
 5. Unknown verdict: unrecognized verdict falls back to escalation
 """
@@ -43,7 +43,6 @@ def _make_running_run(
 ) -> Run:
     return make_run(
         status=RunStatus.RUNNING,
-        confidence=0.5,
         session_id=session_id,
         retry_count=retry_count,
         tracker_id=tracker_id,
@@ -86,14 +85,7 @@ summary: Clean implementation
 
 async def test_retry_exhausted_transitions_to_failed() -> None:
     """Retry verdict when retry_count >= max_retries transitions run to FAILED."""
-    config = ReviewConfig(
-        auto_approve_threshold=0.70,
-        confidence_delta_ci_pass=0.30,
-        confidence_delta_ci_fail=-0.30,
-        confidence_delta_approved=0.10,
-        reviewer_session_enabled=False,
-        max_retries=2,
-    )
+    config = ReviewConfig(max_retries=2)
     async with FlockTestHarness(
         cli_responses=[OUTCOME_RETRY],
         review_config=config,
@@ -106,14 +98,7 @@ async def test_retry_exhausted_transitions_to_failed() -> None:
 
 async def test_retry_exhausted_one_below_then_exhausts() -> None:
     """First attempt retries (retry_count=0 < max=1), second exhausts → FAILED."""
-    config = ReviewConfig(
-        auto_approve_threshold=0.70,
-        confidence_delta_ci_pass=0.30,
-        confidence_delta_ci_fail=-0.30,
-        confidence_delta_approved=0.10,
-        reviewer_session_enabled=False,
-        max_retries=1,
-    )
+    config = ReviewConfig(max_retries=1)
     async with FlockTestHarness(
         cli_responses=[OUTCOME_RETRY, OUTCOME_RETRY],
         review_config=config,
@@ -134,7 +119,7 @@ async def test_retry_exhausted_one_below_then_exhausts() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Scenario 7: Approve verdict but low confidence → ESCALATED
+# Scenario 7: Approve verdict without authoritative checks → ESCALATED
 # ---------------------------------------------------------------------------
 
 OUTCOME_APPROVE_LOW_CI = """\
@@ -147,10 +132,11 @@ summary: Approved but CI is failing
 
 
 async def test_approve_with_failing_ci_escalates() -> None:
-    """Approve verdict with tests_passing=false produces low confidence → ESCALATED.
+    """Approve verdict without an authoritative workflow outcome escalates.
 
-    Starting confidence 0.5 + CI_FAIL (-0.30) = 0.20 < threshold 0.70.
-    Verdict is approve, but the score is too low to auto-approve.
+    tests_passing=false means the outcome carries no authoritative checks,
+    so even an "approve" verdict has no machine verdict to trust and is
+    handed to a human instead of auto-merging.
     """
     async with FlockTestHarness(cli_responses=[OUTCOME_APPROVE_LOW_CI]) as h:
         run = _make_running_run()
@@ -216,7 +202,6 @@ async def test_fan_in_both_merged_unlocks_phase() -> None:
             feature_branch="feat/test",
             base_branch="main",
             status=SagaStatus.ACTIVE,
-            confidence=0.5,
             created_at=datetime.now(UTC),
             owner_id=_DEFAULT_OWNER,
         )
@@ -229,7 +214,6 @@ async def test_fan_in_both_merged_unlocks_phase() -> None:
             name="Phase 1",
             number=1,
             status=PhaseStatus.ACTIVE,
-            confidence=0.5,
         )
         phase2 = Phase(
             id=uuid4(),
@@ -238,7 +222,6 @@ async def test_fan_in_both_merged_unlocks_phase() -> None:
             name="Phase 2",
             number=2,
             status=PhaseStatus.GATED,
-            confidence=0.5,
         )
         h.tracker.phase = phase1
         h.tracker._phases = [phase1, phase2]
@@ -295,8 +278,3 @@ async def test_no_outcome_block_handles_gracefully() -> None:
         assert current.status in (RunStatus.ESCALATED, RunStatus.RUNNING), (
             f"Expected ESCALATED or RUNNING for empty outcome; got {current.status}"
         )
-
-
-# ---------------------------------------------------------------------------
-# Scenario 12: Confidence accumulation across signals
-# ---------------------------------------------------------------------------

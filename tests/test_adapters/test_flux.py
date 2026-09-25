@@ -1046,6 +1046,52 @@ class TestFluxResidentRuntimeController:
         assert observation.backend_ref["kind"] == "HelmRelease"
         assert observation.endpoints[0].protocol == "skuld-v1"
 
+    async def test_deploy_omits_realm_values_without_realm_id(
+        self,
+        pod_manager: FluxPodManager,
+        mock_api,
+    ) -> None:
+        runtime = _resident_runtime()
+        with patch.object(pod_manager, "_get_api", return_value=mock_api):
+            await pod_manager.deploy(runtime, _resident_profile())
+
+        body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
+        assert "realm" not in body["spec"]["values"]["resident"]
+
+    async def test_deploy_with_realm_id_requires_a_configured_repository(
+        self,
+        pod_manager: FluxPodManager,
+        mock_api,
+    ) -> None:
+        runtime = _resident_runtime(realm_id=uuid4())
+        with (
+            patch.object(pod_manager, "_get_api", return_value=mock_api),
+            pytest.raises(RuntimeError, match="no realm repository configured"),
+        ):
+            await pod_manager.deploy(runtime, _resident_profile())
+
+    async def test_deploy_renders_the_resolved_realm_slug(
+        self,
+        pod_manager: FluxPodManager,
+        mock_api,
+    ) -> None:
+        realm_id = uuid4()
+
+        class _FakeRealm:
+            slug = "workshop"
+
+        class _FakeRealmRepository:
+            async def get_realm(self, realm_ref):
+                return _FakeRealm() if realm_ref == realm_id else None
+
+        pod_manager.set_realm_repository(_FakeRealmRepository())
+        runtime = _resident_runtime(realm_id=realm_id)
+        with patch.object(pod_manager, "_get_api", return_value=mock_api):
+            await pod_manager.deploy(runtime, _resident_profile())
+
+        body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
+        assert body["spec"]["values"]["resident"]["realm"] == {"slug": "workshop"}
+
     async def test_reconcile_combines_flux_and_workload_state(
         self,
         pod_manager: FluxPodManager,

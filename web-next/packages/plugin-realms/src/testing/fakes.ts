@@ -277,7 +277,7 @@ export function fakeResidents(
       ];
     },
     async deploy(request: DeployResidentRequest) {
-      log.calls.push(`deploy:${request.name}:${request.personaName}`);
+      log.calls.push(`deploy:${request.name}:${request.personaName}:${request.realmId ?? ''}`);
       if (options.failDeploy) throw new Error('profile is not enabled on this target');
       const ravn = {
         id: `ravn-${ravens.length + 1}`,

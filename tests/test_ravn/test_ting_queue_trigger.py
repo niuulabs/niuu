@@ -57,7 +57,6 @@ def _dispatcher_state(
         "running": running,
         "auto_continue": auto_continue,
         "max_concurrent_runs": max_concurrent_runs,
-        "threshold": 0.7,
         "updated_at": "2026-04-16T00:00:00Z",
     }
 

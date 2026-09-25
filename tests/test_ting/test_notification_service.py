@@ -89,7 +89,6 @@ def _make_run(
         declared_files=["src/main.py"],
         estimate_hours=2.0,
         status=status,
-        confidence=0.5,
         session_id="session-1",
         branch="run/test",
         chronicle_summary=None,
@@ -458,7 +457,7 @@ class TestNotificationServiceLifecycle:
     async def test_start_stop(self) -> None:
         event_bus = InMemoryEventBus()
         factory = StubChannelFactory()
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        service = NotificationService(event_bus, factory)
 
         assert service.running is False
         await service.start()
@@ -473,7 +472,7 @@ class TestNotificationServiceLifecycle:
     async def test_stop_when_not_started(self) -> None:
         event_bus = InMemoryEventBus()
         factory = StubChannelFactory()
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        service = NotificationService(event_bus, factory)
         await service.stop()  # Should not raise
 
 
@@ -487,7 +486,7 @@ class TestNotificationServiceEventMapping:
 
         run = _make_run(tracker_id="NIU-200")
 
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        service = NotificationService(event_bus, factory)
         await service.start()
 
         await event_bus.emit(
@@ -522,7 +521,7 @@ class TestNotificationServiceEventMapping:
 
         run = _make_run(tracker_id="NIU-201", status=RunStatus.FAILED)
 
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        service = NotificationService(event_bus, factory)
         await service.start()
 
         await event_bus.emit(
@@ -555,7 +554,7 @@ class TestNotificationServiceEventMapping:
 
         run = _make_run(tracker_id="NIU-202", status=RunStatus.MERGED)
 
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        service = NotificationService(event_bus, factory)
         await service.start()
 
         await event_bus.emit(
@@ -583,7 +582,7 @@ class TestNotificationServiceEventMapping:
         channel = RecordingChannel()
         factory = StubChannelFactory(channels={"user-1": [channel]})
 
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        service = NotificationService(event_bus, factory)
         await service.start()
 
         await event_bus.emit(
@@ -604,7 +603,7 @@ class TestNotificationServiceEventMapping:
         channel = RecordingChannel()
         factory = StubChannelFactory(channels={"user-1": [channel]})
 
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        service = NotificationService(event_bus, factory)
         await service.start()
 
         await event_bus.emit(TingEvent(event="some.unknown.event", data={"foo": "bar"}))
@@ -622,7 +621,7 @@ class TestNotificationServiceEventMapping:
         factory = StubChannelFactory(channels={"user-1": [channel]})
         # saga is None → owner cannot be resolved
 
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        service = NotificationService(event_bus, factory)
         await service.start()
 
         await event_bus.emit(
@@ -645,7 +644,7 @@ class TestNotificationServiceEventMapping:
 
         run = _make_run(tracker_id="NIU-300")
 
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        service = NotificationService(event_bus, factory)
         await service.start()
 
         await event_bus.emit(
@@ -674,7 +673,7 @@ class TestNotificationServiceEventMapping:
 
         run = _make_run(tracker_id="NIU-400")
 
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        service = NotificationService(event_bus, factory)
         await service.start()
 
         await event_bus.emit(
@@ -703,7 +702,7 @@ class TestNotificationServiceEventMapping:
 
         run = _make_run(tracker_id="NIU-500", status=RunStatus.MERGED)
 
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        service = NotificationService(event_bus, factory)
         await service.start()
 
         await event_bus.emit(
@@ -729,7 +728,7 @@ class TestNotificationServiceEventMapping:
         channel = RecordingChannel()
         factory = StubChannelFactory(channels={"user-1": [channel]})
 
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        service = NotificationService(event_bus, factory)
         await service.start()
 
         await event_bus.emit(
@@ -758,7 +757,7 @@ class TestNotificationServiceEventMapping:
         channel = RecordingChannel()
         factory = StubChannelFactory(channels={"user-1": [channel]})
 
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        service = NotificationService(event_bus, factory)
         await service.start()
 
         await event_bus.emit(TingEvent(event="saga.pr_created", data={"saga_name": "X"}))
@@ -774,7 +773,7 @@ class TestNotificationServiceEventMapping:
         channel = RecordingChannel()
         factory = StubChannelFactory(channels={"user-1": [channel]})
 
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        service = NotificationService(event_bus, factory)
         await service.start()
 
         await event_bus.emit(
@@ -803,7 +802,7 @@ class TestNotificationServiceEventMapping:
         channel = RecordingChannel()
         factory = StubChannelFactory(channels={"user-1": [channel]})
 
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        service = NotificationService(event_bus, factory)
         await service.start()
 
         await event_bus.emit(
@@ -821,7 +820,7 @@ class TestNotificationServiceEventMapping:
         channel = RecordingChannel()
         factory = StubChannelFactory(channels={"user-1": [channel]})
 
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        service = NotificationService(event_bus, factory)
         await service.start()
 
         await event_bus.emit(
@@ -852,58 +851,6 @@ class TestNotificationServiceEventMapping:
         )
 
     @pytest.mark.asyncio
-    async def test_confidence_below_threshold(self) -> None:
-        event_bus = InMemoryEventBus()
-        channel = RecordingChannel()
-        factory = StubChannelFactory(channels={"user-1": [channel]})
-
-        run = _make_run(tracker_id="NIU-600")
-
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
-        await service.start()
-
-        await event_bus.emit(
-            TingEvent(
-                event="confidence.updated",
-                data={
-                    "run_id": str(run.id),
-                    "score_after": 0.2,
-                    "tracker_id": "NIU-600",
-                    "owner_id": "user-1",
-                },
-            )
-        )
-
-        await asyncio.sleep(0.1)
-        await service.stop()
-
-        assert len(channel.sent) == 1
-        n = channel.sent[0]
-        assert n.urgency == NotificationUrgency.MEDIUM
-        assert "20%" in n.body
-
-    @pytest.mark.asyncio
-    async def test_confidence_above_threshold_ignored(self) -> None:
-        event_bus = InMemoryEventBus()
-        channel = RecordingChannel()
-        factory = StubChannelFactory(channels={"user-1": [channel]})
-
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
-        await service.start()
-
-        await event_bus.emit(
-            TingEvent(
-                event="confidence.updated",
-                data={"run_id": str(uuid4()), "score_after": 0.5},
-            )
-        )
-
-        await asyncio.sleep(0.1)
-        await service.stop()
-
-        assert len(channel.sent) == 0
-
-    @pytest.mark.asyncio
     async def test_tracker_id_falls_back_to_run_id(self) -> None:
         """When event data lacks tracker_id, fall back to run_id in notification body."""
         event_bus = InMemoryEventBus()
@@ -912,7 +859,7 @@ class TestNotificationServiceEventMapping:
 
         run_id = str(uuid4())
 
-        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        service = NotificationService(event_bus, factory)
         await service.start()
 
         # Emit with run_id but no tracker_id — service uses run_id as fallback
@@ -941,14 +888,12 @@ class TestNotificationConfig:
 
         cfg = NotificationConfig()
         assert cfg.enabled is True
-        assert cfg.confidence_threshold == 0.3
 
     def test_custom(self) -> None:
         from ting.config import NotificationConfig
 
-        cfg = NotificationConfig(enabled=False, confidence_threshold=0.5)
+        cfg = NotificationConfig(enabled=False)
         assert cfg.enabled is False
-        assert cfg.confidence_threshold == 0.5
 
     def test_settings_includes_notification(self) -> None:
         from ting.config import Settings

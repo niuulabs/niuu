@@ -277,7 +277,6 @@ class TestCommitSagaIdempotency:
                 repos=["org/repo"],
                 feature_branch="feat/my-saga",
                 status=SagaStatus.ACTIVE,
-                confidence=0.5,
                 created_at=datetime.now(UTC),
                 base_branch="dev",
                 owner_id="dev-user",
@@ -319,32 +318,6 @@ class TestCommitSagaValidation:
         body = {k: v for k, v in VALID_COMMIT_BODY.items() if k != "slug"}
         resp = client.post("/api/v1/ting/sagas/commit", json=body)
         assert resp.status_code == 422
-
-
-class TestCommitSagaConfidence:
-    def test_saga_has_initial_confidence_from_config(self, client: TestClient) -> None:
-        resp = client.post("/api/v1/ting/sagas/commit", json=VALID_COMMIT_BODY)
-        data = resp.json()
-        assert data["confidence"] == ReviewConfig().initial_confidence
-
-    def test_custom_initial_confidence(
-        self,
-        mock_tracker: MockTracker,
-        saga_repo: MockSagaRepo,
-        mock_git: MockGit,
-    ) -> None:
-        app = FastAPI()
-        app.state.authorization = AllowAllAuthorizationAdapter()
-        app.include_router(create_sagas_router())
-        app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
-        app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
-        app.dependency_overrides[resolve_git] = lambda: mock_git
-        settings = _dev_settings()
-        settings.review = ReviewConfig(initial_confidence=0.8)
-        app.state.settings = settings
-        client = TestClient(app)
-        resp = client.post("/api/v1/ting/sagas/commit", json=VALID_COMMIT_BODY)
-        assert resp.json()["confidence"] == 0.8
 
 
 class TestCommitSagaCustomBaseBranch:

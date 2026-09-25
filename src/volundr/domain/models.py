@@ -1007,6 +1007,11 @@ class SessionSpan:
     actor_id: str | None = None
     actor_label: str | None = None
     attributes: dict[str, Any] = field(default_factory=dict)
+    #: The W3C trace id (32 lowercase hex chars) active when this span was
+    #: recorded, when observability was enabled — distinct from ``trace_id``
+    #: above, which is this Forge trace system's own id (the session UUID).
+    #: ``None`` when observability was disabled or no span was active.
+    w3c_trace_id: str | None = None
 
 
 class PromptScope(StrEnum):
@@ -1551,6 +1556,7 @@ class ResidentRuntime(BaseModel):
     flock_member_id: UUID | None = None
     flock_role: str = Field(default="", max_length=100)
     flock_peer_id: str = Field(default="", max_length=255)
+    realm_id: UUID | None = None
     desired_state: ResidentDesiredState = ResidentDesiredState.RUNNING
     observed_state: ResidentObservedState = ResidentObservedState.PENDING
     backend_ref: dict[str, Any] = Field(default_factory=dict)

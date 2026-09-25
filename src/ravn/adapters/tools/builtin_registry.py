@@ -568,11 +568,12 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         adapter="ravn.adapters.tools.learned_tool_run.LearnedToolRunTool",
         groups=frozenset({"core", "ravn"}),
         required_context=frozenset({"learned_tool_resolver", "permission"}),
-        kwargs_fn=lambda _s, ctx: {
+        kwargs_fn=lambda s, ctx: {
             "resolver": ctx["learned_tool_resolver"],
             "permission": ctx["permission"],
             "skill_manager": ctx.get("skill_manager"),
             "host_tools_provider": ctx.get("capability_tools_provider"),
+            "rollback_consecutive_failures": s.resident_evolution.rollback_consecutive_failures,
         },
     ),
 }

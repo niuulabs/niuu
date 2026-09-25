@@ -26,7 +26,7 @@ describe('AuditLogSection', () => {
 
   it('renders audit log entries after loading', async () => {
     render(<AuditLogSection />, { wrapper: wrap(defaultServices()) });
-    await waitFor(() => expect(screen.getByText(/6 entries/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/4 entries/i)).toBeInTheDocument());
   });
 
   it('shows section heading', async () => {

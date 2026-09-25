@@ -35,6 +35,7 @@ from niuu.session_proxy import (  # noqa: F401
 )
 
 if TYPE_CHECKING:
+    from cli.config import CLISettings
     from cli.registry import PluginRegistry
 
 logger = logging.getLogger(__name__)
@@ -468,6 +469,23 @@ def _install_merged_openapi(
     root.openapi = merged_openapi
 
 
+def _build_host_identity_adapter() -> object:
+    """Compose the root app's own identity adapter (session-proxy attach).
+
+    A header-only slot (no user provisioning) — see ``HostIdentityConfig``.
+    Guarded the same way every other co-hosted service is: 'none' must be
+    the explicit allow-all adapter, 'oidc' must verify a bearer token's
+    signature, matching what ``host_auth.mode`` claims.
+    """
+    from niuu.service_runtime import _get_auth_mode, _validate_identity_adapter_class
+    from niuu.utils import import_class
+
+    settings = NiuuSettings()
+    cls = import_class(settings.host_identity.adapter)
+    _validate_identity_adapter_class(cls, _get_auth_mode(settings))
+    return cls(**settings.host_identity.kwargs)
+
+
 def build_root_app(
     *,
     registry: PluginRegistry,
@@ -477,8 +495,32 @@ def build_root_app(
     host_profile: str = DEFAULT_HOST_PROFILE,
     enabled_mounts: set[str] | None = None,
     skuld_registry: SkuldPortRegistry | None = None,
+    cli_settings: CLISettings | None = None,
 ) -> FastAPI:
-    """Build the root FastAPI app that hosts selected route domains."""
+    """Build the root FastAPI app that hosts selected route domains.
+
+    Configures this process's observability pipeline first, from
+    ``cli_settings.observability`` (loaded fresh when *cli_settings* is
+    omitted, e.g. direct/test callers) — before any plugin's own
+    ``create_api_app()`` runs below. Each plugin's own composition root also
+    calls ``configure_observability`` with its own settings; because this
+    call happens first, theirs joins this one pipeline (or opts out
+    individually) instead of each plugin racing to be the first with a
+    different identity — see ``niuu.observability``'s module docstring.
+    """
+    from niuu.observability import configure_observability, instrument_fastapi_app
+
+    if cli_settings is None:
+        from cli.config import CLISettings as _CLISettings
+
+        cli_settings = _CLISettings()
+    telemetry = configure_observability(
+        cli_settings.observability,
+        resource_attributes={"service.namespace": "niuu-mini"},
+        component="niuu-mini",
+        default_service_name="niuu-mini",
+    )
+
     plugin_public_origin = _plugin_public_origin(public_host, host, port)
     plugin_api_base_url = _plugin_api_base_url(host, port)
     active_mounts = resolve_enabled_mounts(
@@ -579,6 +621,12 @@ def build_root_app(
         version="0.1.0",
         lifespan=lifespan,
     )
+    # Instruments the root app's own direct routes (health checks, the merged
+    # OpenAPI schema, ...). Mounted sub-apps (Volundr, Ting, Bifrost, ...) are
+    # already independently instrumented from their own create_app() above —
+    # they are separate ASGI app objects with their own middleware stacks,
+    # not affected by instrumenting root.
+    instrument_fastapi_app(root, telemetry, component="niuu-mini")
     cors_origins = _configured_cors_origins()
     if cors_origins:
         apply_cors_middleware(
@@ -590,6 +638,7 @@ def build_root_app(
         )
     root.state.legacy_route_hits = {}
     root.state.route_inventory = route_inventory
+    root.state.identity = _build_host_identity_adapter()
 
     logger.info(
         "Selected route domains: %s",

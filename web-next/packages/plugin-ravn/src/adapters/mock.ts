@@ -1381,19 +1381,27 @@ export function createMockRavenStream(): IRavenStream {
 
 /** Create a mock ISessionStream with seeded sessions and messages. */
 export function createMockSessionStream(): ISessionStream {
+  // Each stream owns its sessions, so stopping one never leaks into another.
+  const sessions: Session[] = SEED_SESSIONS.map((session) => ({ ...session }));
   return {
     async listSessions() {
-      return SEED_SESSIONS;
+      return sessions;
     },
 
     async getSession(id: string) {
-      const s = SEED_SESSIONS.find((ss) => ss.id === id);
+      const s = sessions.find((ss) => ss.id === id);
       if (!s) throw new Error(`Session not found: ${id}`);
       return s;
     },
 
     async getMessages(sessionId: string) {
       return SEED_MESSAGES.filter((m) => m.sessionId === sessionId);
+    },
+
+    async stopSession(sessionId: string) {
+      const session = sessions.find((ss) => ss.id === sessionId);
+      if (!session) throw new Error(`Session not found: ${sessionId}`);
+      session.status = 'stopped';
     },
   };
 }

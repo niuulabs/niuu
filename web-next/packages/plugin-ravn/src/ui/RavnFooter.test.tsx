@@ -52,6 +52,7 @@ function servicesWithState({
       async getMessages() {
         return [];
       },
+      async stopSession() {},
     } satisfies ISessionStream,
     'ravn.triggers': createMockTriggerStore(),
     'ravn.budget': createMockBudgetStream(),

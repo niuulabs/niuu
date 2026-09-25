@@ -80,6 +80,7 @@ data:
           enabled: true
           host: "0.0.0.0"
           port: 7781
+          resident_hud_enabled: {{ .Values.resident.hudEnabled | default false }}
       {{- if .Values.resident.platform.enabled }}
       platform:
         enabled: true
@@ -170,6 +171,18 @@ data:
     environment:
       id: {{ .Values.resident.environmentId | quote }}
       resident_name: {{ $residentName | quote }}
+      {{- if .Values.resident.realm.slug }}
+      charter_mimir_page: {{ printf "realms/%s/charter.md" .Values.resident.realm.slug | quote }}
+      {{- end }}
+    {{- if .Values.resident.stewardshipIntervalSeconds }}
+    resident_state:
+      stewardship_interval_seconds: {{ .Values.resident.stewardshipIntervalSeconds | float64 }}
+    {{- end }}
+    {{- if .Values.resident.realm.slug }}
+    resident_evolution:
+      realm_slug: {{ .Values.resident.realm.slug | quote }}
+      realm_api_base_url: {{ .Values.resident.platform.baseUrl | quote }}
+    {{- end }}
     {{- with .Values.resident.observability }}
     observability:
       {{- toYaml . | nindent 6 }}

@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from niuu.observability import get_observability
 from volundr.domain.models import Session
 from volundr.domain.ports import SessionContext, SessionContribution, SessionContributor
 
@@ -11,6 +12,15 @@ class CoreSessionContributor(SessionContributor):
 
     This is the only contributor without a port — it sets pure session
     data plus the few lines of config that don't warrant their own class.
+
+    Also carries the W3C trace context (if observability is enabled and a
+    span is active on the creating request) into ``envVars`` as plain
+    ``TRACEPARENT``/``TRACESTATE`` — the one place every session, of every
+    pod type and local processes alike, picks up env (see
+    ``LocalProcessPodManager._session_env``, which folds ``envVars`` into
+    every runtime it spawns). Previously only ``ravn_flock`` sessions carried
+    trace context, via a separate Ting-workflow-specific path
+    (``provenance.trace_context``); this makes it universal.
     """
 
     def __init__(
@@ -70,5 +80,11 @@ class CoreSessionContributor(SessionContributor):
 
         if context.terminal_restricted:
             values["localServices"] = {"terminal": {"restricted": True}}
+
+        trace_carrier = get_observability().inject()
+        if trace_carrier:
+            values["envVars"] = [
+                {"name": key.upper(), "value": value} for key, value in trace_carrier.items()
+            ]
 
         return SessionContribution(values=values)

@@ -22,7 +22,6 @@ from ting.api.runs import (
 from ting.config import AuthConfig, ReviewConfig
 from ting.domain.exceptions import RunNotFoundError
 from ting.domain.models import (
-    ConfidenceEventType,
     RunStatus,
     SessionMessage,
 )
@@ -167,13 +166,6 @@ class TestSessionMessageService:
         messages = tracker.messages.get(run.id, [])
         assert len(messages) == 1
         assert messages[0].content == "Fix the failing test"
-
-        # Verify confidence event recorded
-        events = tracker.events.get(run.tracker_id, [])
-        assert len(events) == 1
-        assert events[0].event_type == ConfidenceEventType.MESSAGE_SENT
-        assert events[0].delta == 0.0
-        assert events[0].score_after == run.confidence
 
     @pytest.mark.asyncio
     async def test_send_message_with_auth_token(
@@ -659,7 +651,3 @@ class TestSessionMessageModel:
         )
         with pytest.raises(AttributeError):
             msg.content = "changed"  # type: ignore[misc]
-
-    def test_message_sent_event_type(self):
-        assert ConfidenceEventType.MESSAGE_SENT == "message_sent"
-        assert ConfidenceEventType.MESSAGE_SENT.value == "message_sent"

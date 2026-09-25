@@ -44,7 +44,6 @@ class CompletionEvaluation:
 
     is_complete: bool
     signals: dict[str, bool]
-    confidence: float
     pr_id: str | None = None
     pr_url: str | None = None
 
@@ -477,28 +476,16 @@ class SessionActivitySubscriber:
         if self._config.require_ci and not signals["ci_passed"]:
             is_complete = False
 
-        # Calculate confidence based on configurable signal strength
-        cfg = self._config
-        confidence = cfg.confidence_base if is_complete else 0.0
-        if signals["pr_exists"]:
-            confidence += cfg.confidence_pr_bonus
-        if signals["ci_passed"]:
-            confidence += cfg.confidence_ci_bonus
-        if signals["extended_idle"]:
-            confidence += cfg.confidence_idle_bonus
-
         logger.info(
-            "Completion evaluation: session=%s is_complete=%s confidence=%.2f signals=%s",
+            "Completion evaluation: session=%s is_complete=%s signals=%s",
             run.session_id,
             is_complete,
-            min(confidence, 1.0),
             signals,
         )
 
         return CompletionEvaluation(
             is_complete=is_complete,
             signals=signals,
-            confidence=min(confidence, 1.0),
             pr_id=pr_id,
             pr_url=pr_url,
         )

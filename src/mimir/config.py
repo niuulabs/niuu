@@ -26,6 +26,8 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from niuu.domain.observability import ObservabilityConfig
+
 
 def _config_paths() -> list[_Path]:
     env = os.environ.get("MIMIR_CONFIG")
@@ -149,6 +151,12 @@ class EvidenceConfig(BaseModel):
     )
 
 
+class MimirObservabilityConfig(ObservabilityConfig):
+    """OpenTelemetry settings with Mímir's stable service identity."""
+
+    service_name: str = Field(default="mimir")
+
+
 class MimirServiceConfig(BaseSettings):
     """Configuration for a Mímir service instance (standalone or plugin).
 
@@ -261,3 +269,4 @@ class MimirServiceConfig(BaseSettings):
         default_factory=EvidenceConfig,
         description="Evidence-counted belief thresholds (NIU-1062).",
     )
+    observability: MimirObservabilityConfig = Field(default_factory=MimirObservabilityConfig)

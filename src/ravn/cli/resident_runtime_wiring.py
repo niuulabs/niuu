@@ -193,12 +193,48 @@ async def _build_resident_state(
     return await select_resident_state(_build(cfg.adapter, cfg.kwargs, cfg.secret_kwargs_env))
 
 
+async def _resolve_environment_charter(settings: Settings, mimir: Any | None) -> str:
+    """Resolve this resident's charter, preferring its realm's Mímir page.
+
+    ``environment.charter_mimir_page`` is a decision the operator made: fetch
+    the charter from Mímir. A missing page or disabled Mímir is a fatal
+    misconfiguration here, not a reason to silently fall back to the static
+    ``environment.charter`` string (see .claude/rules/no-fallbacks.md).
+    """
+    page = settings.environment.charter_mimir_page.strip()
+    if not page:
+        return settings.environment.charter
+    if mimir is None:
+        raise RuntimeError(
+            f"environment.charter_mimir_page={page!r} is configured but Mímir is "
+            "disabled (mimir.enabled=false). Enable Mímir, or clear charter_mimir_page "
+            "to use the static environment.charter."
+        )
+    try:
+        return await mimir.read_page(page)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"environment.charter_mimir_page={page!r} is configured but that page does "
+            "not exist yet. Write the realm's charter to Mímir first (the Simple-mode "
+            "wizard does this when creating a realm), or clear charter_mimir_page to "
+            "use the static environment.charter."
+        ) from exc
+
+
 def _build_resident_runtime(
     settings: Settings,
     *,
     state: Any,
     inbox: Any | None,
 ) -> Any:
+    """Build the resident runtime.
+
+    ``settings.environment.charter`` must already be resolved by this point
+    (see ``_resolve_environment_charter`` and its call in ``_run_daemon``,
+    before any consumer — this runtime, ``EnvironmentSignalRuntime``'s triage
+    prompts, resident context, and the HUD dashboard payload — is built) so
+    every consumer sees the same charter, read once at daemon startup.
+    """
     from ravn.resident_runtime import ResidentRuntime  # noqa: PLC0415
 
     cfg = settings.resident_state

@@ -1,128 +1,212 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
-test('ravn overview renders at /ravn', async ({ page }) => {
+/**
+ * The Ravn plugin: the ravens workbench at /ravn and the persona library at
+ * /ravn/personas. Fleet reads go over HTTP, so they are answered here.
+ */
+
+const RUNNING = '11111111-1111-4111-8111-111111111111';
+const FAILED = '22222222-2222-4222-8222-222222222222';
+
+const ravens = [
+  {
+    id: RUNNING,
+    persona_name: 'reviewer',
+    resident_name: 'Muninn',
+    kind: 'resident',
+    status: 'active',
+    model: 'claude-sonnet-4-6',
+    created_at: '2026-09-01T10:00:00Z',
+    updated_at: '2026-09-24T09:00:00Z',
+    backend: 'local',
+    engine: 'openclaw',
+    profile_id: 'nemoclaw-local',
+    desired_state: 'running',
+    observed_state: 'active',
+    capabilities: ['chat', 'session.list', 'session.create', 'runtime.restart', 'logs'],
+    conditions: [],
+    managed: true,
+    instance_id: 'local',
+    instance_name: 'Local Forge',
+    message_count: 12,
+    tokens_used: 34904,
+    cost: '0.07',
+  },
+  {
+    id: FAILED,
+    persona_name: 'product-steward',
+    resident_name: 'Proof',
+    kind: 'resident',
+    status: 'failed',
+    model: 'gpt-5.6-sol',
+    created_at: '2026-07-12T13:12:12Z',
+    updated_at: '2026-09-24T11:36:21Z',
+    backend: 'local',
+    engine: 'ravn',
+    profile_id: 'ravn-local',
+    desired_state: 'running',
+    observed_state: 'failed',
+    capabilities: ['chat', 'runtime.restart', 'logs'],
+    conditions: [
+      {
+        type: 'BackendReady',
+        status: 'unknown',
+        reason: 'ReconcileFailed',
+        message: 'connection aborted',
+        lastTransitionAt: '2026-09-24T11:36:21Z',
+      },
+    ],
+    managed: true,
+    instance_id: 'local',
+    instance_name: 'Local Forge',
+  },
+];
+
+async function answerRavnApi(
+  page: Page,
+  options: { ravensStatus?: number; delayMs?: number } = {},
+) {
+  await page.route('**/api/v1/ravn/ravens', async (route) => {
+    if (options.delayMs) await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+    if (options.ravensStatus) {
+      await route.fulfill({
+        status: options.ravensStatus,
+        json: { detail: 'Ravn fleet is unavailable' },
+      });
+      return;
+    }
+    await route.fulfill({ json: ravens });
+  });
+  await page.route('**/api/v1/ravn/sessions', (route) => route.fulfill({ json: [] }));
+  await page.route('**/api/v1/ravn/ravens/*/sessions**', (route) => route.fulfill({ json: [] }));
+  await page.route('**/api/v1/ravn/ravens/*/logs**', (route) =>
+    route.fulfill({
+      json: {
+        entries: [
+          {
+            timestamp_ms: Date.parse('2026-09-24T09:41:02Z'),
+            level: 'INFO',
+            source: 'ravn',
+            target: 'ravn.agent',
+            message: 'turn started',
+            fields: {},
+          },
+        ],
+        buffer_total: 1,
+      },
+    }),
+  );
+  await page.route('**/api/v1/ravn/deployment-profiles', (route) =>
+    route.fulfill({
+      json: [
+        {
+          id: 'nemoclaw-local',
+          displayName: 'NemoClaw (Local)',
+          description: 'NVIDIA OpenClaw resident hosted by the local container engine',
+          backend: 'local',
+          engine: 'openclaw',
+          capabilities: ['chat', 'session.list', 'logs'],
+          defaultModel: 'niuu/nvidia/nemotron-3-super',
+          allowedModels: ['niuu/nvidia/nemotron-3-super'],
+          instance_id: 'local',
+          instance_name: 'Local Forge',
+        },
+      ],
+    }),
+  );
+}
+
+test('the workbench opens on the ravn that needs attention and says why', async ({ page }) => {
+  await answerRavnApi(page);
   await page.goto('/ravn');
-  await expect(page.getByTestId('ravn-page')).toBeVisible();
-  await expect(page.getByTestId('overview-page')).toBeVisible({ timeout: 5000 });
+
+  await expect(page.getByTestId('ravn-list')).toBeVisible({ timeout: 8_000 });
+  await expect(page.getByRole('heading', { level: 1, name: /Proof/ })).toBeVisible();
+  await expect(page.getByTestId('ravn-health-banner')).toContainText(
+    'Not running — backend not ready · reconcile failed',
+  );
+  await expect(page.getByTestId('ravn-talk')).toBeDisabled();
 });
 
-test('ravn overview shows current fleet telemetry', async ({ page }) => {
+test('the workbench shows a loading state before the fleet arrives', async ({ page }) => {
+  await answerRavnApi(page, { delayMs: 1_500 });
   await page.goto('/ravn');
-
-  await expect(page.getByTestId('kpi-ravens')).toBeVisible({ timeout: 5000 });
-  await expect(page.getByTestId('kpi-sessions')).toBeVisible();
-  await expect(page.getByTestId('kpi-spend')).toBeVisible();
-  await expect(page.getByTestId('kpi-triggers')).toBeVisible();
-  await expect(page.getByTestId('active-ravens-list')).toBeVisible();
-  await expect(page.getByTestId('fleet-sparkline')).toBeVisible();
-  await expect(page.getByTestId('activity-log')).toBeVisible();
+  await expect(page.getByTestId('ravn-workbench-loading')).toBeVisible();
+  await expect(page.getByTestId('ravn-list')).toBeVisible({ timeout: 8_000 });
 });
 
-test('ravens directory renders with a selected detail pane by default', async ({ page }) => {
-  await page.goto('/ravn/ravens');
-
-  await expect(page.getByTestId('ravens-page')).toBeVisible({ timeout: 5000 });
-  await expect(page.getByTestId('ravens-sidebar')).toBeVisible();
-  await expect(page.getByTestId('ravn-detail')).toBeVisible();
-  await expect(page.getByTestId('detail-empty')).toHaveCount(0);
+test('the workbench says why the fleet could not be loaded', async ({ page }) => {
+  await answerRavnApi(page, { ravensStatus: 503 });
+  await page.goto('/ravn');
+  await expect(page.getByTestId('ravn-workbench-error')).toContainText(
+    'Ravn fleet is unavailable',
+    { timeout: 8_000 },
+  );
 });
 
-test('ravens grouping controls switch modes', async ({ page }) => {
-  await page.goto('/ravn/ravens');
+test('state pills and search narrow the list', async ({ page }) => {
+  await answerRavnApi(page);
+  await page.goto('/ravn');
+  const list = page.getByTestId('ravn-list');
+  await expect(list).toBeVisible({ timeout: 8_000 });
 
-  const groupByState = page.getByTestId('group-btn-state');
-  const groupByPersona = page.getByTestId('group-btn-persona');
-  const groupByFlat = page.getByTestId('group-btn-none');
+  await page.getByTestId('ravn-filter-running').click();
+  await expect(list.getByText('Proof')).toHaveCount(0);
+  await expect(list.getByText('Muninn')).toBeVisible();
 
-  await groupByState.click();
-  await expect(groupByState).toHaveAttribute('aria-pressed', 'true');
-
-  await groupByPersona.click();
-  await expect(groupByPersona).toHaveAttribute('aria-pressed', 'true');
-
-  await groupByFlat.click();
-  await expect(groupByFlat).toHaveAttribute('aria-pressed', 'true');
+  await page.getByTestId('ravn-filter-all').click();
+  await page.getByTestId('ravn-search').fill('definitely-not-a-ravn');
+  await expect(page.getByTestId('ravn-list-empty')).toBeVisible();
 });
 
-test('ravens search filters the directory and can recover', async ({ page }) => {
-  await page.goto('/ravn/ravens');
+test('a ravn page moves between tabs by click and arrow key', async ({ page }) => {
+  await answerRavnApi(page);
+  await page.goto(`/ravn?ravn=${RUNNING}&instance_id=local`);
+  await expect(page.getByRole('heading', { level: 1, name: /Muninn/ })).toBeVisible({
+    timeout: 8_000,
+  });
+  await expect(page.getByText('No conversations yet')).toBeVisible();
 
-  const search = page.getByTestId('ravens-search');
-  await expect(page.getByTestId('ravn-list-row').first()).toBeVisible({ timeout: 5000 });
+  await page.getByTestId('ravn-tab-activity').click();
+  await expect(page.getByRole('log', { name: 'Runtime logs' })).toContainText('turn started');
 
-  await search.fill('definitely-not-a-ravn');
-  await expect(page.getByText(/no ravens match/i)).toBeVisible();
+  await page.getByTestId('ravn-tab-activity').press('ArrowRight');
+  await expect(page).toHaveURL(/tab=setup/);
+  await expect(page.getByTestId('ravn-setup-tab')).toBeVisible();
 
-  await search.fill('');
-  await expect(page.getByTestId('ravn-list-row').first()).toBeVisible({ timeout: 5000 });
+  await page.getByTestId('ravn-tab-setup').press('ArrowRight');
+  await expect(page.getByTestId('ravn-usage-tab')).toBeVisible();
 });
 
-test('ravn detail tabs switch between current sections', async ({ page }) => {
-  await page.goto('/ravn/ravens');
-
-  await expect(page.getByTestId('ravn-detail')).toBeVisible({ timeout: 5000 });
-
-  await page.getByTestId('sectab-activity').click();
-  await expect(page.getByTestId('activity-section-body')).toBeVisible();
-
-  await page.getByTestId('sectab-sessions').click();
-  await expect(page.getByTestId('sessions-section-body')).toBeVisible();
-
-  await page.getByTestId('sectab-connectivity').click();
-  await expect(page.getByTestId('connectivity-section-body')).toBeVisible();
-
-  await page.getByTestId('sectab-overview').click();
-  await expect(page.getByTestId('section-body-overview')).toBeVisible();
+test('the deploy dialog lists runtimes and closes on Escape', async ({ page }) => {
+  await answerRavnApi(page);
+  await page.goto('/ravn');
+  await page.getByTestId('ravn-deploy-open').click();
+  const dialog = page.getByRole('dialog', { name: 'Deploy a ravn' });
+  await expect(dialog.getByTestId('ravn-deploy-profile-nemoclaw-local')).toBeVisible();
+  await expect(dialog.getByTestId('ravn-deploy-submit')).toBeDisabled();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
 });
 
-test('personas route renders the directory and detail workspace', async ({ page }) => {
-  await page.goto('/ravn/personas');
-
-  await expect(page.getByTestId('personas-page')).toBeVisible({ timeout: 5000 });
-  await expect(page.getByTestId('personas-directory')).toBeVisible();
-  await expect(page.getByTestId('personas-detail-pane')).toBeVisible();
-});
-
-test('personas route can switch to the YAML pane for a selected persona', async ({ page }) => {
-  await page.goto('/ravn/personas');
-
-  await expect(page.getByTestId('personas-directory')).toBeVisible({ timeout: 5000 });
-  await page.getByTestId('personas-directory').getByRole('button').first().click();
-  await page.getByRole('tab', { name: 'YAML' }).click();
-
-  await expect(
-    page.getByTestId('persona-yaml').or(page.getByTestId('persona-yaml-loading')),
-  ).toBeVisible({ timeout: 5000 });
-});
-
-test('sessions route renders the transcript and context panes', async ({ page }) => {
-  await page.goto('/ravn/sessions');
-
-  await expect(page.getByTestId('sessions-page')).toBeVisible({ timeout: 5000 });
-  await expect(page.getByTestId('sessions-header')).toBeVisible();
-  await expect(page.getByRole('log', { name: 'Session transcript' })).toBeVisible();
-  await expect(page.getByTestId('sessions-context')).toBeVisible();
-});
-
-test('sessions route surfaces active and closed session counts', async ({ page }) => {
-  await page.goto('/ravn/sessions');
-  await expect(page.getByText(/\d+ active · \d+ closed/)).toBeVisible({ timeout: 5000 });
-});
-
-test('sessions route can switch transcript filters', async ({ page }) => {
-  await page.goto('/ravn/sessions');
-
-  const toolsFilter = page.getByRole('button', { name: '+ tools' });
-  await toolsFilter.click();
-  await expect(toolsFilter).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByRole('log', { name: 'Session transcript' })).toBeVisible();
-});
-
-test('budget route renders runway and recommendation surfaces', async ({ page }) => {
+test('old addresses land on the workbench', async ({ page }) => {
+  await answerRavnApi(page);
+  await page.goto(`/ravn/sessions?session=s-1&ravn_id=${RUNNING}&instance_id=local`);
+  await expect(page).toHaveURL(new RegExp(`/ravn\\?.*ravn=${RUNNING}.*tab=chat`));
   await page.goto('/ravn/budget');
+  await expect(page).toHaveURL(/\/ravn\?tab=usage/);
+});
 
-  await expect(page.getByTestId('runway-bar')).toBeVisible({ timeout: 5000 });
-  await expect(page.getByTestId('fleet-sparkline')).toBeVisible();
-  await expect(page.getByTestId('top-drivers')).toBeVisible();
-  await expect(page.getByTestId('recommended-changes')).toBeVisible();
+test('the persona library groups by family and reads as a sheet', async ({ page }) => {
+  await answerRavnApi(page);
+  await page.goto('/ravn/personas');
+  await expect(page.getByTestId('persona-library')).toBeVisible({ timeout: 8_000 });
+  await expect(page.getByTestId('persona-family-general')).toBeVisible();
+  await expect(page.getByTestId('persona-sheet')).toBeVisible();
+  await expect(page.getByTestId('persona-flow')).toBeVisible();
+
+  await page.getByTestId('persona-view-yaml').click();
+  await expect(page.getByTestId('persona-body-yaml')).toBeVisible();
+  await page.getByTestId('persona-edit').click();
+  await expect(page.getByTestId('persona-form')).toBeVisible();
 });

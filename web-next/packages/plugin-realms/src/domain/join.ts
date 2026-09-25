@@ -25,12 +25,32 @@ export function residentForRealm(
   );
 }
 
-/** The realm's own resident in the Ravn fleet, by name. */
-export function ravnForRealm(ravens: Ravn[] | undefined, slug: string): Ravn | null {
+/**
+ * The realm's own resident in the Ravn fleet.
+ *
+ * Prefers the explicit `realmId` link stored on the resident record at
+ * deploy time (migration 000079). Falls back to the naming convention for
+ * residents deployed before that link existed, or discovered residents that
+ * carry no realm id at all.
+ */
+export function ravnForRealm(
+  ravens: Ravn[] | undefined,
+  slug: string,
+  realmId?: string | null,
+): Ravn | null {
   if (!ravens) return null;
+  if (realmId) {
+    const linked = ravens.find((ravn) => ravn.realmId === realmId);
+    if (linked) return linked;
+  }
+  // The naming-convention fallback is only for residents that carry no
+  // realmId at all (deployed before the link existed, or discovered rather
+  // than managed). A ravn that IS linked to a different realm must never
+  // match here just because it happens to share this realm's name/persona.
+  const unlinked = ravens.filter((ravn) => !ravn.realmId);
   return (
-    ravens.find((ravn) => ravn.residentName === residentNameFor(slug)) ??
-    ravens.find((ravn) => ravn.personaName === personaNameFor(slug)) ??
+    unlinked.find((ravn) => ravn.residentName === residentNameFor(slug)) ??
+    unlinked.find((ravn) => ravn.personaName === personaNameFor(slug)) ??
     null
   );
 }
@@ -94,7 +114,7 @@ export function buildRealmView(input: {
 }): RealmView {
   const { realm } = input;
   const resident = residentForRealm(input.dashboard, realm.slug);
-  const ravn = ravnForRealm(input.ravens, realm.slug);
+  const ravn = ravnForRealm(input.ravens, realm.slug, realm.id);
   const sessions = sessionsForRealm(input.sessions, realm.slug);
   return {
     slug: realm.slug,

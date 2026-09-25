@@ -44,7 +44,6 @@ def _make_running_run(
 ) -> Run:
     return make_run(
         status=RunStatus.RUNNING,
-        confidence=0.5,
         session_id=session_id,
         retry_count=retry_count,
         tracker_id=tracker_id,
