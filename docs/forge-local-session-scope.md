@@ -20,7 +20,7 @@ or a native host alias. Do not delete real sessions to hide this presentation bu
 | --- | --- |
 | `GET /api/v1/forge/sessions?scope=local` | Only the visible, enabled embedded Forge runtime; no registered-node requests |
 | `GET /api/v1/forge/sessions?status=archived&scope=local` | Same scope, with the existing archive filter |
-| `GET /api/v1/forge/sessions/stream?scope=local` | Only that embedded runtime's broadcaster |
+| `GET /api/v1/forge/sessions/stream?scope=local` | Only that embedded runtime's events, scoped to the caller like the list |
 | `GET /api/v1/forge/sessions/<id>?scope=local` | Resolve the row only within the embedded runtime |
 | `GET/PATCH /api/v1/forge/sessions/<id>/read-state?scope=local` | Existing authenticated reader API, with ownership lookup restricted to local |
 | `GET /api/v1/forge/feature-flags?scope=local` | Probe local runtime capabilities, not a possibly remote default |
@@ -46,8 +46,16 @@ every Forge endpoint or session-creation operation now supports scoped routing.
 
 A standalone Volundr server already serves only local sessions. It now accepts the
 scope contract, advertises the capability and emits the same list/stream header.
-An explicit `guild` request on standalone still returns its local sessions; it has
-no registry to aggregate.
+An explicit `guild` list request on standalone returns its local rows: the facade
+forwards list scope to member nodes, and a node's local rows are its contribution
+to the guild aggregate. The standalone **stream** serves `scope=local` only and
+answers `scope=guild` with 422; it has no registry to aggregate, and the facade
+never forwards stream scope to members.
+
+Every stream, standalone or embedded, is scoped to the caller exactly like
+`GET /sessions`: a caller receives events for its own sessions, or for its tenant's
+sessions as a tenant admin (`volundr:admin`), never another tenant's. The facade's
+embedded path subscribes through the Forge's scoped stream, not the raw broadcaster.
 
 ## Compatibility and rollout
 

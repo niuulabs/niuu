@@ -1045,6 +1045,48 @@ async def test_mesh_rpc_unknown_type():
     assert "error" in reply
 
 
+def test_wire_cascade_raises_when_enabled_mesh_cannot_be_built():
+    """An enabled mesh that cannot be built must not leave the cascade running alone."""
+    from niuu.mesh import MeshBuildError
+    from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
+
+    dl = _make_drive_loop()
+    settings = Settings()
+    settings.mesh.enabled = True
+    settings.discovery.enabled = False
+
+    with patch(
+        "ravn.cli.commands._build_mesh",
+        side_effect=MeshBuildError("mesh adapter 'webhook' could not be constructed"),
+    ):
+        with pytest.raises(MeshBuildError, match="could not be constructed"):
+            _wire_cascade(dl, settings)
+
+    assert dl._mesh is None
+
+
+def test_wire_cascade_raises_when_enabled_discovery_cannot_be_built():
+    from niuu.mesh.discovery_builder import DiscoveryBuildError
+    from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
+
+    dl = _make_drive_loop()
+    settings = Settings()
+    settings.mesh.enabled = True
+    settings.discovery.enabled = True
+
+    with (
+        patch(
+            "ravn.cli.commands._build_discovery",
+            side_effect=DiscoveryBuildError("discovery adapter 'k8s' could not be imported"),
+        ),
+        patch("ravn.cli.commands._build_mesh") as build_mesh,
+    ):
+        with pytest.raises(DiscoveryBuildError, match="could not be imported"):
+            _wire_cascade(dl, settings)
+
+    build_mesh.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # task_create routing tests
 # ---------------------------------------------------------------------------

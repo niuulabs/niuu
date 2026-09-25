@@ -35,18 +35,43 @@ All events are persisted in a single stream (``sleipnir`` by default) that
 covers all subjects under the configured prefix.  Configurable retention
 policies: ``limits`` (default), ``interest``, ``workqueue``.
 
+Delivery guarantee
+------------------
+JetStream subscriptions are **at-least-once**; handlers must be idempotent.
+A message is acknowledged only after the subscriber's handler has returned.
+If the handler raises, the message is nak'd with a delay from ``nak_backoff_s``
+and JetStream redelivers it.  After ``max_deliver`` failed deliveries it is
+published to ``{prefix}.system.dlq.message`` and terminated.  It is never
+acked unless it was handled or dead-lettered.  While a message waits in the
+subscription's bounded queue or runs in its handler, the subscriber sends
+in-progress pings every ``ack_progress_interval_s``.  Slow handling therefore
+never triggers redelivery, but a crashed process stops pinging, and JetStream
+redelivers after ``ack_wait_s``.  A full queue blocks the NATS callback and
+withholds acks, and ``max_ack_pending`` stops JetStream pushing more.  Nothing
+is dropped to make room.
+
+Core NATS subscriptions (``core_subscriptions`` or ``stream_name: core``)
+have no server-side log and no acks, so they are at-most-once.
+
 Consumer groups
 ---------------
 Pass ``consumer_group`` to :class:`NatsSubscriber` (or :class:`NatsTransport`)
-to create a durable, queue-group consumer.  Multiple replicas sharing the same
-group name receive each message exactly once, distributing load across the
-group.
+to create a durable, queue-group consumer.  Replicas sharing the same group
+name split the messages between them: each message goes to one member at a
+time, and to another member if the first fails or dies before acking.
+
+A durable consumer that already exists keeps its server-side ``ack_wait``,
+``max_deliver`` and ``max_ack_pending``.  nats-py binds to it without
+reconfiguring it.  The subscriber enforces ``max_deliver`` and the DLQ itself,
+so dead-lettering works on old durables too.  Apply the other settings with
+``nats consumer edit`` or by recreating the durable.
 
 Replay
 ------
 Pass ``replay_from_sequence`` or ``replay_from_time`` to
-:class:`NatsSubscriber` for crash recovery.  On restart the subscriber resumes
-from the specified position in the stream, reprocessing missed events.
+:class:`NatsSubscriber` to choose where a new consumer starts in the stream.
+Recovery from a crash does not depend on it: unacknowledged messages are
+redelivered to a durable consumer group regardless.
 
 Configuration example
 ---------------------
@@ -71,6 +96,7 @@ import logging
 import ssl
 import time
 from collections import deque
+from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -93,9 +119,9 @@ except ImportError:  # pragma: no cover
     _NATS_AVAILABLE = False
 
 from sleipnir.adapters._subscriber_support import (
+    Delivery,
     _BaseSubscription,
-    consume_queue,
-    enqueue_with_overflow,
+    consume_deliveries,
 )
 from sleipnir.adapters.serialization import deserialize, serialize
 from sleipnir.domain import registry
@@ -119,8 +145,23 @@ DEFAULT_MAX_AGE_SECONDS = 7 * 24 * 3600
 #: Default maximum stream size — 1 GiB in bytes.
 DEFAULT_MAX_BYTES = 1024 * 1024 * 1024
 
-#: Per-subscriber in-process ring buffer depth (events).
+#: Per-subscription queue depth (events).  A full queue blocks the NATS
+#: callback and withholds acks; it never drops events.
 DEFAULT_RING_BUFFER_DEPTH = 1000
+
+#: JetStream deliveries of one message before it is dead-lettered.
+DEFAULT_MAX_DELIVER = 5
+
+#: Seconds JetStream waits for an ack or in-progress ping before redelivering.
+DEFAULT_ACK_WAIT_S = 30.0
+
+#: Seconds between in-progress pings for received but unsettled messages.
+#: Must be shorter than the ack wait.
+DEFAULT_ACK_PROGRESS_INTERVAL_S = 10.0
+
+#: Redelivery delay (seconds) after the 1st, 2nd, … failed delivery; the last
+#: entry repeats for any later attempt.
+DEFAULT_NAK_BACKOFF_S: tuple[float, ...] = (1.0, 5.0, 30.0, 60.0)
 
 #: NATS connection timeout in seconds.
 DEFAULT_CONNECT_TIMEOUT_S = 10.0
@@ -446,13 +487,24 @@ def _parse_retention(retention_str: str) -> Any:
 def _decode_nats_message(data: bytes) -> SleipnirEvent | None:
     """Decode a NATS message payload (msgpack-serialised :class:`SleipnirEvent`).
 
-    Returns ``None`` and logs a warning on malformed or undeserializable input.
+    Returns ``None`` and logs the error on malformed or undeserializable input;
+    JetStream callers dead-letter the message.
     """
     try:
         return deserialize(data)
     except Exception:
-        logger.exception("NatsTransport: deserialization failed, message dropped")
+        logger.exception("NatsTransport: deserialization failed")
         return None
+
+
+def _delivery_attempt(msg: Any) -> int:
+    """Return how many times JetStream has delivered *msg* (1 on first delivery)."""
+    return int(msg.metadata.num_delivered)
+
+
+def _stream_sequence(msg: Any) -> int:
+    """Return the sequence number of *msg* in its JetStream stream."""
+    return int(msg.metadata.sequence.stream)
 
 
 async def _ensure_stream(
@@ -790,16 +842,127 @@ class NatsCorePublisher(SleipnirPublisher):
 # ---------------------------------------------------------------------------
 
 
+class _JetStreamDelivery(Delivery):
+    """A JetStream message, acknowledged only once its handler has returned."""
+
+    __slots__ = ("msg", "_subscription")
+
+    def __init__(self, event: SleipnirEvent, msg: Any, subscription: _NatsSubscription) -> None:
+        super().__init__(event)
+        self.msg = msg
+        self._subscription = subscription
+        subscription.unsettled.add(self)
+
+    # Each settlement leaves ``unsettled`` only after it has been sent, so a
+    # cancellation mid-settlement still has the message released on unsubscribe.
+
+    async def ack(self) -> None:
+        await self._subscription.owner._settle(self.msg, "ack")
+        self._subscription.unsettled.discard(self)
+
+    async def nak(self, error: Exception) -> None:
+        await self._subscription.owner._reject(self.msg, error)
+        self._subscription.unsettled.discard(self)
+
+    async def release(self) -> None:
+        """Hand an unhandled message straight back to JetStream (unsubscribe/stop)."""
+        await self._subscription.owner._settle(self.msg, "nak")
+        self._subscription.unsettled.discard(self)
+
+
+class _CoreDelivery(Delivery):
+    """A core NATS message: no server-side log, so nothing to ack or redeliver."""
+
+    __slots__ = ("_owner",)
+
+    def __init__(self, event: SleipnirEvent, owner: NatsSubscriber) -> None:
+        super().__init__(event)
+        self._owner = owner
+
+    async def ack(self) -> None:
+        return None
+
+    async def nak(self, error: Exception) -> None:
+        self._owner._stats["handler_failures"] += 1
+        logger.error(
+            "NatsSubscriber: handler raised for core NATS event %s (%s); core subjects "
+            "are at-most-once, so the event is not redelivered",
+            self.event.event_id,
+            self.event.event_type,
+            exc_info=error,
+        )
+
+
+class _NatsSubscription(_BaseSubscription):
+    """One logical subscription: its NATS subscriptions, queue and unsettled messages.
+
+    Every JetStream message from the moment its callback accepts it until it
+    is settled sits in :attr:`unsettled` and gets an in-progress ping every
+    *progress_interval_s*, so waiting in the queue or a slow handler never
+    exhausts ``ack_wait``.  Unsubscribing hands whatever is still unsettled
+    back to JetStream with an immediate nak.
+    """
+
+    def __init__(
+        self,
+        patterns: list[str],
+        queue: asyncio.Queue[Delivery],
+        task: asyncio.Task[None],
+        remove_fn: Callable[[], None],
+        owner: NatsSubscriber,
+        progress_interval_s: float,
+    ) -> None:
+        super().__init__(patterns, queue, task, remove_fn)
+        self.owner = owner
+        self.nats_subs: list[Any] = []
+        self.unsettled: set[_JetStreamDelivery] = set()
+        self._progress_task = asyncio.create_task(self._report_progress(progress_interval_s))
+
+    async def put(self, delivery: Delivery) -> None:
+        """Queue *delivery* for the handler, waiting while the queue is full."""
+        await self._queue.put(delivery)
+
+    async def _report_progress(self, interval_s: float) -> None:
+        while True:
+            await asyncio.sleep(interval_s)
+            for delivery in list(self.unsettled):
+                await self.owner._settle(delivery.msg, "in_progress")
+
+    async def unsubscribe(self) -> None:
+        if not self.active:
+            return
+        await super().unsubscribe()
+        for nats_sub in self.nats_subs:
+            try:
+                await nats_sub.unsubscribe()
+            except Exception:
+                logger.warning(
+                    "NatsSubscriber: NATS unsubscribe failed; the server drops the "
+                    "interest when the connection closes",
+                    exc_info=True,
+                )
+        self.nats_subs.clear()
+        self._progress_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await self._progress_task
+        for delivery in list(self.unsettled):
+            await delivery.release()
+
+
 class NatsSubscriber(SleipnirSubscriber):
-    """NATS JetStream subscriber with consumer group and replay support.
+    """NATS JetStream subscriber with at-least-once delivery.
 
-    *consumer_group* enables parallel processing across replicas: all
-    instances sharing the same group name receive each message exactly once
-    (load distribution via JetStream queue groups).
+    Each JetStream message is acked only after the handler returns.  A handler
+    that raises gets the message redelivered with backoff, and after
+    *max_deliver* deliveries it is dead-lettered.  Handlers must be idempotent.
+    See the module docstring for the full guarantee.
 
-    *replay_from_sequence* or *replay_from_time* enable crash recovery: on
-    restart the subscriber resumes from the specified position in the stream,
-    reprocessing any events that were missed.
+    *consumer_group* enables parallel processing across replicas: instances
+    sharing the group name split the messages between them (JetStream queue
+    groups), and a message a member failed to ack goes to another member.
+
+    *replay_from_sequence* or *replay_from_time* choose where a new consumer
+    starts reading the stream.
 
     Usage::
 
@@ -845,10 +1008,47 @@ class NatsSubscriber(SleipnirSubscriber):
         proxy_url: str = "",
         extra_subscriptions: list[dict[str, str]] | None = None,
         core_subscriptions: list[str | dict[str, str]] | None = None,
+        max_deliver: int = DEFAULT_MAX_DELIVER,
+        ack_wait_s: float = DEFAULT_ACK_WAIT_S,
+        ack_progress_interval_s: float = DEFAULT_ACK_PROGRESS_INTERVAL_S,
+        max_ack_pending: int | None = None,
+        nak_backoff_s: list[float] | None = None,
     ) -> None:
+        """Create the subscriber (connect with :meth:`start`).
+
+        :param ring_buffer_depth: Events queued per subscription before the
+            NATS callback blocks and acks are withheld.
+        :param max_deliver: Deliveries of one message before it is
+            dead-lettered to ``{subject_prefix}.system.dlq.message``.
+        :param ack_wait_s: Seconds without an ack or in-progress ping before
+            JetStream redelivers — how long a crashed process holds a message.
+        :param ack_progress_interval_s: Seconds between in-progress pings for
+            unsettled messages; must be shorter than *ack_wait_s*.
+        :param max_ack_pending: Unacked messages JetStream may push to one
+            consumer; defaults to *ring_buffer_depth*.
+        :param nak_backoff_s: Redelivery delay after the 1st, 2nd, … failed
+            delivery; the last entry repeats.
+        """
         _require_nats()
         if ring_buffer_depth < 1:
             raise ValueError(f"ring_buffer_depth must be >= 1, got {ring_buffer_depth}")
+        if max_deliver < 1:
+            raise ValueError(f"max_deliver must be >= 1, got {max_deliver}")
+        if ack_wait_s <= 0:
+            raise ValueError(f"ack_wait_s must be > 0, got {ack_wait_s}")
+        if not 0 < ack_progress_interval_s < ack_wait_s:
+            raise ValueError(
+                "ack_progress_interval_s must be > 0 and shorter than ack_wait_s "
+                f"({ack_wait_s}), got {ack_progress_interval_s}"
+            )
+        resolved_max_ack_pending = ring_buffer_depth if max_ack_pending is None else max_ack_pending
+        if resolved_max_ack_pending < 1:
+            raise ValueError(f"max_ack_pending must be >= 1, got {resolved_max_ack_pending}")
+        backoff = list(DEFAULT_NAK_BACKOFF_S if nak_backoff_s is None else nak_backoff_s)
+        if not backoff or any(delay < 0 for delay in backoff):
+            raise ValueError(
+                f"nak_backoff_s must be a non-empty list of delays >= 0, got {nak_backoff_s}"
+            )
         self._servers = servers or DEFAULT_SERVERS
         self._stream_name = stream_name
         self._subject_prefix = subject_prefix
@@ -860,6 +1060,12 @@ class NatsSubscriber(SleipnirSubscriber):
         self._replay_from_sequence = replay_from_sequence
         self._replay_from_time = replay_from_time
         self._ring_buffer_depth = ring_buffer_depth
+        self._max_deliver = max_deliver
+        self._ack_wait_s = ack_wait_s
+        self._ack_progress_interval_s = ack_progress_interval_s
+        self._max_ack_pending = resolved_max_ack_pending
+        self._nak_backoff_s = backoff
+        self._dlq_subject = _nats_subject_for_event(registry.SYSTEM_DLQ_MESSAGE, subject_prefix)
         self._connect_timeout_s = connect_timeout_s
         self._max_reconnect_attempts = max_reconnect_attempts
         self._ensure_stream = ensure_stream
@@ -906,15 +1112,17 @@ class NatsSubscriber(SleipnirSubscriber):
         ]
         self._client: Any = None
         self._js: Any = None
-        self._nats_subs: list[Any] = []
-        self._subscriptions: list[_BaseSubscription] = []
+        self._subscriptions: list[_NatsSubscription] = []
         self._running = False
         self._stats: dict[str, int] = {
             "ack_failures": 0,
+            "nak_failures": 0,
+            "term_failures": 0,
+            "in_progress_failures": 0,
+            "handler_failures": 0,
             "decode_failures": 0,
             "dlq_published": 0,
             "dlq_publish_failures": 0,
-            "ring_buffer_overflows": 0,
         }
 
     def stats(self) -> dict[str, int]:
@@ -951,12 +1159,10 @@ class NatsSubscriber(SleipnirSubscriber):
         )
 
     async def stop(self) -> None:
-        """Unsubscribe all NATS subscriptions and close the connection."""
+        """Unsubscribe everything, hand unsettled messages back, and close the connection."""
         self._running = False
-        for nats_sub in self._nats_subs:
-            with suppress(Exception):
-                await nats_sub.unsubscribe()
-        self._nats_subs.clear()
+        for sub in list(self._subscriptions):
+            await sub.unsubscribe()
         if self._client is not None:
             with suppress(Exception):
                 await self._client.drain()
@@ -981,16 +1187,29 @@ class NatsSubscriber(SleipnirSubscriber):
         if self._js is None:
             raise RuntimeError("NatsSubscriber is not started. Call start() first.")
 
-        queue: asyncio.Queue[SleipnirEvent] = asyncio.Queue(maxsize=self._ring_buffer_depth)
-        consumer_task = asyncio.create_task(consume_queue(queue, handler))
-        sub = _BaseSubscription(
+        queue: asyncio.Queue[Delivery] = asyncio.Queue(maxsize=self._ring_buffer_depth)
+        consumer_task = asyncio.create_task(consume_deliveries(queue, handler))
+        sub = _NatsSubscription(
             list(event_types),
             queue,
             consumer_task,
             lambda: self._remove_subscription(sub),
+            owner=self,
+            progress_interval_s=self._ack_progress_interval_s,
         )
         self._subscriptions.append(sub)
+        try:
+            await self._attach_nats_subscriptions(sub, event_types)
+        except BaseException:
+            await sub.unsubscribe()
+            raise
+        return sub
 
+    async def _attach_nats_subscriptions(
+        self,
+        sub: _NatsSubscription,
+        event_types: list[str],
+    ) -> None:
         core_only = self._stream_name.lower() == "core"
         subscriptions = []
         if not core_only:
@@ -1023,27 +1242,25 @@ class NatsSubscriber(SleipnirSubscriber):
                 self._build_consumer_config(),
                 stream_name=stream_name,
             )
-            self._nats_subs.append(nats_sub)
+            sub.nats_subs.append(nats_sub)
 
         core_subjects = list(self._core_subscriptions)
         if core_only:
             core_subjects.extend(_nats_subjects_for_patterns(event_types, self._subject_prefix))
         for subject in dict.fromkeys(core_subjects):
             nats_sub = await self._create_core_subscription(subject, event_types, sub)
-            self._nats_subs.append(nats_sub)
-
-        return sub
+            sub.nats_subs.append(nats_sub)
 
     async def _create_core_subscription(
         self,
         subject: str,
         patterns: list[str],
-        sub: _BaseSubscription,
+        sub: _NatsSubscription,
     ) -> Any:
-        """Create a core NATS subscription for live control subjects."""
+        """Create a core NATS subscription for live control subjects (at-most-once)."""
 
         async def _on_message(msg: Any) -> None:
-            if not self._running:
+            if not self._running or not sub.active:
                 return
             event = _decode_nats_message(msg.data)
             if event is None:
@@ -1053,11 +1270,7 @@ class NatsSubscriber(SleipnirSubscriber):
                 return
             if not any(match_event_type(p, event.event_type) for p in patterns):
                 return
-            overflowed = await enqueue_with_overflow(
-                sub._queue, event, self._ring_buffer_depth, logger
-            )
-            if overflowed:
-                self._stats["ring_buffer_overflows"] += 1
+            await sub.put(_CoreDelivery(event, self))
 
         return await self._client.subscribe(subject, cb=_on_message)
 
@@ -1065,44 +1278,44 @@ class NatsSubscriber(SleipnirSubscriber):
         self,
         subject: str,
         patterns: list[str],
-        sub: _BaseSubscription,
+        sub: _NatsSubscription,
         config: Any,
         stream_name: str | None = None,
     ) -> Any:
-        """Create a JetStream push subscription for *subject*."""
+        """Create a JetStream push subscription for *subject*.
+
+        The callback only queues the message; the subscription's consumer
+        loop acks it after the handler returns.  Messages the subscriber
+        deliberately ignores (expired TTL, a pattern this subscription does
+        not match) are acked here.  A message that arrives while stopping is
+        left unacked, and JetStream redelivers it.
+        """
 
         async def _on_message(msg: Any) -> None:
-            try:
-                if not self._running:
-                    return
-                event = _decode_nats_message(msg.data)
-                if event is None:
-                    self._stats["decode_failures"] += 1
-                    await self._publish_dlq(msg, reason="deserialization failed")
-                    return
-                if event.ttl is not None and event.ttl <= 0:
-                    return
-                if not any(match_event_type(p, event.event_type) for p in patterns):
-                    return
-                overflowed = await enqueue_with_overflow(
-                    sub._queue, event, self._ring_buffer_depth, logger
+            if not self._running or not sub.active:
+                return
+            event = _decode_nats_message(msg.data)
+            if event is None:
+                self._stats["decode_failures"] += 1
+                await self._dead_letter(
+                    msg, reason="deserialization failed", attempt=_delivery_attempt(msg)
                 )
-                if overflowed:
-                    self._stats["ring_buffer_overflows"] += 1
-            finally:
-                try:
-                    await msg.ack()
-                except Exception:
-                    self._stats["ack_failures"] += 1
-                    logger.warning(
-                        "NatsSubscriber: ack failed for subject=%s "
-                        "(message will be redelivered); ack_failures=%d",
-                        getattr(msg, "subject", "?"),
-                        self._stats["ack_failures"],
-                        exc_info=True,
-                    )
+                return
+            if event.ttl is not None and event.ttl <= 0:
+                await self._settle(msg, "ack")
+                return
+            if not any(match_event_type(p, event.event_type) for p in patterns):
+                await self._settle(msg, "ack")
+                return
+            await sub.put(_JetStreamDelivery(event, msg, sub))
 
-        kwargs: dict[str, Any] = {"stream": stream_name or self._stream_name, "config": config}
+        kwargs: dict[str, Any] = {
+            "stream": stream_name or self._stream_name,
+            "config": config,
+            # nats-py otherwise acks every message as soon as this callback
+            # returns — after queueing, before the handler has run.
+            "manual_ack": True,
+        }
         if self._consumer_group is not None:
             durable = _durable_name_for_subject(self._consumer_group, subject)
             kwargs["durable"] = durable
@@ -1110,22 +1323,109 @@ class NatsSubscriber(SleipnirSubscriber):
 
         return await self._js.subscribe(subject, cb=_on_message, **kwargs)
 
-    async def _publish_dlq(self, msg: Any, *, reason: str) -> None:
-        """Dead-letter an unprocessable message instead of dropping it.
+    async def _settle(self, msg: Any, op: str, **kwargs: float) -> None:
+        """Send one JetStream acknowledgement: ``ack``, ``nak``, ``term`` or ``in_progress``.
+
+        An acknowledgement that fails to send leaves the message unacked.
+        JetStream answers that with a redelivery after ``ack_wait``, which is
+        a duplicate, not a loss.  So the failure is counted and logged here
+        rather than raised into the consumer loop.
+        """
+        try:
+            await getattr(msg, op)(**kwargs)
+        except Exception:
+            counter = f"{op}_failures"
+            self._stats[counter] += 1
+            logger.warning(
+                "NatsSubscriber: %s failed for subject=%s (JetStream redelivers the "
+                "message after ack_wait); %s=%d",
+                op,
+                getattr(msg, "subject", "?"),
+                counter,
+                self._stats[counter],
+                exc_info=True,
+            )
+
+    def _nak_delay(self, attempt: int) -> float:
+        """Redelivery delay after failed delivery number *attempt* (1-based)."""
+        return self._nak_backoff_s[min(attempt, len(self._nak_backoff_s)) - 1]
+
+    async def _reject(self, msg: Any, error: Exception) -> None:
+        """The handler raised: nak for a delayed redelivery, or dead-letter when exhausted."""
+        self._stats["handler_failures"] += 1
+        attempt = _delivery_attempt(msg)
+        if attempt < self._max_deliver:
+            delay = self._nak_delay(attempt)
+            logger.warning(
+                "NatsSubscriber: handler raised for subject=%s (delivery %d of %d); "
+                "redelivering in %.1fs",
+                getattr(msg, "subject", "?"),
+                attempt,
+                self._max_deliver,
+                delay,
+                exc_info=error,
+            )
+            await self._settle(msg, "nak", delay=delay)
+            return
+        logger.error(
+            "NatsSubscriber: handler raised for subject=%s on its final delivery "
+            "(%d of %d); dead-lettering",
+            getattr(msg, "subject", "?"),
+            attempt,
+            self._max_deliver,
+            exc_info=error,
+        )
+        await self._dead_letter(
+            msg,
+            reason=f"handler failed after {attempt} deliveries: {error!r}",
+            attempt=attempt,
+        )
+
+    async def _dead_letter(self, msg: Any, *, reason: str, attempt: int) -> None:
+        """Move an unprocessable message to the DLQ, then terminate it.
+
+        A message is terminated only once its DLQ record is safely published.
+        If the DLQ publish fails, the message is nak'd with backoff, so the
+        dead-lettering is retried on redelivery.  A DLQ record that cannot be
+        processed itself is terminated without another DLQ record, which would
+        loop.  It stays in the stream at the logged sequence.
+        """
+        subject = str(getattr(msg, "subject", "") or "")
+        if subject == self._dlq_subject:
+            logger.error(
+                "NatsSubscriber: DLQ record on %s (stream sequence %s) cannot be "
+                "processed (%s); terminating it — it remains in the stream",
+                subject,
+                _stream_sequence(msg),
+                reason,
+            )
+            await self._settle(msg, "term")
+            return
+        if await self._publish_dlq(msg, reason=reason, attempt=attempt):
+            await self._settle(msg, "term")
+            return
+        delay = self._nak_delay(attempt)
+        logger.error(
+            "NatsSubscriber: could not dead-letter the message on %s (stream sequence %s, "
+            "delivery %d of %d); nak so it is retried in %.1fs. If JetStream has "
+            "already reached max_deliver for this consumer it stops redelivering and "
+            "the message stays in the stream at that sequence",
+            subject,
+            _stream_sequence(msg),
+            attempt,
+            self._max_deliver,
+            delay,
+        )
+        await self._settle(msg, "nak", delay=delay)
+
+    async def _publish_dlq(self, msg: Any, *, reason: str, attempt: int) -> bool:
+        """Publish a DLQ record for *msg*; return whether it was published.
 
         The record is itself a valid Sleipnir event (``system.dlq.message``)
         carrying the raw bytes base64-encoded, published under the configured
-        prefix so the main stream retains it. DLQ records are never
-        dead-lettered again — a poison DLQ entry is dropped with an error log.
+        prefix so the main stream retains it.
         """
         subject = str(getattr(msg, "subject", "") or "")
-        dlq_subject = _nats_subject_for_event(registry.SYSTEM_DLQ_MESSAGE, self._subject_prefix)
-        if subject == dlq_subject:
-            logger.error(
-                "NatsSubscriber: DLQ record on %s is itself unprocessable; dropping",
-                subject,
-            )
-            return
         import base64  # noqa: PLC0415
 
         record = SleipnirEvent(
@@ -1135,6 +1435,8 @@ class NatsSubscriber(SleipnirSubscriber):
                 "reason": reason,
                 "original_subject": subject,
                 "stream": self._stream_name,
+                "stream_sequence": _stream_sequence(msg),
+                "deliveries": attempt,
                 "raw_base64": base64.b64encode(bytes(msg.data)).decode("ascii"),
                 "raw_bytes": len(msg.data),
             },
@@ -1144,41 +1446,49 @@ class NatsSubscriber(SleipnirSubscriber):
             timestamp=datetime.now(UTC),
         )
         try:
-            await self._js.publish(dlq_subject, serialize(record))
-            self._stats["dlq_published"] += 1
+            await self._js.publish(self._dlq_subject, serialize(record))
         except Exception:
             self._stats["dlq_publish_failures"] += 1
             logger.exception(
-                "NatsSubscriber: failed to dead-letter message from %s; "
-                "raw payload is lost after ack",
+                "NatsSubscriber: failed to publish the DLQ record for %s; the message "
+                "stays unacked",
                 subject,
             )
+            return False
+        self._stats["dlq_published"] += 1
+        return True
 
     def _build_consumer_config(self) -> Any:
         """Build the :class:`~nats.js.api.ConsumerConfig` for this subscriber.
+
+        Every consumer uses explicit acks, ``ack_wait``, ``max_deliver`` and
+        ``max_ack_pending`` from this subscriber.  The deliver policy:
 
         - *replay_from_sequence* → ``DeliverPolicy.BY_START_SEQUENCE``
         - *replay_from_time* → ``DeliverPolicy.BY_START_TIME``
         - Otherwise → ``DeliverPolicy.NEW`` (only future messages)
         """
+        settlement = {
+            "ack_policy": js_api.AckPolicy.EXPLICIT,
+            "ack_wait": self._ack_wait_s,
+            "max_deliver": self._max_deliver,
+            "max_ack_pending": self._max_ack_pending,
+        }
         if self._replay_from_sequence is not None:
             return js_api.ConsumerConfig(
                 deliver_policy=js_api.DeliverPolicy.BY_START_SEQUENCE,
                 opt_start_seq=self._replay_from_sequence,
-                ack_policy=js_api.AckPolicy.EXPLICIT,
+                **settlement,
             )
         if self._replay_from_time is not None:
             return js_api.ConsumerConfig(
                 deliver_policy=js_api.DeliverPolicy.BY_START_TIME,
                 opt_start_time=self._replay_from_time,
-                ack_policy=js_api.AckPolicy.EXPLICIT,
+                **settlement,
             )
-        return js_api.ConsumerConfig(
-            deliver_policy=js_api.DeliverPolicy.NEW,
-            ack_policy=js_api.AckPolicy.EXPLICIT,
-        )
+        return js_api.ConsumerConfig(deliver_policy=js_api.DeliverPolicy.NEW, **settlement)
 
-    def _remove_subscription(self, sub: _BaseSubscription) -> None:
+    def _remove_subscription(self, sub: _NatsSubscription) -> None:
         with suppress(ValueError):
             self._subscriptions.remove(sub)
 
@@ -1236,6 +1546,11 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
         proxy_url: str = "",
         extra_subscriptions: list[dict[str, str]] | None = None,
         core_subscriptions: list[str | dict[str, str]] | None = None,
+        max_deliver: int = DEFAULT_MAX_DELIVER,
+        ack_wait_s: float = DEFAULT_ACK_WAIT_S,
+        ack_progress_interval_s: float = DEFAULT_ACK_PROGRESS_INTERVAL_S,
+        max_ack_pending: int | None = None,
+        nak_backoff_s: list[float] | None = None,
     ) -> None:
         _require_nats()
         self._publisher = NatsPublisher(
@@ -1296,6 +1611,11 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             proxy_url=proxy_url,
             extra_subscriptions=extra_subscriptions,
             core_subscriptions=core_subscriptions,
+            max_deliver=max_deliver,
+            ack_wait_s=ack_wait_s,
+            ack_progress_interval_s=ack_progress_interval_s,
+            max_ack_pending=max_ack_pending,
+            nak_backoff_s=nak_backoff_s,
         )
 
     async def start(self) -> None:
@@ -1358,9 +1678,13 @@ class NatsBridgeAdapter(SleipnirPublisher, SleipnirSubscriber):
     **Publishing**: events are forwarded to *both* the local transport and the
     NATS cluster so that both local and remote consumers receive them.
 
-    **Subscribing**: the bridge subscribes to both transports and deduplicates
-    by *event_id* so that each logical event is delivered to handlers exactly
-    once, regardless of which transport delivered it first.
+    **Subscribing**: the bridge subscribes to both transports and skips an
+    event whose *event_id* a handler has already processed successfully, so
+    the copy arriving over the second transport is normally suppressed.  An
+    event is only recorded as seen once its handler has returned: a failed
+    attempt must not suppress the redelivery that retries it.  Two copies
+    that arrive while the first is still being handled both reach the
+    handler, so this is still at-least-once and handlers must be idempotent.
 
     The deduplication cache is bounded to *dedup_cache_size* entries.  When
     full, the oldest entry is evicted (LRU semantics).
@@ -1409,13 +1733,13 @@ class NatsBridgeAdapter(SleipnirPublisher, SleipnirSubscriber):
         event_types: list[str],
         handler: EventHandler,
     ) -> Subscription:
-        """Subscribe to both transports, delivering each event exactly once."""
+        """Subscribe to both transports, skipping events already handled successfully."""
 
         async def _dedup_handler(event: SleipnirEvent) -> None:
             if self._dedup.is_seen(event.event_id):
                 return
-            self._dedup.mark_seen(event.event_id)
             await handler(event)
+            self._dedup.mark_seen(event.event_id)
 
         local_sub = await self._local_sub.subscribe(event_types, _dedup_handler)
         nats_sub = await self._nats_sub.subscribe(event_types, _dedup_handler)

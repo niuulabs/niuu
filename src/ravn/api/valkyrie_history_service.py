@@ -140,6 +140,8 @@ class ValkyrieHistoryService:
 
     async def _ingest_decision(self, record: dict[str, Any]) -> None:
         await self._store.record_decision(record)
+        if self._review_service is None:
+            return
         if not decision_requires_review(
             record,
             attention_tiers=self._review_attention_tiers,
@@ -147,9 +149,10 @@ class ValkyrieHistoryService:
         ):
             return
         item = review_item_for_judgment(record)
-        filed = await self._file_pending_review(item)
-        if filed:
-            await self._store.link_review_item(str(record["decisionId"]), item.item_id)
+        await self._file_pending_review(item)
+        # Link even when the item was already on file: a redelivery after the
+        # link failed finds the item filed and must still complete the link.
+        await self._store.link_review_item(str(record["decisionId"]), item.item_id)
 
     async def _ingest_action(self, record: dict[str, Any]) -> None:
         await self._store.record_action(record)

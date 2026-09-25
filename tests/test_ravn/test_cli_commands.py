@@ -52,6 +52,7 @@ from ravn.domain.models import (
     ToolResult,
     TurnResult,
 )
+from ravn.domain.permission_mode import PermissionMode
 from ravn.domain.profile import RavnProfile
 from ravn.ports.warden_deployer import WardenDeploymentError, WardenDeploymentResult
 from ravn.warden import WardenSpec, WardenStore
@@ -1631,7 +1632,11 @@ class TestDaemonAgentFactory:
         ]
         publish_inventory.assert_called_once_with(settings, Path("/tmp/workspace"))
         assert recorded[0]["prompt_builder"] is not recorded[1]["prompt_builder"]
-        assert [call["permission_mode"] for call in recorded] == ["read-only", "read-only"]
+        # The executor receives the parsed mode, the same one the enforcer uses.
+        assert [call["permission_mode"] for call in recorded] == [
+            PermissionMode.READ_ONLY,
+            PermissionMode.READ_ONLY,
+        ]
         assert recorded[0]["mcp_servers"] == [
             {
                 "name": "mimir-local",

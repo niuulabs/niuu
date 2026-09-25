@@ -534,6 +534,48 @@ async def test_review_required_judgment_lands_in_inbox_once(tmp_path: Any) -> No
     assert stored["reviewItemId"] == item.item_id
 
 
+class _LinkFailsOnceStore(InMemoryValkyrieHistoryStore):
+    """History store whose first review link fails, like a dropped connection."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.link_attempts = 0
+
+    async def link_review_item(self, decision_id: str, review_item_id: str) -> None:
+        self.link_attempts += 1
+        if self.link_attempts == 1:
+            raise ConnectionError("history store unavailable")
+        await super().link_review_item(decision_id, review_item_id)
+
+
+@pytest.mark.asyncio
+async def test_telemetry_redelivery_completes_a_failed_review_link(tmp_path: Any) -> None:
+    from ravn.api.valkyries import ValkyrieTelemetrySubscription
+
+    reviews = _review_service(tmp_path)
+    store = _LinkFailsOnceStore()
+    history = ValkyrieHistoryService(store, review_service=reviews)
+    telemetry = ValkyrieTelemetrySubscription(
+        projection=ValkyrieDashboardProjection(),
+        subscribers=[],
+        event_types=["*"],
+        history_ingest=history.ingest_event,
+        review_ingest=reviews.ingest_event,
+    )
+    event = _judgment_event(authority="human_review_required")
+
+    # The failure reaches the transport, which naks and redelivers the event.
+    with pytest.raises(ConnectionError, match="history store unavailable"):
+        await telemetry._handle(event)
+    await telemetry._handle(event)
+
+    pending = await reviews.list_items(status=ReviewStatus.PENDING.value)
+    assert [item.item_id for item in pending] == ["review:court_escalation:evt-judgment-1"]
+    stored = await store.get_decision("evt-judgment-1")
+    assert stored is not None
+    assert stored["reviewItemId"] == "review:court_escalation:evt-judgment-1"
+
+
 @pytest.mark.asyncio
 async def test_autonomous_judgment_stays_out_of_inbox(tmp_path: Any) -> None:
     reviews = _review_service(tmp_path)

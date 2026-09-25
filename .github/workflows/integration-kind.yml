@@ -29,6 +29,10 @@
 # Failure handling:
 #   On failure the cluster is always deleted (via the `if: always()` step)
 #   so dangling clusters do not accumulate on self-hosted runners.
+#   A failed or cancelled SCHEDULED run opens a tracking issue labelled
+#   `ci:scheduled-failure` (or comments on the open one). Nobody watches a
+#   weekly run: an unresolvable action pin failed every Monday for months
+#   before anyone noticed.
 # ──────────────────────────────────────────────────────────────────────────
 
 name: Integration (kind)
@@ -122,12 +126,12 @@ jobs:
           kind version
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1381784a5cf4 # v4
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
         with:
           version: "v1.30.0"
 
       - name: Install Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v4
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: "v3.15.0"
 
@@ -181,12 +185,12 @@ jobs:
           kind version
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1381784a5cf4 # v4
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
         with:
           version: "v1.30.0"
 
       - name: Install Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v4
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: "v3.15.0"
 
@@ -204,3 +208,67 @@ jobs:
           KIND_CLUSTER_NAME: ${{ github.event.inputs.cluster_name || 'niuu-http-integ' }}
         run: |
           kind delete cluster --name "$KIND_CLUSTER_NAME" || true
+
+  # ---------------------------------------------------------------------------
+  # Scheduled-failure report — makes a broken weekly run visible.
+  # cancelled() is included because a job that hits its timeout is reported as
+  # cancelled, not failed.
+  # ---------------------------------------------------------------------------
+  report-scheduled-failure:
+    name: Report scheduled failure
+    needs: [in-process-parity, kind-mounted-volume, kind-http]
+    if: ${{ github.event_name == 'schedule' && (failure() || cancelled()) }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          WORKFLOW_FILE: .github/workflows/integration-kind.yml
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          label="ci:scheduled-failure"
+          title="Scheduled workflow failing: ${WORKFLOW_NAME}"
+          results="$(jq -r 'to_entries[] | "- `\(.key)`: \(.value.result)"' <<<"$JOB_RESULTS")"
+
+          gh label create "$label" --force --color B60205 \
+            --description "A scheduled workflow run failed"
+
+          number="$(gh issue list --state open --label "$label" --limit 100 \
+            --json number,title \
+            | jq -r --arg title "$title" 'map(select(.title == $title)) | first | .number // empty')"
+
+          if [[ -n "$number" ]]; then
+            gh issue comment "$number" --body "$(cat <<EOF
+          Failed again: ${RUN_URL} (\`${HEAD_SHA:0:7}\`)
+
+          ${results}
+          EOF
+          )"
+            echo "Commented on #${number}"
+            exit 0
+          fi
+
+          gh issue create --title "$title" --label "$label" --body "$(cat <<EOF
+          The scheduled run of \`${WORKFLOW_FILE}\` failed.
+
+          Run: ${RUN_URL}
+          Commit: \`${HEAD_SHA}\`
+
+          ${results}
+
+          Every further failing scheduled run adds a comment here. Close this
+          issue once a run is green again.
+          EOF
+          )"

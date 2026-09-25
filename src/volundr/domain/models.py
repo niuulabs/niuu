@@ -865,6 +865,14 @@ class Chronicle(BaseModel):
         default=None,
         description="Parent chronicle ID for reforge chains",
     )
+    owner_id: str | None = Field(
+        default=None,
+        description="Owner of the session that produced this chronicle",
+    )
+    tenant_id: str | None = Field(
+        default=None,
+        description="Tenant of the session that produced this chronicle",
+    )
     created_at: datetime = Field(
         default_factory=_utc_now,
         description="Timestamp when the chronicle was created",

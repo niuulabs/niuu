@@ -9,6 +9,7 @@ import pytest
 from volundr.domain.models import (
     EventType,
     GitSource,
+    Principal,
     Session,
     SessionActivityState,
     SessionStatus,
@@ -172,6 +173,43 @@ class TestUpdateActivity:
         assert len(activity_events) == 1
         assert activity_events[0].data["state"] == "active"
         assert activity_events[0].data["session_id"] == str(session.id)
+
+    @pytest.mark.asyncio
+    async def test_session_events_carry_owner_and_tenant_for_stream_scoping(
+        self, service, broadcaster
+    ):
+        """Activity, needs-input and delete events name the session's owner/tenant."""
+        owner = Principal(user_id="alice", email="", tenant_id="t1", roles=[])
+        session = await service.create_session(
+            name="Scoped",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+            principal=owner,
+        )
+        broadcaster._events.clear()
+
+        await service.update_activity(
+            session.id,
+            SessionActivityState.AWAITING_INPUT,
+            {"kind": "question", "prompt": "Which DB?", "request_id": "askq-9"},
+        )
+        await service.delete_session(session.id, principal=owner)
+
+        scoped = {
+            e.type: (e.data["owner_id"], e.data["tenant_id"])
+            for e in broadcaster._events
+            if e.type
+            in (
+                EventType.SESSION_ACTIVITY,
+                EventType.SESSION_NEEDS_INPUT,
+                EventType.SESSION_DELETED,
+            )
+        }
+        assert scoped == {
+            EventType.SESSION_ACTIVITY: ("alice", "t1"),
+            EventType.SESSION_NEEDS_INPUT: ("alice", "t1"),
+            EventType.SESSION_DELETED: ("alice", "t1"),
+        }
 
     @pytest.mark.asyncio
     async def test_awaiting_input_emits_needs_input_event(self, service, broadcaster):

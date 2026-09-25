@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Path, Query, Response, status
 from pydantic import BaseModel, Field
 
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter, PersonaConfig
+from ravn.domain.permission_mode import parse_optional_permission_mode
 from ravn.domain.persona_document import PersonaDocumentError, PortablePersonaDefinition
 from ravn.ports.persona import PersonaRegistryPort
 
@@ -60,7 +61,10 @@ class PersonaSummary(BaseModel):
 
     name: str = Field(description="Unique persona name")
     permission_mode: str = Field(
-        description="Permission mode (e.g. 'read-only', 'workspace-write')",
+        description=(
+            "Permission mode as authored (e.g. 'read-only' or 'read_only'); "
+            "empty when the persona defers to the configured default"
+        ),
     )
     allowed_tools: list[str] = Field(description="Explicitly allowed tool groups")
     iteration_budget: int = Field(description="Maximum agent iterations (0 = unlimited)")
@@ -261,6 +265,17 @@ class ErrorResponse(BaseModel):
 _VALID_FAN_IN_STRATEGIES = {"all_must_pass", "any_pass", "majority", "merge"}
 
 
+def _persona_config_from_request(data: PersonaCreate) -> PersonaConfig:
+    """Build the PersonaConfig for a write, rejecting an unknown permission mode."""
+    try:
+        return data.to_persona_config()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+
+
 def create_personas_router(loader: PersonaRegistryPort) -> APIRouter:
     """Create FastAPI router for Ravn persona endpoints."""
     router = APIRouter(prefix="/api/v1/ravn")
@@ -311,6 +326,11 @@ def create_personas_router(loader: PersonaRegistryPort) -> APIRouter:
                 f"Invalid fan_in_strategy '{data.fan_in_strategy}'. "
                 f"Must be one of: {', '.join(sorted(_VALID_FAN_IN_STRATEGIES))}"
             )
+
+        try:
+            parse_optional_permission_mode(data.permission_mode)
+        except ValueError as exc:
+            errors.append(str(exc))
 
         return PersonaValidateResponse(valid=not errors, errors=errors)
 
@@ -437,7 +457,7 @@ def create_personas_router(loader: PersonaRegistryPort) -> APIRouter:
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Persona already exists as built-in: {data.name}",
             )
-        config = data.to_persona_config()
+        config = _persona_config_from_request(data)
         loader.save(config)
         saved = loader.load(data.name)
         if saved is None:
@@ -460,7 +480,7 @@ def create_personas_router(loader: PersonaRegistryPort) -> APIRouter:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Persona not found: {name}",
             )
-        config = _dc_replace(data.to_persona_config(), name=name)
+        config = _dc_replace(_persona_config_from_request(data), name=name)
         loader.save(config)
         saved = loader.load(name)
         if saved is None:

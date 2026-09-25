@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from ravn.adapters.tools.persona_tools import PersonaSaveTool, PersonaValidateTool
 
 # ---------------------------------------------------------------------------
@@ -93,12 +95,20 @@ class TestPersonaValidateTool:
         result = _run(self.tool.execute({"yaml_content": "   \n  "}))
         assert result.is_error
 
-    def test_unknown_permission_mode_returns_warning(self):
+    def test_unknown_permission_mode_returns_error(self):
         yaml_unknown_perm = "name: x\nsystem_prompt_template: hi\npermission_mode: superuser\n"
         result = _run(self.tool.execute({"yaml_content": yaml_unknown_perm}))
-        assert not result.is_error
+        assert result.is_error
         assert "superuser" in result.content
-        assert "warning" in result.content.lower() or "⚠" in result.content
+        assert "read-only" in result.content
+        assert "read_only" in result.content
+
+    @pytest.mark.parametrize("mode", ["read-only", "read_only", "workspace_write", "prompt"])
+    def test_either_permission_mode_spelling_is_accepted(self, mode: str):
+        yaml_mode = f"name: x\nsystem_prompt_template: hi\npermission_mode: {mode}\n"
+        result = _run(self.tool.execute({"yaml_content": yaml_mode}))
+        assert not result.is_error
+        assert "permission_mode" not in result.content
 
     def test_empty_system_prompt_returns_warning(self):
         yaml_no_prompt = "name: x\npermission_mode: read-only\n"
@@ -179,18 +189,20 @@ class TestPersonaValidateTool:
         assert "verdict" in result.content
 
     def test_errors_and_warnings_shown_together(self):
-        # Invalid fan_in strategy (error) + unknown permission_mode (warning)
+        # Invalid fan_in strategy (error) + unknown llm alias (warning)
         yaml_both = (
             "name: x\n"
             "system_prompt_template: hi\n"
-            "permission_mode: super-mode\n"
+            "llm:\n"
+            "  primary_alias: exotic\n"
             "fan_in:\n"
             "  strategy: bad_strat\n"
         )
         result = _run(self.tool.execute({"yaml_content": yaml_both}))
         assert result.is_error
         assert "bad_strat" in result.content
-        assert "super-mode" in result.content
+        assert "exotic" in result.content
+        assert "⚠" in result.content
 
     def test_produces_with_no_schema_dict_branch(self):
         # produces section with schema: null — branch 101->121 not taken in loop
@@ -288,16 +300,25 @@ class TestPersonaSaveTool:
         assert not list(tmp_path.glob("*.yaml"))
 
     def test_save_with_warnings_shows_them(self, tmp_path: Path):
-        # Persona with unknown permission_mode → saves but shows warning
+        # Persona with unknown llm alias → saves but shows warning
         yaml_with_warning = (
-            "name: warn-persona\nsystem_prompt_template: hi\npermission_mode: super-mode\n"
+            "name: warn-persona\nsystem_prompt_template: hi\nllm:\n  primary_alias: turbo\n"
         )
         result = _run(
             self.tool.execute({"yaml_content": yaml_with_warning, "directory": str(tmp_path)})
         )
         assert not result.is_error
         assert "warn-persona" in result.content
-        assert "super-mode" in result.content or "⚠" in result.content
+        assert "turbo" in result.content or "⚠" in result.content
+
+    def test_save_refuses_unknown_permission_mode(self, tmp_path: Path):
+        yaml_bad_mode = "name: bad-mode\nsystem_prompt_template: hi\npermission_mode: super-mode\n"
+        result = _run(
+            self.tool.execute({"yaml_content": yaml_bad_mode, "directory": str(tmp_path)})
+        )
+        assert result.is_error
+        assert "super-mode" in result.content
+        assert not list(tmp_path.glob("*.yaml"))
 
     def test_name_and_description_properties(self):
         assert self.tool.name == "persona_save"

@@ -265,6 +265,9 @@ class InMemoryChronicleRepository(ChronicleRepository):
 
     async def list(
         self,
+        *,
+        tenant_id: str | None,
+        owner_id: str | None,
         project: str | None = None,
         repo: str | None = None,
         model: str | None = None,
@@ -274,6 +277,10 @@ class InMemoryChronicleRepository(ChronicleRepository):
     ) -> list[Chronicle]:
         results = list(self._chronicles.values())
 
+        if tenant_id is not None:
+            results = [c for c in results if c.tenant_id and c.tenant_id == tenant_id]
+        if owner_id is not None:
+            results = [c for c in results if c.owner_id and c.owner_id == owner_id]
         if project is not None:
             results = [c for c in results if c.project == project]
         if repo is not None:
@@ -449,8 +456,10 @@ class InMemoryStatsRepository(StatsRepository):
             sessions_today=sessions_today,
             sparklines=sparklines,
         )
+        self.scopes: list[tuple[str | None, str | None]] = []
 
-    async def get_stats(self) -> Stats:
+    async def get_stats(self, *, tenant_id: str | None, owner_id: str | None) -> Stats:
+        self.scopes.append((tenant_id, owner_id))
         return self._stats
 
     def set_stats(
@@ -761,7 +770,7 @@ class MockEventBroadcaster(EventBroadcaster):
         self._session_created_events: list[Session] = []
         self._session_updated_events: list[Session] = []
         self._session_deleted_events: list[UUID] = []
-        self._stats_events: list[Stats] = []
+        self._stats_tick_count: int = 0
         self._heartbeat_count: int = 0
 
     async def publish(self, event: RealtimeEvent) -> None:
@@ -779,7 +788,11 @@ class MockEventBroadcaster(EventBroadcaster):
         await self.publish(
             RealtimeEvent(
                 type=EventType.SESSION_CREATED,
-                data={"id": str(session.id)},
+                data={
+                    "id": str(session.id),
+                    "owner_id": session.owner_id,
+                    "tenant_id": session.tenant_id,
+                },
                 timestamp=datetime.now(UTC),
             )
         )
@@ -790,31 +803,37 @@ class MockEventBroadcaster(EventBroadcaster):
         await self.publish(
             RealtimeEvent(
                 type=EventType.SESSION_UPDATED,
-                data={"id": str(session.id)},
+                data={
+                    "id": str(session.id),
+                    "owner_id": session.owner_id,
+                    "tenant_id": session.tenant_id,
+                },
                 timestamp=datetime.now(UTC),
             )
         )
 
-    async def publish_session_deleted(self, session_id: UUID) -> None:
+    async def publish_session_deleted(
+        self,
+        session_id: UUID,
+        *,
+        owner_id: str | None,
+        tenant_id: str | None,
+    ) -> None:
         """Record a session deleted event."""
         self._session_deleted_events.append(session_id)
         await self.publish(
             RealtimeEvent(
                 type=EventType.SESSION_DELETED,
-                data={"id": str(session_id)},
+                data={"id": str(session_id), "owner_id": owner_id, "tenant_id": tenant_id},
                 timestamp=datetime.now(UTC),
             )
         )
 
-    async def publish_stats(self, stats: Stats) -> None:
-        """Record a stats event."""
-        self._stats_events.append(stats)
+    async def publish_stats_tick(self) -> None:
+        """Record a figure-less stats tick."""
+        self._stats_tick_count += 1
         await self.publish(
-            RealtimeEvent(
-                type=EventType.STATS_UPDATED,
-                data={"active_sessions": stats.active_sessions},
-                timestamp=datetime.now(UTC),
-            )
+            RealtimeEvent(type=EventType.STATS_UPDATED, data={}, timestamp=datetime.now(UTC))
         )
 
     async def publish_heartbeat(self) -> None:
@@ -833,6 +852,9 @@ class MockEventBroadcaster(EventBroadcaster):
         session_id: UUID,
         event: TimelineEvent,
         timeline: TimelineResponse,
+        *,
+        owner_id: str | None,
+        tenant_id: str | None,
     ) -> None:
         """Record a chronicle event."""
         await self.publish(
@@ -841,6 +863,8 @@ class MockEventBroadcaster(EventBroadcaster):
                 data={
                     "session_id": str(session_id),
                     "event": {"t": event.t, "type": event.type.value},
+                    "owner_id": owner_id,
+                    "tenant_id": tenant_id,
                 },
                 timestamp=datetime.now(UTC),
             )

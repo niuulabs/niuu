@@ -1099,3 +1099,44 @@ def test_cli_executor_leaves_claude_native_tools_enabled_for_coder_persona() -> 
     assert agent._transport_kwargs["skip_permissions"] is True
     assert "read_only_mcp_only" not in agent._transport_kwargs
     assert "allowed_mcp_tools" not in agent._transport_kwargs
+
+
+@pytest.mark.parametrize("permission_mode", ["superuser", "read-onyl"])
+def test_cli_executor_rejects_unknown_permission_mode(permission_mode: str) -> None:
+    """Shares the persona parser: an unrecognised mode is not a writable run."""
+    executor = CliTransportExecutor(transport_adapter="skuld.transports.sdk.SDKTransport")
+
+    with pytest.raises(ValueError, match=f"Unknown permission_mode '{permission_mode}'"):
+        executor.build(
+            channel=_CollectingChannel(),
+            system_prompt="Review only.",
+            session=Session(),
+            model="claude-opus-4-8",
+            max_iterations=3,
+            checkpoint_port=None,
+            task_id="task-unknown-mode",
+            persona="reviewer",
+            workspace_dir="/tmp/workspace",
+            permission_mode=permission_mode,
+            tools=[DummyTool()],
+            mcp_servers=[],
+        )
+
+
+def test_cli_executor_requires_permission_mode() -> None:
+    executor = CliTransportExecutor(transport_adapter="skuld.transports.sdk.SDKTransport")
+
+    with pytest.raises(KeyError, match="permission_mode"):
+        executor.build(
+            channel=_CollectingChannel(),
+            system_prompt="Review only.",
+            session=Session(),
+            model="claude-opus-4-8",
+            max_iterations=3,
+            checkpoint_port=None,
+            task_id="task-missing-mode",
+            persona="reviewer",
+            workspace_dir="/tmp/workspace",
+            tools=[DummyTool()],
+            mcp_servers=[],
+        )

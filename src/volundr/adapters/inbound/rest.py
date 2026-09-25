@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import time
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path as FilePath
 from typing import Any, Literal
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
@@ -71,7 +71,6 @@ from volundr.domain.models import (
     SessionActivityState,
     SessionSource,
     SessionStatus,
-    TimelineEvent,
     TimelineEventType,
     WorkspaceStatus,
 )
@@ -84,6 +83,7 @@ from volundr.domain.ports import (
 )
 from volundr.domain.projects import SessionCoordination
 from volundr.domain.services import (
+    ChronicleAccessDeniedError,
     ChronicleNotFoundError,
     ChronicleService,
     ExternalSessionAlreadyImportedError,
@@ -99,6 +99,7 @@ from volundr.domain.services import (
     SessionAccessDeniedError,
     SessionArchiveNotAvailableError,
     SessionCapacityError,
+    SessionEventStream,
     SessionNotFoundError,
     SessionNotRunningError,
     SessionService,
@@ -1428,18 +1429,21 @@ class TimelineEventCreate(BaseModel):
 
 
 class StatsResponse(BaseModel):
-    """Response model for aggregate statistics."""
+    """Response model for aggregate statistics. "Today" is the current UTC day."""
 
     active_sessions: int = Field(default=0, description="Currently running sessions")
     total_sessions: int = Field(default=0, description="Total sessions (all statuses)")
-    sessions_today: int = Field(default=0, description="Sessions created today")
-    tokens_today: int = Field(default=0, description="Tokens consumed today")
-    local_tokens: int = Field(default=0, description="Tokens from local models today")
-    cloud_tokens: int = Field(default=0, description="Tokens from cloud models today")
-    cost_today: float = Field(default=0.0, description="Total cloud cost today in USD")
+    sessions_today: int = Field(default=0, description="Sessions created today (UTC)")
+    tokens_today: int = Field(default=0, description="Tokens consumed today (UTC)")
+    local_tokens: int = Field(default=0, description="Tokens from local models today (UTC)")
+    cloud_tokens: int = Field(default=0, description="Tokens from cloud models today (UTC)")
+    cost_today: float = Field(default=0.0, description="Total cloud cost today (UTC) in USD")
     sparklines: dict[str, list[float]] = Field(
         default_factory=dict,
-        description="Historical KPI samples for lightweight dashboard sparklines",
+        description=(
+            "Historical KPI samples for lightweight dashboard sparklines; "
+            "sessionsToday holds one count per UTC day, oldest first, ending today"
+        ),
     )
 
 
@@ -1563,6 +1567,14 @@ def create_router(
     router = APIRouter(prefix=prefix)
     if preview_cache is None:
         preview_cache = PreviewCache(_PREVIEW_CACHE_ROOT)
+    event_stream = None
+    if broadcaster is not None:
+        if stats_service is None:
+            raise ValueError(
+                "The session event stream computes stats_updated per subscriber; "
+                "pass stats_service together with broadcaster"
+            )
+        event_stream = SessionEventStream(broadcaster, session_service, stats_service)
 
     def _session_response(session: Session) -> SessionResponse:
         return SessionResponse.from_session(session, public_host=server_public_host)
@@ -1646,6 +1658,27 @@ def create_router(
         from volundr.adapters.outbound.identity import AllowAllIdentityAdapter
 
         return not isinstance(identity, AllowAllIdentityAdapter)
+
+    @contextlib.contextmanager
+    def _chronicle_errors():
+        """Map chronicle scoping and authorization failures onto HTTP statuses.
+
+        History outside the caller's scope is reported as not found, so its
+        existence is not disclosed; history the caller can see but may not
+        change is forbidden.
+        """
+        try:
+            yield
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+        except (ChronicleAccessDeniedError, SessionAccessDeniedError) as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        except (ChronicleNotFoundError, SessionNotFoundError) as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+            ) from exc
 
     if project_service is not None:
 
@@ -1775,7 +1808,13 @@ def create_router(
     )
     async def stream_sessions(
         request: Request,
-        scope: Literal["local", "guild"] = Query(default="local"),
+        scope: Literal["local"] = Query(
+            default="local",
+            description=(
+                "A standalone Forge streams only its own sessions. Guild aggregation "
+                "is served by the Niuu host's /api/v1/forge/sessions/stream."
+            ),
+        ),
     ) -> StreamingResponse:
         """Stream real-time session updates via Server-Sent Events (SSE).
 
@@ -1786,6 +1825,11 @@ def create_router(
         - stats_updated: Periodic stats updates (every 30s)
         - heartbeat: Keep-alive signal (every 30s)
 
+        Session events are scoped like ``GET /sessions``: a caller receives
+        events for its own sessions, or for its tenant's sessions as a tenant
+        admin. ``stats_updated`` carries the figures ``GET /stats`` returns to
+        the same caller.
+
         Events are formatted as SSE:
         ```
         event: session_updated
@@ -1793,12 +1837,18 @@ def create_router(
 
         ```
         """
-        if broadcaster is None:
+        if event_stream is None:
             logger.warning("SSE stream requested but broadcaster is None")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Event streaming not available",
             )
+
+        principal = await _optional_principal(request)
+        try:
+            event_stream.authorize(principal)
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
 
         client_host = request.client.host if request.client else "unknown"
         logger.info("SSE stream: client connected from %s", client_host)
@@ -1806,7 +1856,7 @@ def create_router(
         async def event_generator():
             event_count = 0
             try:
-                async for event in broadcaster.subscribe():
+                async for event in event_stream.subscribe(principal):
                     # Check if client disconnected
                     if await request.is_disconnected():
                         logger.info(
@@ -2044,7 +2094,7 @@ def create_router(
 
         principal = await _optional_principal(request)
         try:
-            await forge.ensure_access(session, principal)
+            await forge.ensure_access(session, principal, "read")
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -2062,7 +2112,7 @@ def create_router(
             raise HTTPException(status_code=404, detail="Session not found")
         principal = await _optional_principal(request)
         try:
-            await forge.ensure_access(session, principal)
+            await forge.ensure_access(session, principal, "read")
         except SessionAccessDeniedError:
             raise HTTPException(status_code=403, detail="Access denied") from None
         result = {"available": runtime_build, "current": None, "state": "unavailable"}
@@ -2578,13 +2628,16 @@ def create_router(
 
     @router.get("/stats", response_model=StatsResponse, tags=["Models & Stats"])
     async def get_stats(request: Request) -> StatsResponse:
-        """Get aggregate statistics for the dashboard."""
-        if _strict_identity_enabled(request):
-            principal = await _optional_principal(request)
-            if principal is None:
-                return StatsResponse()
+        """Get aggregate statistics over the sessions the caller may list.
+
+        Scoped like ``GET /sessions``: the caller's own sessions, or its
+        tenant's sessions as a tenant admin.
+        """
+        principal = await _optional_principal(request)
         try:
-            stats = await forge.get_stats()
+            stats = await forge.get_stats(principal)
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -3433,7 +3486,7 @@ def create_router(
 
         principal = await _optional_principal(request)
         try:
-            await forge.ensure_access(session, principal)
+            await forge.ensure_access(session, principal, "read")
         except SessionAccessDeniedError as exc:
             raise HTTPException(403, f"Access denied to session {session_id}") from exc
 
@@ -4329,6 +4382,8 @@ def create_router(
         response_model=ChronicleResponse,
         status_code=status.HTTP_201_CREATED,
         responses={
+            401: {"model": ErrorResponse},
+            403: {"model": ErrorResponse},
             404: {"model": ErrorResponse},
             503: {"model": ErrorResponse},
         },
@@ -4343,43 +4398,34 @@ def create_router(
 
         Creates a new DRAFT chronicle or enriches an existing one.
         Mirrors the ``/sessions/{id}/usage`` pattern for token reporting.
+        The caller must be allowed ``report_chronicle`` on the session's history.
         """
-        # Authorization: caller must own the session
         principal = await _optional_principal(request)
-        session = await forge.get_session(session_id)
-        if session is not None and principal is not None:
-            try:
-                await forge.ensure_access(session, principal, "report_chronicle")
-            except SessionAccessDeniedError:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Not authorized to report chronicle for session {session_id}",
-                )
-
-        try:
+        with _chronicle_errors():
             chronicle = await forge.create_or_update_chronicle_from_broker(
                 session_id=session_id,
+                principal=principal,
                 summary=data.summary,
                 key_changes=data.key_changes,
                 unfinished_work=data.unfinished_work,
                 duration_seconds=data.duration_seconds,
             )
-            return ChronicleResponse.from_chronicle(chronicle)
-        except RuntimeError as e:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(e),
-            )
-        except SessionNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Session not found: {session_id}",
-            )
+        return ChronicleResponse.from_chronicle(chronicle)
 
     # --- Chronicle endpoints ---
+    #
+    # Chronicles are scoped like GET /sessions: a caller sees its own history,
+    # or its tenant's as a tenant admin. History outside that scope is 404;
+    # history the caller sees but may not change is 403.
 
-    @router.get("/chronicles", response_model=list[ChronicleResponse], tags=["Chronicles"])
+    @router.get(
+        "/chronicles",
+        response_model=list[ChronicleResponse],
+        responses={401: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+        tags=["Chronicles"],
+    )
     async def list_chronicles(
+        request: Request,
         project: str | None = Query(
             default=None,
             description="Filter by project name",
@@ -4408,10 +4454,12 @@ def create_router(
             description="Number of results to skip for pagination",
         ),
     ) -> list[ChronicleResponse]:
-        """List chronicles with optional filters."""
+        """List the chronicles the caller may read, with optional filters."""
         tag_list = [t.strip() for t in tags.split(",")] if tags else None
-        try:
+        principal = await _optional_principal(request)
+        with _chronicle_errors():
             chronicles = await forge.list_chronicles(
+                principal=principal,
                 project=project,
                 repo=repo,
                 model=model_name,
@@ -4419,53 +4467,45 @@ def create_router(
                 limit=limit,
                 offset=offset,
             )
-        except RuntimeError as e:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(e),
-            )
         return [ChronicleResponse.from_chronicle(c) for c in chronicles]
 
     @router.post(
         "/chronicles",
         response_model=ChronicleResponse,
         status_code=status.HTTP_201_CREATED,
-        responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+        responses={
+            401: {"model": ErrorResponse},
+            403: {"model": ErrorResponse},
+            404: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
         tags=["Chronicles"],
     )
-    async def create_chronicle(data: ChronicleCreate) -> ChronicleResponse:
+    async def create_chronicle(request: Request, data: ChronicleCreate) -> ChronicleResponse:
         """Create a chronicle from a session's current state."""
-        try:
-            chronicle = await forge.create_chronicle(data.session_id)
-            return ChronicleResponse.from_chronicle(chronicle)
-        except RuntimeError as e:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(e),
-            )
-        except SessionNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Session not found: {data.session_id}",
-            )
+        principal = await _optional_principal(request)
+        with _chronicle_errors():
+            chronicle = await forge.create_chronicle(data.session_id, principal=principal)
+        return ChronicleResponse.from_chronicle(chronicle)
 
     @router.get(
         "/chronicles/{chronicle_id}",
         response_model=ChronicleResponse,
-        responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+        responses={
+            401: {"model": ErrorResponse},
+            404: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
         tags=["Chronicles"],
     )
     async def get_chronicle(
+        request: Request,
         chronicle_id: UUID = Path(description="Unique chronicle identifier"),
     ) -> ChronicleResponse:
         """Get a chronicle by ID."""
-        try:
-            chronicle = await forge.get_chronicle(chronicle_id)
-        except RuntimeError as e:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(e),
-            )
+        principal = await _optional_principal(request)
+        with _chronicle_errors():
+            chronicle = await forge.get_chronicle(chronicle_id, principal=principal)
         if chronicle is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -4476,121 +4516,121 @@ def create_router(
     @router.patch(
         "/chronicles/{chronicle_id}",
         response_model=ChronicleResponse,
-        responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+        responses={
+            401: {"model": ErrorResponse},
+            403: {"model": ErrorResponse},
+            404: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
         tags=["Chronicles"],
     )
     async def update_chronicle(
+        request: Request,
         chronicle_id: UUID = Path(description="Unique chronicle identifier"),
         data: ChronicleUpdate = ...,
     ) -> ChronicleResponse:
         """Update a chronicle's mutable fields."""
-        try:
+        principal = await _optional_principal(request)
+        with _chronicle_errors():
             chronicle = await forge.update_chronicle(
                 chronicle_id,
+                principal=principal,
                 summary=data.summary,
                 key_changes=data.key_changes,
                 unfinished_work=data.unfinished_work,
                 tags=data.tags,
                 status=data.status,
             )
-            return ChronicleResponse.from_chronicle(chronicle)
-        except RuntimeError as e:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(e),
-            )
-        except ChronicleNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Chronicle not found: {chronicle_id}",
-            )
+        return ChronicleResponse.from_chronicle(chronicle)
 
     @router.delete(
         "/chronicles/{chronicle_id}",
         status_code=status.HTTP_204_NO_CONTENT,
-        responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+        responses={
+            401: {"model": ErrorResponse},
+            403: {"model": ErrorResponse},
+            404: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
         tags=["Chronicles"],
     )
     async def delete_chronicle(
+        request: Request,
         chronicle_id: UUID = Path(description="Unique chronicle identifier"),
     ) -> None:
         """Delete a chronicle."""
-        try:
-            deleted = await forge.delete_chronicle(chronicle_id)
-        except RuntimeError as e:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(e),
-            )
-        if not deleted:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Chronicle not found: {chronicle_id}",
-            )
+        principal = await _optional_principal(request)
+        with _chronicle_errors():
+            await forge.delete_chronicle(chronicle_id, principal=principal)
 
     @router.post(
         "/chronicles/{chronicle_id}/reforge",
         response_model=SessionResponse,
-        responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+        responses={
+            401: {"model": ErrorResponse},
+            403: {"model": ErrorResponse},
+            404: {"model": ErrorResponse},
+            409: {"model": ErrorResponse},
+            422: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
         tags=["Chronicles"],
     )
     async def reforge_chronicle(
+        request: Request,
         chronicle_id: UUID = Path(description="Unique chronicle identifier"),
     ) -> SessionResponse:
-        """Relaunch a session from a chronicle entry."""
+        """Relaunch a session from a chronicle entry, owned by the caller."""
+        principal = await _optional_principal(request)
         try:
-            session = await forge.reforge_chronicle(chronicle_id)
-            return _session_response(session)
-        except RuntimeError as e:
+            with _chronicle_errors():
+                session = await forge.reforge_chronicle(chronicle_id, principal=principal)
+        except RepoValidationError as e:
             raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(e),
-            )
-        except ChronicleNotFoundError:
+            ) from e
+        except SessionCapacityError as e:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Chronicle not found: {chronicle_id}",
-            )
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(e),
+            ) from e
+        return _session_response(session)
 
     @router.get(
         "/chronicles/{chronicle_id}/chain",
         response_model=list[ChronicleResponse],
-        responses={503: {"model": ErrorResponse}},
+        responses={401: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
         tags=["Chronicles"],
     )
     async def get_chronicle_chain(
+        request: Request,
         chronicle_id: UUID = Path(description="Unique chronicle identifier"),
     ) -> list[ChronicleResponse]:
-        """Get the full reforge chain for a chronicle."""
-        try:
-            chain = await forge.get_chronicle_chain(chronicle_id)
-        except RuntimeError as e:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(e),
-            )
+        """Get the reforge chain for a chronicle, limited to what the caller may read."""
+        principal = await _optional_principal(request)
+        with _chronicle_errors():
+            chain = await forge.get_chronicle_chain(chronicle_id, principal=principal)
         return [ChronicleResponse.from_chronicle(c) for c in chain]
 
     @router.get(
         "/sessions/{session_id}/chronicle",
         response_model=ChronicleResponse,
         responses={
+            401: {"model": ErrorResponse},
             404: {"model": ErrorResponse},
             503: {"model": ErrorResponse},
         },
         tags=["Chronicles"],
     )
     async def get_session_chronicle(
+        request: Request,
         session_id: UUID = Path(description="Unique session identifier"),
     ) -> ChronicleResponse:
         """Get the most recent chronicle for a session."""
-        try:
-            chronicle = await forge.get_session_chronicle(session_id)
-        except RuntimeError as e:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(e),
-            )
+        principal = await _optional_principal(request)
+        with _chronicle_errors():
+            chronicle = await forge.get_session_chronicle(session_id, principal=principal)
         if chronicle is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -4604,22 +4644,20 @@ def create_router(
         "/chronicles/{session_id}/timeline",
         response_model=TimelineResponseModel,
         responses={
+            401: {"model": ErrorResponse},
             404: {"model": ErrorResponse},
             503: {"model": ErrorResponse},
         },
         tags=["Timeline"],
     )
     async def get_timeline(
+        request: Request,
         session_id: UUID = Path(description="Session identifier for timeline lookup"),
     ) -> TimelineResponseModel:
         """Get the event timeline for a session's chronicle."""
-        try:
-            timeline = await forge.get_timeline(session_id)
-        except RuntimeError as e:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(e),
-            )
+        principal = await _optional_principal(request)
+        with _chronicle_errors():
+            timeline = await forge.get_timeline(session_id, principal=principal)
         if timeline is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -4661,6 +4699,8 @@ def create_router(
         response_model=TimelineEventResponse,
         status_code=status.HTTP_201_CREATED,
         responses={
+            401: {"model": ErrorResponse},
+            403: {"model": ErrorResponse},
             404: {"model": ErrorResponse},
             503: {"model": ErrorResponse},
         },
@@ -4671,54 +4711,25 @@ def create_router(
         session_id: UUID = Path(description="Session identifier for timeline lookup"),
         data: TimelineEventCreate = ...,
     ) -> TimelineEventResponse:
-        """Add a timeline event for a session's chronicle."""
-        try:
-            chronicle = await forge.ensure_session_chronicle(session_id)
-        except RuntimeError as e:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(e),
-            )
-        except SessionNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Session not found: {session_id}",
-            )
+        """Add a timeline event for a session's chronicle, creating one if needed.
 
-        # Authorization: caller must own the session
-        principal = await extract_principal(request)
-        session = await forge.get_session(session_id)
-        if session is not None:
-            try:
-                await forge.ensure_access(session, principal, "report_timeline")
-            except SessionAccessDeniedError:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Not authorized to report timeline for session {session_id}",
-                )
-
-        event = TimelineEvent(
-            id=uuid4(),
-            chronicle_id=chronicle.id,
-            session_id=session_id,
-            t=data.t,
-            type=TimelineEventType(data.type),
-            label=data.label,
-            tokens=data.tokens,
-            action=data.action,
-            ins=data.ins,
-            del_=data.del_,
-            hash=data.hash,
-            exit_code=data.exit_code,
-            created_at=datetime.now(UTC),
-        )
-
-        try:
-            stored = await forge.add_timeline_event(session_id, event)
-        except RuntimeError:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Timeline service not available",
+        The caller must be allowed ``report_timeline`` on the session's history;
+        nothing is written before that is established.
+        """
+        principal = await _optional_principal(request)
+        with _chronicle_errors():
+            stored = await forge.add_timeline_event(
+                session_id,
+                principal=principal,
+                t=data.t,
+                type=TimelineEventType(data.type),
+                label=data.label,
+                tokens=data.tokens,
+                action=data.action,
+                ins=data.ins,
+                del_=data.del_,
+                hash=data.hash,
+                exit_code=data.exit_code,
             )
 
         return TimelineEventResponse(
@@ -4739,6 +4750,8 @@ def create_router(
         "/chronicles/{session_id}/diff",
         responses={
             400: {"model": ErrorResponse},
+            401: {"model": ErrorResponse},
+            403: {"model": ErrorResponse},
             404: {"model": ErrorResponse},
             502: {"model": ErrorResponse},
         },
@@ -4756,7 +4769,10 @@ def create_router(
             description="Diff base: last-commit or default-branch",
         ),
     ) -> dict:
-        """Get git diff for a file in a session workspace via Skuld."""
+        """Get git diff for a file in a session workspace via Skuld.
+
+        The caller must be allowed to ``read`` the session.
+        """
         if base not in ("last-commit", "default-branch"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -4764,6 +4780,10 @@ def create_router(
                     f"Invalid base parameter: {base}. Must be 'last-commit' or 'default-branch'"
                 ),
             )
+
+        principal = await _optional_principal(request)
+        with _chronicle_errors():
+            await forge.get_authorized_session(session_id, principal=principal, action="read")
 
         try:
             _, base_url = await forge.get_session_proxy_target(session_id)

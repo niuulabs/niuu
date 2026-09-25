@@ -20,7 +20,6 @@ from volundr.domain.models import (
     Session,
     SessionLogEntry,
     SessionStatus,
-    TimelineEvent,
     TimelineEventType,
 )
 from volundr.domain.services import ChronicleService, SessionArchiveService, SessionService
@@ -151,19 +150,14 @@ async def test_session_archive_service_builds_archive_with_chronicle_and_timelin
         encoding="utf-8",
     )
 
-    chronicle = await chronicle_service.create_chronicle(session.id)
+    await chronicle_service.create_chronicle(session.id, principal=None)
     await chronicle_service.add_timeline_event(
         session.id,
-        TimelineEvent(
-            id=uuid4(),
-            chronicle_id=chronicle.id,
-            session_id=session.id,
-            t=5,
-            type=TimelineEventType.MESSAGE,
-            label="assistant replied",
-            tokens=12,
-            created_at=datetime.now(UTC),
-        ),
+        principal=None,
+        t=5,
+        type=TimelineEventType.MESSAGE,
+        label="assistant replied",
+        tokens=12,
     )
 
     archive_service = SessionArchiveService(

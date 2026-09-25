@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from volundr.domain.models import EventType, RealtimeEvent, Stats, TimelineResponse
+from volundr.domain.models import EventType, RealtimeEvent, TimelineResponse
 from volundr.domain.ports import EventBroadcaster
 
 if TYPE_CHECKING:
@@ -35,7 +35,8 @@ def _build_realtime_sleipnir_map() -> dict[str, str]:
         # (active/idle/tool_executing) is deliberately NOT forwarded — it is
         # high-frequency SSE-only state and would flood the bus.
         EventType.SESSION_NEEDS_INPUT.value: registry.VOLUNDR_SESSION_NEEDS_INPUT,
-        EventType.STATS_UPDATED.value: registry.VOLUNDR_STATS_UPDATED,
+        # stats_updated is not forwarded: it is a figure-less tick, and the
+        # figures are computed per SSE subscriber over what that caller may list.
         EventType.CHRONICLE_CREATED.value: registry.VOLUNDR_CHRONICLE_CREATED,
         EventType.CHRONICLE_UPDATED.value: registry.VOLUNDR_CHRONICLE_UPDATED,
         EventType.CHRONICLE_DELETED.value: registry.VOLUNDR_CHRONICLE_DELETED,
@@ -269,41 +270,30 @@ class InMemoryEventBroadcaster(EventBroadcaster):
             timestamp=datetime.now(UTC),
         )
 
-    def create_session_deleted_event(self, session_id: UUID) -> RealtimeEvent:
+    def create_session_deleted_event(
+        self,
+        session_id: UUID,
+        *,
+        owner_id: str | None,
+        tenant_id: str | None,
+    ) -> RealtimeEvent:
         """Create a session deleted event.
 
         Args:
             session_id: The ID of the deleted session.
+            owner_id: Owner of the deleted session, so the stream can scope it.
+            tenant_id: Tenant of the deleted session, so the stream can scope it.
 
         Returns:
             A RealtimeEvent for the deleted session.
         """
         return RealtimeEvent(
             type=EventType.SESSION_DELETED,
-            data={"id": str(session_id), "status": "deleted"},
-            timestamp=datetime.now(UTC),
-        )
-
-    def create_stats_event(self, stats: Stats) -> RealtimeEvent:
-        """Create a stats update event.
-
-        Args:
-            stats: The current statistics.
-
-        Returns:
-            A RealtimeEvent with the stats data.
-        """
-        return RealtimeEvent(
-            type=EventType.STATS_UPDATED,
             data={
-                "active_sessions": stats.active_sessions,
-                "total_sessions": stats.total_sessions,
-                "sessions_today": stats.sessions_today,
-                "tokens_today": stats.tokens_today,
-                "local_tokens": stats.local_tokens,
-                "cloud_tokens": stats.cloud_tokens,
-                "cost_today": float(stats.cost_today),
-                "sparklines": stats.sparklines or {},
+                "id": str(session_id),
+                "status": "deleted",
+                "owner_id": owner_id or None,
+                "tenant_id": tenant_id or None,
             },
             timestamp=datetime.now(UTC),
         )
@@ -344,30 +334,34 @@ class InMemoryEventBroadcaster(EventBroadcaster):
         event = self.create_session_event(EventType.SESSION_UPDATED, session)
         await self.publish(event)
 
-    async def publish_session_deleted(self, session_id: UUID) -> None:
+    async def publish_session_deleted(
+        self,
+        session_id: UUID,
+        *,
+        owner_id: str | None,
+        tenant_id: str | None,
+    ) -> None:
         """Publish a session deleted event.
 
         Args:
             session_id: The ID of the deleted session.
+            owner_id: Owner of the deleted session.
+            tenant_id: Tenant of the deleted session.
         """
-        event = self.create_session_deleted_event(session_id)
-        await self.publish(event)
-
-    async def publish_stats(self, stats: Stats) -> None:
-        """Publish a stats update event.
-
-        Args:
-            stats: The current statistics.
-        """
-        logger.info(
-            "SSE broadcast stats_updated: tokens_today=%d, cloud=%d, local=%d, cost=%.4f",
-            stats.tokens_today,
-            stats.cloud_tokens,
-            stats.local_tokens,
-            float(stats.cost_today),
+        event = self.create_session_deleted_event(
+            session_id, owner_id=owner_id, tenant_id=tenant_id
         )
-        event = self.create_stats_event(stats)
         await self.publish(event)
+
+    async def publish_stats_tick(self) -> None:
+        """Publish a figure-less ``stats_updated`` tick.
+
+        Aggregate figures differ per caller, so the principal-scoped session
+        event stream computes them for each subscriber when the tick arrives.
+        """
+        await self.publish(
+            RealtimeEvent(type=EventType.STATS_UPDATED, data={}, timestamp=datetime.now(UTC))
+        )
 
     async def publish_heartbeat(self) -> None:
         """Publish a heartbeat event."""
@@ -379,6 +373,9 @@ class InMemoryEventBroadcaster(EventBroadcaster):
         session_id: UUID,
         event: TimelineEvent,
         timeline: TimelineResponse,
+        *,
+        owner_id: str | None,
+        tenant_id: str | None,
     ) -> None:
         """Publish a chronicle timeline event.
 
@@ -386,6 +383,8 @@ class InMemoryEventBroadcaster(EventBroadcaster):
             session_id: The session this event belongs to.
             event: The new timeline event to append.
             timeline: The full aggregated timeline (files, commits, token_burn).
+            owner_id: Owner of the session, so the stream can scope the event.
+            tenant_id: Tenant of the session, so the stream can scope the event.
         """
         event_data: dict = {
             "t": event.t,
@@ -418,6 +417,8 @@ class InMemoryEventBroadcaster(EventBroadcaster):
                     {"hash": c.hash, "msg": c.msg, "time": c.time} for c in timeline.commits
                 ],
                 "token_burn": timeline.token_burn,
+                "owner_id": owner_id or None,
+                "tenant_id": tenant_id or None,
             },
             timestamp=datetime.now(UTC),
         )
