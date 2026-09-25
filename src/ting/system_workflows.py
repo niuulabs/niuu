@@ -234,7 +234,7 @@ async def seed_system_workflows(
             workflow_id,
             orphan.name,
         )
-        await repo.save_workflow(replace(orphan, origin="authored"))
+        await repo.reclassify_orphaned_bundled_as_authored(workflow_id)
 
     saved: list[WorkflowDefinition] = []
     for seed in seeds:

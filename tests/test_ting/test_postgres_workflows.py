@@ -579,3 +579,48 @@ class TestAdoptLegacyBundled:
 
         with pytest.raises(WorkflowConflictError, match="no longer exists"):
             await repo.adopt_legacy_bundled(seed)
+
+
+class TestReclassifyOrphanedBundledAsAuthored:
+    """No archive, no version change -- unlike save_workflow/_advance, this
+    cannot crash on a pre-#1012 non-semver version label ("v1") and cannot
+    leave behind an archived snapshot that later blocks delete_workflow.
+    """
+
+    async def test_guarded_update_only_no_archive_no_version_change(
+        self, repo, mock_pool, workflow
+    ):
+        legacy = replace(workflow, version="v1")  # non-semver: would crash next_workflow_version
+        mock_pool.execute.return_value = "UPDATE 1"
+        mock_pool.fetchrow.return_value = {
+            **workflow_row(legacy),
+            "version_origin": "authored",
+            "based_on_revision": None,
+            "schema_version": 1,
+            "workflow_dependencies_json": {},
+            "workflow_definitions_json": {},
+        }
+
+        result = await repo.reclassify_orphaned_bundled_as_authored(workflow.id)
+
+        assert result.version == "v1"
+        assert result.origin == "authored"
+        update_calls = [
+            call for call in mock_pool.execute.call_args_list if "UPDATE workflows" in call.args[0]
+        ]
+        assert len(update_calls) == 1
+        assert "version_origin = 'authored'" in update_calls[0].args[0]
+        archive_calls = [
+            call
+            for call in mock_pool.execute.call_args_list
+            if "INSERT INTO workflow_versions" in call.args[0]
+        ]
+        assert archive_calls == []
+
+    async def test_returns_none_when_the_row_no_longer_exists(self, repo, mock_pool):
+        mock_pool.execute.return_value = "UPDATE 0"
+        mock_pool.fetchrow.return_value = None
+
+        result = await repo.reclassify_orphaned_bundled_as_authored(uuid4())
+
+        assert result is None

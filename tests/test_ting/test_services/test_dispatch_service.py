@@ -1575,6 +1575,9 @@ class _StubWorkflowRepo(WorkflowRepository):
     async def adopt_legacy_bundled(self, seed):
         return await self.save_workflow(seed)
 
+    async def reclassify_orphaned_bundled_as_authored(self, workflow_id):
+        return await self.get_workflow(workflow_id)
+
 
 class TestResolveWorkflowSnapshot:
     @pytest.mark.asyncio

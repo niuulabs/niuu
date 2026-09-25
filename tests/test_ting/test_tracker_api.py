@@ -482,6 +482,9 @@ class InMemoryWorkflowRepository(WorkflowRepository):
     async def adopt_legacy_bundled(self, seed):
         return await self.save_workflow(seed)
 
+    async def reclassify_orphaned_bundled_as_authored(self, workflow_id):
+        return await self.get_workflow(workflow_id)
+
 
 class _DispatchRecorder:
     def __init__(self, *, should_fail: bool = False) -> None:

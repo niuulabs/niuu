@@ -161,6 +161,15 @@ class FilesystemWorkflowRepository(WorkflowRepository):
             raise WorkflowDocumentError(f"Workflow {seed.id} not found for legacy adoption")
         return current
 
+    async def reclassify_orphaned_bundled_as_authored(
+        self, workflow_id: UUID
+    ) -> WorkflowDefinition | None:
+        """No-op here, for the same reason as ``adopt_legacy_bundled``: this
+        catalog has no persisted ``version_origin`` row to flip -- a bundled
+        id is always served live from the package, never orphaned.
+        """
+        return await self.get_workflow(workflow_id)
+
     async def mark_migration_complete(self, metadata: dict[str, Any]) -> None:
         """Durably record a verified legacy catalog migration."""
         await asyncio.to_thread(self._mark_migration_complete_sync, metadata)

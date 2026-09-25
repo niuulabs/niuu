@@ -39,6 +39,16 @@ class _InMemoryWorkflowRepository(WorkflowRepository):
         self.never_versioned_ids.discard(seed.id)
         return await self.save_workflow(successor)
 
+    async def reclassify_orphaned_bundled_as_authored(self, workflow_id):
+        # No save_workflow call -- no archive, no version bump, matching the
+        # real adapters' guarded-UPDATE-only contract.
+        current = self._workflows.get(workflow_id)
+        if current is None:
+            return None
+        updated = replace(current, origin="authored")
+        self._workflows[workflow_id] = updated
+        return updated
+
     async def list_workflows(
         self,
         *,

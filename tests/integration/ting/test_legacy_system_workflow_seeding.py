@@ -95,6 +95,16 @@ async def test_legacy_system_rows_seed_successfully_after_reclassification(txn_p
         replace(seeds[0], id=uuid4(), name="Admin-created system workflow"),
     )
 
+    # A pre-#1012 row whose version predates the semantic-version
+    # requirement the current API enforces on save/advance. Routing this
+    # through save_workflow's normal advance path (next_workflow_version)
+    # would raise; reclassify_orphaned_bundled_as_authored must not.
+    orphan_non_semver = await _create_and_regress_to_legacy_shape(
+        repo,
+        txn_pool,
+        replace(seeds[0], id=uuid4(), name="Legacy non-semver orphan", version="v1"),
+    )
+
     # Migration 000046, applied for real: reclassifies every qualifying
     # legacy system row (the package-matching ones AND the orphan) to
     # version_origin='bundled'; the user row is untouched (scope != system).
@@ -122,6 +132,12 @@ async def test_legacy_system_rows_seed_successfully_after_reclassification(txn_p
     reclassified_orphan = await repo.get_workflow(orphan.id)
     assert reclassified_orphan is not None
     assert reclassified_orphan.origin == "authored"
+
+    reclassified_non_semver = await repo.get_workflow(orphan_non_semver.id)
+    assert reclassified_non_semver is not None
+    assert reclassified_non_semver.origin == "authored"
+    assert reclassified_non_semver.version == "v1"  # unchanged, no version bump
+    assert await repo.delete_workflow(orphan_non_semver.id) is True
 
     # Second pass: every row now has recorded history (or is 'authored'), so
     # this is a pure no-op -- no crash, same heads, nothing rewritten.

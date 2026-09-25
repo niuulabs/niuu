@@ -82,3 +82,20 @@ class WorkflowRepository(ABC):
         concurrent caller (another replica's own startup seeding) may have
         already adopted or advanced it.
         """
+
+    @abstractmethod
+    async def reclassify_orphaned_bundled_as_authored(
+        self, workflow_id: UUID
+    ) -> WorkflowDefinition | None:
+        """Flip a never-versioned, package-orphaned bundled row to authored.
+
+        For a row ``adopt_legacy_bundled`` cannot apply to (no packaged seed
+        shares its id). Going through ``save_workflow``'s normal advance
+        path would bump its version label -- crashing on a pre-#1012 row
+        whose version predates the semantic-version requirement -- and
+        archive a snapshot that then makes ``delete_workflow`` refuse it
+        forever. This changes only ``version_origin``: no version change, no
+        archive. Implementations re-verify the row is still never-versioned
+        and bundled before writing. Returns the row's current state, or
+        None if it no longer exists.
+        """

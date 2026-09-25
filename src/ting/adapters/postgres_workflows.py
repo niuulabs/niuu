@@ -184,6 +184,37 @@ class PostgresWorkflowRepository(WorkflowRepository):
             await self._archive(connection, saved)
             return saved
 
+    async def reclassify_orphaned_bundled_as_authored(
+        self, workflow_id: UUID
+    ) -> WorkflowDefinition | None:
+        """Flip a never-versioned, package-orphaned bundled row to authored.
+
+        Deliberately not routed through save_workflow/_advance: that path
+        bumps the version label (raising on a pre-#1012 row whose version
+        predates the semantic-version requirement, e.g. "v1") and archives a
+        snapshot that then makes delete_workflow refuse the row forever.
+        This is a guarded UPDATE of version_origin only -- no version
+        change, no archive -- re-checking under the row's advisory lock that
+        it is still bundled and never-versioned before writing.
+        """
+        async with self._pool.acquire() as connection, connection.transaction():
+            await self._lock(connection, workflow_id)
+            await connection.execute(
+                """
+                UPDATE workflows
+                SET version_origin = 'authored'
+                WHERE id = $1
+                  AND version_origin = 'bundled'
+                  AND based_on_revision IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM workflow_versions v WHERE v.workflow_id = workflows.id
+                  )
+                """,
+                workflow_id,
+            )
+            row = await connection.fetchrow("SELECT * FROM workflows WHERE id = $1", workflow_id)
+            return self._row_to_workflow(row) if row else None
+
     async def save_workflow_version(
         self,
         workflow: WorkflowDefinition,

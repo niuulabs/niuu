@@ -104,6 +104,9 @@ class AuthorizedWorkflowRepository(_Policy, WorkflowRepository):
     async def adopt_legacy_bundled(self, seed):
         return await self.repo.adopt_legacy_bundled(seed)
 
+    async def reclassify_orphaned_bundled_as_authored(self, workflow_id):
+        return await self.repo.reclassify_orphaned_bundled_as_authored(workflow_id)
+
 
 class AuthorizedCampaignRepository(_Policy, WorkflowCampaignRepository):
     async def list_campaigns(self, *, owner_id):
