@@ -55,8 +55,11 @@ def _make_drive_loop(cascade_enabled: bool = False) -> DriveLoop:
     settings = MagicMock()
     settings.skuld.enabled = False
     settings.cascade.enabled = cascade_enabled
+    settings.budget.enabled = True
     settings.budget.daily_cap_usd = 1.0
     settings.budget.warn_at_percent = 80
+    settings.budget.pricing_source = "flat"
+    settings.budget.pricing_overrides = {}
     settings.budget.input_token_cost_per_million = 3.0
     settings.budget.output_token_cost_per_million = 15.0
     return DriveLoop(agent_factory=agent_factory, config=cfg, settings=settings)
@@ -344,6 +347,13 @@ class TestDriveLoopCaptureIntegration:
         cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=3, task_queue_max=50)
         settings = MagicMock()
         settings.skuld.enabled = False
+        settings.budget.enabled = True
+        settings.budget.daily_cap_usd = 1.0
+        settings.budget.warn_at_percent = 80
+        settings.budget.pricing_source = "flat"
+        settings.budget.pricing_overrides = {}
+        settings.budget.input_token_cost_per_million = 3.0
+        settings.budget.output_token_cost_per_million = 15.0
         settings.cascade.enabled = True
         dl = DriveLoop(agent_factory=_agent_factory, config=cfg, settings=settings)
 
@@ -385,6 +395,13 @@ class TestDriveLoopCaptureIntegration:
         cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=1, task_queue_max=10)
         settings = MagicMock()
         settings.skuld.enabled = False
+        settings.budget.enabled = True
+        settings.budget.daily_cap_usd = 1.0
+        settings.budget.warn_at_percent = 80
+        settings.budget.pricing_source = "flat"
+        settings.budget.pricing_overrides = {}
+        settings.budget.input_token_cost_per_million = 3.0
+        settings.budget.output_token_cost_per_million = 15.0
         settings.cascade.enabled = False
         dl = DriveLoop(agent_factory=_agent_factory, config=cfg, settings=settings)
 
@@ -419,6 +436,13 @@ class TestDriveLoopCaptureIntegration:
         cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=1, task_queue_max=10)
         settings = MagicMock()
         settings.skuld.enabled = False
+        settings.budget.enabled = True
+        settings.budget.daily_cap_usd = 1.0
+        settings.budget.warn_at_percent = 80
+        settings.budget.pricing_source = "flat"
+        settings.budget.pricing_overrides = {}
+        settings.budget.input_token_cost_per_million = 3.0
+        settings.budget.output_token_cost_per_million = 15.0
         settings.cascade.enabled = True
         dl = DriveLoop(agent_factory=_agent_factory, config=cfg, settings=settings)
 
@@ -627,6 +651,13 @@ async def test_integration_two_local_tasks_progress_and_collect():
     cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=3, task_queue_max=50)
     settings = MagicMock()
     settings.skuld.enabled = False
+    settings.budget.enabled = True
+    settings.budget.daily_cap_usd = 1.0
+    settings.budget.warn_at_percent = 80
+    settings.budget.pricing_source = "flat"
+    settings.budget.pricing_overrides = {}
+    settings.budget.input_token_cost_per_million = 3.0
+    settings.budget.output_token_cost_per_million = 15.0
     settings.cascade.enabled = True
     dl = DriveLoop(agent_factory=_agent_factory, config=cfg, settings=settings)
 

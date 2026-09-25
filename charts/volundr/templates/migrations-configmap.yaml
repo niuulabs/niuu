@@ -1931,6 +1931,67 @@ data:
     ALTER TABLE niuu_instances DROP COLUMN IF EXISTS last_checked_at;
     ALTER TABLE niuu_instances DROP COLUMN IF EXISTS last_seen_at;
     ALTER TABLE niuu_instances DROP COLUMN IF EXISTS health;
+  000081_ravn_trigger_store.up.sql: |
+    -- Durable storage for the Ravn API's /triggers routes (POST /ravn/triggers
+    -- was returning 503 because no store was wired). trigger_store is a dynamic
+    -- adapter (trigger_store.adapter); only used when it is set to
+    -- ravn.adapters.trigger_store.postgres_store.LazyPostgresTriggerStore — the
+    -- default (ravn.adapters.trigger_store.FileTriggerStore) is a local file.
+    -- Scoped by owner_id/tenant_id so one tenant cannot list or delete another
+    -- tenant's triggers. repo scopes an event-kind trigger to one repository's
+    -- events (ravn.adapters.triggers.api_source filters on it before
+    -- enqueueing) so a QA resident does not fire on every tenant's pull
+    -- requests; empty for cron-kind triggers, which have no event payload.
+    CREATE TABLE IF NOT EXISTS ravn_triggers (
+        id           UUID        PRIMARY KEY,
+        kind         TEXT        NOT NULL,
+        persona_name TEXT        NOT NULL,
+        spec         TEXT        NOT NULL,
+        repo         TEXT        NOT NULL DEFAULT '',
+        enabled      BOOLEAN     NOT NULL DEFAULT TRUE,
+        owner_id     TEXT        NOT NULL,
+        tenant_id    TEXT        NOT NULL,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ravn_triggers_tenant_created
+        ON ravn_triggers (tenant_id, created_at DESC);
+  000081_ravn_trigger_store.down.sql: |
+    DROP INDEX IF EXISTS idx_ravn_triggers_tenant_created;
+    DROP TABLE IF EXISTS ravn_triggers;
+  000082_ravn_budget_ledger.up.sql: |
+    -- Durable fleet-wide budget ledger for the Ravn API's /budget routes
+    -- (GET /ravn/budget/fleet and /ravn/budget/{ravnId} were returning 503
+    -- because no store was wired). budget_ledger is a dynamic adapter
+    -- (budget_ledger.adapter); only used when it is set to
+    -- ravn.adapters.budget_ledger.postgres_store.LazyPostgresBudgetLedger — the
+    -- default (ravn.adapters.budget_ledger.FileBudgetLedger) is a local file.
+    -- One row per (tenant, ravn) per
+    -- UTC day. tenant_id is part of the primary key, not a bare index, so a
+    -- ravn_id collision across tenants cannot upsert into another tenant's row.
+    -- ravn_id is TEXT, not UUID: standalone/discovered residents are not
+    -- guaranteed to carry a UUID id, and this table must never 500 on a
+    -- caller-supplied id the way an earlier draft's UUID trigger id did.
+    -- Written synchronously by the Ravn API's POST /budget/spend, called by each
+    -- resident's DailyBudgetTracker (ravn.drive_loop._record_task_cost) as real
+    -- spend happens, with ravn_id/tenant_id derived server-side from the
+    -- caller's workload principal — never client-supplied.
+    CREATE TABLE IF NOT EXISTS ravn_budget_ledger (
+        tenant_id  TEXT        NOT NULL,
+        ravn_id    TEXT        NOT NULL,
+        day        DATE        NOT NULL,
+        spent_usd  NUMERIC     NOT NULL DEFAULT 0,
+        cap_usd    NUMERIC     NOT NULL DEFAULT 0,
+        warn_at    DOUBLE PRECISION NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (tenant_id, ravn_id, day)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ravn_budget_ledger_tenant_day
+        ON ravn_budget_ledger (tenant_id, day);
+  000082_ravn_budget_ledger.down.sql: |
+    DROP INDEX IF EXISTS idx_ravn_budget_ledger_tenant_day;
+    DROP TABLE IF EXISTS ravn_budget_ledger;
   lineage-aliases.json: |
     {
       "000050_session_definition.up.sql": [

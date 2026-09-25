@@ -6,7 +6,7 @@ import { createElement } from 'react';
 import { useActivityLog } from './useActivityLog';
 import { createMockSessionStream, createMockTriggerStore } from '../../adapters/mock';
 import type { Session } from '../../domain/session';
-import type { Trigger } from '../../domain/trigger';
+import type { CreatedTrigger, Trigger } from '../../domain/trigger';
 
 function makeWrapper(
   sessionStream = createMockSessionStream(),
@@ -140,6 +140,7 @@ describe('useActivityLog', () => {
         ...t,
         id: 'x',
         createdAt: '',
+        executionEnabled: true,
       }),
       deleteTrigger: async () => undefined,
     };
@@ -229,7 +230,7 @@ describe('useActivityLog', () => {
     };
     const triggerStore = {
       listTriggers: async () => triggers,
-      createTrigger: async () => triggers[0]!,
+      createTrigger: async () => ({ ...triggers[0]!, executionEnabled: true }),
       deleteTrigger: async () => undefined,
     };
 
@@ -248,7 +249,7 @@ describe('useActivityLog', () => {
     };
     const slowTriggers = {
       listTriggers: () => new Promise<Trigger[]>(() => undefined),
-      createTrigger: async () => ({}) as Trigger,
+      createTrigger: async () => ({}) as CreatedTrigger,
       deleteTrigger: async () => undefined,
     };
     const loading = renderHook(() => useActivityLog(), {

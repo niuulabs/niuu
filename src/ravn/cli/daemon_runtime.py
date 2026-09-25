@@ -441,12 +441,20 @@ async def _run_daemon(
                     settings.sleipnir.amqp_url_env,
                 )
 
+        from ravn.api.persistence_wiring import build_resident_budget  # noqa: PLC0415
+
+        _resident_budget = build_resident_budget(
+            settings.resident_budget,
+            default_timeout_seconds=settings.gateway.platform.timeout,
+        )
+
         drive_loop = DriveLoop(
             agent_factory=_agent_factory,
             config=settings.initiative,
             settings=settings,
             event_publisher=event_publisher,
             resume=resume,
+            resident_budget=_resident_budget,
             mimir=daemon_mimir,
             sleipnir_publisher=environment_signal_publisher
             or sleipnir_catalog_publisher
@@ -502,6 +510,15 @@ async def _run_daemon(
                 )
         _cron_jobs = _wire_triggers(drive_loop, settings.initiative)
         cron_tools[:] = _wire_cron(drive_loop, _cron_jobs, settings.initiative)
+
+        # Load this resident's own durably-stored triggers (POST /ravn/triggers)
+        # and run them — gated by resident_triggers.enabled (see trigger_wiring).
+        _api_triggers_persona = (
+            persona_config.name
+            if persona_config is not None
+            else settings.initiative.default_persona
+        )
+        _wire_api_triggers(drive_loop, settings, _api_triggers_persona)
 
         # Wire Mímir triggers (source synthesis + staleness refresh + threads)
         if daemon_mimir is not None:

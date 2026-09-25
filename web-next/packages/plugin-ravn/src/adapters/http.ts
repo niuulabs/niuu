@@ -36,7 +36,7 @@ import type {
   ResidentEndpoint,
 } from '../domain/ravn';
 import type { Session, SessionStatus } from '../domain/session';
-import type { Trigger, TriggerKind } from '../domain/trigger';
+import type { CreatedTrigger, Trigger, TriggerKind } from '../domain/trigger';
 import type { Message, MessageKind } from '../domain/message';
 
 // ---------------------------------------------------------------------------
@@ -358,8 +358,11 @@ interface RawTrigger {
   kind: string;
   persona_name: string;
   spec: string;
+  repo: string;
   enabled: boolean;
   created_at: string;
+  /** Only present on the POST /triggers (create) response, not GET (list). */
+  execution_enabled?: boolean;
 }
 
 interface RawBudgetState {
@@ -602,9 +605,14 @@ function toTrigger(raw: RawTrigger): Trigger {
     kind: raw.kind as TriggerKind,
     personaName: raw.persona_name,
     spec: raw.spec,
+    repo: raw.repo ?? '',
     enabled: raw.enabled,
     createdAt: raw.created_at,
   };
+}
+
+function toCreatedTrigger(raw: RawTrigger): CreatedTrigger {
+  return { ...toTrigger(raw), executionEnabled: raw.execution_enabled ?? false };
 }
 
 function toBudgetState(raw: RawBudgetState): BudgetState {
@@ -915,10 +923,11 @@ export function buildRavnTriggerAdapter(client: ApiClient): ITriggerStore {
         kind: t.kind,
         persona_name: t.personaName,
         spec: t.spec,
+        repo: t.repo,
         enabled: t.enabled,
       };
       const raw = await client.post<RawTrigger>('/triggers', body);
-      return toTrigger(raw);
+      return toCreatedTrigger(raw);
     },
     async deleteTrigger(id) {
       await client.delete<void>(`/triggers/${encodeURIComponent(id)}`);

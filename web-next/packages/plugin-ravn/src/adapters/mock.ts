@@ -22,7 +22,7 @@ import type {
 } from '../ports';
 import type { Ravn } from '../domain/ravn';
 import type { Session } from '../domain/session';
-import type { Trigger } from '../domain/trigger';
+import type { CreatedTrigger, Trigger } from '../domain/trigger';
 import type { Message } from '../domain/message';
 import type { BudgetState } from '@niuulabs/domain';
 
@@ -1045,6 +1045,7 @@ const SEED_TRIGGERS: Trigger[] = [
     kind: 'cron',
     personaName: 'eir',
     spec: '0 * * * *',
+    repo: '',
     enabled: true,
     createdAt: '2026-01-01T00:00:00Z',
     lastFiredAt: '2026-01-15T08:24:12Z',
@@ -1055,6 +1056,7 @@ const SEED_TRIGGERS: Trigger[] = [
     kind: 'event',
     personaName: 'fjölnir',
     spec: 'code.changed',
+    repo: '',
     enabled: true,
     createdAt: '2026-01-01T00:00:00Z',
     lastFiredAt: '2026-01-15T08:25:50Z',
@@ -1065,6 +1067,7 @@ const SEED_TRIGGERS: Trigger[] = [
     kind: 'event',
     personaName: 'höðr',
     spec: 'review.completed',
+    repo: '',
     enabled: true,
     createdAt: '2026-01-01T00:00:00Z',
     lastFiredAt: '2026-01-15T08:27:03Z',
@@ -1072,9 +1075,10 @@ const SEED_TRIGGERS: Trigger[] = [
   },
   {
     id: 'aa000001-0000-4000-8000-000000000004',
-    kind: 'webhook',
+    kind: 'cron',
     personaName: 'sindri',
     spec: '/hooks/dispatch',
+    repo: '',
     enabled: false,
     createdAt: '2026-01-10T12:00:00Z',
     lastFiredAt: '2026-01-15T08:18:44Z',
@@ -1082,9 +1086,10 @@ const SEED_TRIGGERS: Trigger[] = [
   },
   {
     id: 'aa000001-0000-4000-8000-000000000005',
-    kind: 'manual',
+    kind: 'event',
     personaName: 'nótt',
     spec: 'investigate-incident',
+    repo: '',
     enabled: true,
     createdAt: '2026-01-12T09:00:00Z',
     lastFiredAt: '2026-01-15T08:23:31Z',
@@ -1092,9 +1097,10 @@ const SEED_TRIGGERS: Trigger[] = [
   },
   {
     id: 'aa000001-0000-4000-8000-000000000006',
-    kind: 'webhook',
+    kind: 'cron',
     personaName: 'sindri',
     spec: '/hooks/dispatch',
+    repo: '',
     enabled: true,
     createdAt: '2026-01-10T12:00:00Z',
     lastFiredAt: '2026-01-15T08:26:48Z',
@@ -1105,6 +1111,7 @@ const SEED_TRIGGERS: Trigger[] = [
     kind: 'event',
     personaName: 'muninn',
     spec: 'mimir.index.requested',
+    repo: '',
     enabled: true,
     createdAt: '2026-01-04T12:00:00Z',
     lastFiredAt: '2026-01-15T08:26:31Z',
@@ -1115,6 +1122,7 @@ const SEED_TRIGGERS: Trigger[] = [
     kind: 'event',
     personaName: 'gefjon',
     spec: 'security.audit.requested',
+    repo: '',
     enabled: true,
     createdAt: '2026-01-05T12:00:00Z',
     lastFiredAt: '2026-01-15T08:24:58Z',
@@ -1122,9 +1130,10 @@ const SEED_TRIGGERS: Trigger[] = [
   },
   {
     id: 'aa000001-0000-4000-8000-000000000009',
-    kind: 'manual',
+    kind: 'event',
     personaName: 'víðar',
     spec: 'drain-incident-queue',
+    repo: '',
     enabled: true,
     createdAt: '2026-01-06T12:00:00Z',
     lastFiredAt: '2026-01-15T08:27:12Z',
@@ -1135,6 +1144,7 @@ const SEED_TRIGGERS: Trigger[] = [
     kind: 'event',
     personaName: 'saga',
     spec: 'recap.requested',
+    repo: '',
     enabled: true,
     createdAt: '2026-01-08T12:00:00Z',
     lastFiredAt: '2026-01-15T08:25:12Z',
@@ -1409,7 +1419,11 @@ export function createMockTriggerStore(): ITriggerStore {
         createdAt: new Date().toISOString(),
       };
       store.set(trigger.id, trigger);
-      return trigger;
+      // Mock/demo posture: execution is assumed enabled so the standalone
+      // UI demo (no real resident behind it) does not warn about a real
+      // deployment concern it cannot represent.
+      const created: CreatedTrigger = { ...trigger, executionEnabled: true };
+      return created;
     },
 
     async deleteTrigger(id: string) {

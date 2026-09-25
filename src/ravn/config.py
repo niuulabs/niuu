@@ -42,6 +42,7 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from bifrost.config import PricingOverride
 from niuu.config_models import WorkloadIdentityVerifierConfig
 from niuu.domain.observability import ObservabilityConfig
 from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE, MeshNatsConfig
@@ -1547,19 +1548,72 @@ class TriggerAdapterConfig(BaseModel):
 
 
 class BudgetConfig(BaseModel):
-    """Per-Ravn daily API budget configuration (NIU-570)."""
+    """Per-Ravn daily API budget configuration (NIU-570).
 
+    No ravn_id/tenant_id here: durable spend reporting goes through
+    ``ResidentBudgetConfig`` (a dynamic adapter), and in the production
+    (platform) adapter the server derives both from the caller's workload
+    identity — a resident process no longer names itself for budget
+    purposes, matching the trigger-poll boundary.
+
+    Every turn is always priced (usage events carry ``cost_usd`` regardless
+    of ``enabled`` — see ``DriveLoop._emit_task_usage``) and the local
+    ``DailyBudgetTracker`` always records it; ``enabled`` (default ``True``)
+    only gates whether the daily cap actually blocks new tasks. Pricing
+    itself never needs to be conditional, because ``pricing_source``
+    defaults to ``"flat"``: a per-million-token rate that prices any model,
+    with no catalog lookup that can fail. ``pricing_source: "bifrost"`` is
+    an explicit opt-in for catalog-accurate pricing, and only then does an
+    unpriced model (checked against ``pricing_overrides`` first, then
+    Bifröst's built-in catalog) raise ``UnpricedModelError`` — loud and
+    fixable, exactly where the operator asked for something pricing cannot
+    give. ``enabled: false`` is the only explicit opt-out from cap
+    enforcement; every already-deployed config with no new values set keeps
+    enforcing its cap exactly as before.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Enforce the daily cap. On by default — every already-deployed "
+            "resident enforces daily_cap_usd today, and this must not silently "
+            "disappear. Set to false to run this resident uncapped, an explicit "
+            "operator decision, not a default."
+        ),
+    )
     daily_cap_usd: float = Field(
         default=1.0,
         description="Maximum USD spend per UTC day before new initiative tasks are gated.",
     )
+    pricing_source: Literal["bifrost", "flat"] = Field(
+        default="flat",
+        description=(
+            "'flat' (the default) always uses input/output_token_cost_per_million "
+            "below, regardless of model — safe for any model, including ones no "
+            "catalog prices. 'bifrost' is an explicit opt-in for catalog-accurate "
+            "pricing: it prices each turn from pricing_overrides below, then "
+            "Bifröst's built-in model-pricing catalog, and raises if the model "
+            "that served the turn has no entry in either — silently billing an "
+            "unpriced model at a generic flat rate would misreport spend."
+        ),
+    )
+    pricing_overrides: dict[str, PricingOverride] = Field(
+        default_factory=dict,
+        description=(
+            "Per-model USD/million-token pricing, keyed by model id, consulted "
+            "before Bifröst's built-in snapshot when pricing_source is 'bifrost'. "
+            "The remedy for UnpricedModelError on a model Bifröst's built-in "
+            "catalog does not carry (e.g. Nemotron, Qwen, a fine-tune) — add it "
+            "here rather than switch the whole resident to 'flat' pricing."
+        ),
+    )
     input_token_cost_per_million: float = Field(
         default=3.0,
-        description="Input token cost in USD per million tokens (used to estimate task cost).",
+        description="Input token USD/million, used only when pricing_source is 'flat'.",
     )
     output_token_cost_per_million: float = Field(
         default=15.0,
-        description="Output token cost in USD per million tokens (used to estimate task cost).",
+        description="Output token USD/million, used only when pricing_source is 'flat'.",
     )
     warn_at_percent: int = Field(
         default=80,
@@ -4363,6 +4417,201 @@ class ValkyrieRoomConfig(_LegacyAliasSettings):
     )
 
 
+class TriggerStoreConfig(BaseModel):
+    """Durable storage for API-created triggers (``POST /api/v1/ravn/triggers``).
+
+    Dynamic adapter, not a database_url/store_path pair: a plain BaseModel
+    (not env-aliased) because the config file is canonical for which
+    persistence backend the hosted Ravn API runs on — an env var silently
+    overriding "which store" is exactly the kind of surprise this config
+    should not allow.
+
+    Empty ``adapter`` (the default) means this Ravn API process has no
+    durable trigger store at all — ``/api/v1/ravn/triggers`` returns 503
+    with the remedy, exactly like before this feature existed. This is
+    deliberately opt-in, not opt-out: every already-deployed Ravn API chart
+    (no new values set) must keep behaving exactly as it does today, and a
+    silently-appearing file adapter writing into the container filesystem
+    would either lose data on restart (no PVC) or silently start a new
+    feature nobody asked for. The chart renders the file adapter
+    (``ravn.adapters.trigger_store.FileTriggerStore``) when
+    ``persistence.enabled: true``, and the Postgres adapter
+    (``ravn.adapters.trigger_store.postgres_store.LazyPostgresTriggerStore``)
+    when ``database.enabled: true`` — never both, and never a replica count
+    above 1 with the file adapter, since several replicas each keeping their
+    own file would each see a different, incomplete trigger set.
+    """
+
+    adapter: str = Field(
+        default="",
+        description=(
+            "Fully-qualified TriggerStorePort adapter class path. Empty means "
+            "this Ravn API has no durable trigger store — POST/GET/DELETE "
+            "/api/v1/ravn/triggers return 503."
+        ),
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=lambda: {"path": "~/.ravn/ravn_triggers.json"},
+        description="Constructor kwargs for the adapter above.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="kwarg name -> env var name, for secrets such as a Postgres dsn.",
+    )
+
+
+class TriggerRepoAllowlistConfig(BaseModel):
+    """Which repos each tenant's event triggers may reference.
+
+    Closes a real cross-tenant leak: Völundr's GitHub webhook
+    (``volundr.config.WebhooksConfig.github``) is ONE HMAC secret for the
+    whole deployment, not one per tenant — a webhook-derived Sleipnir event
+    carries no ``tenant_id`` and cannot be "stamped" with one at ingestion,
+    and ``IntegrationConnection`` (a user's connected GitHub/GitLab account)
+    is ``owner_id``-scoped and never persists which repos a credential can
+    reach. So there is no live signal today to check a trigger's freeform
+    ``repo`` field against. Until one exists, ``repo`` must be explicitly
+    granted here per tenant, checked at ``POST /api/v1/ravn/triggers`` —
+    without this, any tenant member could name another tenant's private repo
+    and receive its PR titles, authors, and branches over the (system-wide)
+    Sleipnir event bus, since ``ApiTriggerSource``'s repo filter only checks
+    string equality, never authorization.
+
+    Deliberately empty by default (fail closed): a deployment that wants
+    event triggers must explicitly grant each tenant's repos. Grant ``["*"]``
+    for a tenant to opt that tenant out of the check entirely — an explicit,
+    auditable, single-tenant-trusted-deployment decision, not a default.
+    """
+
+    grants: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "tenant_id -> repos ('org/repo') that tenant's event triggers may "
+            "reference. A tenant's list may contain '*' to allow any repo."
+        ),
+    )
+
+
+class TriggerExecutionConfig(BaseModel):
+    """Declares, for THIS hosted Ravn API deployment, whether any resident
+    in it actually executes the triggers this process stores.
+
+    This process only owns the durable trigger STORE
+    (``POST``/``GET``/``DELETE /api/v1/ravn/triggers``, ``charts/ravn``) — a
+    resident that polls and runs what gets stored here is a separate
+    process/deployment (the Skuld chart's ``resident.triggers.enabled``,
+    driven by ``volundr.adapters.outbound.flux.FluxPodManager``'s
+    ``resident_triggers_enabled``/``resident_platform_base_url`` kwargs, set
+    from ``charts/volundr``'s ``podManager.kwargs.*`` values).
+    There is no channel from a resident process back to this one reporting
+    whether it was actually configured to execute, so this cannot be
+    auto-detected — an operator who turns on resident-side execution in the
+    volundr and skuld charts must ALSO set this to ``true`` here, or
+    ``/api/v1/ravn/settings`` and every ``POST /api/v1/ravn/triggers``
+    response keep (correctly, safely) reporting execution as off.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether residents in this deployment actually execute stored "
+            "triggers. Keep in sync with volundr's resident_triggers_enabled "
+            "(FluxPodManager) and skuld's resident.triggers.enabled — this "
+            "process has no way to detect either."
+        ),
+    )
+
+
+class ResidentTriggerSourceConfig(BaseModel):
+    """A resident's own poll of the durable trigger store (NIU-triggers).
+
+    Distinct from ``initiative.cron_tick_seconds``: cron-kind triggers reuse
+    the existing ``CronTrigger`` tick loop (that interval), while this one
+    governs the poll for event-kind triggers and for refreshing the cron-kind
+    view the ``CronTrigger`` reads from.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Have this resident load and run its own triggers from the durable "
+            "trigger store (ravn.adapters.triggers.api_source.ApiTriggerSource)."
+        ),
+    )
+    poll_interval_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        description="Seconds between polls of the durable trigger store.",
+    )
+    max_consecutive_poll_failures: int = Field(
+        default=5,
+        gt=0,
+        description=(
+            "Give up (raise, ending the resident process) after this many consecutive "
+            "poll failures, instead of retrying an unreachable trigger store forever "
+            "with an ever-stale cache."
+        ),
+    )
+
+
+class ResidentBudgetConfig(BaseModel):
+    """How this resident reads/records its own spend (dynamic adapter).
+
+    Production: ``ravn.adapters.resident_budget.PlatformBudgetReporter``,
+    talking to the same workload-authenticated platform API the trigger poll
+    uses — the server derives this resident's identity, so no ravn_id or
+    tenant_id is configured here. Mini mode: explicitly configure
+    ``ravn.adapters.resident_budget.LocalBudgetReporter`` with its own
+    ravn_id/tenant_id/ledger kwargs — the only place a resident process still
+    names itself directly, because there is no platform boundary to derive
+    it from.
+    """
+
+    adapter: str = Field(
+        default="",
+        description=(
+            "Fully-qualified ResidentBudgetPort adapter class path. Empty means "
+            "this resident does not durably report spend — the daily cap still "
+            "gates locally from an in-memory counter that resets on restart."
+        ),
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+
+class BudgetLedgerConfig(BaseModel):
+    """Durable per-(tenant, ravn), per-UTC-day spend ledger backing ``/ravn/budget/*``.
+
+    Empty ``adapter`` (the default) means no durable budget ledger —
+    ``/api/v1/ravn/budget/*`` returns 503 with the remedy, exactly like
+    before this feature existed; opt-in for the same reason as
+    ``TriggerStoreConfig`` (an already-deployed chart with no new values set
+    must keep behaving exactly as it does today). The chart renders the file
+    adapter (``ravn.adapters.budget_ledger.FileBudgetLedger``) when
+    ``persistence.enabled: true`` and the Postgres adapter
+    (``ravn.adapters.budget_ledger.postgres_store.LazyPostgresBudgetLedger``)
+    when ``database.enabled: true`` — a per-file store cannot be shared
+    correctly across replicas behind an HPA.
+    """
+
+    adapter: str = Field(
+        default="",
+        description=(
+            "Fully-qualified BudgetLedgerPort adapter class path. Empty means "
+            "this Ravn API has no durable budget ledger — /api/v1/ravn/budget/* "
+            "return 503."
+        ),
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=lambda: {"path": "~/.ravn/ravn_budget_ledger.json"},
+        description="Constructor kwargs for the adapter above.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="kwarg name -> env var name, for secrets such as a Postgres dsn.",
+    )
+
+
 class OdinReviewConfig(_LegacyAliasSettings):
     """Durable ODIN review queue and expiry policy."""
 
@@ -4558,6 +4807,18 @@ class Settings(BaseSettings):
 
     # NIU-570: daily API budget gates
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
+
+    # Durable storage backing /api/v1/ravn/triggers and /api/v1/ravn/budget/*
+    trigger_store: TriggerStoreConfig = Field(default_factory=TriggerStoreConfig)
+    trigger_repo_allowlist: TriggerRepoAllowlistConfig = Field(
+        default_factory=TriggerRepoAllowlistConfig
+    )
+    trigger_execution: TriggerExecutionConfig = Field(default_factory=TriggerExecutionConfig)
+    budget_ledger: BudgetLedgerConfig = Field(default_factory=BudgetLedgerConfig)
+    resident_triggers: ResidentTriggerSourceConfig = Field(
+        default_factory=ResidentTriggerSourceConfig
+    )
+    resident_budget: ResidentBudgetConfig = Field(default_factory=ResidentBudgetConfig)
 
     # NIU-558: thread enrichment queue
     thread: ThreadConfig = Field(default_factory=ThreadConfig)

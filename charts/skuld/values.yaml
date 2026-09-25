@@ -525,7 +525,14 @@ affinity: {}
 # -- Runtime class name for the pod (e.g., "nvidia", "kata", "gvisor")
 runtimeClassName: ""
 
-# -- Service account name for the pod (set by secret injection contributor)
+# -- Service account name for the pod. For ordinary session pods, set by a
+# secret injection contributor. For a resident release, Völundr sets this to
+# "resident-<runtime.id>" (volundr/adapters/outbound/flux.py
+# _resident_release_name) — templates/serviceaccount.yaml then creates a
+# ServiceAccount by this exact name, giving the resident's own projected
+# workload-identity token (niuu-workload-identity, see deployment.yaml) a
+# subject unique to it, instead of every resident sharing the namespace
+# default ServiceAccount's identity.
 serviceAccountName: ""
 
 # -- Additional init containers to add to the session pod.
@@ -633,6 +640,23 @@ resident:
     #     defaults:
     #       gate_auto_forward_after: ""
     workflowAliases: {}
+  triggers:
+    # -- Have this resident load and run its own durable triggers
+    # (POST /api/v1/ravn/triggers) over the platform gateway above. Requires
+    # resident.platform.enabled — the chart fails the render otherwise, since
+    # a resident with nothing to poll would gate/retry forever for no reason.
+    enabled: false
+    # -- Seconds between polls of the durable trigger store.
+    pollIntervalSeconds: 60
+    # -- Give up (and end the resident process) after this many consecutive
+    # poll failures, instead of retrying an unreachable store forever.
+    maxConsecutivePollFailures: 5
+  budget:
+    # -- Have this resident read/report its own spend
+    # (GET/POST /api/v1/ravn/budget/me,/spend) over the platform gateway
+    # above, instead of only gating locally from an in-memory counter that
+    # resets on restart. Requires resident.platform.enabled.
+    enabled: false
   mimir:
     sourceTrigger:
       # -- Automatically synthesize unprocessed Mímir sources.
@@ -652,6 +676,18 @@ resident:
     audience: "volundr-api"
     # -- Expiration (seconds) for the projected serviceAccountToken
     expirationSeconds: 1200
+  serviceAccount:
+    # -- Whether THIS release should create the ServiceAccount named by
+    # serviceAccountName (below/top-level). Default false: several resident
+    # releases can share one existingSecret's worth of infrastructure
+    # (Fleet-managed, e.g. a bundle's own serviceaccount.yaml, or another
+    # controller) naming the SAME ServiceAccount — this chart creating it too
+    # would fail on Helm ownership (two releases claiming the same object),
+    # and uninstalling any ONE such release would delete an SA every other
+    # resident still uses. volundr.adapters.outbound.flux.FluxPodManager
+    # sets this to true only when it assigns the resident its own unique
+    # "resident-<runtime.id>" name — a name no other release can already own.
+    create: false
 
 # -- Secret mapping manifest for file-based credential injection.
 # Rendered into a ConfigMap and mounted at /run/secrets/manifest.json.

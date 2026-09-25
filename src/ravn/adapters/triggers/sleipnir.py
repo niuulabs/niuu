@@ -35,6 +35,7 @@ class SleipnirEventTrigger(TriggerPort):
         amqp_url: str = "amqp://guest:guest@localhost/",
         exchange: str = "sleipnir",
         retry_delay_seconds: float = 5.0,
+        payload_filter: Callable[[dict], bool] | None = None,
     ) -> None:
         self._name = name
         self._pattern = pattern
@@ -45,6 +46,11 @@ class SleipnirEventTrigger(TriggerPort):
         self._amqp_url = amqp_url
         self._exchange = exchange
         self._retry_delay_seconds = retry_delay_seconds
+        # Routing-key pattern matching narrows by event *type* only. A
+        # payload_filter narrows by event *content* — e.g. "only this repo" —
+        # evaluated before rendering/enqueueing so a message this trigger
+        # should not act on never becomes a task.
+        self._payload_filter = payload_filter
         self._counter = 0
 
     @property
@@ -126,6 +132,15 @@ class SleipnirEventTrigger(TriggerPort):
             payload = _json.loads(message.body)  # type: ignore[attr-defined]
         except Exception:
             payload = {"raw": str(message.body)}  # type: ignore[attr-defined]
+
+        if self._payload_filter is not None and not self._payload_filter(payload):
+            logger.debug(
+                "SleipnirEventTrigger %r ignoring message that failed payload_filter "
+                "(routing_key=%s)",
+                self._name,
+                message.routing_key,  # type: ignore[attr-defined]
+            )
+            return
 
         context = self._render_context(payload)
         task_id = self._make_task_id()

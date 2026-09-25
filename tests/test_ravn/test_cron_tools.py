@@ -124,6 +124,23 @@ class TestCronParsing:
         assert _field_matches(3, "1,3,5") is True
         assert _field_matches(4, "1,3,5") is False
 
+    def test_zero_step_raises_instead_of_dividing_by_zero(self):
+        with pytest.raises(ValueError, match="step must be positive"):
+            _field_matches(0, "*/0")
+
+    def test_zero_step_on_a_base_raises(self):
+        with pytest.raises(ValueError, match="step must be positive"):
+            _field_matches(5, "5/0")
+
+    def test_range_with_step_matches_every_nth_value_in_range(self):
+        # "1-5/2": 1, 3, 5 match; 2, 4, 6, 0 do not.
+        assert _field_matches(1, "1-5/2") is True
+        assert _field_matches(3, "1-5/2") is True
+        assert _field_matches(5, "1-5/2") is True
+        assert _field_matches(2, "1-5/2") is False
+        assert _field_matches(4, "1-5/2") is False
+        assert _field_matches(6, "1-5/2") is False
+
     def test_cron_matches_at_9am(self):
         dt = datetime(2026, 4, 8, 9, 0, 0, tzinfo=UTC)
         assert _cron_matches("0 9 * * *", dt) is True
@@ -138,6 +155,14 @@ class TestCronParsing:
 
     def test_bad_cron_expression(self):
         assert _cron_matches("not-valid", datetime.now(UTC)) is False
+
+    def test_zero_step_expression_raises_not_crashes_with_zero_division(self):
+        with pytest.raises(ValueError, match="step must be positive"):
+            _cron_matches("*/0 * * * *", datetime.now(UTC))
+
+    def test_range_with_step_expression_matches(self):
+        dt = datetime(2026, 4, 8, 9, 3, 0, tzinfo=UTC)  # minute=3, in 1-5/2
+        assert _cron_matches("1-5/2 * * * *", dt) is True
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +382,80 @@ async def test_cron_trigger_fires_store_job(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_cron_trigger_quarantines_unschedulable_store_job(tmp_path, caplog):
+    """Regression: a persisted job whose schedule _field_matches cannot
+    evaluate (e.g. a day-of-week name like 'MON-FRI' — predating create-time
+    validation, or written directly to jobs.json) must not raise out of
+    run() and end the resident process — it is logged and skipped instead,
+    and run() keeps ticking (and firing other, valid jobs)."""
+    store = _make_store(tmp_path)
+    bad = _make_record(job_id="bad-job-1", name="bad-job", schedule="* * * * MON-FRI")
+    good = _make_record(job_id="good-job-1", name="good-job", schedule="every 1s")
+    store.create(bad)
+    store.create(good)
+
+    trigger = CronTrigger(
+        jobs=[],
+        state_path=tmp_path / "state.json",
+        lock_path=tmp_path / "cron.lock",
+        tick_seconds=9999,
+        store=store,
+    )
+
+    enqueued: list[AgentTask] = []
+
+    async def fake_enqueue(task: AgentTask) -> bool:
+        enqueued.append(task)
+        return True
+
+    run_task = asyncio.ensure_future(trigger.run(fake_enqueue))
+    try:
+        for _ in range(200):
+            await asyncio.sleep(0)
+            if enqueued:
+                break
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
+
+    # If run() had raised anything other than CancelledError, awaiting
+    # run_task above (inside `with suppress(asyncio.CancelledError)`) would
+    # have propagated it and failed this test — reaching here already
+    # proves run() survived the bad job.
+    assert [t.triggered_by for t in enqueued] == ["cron:good-job-1"]
+    assert "bad-job-1" in trigger._quarantined
+
+
+@pytest.mark.asyncio
+async def test_cron_trigger_quarantine_is_logged_once_not_every_tick(tmp_path, caplog):
+    store = _make_store(tmp_path)
+    bad = _make_record(job_id="bad-job-2", name="bad-job", schedule="* * * * MON-FRI")
+    store.create(bad)
+
+    trigger = CronTrigger(
+        jobs=[],
+        state_path=tmp_path / "state.json",
+        lock_path=tmp_path / "cron.lock",
+        tick_seconds=0.01,
+        store=store,
+    )
+
+    async def fake_enqueue(task: AgentTask) -> bool:
+        return True
+
+    with caplog.at_level("ERROR", logger="ravn.adapters.triggers.cron"):
+        run_task = asyncio.ensure_future(trigger.run(fake_enqueue))
+        await asyncio.sleep(0.1)  # several ticks at tick_seconds=0.01
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
+
+    quarantine_records = [r for r in caplog.records if "quarantining job" in r.message]
+    assert len(quarantine_records) == 1
+
+
+@pytest.mark.asyncio
 async def test_cron_trigger_silent_marker(tmp_path):
     """[SILENT] prefix forces output_mode=SILENT and is stripped from context."""
     store = _make_store(tmp_path)
@@ -569,6 +668,34 @@ async def test_cron_create_invalid_delivery(tmp_path):
         }
     )
     assert result.is_error
+
+
+@pytest.mark.asyncio
+async def test_cron_create_rejects_day_of_week_names(tmp_path):
+    """Regression: '0 9 * * MON-FRI' must be refused at cron_create time,
+    not stored and left to crash CronTrigger's scheduler every tick — see
+    ravn.adapters.triggers.cron.validate_cron_fields, the same check
+    ravn.api.trigger_validation applies to POST /api/v1/ravn/triggers."""
+    store = _make_store(tmp_path)
+    tool = CronCreateTool(store)
+    result = await tool.execute(
+        {"name": "weekday-standup", "schedule": "0 9 * * MON-FRI", "context": "Standup."}
+    )
+    assert result.is_error
+    assert "invalid field" in result.content
+    assert store.list() == []
+
+
+@pytest.mark.asyncio
+async def test_cron_create_rejects_out_of_range_field(tmp_path):
+    store = _make_store(tmp_path)
+    tool = CronCreateTool(store)
+    result = await tool.execute(
+        {"name": "bad-hour", "schedule": "0 99 * * *", "context": "Never fires."}
+    )
+    assert result.is_error
+    assert "outside" in result.content
+    assert store.list() == []
 
 
 @pytest.mark.asyncio

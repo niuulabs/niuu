@@ -91,10 +91,21 @@ def create_workload_identity_service(config: Any) -> WorkloadIdentityService:
         verifier_class = import_class(str(getattr(verifier_config, "adapter")))
         verifiers[str(getattr(verifier_config, "name"))] = verifier_class(**kwargs)
 
+    tenant_resolver = None
+    resolver_config = getattr(config, "tenant_resolver", None)
+    resolver_adapter_path = str(getattr(resolver_config, "adapter", "") or "")
+    if resolver_adapter_path:
+        resolver_kwargs = resolve_secret_kwargs(
+            dict(getattr(resolver_config, "kwargs", {}) or {}),
+            dict(getattr(resolver_config, "secret_kwargs_env", {}) or {}),
+        )
+        tenant_resolver = import_class(resolver_adapter_path)(**resolver_kwargs)
+
     return WorkloadIdentityService(
         config,
         signing_key_pem=signing_key_pem,
         verifiers=verifiers,
+        tenant_resolver=tenant_resolver,
     )
 
 

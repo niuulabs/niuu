@@ -97,6 +97,30 @@ data:
           {{- toYaml . | nindent 10 }}
         {{- end }}
       {{- end }}
+    {{- if .Values.resident.triggers.enabled }}
+    {{- if not .Values.resident.platform.enabled }}
+    {{- fail "resident.triggers.enabled requires resident.platform.enabled — a resident with no platform gateway has nothing to poll its triggers from" }}
+    {{- end }}
+    resident_triggers:
+      enabled: true
+      poll_interval_seconds: {{ .Values.resident.triggers.pollIntervalSeconds | float64 }}
+      max_consecutive_poll_failures: {{ .Values.resident.triggers.maxConsecutivePollFailures }}
+    {{- end }}
+    {{- if .Values.resident.budget.enabled }}
+    {{- if not .Values.resident.platform.enabled }}
+    {{- fail "resident.budget.enabled requires resident.platform.enabled — a resident with no platform gateway has nowhere to report spend to" }}
+    {{- end }}
+    resident_budget:
+      adapter: ravn.adapters.resident_budget.PlatformBudgetReporter
+      kwargs:
+        base_url: {{ .Values.resident.platform.baseUrl | quote }}
+        workload_token_file: "/var/run/secrets/niuu-workload/token"
+        {{- if .Values.resident.platform.workloadExchangeUrl }}
+        workload_exchange_url: {{ .Values.resident.platform.workloadExchangeUrl | quote }}
+        {{- else if .Values.volundr.apiUrl }}
+        workload_exchange_url: {{ printf "%s/api/v1/tokens/workload/exchange" (.Values.volundr.apiUrl | trimSuffix "/") | quote }}
+        {{- end }}
+    {{- end }}
     initiative:
       enabled: true
       max_concurrent_tasks: {{ .Values.resident.maxConcurrentTasks }}

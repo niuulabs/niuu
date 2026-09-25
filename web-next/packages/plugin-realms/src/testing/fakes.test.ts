@@ -49,14 +49,27 @@ describe('test doubles', () => {
   it('trigger double lists what it created', async () => {
     const log = createCallLog();
     const triggers = fakeTriggers(log);
-    await triggers.createTrigger({
+    const created = await triggers.createTrigger({
       kind: 'cron',
       spec: '* * * * *',
       personaName: 'p',
       enabled: true,
     });
+    expect(created.executionEnabled).toBe(true);
     expect(await triggers.listTriggers()).toHaveLength(1);
     await triggers.deleteTrigger('x');
+  });
+
+  it('fakeTriggers can report execution as disabled for this deployment', async () => {
+    const log = createCallLog();
+    const triggers = fakeTriggers(log, { executionEnabled: false });
+    const created = await triggers.createTrigger({
+      kind: 'cron',
+      spec: '* * * * *',
+      personaName: 'p',
+      enabled: true,
+    });
+    expect(created.executionEnabled).toBe(false);
   });
 
   it('resident double deploys, lists and refuses unknown ravens', async () => {

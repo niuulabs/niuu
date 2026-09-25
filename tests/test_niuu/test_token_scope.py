@@ -20,6 +20,7 @@ from niuu.domain.services.token_scope import (
     require_scope,
     token_has_scope,
     token_requires_scope_check,
+    workload_owner_scoped,
 )
 
 _SIGNING_KEY = "test-only-signing-key-32-bytes-long!"
@@ -244,6 +245,33 @@ class TestBoundWorkloadScopes:
             ]
         )
         assert result == ["forge:session:create", "ting:workflow:launch"]
+
+
+class TestWorkloadOwnerScoped:
+    """``workload_owner_scoped`` is how ``PlatformBudgetReporter`` refuses to
+    seed a resident's budget from a caller identity it cannot prove is this
+    resident's own — see ``niuu.domain.services.workload_identity`` for
+    where the ``workload_owner_scoped`` claim is minted."""
+
+    def test_true_when_the_claim_is_true(self) -> None:
+        token = _encode({"workload_owner_scoped": True})
+        assert workload_owner_scoped(token) is True
+
+    def test_false_when_the_claim_is_false(self) -> None:
+        token = _encode({"workload_owner_scoped": False})
+        assert workload_owner_scoped(token) is False
+
+    def test_false_when_the_claim_is_absent(self) -> None:
+        """A token minted before this claim existed, or by a mapping that
+        never set it, must read as NOT scoped — never a permissive default."""
+        token = _encode({})
+        assert workload_owner_scoped(token) is False
+
+    def test_false_for_an_empty_token(self) -> None:
+        assert workload_owner_scoped("") is False
+
+    def test_false_for_a_malformed_token(self) -> None:
+        assert workload_owner_scoped("not-a-jwt") is False
 
 
 class TestRequireScopeFactory:

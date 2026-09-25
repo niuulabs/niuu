@@ -113,6 +113,25 @@ def scoped_credential_claims(token: str) -> dict | None:
     return claims
 
 
+def workload_owner_scoped(token: str) -> bool:
+    """Whether this caller's workload-identity mapping derived a per-caller
+    ``owner_id`` (``owner_id_claim``) rather than a fixed one every caller
+    matching that mapping's subject/subject_prefix shares.
+
+    Set by ``niuu.domain.services.workload_identity.WorkloadIdentityService``
+    at exchange time as the ``workload_owner_scoped`` claim. Read directly off
+    the trusted claims (Envoy already verified the signature upstream — same
+    posture as the rest of this module) rather than threading a new field
+    through ``Principal``, so the one caller that needs this narrow signal
+    (resident budget reporting, which must refuse to run under a possibly
+    shared identity) does not force it onto every consumer of ``Principal``.
+    """
+    claims = _decode_claims(token)
+    if claims is None:
+        return False
+    return bool(claims.get("workload_owner_scoped", False))
+
+
 def bound_workload_scopes(requested: list[str] | None) -> list[str]:
     """Intersect requested scopes with :data:`KNOWN_WORKLOAD_SCOPES`.
 

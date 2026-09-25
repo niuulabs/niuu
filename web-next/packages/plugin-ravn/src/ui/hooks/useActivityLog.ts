@@ -58,10 +58,6 @@ function triggerMessage(t: Trigger): string {
       return `cron.tick · ${t.spec}`;
     case 'event':
       return `${t.spec} · dispatch ${t.personaName}`;
-    case 'manual':
-      return `manual.run · ${t.spec}`;
-    case 'webhook':
-      return `webhook.hit · ${t.spec}`;
     default:
       return `${t.kind} · ${t.spec}`;
   }
