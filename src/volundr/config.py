@@ -45,8 +45,8 @@ from niuu.config_models import (
 from niuu.domain.delivery import AcceptancePolicy
 from niuu.domain.observability import ObservabilityConfig
 from ravn.config import LLMConfig, PersonaSourceConfig
-from volundr.adapters.outbound.contributors.model_gateway import MODEL_GATEWAY_TOKEN_ENV
 from volundr.compute.config import ComputeConfig
+from volundr.domain.model_gateway import MODEL_GATEWAY_TOKEN_ENV
 from volundr.domain.models import (
     IntegrationType,
     ResidentBackend,

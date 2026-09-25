@@ -698,7 +698,7 @@ def model_server_seed_connections(settings: CLISettings) -> list[dict[str, Any]]
     the sentinel is all a session needs.
     """
     from cli.services.compose_bundle import MODEL_SERVER_PROVIDERS, bifrost_providers
-    from volundr.adapters.outbound.contributors.model_gateway import OPEN_GATEWAY_TOKEN
+    from volundr.domain.model_gateway import OPEN_GATEWAY_TOKEN
 
     gateway_url = f"{_session_platform_url(settings)}/api/v1/bifrost"
     seeds: list[dict[str, Any]] = []
