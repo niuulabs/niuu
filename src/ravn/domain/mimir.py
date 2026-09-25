@@ -29,6 +29,10 @@ class MimirAuth:
     exchange_url: str | None = None
     audiences: tuple[str, ...] = ()
     trust_domain: str | None = None
+    token_refresh_margin_seconds: float = 30.0
+    """Seconds of safety margin before a cached workload token's reported
+    expiry at which a fresh exchange is triggered, so a near-expiry token is
+    never handed to an in-flight request."""
 
 
 @dataclass

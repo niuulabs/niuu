@@ -1757,6 +1757,13 @@ class MimirAuthConfig(BaseModel):
         default=None,
         description="SPIFFE trust domain (when type=spiffe), e.g. 'niuu.world'.",
     )
+    token_refresh_margin_seconds: float = Field(
+        default=30.0,
+        description=(
+            "Seconds of safety margin before a cached workload token's reported "
+            "expiry at which a fresh exchange is triggered (type=workload)."
+        ),
+    )
 
 
 class MimirInstanceConfig(BaseModel):
