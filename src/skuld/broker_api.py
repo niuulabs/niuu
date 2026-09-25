@@ -303,6 +303,16 @@ async def _enforce_room_role(request: Request, call_next):
     except RoomRoleResolutionError as exc:
         logger.error("Room role resolution failed: %s", exc)
         return JSONResponse({"detail": str(exc)}, status_code=503)
+    # Cached for the route handler (see _room_role_from_state): resolving a
+    # second time mid-request could legitimately get a DIFFERENT answer once
+    # "remote" mode's short cache TTL expires between the two calls, which
+    # would otherwise desync a route handler's own role-gated decision from
+    # what this middleware already enforced (or crash on a raw "remote"
+    # RoomRoleResolutionError the handler never expected to see). Guarded on
+    # hasattr: a real Starlette Request always has .state; only a bare test
+    # double calling this middleware function directly might not.
+    if hasattr(request, "state"):
+        request.state.room_role = effective_role
     if effective_role is None:
         return JSONResponse(
             {"detail": "No active session_participants grant for this session"},
@@ -315,6 +325,27 @@ async def _enforce_room_role(request: Request, call_next):
             status_code=403,
         )
     return await call_next(request)
+
+
+async def _room_role_from_state(request: Request) -> str:
+    """Return the role _enforce_room_role already resolved for this request.
+
+    Every role-gated route handler below calls this instead of resolving
+    ``_effective_room_role`` a second time, so a request can never be
+    admitted by the middleware under one role and then handled under a
+    different one — the SAME guarantee ``_effective_room_role``'s own
+    docstring describes, now actually held across the two calls instead of
+    just the two functions. Falls back to a fresh resolution only when
+    ``request.state`` was never populated (a unit test calling a route
+    handler directly, bypassing the middleware) — real traffic always has
+    ``_enforce_room_role`` run first, so this is a fallback for tests, not a
+    routine path in production.
+    """
+    state = getattr(request, "state", None)
+    role = getattr(state, "room_role", None)
+    if role is not None:
+        return role
+    return await _effective_room_role(request)
 
 
 @app.get("/health")
@@ -1229,7 +1260,7 @@ def _room_identity_fields(
 @app.post("/api/room/message")
 async def send_room_message(request: Request, body: _RoomMessageRequest) -> dict:
     """Inject a human-originated message into the active room session."""
-    role = await _effective_room_role(request)
+    role = await _room_role_from_state(request)
     participant_id, source = _room_identity_fields(role, body.participant_id, body.source)
     metadata = _sanitize_room_metadata(role, body.metadata)
     try:
@@ -1253,7 +1284,7 @@ async def send_room_message(request: Request, body: _RoomMessageRequest) -> dict
 @app.post("/api/room/direct")
 async def send_directed_room_message(request: Request, body: _DirectedRoomMessageRequest) -> dict:
     """Inject a human-originated directed room message."""
-    role = await _effective_room_role(request)
+    role = await _room_role_from_state(request)
     participant_id, source = _room_identity_fields(role, body.participant_id, body.source)
     if not broker._reply_context_consumption_allowed(body.target_peer_id, role):
         raise HTTPException(
@@ -1433,7 +1464,7 @@ async def get_help_requests() -> dict:
 @app.post("/api/help/requests/{request_id}/answer")
 async def answer_help_request(request: Request, request_id: str, body: _HelpAnswerRequest) -> dict:
     """Answer a pending help request; the answer routes to the asking peer."""
-    role = await _effective_room_role(request)
+    role = await _room_role_from_state(request)
     source = body.source if role == "owner" else f"room_{role}"
     try:
         message_id = await broker.answer_help_request(
@@ -1462,10 +1493,11 @@ async def resolve_workflow_gate(
         raise HTTPException(428, "Missing explicit workflow gate intent header")
     # x-niuu-room-role, set by Volundr's REST layer after its own Cedar
     # check when reachable, or _effective_room_role's own resolution
-    # (ws_auth.room_role_source) otherwise — the SAME function the
-    # middleware and every other role-gated route here uses, so this can
-    # never disagree with what already admitted the request.
-    if await _effective_room_role(request) not in ROOM_ROLES_MAY_RESOLVE_GATES:
+    # (ws_auth.room_role_source) otherwise, cached on request.state by
+    # _enforce_room_role — the SAME resolution the middleware and every
+    # other role-gated route here uses, so this can never disagree with
+    # what already admitted the request.
+    if await _room_role_from_state(request) not in ROOM_ROLES_MAY_RESOLVE_GATES:
         raise HTTPException(403, "Only the session owner or an approver may resolve this gate")
     try:
         gate = await broker.resolve_workflow_gate(

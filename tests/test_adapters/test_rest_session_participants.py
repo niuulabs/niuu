@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from niuu.domain.models import Principal
-from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
+from niuu.ports.identity import HeaderAuthenticationPort, IdentityPort, InvalidTokenError
 from volundr.adapters.inbound.rest_session_participants import create_session_participants_router
 from volundr.domain.services.session import SessionAccessDeniedError
 from volundr.domain.session_participants import (
@@ -425,10 +425,16 @@ def test_actual_cedar_policy_enforces_invite_and_accept_end_to_end():
 # on extract_principal's ordinary Cedar checks.
 
 _ROOM_ROLE_SIGNING_KEY = "test-only-signing-key-32-bytes-long!"
+_WRONG_SIGNING_KEY = "a-different-test-signing-key-32-bytes!!"
 
 
 def _scoped_workload_token(
-    session_id, *, scopes=("forge:session:room-role",), workload_sub=None, **overrides
+    session_id,
+    *,
+    scopes=("forge:session:room-role",),
+    workload_sub=None,
+    signing_key=_ROOM_ROLE_SIGNING_KEY,
+    **overrides,
 ):
     import time
 
@@ -450,7 +456,38 @@ def _scoped_workload_token(
         ),
     }
     claims.update(overrides)
-    return jwt.encode(claims, _ROOM_ROLE_SIGNING_KEY, algorithm="HS256")
+    return jwt.encode(claims, signing_key, algorithm="HS256")
+
+
+class _VerifyingIdentity(IdentityPort):
+    """Stands in for whatever REAL identity adapter Forge is configured with
+    (JWKS-verifying, PAT-validating, ...) — the one thing every one of them
+    has in common is that an unsigned or wrongly-signed bearer token is
+    rejected. Deliberately an ``IdentityPort``, not a
+    ``HeaderAuthenticationPort``: ``extract_principal`` then goes through
+    its token-based branch (``validate_token`` on the Authorization header —
+    the mandatory verification this endpoint now requires), while
+    ``_resolve_target_principal``'s SEPARATE ``isinstance(identity,
+    HeaderAuthenticationPort)`` check stays False, leaving the
+    unmapped-roles-passthrough behavior the non-mapping tests below assert
+    on unaffected — exactly like a real deployment's identity adapter, which
+    does not double as the x-auth-* role-mapping port unless it also
+    implements that port (see test_target_roles_are_mapped_through_the
+    _identity_adapter for that separate, explicit case).
+    """
+
+    async def validate_token(self, raw_token: str) -> Principal:
+        token = raw_token[7:] if raw_token.lower().startswith("bearer ") else raw_token
+        import jwt
+
+        try:
+            jwt.decode(token, _ROOM_ROLE_SIGNING_KEY, algorithms=["HS256"])
+        except jwt.InvalidTokenError as exc:
+            raise InvalidTokenError(str(exc)) from exc
+        return Principal(user_id="niuu-workload", email="", tenant_id="", roles=[])
+
+    async def get_or_provision_user(self, principal: Principal):
+        raise NotImplementedError("not exercised by these tests")
 
 
 @pytest.fixture
@@ -458,7 +495,7 @@ def remote_participants_api():
     """runtime_backend/room_role_source combo that registers the role endpoint."""
     service, session_service = AsyncMock(), AsyncMock()
     app = FastAPI()
-    app.state.identity = None
+    app.state.identity = _VerifyingIdentity()
     app.include_router(
         create_session_participants_router(
             service,
@@ -482,6 +519,53 @@ def test_route_absent_unless_room_role_source_is_remote(participants_api):
         headers={"Authorization": f"Bearer {_scoped_workload_token(uuid4())}"},
     )
     assert response.status_code == 405
+
+
+def test_unsigned_forged_token_is_rejected(remote_participants_api):
+    """scoped_credential_claims/require_scope decode WITHOUT verifying a
+    signature (by design — see token_scope._decode_claims's docstring:
+    verification is delegated to Envoy upstream). An unsigned token carrying
+    exactly the right claims (token_use, scope, and a workload_sub naming
+    THIS session) must still be refused — extract_principal's mandatory
+    verification is what stops a forged claim set on a Forge reached
+    without Envoy in front, or directly via the app port."""
+    import jwt
+
+    client, service, session_service, sid = remote_participants_api
+    session_service.get_session.return_value = object()
+    forged = jwt.encode(
+        {
+            "sub": "niuu-workload",
+            "token_use": "valkyrie_build",
+            "scopes": ["forge:session:room-role"],
+            "workload_sub": f"system:serviceaccount:volundr-sessions:openbao-session-{sid}",
+        },
+        key="",
+        algorithm="none",
+        headers={"alg": "none"},
+    )
+    response = client.get(
+        f"/api/v1/forge/sessions/{sid}/participants/role",
+        params={"user_id": "bob"},
+        headers={"Authorization": f"Bearer {forged}"},
+    )
+    assert response.status_code == 401
+    service.effective_room_role.assert_not_awaited()
+
+
+def test_wrongly_signed_forged_token_is_rejected(remote_participants_api):
+    """Same forged claim set as above, but signed with a key the configured
+    identity adapter does not trust — still refused."""
+    client, service, session_service, sid = remote_participants_api
+    session_service.get_session.return_value = object()
+    forged = _scoped_workload_token(sid, signing_key=_WRONG_SIGNING_KEY)
+    response = client.get(
+        f"/api/v1/forge/sessions/{sid}/participants/role",
+        params={"user_id": "bob"},
+        headers={"Authorization": f"Bearer {forged}"},
+    )
+    assert response.status_code == 401
+    service.effective_room_role.assert_not_awaited()
 
 
 def test_effective_role_endpoint_returns_the_service_answer(remote_participants_api):
@@ -560,12 +644,14 @@ def test_unscoped_human_jwt_is_refused(remote_participants_api):
 
 
 def test_missing_bearer_token_is_refused(remote_participants_api):
+    """extract_principal (the mandatory signature-verifying gate, run before
+    the scope/session-binding checks) rejects this first, with 401."""
     client, service, session_service, sid = remote_participants_api
     session_service.get_session.return_value = object()
     response = client.get(
         f"/api/v1/forge/sessions/{sid}/participants/role", params={"user_id": "bob"}
     )
-    assert response.status_code == 403
+    assert response.status_code == 401
     service.effective_room_role.assert_not_awaited()
 
 
@@ -617,6 +703,11 @@ def test_target_roles_are_mapped_through_the_identity_adapter(remote_participant
 
     class _FakeHeaderIdentity(HeaderAuthenticationPort):
         async def validate_headers(self, headers: dict[str, str]) -> Principal:
+            if "x-auth-roles" not in headers:
+                # extract_principal's own mandatory verification call (raw
+                # request headers — "authorization", no "x-auth-roles").
+                # This test is about target role MAPPING, not caller auth.
+                return Principal(user_id="niuu-workload", email="", tenant_id="", roles=[])
             assert headers["x-auth-roles"] == "developer"
             return mapped_principal
 
@@ -632,12 +723,58 @@ def test_target_roles_are_mapped_through_the_identity_adapter(remote_participant
     assert target.roles == ["volundr:developer"]
 
 
+def test_target_role_mapping_uses_configured_header_names():
+    """header_names mirrors settings.identity.kwargs (volundr.main's
+    _resolve_ws_principal) rather than a hardcoded x-auth-* guess."""
+    service, session_service = AsyncMock(), AsyncMock()
+    app = FastAPI()
+    app.include_router(
+        create_session_participants_router(
+            service,
+            session_service,
+            runtime_backend="kubernetes",
+            room_role_source="remote",
+            identity_header_names={
+                "user_id_header": "x-custom-user",
+                "tenant_header": "x-custom-tenant",
+                "roles_header": "x-custom-roles",
+            },
+        )
+    )
+    sid = uuid4()
+    session_service.get_session.return_value = object()
+    service.effective_room_role.return_value = "viewer"
+
+    class _CustomHeaderIdentity(HeaderAuthenticationPort):
+        async def validate_headers(self, headers: dict[str, str]) -> Principal:
+            if "x-custom-roles" not in headers:
+                return Principal(user_id="niuu-workload", email="", tenant_id="", roles=[])
+            assert headers["x-custom-user"] == "bob"
+            assert headers["x-custom-tenant"] == "acme"
+            assert headers["x-custom-roles"] == "developer"
+            return Principal(user_id="bob", email="", tenant_id="acme", roles=["volundr:developer"])
+
+    app.state.identity = _CustomHeaderIdentity()
+    token = _scoped_workload_token(sid)
+    response = TestClient(app).get(
+        f"/api/v1/forge/sessions/{sid}/participants/role",
+        params={"user_id": "bob", "tenant_id": "acme", "roles": "developer"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    target = service.effective_room_role.await_args.args[1]
+    assert target.roles == ["volundr:developer"]
+
+
 def test_identity_adapter_rejection_yields_no_role_not_an_error(remote_participants_api):
     client, service, session_service, sid = remote_participants_api
     session_service.get_session.return_value = object()
 
     class _RejectingIdentity(HeaderAuthenticationPort):
         async def validate_headers(self, headers: dict[str, str]) -> Principal:
+            if "x-auth-roles" not in headers:
+                # extract_principal's own mandatory verification call.
+                return Principal(user_id="niuu-workload", email="", tenant_id="", roles=[])
             raise InvalidTokenError("unknown user")
 
     client.app.state.identity = _RejectingIdentity()

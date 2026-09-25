@@ -99,7 +99,12 @@ def _require_session_scoped_workload_credential(request: Request, session_id: UU
 
 
 async def _resolve_target_principal(
-    request: Request, *, user_id: str, tenant_id: str, roles: list[str]
+    request: Request,
+    *,
+    user_id: str,
+    tenant_id: str,
+    roles: list[str],
+    header_names: dict[str, str] | None = None,
 ) -> Principal | None:
     """Re-derive the TARGET caller's platform-role-mapped Principal.
 
@@ -112,6 +117,11 @@ async def _resolve_target_principal(
     project history already hit once (see identity_adapter role mapping in
     volundr/main.py). Returns None (never a bare, unmapped Principal) when
     the configured identity adapter rejects the target outright.
+
+    ``header_names`` mirrors ``settings.identity.kwargs`` (see
+    ``volundr.main``'s ``_resolve_ws_principal``) — the SAME configured
+    header names the identity adapter expects, not a hardcoded guess that
+    could silently drift from a deployment's actual configuration.
     """
     principal = Principal(user_id=user_id, email="", tenant_id=tenant_id, roles=list(roles))
     identity = getattr(request.app.state, "identity", None)
@@ -124,10 +134,11 @@ async def _resolve_target_principal(
             return None
     if not isinstance(identity, HeaderAuthenticationPort):
         return principal
+    keys = header_names or {}
     headers = {
-        "x-auth-user-id": principal.user_id,
-        "x-auth-tenant": principal.tenant_id,
-        "x-auth-roles": ",".join(principal.roles),
+        keys.get("user_id_header", "x-auth-user-id"): principal.user_id,
+        keys.get("tenant_header", "x-auth-tenant"): principal.tenant_id,
+        keys.get("roles_header", "x-auth-roles"): ",".join(principal.roles),
     }
     try:
         return await identity.validate_headers(headers)
@@ -221,6 +232,7 @@ def create_session_participants_router(
     prefix: str = "/api/v1/forge",
     runtime_backend: str = "process",
     room_role_source: str = "deployment",
+    identity_header_names: dict[str, str] | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix=prefix, tags=["Sessions"])
     grants_are_attachable = runtime_backend in GRANT_HONORING_RUNTIME_BACKENDS or (
@@ -409,7 +421,21 @@ def create_session_participants_router(
             ``effective_room_role``'s "no role" answer — this is what lets
             the remote adapter fail closed on transport/auth errors while
             still treating "no grant" as its own, distinct, expected outcome.
+
+            ``scoped_credential_claims``/``require_scope`` deliberately
+            decode the bearer token WITHOUT verifying its signature (see
+            ``token_scope._decode_claims``'s docstring: "Signature
+            verification is delegated to Envoy upstream"). That is safe only
+            once something in-process has already verified the token —
+            which is exactly what ``extract_principal`` does (the SAME
+            dependency every other route on this router uses). Calling it
+            FIRST, and discarding only what it returns, is what stops an
+            unsigned or wrongly-signed forged
+            ``{token_use: valkyrie_build, scopes: [...], workload_sub: ...}``
+            token from reading any session's participant roles on a Forge
+            reached without Envoy in front (or directly via the app port).
             """
+            await extract_principal(request)
             _require_session_scoped_workload_credential(request, session_id)
             session = await _get_session(session_id)
             target = await _resolve_target_principal(
@@ -417,6 +443,7 @@ def create_session_participants_router(
                 user_id=user_id,
                 tenant_id=tenant_id,
                 roles=[r for r in (role.strip() for role in roles.split(",")) if r],
+                header_names=identity_header_names,
             )
             if target is None:
                 return EffectiveRoomRoleResponse(role=None)

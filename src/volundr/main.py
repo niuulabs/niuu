@@ -130,6 +130,7 @@ from volundr.composition_builders import (  # noqa: F401
     _create_secret_injection_adapter,
     _create_workflow_execution_credential_service,
     _runtime_backend,
+    _validate_remote_room_role_config,
     create_oauth_client_registry,
     integration_database_pool,
     with_oauth_device_runner,
@@ -593,6 +594,7 @@ def create_app(
             workload_identity_service = create_workload_identity_service(settings.workload_identity)
             pod_manager = _create_pod_manager(settings)
             runtime_backend = _runtime_backend(settings, pod_manager)
+            _validate_remote_room_role_config(settings, runtime_backend)
             execution_credential_service = _create_workflow_execution_credential_service(
                 settings,
                 repository=repository,
@@ -1592,6 +1594,7 @@ def create_app(
                     session_service,
                     runtime_backend=runtime_backend,
                     room_role_source=settings.pod_manager.room_role_source,
+                    identity_header_names=settings.identity.kwargs,
                 )
             )
 

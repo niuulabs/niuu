@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from dataclasses import asdict
 from typing import Any
 
@@ -196,24 +197,13 @@ class WebSocketLifecycleMixin:
 
         A grant revoked (or demoted) after connect must not leave the live
         socket usable at its original privilege until the browser happens to
-        reconnect — mirrors ``niuu.session_proxy._revalidate_loop`` exactly,
-        including its asymmetric failure handling: a *transient*
-        ``RoomRoleResolutionError`` (a momentary Forge blip) is treated as
-        "still allowed" here, so a flapping network connection never tears
-        down an otherwise-healthy session — only an explicit demotion or
-        revoke (a real answer from Forge) closes the socket. The wrapping
-        loop still fails closed on an UNEXPECTED failure of revalidation
-        itself (anything other than this specific, typed error).
+        reconnect. Raises ``RoomRoleResolutionError`` on a resolution
+        failure — the caller (``_room_role_revalidation_loop``) decides how
+        much of that failure to tolerate before closing, rather than this
+        method silently absorbing it (see the loop's own docstring for why
+        that grace must be bounded, not unlimited).
         """
-        try:
-            current_role = await self._resolve_room_role(websocket)
-        except RoomRoleResolutionError:
-            logger.warning(
-                "Room role revalidation failed transiently; keeping the connection "
-                "open rather than closing on a momentary Forge blip",
-                exc_info=True,
-            )
-            return True
+        current_role = await self._resolve_room_role(websocket)
         if current_role is None:
             return False
         return ROOM_ROLE_RANK[current_role] >= ROOM_ROLE_RANK[original_role]
@@ -221,18 +211,64 @@ class WebSocketLifecycleMixin:
     async def _room_role_revalidation_loop(self, websocket: WebSocket, original_role: str) -> None:
         """Periodically re-check a 'remote'-mode room role; close on revoke/demotion.
 
-        See ``_revalidate_remote_room_role`` for what counts as "still
-        allowed". A raise reaching THIS function is an unexpected failure of
-        the loop itself (not a routine revalidation outcome) and must not be
-        swallowed: a silently-dead loop leaves an already-open socket at its
-        original privilege forever — the exact gap this loop exists to
+        Mirrors ``niuu.session_proxy._revalidate_loop``'s asymmetric failure
+        handling — a *transient* ``RoomRoleResolutionError`` (a momentary
+        Forge blip) does not immediately close an otherwise-healthy
+        connection — but that grace is BOUNDED, not unlimited: an authority
+        that never recovers must not keep a socket open forever on stale
+        authorization. After ``room_role_revalidate_max_consecutive_failures``
+        in a row, or ``room_role_revalidate_max_staleness_seconds`` since the
+        first one (whichever comes first), the socket closes (1011) just
+        like any other unexpected loop failure. A single successful
+        revalidation (allowed OR explicitly denied — anything that isn't
+        this typed error) resets both counters.
+
+        Any OTHER exception reaching this function is an unexpected failure
+        of the loop itself (not a routine revalidation outcome) and must not
+        be swallowed: a silently-dead loop leaves an already-open socket at
+        its original privilege forever — the exact gap this loop exists to
         close. Fail closed and loud instead.
         """
-        interval = self._settings.ws_auth.room_role_revalidate_interval_seconds
+        cfg = self._settings.ws_auth
+        consecutive_failures = 0
+        first_failure_at: float | None = None
         try:
             while True:
-                await asyncio.sleep(interval)
-                if not await self._revalidate_remote_room_role(websocket, original_role):
+                await asyncio.sleep(cfg.room_role_revalidate_interval_seconds)
+                try:
+                    allowed = await self._revalidate_remote_room_role(websocket, original_role)
+                except RoomRoleResolutionError:
+                    consecutive_failures += 1
+                    now = time.monotonic()
+                    if first_failure_at is None:
+                        first_failure_at = now
+                    stale_for = now - first_failure_at
+                    if (
+                        consecutive_failures >= cfg.room_role_revalidate_max_consecutive_failures
+                        or stale_for >= cfg.room_role_revalidate_max_staleness_seconds
+                    ):
+                        logger.error(
+                            "Room role revalidation failed %d times over %.1fs; closing "
+                            "the socket rather than trusting a stale authorization "
+                            "indefinitely",
+                            consecutive_failures,
+                            stale_for,
+                        )
+                        await websocket.close(
+                            code=1011, reason="Room role authorization unavailable"
+                        )
+                        return
+                    logger.warning(
+                        "Room role revalidation failed transiently (%d/%d); keeping the "
+                        "connection open",
+                        consecutive_failures,
+                        cfg.room_role_revalidate_max_consecutive_failures,
+                        exc_info=True,
+                    )
+                    continue
+                consecutive_failures = 0
+                first_failure_at = None
+                if not allowed:
                     await websocket.close(code=1008, reason="Access revoked or downgraded")
                     return
         except Exception:

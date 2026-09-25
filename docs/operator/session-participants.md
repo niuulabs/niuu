@@ -120,6 +120,25 @@ verified against a live cluster.** Do not describe `remote` mode as
 trip has been exercised against a running deployment with
 `enforce_ownership: false`.
 
+**`enforce_ownership: false` also means `/terminal/` and devrunner's
+`.services` routes stay unrestricted by room role.** Room-role gating
+(`_enforce_room_role`, and the `GET .../participants/role` endpoint this
+whole feature adds) only covers `/api/*` — it was never in scope for
+`/terminal/` (routed straight to `ttyd` by `charts/skuld/templates/nginx
+-configmap.yaml`, not through the broker's ASGI app at all) or the
+devrunner-local-service-manager surface. With `enforce_ownership: true`,
+the pod's ext_authz sidecar gates every path including those. With it
+`false` — which `remote` mode *requires* — any caller who can reach the
+pod with a valid IdP-authenticated identity reaches `/terminal/` (a raw
+shell) and `.services` unrestricted, same as any other non-enforced
+deployment today. This is **not a new regression `remote` mode
+introduces**; it is the existing, unchanged behavior of running with
+`enforce_ownership: false` at all. It does mean a participant grant is a
+narrower promise than "may reach this pod" on such a deployment — an
+invited viewer and an uninvited caller who can route to the pod get the
+same terminal/devrunner exposure either way; only the room-gated `/api/*`
+surface actually distinguishes them.
+
 Room-role resolution follows Skuld's `ws_auth.room_role_source` setting
 (`process` renders `proxy`; every other backend keeps the default,
 `deployment`, unless the deployment opted into `remote`):

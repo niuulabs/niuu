@@ -220,6 +220,54 @@ def _create_pod_manager(settings: Settings) -> PodManager:
     return instance
 
 
+_OPENBAO_SECRET_INJECTION_ADAPTER = (
+    "volundr.adapters.outbound.openbao_secret_injection.OpenBaoAgentInjectionAdapter"
+)
+
+
+def _validate_remote_room_role_config(settings: Settings, runtime_backend: str) -> None:
+    """Fail fast at startup rather than shipping a 'remote' config that can never work.
+
+    ``pod_manager.room_role_source`` is a whole-deployment decision (see its
+    own field description in ``volundr/config.py``) — every future session
+    pod's trust boundary changes with it, so refusing an impossible
+    combination once at process startup is far better than letting it
+    render broken session pods one at a time, discovered only when the
+    first invited participant can never attach.
+    """
+    if settings.pod_manager.room_role_source != "remote":
+        return
+    if runtime_backend != "kubernetes":
+        return
+    session_defaults = settings.pod_manager.kwargs.get("session_defaults") or {}
+    ws_auth_defaults = session_defaults.get("wsAuth") or {}
+    if ws_auth_defaults.get("enforce_ownership"):
+        raise ValueError(
+            "pod_manager.room_role_source is 'remote' but pod_manager.kwargs."
+            "session_defaults.wsAuth.enforce_ownership is true — the pod-local "
+            "ext_authz sidecar (identity.adapters.envoy_authz) would gate every "
+            "connection to Cedar's owner/admin-only 'start' action before a "
+            "remote room-role lookup ever ran, so a participant could never "
+            "attach. Set pod_manager.kwargs.session_defaults.wsAuth"
+            ".enforce_ownership: false, or set pod_manager.room_role_source "
+            "back to 'deployment'."
+        )
+    if settings.secret_injection.adapter != _OPENBAO_SECRET_INJECTION_ADAPTER:
+        raise ValueError(
+            "pod_manager.room_role_source is 'remote' but secret_injection.adapter "
+            f"is {settings.secret_injection.adapter!r}, not "
+            f"{_OPENBAO_SECRET_INJECTION_ADAPTER!r} — "
+            "skuld.room_role_remote.RemoteAuthorizationAdapter's session-binding "
+            "check (see rest_session_participants._require_session_scoped_"
+            "workload_credential) trusts the openbao-session-{id} service "
+            "account OpenBaoAgentInjectionAdapter creates per session; without "
+            "it, session pods have no per-session service account for Forge's "
+            "role endpoint to bind a workload credential to. Configure "
+            f"secret_injection.adapter: {_OPENBAO_SECRET_INJECTION_ADAPTER!r}, "
+            "or set pod_manager.room_role_source back to 'deployment'."
+        )
+
+
 def _create_resident_controllers(
     settings: Settings,
     pod_manager: PodManager,

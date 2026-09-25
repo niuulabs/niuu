@@ -462,6 +462,28 @@ class WsAuthConfig(BaseModel):
             "room_role_source is 'remote'."
         ),
     )
+    room_role_revalidate_max_consecutive_failures: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "A transient RoomRoleResolutionError during revalidation (a "
+            "momentary Forge blip) keeps the connection open rather than "
+            "closing it — but that grace is bounded: after this many "
+            "consecutive failures, or room_role_revalidate_max_staleness_"
+            "seconds since the first one (whichever comes first), the "
+            "socket closes (1011) rather than staying open indefinitely on "
+            "an authority that never recovers."
+        ),
+    )
+    room_role_revalidate_max_staleness_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "See room_role_revalidate_max_consecutive_failures — the time"
+            "-based half of the same bound."
+        ),
+    )
 
     @model_validator(mode="after")
     def _remote_room_role_requires_adapter(self) -> "WsAuthConfig":

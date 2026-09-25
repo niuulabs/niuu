@@ -34,7 +34,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from skuld.broker_api import _effective_room_role, _enforce_room_role
+from skuld.broker_api import _effective_room_role, _enforce_room_role, _room_role_from_state
 from skuld.room_role_port import RoomRoleResolutionError
 
 
@@ -340,3 +340,31 @@ class TestEnforceRoomRoleMiddleware:
         )
         call_next.assert_awaited_once()
         assert getattr(response, "marker", None) == "static-ok"
+
+
+class TestRoomRoleFromState:
+    """Route handlers read the middleware's already-resolved role instead of
+    re-resolving — the fix for the "resolve twice, get two different
+    answers" desync a short 'remote'-mode cache TTL could otherwise cause
+    mid-request (or a raw RoomRoleResolutionError the handler never expected
+    to see, if Forge became unreachable between the two calls)."""
+
+    async def test_reads_the_role_the_middleware_cached_without_resolving_again(self, monkeypatch):
+        _set_room_role_source(monkeypatch, "deployment")
+        request = _request(room_role_header=None, client_host="10.0.0.5")
+        # Simulate what _enforce_room_role already did for this request,
+        # with a DIFFERENT answer than a fresh resolve would now give —
+        # proving the handler reads the cached value, not a live one.
+        request.state = SimpleNamespace(room_role="viewer")
+        role = await _room_role_from_state(request)
+        assert role == "viewer"
+
+    async def test_falls_back_to_a_fresh_resolution_when_state_was_never_populated(
+        self, monkeypatch
+    ):
+        """Only reached by a test calling a route handler directly, bypassing
+        the middleware — real traffic always has state.room_role set."""
+        _set_room_role_source(monkeypatch, "deployment")
+        request = _request(room_role_header=None, client_host="10.0.0.5")
+        role = await _room_role_from_state(request)
+        assert role == "owner"
