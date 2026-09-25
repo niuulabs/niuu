@@ -7,6 +7,7 @@ configured daily cap is reached.  Resets automatically at the UTC day boundary.
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from typing import Any
 
 
 def compute_cost(
@@ -20,6 +21,68 @@ def compute_cost(
         input_tokens * input_per_million / 1_000_000
         + output_tokens * output_per_million / 1_000_000
     )
+
+
+class UnpricedModelError(ValueError):
+    """Raised when pricing_source='bifrost' and the model has no catalog entry."""
+
+
+def resolve_task_cost_usd(
+    model: str,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    pricing_source: str,
+    flat_input_per_million: float,
+    flat_output_per_million: float,
+    pricing_overrides: dict[str, Any] | None = None,
+) -> float:
+    """Cost for one turn, priced from the explicitly configured source.
+
+    ``pricing_source == "bifrost"`` prices from *pricing_overrides* first
+    (``ravn.config.BudgetConfig.pricing_overrides`` — the remedy for a model
+    Bifröst's built-in catalog does not carry), then Bifröst's built-in
+    model-pricing catalog, and raises :class:`UnpricedModelError` when
+    *model* has no entry in either — billing an unpriced (e.g. local) model
+    at a generic flat rate would misreport spend, which is worse than a
+    loud, fixable error. ``pricing_source == "flat"`` always uses the
+    configured flat rate, regardless of model: an explicit operator choice
+    for a deployment whose models Bifröst does not price, not an automatic
+    fallback.
+    """
+    if pricing_source == "flat":
+        return compute_cost(
+            input_tokens,
+            output_tokens,
+            flat_input_per_million,
+            flat_output_per_million,
+        )
+    if pricing_source != "bifrost":
+        raise ValueError(
+            f"Unknown budget.pricing_source {pricing_source!r} — expected 'bifrost' or 'flat'"
+        )
+
+    from bifrost.domain.models import TokenUsage  # noqa: PLC0415
+    from bifrost.pricing import BUILTIN_PRICING, ModelPricing, calculate_cost  # noqa: PLC0415
+
+    overrides: dict[str, ModelPricing] = {}
+    for override_model, override in (pricing_overrides or {}).items():
+        overrides[override_model] = ModelPricing(
+            input_per_million=override.input_per_million,
+            output_per_million=override.output_per_million,
+            cache_creation_per_million=override.cache_creation_per_million,
+            cache_read_per_million=override.cache_read_per_million,
+        )
+
+    if model not in overrides and model not in BUILTIN_PRICING:
+        raise UnpricedModelError(
+            f"budget.pricing_source is 'bifrost' but neither budget.pricing_overrides "
+            f"nor Bifröst's built-in catalog has a pricing entry for model {model!r} — "
+            "add it to budget.pricing_overrides, or set budget.pricing_source: flat "
+            "to bill this deployment's models at a configured flat rate instead"
+        )
+    usage = TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens)
+    return calculate_cost(model, usage, overrides=overrides)
 
 
 class DailyBudgetTracker:
@@ -67,6 +130,19 @@ class DailyBudgetTracker:
         """Add spend from a completed task."""
         self._maybe_reset()
         self._spent_today += cost_usd
+
+    def seed(self, spent_usd: float, *, day: date) -> None:
+        """Hydrate today's counter from durable state read at startup.
+
+        Called once, before the first turn, with the ledger's own total for
+        *day* so a restart resumes the same day's count instead of silently
+        forgetting spend already recorded elsewhere (the budget cap would
+        otherwise reset to zero on every restart no matter how much was
+        already spent today).
+        """
+        self._current_date = day
+        self._spent_today = spent_usd
+        self._warn_emitted_today = self.warn_threshold_reached
 
     def can_spend(self, estimated_cost_usd: float = 0.0) -> bool:
         """Return True if adding *estimated_cost_usd* keeps us within the cap.

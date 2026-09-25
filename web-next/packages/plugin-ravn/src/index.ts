@@ -158,7 +158,13 @@ export {
   type SessionStatus,
   type Session,
 } from './domain/session';
-export { triggerKindSchema, triggerSchema, type TriggerKind, type Trigger } from './domain/trigger';
+export {
+  triggerKindSchema,
+  triggerSchema,
+  type TriggerKind,
+  type Trigger,
+  type CreatedTrigger,
+} from './domain/trigger';
 export { messageKindSchema, messageSchema, type MessageKind, type Message } from './domain/message';
 
 // Application logic

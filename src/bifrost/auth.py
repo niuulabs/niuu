@@ -33,6 +33,18 @@ class AuthMode(StrEnum):
     MESH = "mesh"
     """Service-mesh / Envoy injected identity headers."""
 
+    OIDC = "oidc"
+    """In-process JWT verification via JWKS — for a host without Envoy.
+
+    Set automatically by the CLI host when ``host_auth.mode: oidc``
+    (``cli.commands.platform._resolve_local_pod_manager_env``); every
+    caller must present a bearer token signature-verified against the
+    configured OIDC issuer(s), the same verification
+    ``identity.adapters.jwks.JwksBearerAuthenticationAdapter`` performs for
+    every other co-hosted service. ``X-Agent-Id`` header spoofing is not
+    accepted in this mode.
+    """
+
 
 @dataclass
 class AgentIdentity:
@@ -42,6 +54,14 @@ class AgentIdentity:
     tenant_id: str = "default"
     session_id: str = ""
     saga_id: str = ""
+    #: Roles asserted by the verified credential, when the auth mode can
+    #: carry them: oidc (the token's role claim, via JwksBearerAuthentication
+    #: Adapter/Principal.roles) and pat (an optional 'roles' claim — not
+    #: every PAT issuer sets one; niuu.adapters.memory_token_issuer never
+    #: does). Empty for 'mesh'/'open', which have no per-caller role concept.
+    #: See admin_reload_keys in bifrost.inbound.routes for the one place
+    #: this is currently enforced.
+    roles: tuple[str, ...] = ()
 
 
 #: Attribution headers, canonical name first.

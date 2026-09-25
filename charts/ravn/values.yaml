@@ -70,7 +70,40 @@ config:
   #         subject_prefix: "ravn.environment"
   #       room:
   #         url: "http://skuld:8081"
+  #     # Which repos each tenant's event triggers may reference — empty by
+  #     # default (fail closed): see ravn.config.TriggerRepoAllowlistConfig.
+  #     trigger_repo_allowlist:
+  #       grants:
+  #         tenant-a: ["org/repo-a"]
+  #     # Whether any resident in THIS deployment actually executes stored
+  #     # triggers — operator-declared, kept in sync with the volundr
+  #     # chart's podManager.kwargs.resident_triggers_enabled and the skuld
+  #     # chart's resident.triggers.enabled. See
+  #     # ravn.config.TriggerExecutionConfig for why this cannot be
+  #     # auto-detected from this process.
+  #     trigger_execution:
+  #       enabled: false
   settings: {}
+
+# database.enabled / persistence.enabled are general-purpose: they existed
+# before trigger/budget storage did (persistence already backs the cron job
+# store and a sqlite memory backend under the same mount) and an operator
+# may set either for those, unrelated to this feature. So they are NOT by
+# themselves what turns POST /api/v1/ravn/triggers / GET /api/v1/ravn/budget/*
+# on — triggerStore.enabled / budgetLedger.enabled (below) are the explicit,
+# feature-specific opt-in; database.enabled/persistence.enabled then say
+# WHERE that store lives. An already-deployed release with persistence.enabled
+# or database.enabled true for its own, prior reasons gets no new behaviour
+# from this feature until it ALSO sets triggerStore.enabled/budgetLedger.enabled.
+database:
+  enabled: false
+  # Secret holding the Postgres DSN both trigger_store and budget_ledger
+  # read from — they resolve to the same env var on purpose, so they share
+  # one connection pool (see ravn.adapters._lazy_asyncpg_pool) instead of
+  # each opening its own.
+  existingSecret: ""
+  secretKey: "dsn"
+  dsnEnvVar: "RAVN_STORE_DSN"
 
 persistence:
   enabled: false
@@ -78,6 +111,25 @@ persistence:
   accessMode: ReadWriteOnce
   size: 1Gi
   mountPath: /home/niuu/.ravn
+
+# Durable storage for POST /api/v1/ravn/triggers (ravn.config.TriggerStoreConfig).
+# Opt-in (default false): with it left false, /api/v1/ravn/triggers returns
+# 503 with the remedy, and /api/v1/ravn/settings reports the store
+# unavailable — exactly as if this feature did not exist, regardless of
+# database.enabled/persistence.enabled being set for something else. When
+# true, this chart picks the Postgres adapter if database.enabled, else the
+# file adapter if persistence.enabled, else the render fails (an operator
+# who asks for the store must also provide it a backing store). This chart
+# runs behind an HPA (see autoscaling below) — each replica keeping its own
+# file would give a different, incomplete trigger set, so a horizontally
+# scaled deployment with triggerStore.enabled MUST also set database.enabled.
+triggerStore:
+  enabled: false
+
+# Durable storage for GET/POST /api/v1/ravn/budget/* (ravn.config.BudgetLedgerConfig).
+# Same opt-in shape and Postgres/file selection as triggerStore above.
+budgetLedger:
+  enabled: false
 
 envoy:
   enabled: false
@@ -116,6 +168,7 @@ envoy:
     extraClaimHeaders: []
     bypassPrefixes:
       - /health
+      - /api/v1/ravn/health
     workload:
       enabled: false
       issuer: ""

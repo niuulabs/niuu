@@ -172,8 +172,20 @@ ravn:
   enabled: true
   command:
     - ravn-api
-  persistence:
-    enabled: false
+  # trigger_store/budget_ledger are opt-in (empty adapter by default — see
+  # ravn.config.TriggerStoreConfig/BudgetLedgerConfig): with
+  # triggerStore.enabled/budgetLedger.enabled left at their default false,
+  # this Ravn API has no durable trigger/budget store, and POST/GET/DELETE
+  # /api/v1/ravn/triggers and /api/v1/ravn/budget/* return 503 — matching
+  # this umbrella's pre-existing behavior. Set triggerStore.enabled: true /
+  # budgetLedger.enabled: true, plus persistence.enabled: true (a
+  # single-replica, PVC-backed file store) or database.enabled: true (with a
+  # dsn-shaped secret — the shared volundr-postgres-app secret used by
+  # guild/observatory above is username/password-shaped, not dsn-shaped, so
+  # it cannot be reused here as-is), to opt in. database.enabled/
+  # persistence.enabled alone do NOT turn this on — they are also used for
+  # things unrelated to trigger/budget storage (persistence already backs
+  # the cron job store and a sqlite memory backend).
 
 observatory:
   enabled: true

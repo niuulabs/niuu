@@ -5,6 +5,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from mimir.adapters.flux import FluxKnowledgeDeploymentAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.ports.deployment import DeploymentRequest, KnowledgeDeploymentPort
@@ -53,6 +54,7 @@ def test_mount_discovery_reads_writes_and_credentials_are_tenant_scoped(tmp_path
             MarkdownMimirAdapter(root=tmp_path / "shared"),
             deployment=deployment,
             public_url="https://mimir.test/api/v1",
+            auth=EnvoyHeaderAuthenticationAdapter(),
         ).router
     )
     with TestClient(app) as client:
@@ -115,7 +117,11 @@ def test_registry_cannot_read_edit_or_delete_another_tenant_connection(tmp_path)
     entry = store.save_entry(MimirRegistryEntry(name="private", tenant_id="a", enabled=False))
     app = FastAPI()
     app.include_router(
-        MimirRouter(MarkdownMimirAdapter(root=tmp_path / "wiki"), registry_store=store).router
+        MimirRouter(
+            MarkdownMimirAdapter(root=tmp_path / "wiki"),
+            registry_store=store,
+            auth=EnvoyHeaderAuthenticationAdapter(),
+        ).router
     )
     with TestClient(app) as client:
         assert client.get("/registry/mounts", headers=identity("b")).json() == []
@@ -276,7 +282,9 @@ def test_tenant_registry_cannot_import_adapters_or_read_host_secrets(tmp_path, s
     app = FastAPI()
     app.include_router(
         MimirRouter(
-            MarkdownMimirAdapter(root=tmp_path / "wiki"), registry_store=MimirRegistryStore()
+            MarkdownMimirAdapter(root=tmp_path / "wiki"),
+            registry_store=MimirRegistryStore(),
+            auth=EnvoyHeaderAuthenticationAdapter(),
         ).router
     )
     with TestClient(app) as client:

@@ -1174,13 +1174,17 @@ def test_model_server_is_a_local_provider_configured_from_runtime_settings():
         MODEL_SERVER_SLUG,
         _default_integration_definitions,
     )
+    from volundr.domain.model_gateway import MODEL_GATEWAY_TOKEN_ENV
 
     entry = next(e for e in _default_integration_definitions() if e.slug == MODEL_SERVER_SLUG)
     assert entry.integration_type == "ai_provider"
     assert entry.model_vendor == "local"
     assert entry.auth_type == "none"
     assert entry.env_from_credentials == {}
-    assert entry.env_from_config == {MODEL_GATEWAY_URL_ENV: "gateway_url"}
+    assert entry.env_from_config == {
+        MODEL_GATEWAY_URL_ENV: "gateway_url",
+        MODEL_GATEWAY_TOKEN_ENV: "token",
+    }
     assert "Settings → Runtime" in entry.description
 
 
@@ -1199,13 +1203,17 @@ def test_env_from_config_reaches_the_registry():
         MODEL_SERVER_SLUG,
         _default_integration_definitions,
     )
+    from volundr.domain.model_gateway import MODEL_GATEWAY_TOKEN_ENV
     from volundr.domain.services.integration_registry import definitions_from_config
 
     loaded = definitions_from_config(
         [entry.model_dump() for entry in _default_integration_definitions()]
     )
     entry = next(d for d in loaded if d.slug == MODEL_SERVER_SLUG)
-    assert entry.env_from_config == {MODEL_GATEWAY_URL_ENV: "gateway_url"}
+    assert entry.env_from_config == {
+        MODEL_GATEWAY_URL_ENV: "gateway_url",
+        MODEL_GATEWAY_TOKEN_ENV: "token",
+    }
 
 
 def test_git_hosts_sign_the_cli_tools_in():

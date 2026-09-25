@@ -300,6 +300,7 @@ describe('createMockTriggerStore', () => {
     expect(trigger.id).toBeDefined();
     expect(trigger.personaName).toBe('architect');
     expect(trigger.createdAt).toBeDefined();
+    expect(trigger.executionEnabled).toBe(true);
 
     const all = await store.listTriggers();
     expect(all.length).toBe(11);

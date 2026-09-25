@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter, _extract_typed_edges
 from mimir.config import EvidenceConfig, RankingConfig
 from mimir.learning import (
@@ -34,6 +35,17 @@ from mimir.ranking import (
 )
 from mimir.router import MimirRouter
 from niuu.domain.mimir import MimirPageMeta, PageConfidence, PageType
+
+#: Headers satisfying both _require_write_auth (tenant + WRITE_ROLES) and
+#: _require_deploy_auth for the default EnvoyHeaderAuthenticationAdapter fixture
+#: these tests use — these tests exercise CRUD/search/ranking logic, not auth,
+#: so they get a fixed admin identity rather than testing auth per call.
+_ADMIN_HEADERS = {
+    "x-auth-user-id": "test-user",
+    "x-auth-tenant": "test-tenant",
+    "x-auth-roles": "volundr:admin",
+}
+
 
 NOW = datetime(2026, 6, 12, tzinfo=UTC)
 
@@ -408,10 +420,10 @@ def test_find_bearing_pages() -> None:
 
 def _client(tmp_path: Path) -> TestClient:
     adapter = _graph_adapter(tmp_path)
-    router = MimirRouter(adapter=adapter)
+    router = MimirRouter(adapter=adapter, auth=EnvoyHeaderAuthenticationAdapter())
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
-    return TestClient(app)
+    return TestClient(app, headers=_ADMIN_HEADERS)
 
 
 def test_search_debug_returns_breakdown(tmp_path: Path) -> None:

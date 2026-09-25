@@ -371,15 +371,29 @@ across the network, becomes a provider in two places at once:
 That provider unlocks the `local` vendor, which the Claude Code, Claude Code
 Interactive and OpenAI Codex engines accept, so it appears in the launch
 dialogs like any other account, with a **Model** dropdown of the ids you
-listed. A session launched with it gets `SKULD__MODEL_GATEWAY__URL` from the
-connection and its Skuld routes the CLI through the gateway: Claude Code with
-`ANTHROPIC_BASE_URL` (the platform API key is dropped so it cannot win), Codex
-with a `niuu` model provider block (`wire_api = "responses"`: the gateway
-serves the OpenAI Responses API at `/v1/responses` for it, its key from
+listed. A session launched with it gets both `SKULD__MODEL_GATEWAY__URL` and
+`SKULD__MODEL_GATEWAY__TOKEN` from the connection's config (the seeded **Model
+server** integration's `gateway_url` and `token`, mapped by
+`IntegrationContributor`'s `env_from_config` — see
+`cli.commands.platform.model_server_seed_connections` and
+`volundr.config`'s `model-server` integration definition; the resident-only
+`ModelGatewayContributor` isn't wired into docker or mini mode), and its Skuld
+routes the CLI through the gateway: Claude Code with `ANTHROPIC_BASE_URL` (the
+platform API key is dropped so it cannot win), Codex with a `niuu` model
+provider block (`wire_api = "responses"`: the gateway serves the OpenAI
+Responses API at `/v1/responses` for it, its key from
 `NIUU_MODEL_GATEWAY_TOKEN`; no ChatGPT sign-in is attempted). Ravn residents
 already talk to the gateway, so the server's models show up for them as
 `niuu/<model>` without further setup. The bundle's gateway is open; the token
-the CLIs present is a placeholder there.
+the CLIs present is the named `OPEN_GATEWAY_TOKEN` sentinel
+(`volundr.adapters.outbound.contributors.model_gateway`) — not a credential, a
+documented literal the gateway ignores because it runs `auth_mode: open`. The
+CLIs refuse to start with a blank token instead of silently sending no
+credential or leaking the host's own subscription login, so this sentinel is
+load-bearing until real per-session credentials exist. `niuu up` only ever
+seeds this connection where the bifrost plugin is enabled, which `auth.mode:
+oidc` hosts cannot do yet (see `CLISettings._OIDC_UNCOVERED_PLUGINS`), so the
+sentinel is never sent under `oidc`.
 
 A server that stops serving a model fails the session's first turn with the
 gateway's error, not a silent fallback to a cloud model. Switching the

@@ -14,12 +14,27 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.identity import (
+    AllowAllHeaderAuthenticationAdapter,
+    EnvoyHeaderAuthenticationAdapter,
+)
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.registry import MimirRegistryStore
 from mimir.router import MimirRouter
 from niuu.domain.mimir import compute_source_id
 from ravn.adapters.mimir.composite import CompositeMimirAdapter
 from ravn.domain.mimir import MimirMount, WriteRouting
+
+#: Headers satisfying both _require_write_auth (tenant + WRITE_ROLES) and
+#: _require_deploy_auth for the default EnvoyHeaderAuthenticationAdapter fixture
+#: these tests use — these tests exercise CRUD/search/ranking logic, not auth,
+#: so they get a fixed admin identity rather than testing auth per call.
+_ADMIN_HEADERS = {
+    "x-auth-user-id": "test-user",
+    "x-auth-tenant": "test-tenant",
+    "x-auth-roles": "volundr:admin",
+}
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -28,7 +43,9 @@ from ravn.domain.mimir import MimirMount, WriteRouting
 
 def _make_app(tmp_path: Path) -> FastAPI:
     adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
-    router = MimirRouter(adapter=adapter, name="test", role="local")
+    router = MimirRouter(
+        adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
+    )
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
     return app
@@ -50,7 +67,9 @@ def _make_composite_app(tmp_path: Path) -> FastAPI:
             default=["local"],
         ),
     )
-    router = MimirRouter(adapter=adapter, name="test", role="local")
+    router = MimirRouter(
+        adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
+    )
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
     return app
@@ -64,6 +83,31 @@ def _make_registry_app(tmp_path: Path) -> FastAPI:
         name="test",
         role="local",
         registry_store=registry_store,
+        auth=EnvoyHeaderAuthenticationAdapter(),
+    )
+    app = FastAPI()
+    app.include_router(router.router, prefix="/mimir")
+    return app
+
+
+def _make_none_mode_registry_app(tmp_path: Path) -> FastAPI:
+    """A registry app under auth_mode: none — the only mode a *local*,
+
+    host-path registry mount can be created in: _request_scope forces
+    tenant "" there (the unrestricted host operator), while a real identity
+    (envoy/oidc) always carries some tenant once it satisfies
+    _require_write_auth's write-role requirement, and a tenant-scoped
+    caller is correctly refused a local mount by _validate_registry_write.
+    """
+    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    registry_store = MimirRegistryStore(tmp_path / "mimir" / ".mimir-registry.json")
+    router = MimirRouter(
+        adapter=adapter,
+        name="test",
+        role="local",
+        registry_store=registry_store,
+        auth=AllowAllHeaderAuthenticationAdapter(),
+        auth_mode="none",
     )
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
@@ -72,7 +116,7 @@ def _make_registry_app(tmp_path: Path) -> FastAPI:
 
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
-    return TestClient(_make_app(tmp_path))
+    return TestClient(_make_app(tmp_path), headers=_ADMIN_HEADERS)
 
 
 @pytest.fixture()
@@ -80,10 +124,12 @@ def client_with_page(tmp_path: Path) -> TestClient:
     """Build a TestClient pre-populated with one wiki page."""
     adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
     # Populate via the HTTP client itself — avoids direct asyncio.run()
-    router = MimirRouter(adapter=adapter, name="test", role="local")
+    router = MimirRouter(
+        adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
+    )
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
-    tc = TestClient(app)
+    tc = TestClient(app, headers=_ADMIN_HEADERS)
 
     # Ingest a source and write a page via the API
     tc.post(
@@ -111,10 +157,12 @@ def client_with_page(tmp_path: Path) -> TestClient:
 @pytest.fixture()
 def client_with_sourced_page(tmp_path: Path) -> TestClient:
     adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
-    router = MimirRouter(adapter=adapter, name="test", role="local")
+    router = MimirRouter(
+        adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
+    )
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
-    tc = TestClient(app)
+    tc = TestClient(app, headers=_ADMIN_HEADERS)
 
     ingest = tc.post(
         "/mimir/ingest",
@@ -138,10 +186,12 @@ def client_with_sourced_page(tmp_path: Path) -> TestClient:
 @pytest.fixture()
 def client_with_compiled_truth_page(tmp_path: Path) -> TestClient:
     adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
-    router = MimirRouter(adapter=adapter, name="test", role="local")
+    router = MimirRouter(
+        adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
+    )
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
-    tc = TestClient(app)
+    tc = TestClient(app, headers=_ADMIN_HEADERS)
 
     ingest = tc.post(
         "/mimir/ingest",
@@ -184,7 +234,7 @@ def client_with_compiled_truth_page(tmp_path: Path) -> TestClient:
 
 @pytest.fixture()
 def composite_client(tmp_path: Path) -> TestClient:
-    tc = TestClient(_make_composite_app(tmp_path))
+    tc = TestClient(_make_composite_app(tmp_path), headers=_ADMIN_HEADERS)
     tc.put(
         "/mimir/page",
         json={"path": "self/notes/local.md", "content": "# Local\nPersonal note."},
@@ -198,7 +248,7 @@ def composite_client(tmp_path: Path) -> TestClient:
 
 @pytest.fixture()
 def registry_client(tmp_path: Path) -> TestClient:
-    return TestClient(_make_registry_app(tmp_path))
+    return TestClient(_make_registry_app(tmp_path), headers=_ADMIN_HEADERS)
 
 
 # ---------------------------------------------------------------------------
@@ -448,10 +498,12 @@ def test_list_pages_category_filter(client_with_page: TestClient) -> None:
 
 def test_list_pages_prefix_filter(tmp_path: Path) -> None:
     adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
-    router = MimirRouter(adapter=adapter, name="test", role="local")
+    router = MimirRouter(
+        adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
+    )
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
-    client = TestClient(app)
+    client = TestClient(app, headers=_ADMIN_HEADERS)
 
     client.put(
         "/mimir/page",
@@ -529,8 +581,8 @@ def test_registry_mount_crud(registry_client: TestClient) -> None:
 
 def test_registry_local_mount_is_browsable_without_http_server(
     tmp_path: Path,
-    registry_client: TestClient,
 ) -> None:
+    registry_client = TestClient(_make_none_mode_registry_app(tmp_path))
     external_root = tmp_path / "mimir-test"
     external = MarkdownMimirAdapter(root=external_root)
     asyncio.run(
@@ -648,10 +700,12 @@ def test_read_page_falls_back_to_assessment_for_legacy_compiled_truth(
     tmp_path: Path,
 ) -> None:
     adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
-    router = MimirRouter(adapter=adapter, name="test", role="local")
+    router = MimirRouter(
+        adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
+    )
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
-    tc = TestClient(app)
+    tc = TestClient(app, headers=_ADMIN_HEADERS)
 
     tc.put(
         "/mimir/page",
@@ -1042,7 +1096,7 @@ def test_dreams_endpoint_parses_dream_cycle_entries(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    client = TestClient(app)
+    client = TestClient(app, headers=_ADMIN_HEADERS)
 
     resp = client.get("/mimir/dreams")
     assert resp.status_code == 200
@@ -1102,10 +1156,12 @@ def test_sources_unprocessed_excludes_operational_exhaust(tmp_path: Path) -> Non
     from niuu.domain.mimir import MimirSource, compute_content_hash
 
     adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
-    router = MimirRouter(adapter=adapter, name="test", role="local")
+    router = MimirRouter(
+        adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
+    )
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
-    tc = TestClient(app)
+    tc = TestClient(app, headers=_ADMIN_HEADERS)
 
     tc.post(
         "/mimir/ingest",
@@ -1282,7 +1338,7 @@ def test_activity_recent_writes_and_dreams_cover_log_variants(tmp_path: Path) ->
         ),
         encoding="utf-8",
     )
-    client = TestClient(app)
+    client = TestClient(app, headers=_ADMIN_HEADERS)
     client.post(
         "/mimir/ingest",
         json={"title": "Recent Source", "content": "recent content", "source_type": "document"},
@@ -1317,10 +1373,12 @@ def test_mounts_support_remote_http_host_metadata(tmp_path: Path) -> None:
         mounts=[MimirMount(name="remote", port=remote, role="shared", read_priority=0)],
         write_routing=WriteRouting(default=["remote"]),
     )
-    router = MimirRouter(adapter=adapter, name="test", role="local")
+    router = MimirRouter(
+        adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
+    )
     composite_app = FastAPI()
     composite_app.include_router(router.router, prefix="/mimir")
-    client = TestClient(composite_app)
+    client = TestClient(composite_app, headers=_ADMIN_HEADERS)
 
     mounts = client.get("/mimir/mounts")
     assert mounts.status_code == 200
@@ -1409,7 +1467,7 @@ def test_page_response_still_reports_its_mount(client: TestClient) -> None:
 
 
 def test_graph_keeps_duplicate_paths_in_separate_mounts(tmp_path):
-    client = TestClient(_make_composite_app(tmp_path))
+    client = TestClient(_make_composite_app(tmp_path), headers=_ADMIN_HEADERS)
     for mount in ("local", "shared"):
         assert (
             client.put(
@@ -1447,7 +1505,7 @@ def test_graph_keeps_duplicate_paths_in_separate_mounts(tmp_path):
 
 
 def test_graph_preserves_shared_provenance_across_mounts(tmp_path):
-    client = TestClient(_make_composite_app(tmp_path))
+    client = TestClient(_make_composite_app(tmp_path), headers=_ADMIN_HEADERS)
     for mount in ("local", "shared"):
         response = client.put(
             "/mimir/page",
@@ -1470,7 +1528,11 @@ def test_remote_registry_connection_becomes_a_routable_mount(tmp_path):
 
     store = MimirRegistryStore(tmp_path / "registry.json")
     entry = store.save_entry(MimirRegistryEntry(name="ymir", url="http://ymir.test"))
-    router = MimirRouter(MarkdownMimirAdapter(root=tmp_path / "local"), registry_store=store)
+    router = MimirRouter(
+        MarkdownMimirAdapter(root=tmp_path / "local"),
+        registry_store=store,
+        auth=EnvoyHeaderAuthenticationAdapter(),
+    )
     port, name = router._resolve_port("ymir")
     assert isinstance(port, HttpMimirAdapter)
     assert name == "ymir"
@@ -1494,8 +1556,12 @@ def test_federation_diagnostics_read_configured_capture_directory(tmp_path):
         ]
     )
     app = FastAPI()
-    app.include_router(MimirRouter(adapter, eval_capture_dir=tmp_path / "captures").router)
-    with TestClient(app) as client:
+    app.include_router(
+        MimirRouter(
+            adapter, eval_capture_dir=tmp_path / "captures", auth=EnvoyHeaderAuthenticationAdapter()
+        ).router
+    )
+    with TestClient(app, headers=_ADMIN_HEADERS) as client:
         assert client.get("/eval/queries").status_code == 404
         assert (
             client.get("/search", params={"q": "test query", "mount": "notes"}).status_code == 200
@@ -1509,7 +1575,7 @@ def test_federation_diagnostics_read_configured_capture_directory(tmp_path):
 
 
 def test_doctor_can_check_a_selected_filesystem_mount_in_a_federation(tmp_path):
-    client = TestClient(_make_composite_app(tmp_path))
+    client = TestClient(_make_composite_app(tmp_path), headers=_ADMIN_HEADERS)
     response = client.get("/mimir/doctor", params={"mount": "local"})
     assert response.status_code == 200
     assert len(response.json()["checks"]) == 8
@@ -1525,7 +1591,7 @@ def test_federated_lint_failure_returns_json(tmp_path: Path, monkeypatch, cause,
         raise MimirUnavailableError("Mount cannot run lint") from cause
 
     monkeypatch.setattr(CompositeMimirAdapter, "lint", fail_lint)
-    response = TestClient(_make_composite_app(tmp_path)).get("/mimir/lint")
+    response = TestClient(_make_composite_app(tmp_path), headers=_ADMIN_HEADERS).get("/mimir/lint")
     assert response.status_code == status
     assert response.json() == {"detail": "Mount cannot run lint"}
 
@@ -1536,10 +1602,16 @@ def test_registry_mounts_preserve_named_service_write_destination(tmp_path):
     store = MimirRegistryStore(tmp_path / "registry.json")
     store.save_entry(MimirRegistryEntry(name="remote", url="https://mimir.example"))
     adapter = MarkdownMimirAdapter(root=tmp_path / "shared")
-    router = MimirRouter(adapter, name="shared", role="shared", registry_store=store)
+    router = MimirRouter(
+        adapter,
+        name="shared",
+        role="shared",
+        registry_store=store,
+        auth=EnvoyHeaderAuthenticationAdapter(),
+    )
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
-    with TestClient(app) as client:
+    with TestClient(app, headers=_ADMIN_HEADERS) as client:
         response = client.put(
             "/mimir/page",
             json={

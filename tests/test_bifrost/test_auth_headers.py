@@ -21,8 +21,8 @@ def identity_app() -> FastAPI:
     adapter = OpenAuthAdapter()
 
     @app.get("/who")
-    def who(request: Request) -> dict[str, str]:
-        identity = adapter.extract(request)
+    async def who(request: Request) -> dict[str, str]:
+        identity = await adapter.extract(request)
         return {
             "agentId": identity.agent_id,
             "tenantId": identity.tenant_id,

@@ -860,6 +860,76 @@ _DEFAULT_BASE_URLS: dict[str, str] = {
 }
 
 
+class PATRevocationConfig(BaseModel):
+    """Revocation check applied to PATs Bifröst accepts (``auth_mode: pat``).
+
+    Dynamic-adapter slot (fully-qualified ``niuu.domain.services.pat_validator
+    .PATValidator`` subclass + plain kwargs — see .claude/rules/dynamic-adapters.md),
+    mirroring ``ting.config.PATConfig`` / ``volundr.config.PATConfig``'s
+    ``validator_adapter``/``validator_kwargs`` pair.
+
+    ``auth_mode: pat`` requires a decision here — ``BifrostConfig``'s
+    ``_pat_mode_requires_revocation_decision`` validator refuses to start
+    otherwise. Configure ``adapter`` (a real revocation check), or set
+    ``enabled: false`` to explicitly accept any signature-valid PAT
+    regardless of revocation status. There is no silent default either way —
+    this used to run with no revocation check at all and nothing said so.
+
+    The intended real adapter, ``niuu.adapters.remote_pats.RemotePATValidator``,
+    checks revocation against the platform's identity authority over HTTPS
+    (Bifröst is typically a standalone process — ``bifrost.__main__`` or the
+    ``BifrostPlugin`` mount, see ``bifrost.app.create_app`` — with no
+    database pool of its own, the same situation Ravn's own gateway and
+    off-cluster residents are in; see .claude/rules/architecture.md's
+    workload-identity section), and that adapter refuses non-HTTPS URLs with
+    no localhost exception (unlike the JWKS adapters) — so it has no URL a
+    same-host mini/docker deployment without a locally-trusted TLS
+    certificate can default to. Configure ``adapter``/``kwargs.authority_url``
+    explicitly for a real multi-host deployment; ``bifrost.app.
+    _build_pat_revocation_validator`` supplies the ``repo`` argument
+    ``PATValidator.__init__`` requires — ``RemotePATValidator`` never reads
+    it (its own ``is_valid`` calls the authority instead, see
+    ``tests/test_niuu/test_remote_authority.py``), so a real, pool-backed
+    ``repo`` is not required, and that function rejects at startup any
+    configured adapter that *does* need one (it would silently crash on the
+    first PAT-checked request instead). Configuring a repo-backed validator
+    (plain ``PATValidator`` + ``PostgresPATRepository``) is not supported
+    through this flat-kwargs slot for that reason — that needs a database
+    pool this composition root does not have.
+
+    Also applied under ``auth_mode: oidc`` when a caller's verified bearer
+    happens to be a PAT (an IDP-backed ``TokenIssuer`` PAT shares the same
+    issuer/JWKS as regular tokens — see ``bifrost.adapters.auth.oidc.
+    OidcAuthAdapter``) — optional there, since oidc's primary verification
+    is the bearer signature, not PAT-specific.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether auth_mode: pat requires a revocation check. True (the "
+            "default) requires 'adapter' to be configured too; set False to "
+            "explicitly accept any signature-valid PAT with no revocation check."
+        ),
+    )
+    adapter: str = Field(
+        default="",
+        description="Fully-qualified PATValidator subclass — see class docstring.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Kwargs for `adapter`, e.g. {'authority_url': 'https://...'}.",
+    )
+    cache_ttl: float = Field(
+        default=300.0,
+        description="Seconds to cache a valid-PAT lookup before re-checking revocation.",
+    )
+    revoked_cache_ttl: float = Field(
+        default=60.0,
+        description="Seconds to cache a revoked-PAT lookup (shorter for fast propagation).",
+    )
+
+
 class BifrostConfig(BaseModel):
     """Top-level Bifröst gateway configuration."""
 
@@ -922,8 +992,11 @@ class BifrostConfig(BaseModel):
     auth_mode: AuthMode = Field(
         default=AuthMode.OPEN,
         description=(
-            "Authentication mode: 'open' (trust headers), "
-            "'pat' (Bearer JWT), or 'mesh' (Envoy injected headers)."
+            "Authentication mode: 'open' (trust headers), 'pat' (Bearer JWT), "
+            "'mesh' (Envoy injected headers), or 'oidc' (in-process JWKS "
+            "verification — set automatically by the CLI host from "
+            "host_auth.mode: oidc, see cli.commands.platform."
+            "_resolve_local_pod_manager_env)."
         ),
     )
     pat_secret: str = Field(
@@ -934,6 +1007,40 @@ class BifrostConfig(BaseModel):
             "Read from the PAT_SECRET environment variable if blank."
         ),
     )
+    pat_revocation: PATRevocationConfig = Field(
+        default_factory=PATRevocationConfig,
+        description="Revocation check applied to PATs accepted in auth_mode='pat'.",
+    )
+    oidc_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Kwargs for identity.adapters.jwks.JwksBearerAuthenticationAdapter "
+            "(issuers, clock_leeway_seconds, ...). Required when auth_mode = 'oidc'. "
+            "Set by the CLI host from host_auth.oidc (cli.config._oidc_adapter_kwargs) "
+            "when host_auth.mode: oidc."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _pat_mode_requires_revocation_decision(self) -> BifrostConfig:
+        """auth_mode: pat must not silently run with no revocation check.
+
+        Before pat_revocation existed, every PAT accepted in 'pat' mode was
+        never checked for revocation at all — signature verification alone,
+        forever. Rather than keep that as the unstated default, an operator
+        must now say so explicitly (pat_revocation.enabled: false) or
+        configure a real check (pat_revocation.adapter).
+        """
+        if self.auth_mode != AuthMode.PAT:
+            return self
+        if self.pat_revocation.adapter or not self.pat_revocation.enabled:
+            return self
+        raise ValueError(
+            "auth_mode: 'pat' requires pat_revocation.adapter (a PATValidator, "
+            "e.g. niuu.adapters.remote_pats.RemotePATValidator) to check "
+            "revocation, or an explicit pat_revocation.enabled: false to accept "
+            "any signature-valid PAT regardless of revocation status."
+        )
 
     # ── Pricing overrides ───────────────────────────────────────────────────
     pricing: dict[str, PricingOverride] = Field(

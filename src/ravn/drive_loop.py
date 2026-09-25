@@ -45,13 +45,12 @@ from ravn.adapters.channels.skuld_channel import SkuldChannel
 from ravn.adapters.channels.task_context import TaskContextChannel
 from ravn.adapters.events.noop_publisher import NoOpEventPublisher
 from ravn.config import (
-    BudgetConfig,
     HttpChannelConfig,
     InitiativeConfig,
     ResidentStateConfig,
     Settings,
 )
-from ravn.domain.budget import DailyBudgetTracker, compute_cost
+from ravn.domain.budget import DailyBudgetTracker, resolve_task_cost_usd
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.exceptions import LLMError, PromptBudgetExceededError
 from ravn.domain.help_needed import build_help_needed_event
@@ -67,6 +66,7 @@ from ravn.domain.valkyrie_contracts import (
 )
 from ravn.ports.channel import ChannelPort
 from ravn.ports.event_publisher import EventPublisherPort
+from ravn.ports.resident_budget import ResidentBudgetPort
 from ravn.ports.trigger import TriggerPort
 from ravn.prompt_builder import build_initiative_prompt
 from ravn.reflex import ReflexInjector, build_reflex_injector
@@ -1366,6 +1366,7 @@ class DriveLoop:
         event_publisher: EventPublisherPort | None = None,
         resume: bool = False,
         budget: DailyBudgetTracker | None = None,
+        resident_budget: ResidentBudgetPort | None = None,
         mimir: MimirPort | None = None,
         sleipnir_publisher: object | None = None,
     ) -> None:
@@ -1420,17 +1421,18 @@ class DriveLoop:
             "ravn_current_task",
             default=None,
         )
-        budget_cfg = getattr(settings, "budget", None)
-        if isinstance(budget_cfg, BudgetConfig):
-            _cap = budget_cfg.daily_cap_usd
-            _warn = budget_cfg.warn_at_percent
-        else:
-            _cap = 1.0
-            _warn = 80
         self._budget: DailyBudgetTracker = budget or DailyBudgetTracker(
-            daily_cap_usd=_cap,
-            warn_at_percent=_warn,
+            daily_cap_usd=settings.budget.daily_cap_usd,
+            warn_at_percent=settings.budget.warn_at_percent,
         )
+        # resident_budget is only wired in when settings.resident_budget.adapter
+        # names one (see daemon_runtime.py) — an empty adapter is the operator's
+        # decision to run without durable budget reporting (e.g. local/dev CLI
+        # use with no platform to report to), not a broken configuration. When
+        # set, spend is reported synchronously and durably instead of living
+        # only in this process's memory, and identity (ravn_id/tenant_id) is
+        # never this process's concern — the adapter resolves it.
+        self._resident_budget: ResidentBudgetPort | None = resident_budget
 
         # Session-join manager: built once here (composition root) and injected
         # into both this loop's observer and the session_join tool's runtime
@@ -2583,6 +2585,8 @@ class DriveLoop:
 
     async def run(self) -> None:
         """Start all three internal loops and run until cancelled."""
+        if self._resident_budget is not None:
+            await self._seed_budget_from_ledger()
         if self._resume:
             self._load_journal()
         elif self._journal_path.exists():
@@ -2634,14 +2638,20 @@ class DriveLoop:
     # ------------------------------------------------------------------
 
     async def _trigger_watcher(self, trigger: TriggerPort) -> None:
-        """Run a single trigger indefinitely, forwarding tasks to the queue."""
+        """Run a single trigger indefinitely, forwarding tasks to the queue.
+
+        Deliberately does not catch-and-log: a trigger source that gives up
+        (e.g. ``ApiTriggerSource`` after too many consecutive poll failures,
+        or any other ``PermanentPollError``) must end the resident process,
+        not degrade into a watcher that silently stops updating while the
+        resident keeps running on whatever cron/event state it last polled —
+        including triggers since deleted. See ``.claude/rules/no-fallbacks.md``.
+        """
         logger.info("drive_loop: starting trigger %r", trigger.name)
         try:
             await trigger.run(self.enqueue)
         except asyncio.CancelledError:
             return
-        except Exception as exc:
-            logger.error("drive_loop: trigger %r raised unexpected error: %s", trigger.name, exc)
 
     async def _task_executor(self) -> None:
         """Drain the priority queue and execute tasks with the semaphore cap."""
@@ -2891,10 +2901,13 @@ class DriveLoop:
                 "resident_turn_index": task.resident_turn_index,
             },
         )
-        # Budget pre-check: skip when daily cap is reached.
-        # The task is already persisted in the journal and will be retried
-        # after the UTC day rolls over and the budget resets.
-        if not self._budget.can_spend():
+        # Budget pre-check: skip when daily cap is reached. budget.enabled
+        # defaults to True (every already-deployed resident enforces its
+        # cap today) — set it to false to run uncapped, an explicit
+        # operator decision, not a default. The task is already persisted
+        # in the journal and will be retried after the UTC day rolls over
+        # and the budget resets.
+        if self._settings.budget.enabled and not self._budget.can_spend():
             logger.info(
                 "drive_loop: task %s (%r) skipped — daily budget cap reached "
                 "(spent=%.4f remaining=%.4f)",
@@ -3084,7 +3097,7 @@ class DriveLoop:
                     },
                     content=getattr(turn_result, "response", ""),
                 )
-                cost_usd = self._record_task_cost(task, turn_result)
+                cost_usd = await self._record_task_cost(task, turn_result, agent)
                 await self._emit_task_usage(channel, task, turn_result, cost_usd, agent)
                 response_text = (
                     capture_channel.response_text
@@ -3097,7 +3110,7 @@ class DriveLoop:
                     response_text=response_text,
                 )
                 if repair_result is not None:
-                    repair_cost_usd = self._record_task_cost(task, repair_result)
+                    repair_cost_usd = await self._record_task_cost(task, repair_result, agent)
                     await self._emit_task_usage(
                         channel, task, repair_result, repair_cost_usd, agent
                     )
@@ -3109,7 +3122,9 @@ class DriveLoop:
                     response_text=response_text,
                 )
                 if workflow_repair_result is not None:
-                    repair_cost_usd = self._record_task_cost(task, workflow_repair_result)
+                    repair_cost_usd = await self._record_task_cost(
+                        task, workflow_repair_result, agent
+                    )
                     await self._emit_task_usage(
                         channel, task, workflow_repair_result, repair_cost_usd, agent
                     )
@@ -4208,7 +4223,7 @@ class DriveLoop:
                     result_schema=result_schema,
                 )
                 if repair_result is not None:
-                    repair_cost_usd = self._record_task_cost(task, repair_result)
+                    repair_cost_usd = await self._record_task_cost(task, repair_result, agent)
                     if channel is not None and agent is not None:
                         await self._emit_task_usage(
                             channel,
@@ -4794,13 +4809,8 @@ class DriveLoop:
             return
         if self._budget.warn_emitted_today:
             return
-        budget_cfg = getattr(self._settings, "budget", None)
-        if isinstance(budget_cfg, BudgetConfig):
-            daily_cap_usd = budget_cfg.daily_cap_usd
-            warn_at_percent = budget_cfg.warn_at_percent
-        else:
-            daily_cap_usd = self._budget._daily_cap_usd
-            warn_at_percent = self._budget._warn_at_percent
+        daily_cap_usd = self._settings.budget.daily_cap_usd
+        warn_at_percent = self._settings.budget.warn_at_percent
         logger.warning(
             "drive_loop: daily budget warning — spent=%.4f remaining=%.4f cap=%.4f",
             self._budget.spent_today_usd,
@@ -4827,22 +4837,70 @@ class DriveLoop:
             )
         )
 
-    def _record_task_cost(self, task: AgentTask, turn_result: object) -> float | None:
-        """Compute cost from turn_result.usage and record it on the budget tracker."""
+    async def _seed_budget_from_ledger(self) -> None:
+        """Hydrate today's in-memory spend counter from durable state.
+
+        Runs once, before the task executor starts, so a restart resumes the
+        UTC day's real total instead of the cap silently resetting to zero.
+        """
+        assert self._resident_budget is not None  # noqa: S101 — guarded by caller
+        today = datetime.now(UTC).date()
+        spent_usd = await self._resident_budget.seed_today()
+        self._budget.seed(spent_usd, day=today)
+        logger.info("drive_loop: budget seeded from platform — spent_today=%.6f", spent_usd)
+
+    def _model_for_turn(self, agent: object) -> str:
+        """The model that actually served this turn — a persona/runtime
+        override on *agent* takes precedence over the process-wide default,
+        since pricing must match what really ran, not what is configured."""
+        return str(getattr(agent, "_model", "") or self._settings.llm.model)
+
+    async def _record_task_cost(
+        self,
+        task: AgentTask,
+        turn_result: object,
+        agent: object = None,
+    ) -> float | None:
+        """Compute cost from turn_result.usage and report it durably.
+
+        Always runs when there is usage to price — usage events carry
+        ``cost_usd`` regardless of whether cap enforcement or durable
+        reporting is configured (see ``_emit_task_usage``), and this is safe
+        by default because ``pricing_source`` defaults to ``"flat"`` (a
+        per-million-token rate, never a catalog lookup that can fail — see
+        ``ravn.config.BudgetConfig``). ``settings.budget.enabled`` gates only
+        whether the local cap actually blocks new tasks (see the
+        ``can_spend()`` check in ``_run_task_observed``), not pricing.
+
+        Reporting through ``resident_budget`` (when one is wired — see
+        ``settings.resident_budget.adapter``) happens synchronously, in line
+        with the turn it belongs to: a failure raises rather than being
+        logged and dropped, because a silently-lost write is exactly how the
+        daily cap stopped meaning anything before.
+        """
         usage = getattr(turn_result, "usage", None)
         if usage is None:
             return None
         input_tokens: int = getattr(usage, "input_tokens", 0)
         output_tokens: int = getattr(usage, "output_tokens", 0)
-        budget_cfg = getattr(self._settings, "budget", None)
-        if isinstance(budget_cfg, BudgetConfig):
-            input_rate = budget_cfg.input_token_cost_per_million
-            output_rate = budget_cfg.output_token_cost_per_million
-        else:
-            input_rate = 3.0
-            output_rate = 15.0
-        cost_usd = compute_cost(input_tokens, output_tokens, input_rate, output_rate)
+        model = self._model_for_turn(agent)
+        cost_usd = resolve_task_cost_usd(
+            model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            pricing_source=self._settings.budget.pricing_source,
+            flat_input_per_million=self._settings.budget.input_token_cost_per_million,
+            flat_output_per_million=self._settings.budget.output_token_cost_per_million,
+            pricing_overrides=self._settings.budget.pricing_overrides,
+        )
         self._budget.record(cost_usd)
+        if self._resident_budget is not None:
+            await self._resident_budget.record_spend(
+                cost_usd=cost_usd,
+                model=model,
+                cap_usd=self._settings.budget.daily_cap_usd,
+                warn_at=self._settings.budget.warn_at_percent / 100,
+            )
         logger.debug(
             "drive_loop: task %s cost=%.6f spent_today=%.6f remaining=%.6f",
             task.task_id,

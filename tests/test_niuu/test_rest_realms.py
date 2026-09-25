@@ -21,13 +21,17 @@ def _make_principal() -> Principal:
     )
 
 
-def _make_client(*, with_service: bool = True) -> TestClient:
+def _make_client(
+    *,
+    with_service: bool = True,
+    principal: Principal | None = None,
+) -> TestClient:
     app = FastAPI()
     if with_service:
         app.state.realm_service = RealmService(InMemoryRealmRepository())
 
     async def extract_principal() -> Principal:
-        return _make_principal()
+        return principal or _make_principal()
 
     app.include_router(create_realms_router(extract_principal))
     return TestClient(app)
@@ -248,3 +252,97 @@ def test_record_capability_unknown_realm_still_404(client_with_realm) -> None:
         ).status_code
         == 404
     )
+
+
+# ---------------------------------------------------------------------------
+# PUT /{realm_id} — cross-instance realm sync (Guild routing a resident
+# create to a remote Völundr; see _sync_realm_to_instance in rest_volundr.py)
+# ---------------------------------------------------------------------------
+
+
+def test_upsert_realm_by_id_creates_it_with_the_given_id() -> None:
+    client = _make_client()
+    realm_id = "22222222-2222-2222-2222-222222222222"
+
+    response = client.put(
+        f"/api/v1/realms/by-id/{realm_id}",
+        json={"slug": "workshop", "name": "Workshop", "owner_id": "user-1"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == realm_id
+    assert body["slug"] == "workshop"
+    assert client.get("/api/v1/realms/workshop").json()["id"] == realm_id
+
+
+def test_upsert_realm_by_id_updates_an_existing_row_it_owns() -> None:
+    client = _make_client()
+    realm_id = "33333333-3333-3333-3333-333333333333"
+    client.put(
+        f"/api/v1/realms/by-id/{realm_id}",
+        json={"slug": "workshop", "name": "Workshop", "owner_id": "user-1"},
+    )
+
+    response = client.put(
+        f"/api/v1/realms/by-id/{realm_id}",
+        json={"slug": "workshop", "name": "Workshop Renamed", "owner_id": "user-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Workshop Renamed"
+
+
+def test_upsert_realm_by_id_rejects_overwriting_another_owners_realm() -> None:
+    client = _make_client()  # authenticates as user-1
+    realm_id = "44444444-4444-4444-4444-444444444444"
+    client.put(
+        f"/api/v1/realms/by-id/{realm_id}",
+        json={"slug": "workshop", "name": "Workshop", "owner_id": "someone-else"},
+    )
+
+    response = client.put(
+        f"/api/v1/realms/by-id/{realm_id}",
+        json={"slug": "workshop", "name": "Hijacked", "owner_id": "user-1"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_upsert_realm_by_id_allows_admin_to_override_another_owners_realm() -> None:
+    client = _make_client()
+    realm_id = "55555555-5555-5555-5555-555555555555"
+    client.put(
+        f"/api/v1/realms/by-id/{realm_id}",
+        json={"slug": "workshop", "name": "Workshop", "owner_id": "someone-else"},
+    )
+
+    admin_client = _make_client(
+        principal=Principal(
+            user_id="admin-1",
+            email="admin@example.com",
+            tenant_id="tenant-1",
+            roles=["volundr:admin"],
+        )
+    )
+    admin_client.app.state.realm_service = client.app.state.realm_service  # type: ignore[attr-defined]
+
+    response = admin_client.put(
+        f"/api/v1/realms/by-id/{realm_id}",
+        json={"slug": "workshop", "name": "Reassigned", "owner_id": "admin-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Reassigned"
+
+
+def test_upsert_realm_by_id_rejects_invalid_slug() -> None:
+    client = _make_client()
+    realm_id = "66666666-6666-6666-6666-666666666666"
+
+    response = client.put(
+        f"/api/v1/realms/by-id/{realm_id}",
+        json={"slug": "Not A Slug", "name": "Workshop"},
+    )
+
+    assert response.status_code == 422

@@ -212,45 +212,60 @@ class TestOidcCoverageGate:
         },
     }
 
-    def test_oidc_blocked_while_mimir_plugin_enabled_by_default(self) -> None:
-        with pytest.raises(ValueError, match="mimir"):
-            CLISettings(host_auth=self._ISSUER_KWARGS)
+    _CLEAR_UNCOVERED = {"enabled": {"bifrost": False}}
 
-    def test_oidc_allowed_once_mimir_disabled_and_bifrost_not_open(self) -> None:
-        settings = CLISettings(
-            host_auth=self._ISSUER_KWARGS,
-            plugins={"enabled": {"mimir": False, "guild": False}},
-            bifrost={"auth_mode": "pat"},
-        )
+    def test_oidc_allowed_with_mimir_plugin_enabled_by_default(self) -> None:
+        """Mímir's own auth checks now go through auth_mode (see mimir.config.
+
+        MimirServiceConfig.auth_mode/identity_adapter and
+        niuu.service_runtime._validate_identity_adapter_class), so it no
+        longer needs plugins.enabled.mimir: false to run oidc — only bifrost
+        (its client-credential gap — see the 'bifrost' entry in
+        _OIDC_UNCOVERED_PLUGINS) still needs disabling.
+        """
+        settings = CLISettings(host_auth=self._ISSUER_KWARGS, plugins=self._CLEAR_UNCOVERED)
         assert settings.host_auth.mode == "oidc"
 
     def test_oidc_allowed_with_guild_enabled(self) -> None:
         """Guild forwards only the caller's bearer token to a remote instance
+
         (see niuu.adapters.inbound.remote_urls.forward_identity_headers), so
-        it no longer needs to be disabled for auth.mode: oidc — unlike mimir,
-        which still trusts x-auth-* headers directly."""
-        settings = CLISettings(
-            host_auth=self._ISSUER_KWARGS,
-            plugins={"enabled": {"mimir": False}},
-            bifrost={"auth_mode": "pat"},
-        )
+        it does not need to be disabled for auth.mode: oidc.
+        """
+        settings = CLISettings(host_auth=self._ISSUER_KWARGS, plugins=self._CLEAR_UNCOVERED)
         assert settings.host_auth.mode == "oidc"
         assert settings.plugins.enabled.get("guild", True) is True
 
-    def test_oidc_blocked_while_bifrost_auth_mode_open(self) -> None:
-        with pytest.raises(ValueError, match="bifrost.auth_mode"):
-            CLISettings(
-                host_auth=self._ISSUER_KWARGS,
-                plugins={"enabled": {"mimir": False, "guild": False}},
-            )
+    def test_oidc_allowed_regardless_of_bifrost_auth_mode_once_bifrost_plugin_disabled(
+        self,
+    ) -> None:
+        """Bifröst's auth_mode is now forced to oidc by the CLI host itself
 
-    def test_oidc_allowed_with_bifrost_pat_mode(self) -> None:
+        (cli.commands.platform._effective_bifrost_config) whenever
+        host_auth.mode: oidc, so a stale bifrost.auth_mode in config.yaml no
+        longer needs to be validated here — see that function's docstring.
+        The bifrost *plugin* still needs disabling separately (see below):
+        that's about whether anything can reach it without a credential,
+        not about what auth_mode it's configured with.
+        """
         settings = CLISettings(
             host_auth=self._ISSUER_KWARGS,
-            plugins={"enabled": {"mimir": False, "guild": False}},
-            bifrost={"auth_mode": "pat"},
+            plugins=self._CLEAR_UNCOVERED,
+            bifrost={"auth_mode": "open"},
         )
-        assert settings.bifrost.auth_mode == "pat"
+        assert settings.host_auth.mode == "oidc"
+        assert settings.bifrost.auth_mode == "open"  # untouched here; platform.py overrides it
+
+    def test_oidc_blocked_while_bifrost_plugin_enabled_by_default(self) -> None:
+        """Bifröst's inbound auth is verified now, but sessions/residents have
+
+        no way to authenticate to it yet (skuld.config.ModelGatewayConfig.
+        token has no real default; ravn.adapters.llm.bifrost.BifrostAdapter
+        sends no Authorization header) — every model call would 401. See the
+        'bifrost' entry in _OIDC_UNCOVERED_PLUGINS for the full reasoning.
+        """
+        with pytest.raises(ValueError, match="bifrost"):
+            CLISettings(host_auth=self._ISSUER_KWARGS)
 
     def test_none_mode_ignores_uncovered_plugins(self) -> None:
         settings = CLISettings()

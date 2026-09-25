@@ -661,3 +661,85 @@ class TestStackFiles:
             assert sc.pull_session_image(settings) == "docker pull exited with 1"
         with patch(f"{MOD}.shutil.which", return_value=None), pytest.raises(RuntimeError):
             sc.pull_session_image(settings)
+
+
+class TestDockerModeBifrostOidcCoverage:
+    """Docker mode isn't a separate gap for the Bifröst oidc-client-credential
+
+    guard: the platform container's entrypoint is `platform up` (see
+    compose_bundle.py's docker-compose service definition and
+    platform_environment's NIUU_MODE=mini), reading the SAME bind-mounted
+    config.yaml the outer `niuu up` used to render the bundle — so
+    host_auth.mode inside the container is whatever the operator configured
+    outside it, and _resolve_local_pod_manager_env/_effective_bifrost_config
+    apply there exactly as they do for a plain (non-docker) mini host. This
+    pins that chain down rather than asserting it only by inspection.
+    """
+
+    def test_host_auth_propagates_into_the_bundle_settings_the_container_reads(
+        self, tmp_path: Path
+    ) -> None:
+        outer = CLISettings(
+            mode="docker",
+            docker={
+                "data_dir": str(tmp_path / "data"),
+                "compose_dir": str(tmp_path / "bundle"),
+                "image": "ghcr.io/niuulabs/niuu:test",
+            },
+            host_auth={
+                "mode": "oidc",
+                "oidc": {
+                    "issuers": [
+                        {"issuer": "https://kc.example/realms/volundr", "audiences": ["api"]}
+                    ]
+                },
+            },
+            plugins={"enabled": {"guild": False, "bifrost": False}},
+        )
+        # stack_settings_dict is what write_stack_file persists for the
+        # in-container stack controller — host_auth must survive that trip.
+        bundled = sc.stack_settings_dict(outer)
+        assert bundled["host_auth"]["mode"] == "oidc"
+
+    def test_mini_mode_reconstruction_with_the_same_host_auth_forces_bifrost_oidc(
+        self, tmp_path: Path
+    ) -> None:
+        """Simulates what the container's own `platform up` sees: the same
+
+        host_auth/bifrost/plugins config.yaml content, but mode=mini
+        (NIUU_MODE=mini, set unconditionally for the platform container —
+        see platform_environment). This is the same code path a plain
+        (non-docker) mini host runs, verified already by
+        TestBifrostConfigAuthWiring in test_platform_commands.py; this test
+        only pins down that docker mode reaches it with the right host_auth.
+        """
+        from cli.commands.platform import _resolve_local_pod_manager_env
+
+        outer = CLISettings(
+            mode="docker",
+            docker={
+                "data_dir": str(tmp_path / "data"),
+                "compose_dir": str(tmp_path / "bundle"),
+                "image": "ghcr.io/niuulabs/niuu:test",
+            },
+            host_auth={
+                "mode": "oidc",
+                "oidc": {
+                    "issuers": [
+                        {"issuer": "https://kc.example/realms/volundr", "audiences": ["api"]}
+                    ]
+                },
+            },
+            plugins={"enabled": {"guild": False, "bifrost": False}},
+        )
+        in_container = CLISettings(
+            mode="mini",
+            host_auth=outer.host_auth,
+            bifrost=outer.bifrost,
+            plugins=outer.plugins,
+        )
+
+        env = _resolve_local_pod_manager_env(in_container)
+
+        bifrost_config = json.loads(env["BIFROST_CONFIG"])
+        assert bifrost_config["auth_mode"] == "oidc"

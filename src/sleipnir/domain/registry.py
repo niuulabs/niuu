@@ -538,3 +538,19 @@ ROOM_TRANSCRIPT_RECORDED: str = "room.transcript.recorded"
 
 #: A room was closed.
 ROOM_CLOSED: str = "room.closed"
+
+
+def known_event_types() -> frozenset[str]:
+    """Every event-type string this module declares.
+
+    Introspects this module's own ``UPPER_SNAKE_CASE: str = "dotted.value"``
+    constants rather than maintaining a second, hand-kept list — a constant
+    added above is automatically a known type here, so the two cannot drift.
+    Used to validate that something naming an event type (e.g. a Ravn
+    trigger's ``spec``) actually names one Sleipnir will ever publish.
+    """
+    return frozenset(
+        value
+        for name, value in globals().items()
+        if name.isupper() and isinstance(value, str) and "." in value
+    )

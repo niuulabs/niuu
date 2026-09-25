@@ -126,3 +126,21 @@ def test_all_constants_pass_format_validation():
 def test_constants_are_strings_not_magic_numbers():
     for name, value in _all_constants():
         assert isinstance(value, str), f"{name} must be a str, got {type(value)}"
+
+
+# ---------------------------------------------------------------------------
+# known_event_types
+# ---------------------------------------------------------------------------
+
+
+def test_known_event_types_matches_every_declared_constant():
+    values = {value for _, value in _all_constants()}
+    assert registry.known_event_types() == frozenset(values)
+
+
+def test_known_event_types_rejects_a_plausible_but_wrong_event_type():
+    """Regression: github.pull_request.opened looks valid (known namespace,
+    right shape) but is not a real event — only github.pr.opened is."""
+    known = registry.known_event_types()
+    assert registry.GITHUB_PR_OPENED in known
+    assert "github.pull_request.opened" not in known

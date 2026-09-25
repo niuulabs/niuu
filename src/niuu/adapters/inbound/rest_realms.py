@@ -11,14 +11,20 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
-from niuu.domain.models import Capability, Realm, TrustGrant
+from niuu.domain.models import Capability, Principal, Realm, TrustGrant
 from niuu.domain.services.realm import RealmService
 
 logger = logging.getLogger(__name__)
+
+# Role that may upsert a realm at a caller-supplied id (PUT /realms/{id}),
+# bypassing the owner check below. Matches the convention used across
+# src/niuu/adapters/inbound/*.py (rest_setup.py, rest_credentials_settings.py).
+ADMIN_ROLE = "volundr:admin"
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +62,29 @@ class RealmResponse(BaseModel):
 
 class CreateRealmRequest(BaseModel):
     """Request model for creating a realm."""
+
+    slug: str = Field(
+        min_length=1,
+        max_length=100,
+        pattern=r"^[a-z0-9][a-z0-9_-]*$",
+        description="URL-safe unique identifier for the realm",
+    )
+    name: str = Field(min_length=1, max_length=200)
+    sleipnir_domain: str | None = None
+    owner_id: str | None = None
+    instance_id: str | None = None
+    autonomy_profile: str = "balanced"
+
+
+class UpsertRealmRequest(BaseModel):
+    """Request model for syncing a realm onto this instance at a known id.
+
+    For a remote instance to host a resident bound to a realm that lives on
+    a different instance's database (e.g. Guild aggregating a realm created
+    against ymir's database, deploying the resident on noatun/valhalla) —
+    the same realm identity (id + slug) must exist here too, or the
+    resident's realm_id foreign key has nothing to point at.
+    """
 
     slug: str = Field(
         min_length=1,
@@ -220,6 +249,43 @@ def create_realms_router(
         )
         return RealmResponse.from_domain(realm)
 
+    @router.put("/by-id/{realm_id}", response_model=RealmResponse)
+    async def upsert_realm(
+        request: Request,
+        realm_id: UUID,
+        body: UpsertRealmRequest,
+        principal: Principal = Depends(extract_principal),
+    ) -> RealmResponse:
+        """Create or replace a realm at a caller-supplied id.
+
+        Used to sync a realm's identity onto this instance from another
+        instance's database (see UpsertRealmRequest). Restricted to the
+        realm's own owner or an admin: an authenticated caller may sync a
+        realm they own, but may not use a known id to overwrite a realm
+        that already exists here under a different owner.
+        """
+        existing = await _service(request).get_realm(realm_id)
+        if (
+            existing is not None
+            and existing.owner_id
+            and existing.owner_id != principal.user_id
+            and ADMIN_ROLE not in principal.roles
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Realm {realm_id} belongs to another owner on this instance",
+            )
+        realm = await _service(request).upsert_realm(
+            realm_id,
+            slug=body.slug,
+            name=body.name,
+            sleipnir_domain=body.sleipnir_domain,
+            owner_id=body.owner_id,
+            instance_id=body.instance_id,
+            autonomy_profile=body.autonomy_profile,
+        )
+        return RealmResponse.from_domain(realm)
+
     @router.get("/{slug}", response_model=RealmResponse)
     async def get_realm(request: Request, slug: str) -> RealmResponse:
         """Get a realm by slug."""
@@ -301,11 +367,13 @@ def create_realms_router(
 
 
 __all__ = [
+    "ADMIN_ROLE",
     "CapabilityResponse",
     "CreateRealmRequest",
     "CreateTrustGrantRequest",
     "RealmResponse",
     "RecordCapabilityRequest",
     "TrustGrantResponse",
+    "UpsertRealmRequest",
     "create_realms_router",
 ]
