@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -18,6 +17,27 @@ class _InMemoryWorkflowRepository(WorkflowRepository):
     def __init__(self, workflows: list[WorkflowDefinition] | None = None) -> None:
         self._workflows = {workflow.id: workflow for workflow in workflows or []}
         self.save_calls: list[WorkflowDefinition] = []
+        # Ids with no recorded version history, i.e. never touched by
+        # save_workflow/adopt_legacy_bundled -- a legacy row. Empty by
+        # default so every existing fixture keeps today's strict-comparison
+        # behaviour; tests that need the legacy path add to this set.
+        self.never_versioned_ids: set = set()
+
+    async def has_recorded_version_history(self, workflow_id) -> bool:
+        return workflow_id not in self.never_versioned_ids
+
+    async def adopt_legacy_bundled(self, seed: WorkflowDefinition) -> WorkflowDefinition:
+        current = self._workflows.get(seed.id)
+        successor = replace(
+            seed,
+            created_at=current.created_at if current is not None else seed.created_at,
+            revision=current.revision if current is not None else None,
+            read_only=True,
+            origin="bundled",
+            source="postgres",
+        )
+        self.never_versioned_ids.discard(seed.id)
+        return await self.save_workflow(successor)
 
     async def list_workflows(
         self,
@@ -542,7 +562,7 @@ async def test_seed_reclassified_legacy_row_matching_package_is_replaced_not_com
         document_revision=None,
     )
     repo = _InMemoryWorkflowRepository([legacy])
-    repo.has_recorded_version_history = AsyncMock(return_value=False)
+    repo.never_versioned_ids.add(seed.id)
     monkeypatch.setattr("ting.system_workflows.load_system_workflows", lambda _path: [seed])
 
     saved = await seed_system_workflows(repo)
@@ -557,7 +577,6 @@ async def test_seed_reclassified_legacy_row_matching_package_is_replaced_not_com
     assert saved[0].read_only is True
 
     repo.save_calls.clear()
-    repo.has_recorded_version_history = AsyncMock(return_value=True)
 
     rerun = await seed_system_workflows(repo)
 
@@ -594,7 +613,7 @@ async def test_seed_reclassified_legacy_research_campaign_reseeds_current_versio
         document_revision=None,
     )
     repo = _InMemoryWorkflowRepository([legacy])
-    repo.has_recorded_version_history = AsyncMock(return_value=False)
+    repo.never_versioned_ids.add(seed.id)
     monkeypatch.setattr("ting.system_workflows.load_system_workflows", lambda _path: [seed])
 
     saved = await seed_system_workflows(repo)
@@ -606,9 +625,49 @@ async def test_seed_reclassified_legacy_research_campaign_reseeds_current_versio
     assert saved[0].origin == "bundled"
 
     repo.save_calls.clear()
-    repo.has_recorded_version_history = AsyncMock(return_value=True)
 
     rerun = await seed_system_workflows(repo)
 
     assert repo.save_calls == []
     assert rerun[0].version == "2.0.0"
+
+
+@pytest.mark.asyncio
+async def test_seed_reclassifies_orphaned_never_versioned_row_as_authored(
+    monkeypatch, caplog
+) -> None:
+    """A 000046-reclassified row with no matching packaged id is not deleted.
+
+    Migration 000046 cannot distinguish a legacy packaged row from an
+    admin-created system row at the SQL level; the seeding pass corrects
+    that here for ids that turn out not to be in the current package,
+    flipping them back to 'authored' and logging a warning instead of
+    silently dropping or crashing on them.
+    """
+    seed = load_system_workflows()[0]
+    orphan_id = uuid4()
+    orphan = replace(
+        seed,
+        id=orphan_id,
+        name="Admin custom system workflow",
+        based_on_revision=None,
+        document_revision=None,
+    )
+    # seed itself is already present and matching, so the main per-seed loop
+    # makes no save calls of its own -- isolating the orphan-only assertion.
+    repo = _InMemoryWorkflowRepository([orphan, seed])
+    repo.never_versioned_ids.add(orphan_id)
+    monkeypatch.setattr("ting.system_workflows.load_system_workflows", lambda _path: [seed])
+
+    with caplog.at_level("WARNING"):
+        await seed_system_workflows(repo)
+
+    reclassified = await repo.get_workflow(orphan_id)
+    assert reclassified is not None
+    assert reclassified.origin == "authored"
+    assert str(orphan_id) in caplog.text
+
+    # A second pass leaves it alone: it is now 'authored'.
+    repo.save_calls.clear()
+    await seed_system_workflows(repo)
+    assert repo.save_calls == []

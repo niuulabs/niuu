@@ -217,6 +217,7 @@ async def test_bundled_superseded_row_is_skipped_without_error_or_flag(tmp_path)
     stale_bundled = replace(
         packaged,
         description="Older packaged content before a version bump",
+        version="0.9.0",
         read_only=False,
         source="postgres",
         origin="bundled",
@@ -245,6 +246,39 @@ async def test_bundled_superseded_row_is_skipped_without_error_or_flag(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_bundled_row_newer_than_package_is_an_error_not_superseded(tmp_path) -> None:
+    """An image rollback must not silently discard newer bundled content.
+
+    A database row at a version newer than the currently loaded package is
+    the opposite of superseded -- this image is older than what produced
+    that row -- so it must be reported as an error with a remedy, not
+    skipped as bundled_superseded.
+    """
+    packaged = load_system_workflows()[0]
+    newer_bundled = replace(
+        packaged,
+        description="Content from a newer image",
+        version="99.0.0",
+        read_only=False,
+        source="postgres",
+        origin="bundled",
+    )
+    target = FilesystemWorkflowRepository(str(tmp_path))
+
+    report = await migrate_workflow_catalog(
+        source=_Source([newer_bundled]),
+        target=target,
+        persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
+        bundled_workflows=load_system_workflows(),
+    )
+
+    assert report.can_apply is False
+    assert report.bundled_superseded == 0
+    assert "newer than this image's packaged version" in report.errors[0]
+    assert "rollback" in report.errors[0]
+
+
+@pytest.mark.asyncio
 async def test_startup_guard_accepts_catalog_with_a_superseded_bundled_row(tmp_path) -> None:
     """The startup guard passes after a migration that only skipped superseded rows."""
     from ting.main import _assert_workflow_catalog_migrated
@@ -253,6 +287,7 @@ async def test_startup_guard_accepts_catalog_with_a_superseded_bundled_row(tmp_p
     stale_bundled = replace(
         packaged,
         description="Older packaged content before a version bump",
+        version="0.9.0",
         read_only=False,
         source="postgres",
         origin="bundled",

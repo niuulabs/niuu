@@ -344,6 +344,9 @@ spec:
                 secretKeyRef:
                   name: {{ include "ting.databaseSecretName" . }}
                   key: {{ .Values.database.passwordKey | default "password" }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- with .Values.workflowMigration.resources }}
           resources:
             {{- toYaml . | nindent 12 }}

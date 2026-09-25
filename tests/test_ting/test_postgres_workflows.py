@@ -498,3 +498,84 @@ class TestHasRecordedVersionHistory:
         result = await repo.has_recorded_version_history(workflow.id)
 
         assert result is False
+
+
+class TestAdoptLegacyBundled:
+    """Reproduces and fixes the real-Postgres startup crash.
+
+    A legacy row at the same version as the current package used to be
+    reseeded through plain save_workflow -> _advance, which archives the
+    legacy snapshot under (id, version) and then tries to archive the new
+    packaged snapshot under the SAME (id, version) slot, colliding and
+    raising WorkflowConflictError. adopt_legacy_bundled must archive the
+    legacy snapshot only when its version differs from the seed's.
+    """
+
+    def _legacy_row(self, workflow, **overrides):
+        row = workflow_row(workflow)
+        row.update(
+            {
+                "version_origin": "bundled",
+                "based_on_revision": None,
+                "schema_version": 1,
+                "persona_dependencies_json": {},
+                "workflow_dependencies_json": {},
+                "workflow_definitions_json": {},
+            }
+        )
+        row.update(overrides)
+        return row
+
+    async def test_same_version_archives_only_the_new_head(self, repo, mock_pool, workflow):
+        seed = replace(workflow, origin="bundled", version="1.0.0", read_only=True)
+        mock_pool.fetchrow.return_value = self._legacy_row(workflow, version="1.0.0")
+        mock_pool.fetchval = AsyncMock(return_value=False)
+
+        saved = await repo.adopt_legacy_bundled(seed)
+
+        assert saved.version == "1.0.0"
+        assert saved.origin == "bundled"
+        assert saved.read_only is True
+        assert saved.created_at == workflow.created_at
+        archive_calls = [
+            call
+            for call in mock_pool.execute.call_args_list
+            if "INSERT INTO workflow_versions" in call.args[0]
+        ]
+        assert len(archive_calls) == 1
+
+    async def test_different_version_archives_legacy_and_new_head(self, repo, mock_pool, workflow):
+        seed = replace(workflow, origin="bundled", version="2.0.0", read_only=True)
+        mock_pool.fetchrow.return_value = self._legacy_row(workflow, version="1.0.0")
+        mock_pool.fetchval = AsyncMock(return_value=False)
+
+        saved = await repo.adopt_legacy_bundled(seed)
+
+        assert saved.version == "2.0.0"
+        archive_calls = [
+            call
+            for call in mock_pool.execute.call_args_list
+            if "INSERT INTO workflow_versions" in call.args[0]
+        ]
+        assert len(archive_calls) == 2
+
+    async def test_returns_current_unchanged_when_already_adopted_concurrently(
+        self, repo, mock_pool, workflow
+    ):
+        seed = replace(workflow, origin="bundled", version="1.0.0", read_only=True)
+        mock_pool.fetchrow.return_value = self._legacy_row(workflow, version="1.0.0")
+        mock_pool.fetchval = AsyncMock(return_value=True)
+
+        saved = await repo.adopt_legacy_bundled(seed)
+
+        assert mock_pool.execute.call_count == 1  # only the advisory lock
+        assert saved.id == workflow.id
+
+    async def test_raises_when_the_row_no_longer_exists(self, repo, mock_pool, workflow):
+        from ting.domain.exceptions import WorkflowConflictError
+
+        seed = replace(workflow, origin="bundled")
+        mock_pool.fetchrow.return_value = None
+
+        with pytest.raises(WorkflowConflictError, match="no longer exists"):
+            await repo.adopt_legacy_bundled(seed)

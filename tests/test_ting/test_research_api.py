@@ -78,6 +78,12 @@ class InMemoryWorkflowRepository(WorkflowRepository):
         removed = self._workflows.pop(workflow_id, None)
         return removed is not None
 
+    async def has_recorded_version_history(self, workflow_id: UUID) -> bool:
+        return True
+
+    async def adopt_legacy_bundled(self, seed):
+        return await self.save_workflow(seed)
+
 
 class InMemoryWorkflowCampaignRepository(WorkflowCampaignRepository):
     def __init__(self, campaigns: list[WorkflowCampaign] | None = None) -> None:

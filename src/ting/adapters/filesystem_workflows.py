@@ -135,6 +135,32 @@ class FilesystemWorkflowRepository(WorkflowRepository):
     async def delete_workflow(self, workflow_id: UUID) -> bool:
         return await asyncio.to_thread(self._delete_sync, workflow_id)
 
+    async def has_recorded_version_history(self, workflow_id: UUID) -> bool:
+        """True once at least one immutable snapshot is archived under ``.history``."""
+        return await asyncio.to_thread(self._has_recorded_version_history_sync, workflow_id)
+
+    def _has_recorded_version_history_sync(self, workflow_id: UUID) -> bool:
+        with self._locked():
+            self._recover_transactions()
+            return bool(self._load_history_payloads(workflow_id))
+
+    async def adopt_legacy_bundled(self, seed: WorkflowDefinition) -> WorkflowDefinition:
+        """No-op here: a bundled id with no local override is always served live.
+
+        There is no persisted legacy system row to reconcile on this
+        catalog -- ``get_workflow(seed.id)`` already returns the current
+        packaged definition on every read, since bundled workflows are
+        loaded directly from the package on each access rather than stored.
+        Exists to satisfy the shared ``WorkflowRepository`` port;
+        ``seed_system_workflows`` never actually calls this against the
+        filesystem adapter, because ``workflow_repository.seed_bundled``
+        must be false for it (see charts/ting/templates/configmap.yaml).
+        """
+        current = await self.get_workflow(seed.id)
+        if current is None:
+            raise WorkflowDocumentError(f"Workflow {seed.id} not found for legacy adoption")
+        return current
+
     async def mark_migration_complete(self, metadata: dict[str, Any]) -> None:
         """Durably record a verified legacy catalog migration."""
         await asyncio.to_thread(self._mark_migration_complete_sync, metadata)

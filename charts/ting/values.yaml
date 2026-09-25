@@ -318,6 +318,8 @@ workflowMigration:
   applyOnStart: false
   # -- Database name on the configured PostgreSQL host holding the persona
   # registry rows referenced by workflows being migrated (--persona-database).
+  # Reuses Ting's own database.username/password secret against this other
+  # database name on the same PostgreSQL host -- not a separate credential.
   personaDatabase: volundr
   # -- Pass --replace-divergent-bundled: preserve database system rows that
   # diverge from their packaged definition under their existing identity,

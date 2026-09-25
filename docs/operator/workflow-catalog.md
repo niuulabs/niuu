@@ -323,7 +323,11 @@ workflowPersistence:
 
 workflowMigration:
   applyOnStart: false                # true = automated cutover init container
-  personaDatabase: volundr
+  personaDatabase: volundr           # reuses Ting's own DB credentials, just a different database name
   replaceDivergentBundled: false
   resources: {}
 ```
+
+The `workflow-catalog-migrate` init container also receives `extraEnv`, same as
+the main container, so anything the migration needs beyond `DATABASE__*` (e.g.
+observability exporter settings) can be supplied the same way.

@@ -142,6 +142,48 @@ class PostgresWorkflowRepository(WorkflowRepository):
                 bundled_version=workflow.version if workflow.origin == "bundled" else None,
             )
 
+    async def adopt_legacy_bundled(self, seed: WorkflowDefinition) -> WorkflowDefinition:
+        """Publish a packaged seed as the head of a never-versioned legacy row.
+
+        Re-verifies under the row's own advisory lock that it is still
+        never-versioned (a concurrent replica's own seeding pass may have
+        already adopted, advanced, or reclassified it) before writing.
+        Archives the new head always; archives the legacy row's own snapshot
+        only when its version differs from the seed's -- equal versions
+        would collide in the same immutable ``(id, version)`` archive slot
+        the new head is about to occupy.
+        """
+        async with self._pool.acquire() as connection, connection.transaction():
+            await self._lock(connection, seed.id)
+            row = await connection.fetchrow(
+                "SELECT * FROM workflows WHERE id = $1 FOR UPDATE", seed.id
+            )
+            current = self._row_to_workflow(row) if row else None
+            if current is None:
+                raise WorkflowConflictError(f"Workflow {seed.id} no longer exists")
+            has_history = await connection.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM workflow_versions WHERE workflow_id = $1)",
+                seed.id,
+            )
+            if has_history or current.based_on_revision is not None or current.origin == "authored":
+                return current
+            successor = replace(
+                seed,
+                revision=current.revision,
+                created_at=current.created_at,
+                updated_at=datetime.now(UTC),
+                read_only=True,
+                origin="bundled",
+                is_head=True,
+                based_on_revision=None,
+                source="postgres",
+            )
+            saved = await self._write_workflow(connection, successor)
+            if current.version != seed.version:
+                await self._archive(connection, current)
+            await self._archive(connection, saved)
+            return saved
+
     async def save_workflow_version(
         self,
         workflow: WorkflowDefinition,

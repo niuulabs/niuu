@@ -66,6 +66,12 @@ class InMemoryWorkflowRepository(WorkflowRepository):
     async def delete_workflow(self, workflow_id: UUID) -> bool:
         return self._workflows.pop(workflow_id, None) is not None
 
+    async def has_recorded_version_history(self, workflow_id: UUID) -> bool:
+        return True
+
+    async def adopt_legacy_bundled(self, seed):
+        return await self.save_workflow(seed)
+
 
 def _workflow(
     *,

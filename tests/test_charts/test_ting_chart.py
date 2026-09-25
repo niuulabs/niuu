@@ -360,6 +360,32 @@ class TestWorkflowMigrationInitContainer:
         mount_names = {mount["name"] for mount in migrate_catalog["volumeMounts"]}
         assert mount_names == {"config", "workflow-catalog"}
 
+    def test_apply_on_start_passes_extra_env(self, tmp_path):
+        deployment = _deployment_from_rendered(
+            _render_ting_chart(
+                tmp_path,
+                {
+                    **self._RWO_RECREATE,
+                    "workflowMigration": {"applyOnStart": True},
+                    "extraEnv": [{"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": "http://otel:4317"}],
+                },
+            )
+        )
+
+        init_containers = deployment["spec"]["template"]["spec"]["initContainers"]
+        migrate_catalog = next(
+            c for c in init_containers if c["name"] == "workflow-catalog-migrate"
+        )
+        env_names = [entry["name"] for entry in migrate_catalog["env"]]
+        assert env_names[-1] == "OTEL_EXPORTER_OTLP_ENDPOINT"
+        assert env_names[:-1] == [
+            "DATABASE__HOST",
+            "DATABASE__PORT",
+            "DATABASE__NAME",
+            "DATABASE__USER",
+            "DATABASE__PASSWORD",
+        ]
+
     def test_apply_on_start_passes_replace_divergent_bundled(self, tmp_path):
         deployment = _deployment_from_rendered(
             _render_ting_chart(

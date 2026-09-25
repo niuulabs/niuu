@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,6 +27,7 @@ from ting.ports.workflow_repository import WorkflowRepository
 
 BUNDLED_SYSTEM_WORKFLOWS_PATH = (Path(__file__).parent / "workflows").resolve()
 BUNDLED_SYSTEM_PACKAGE_ROOT = BUNDLED_SYSTEM_WORKFLOWS_PATH.parent
+logger = logging.getLogger(__name__)
 
 
 def load_system_workflows(path: Path = BUNDLED_SYSTEM_WORKFLOWS_PATH) -> list[WorkflowDefinition]:
@@ -198,8 +200,17 @@ async def seed_system_workflows(
     ``bundled`` by migration 000046, having previously been skipped entirely
     by the ``origin == "authored"`` check below). Comparing its stale shape
     against the current packaged document would always disagree even when
-    the visible content (name, graph, version) matches, so it is replaced
-    outright with the packaged rendering instead of content-compared.
+    the visible content (name, graph, version) matches, so it is instead
+    handed to ``adopt_legacy_bundled``, which publishes the packaged
+    rendering under its immutable identity without an intermediate content
+    comparison and without colliding the legacy and current snapshots in the
+    same archived version slot.
+
+    A never-versioned row reclassified by 000046 whose id is not in the
+    current package at all (an admin-created system row, not something
+    Ting ever packaged) is not deleted -- 000046 cannot tell that apart from
+    a legacy packaged row at the SQL level -- it is flipped back to
+    ``authored`` here instead, and logged.
     """
     seeds = load_system_workflows(path)
     existing = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
@@ -208,7 +219,22 @@ async def seed_system_workflows(
         return []
 
     existing_by_id = {workflow.id: workflow for workflow in existing}
-    has_version_history = getattr(repo, "has_recorded_version_history", None)
+    seed_ids = {seed.id for seed in seeds}
+
+    for workflow_id, orphan in existing_by_id.items():
+        if workflow_id in seed_ids or orphan.origin != "bundled":
+            continue
+        if await repo.has_recorded_version_history(workflow_id):
+            continue
+        logger.warning(
+            "System workflow %s (%r) is not part of the current package and has no "
+            "recorded version history (likely a pre-#1012 admin-created row "
+            "migration 000046 could not tell apart from legacy packaged content); "
+            "reclassifying it as authored instead of deleting it.",
+            workflow_id,
+            orphan.name,
+        )
+        await repo.save_workflow(replace(orphan, origin="authored"))
 
     saved: list[WorkflowDefinition] = []
     for seed in seeds:
@@ -223,20 +249,19 @@ async def seed_system_workflows(
         if current.origin == "authored":
             saved.append(current)
             continue
-        never_versioned = has_version_history is not None and not await has_version_history(seed.id)
-        if not never_versioned:
-            current_document_revision = current.document_revision or workflow_document_revision(
-                current
-            )
-            seed_document_revision = seed.document_revision or workflow_document_revision(seed)
-            if current.version == seed.version:
-                if current_document_revision != seed_document_revision:
-                    raise WorkflowDocumentError(
-                        f"Bundled workflow {seed.id} version {seed.version} changed content; "
-                        "publish it under a new version"
-                    )
-                saved.append(current)
-                continue
+        if not await repo.has_recorded_version_history(seed.id):
+            saved.append(await repo.adopt_legacy_bundled(seed))
+            continue
+        current_document_revision = current.document_revision or workflow_document_revision(current)
+        seed_document_revision = seed.document_revision or workflow_document_revision(seed)
+        if current.version == seed.version:
+            if current_document_revision != seed_document_revision:
+                raise WorkflowDocumentError(
+                    f"Bundled workflow {seed.id} version {seed.version} changed content; "
+                    "publish it under a new version"
+                )
+            saved.append(current)
+            continue
         saved.append(
             await repo.save_workflow(
                 replace(

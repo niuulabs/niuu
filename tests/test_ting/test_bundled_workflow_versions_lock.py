@@ -10,8 +10,13 @@ revision (the same content hash `workflow_document_revision` computes at
 seed/migration time) so that regression is caught here in CI instead of at
 an operator's startup or migration dry run.
 
-Lock entries are append-only: bumping a workflow's `version` and changing its
-content is a new entry, never an edit to an existing one.
+Bumping a workflow's `version` and changing its content adds a new
+`id@version` entry; it never edits an existing one, so a released entry's
+recorded content is permanent. An old entry for an id that has since moved
+to a newer version may be left in place as history -- it is not re-verified
+against the package, since `load_system_workflows()` only ever returns the
+current head per id, so old content no longer "loads" to compare against.
+Only each id's CURRENT `id@version` is required to be present and unchanged.
 """
 
 from __future__ import annotations
@@ -49,7 +54,11 @@ def test_lock_file_is_valid_json() -> None:
 
 
 def test_bundled_workflow_content_matches_its_locked_version() -> None:
-    """A released id@version's content must never change; bump the version instead."""
+    """A released id@version's content must never change; bump the version instead.
+
+    Checked against every key present in both files -- current heads and any
+    historical entries kept for ids since moved to a newer version alike.
+    """
     locked = _load_lock()
     current = _current_lock()
 
@@ -57,28 +66,22 @@ def test_bundled_workflow_content_matches_its_locked_version() -> None:
     assert not changed, (
         "Bundled workflow content changed for an already-released version: "
         f"{changed}. Bump `version:` in the workflow YAML instead of editing "
-        f"released content, then append the new id@version to {LOCK_PATH.name} "
-        "(existing entries are append-only)."
+        f"released content, then add the new id@version to {LOCK_PATH.name}."
     )
 
 
-def test_every_locked_version_still_loads() -> None:
-    """Released entries are append-only: a locked bundled workflow must not vanish."""
-    locked = _load_lock()
-    current = _current_lock()
+def test_every_current_bundled_workflow_version_is_locked() -> None:
+    """Each id's current head version must have a locked entry, unchanged.
 
-    missing = sorted(set(locked) - set(current))
-    assert not missing, f"Locked bundled workflow version(s) no longer load: {missing}"
-
-
-def test_every_bundled_workflow_version_is_locked() -> None:
-    """A new bundled workflow or a new version of one must be added to the lock."""
+    Only the current head per id is required here -- an id's earlier,
+    since-superseded entries may remain in the lock as history without
+    being re-verified (see this file's module docstring).
+    """
     locked = _load_lock()
     current = _current_lock()
 
     unlocked = sorted(set(current) - set(locked))
     assert not unlocked, (
         f"Bundled workflow version(s) missing from {LOCK_PATH.name}: {unlocked}. "
-        "Add their id@version -> document_revision entries (append-only; see "
-        "this file's module docstring)."
+        "Add their id@version -> document_revision entries."
     )

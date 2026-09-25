@@ -18,6 +18,7 @@ from ravn.domain.persona_document import (
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition
 from ting.domain.workflow_document import referenced_persona_aliases
+from ting.domain.workflow_versioning import workflow_version_tuple
 from ting.ports.workflow_migration import (
     WorkflowMigrationSource,
     WorkflowMigrationTarget,
@@ -138,19 +139,41 @@ async def migrate_workflow_catalog(
         packaged = bundled.get(workflow.id)
         # A package-seeded ('bundled', never operator-authored) row that no
         # longer matches the packaged definition is not divergence to
-        # resolve -- it is simply an older release of the package's own
-        # content, superseded by the current packaged definition under the
-        # same identity. The filesystem catalog already serves that current
+        # resolve when it is an OLDER release of the package's own content --
+        # superseded by the current packaged definition under the same
+        # identity. The filesystem catalog already serves that current
         # packaged definition for this id by default, so there is nothing to
         # write or reconcile, and no persona resolution is needed for
-        # content that will not be published.
+        # content that will not be published. A bundled row at a NEWER
+        # version than this image's own package is not superseded, it is a
+        # sign this image is older than the database (a rollback): treat it
+        # as an error rather than silently discarding the newer content. A
+        # bundled row diverging at the SAME version (or with an unparsable
+        # version) is genuinely ambiguous, not an ordering question, so it
+        # falls through to the divergence handling below unchanged.
         if (
             packaged is not None
             and workflow.origin == "bundled"
             and not _same_packaged_identity(workflow, packaged)
         ):
-            bundled_superseded += 1
-            continue
+            try:
+                source_version = workflow_version_tuple(workflow.version)
+                packaged_version = workflow_version_tuple(packaged.version)
+            except ValueError as exc:
+                errors.append(f"Workflow {workflow.id} version cannot be compared: {exc}")
+                continue
+            if source_version < packaged_version:
+                bundled_superseded += 1
+                continue
+            if source_version > packaged_version:
+                errors.append(
+                    f"System workflow {workflow.id} ({workflow.name!r}) is at version "
+                    f"{workflow.version}, newer than this image's packaged version "
+                    f"{packaged.version}. This looks like an image rollback: deploy the "
+                    "image that shipped that version, or bump the packaged workflow's "
+                    "own version forward past it."
+                )
+                continue
         try:
             persona_source = await persona_source_for_workflow(workflow)
         except (PersonaDocumentError, WorkflowDocumentError) as exc:
