@@ -71,11 +71,13 @@ from ting.api.workflows import (
     WorkflowLaunchBody,
     WorkflowLaunchExecution,
     _can_view_workflow,
+    _resolve_target_adapter,
     _slugify,
     launch_workflow_execution,
     resolve_workflow_repo,
 )
 from ting.domain.a2a_launch import A2ALaunchReservation
+from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.execution_snapshot import pinned_child_workflow
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.workflow_campaign_lifecycle import (
@@ -87,6 +89,7 @@ from ting.domain.workflow_execution import WorkflowExecutionError
 from ting.domain.workflow_snapshot import (
     build_workflow_snapshot,
     workflow_artifact_paths_from_snapshot,
+    workflow_placement_from_snapshot,
 )
 from ting.ports.a2a_launch import A2ALaunchReservationRepository
 from ting.ports.a2a_push import A2APushDispatcherPort
@@ -144,6 +147,9 @@ def campaign_to_task(campaign: WorkflowCampaign) -> Task:
             "skillId": str(campaign.workflow_id),
             "workflowName": campaign.workflow_name,
             "campaignName": campaign.name,
+            # Where the team runs: the Guild target the session was launched
+            # on, whether picked by graph.placement or the default rule.
+            **({"connectionId": campaign.connection_id} if campaign.connection_id else {}),
             **({"repo": str(campaign.metadata["repo"])} if campaign.metadata.get("repo") else {}),
             **(
                 {"branch": str(campaign.metadata["branch"])}
@@ -288,6 +294,34 @@ class WorkflowTaskHandler(RequestHandler):
             )
             pinned_snapshot["workflow_digest"] = workflow_document_revision(workflow)
         stage_state = _initial_stage_state(pinned_snapshot, now)
+
+        # Resolve the Forge target once and persist it, rather than
+        # re-resolving on every retry. A placed (or even just balanced)
+        # launch that re-resolved on each attempt could land a retry on a
+        # different target than the one that already spawned — duplicating
+        # the session, possibly on different hardware. A campaign already
+        # carrying a connection_id (a retry of a launch that got far enough
+        # to save it) reuses that exact target instead of resolving again.
+        if existing is not None and existing.connection_id:
+            resolved_connection_id = existing.connection_id
+        else:
+            try:
+                placement = workflow_placement_from_snapshot(pinned_snapshot)
+            except WorkflowDocumentError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            resolved_adapter = await _resolve_target_adapter(
+                volundr_factory=self._volundr_factory,
+                principal=self._principal,
+                connection_id=_optional_str(metadata, "connectionId"),
+                placement=placement,
+            )
+            if resolved_adapter is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="No Volundr connection is available for this user",
+                )
+            resolved_connection_id = resolved_adapter.target_id
+
         pending = existing or WorkflowCampaign(
             id=reservation.campaign_id,
             slug=reservation.task_id,
@@ -315,7 +349,7 @@ class WorkflowTaskHandler(RequestHandler):
             created_at=now,
             updated_at=now,
             last_activity_at=now,
-            connection_id=_optional_str(metadata, "connectionId"),
+            connection_id=resolved_connection_id,
         )
         if existing is None:
             pending = await self._campaign_repo.save_campaign(pending)
@@ -340,7 +374,10 @@ class WorkflowTaskHandler(RequestHandler):
                 repo=str(metadata.get("repo") or ""),
                 branch=str(metadata.get("branch") or ""),
                 model=str(metadata.get("model") or ""),
-                connectionId=_optional_str(metadata, "connectionId"),
+                # The already-resolved (and, on a retry, already-persisted)
+                # connection — never re-derived from raw request metadata —
+                # so a retry lands on the exact target the first attempt did.
+                connectionId=resolved_connection_id,
                 inheritedResultSchema=(
                     dict(inherited_result_schema)
                     if isinstance(inherited_result_schema, dict)
@@ -358,7 +395,13 @@ class WorkflowTaskHandler(RequestHandler):
                 },
             )
             try:
-                target_adapter = await self._launch_adapter(_optional_str(metadata, "connectionId"))
+                # Recovery must look at the same connection the launch will
+                # use — a session a placed (or otherwise resolved) launch
+                # already spawned lives there, not on the metadata-supplied
+                # or primary connection a naive recheck would consult.
+                target_adapter = await self._volundr_factory.for_connection(
+                    self._principal.user_id, resolved_connection_id
+                )
                 recovered = None
                 if target_adapter is not None:
                     sessions = await target_adapter.list_sessions(
@@ -401,6 +444,11 @@ class WorkflowTaskHandler(RequestHandler):
                     attributes={**attributes, "error.type": type(exc).__name__},
                     content={"error": str(exc)},
                 )
+                # `pending` was already persisted (above, or by an earlier
+                # attempt) before this attempt started — a rejected or
+                # errored launch must not leave it stuck PENDING forever,
+                # since every retry would hit the identical failure.
+                await self._mark_campaign_failed(pending, reason=str(exc))
                 raise
             span.set_attribute("ting.session.id", str(execution.session.id))
             telemetry.event(
@@ -728,6 +776,30 @@ class WorkflowTaskHandler(RequestHandler):
             ),
             None,
         )
+
+    async def _mark_campaign_failed(self, campaign: WorkflowCampaign, *, reason: str) -> None:
+        """Resolve a launch-pending campaign whose attempt failed.
+
+        Best-effort: a failure writing this record must never mask the
+        original launch failure the caller is about to re-raise, so it is
+        logged rather than propagated — mirroring the orphaned-session
+        cleanup below, which follows the same shape for the same reason.
+        """
+        now = datetime.now(UTC)
+        failed = WorkflowCampaign(
+            **{
+                **campaign.__dict__,
+                "status": WorkflowCampaignStatus.FAILED,
+                "metadata": {**campaign.metadata, "failure_error": reason},
+                "updated_at": now,
+                "last_activity_at": now,
+                "completed_at": campaign.completed_at or now,
+            }
+        )
+        try:
+            await self._campaign_repo.save_campaign(failed)
+        except Exception:
+            logger.exception("Failed to mark campaign %s failed after launch error", campaign.slug)
 
     async def _continue_task(self, message: Message) -> Task:
         """Handle a reply on an INPUT_REQUIRED task.
@@ -1066,14 +1138,6 @@ class WorkflowTaskHandler(RequestHandler):
         if workflow is None or not _can_view_workflow(workflow, self._principal):
             raise InvalidParamsError(f"unknown skill: {raw_id}")
         return workflow
-
-    async def _launch_adapter(self, connection_id: str | None):
-        if connection_id:
-            return await self._volundr_factory.for_connection(
-                self._principal.user_id,
-                connection_id,
-            )
-        return await self._volundr_factory.primary_for_owner(self._principal.user_id)
 
     async def _workflow_execution_context(
         self,

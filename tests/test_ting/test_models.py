@@ -8,8 +8,6 @@ import pytest
 from ting.domain.exceptions import InvalidStateTransitionError
 from ting.domain.models import (
     RUN_TRANSITIONS,
-    ConfidenceEvent,
-    ConfidenceEventType,
     DispatcherState,
     Phase,
     PhaseSpec,
@@ -63,24 +61,6 @@ class TestRunStatus:
 
     def test_member_count(self) -> None:
         assert len(RunStatus) == 7
-
-
-class TestConfidenceEventType:
-    def test_values(self) -> None:
-        assert ConfidenceEventType.CI_PASS == "ci_pass"
-        assert ConfidenceEventType.CI_FAIL == "ci_fail"
-        assert ConfidenceEventType.SCOPE_BREACH == "scope_breach"
-        assert ConfidenceEventType.RETRY == "retry"
-        assert ConfidenceEventType.HUMAN_REJECT == "human_reject"
-        assert ConfidenceEventType.HUMAN_APPROVED == "human_approved"
-        assert ConfidenceEventType.AUTO_APPROVED == "auto_approved"
-        assert ConfidenceEventType.PR_CONFLICT == "pr_conflict"
-        assert ConfidenceEventType.PR_MERGEABLE == "pr_mergeable"
-        assert ConfidenceEventType.MESSAGE_SENT == "message_sent"
-        assert ConfidenceEventType.REVIEWER_SCORE == "reviewer_score"
-
-    def test_member_count(self) -> None:
-        assert len(ConfidenceEventType) == 11
 
 
 # ---------------------------------------------------------------------------
@@ -171,14 +151,12 @@ class TestSaga:
             repos=["niuulabs/volundr"],
             feature_branch="feat/my-saga",
             status=SagaStatus.ACTIVE,
-            confidence=0.9,
             created_at=NOW,
             base_branch="dev",
         )
         assert saga.tracker_id == "LIN-100"
         assert saga.name == "My Saga"
         assert saga.status == SagaStatus.ACTIVE
-        assert saga.confidence == 0.9
         assert saga.repos == ["niuulabs/volundr"]
         assert saga.feature_branch == "feat/my-saga"
 
@@ -192,7 +170,6 @@ class TestSaga:
             repos=["r"],
             feature_branch="feat/test",
             status=SagaStatus.ACTIVE,
-            confidence=0.5,
             created_at=NOW,
             base_branch="dev",
         )
@@ -209,7 +186,6 @@ class TestPhase:
             number=1,
             name="Phase 1",
             status=PhaseStatus.PENDING,
-            confidence=0.8,
         )
         assert phase.number == 1
         assert phase.status == PhaseStatus.PENDING
@@ -227,7 +203,6 @@ class TestRun:
             declared_files=["src/foo.py"],
             estimate_hours=2.0,
             status=RunStatus.PENDING,
-            confidence=0.75,
             session_id=None,
             branch=None,
             chronicle_summary=None,
@@ -244,33 +219,17 @@ class TestRun:
         assert run.session_id is None
 
 
-class TestConfidenceEvent:
-    def test_create(self) -> None:
-        event = ConfidenceEvent(
-            id=uuid4(),
-            run_id=uuid4(),
-            event_type=ConfidenceEventType.CI_PASS,
-            delta=0.1,
-            score_after=0.85,
-            created_at=NOW,
-        )
-        assert event.event_type == ConfidenceEventType.CI_PASS
-        assert event.delta == 0.1
-
-
 class TestDispatcherState:
     def test_create(self) -> None:
         state = DispatcherState(
             id=uuid4(),
             owner_id="user-1",
             running=True,
-            threshold=0.7,
             max_concurrent_runs=3,
             auto_continue=False,
             updated_at=NOW,
         )
         assert state.running is True
-        assert state.threshold == 0.7
         assert state.owner_id == "user-1"
         assert state.max_concurrent_runs == 3
         assert state.auto_continue is False

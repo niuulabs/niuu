@@ -44,6 +44,13 @@ ingress:
 config:
   logLevel: "info"
   logFormat: "json"
+  # -- OpenTelemetry trace/metric export. Empty (the default) means
+  # unconfigured — observability.enabled defaults to false, a decision, not
+  # a fallback. Fields match niuu.domain.observability.ObservabilityConfig.
+  # Set service_name explicitly: Observatory reuses volundr.config.Settings,
+  # so this chart's own service name ("observatory") is the composition
+  # root's default only when service_name is left unset here too.
+  observability: {}
   host: "0.0.0.0"
   port: 8083
   cors:

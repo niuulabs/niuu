@@ -30,8 +30,6 @@ export const sessionInfoSchema = z.object({
   chronicleLines: z.array(z.string()),
   /** Git branch associated with this session. */
   branch: z.string().nullable(),
-  /** Confidence score at the time of the last status change (0–100). */
-  confidence: z.number().min(0).max(100),
   /** Name of the run this session is executing. */
   runName: z.string(),
   /** Name of the saga this run belongs to. */

@@ -20,13 +20,27 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Awaitable, Callable, Sequence
+from datetime import UTC, datetime
+from pathlib import Path
 
 from niuu.observability import get_observability
 from ravn.domain.models import ToolResult
 from ravn.ports.permission import PermissionPort
 from ravn.ports.tool import ToolPort
-from ravn.skills.management import SkillManagementRegistry
-from ravn.valkyrie_evolution.learned_tools import LearnedToolError, LearnedToolResolver
+from ravn.skills.management import SkillLifecycle, SkillManagementRegistry
+from ravn.valkyrie_evolution.learned_tools import (
+    LearnedToolError,
+    LearnedToolInfrastructureError,
+    LearnedToolResolver,
+    learned_tool_venvs_dir,
+)
+from ravn.valkyrie_evolution.resident_learning import (
+    DEFAULT_ROLLBACK_CONSECUTIVE_FAILURES,
+    EVOLUTION_ROLLED_BACK_EVENT,
+)
+from ravn.valkyrie_evolution.tool_runtime import remove_tool_venv
+from sleipnir.domain.events import SleipnirEvent
+from sleipnir.ports.events import SleipnirPublisher
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +57,37 @@ class LearnedToolRunTool(ToolPort):
         permission: PermissionPort,
         skill_manager: SkillManagementRegistry | None = None,
         host_tools_provider: Callable[[], Sequence[ToolPort]] | None = None,
+        rollback_consecutive_failures: int = DEFAULT_ROLLBACK_CONSECUTIVE_FAILURES,
+        publisher: SleipnirPublisher | None = None,
+        environment_id: str = "",
+        valkyrie_id: str = "",
+        tools_dir: str | Path | None = None,
+        source: str = "",
     ) -> None:
         self._resolver = resolver
         self._permission = permission
         self._skill_manager = skill_manager
         self._host_tools_provider = host_tools_provider
+        #: Same regression threshold ResidentEvolutionConfig.rollback_
+        #: consecutive_failures expresses for the autonomous install loop
+        #: (resident_learning._rollback_regressed_skill) — applied here too,
+        #: because this dispatcher, not that loop, is the path every learned
+        #: tool actually runs through today. A tool that keeps failing here
+        #: must stop being runnable, the same as one the autonomous loop
+        #: executes on a signal's behalf.
+        self._rollback_consecutive_failures = rollback_consecutive_failures
+        #: When wired, rollback publishes the SAME valkyrie.evolution.
+        #: rolled_back event the autonomous install loop publishes (so the
+        #: realm capability sync and peers learn the capability is gone) and
+        #: prunes the tool's dedicated dependency venv. Without a publisher/
+        #: tools_dir this dispatcher still archives the tool for real — it
+        #: just cannot announce it or reclaim the venv, which callers should
+        #: wire when resident evolution is enabled.
+        self._publisher = publisher
+        self._environment_id = environment_id
+        self._valkyrie_id = valkyrie_id
+        self._tools_dir = Path(tools_dir) if tools_dir else None
+        self._source = source or valkyrie_id or "learned_tool_run"
 
     def _host_call(self, learned_tool_name: str) -> Callable[[str, dict], Awaitable[object]]:
         """Let a learned tool ask this resident to run one of its own tools.
@@ -198,6 +238,28 @@ class LearnedToolRunTool(ToolPort):
 
             try:
                 result = await tool.execute(payload)
+            except LearnedToolInfrastructureError as exc:
+                # The BACKEND could not run the tool at all (docker
+                # unavailable, dependency provisioning failed, the runner
+                # refused the call) — never the tool's own logic. This must
+                # never reach record_usage/rollback below: a backend outage
+                # is not evidence the tool is broken, and counting it toward
+                # the regression threshold archives a healthy tool.
+                span.set_attribute("ravn.learned_tool.outcome", "infrastructure_error")
+                telemetry.event(
+                    "ravn.learned_tool.lifecycle.infrastructure_error",
+                    attributes=attributes,
+                    content={"error": str(exc)},
+                )
+                logger.warning("learned_tool_run: %r backend error: %s", name, exc)
+                return ToolResult(
+                    tool_call_id="",
+                    content=(
+                        f"Learned tool {name!r} could not run (backend error, not a tool "
+                        f"failure): {exc}"
+                    ),
+                    is_error=True,
+                )
             except Exception as exc:
                 logger.warning("learned_tool_run: %r raised: %s", name, exc)
                 result = ToolResult(
@@ -207,39 +269,129 @@ class LearnedToolRunTool(ToolPort):
                 )
             outcome = "error" if result.is_error else "success"
             span.set_attribute("ravn.learned_tool.outcome", outcome)
-            if self._skill_manager is not None:
-                try:
-                    lifecycle = await self._skill_manager.record_usage(
-                        name,
-                        success=not result.is_error,
-                    )
-                    usage_attributes = {
-                        **attributes,
-                        "ravn.learned_tool.outcome": outcome,
-                        "ravn.skill.lifecycle.run_count": lifecycle.run_count,
-                        "ravn.skill.lifecycle.failure_count": lifecycle.failure_count,
-                        "ravn.skill.lifecycle.consecutive_failures": (
-                            lifecycle.consecutive_failures
-                        ),
-                    }
-                    telemetry.event(
-                        "ravn.learned_tool.lifecycle.usage_recorded",
-                        attributes=usage_attributes,
-                    )
-                    telemetry.count(
-                        "ravn.learned_tool.lifecycle.runs",
-                        attributes={
-                            "ravn.learned_tool.name": name,
-                            "ravn.learned_tool.outcome": outcome,
-                        },
-                    )
-                except LookupError:
-                    telemetry.event(
-                        "ravn.learned_tool.lifecycle.unmanaged",
-                        attributes=attributes,
-                    )
-                    logger.warning(
-                        "learned_tool_run: %r has no managed lifecycle record",
-                        name,
-                    )
+            if self._skill_manager is None:
+                return result
+
+            lifecycle: SkillLifecycle | None = None
+            try:
+                lifecycle = await self._skill_manager.record_usage(
+                    name,
+                    success=not result.is_error,
+                )
+            except LookupError:
+                telemetry.event(
+                    "ravn.learned_tool.lifecycle.unmanaged",
+                    attributes=attributes,
+                )
+                logger.warning(
+                    "learned_tool_run: %r has no managed lifecycle record",
+                    name,
+                )
+                return result
+
+            usage_attributes = {
+                **attributes,
+                "ravn.learned_tool.outcome": outcome,
+                "ravn.skill.lifecycle.run_count": lifecycle.run_count,
+                "ravn.skill.lifecycle.failure_count": lifecycle.failure_count,
+                "ravn.skill.lifecycle.consecutive_failures": lifecycle.consecutive_failures,
+            }
+            telemetry.event(
+                "ravn.learned_tool.lifecycle.usage_recorded",
+                attributes=usage_attributes,
+            )
+            telemetry.count(
+                "ravn.learned_tool.lifecycle.runs",
+                attributes={
+                    "ravn.learned_tool.name": name,
+                    "ravn.learned_tool.outcome": outcome,
+                },
+            )
+            # Deliberately OUTSIDE the record_usage try/except above: a
+            # LookupError raised from rollback itself (e.g. skill_manager.
+            # archive() racing a concurrent removal) must never be mistaken
+            # for "this tool has no managed lifecycle record".
+            if (
+                result.is_error
+                and lifecycle.consecutive_failures >= self._rollback_consecutive_failures
+            ):
+                result = await self._rollback_regressed_tool(
+                    name,
+                    lifecycle,
+                    result,
+                    skill_manager=self._skill_manager,
+                )
             return result
+
+    async def _rollback_regressed_tool(
+        self,
+        name: str,
+        lifecycle: SkillLifecycle,
+        result: ToolResult,
+        *,
+        skill_manager: SkillManagementRegistry,
+    ) -> ToolResult:
+        """Archive a learned tool that just crossed the regression threshold.
+
+        The YOLO invariant applies here too: rollback on regression is
+        automatic, not a suggestion an operator has to notice and act on.
+        Archiving makes the tool immediately unrunnable (the lifecycle-status
+        check at the top of ``execute`` refuses an archived tool), so the
+        next dispatch fails loudly and clearly instead of quietly repeating
+        the same failure forever. When wired with a publisher, this emits
+        the SAME ``valkyrie.evolution.rolled_back`` event the autonomous
+        install loop's rollback emits, so the realm capability sync and
+        peers learn the capability is gone; when wired with tools_dir, the
+        tool's dedicated dependency venv is reclaimed.
+        """
+        await skill_manager.archive(name)
+        if self._tools_dir is not None:
+            remove_tool_venv(
+                venvs_dir=learned_tool_venvs_dir(self._tools_dir.parent),
+                tool_name=name,
+            )
+        if self._publisher is not None:
+            await self._publisher.publish(
+                SleipnirEvent(
+                    event_type=EVOLUTION_ROLLED_BACK_EVENT,
+                    source=self._source,
+                    payload={
+                        "environment_id": self._environment_id,
+                        "valkyrie_id": self._valkyrie_id,
+                        "skill_name": name,
+                        "artifact_type": "agent_tool",
+                        "command_action": "auto_rollback_regression",
+                        "rationale": (
+                            f"Auto-rolled-back {name!r} after "
+                            f"{lifecycle.consecutive_failures} consecutive failures via "
+                            "learned_tool_run"
+                        ),
+                    },
+                    summary=f"{self._source} archived learned tool {name!r}",
+                    urgency=0.45,
+                    domain="infrastructure",
+                    timestamp=datetime.now(UTC),
+                )
+            )
+        get_observability().event(
+            "ravn.learned_tool.lifecycle.rolled_back",
+            attributes={
+                "ravn.learned_tool.name": name,
+                "ravn.skill.lifecycle.consecutive_failures": lifecycle.consecutive_failures,
+                "ravn.skill.lifecycle.rollback_threshold": self._rollback_consecutive_failures,
+            },
+        )
+        logger.warning(
+            "learned_tool_run: %r archived after %d consecutive failures",
+            name,
+            lifecycle.consecutive_failures,
+        )
+        return ToolResult(
+            tool_call_id="",
+            content=(
+                f"{result.content}\n\nLearned tool {name!r} was archived after "
+                f"{lifecycle.consecutive_failures} consecutive failures and can no "
+                "longer be run."
+            ),
+            is_error=True,
+        )

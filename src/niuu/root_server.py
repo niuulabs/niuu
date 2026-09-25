@@ -31,6 +31,7 @@ from niuu.service_databases import (
 )
 
 if TYPE_CHECKING:
+    from cli.config import CLISettings
     from cli.registry import PluginRegistry
     from niuu.ports.embedded_database import EmbeddedDatabasePort
 
@@ -50,11 +51,19 @@ class RootServer(Service):
         host_profile: str = DEFAULT_HOST_PROFILE,
         enabled_mounts: set[str] | None = None,
         dev_identity: bool = False,
+        cli_settings: CLISettings | None = None,
     ) -> None:
         """``dev_identity``: local dev without an identity provider (mini mode).
 
         Only then does the session proxy forward browser-asserted dev identity
         and attach without an ownership guard.
+
+        ``cli_settings``: the CLI settings already loaded by the caller
+        (``cli.commands.platform``), so ``build_root_app`` configures this
+        process's observability pipeline from the same
+        ``CLISettings.observability`` the operator set, without re-reading
+        config from disk/env a second time. Loaded fresh when omitted (tests,
+        direct callers).
         """
         self._registry = registry
         self._host = host
@@ -62,6 +71,7 @@ class RootServer(Service):
         self._port = port
         self._host_profile = host_profile
         self._enabled_mounts = enabled_mounts
+        self._cli_settings = cli_settings
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task[None] | None = None
         self._embedded_db: EmbeddedDatabasePort | None = None
@@ -152,6 +162,7 @@ class RootServer(Service):
             host_profile=self._host_profile,
             enabled_mounts=self._enabled_mounts,
             skuld_registry=self.skuld_registry,
+            cli_settings=self._cli_settings,
         )
 
     async def start(self) -> None:

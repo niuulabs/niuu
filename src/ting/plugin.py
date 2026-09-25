@@ -234,7 +234,6 @@ class TingPlugin(ServicePlugin):
                     ("id", "ID"),
                     ("name", "Name"),
                     ("status", "Status"),
-                    ("confidence", "Confidence"),
                     ("session", "Session"),
                 ],
                 rows=data,

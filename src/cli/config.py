@@ -16,6 +16,7 @@ from pydantic_settings import (
 
 from bifrost.auth import AuthMode as BifrostAuthMode
 from bifrost.config import BifrostConfig
+from niuu.domain.observability import ObservabilityConfig
 from volundr.compute.config import ComputeConfig
 
 DEFAULT_CONFIG_DIR = Path.home() / ".niuu"
@@ -455,6 +456,20 @@ class ServerConfig(BaseModel):
     )
 
 
+class ResidentsConfig(BaseModel):
+    """How mini mode hosts long-lived residents on this machine."""
+
+    runtime: Literal["process", "docker"] = Field(
+        default="process",
+        description=(
+            "'process' runs Ravn residents as Skuld and Ravn processes on this host and "
+            "needs no container engine. 'docker' runs resident images through the local "
+            "Docker Engine, which must be running, and also offers the NemoClaw and "
+            "NemoHermes profiles."
+        ),
+    )
+
+
 class ServiceConfig(BaseModel):
     """Service management configuration."""
 
@@ -479,6 +494,20 @@ class TUIConfig(BaseModel):
         default="textual-dark",
         description="Textual theme name.",
     )
+
+
+class CLIObservabilityConfig(ObservabilityConfig):
+    """OpenTelemetry settings for the mini-mode host's local stack.
+
+    The single place a `niuu platform up` user points the whole local stack
+    (Volundr, Ting, Bifröst, and the shared host) at an OTLP collector
+    (Tempo, Jaeger, etc.), instead of repeating ``observability:`` in every
+    per-service config file. Each service still owns its own
+    ``configure_observability`` call at its own composition root — see
+    ``docs/site/operations/observability.md``.
+    """
+
+    service_name: str = Field(default="niuu-mini")
 
 
 class OidcIssuerConfig(BaseModel):
@@ -717,10 +746,12 @@ class CLISettings(BaseSettings):
     host_auth: AuthConfig = Field(default_factory=AuthConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+    residents: ResidentsConfig = Field(default_factory=ResidentsConfig)
     docker: DockerConfig = Field(default_factory=DockerConfig)
     plugins: PluginConfig = Field(default_factory=PluginConfig)
     services: ServiceConfig = Field(default_factory=ServiceConfig)
     bifrost: BifrostConfig = Field(default_factory=BifrostConfig)
+    observability: CLIObservabilityConfig = Field(default_factory=CLIObservabilityConfig)
     compute: ComputeConfig | None = None
     service_overrides: dict[str, PerServiceConfig] = Field(
         default_factory=dict,

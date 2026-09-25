@@ -403,6 +403,45 @@ def test_include_overrides_reject_unknown_keys():
         )
 
 
+def test_include_rejects_a_child_whose_placement_conflicts_with_the_parent():
+    child_payload = _child_payload()
+    child_payload["graph"]["placement"] = {"instance": "spark-01"}
+    child = load_workflow_document(yaml.safe_dump(child_payload, sort_keys=False))
+    # The parent declares no placement of its own, so any placement the
+    # child declares is a conflict — there is nothing for it to match.
+    parent = _load_parent(child_document=child, include_nodes={"child-stage": "local-stage"})
+
+    with pytest.raises(WorkflowDocumentError, match="declares its own graph.placement"):
+        resolve_workflow_includes(
+            parent.graph,
+            persona_dependencies=parent.persona_dependencies,
+            workflow_dependencies=parent.workflow_dependencies,
+            resolve_alias=_resolver_for(child),
+        )
+
+
+def test_include_allows_a_child_whose_placement_matches_the_parent_exactly():
+    child_payload = _child_payload()
+    # Deliberately different tag order than the parent below: the comparison
+    # must be order-independent, not a literal list match.
+    child_payload["graph"]["placement"] = {"tags": ["gpu", "dgx-spark"], "match": "any"}
+    child = load_workflow_document(yaml.safe_dump(child_payload, sort_keys=False))
+    parent_payload = _parent_payload(
+        child_document=child, include_nodes={"child-stage": "local-stage"}
+    )
+    parent_payload["graph"]["placement"] = {"tags": ["dgx-spark", "gpu"], "match": "any"}
+    parent = load_workflow_document(yaml.safe_dump(parent_payload, sort_keys=False))
+
+    resolved = resolve_workflow_includes(
+        parent.graph,
+        persona_dependencies=parent.persona_dependencies,
+        workflow_dependencies=parent.workflow_dependencies,
+        resolve_alias=_resolver_for(child),
+    )
+
+    assert "local-stage" in {node["id"] for node in resolved["nodes"]}
+
+
 def test_include_overrides_reject_targets_not_included():
     child = _load_child()
     with pytest.raises(WorkflowDocumentError, match="does not include: someone-else"):

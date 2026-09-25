@@ -227,7 +227,6 @@ class TestDecomposeEndpoint:
         assert data["repos"] == ["org/repo"]
         assert data["feature_branch"] == "feat/test-saga"
         assert data["base_branch"] == "main"
-        assert data["confidence"] == 0.0
         assert data["created_at"] == ""
         assert data["phase_summary"] == {"total": 0, "completed": 0}
         assert data["milestone_count"] == 1

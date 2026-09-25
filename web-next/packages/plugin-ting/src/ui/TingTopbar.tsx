@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { TopbarChip } from '@niuulabs/ui';
 import { useDispatcherState } from './useDispatcherState';
-import { formatThreshold } from './thresholdDisplay';
 
 export function TingTopbar() {
   const { data: state } = useDispatcherState();
@@ -29,7 +28,6 @@ export function TingTopbar() {
     };
   }, [open]);
 
-  const thresholdDisplay = state ? formatThreshold(state.threshold) : '—';
   const concurrentDisplay = state ? String(state.maxConcurrentRuns) : '—';
 
   return (
@@ -63,8 +61,6 @@ export function TingTopbar() {
           <span className="niuu:text-xs niuu:text-text-muted">{status}</span>
         </div>
         <dl className="niuu:grid niuu:grid-cols-[1fr_auto] niuu:gap-x-4 niuu:gap-y-2 niuu:text-xs">
-          <dt className="niuu:text-text-muted">Threshold</dt>
-          <dd className="niuu:font-mono niuu:text-text-secondary">{thresholdDisplay}</dd>
           <dt className="niuu:text-text-muted">Concurrent runs</dt>
           <dd className="niuu:font-mono niuu:text-text-secondary">{concurrentDisplay}</dd>
         </dl>

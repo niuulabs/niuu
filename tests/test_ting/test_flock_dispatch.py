@@ -56,7 +56,6 @@ def _make_saga(
         feature_branch=feature_branch,
         base_branch=base_branch,
         status=SagaStatus.ACTIVE,
-        confidence=0.5,
         created_at=datetime.now(UTC),
         owner_id="user-1",
     )

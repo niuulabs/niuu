@@ -443,6 +443,30 @@ def create_app(
             yield
 
     app = FastAPI(title="Observatory API", lifespan=lifespan)
+
+    # Configured and instrumented here, not in lifespan: Starlette builds and
+    # caches its middleware stack on the app's first ASGI __call__ (which is
+    # also how the lifespan startup event arrives), so instrumenting from
+    # inside a lifespan handler has no effect. Observatory reuses
+    # volundr.config.Settings wholesale (see the import above), so
+    # observability.service_name would default to "volundr" unless told
+    # otherwise — default_service_name gives it its own identity unless the
+    # operator explicitly set observability.service_name in its own config.
+    from niuu.observability import (
+        configure_observability,
+        instrument_fastapi_app,
+        instrument_httpx_client,
+    )
+
+    telemetry = configure_observability(
+        loaded_settings.observability,
+        resource_attributes={"service.namespace": "observatory"},
+        component="observatory",
+        default_service_name="observatory",
+    )
+    instrument_fastapi_app(app, telemetry, component="observatory")
+    instrument_httpx_client(telemetry)
+
     app.state.identity = create_identity_adapter(loaded_settings, user_repository=None)
     app.add_middleware(
         PATRevocationMiddleware,

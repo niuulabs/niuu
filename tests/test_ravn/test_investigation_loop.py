@@ -14,14 +14,19 @@ from unittest.mock import AsyncMock
 
 from ravn.adapters.skill.file_registry import FileSkillRegistry
 from ravn.adapters.tools.build_tool import attach_build_tool
+from ravn.adapters.tools.learned_tool_run import LearnedToolRunTool
 from ravn.agent import RavnAgent
 from ravn.domain.models import StreamEvent, StreamEventType, TokenUsage, ToolCall
 from ravn.odin.review import JsonReviewStore, ReviewRequester
 from ravn.ports.llm import LLMPort
 from ravn.skills.management import SkillManagementRegistry
+from ravn.valkyrie_evolution.learned_tools import LearnedToolResolver, read_learned_tool_artifact
 from ravn.valkyrie_evolution.resident_learning import (
+    ResidentLearningArtifact,
     ResidentLearningIdentity,
     ResidentLearningRuntime,
+    capability_proposal_event,
+    capability_proposal_from_artifact,
 )
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain import registry
@@ -40,6 +45,16 @@ _OOM_TOOL_CODE = (
     "    }\n"
 )
 
+_OOM_TEST_CODE = (
+    "import _verify_tool\n\n"
+    "def test_matches_oomkilled():\n"
+    "    result = _verify_tool.run(\n"
+    "        {'payload': {'reason': 'OOMKilled', 'namespace': 'payments'}}\n"
+    "    )\n"
+    "    assert result['matches'] is True\n"
+    "    assert result['observed']['namespace'] == 'payments'\n"
+)
+
 
 def _build_tool_call() -> ToolCall:
     return ToolCall(
@@ -54,6 +69,7 @@ def _build_tool_call() -> ToolCall:
                 "declared_reach": [{"kind": "pure_compute", "access": "none"}],
             },
             "tool_code": _OOM_TOOL_CODE,
+            "test_code": _OOM_TEST_CODE,
             "canary_input": {"payload": {"reason": "OOMKilled", "namespace": "payments"}},
         },
     )
@@ -190,5 +206,91 @@ async def test_investigation_session_authors_tool_and_teaches_flock(tmp_path) ->
     assert len(adoptions) == 1
     student_tool = tmp_path / "student" / "learned_tools" / "inspect_oomkilled_pod.py"
     assert student_tool.is_file()
+
+    # The teacher's own claims travel with the install for audit, kept
+    # distinct from the student's own verification (never confused for it).
+    student_artifact = read_learned_tool_artifact(
+        tmp_path / "student" / "learned_tool_artifacts" / "inspect_oomkilled_pod.json"
+    )
+    assert student_artifact.provenance["verification"]["verified_by"] == "valkyrie:k8s-b"
+    assert "builder_evidence" in student_artifact.provenance
+
+    # 5. The student independently re-verified the proposal for itself (never
+    #    trusting the teacher's own claim) and can actually RUN what it
+    #    adopted through learned_tool_run — the headline loop this test
+    #    guards: build, propose, peer-verify, install, run.
+    dispatch = LearnedToolRunTool(
+        resolver=LearnedToolResolver(state_dir=tmp_path / "student"),
+        permission=AllowAllPermission(),
+        skill_manager=student.skills,
+    )
+    run_result = await dispatch.execute(
+        {
+            "name": "inspect_oomkilled_pod",
+            "input": {"payload": {"reason": "OOMKilled", "namespace": "payments"}},
+        }
+    )
+    assert not run_result.is_error, run_result.content
+    assert '"matches": true' in run_result.content
+
+    await student.stop()
+
+
+async def test_peer_proposal_without_test_code_is_declined_not_installed(tmp_path) -> None:
+    """An agent_tool proposal with no test_code cannot be independently
+    re-verified, so require_verified_artifact would refuse it forever if
+    installed. It is declined at adoption time instead — never a capability
+    the peer can see but never run."""
+    bus = InProcessBus()
+    recorder = BusRecorder(bus)
+    await bus.subscribe(["*"], recorder)
+
+    student = _student_runtime(tmp_path, bus)
+    await student.start()
+
+    resident_artifact = ResidentLearningArtifact(
+        learning_id="learn-oom-untested",
+        title="inspect_oomkilled_pod",
+        summary="Inspect an OOMKilled pod.",
+        content="",
+        artifact_type="agent_tool",
+        scope="flock",
+        confidence=0.74,
+        source_environment_id="cluster-a",
+        source_valkyrie_id="valkyrie:k8s-a",
+        promotion_id="learn-oom-untested",
+        flock_id="flock:k8s-valkyries",
+        domain="k8s",
+        redaction_status="none",
+        tool_code=_OOM_TOOL_CODE,
+        tool_entry_point="run",
+        learned_tool_manifest={
+            "name": "inspect_oomkilled_pod",
+            "description": "Inspect an OOMKilled pod signal.",
+            "input_schema": {"type": "object"},
+            "required_permission": "k8s:read",
+        },
+        test_code="",  # No tests: nothing for a peer to re-verify.
+        canary_sample={"payload": {"reason": "OOMKilled", "namespace": "payments"}},
+    )
+    proposal = capability_proposal_from_artifact(
+        resident_artifact,
+        builder_evidence={},
+        review_outcome="self_registered",
+    )
+    await bus.publish(capability_proposal_event(proposal, source="valkyrie:k8s-a"))
+    await bus.flush()
+
+    adoptions = [
+        event
+        for event in await recorder.of_type(registry.LEARNING_ADOPTION_RECORDED)
+        if event.payload.get("resident_valkyrie_id") == "valkyrie:k8s-b"
+    ]
+    assert all(event.payload.get("action") != "adopted" for event in adoptions)
+    decisions = student.decisions()
+    assert decisions
+    assert decisions[-1].action == "rejected"
+    assert "no test_code" in decisions[-1].rationale
+    assert not (tmp_path / "student" / "learned_tools" / "inspect_oomkilled_pod.py").exists()
 
     await student.stop()

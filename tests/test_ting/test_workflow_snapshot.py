@@ -3,12 +3,17 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import pytest
+
+from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition, WorkflowScope
+from ting.domain.workflow_document import WorkflowPlacement
 from ting.domain.workflow_snapshot import (
     build_workflow_snapshot,
     workflow_mimir_from_snapshot,
     workflow_name_from_snapshot,
     workflow_personas_from_snapshot,
+    workflow_placement_from_snapshot,
     workflow_resource_bindings_from_snapshot,
     workflow_resource_nodes_from_snapshot,
 )
@@ -357,3 +362,32 @@ def test_workflow_snapshot_empty_inputs_return_empty_structures() -> None:
     assert workflow_resource_nodes_from_snapshot({"graph": []}) == []
     assert workflow_resource_bindings_from_snapshot({"graph": {}}) == []
     assert workflow_mimir_from_snapshot({"graph": {"nodes": []}}) == {}
+
+
+class TestWorkflowPlacementFromSnapshot:
+    def test_returns_none_when_graph_has_no_placement(self) -> None:
+        snapshot = {"schema_version": 2, "graph": {"nodes": [], "edges": []}}
+        assert workflow_placement_from_snapshot(snapshot) is None
+
+    def test_extracts_a_pinned_placement(self) -> None:
+        snapshot = {
+            "schema_version": 2,
+            "graph": {"nodes": [], "edges": [], "placement": {"instance": "spark-01"}},
+        }
+        assert workflow_placement_from_snapshot(snapshot) == WorkflowPlacement(instance="spark-01")
+
+    def test_raises_rather_than_treat_a_missing_snapshot_as_unplaced(self) -> None:
+        with pytest.raises(WorkflowDocumentError, match="snapshot is required"):
+            workflow_placement_from_snapshot({})
+
+    def test_raises_rather_than_treat_a_malformed_graph_as_unplaced(self) -> None:
+        with pytest.raises(WorkflowDocumentError, match="graph must be a mapping"):
+            workflow_placement_from_snapshot({"schema_version": 2, "graph": "not-a-mapping"})
+
+    def test_rejects_placement_pinned_on_a_schema_version_1_snapshot(self) -> None:
+        snapshot = {
+            "schema_version": 1,
+            "graph": {"nodes": [], "edges": [], "placement": {"instance": "spark-01"}},
+        }
+        with pytest.raises(WorkflowDocumentError, match="requires workflow schema_version 2"):
+            workflow_placement_from_snapshot(snapshot)

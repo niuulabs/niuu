@@ -557,7 +557,6 @@ def _build_tracker_router(
             repo_branches=repo_branches,
             feature_branch=f"feat/{slug}",
             status=existing.status if existing is not None else SagaStatus.ACTIVE,
-            confidence=existing.confidence if existing is not None else 0.0,
             created_at=existing.created_at if existing is not None else now,
             base_branch=base_branch,
             owner_id=principal.user_id,

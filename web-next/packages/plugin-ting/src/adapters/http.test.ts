@@ -55,7 +55,6 @@ const rawSaga = {
   repos: ['niuulabs/volundr'],
   feature_branch: 'feat/auth-rewrite',
   status: 'active',
-  confidence: 72,
   created_at: '2026-01-01T00:00:00Z',
   phase_summary: { total: 3, completed: 1 },
 };
@@ -70,7 +69,6 @@ const rawRun = {
   declared_files: ['src/auth/refresh.ts'],
   estimate_hours: 4,
   status: 'queued',
-  confidence: 80,
   session_id: null,
   reviewer_session_id: null,
   review_round: 0,
@@ -88,14 +86,12 @@ const rawPhase = {
   number: 1,
   name: 'Foundation',
   status: 'active',
-  confidence: 75,
   runs: [rawRun],
 };
 
 const rawDispatcherState = {
   id: '00000000-0000-0000-0000-000000000099',
   running: true,
-  threshold: 70,
   max_concurrent_runs: 3,
   auto_continue: false,
   updated_at: '2026-01-01T00:00:00Z',
@@ -106,7 +102,6 @@ const rawSessionInfo = {
   status: 'running',
   chronicle_lines: ['line 1', 'line 2'],
   branch: 'feat/jwt-refresh',
-  confidence: 80,
   run_name: 'Implement JWT refresh',
   saga_name: 'Auth Rewrite',
   cluster_name: 'Mac mini',
@@ -280,7 +275,6 @@ const rawFlockConfig = {
 };
 
 const rawDispatchDefaults = {
-  confidence_threshold: 72,
   max_concurrent_runs: 4,
   auto_continue: true,
   batch_size: 6,
@@ -893,7 +887,6 @@ describe('buildTingHttpAdapter', () => {
         trackerType: 'linear',
         slug: 'my-new-saga',
         baseBranch: 'main',
-        confidence: 0,
         phaseSummary: { total: 2, completed: 0 },
       });
     });
@@ -2027,7 +2020,6 @@ describe('buildDispatcherHttpAdapter', () => {
     const state = await buildDispatcherHttpAdapter(client).getState();
     expect(state).toMatchObject({
       running: true,
-      threshold: 70,
       maxConcurrentRuns: 3,
       autoContinue: false,
     });
@@ -2045,13 +2037,6 @@ describe('buildDispatcherHttpAdapter', () => {
     client.patch.mockResolvedValue(undefined);
     await buildDispatcherHttpAdapter(client).setRunning(false);
     expect(client.patch).toHaveBeenCalledWith('/dispatcher', { running: false });
-  });
-
-  it('PATCHes threshold', async () => {
-    const client = makeClient();
-    client.patch.mockResolvedValue(undefined);
-    await buildDispatcherHttpAdapter(client).setThreshold(80);
-    expect(client.patch).toHaveBeenCalledWith('/dispatcher', { threshold: 80 });
   });
 
   it('PATCHes auto_continue', async () => {
@@ -2101,7 +2086,6 @@ describe('buildDispatcherHttpAdapter', () => {
     const svc: IDispatcherService = buildDispatcherHttpAdapter(client);
     expect(typeof svc.getState).toBe('function');
     expect(typeof svc.setRunning).toBe('function');
-    expect(typeof svc.setThreshold).toBe('function');
     expect(typeof svc.setAutoContinue).toBe('function');
     expect(typeof svc.getLog).toBe('function');
   });
@@ -2859,7 +2843,6 @@ describe('buildTingSettingsHttpAdapter', () => {
     const service = buildTingSettingsHttpAdapter(client);
     const defaults = await service.getDispatchDefaults();
     const updated = await service.updateDispatchDefaults({
-      confidenceThreshold: 80,
       maxConcurrentRuns: 6,
       autoContinue: false,
       batchSize: 10,
@@ -2875,7 +2858,6 @@ describe('buildTingSettingsHttpAdapter', () => {
     expect(defaults.quietHours).toBe('22:00–07:00 UTC');
     expect(defaults.escalateAfter).toBe('30m');
     expect(client.patch).toHaveBeenCalledWith('/settings/dispatch', {
-      confidence_threshold: 80,
       max_concurrent_runs: 6,
       auto_continue: false,
       batch_size: 10,

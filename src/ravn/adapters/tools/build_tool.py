@@ -40,9 +40,11 @@ from ravn.valkyrie_evolution.learned_tools import (
 )
 from ravn.valkyrie_evolution.models import LearnedToolArtifact, LearnedToolManifest, ReviewResult
 from ravn.valkyrie_evolution.resident_learning import (
+    UNSCRUBBED_STATUS,
     ResidentLearningArtifact,
     ResidentLearningIdentity,
-    flock_learning_proposed_event,
+    capability_proposal_event,
+    capability_proposal_from_artifact,
     review_allows_install,
     review_inputs,
     risk_class_for_safety,
@@ -601,6 +603,32 @@ class BuildTool(ToolPort):
                     content="build_tool rejected by review: " + "; ".join(review.blocking_findings),
                     is_error=True,
                 )
+            # A build with no test_code was only ever structurally validated
+            # (tool_verification's "no test_code supplied" pass) — it has
+            # never actually run. Holding it for operator approval leads
+            # nowhere: approval cannot manufacture a test module, so
+            # _verify_peer_artifact would still skip re-verification (it is
+            # self-built), _install_learned_tool_artifact would still write
+            # provenance with no "verification" key, and
+            # require_verified_artifact would refuse to ever run it —
+            # forever. Reject outright instead, with a reason a rebuild can
+            # act on.
+            if not artifact.test_code.strip():
+                telemetry.event(
+                    "ravn.tool_build.rejected.no_tests",
+                    attributes={"ravn.tool_build.name": artifact.manifest.name},
+                )
+                self._complete_commission(input)
+                return ToolResult(
+                    tool_call_id="",
+                    content=(
+                        "build_tool rejected: no test_code was supplied. A build with no "
+                        "independent test module can never be verified — approval could not "
+                        "fix that, so this is not held for review. Rebuild with a "
+                        "self-contained test module covering the tool's behavior."
+                    ),
+                    is_error=True,
+                )
             if not review_allows_install(review, self._autonomy_mode):
                 review_filed = await self._file_install_review(resident_artifact, artifact, review)
                 telemetry.event(
@@ -675,8 +703,12 @@ class BuildTool(ToolPort):
                 )
 
             replace = bool(input.get("replace"))
-            self._register_tool(learned_tool, replace=replace)  # type: ignore[call-arg]
-            lifecycle_warning = ""
+            # Record the lifecycle artifact BEFORE registering the live tool:
+            # a failure here must never leave a tool callable in this session
+            # with no lifecycle record — require_verified_artifact, rollback
+            # bookkeeping, and the dashboard inventory would never see it, and
+            # the failure would surface after the tool was already live. No
+            # fallback: raise, with the remedy visible in the exception.
             if self._installed_artifact_recorder is not None:
                 lifecycle_attributes = {
                     "ravn.learned_tool.name": artifact.manifest.name,
@@ -686,28 +718,13 @@ class BuildTool(ToolPort):
                 with telemetry.span(
                     "ravn.learned_tool.lifecycle.register",
                     attributes=lifecycle_attributes,
-                ) as lifecycle_span:
-                    try:
-                        await self._installed_artifact_recorder(resident_artifact)
-                        telemetry.event(
-                            "ravn.learned_tool.lifecycle.registered",
-                            attributes=lifecycle_attributes,
-                        )
-                    except Exception as exc:  # noqa: BLE001 — installation already succeeded
-                        lifecycle_warning = (
-                            "The tool is installed, but its lifecycle record could not be "
-                            f"updated: {type(exc).__name__}: {exc}"
-                        )
-                        telemetry.mark_error(
-                            lifecycle_span,
-                            type(exc).__name__,
-                            str(exc),
-                        )
-                        logger.warning(
-                            "Learned tool %s installed, but lifecycle registration failed",
-                            artifact.manifest.name,
-                            exc_info=True,
-                        )
+                ):
+                    await self._installed_artifact_recorder(resident_artifact)
+                    telemetry.event(
+                        "ravn.learned_tool.lifecycle.registered",
+                        attributes=lifecycle_attributes,
+                    )
+            self._register_tool(learned_tool, replace=replace)  # type: ignore[call-arg]
             publish_learned_tool_inventory([artifact])
             telemetry.event(
                 "ravn.tool_build.registered",
@@ -718,7 +735,10 @@ class BuildTool(ToolPort):
             )
             flock_warning = ""
             try:
-                await self._publish_flock_proposal(artifact)
+                await self._publish_flock_proposal(
+                    resident_artifact,
+                    builder_evidence=artifact.provenance,
+                )
             except Exception as exc:  # noqa: BLE001 — publication follows successful install
                 flock_warning = (
                     "The tool is installed and registered, but its Flock "
@@ -752,7 +772,6 @@ class BuildTool(ToolPort):
                 artifact_path,
                 registered=True,
                 flock_warning=flock_warning,
-                lifecycle_warning=lifecycle_warning,
             ),
         )
 
@@ -1498,12 +1517,27 @@ class BuildTool(ToolPort):
         )
         return await self._review_requester.request(item) is not None
 
-    async def _publish_flock_proposal(self, artifact: LearnedToolArtifact) -> None:
+    async def _publish_flock_proposal(
+        self,
+        resident_artifact: ResidentLearningArtifact,
+        *,
+        builder_evidence: Mapping[str, Any],
+    ) -> None:
+        """Publish this build as a capability proposal, through the ONE publisher.
+
+        ``capability_proposal_from_artifact`` + ``capability_proposal_event``
+        is exactly what the resident install pipeline calls for its own
+        proposals — there is no build_tool-local, narrower payload that omits
+        test_code/requirements/canary_sample/builder_evidence, which used to
+        leave a peer with nothing to re-verify and no way to ever pass
+        ``require_verified_artifact`` for what it adopted.
+        """
+        name = resident_artifact.title
         if self._publisher is None or not self._flock_id:
             get_observability().event(
                 "ravn.tool_build.flock.skipped",
                 attributes={
-                    "ravn.tool_build.name": artifact.manifest.name,
+                    "ravn.tool_build.name": name,
                     "ravn.tool_build.flock.reason": (
                         "publisher_unavailable" if self._publisher is None else "flock_unconfigured"
                     ),
@@ -1513,34 +1547,20 @@ class BuildTool(ToolPort):
         telemetry = get_observability()
         with telemetry.span(
             "ravn.tool_build.flock.publish",
-            attributes={"ravn.tool_build.name": artifact.manifest.name},
+            attributes={"ravn.tool_build.name": name},
         ):
+            proposal = capability_proposal_from_artifact(
+                resident_artifact,
+                builder_evidence=builder_evidence,
+                review_outcome="self_registered",
+                subject_domain=self._domain,
+            )
             await self._publisher.publish(
-                flock_learning_proposed_event(
-                    source=self._valkyrie_id or "build_tool",
-                    learning_id=artifact.artifact_id,
-                    title=artifact.manifest.name,
-                    summary=artifact.manifest.description,
-                    flock_id=self._flock_id,
-                    artifact_type=artifact.artifact_type,
-                    content="",
-                    domain=self._domain,
-                    environment_id=self._environment_id,
-                    source_valkyrie_id=self._valkyrie_id,
-                    confidence=self._flock_confidence,
-                    redaction_status="redacted",
-                    promotion_id=artifact.artifact_id,
-                    tool_code=artifact.tool_code,
-                    tool_entry_point=artifact.manifest.entry_point,
-                    learned_tool_manifest=artifact.manifest.to_dict(),
-                    review_outcome="self_registered",
-                    builder_evidence=artifact.provenance,
-                    correlation_id=artifact.artifact_id,
-                )
+                capability_proposal_event(proposal, source=self._valkyrie_id or "build_tool")
             )
             telemetry.event(
                 "ravn.tool_build.flock.proposed",
-                attributes={"ravn.tool_build.name": artifact.manifest.name},
+                attributes={"ravn.tool_build.name": name},
             )
             telemetry.count("ravn.tool_build.flock.proposals")
 
@@ -1622,9 +1642,12 @@ def _resident_learning_artifact(
 ) -> ResidentLearningArtifact:
     """Project a learned tool into the shared resident-artifact envelope.
 
-    The same object feeds the review gate (via review_inputs) and the review
-    item evidence (via asdict), so the resident rehydrates exactly what was
-    reviewed.
+    The same object feeds the review gate (via review_inputs), the review
+    item evidence (via asdict), and the flock proposal (via
+    capability_proposal_from_artifact), so the resident rehydrates exactly
+    what was reviewed and a peer gets exactly what build_tool verified —
+    including test_code and requirements, without which a peer cannot
+    independently re-verify or provision the tool's dependencies.
     """
     return ResidentLearningArtifact(
         learning_id=artifact.artifact_id,
@@ -1639,11 +1662,15 @@ def _resident_learning_artifact(
         promotion_id=artifact.artifact_id,
         flock_id=flock_id,
         domain=domain,
-        redaction_status="redacted",
+        # No redactor runs on this path; UNSCRUBBED_STATUS says so honestly
+        # instead of claiming a scrub that never happened.
+        redaction_status=UNSCRUBBED_STATUS,
         artifact_path=str(artifact_path),
         tool_code=artifact.tool_code,
         tool_entry_point=artifact.manifest.entry_point,
         learned_tool_manifest=artifact.manifest.to_dict(),
+        test_code=artifact.test_code,
+        requirements=list(artifact.requirements),
         canary_sample=dict(canary_input),
         correlation_id=artifact.artifact_id,
     )
@@ -1731,7 +1758,6 @@ def _summary(
     *,
     registered: bool,
     flock_warning: str = "",
-    lifecycle_warning: str = "",
 ) -> str:
     payload = {
         "artifact_id": artifact.artifact_id,
@@ -1746,8 +1772,6 @@ def _summary(
     }
     if flock_warning:
         payload["flock_publication_warning"] = flock_warning
-    if lifecycle_warning:
-        payload["lifecycle_warning"] = lifecycle_warning
     return json.dumps(payload, indent=2, sort_keys=True)
 
 

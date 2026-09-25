@@ -169,16 +169,22 @@ class RecordingVolundrPort(VolundrPort):
         name: str = "local",
         target_id: str = "local",
         chat_endpoint: str = "wss://sessions.example/s/session-123/session",
+        tags: list[str] | None = None,
     ) -> None:
         self._name = name
         self._target_id = target_id
         self._chat_endpoint = chat_endpoint
+        self._tags = tags or []
         self.requests: list[SpawnRequest] = []
         self.stopped: list[str] = []
 
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def tags(self) -> list[str]:
+        return self._tags
 
     @property
     def target_id(self) -> str:
@@ -360,6 +366,15 @@ def _make_research_workflow() -> WorkflowDefinition:
         },
         created_at=now,
         updated_at=now,
+    )
+
+
+def _make_research_workflow_with_placement(placement: dict) -> WorkflowDefinition:
+    workflow = _make_research_workflow()
+    return replace(
+        workflow,
+        schema_version=2,
+        graph={**workflow.graph, "placement": placement},
     )
 
 
@@ -1698,6 +1713,213 @@ class TestWorkflowCatalogAPI:
         assert len(primary.requests) == 0
         assert len(secondary.requests) == 1
         assert response.json()["clusterName"] == "secondary"
+
+    def test_launch_workflow_placement_tags_selects_matching_target(self) -> None:
+        workflow = _make_research_workflow_with_placement({"tags": ["gpu"]})
+        repo = InMemoryWorkflowRepository([workflow])
+        cpu = RecordingVolundrPort(name="cpu", target_id="cpu", tags=["cpu"])
+        gpu = RecordingVolundrPort(name="gpu-box", target_id="gpu-box", tags=["gpu", "us-west"])
+        client = _make_client(
+            repo,
+            volundr_factory=RecordingVolundrFactory([cpu, gpu]),
+        )
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "Place this workflow team on a GPU-tagged Guild target."},
+        )
+
+        assert response.status_code == 201, response.text
+        assert len(cpu.requests) == 0
+        assert len(gpu.requests) == 1
+        assert response.json()["clusterName"] == "gpu-box"
+
+    def test_launch_workflow_placement_tags_balances_multiple_matches(self, monkeypatch) -> None:
+        workflow = _make_research_workflow_with_placement({"tags": ["gpu"]})
+        repo = InMemoryWorkflowRepository([workflow])
+        first = RecordingVolundrPort(name="first", target_id="first", tags=["gpu"])
+        second = RecordingVolundrPort(name="second", target_id="second", tags=["gpu"])
+        client = _make_client(
+            repo,
+            volundr_factory=RecordingVolundrFactory([first, second]),
+        )
+
+        monkeypatch.setattr(
+            "ting.domain.services.dispatch_service.random.choice", lambda candidates: candidates[-1]
+        )
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "Two GPU targets are eligible; use the existing balancing rule."},
+        )
+
+        assert response.status_code == 201, response.text
+        assert len(first.requests) == 0
+        assert len(second.requests) == 1
+
+    def test_launch_workflow_placement_instance_pins_the_connection(self) -> None:
+        workflow = _make_research_workflow_with_placement({"instance": "spark-01"})
+        repo = InMemoryWorkflowRepository([workflow])
+        other = RecordingVolundrPort(name="other", target_id="other")
+        spark = RecordingVolundrPort(name="spark-01", target_id="spark-01")
+        client = _make_client(
+            repo,
+            volundr_factory=RecordingVolundrFactory([other, spark]),
+        )
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "Pin this workflow team to the Spark instance."},
+        )
+
+        assert response.status_code == 201, response.text
+        assert len(other.requests) == 0
+        assert len(spark.requests) == 1
+        assert response.json()["clusterName"] == "spark-01"
+
+    def test_launch_workflow_placement_with_no_match_is_rejected_and_spawns_nothing(self) -> None:
+        workflow = _make_research_workflow_with_placement({"tags": ["dgx-spark"]})
+        repo = InMemoryWorkflowRepository([workflow])
+        adapter = RecordingVolundrPort(tags=["cpu"])
+        campaign_repo = RecordingCampaignRepository()
+        client = _make_client(
+            repo,
+            volundr_factory=RecordingVolundrFactory([adapter]),
+            campaign_repo=campaign_repo,
+        )
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "No visible target carries the requested tag."},
+        )
+
+        assert response.status_code == 422
+        assert "dgx-spark" in response.json()["detail"]
+        assert "cpu" in response.json()["detail"]
+        assert adapter.requests == []
+        assert campaign_repo.items == {}
+
+    def test_launch_workflow_placement_instance_with_no_match_is_rejected(self) -> None:
+        workflow = _make_research_workflow_with_placement({"instance": "missing-instance"})
+        repo = InMemoryWorkflowRepository([workflow])
+        adapter = RecordingVolundrPort(name="local", target_id="local")
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([adapter]))
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "Pin to an instance that is not visible to this principal."},
+        )
+
+        assert response.status_code == 422
+        assert "missing-instance" in response.json()["detail"]
+        assert adapter.requests == []
+
+    def test_launch_workflow_without_placement_behaves_as_before(self) -> None:
+        """No graph.placement: the pre-existing untargeted balancing rule applies."""
+        workflow = _make_research_workflow()
+        repo = InMemoryWorkflowRepository([workflow])
+        only = RecordingVolundrPort(name="only", target_id="only", tags=["gpu"])
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([only]))
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "Launch without declaring a placement."},
+        )
+
+        assert response.status_code == 201, response.text
+        assert len(only.requests) == 1
+
+    def test_launch_workflow_connection_id_conflicting_with_placement_is_rejected(self) -> None:
+        """An explicit connectionId cannot silently strip a workflow's placement."""
+        workflow = _make_research_workflow_with_placement({"tags": ["gpu"]})
+        repo = InMemoryWorkflowRepository([workflow])
+        cpu = RecordingVolundrPort(name="cpu", target_id="cpu", tags=["cpu"])
+        gpu = RecordingVolundrPort(name="gpu-box", target_id="gpu-box", tags=["gpu"])
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([cpu, gpu]))
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={
+                "prompt": "A connectionId that does not satisfy graph.placement is a conflict.",
+                "connectionId": "cpu",
+            },
+        )
+
+        assert response.status_code == 422, response.text
+        assert "cpu" in response.json()["detail"]
+        assert "gpu" in response.json()["detail"]
+        assert len(cpu.requests) == 0
+        assert len(gpu.requests) == 0
+
+    def test_launch_workflow_connection_id_compatible_with_placement_is_admitted(self) -> None:
+        """A connectionId that also satisfies graph.placement resolves directly."""
+        workflow = _make_research_workflow_with_placement({"tags": ["gpu"]})
+        repo = InMemoryWorkflowRepository([workflow])
+        cpu = RecordingVolundrPort(name="cpu", target_id="cpu", tags=["cpu"])
+        gpu = RecordingVolundrPort(name="gpu-box", target_id="gpu-box", tags=["gpu"])
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([cpu, gpu]))
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={
+                "prompt": "A connectionId that also satisfies graph.placement is admitted.",
+                "connectionId": "gpu-box",
+            },
+        )
+
+        assert response.status_code == 201, response.text
+        assert len(cpu.requests) == 0
+        assert len(gpu.requests) == 1
+
+    def test_launch_workflow_connection_id_instance_placement_conflict_is_rejected(self) -> None:
+        workflow = _make_research_workflow_with_placement({"instance": "spark-01"})
+        repo = InMemoryWorkflowRepository([workflow])
+        other = RecordingVolundrPort(name="other", target_id="other")
+        spark = RecordingVolundrPort(name="spark-01", target_id="spark-01")
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([other, spark]))
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={
+                "prompt": "connectionId names a different instance than graph.placement.",
+                "connectionId": "other",
+            },
+        )
+
+        assert response.status_code == 422, response.text
+        assert "other" in response.json()["detail"]
+        assert "spark-01" in response.json()["detail"]
+        assert len(other.requests) == 0
+        assert len(spark.requests) == 0
+
+    def test_launch_workflow_malformed_pinned_placement_is_422_not_500(self) -> None:
+        """A stored graph.placement bypassing authoring validation (a row
+
+        written before this rule existed, or by another tool) must fail the
+        launch loudly with a 422, not bubble up as an unhandled 500.
+        """
+        workflow = _make_research_workflow_with_placement({"tags": ["gpu"], "instance": "x"})
+        repo = InMemoryWorkflowRepository([workflow])
+        adapter = RecordingVolundrPort()
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([adapter]))
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "This workflow's stored placement is malformed."},
+        )
+
+        assert response.status_code == 422, response.text
+        assert "exactly one of 'tags' or 'instance'" in response.json()["detail"]
+        assert adapter.requests == []
 
     def test_launch_workflow_scoped_build_token_missing_scope_is_403(self) -> None:
         workflow = _make_research_workflow()
