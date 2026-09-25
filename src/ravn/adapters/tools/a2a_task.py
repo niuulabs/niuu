@@ -109,7 +109,9 @@ class A2ATaskTool(ToolPort):
                     "type": "object",
                     "description": (
                         "Launch metadata: repo is the repository URL, branch is the starting "
-                        "branch, and connectionId selects the target. For a "
+                        "branch, and connectionId selects the target — if the workflow pins "
+                        "graph.placement, connectionId must satisfy it (the same instance, or "
+                        "eligible by its tags) or the launch is rejected. For a "
                         "pending question, preserve requestId. For a pending gate, send "
                         "gateId plus gateDecision=approve or request_changes; include "
                         "review notes in answer when requesting changes."
@@ -462,6 +464,10 @@ class A2ATaskTool(ToolPort):
             self._validate_metadata(metadata)
             metadata["skillId"] = skill_id
             if self._default_connection_id:
+                # The receiver validates this against the target workflow's
+                # graph.placement (rejecting a conflict with 422) rather than
+                # silently honoring it, so this default cannot strip a
+                # workflow's placement just by being configured.
                 metadata.setdefault("connectionId", self._default_connection_id)
             trace_context = get_observability().inject()
             if trace_context:
