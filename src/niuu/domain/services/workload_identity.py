@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -23,6 +24,7 @@ from niuu.domain.services.token_scope import (
     VALKYRIE_BUILD_TOKEN_USE,
     bound_workload_scopes,
 )
+from niuu.ports.owner_tenant_resolver import OwnerTenantResolverPort
 from niuu.ports.workload_identity import (
     IssuedWorkloadToken,
     WorkloadIdentityVerifier,
@@ -79,12 +81,14 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
         *,
         signing_key_pem: str = "",
         verifiers: dict[str, WorkloadIdentityVerifier] | None = None,
+        tenant_resolver: OwnerTenantResolverPort | None = None,
     ) -> None:
         self._config = config
         configured_pem = signing_key_pem or str(getattr(config, "signing_key_pem", "") or "")
         self._trusted_signing_configured = bool(configured_pem.strip())
         self._private_key = self._load_or_generate_key(configured_pem)
         self._verifiers = dict(verifiers or {})
+        self._tenant_resolver = tenant_resolver
 
     @property
     def enabled(self) -> bool:
@@ -136,7 +140,7 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
                 last_error = exc
                 continue
             if self._matches(mapping, claims):
-                return self._issue(
+                return await self._issue(
                     mapping,
                     claims,
                     audiences=self._resolve_audiences(audiences),
@@ -173,9 +177,104 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
         for path, expected in (getattr(mapping, "claims", {}) or {}).items():
             if _claim(claims, str(path)) != expected:
                 return False
+        if not self._owner_id_claim_pattern_compatible(mapping, claims):
+            return False
         return True
 
-    def _issue(
+    def _owner_id_claim_pattern_compatible(self, mapping: Any, claims: dict[str, Any]) -> bool:
+        """A configured ``owner_id_claim_pattern`` the claim value does not
+        match means this mapping does not apply to this caller at all — try
+        the next mapping, rather than matching on ``subject_prefix`` alone
+        and then blowing up in ``_resolve_owner_id``. This is what stops a
+        broad prefix mapping (e.g. residentMapping's
+        "system:serviceaccount:<ns>:resident-" matching every resident SA in
+        the namespace) from shadowing a more specific mapping some
+        non-UUID-named ServiceAccount (e.g. a Fleet-managed
+        "resident-muninn" or "resident-ravn") is meant to match instead.
+
+        A claim that is entirely MISSING (as opposed to present but pattern-
+        mismatched) is a distinct, harder failure — the mapping names a
+        claim this verifier's tokens never carry at all, which is a mapping
+        misconfiguration, not "try the next one" — left to
+        ``_resolve_owner_id``, which raises with the specific remedy.
+        """
+        claim_path = str(getattr(mapping, "owner_id_claim", "") or "").strip()
+        pattern = str(getattr(mapping, "owner_id_claim_pattern", "") or "").strip()
+        if not claim_path or not pattern:
+            return True
+        claim_value = _claim(claims, claim_path)
+        if not claim_value:
+            return True
+        match = re.fullmatch(pattern, str(claim_value))
+        return bool(match and match.groups())
+
+    def _resolve_owner_id(self, mapping: Any, claims: dict[str, Any]) -> str:
+        """Fixed mapping.owner_id, or a per-caller id derived from a claim.
+
+        A mapping with ``owner_id_claim`` set gives every distinct caller
+        (e.g. a distinct Kubernetes ServiceAccount subject) its own principal
+        instead of conflating every caller that matches the mapping's
+        subject/subject_prefix into one shared identity — the same mapping a
+        whole namespace of resident pods matches would otherwise mint the
+        identical owner_id for every resident, making per-resident
+        authorization (budget spend, trigger ownership) impossible.
+        """
+        claim_path = str(getattr(mapping, "owner_id_claim", "") or "").strip()
+        if not claim_path:
+            owner_id = str(getattr(mapping, "owner_id", "") or "").strip()
+            if not owner_id:
+                raise WorkloadIdentityError("Matched workload identity has no owner_id")
+            return owner_id
+
+        claim_value = _claim(claims, claim_path)
+        if not claim_value:
+            raise WorkloadIdentityError(
+                f"Matched workload identity requires claim {claim_path!r} for "
+                "owner_id, but the verified proof does not carry it"
+            )
+        claim_value = str(claim_value)
+
+        pattern = str(getattr(mapping, "owner_id_claim_pattern", "") or "").strip()
+        if not pattern:
+            return claim_value
+
+        # fullmatch, not match: a pattern missing a trailing "$" (an easy
+        # mistake to make) must not silently accept a claim value with
+        # unmatched trailing content — the unmatched suffix could be
+        # anything, including another principal's identity fragment.
+        match = re.fullmatch(pattern, claim_value)
+        if match is None or not match.groups():
+            raise WorkloadIdentityError(
+                f"Claim {claim_path!r} value {claim_value!r} did not match "
+                f"owner_id_claim_pattern {pattern!r}"
+            )
+        return match.group(1)
+
+    async def _resolve_tenant_id(self, mapping: Any, owner_id: str) -> str:
+        """Static mapping.tenant_id, or the owner's real tenant when a
+        resolver is configured and this mapping derives owner_id per-caller.
+
+        A per-caller (``owner_id_claim``) mapping's own ``tenant_id`` is one
+        fixed guess shared by every caller it matches — correct for at most
+        one tenant. When a resolver is wired, it is the authority for that
+        case; a caller whose owner_id it cannot find is rejected outright
+        rather than silently placed in the mapping's default tenant, which
+        would put its triggers/spend where the real owner can never see them
+        (GET /api/v1/ravn/budget/{id} keyed by the real tenant).
+        """
+        configured = str(getattr(mapping, "tenant_id", "") or "default").strip() or "default"
+        claim_path = str(getattr(mapping, "owner_id_claim", "") or "").strip()
+        if not claim_path or self._tenant_resolver is None:
+            return configured
+        resolved = await self._tenant_resolver.tenant_id_for_owner(owner_id)
+        if resolved is None:
+            raise WorkloadIdentityError(
+                f"tenant_resolver has no durable record for owner_id {owner_id!r} — "
+                "cannot derive this caller's real tenant_id"
+            )
+        return resolved
+
+    async def _issue(
         self,
         mapping: Any,
         claims: dict[str, Any],
@@ -183,10 +282,8 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
         audiences: list[str],
         build_scopes: list[str] | None = None,
     ) -> WorkloadExchangeResult:
-        owner_id = str(getattr(mapping, "owner_id", "") or "").strip()
-        if not owner_id:
-            raise WorkloadIdentityError("Matched workload identity has no owner_id")
-        tenant_id = str(getattr(mapping, "tenant_id", "") or "default").strip() or "default"
+        owner_id = self._resolve_owner_id(mapping, claims)
+        tenant_id = await self._resolve_tenant_id(mapping, owner_id)
         roles = [str(role) for role in (getattr(mapping, "roles", []) or ["volundr:developer"])]
         workload_subject = str(claims.get("sub") or "")
         workload_name = str(getattr(mapping, "name", "") or workload_subject)
@@ -197,6 +294,13 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
             tenant_id=tenant_id,
             roles=roles,
         )
+        # True only when this mapping derived owner_id per-caller
+        # (owner_id_claim) rather than a fixed value every caller matching
+        # this mapping shares. Callers that need a real per-caller identity
+        # (e.g. a resident reporting its own budget) can check
+        # workload_owner_scoped on the issued token rather than silently
+        # trusting a possibly-shared owner_id.
+        owner_scoped = bool(str(getattr(mapping, "owner_id_claim", "") or "").strip())
         issued = self.issue_token(
             principal=principal,
             workload_subject=workload_subject,
@@ -207,6 +311,7 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
                 **dict(getattr(mapping, "metadata", {}) or {}),
                 **({"scopes": list(build_scopes)} if build_scopes else {}),
                 "issuer": str(claims.get("iss") or ""),
+                "owner_scoped": owner_scoped,
             },
         )
         return WorkloadExchangeResult(

@@ -1045,3 +1045,211 @@ def test_forge_envoy_authorization_route_for_room_role_endpoint_is_valid():
         if "GET" in r.methods and r.matches("/api/v1/forge/sessions/abc-123/participants/role")
     )
     assert matched.required_scope == "forge:session:room-role"
+
+
+class TestResidentWorkloadIdentityMapping:
+    """workloadIdentity.residentMapping — admits resident ServiceAccounts and
+    derives ravn_id per-caller from the verified subject, instead of every
+    resident matching one static, shared owner_id."""
+
+    @staticmethod
+    def _config(*extra_args: str) -> dict:
+        result = subprocess.run(
+            ["helm", "template", "test", str(CHART_DIR), *extra_args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        configmap = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+        return yaml.safe_load(configmap["data"]["config.yaml"])
+
+    def test_disabled_by_default_renders_no_resident_mapping(self):
+        config = self._config()
+        assert config["workload_identity"]["mappings"] == []
+
+    def test_enabled_renders_a_subject_prefix_scoped_mapping(self):
+        config = self._config(
+            "--set",
+            "workloadIdentity.residentMapping.enabled=true",
+            "--set",
+            "workloadIdentity.residentMapping.namespace=residents",
+        )
+        mappings = config["workload_identity"]["mappings"]
+        assert len(mappings) == 1
+        mapping = mappings[0]
+        assert mapping["subject_prefix"] == "system:serviceaccount:residents:resident-"
+        assert mapping["owner_id_claim"] == "sub"
+        assert (
+            mapping["owner_id_claim_pattern"]
+            == "^system:serviceaccount:[^:]+:resident-([0-9a-f-]{36})$"
+        )
+        assert mapping["tenant_id"] == "default"
+
+    def test_enabled_without_namespace_fails_the_render(self):
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                "--set",
+                "workloadIdentity.residentMapping.enabled=true",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "workloadIdentity.residentMapping.namespace is required" in result.stderr
+
+    def test_operator_supplied_mappings_are_preserved_alongside_the_resident_one(self):
+        config = self._config(
+            "--set",
+            "workloadIdentity.residentMapping.enabled=true",
+            "--set",
+            "workloadIdentity.residentMapping.namespace=residents",
+            "--set",
+            "workloadIdentity.mappings[0].name=other-mapping",
+            "--set",
+            "workloadIdentity.mappings[0].owner_id=fixed-owner",
+        )
+        mappings = config["workload_identity"]["mappings"]
+        names = {m["name"] for m in mappings}
+        assert names == {"other-mapping", "ravn-resident"}
+
+    def test_resident_mapping_is_tried_before_operator_mappings(self):
+        """WorkloadIdentityService.exchange() returns on the FIRST match —
+        residentMapping must come first, or a broader operator mapping
+        (e.g. a catch-all "system:serviceaccount:<ns>:" with no
+        "resident-" requirement) ordered ahead of it would silently win,
+        giving every resident that operator mapping's shared owner_id
+        instead of its own."""
+        config = self._config(
+            "--set",
+            "workloadIdentity.residentMapping.enabled=true",
+            "--set",
+            "workloadIdentity.residentMapping.namespace=residents",
+            "--set",
+            "workloadIdentity.mappings[0].name=catch-all",
+            "--set",
+            "workloadIdentity.mappings[0].owner_id=shared-owner",
+        )
+        mappings = config["workload_identity"]["mappings"]
+        assert mappings[0]["name"] == "ravn-resident"
+        assert mappings[1]["name"] == "catch-all"
+
+    def test_owner_id_pattern_extracts_only_the_runtime_uuid(self):
+        """Regression: the subject a resident pod's projected token carries
+        is system:serviceaccount:<namespace>:resident-<uuid> — the pattern
+        must capture just the uuid, not the whole subject or the namespace."""
+        import re
+
+        config = self._config(
+            "--set",
+            "workloadIdentity.residentMapping.enabled=true",
+            "--set",
+            "workloadIdentity.residentMapping.namespace=residents",
+        )
+        pattern = config["workload_identity"]["mappings"][0]["owner_id_claim_pattern"]
+        subject = "system:serviceaccount:residents:resident-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        match = re.match(pattern, subject)
+        assert match is not None
+        assert match.group(1) == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+    def test_owner_id_pattern_does_not_match_a_non_uuid_resident_name(self):
+        """A non-UUID-named ServiceAccount (e.g. valhalla's Fleet-managed
+        "resident-muninn" or "resident-ravn", shared by several releases and
+        never created by FluxPodManager's per-runtime naming) must not match
+        this broad prefix mapping's owner_id_claim_pattern — that would let
+        it shadow the specific mapping that actually owns that name. See
+        WorkloadIdentityService._matches, which treats a pattern non-match as
+        "this mapping does not apply" and falls through instead of raising."""
+        import re
+
+        config = self._config(
+            "--set",
+            "workloadIdentity.residentMapping.enabled=true",
+            "--set",
+            "workloadIdentity.residentMapping.namespace=valhalla",
+        )
+        pattern = config["workload_identity"]["mappings"][0]["owner_id_claim_pattern"]
+        subject = "system:serviceaccount:valhalla:resident-muninn"
+        assert re.fullmatch(pattern, subject) is None
+
+
+class TestWorkloadIdentityTenantResolver:
+    """workloadIdentity.tenantResolver — derives a resident's real tenant_id
+    from resident_runtimes.tenant_id instead of residentMapping's one
+    static, shared tenantId."""
+
+    @staticmethod
+    def _config(*extra_args: str) -> dict:
+        result = subprocess.run(
+            ["helm", "template", "test", str(CHART_DIR), *extra_args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        configmap = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+        return yaml.safe_load(configmap["data"]["config.yaml"])
+
+    def test_disabled_by_default(self):
+        config = self._config()
+        resolver = config["workload_identity"]["tenant_resolver"]
+        assert resolver["adapter"] == ""
+        assert resolver["secret_kwargs_env"] == {}
+
+    def test_configured_adapter_and_secret_kwargs_render(self):
+        config = self._config(
+            "--set",
+            "workloadIdentity.tenantResolver.adapter="
+            "volundr.adapters.outbound.resident_tenant_resolver."
+            "LazyPostgresResidentTenantResolver",
+            "--set",
+            "workloadIdentity.tenantResolver.secretKwargs[0].kwarg=dsn",
+            "--set",
+            "workloadIdentity.tenantResolver.secretKwargs[0].secretName=volundr-postgres-app",
+            "--set",
+            "workloadIdentity.tenantResolver.secretKwargs[0].secretKey=dsn",
+        )
+        resolver = config["workload_identity"]["tenant_resolver"]
+        assert resolver["adapter"] == (
+            "volundr.adapters.outbound.resident_tenant_resolver.LazyPostgresResidentTenantResolver"
+        )
+        assert resolver["secret_kwargs_env"] == {"dsn": "WORKLOAD_TENANT_RESOLVER_SK_DSN"}
+
+    def test_secret_kwargs_env_var_is_sourced_from_the_named_secret(self):
+        docs_result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                "--set",
+                "workloadIdentity.tenantResolver.secretKwargs[0].kwarg=dsn",
+                "--set",
+                "workloadIdentity.tenantResolver.secretKwargs[0].secretName=volundr-postgres-app",
+                "--set",
+                "workloadIdentity.tenantResolver.secretKwargs[0].secretKey=dsn",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(docs_result.stdout) if doc]
+        deployment = next(doc for doc in documents if doc.get("kind") == "Deployment")
+        container = deployment["spec"]["template"]["spec"]["containers"][0]
+        env = {item["name"]: item for item in container["env"]}
+        secret_ref = env["WORKLOAD_TENANT_RESOLVER_SK_DSN"]["valueFrom"]["secretKeyRef"]
+        assert secret_ref == {"name": "volundr-postgres-app", "key": "dsn"}

@@ -22,7 +22,13 @@ def _make_drive_loop_with_mock_settings(
     tmp_path: Path,
     budget: DailyBudgetTracker | None = None,
 ) -> tuple[DriveLoop, MagicMock, list[RavnEvent]]:
-    """Build DriveLoop with MagicMock settings (no BudgetConfig) to test fallback paths."""
+    """Build DriveLoop with a MagicMock settings object rather than a real
+    ``Settings`` instance — DriveLoop must not require ``isinstance(settings,
+    Settings)`` to work, any object with the right attributes suffices, so
+    every attribute ``DriveLoop`` reads off ``settings.budget`` is set
+    explicitly here to a real value (there is no isinstance-based silent
+    fallback to hardcoded defaults for an unrecognised settings shape — that
+    was itself a no-fallbacks.md violation and was removed)."""
 
     journal = tmp_path / "queue.json"
     config = InitiativeConfig(
@@ -34,6 +40,13 @@ def _make_drive_loop_with_mock_settings(
     settings = MagicMock()
     settings.skuld.enabled = False
     settings.cascade.enabled = False
+    settings.budget.enabled = True
+    settings.budget.daily_cap_usd = 1.0
+    settings.budget.warn_at_percent = 80
+    settings.budget.pricing_source = "flat"
+    settings.budget.pricing_overrides = {}
+    settings.budget.input_token_cost_per_million = 3.0
+    settings.budget.output_token_cost_per_million = 15.0
     published: list[RavnEvent] = []
 
     mock_publisher = AsyncMock()
@@ -231,7 +244,7 @@ def test_settings_has_budget_field() -> None:
 
 @pytest.mark.asyncio
 async def test_drive_loop_skips_task_when_budget_exceeded(tmp_path: Path) -> None:
-    """When the budget cap is reached, run_turn must NOT be called."""
+    """When budget.enabled and the cap is reached, run_turn must NOT be called."""
     exhausted_tracker = _make_tracker(cap=0.0)  # cap=0 → always blocked
 
     loop, factory, published = _make_drive_loop(tmp_path, budget=exhausted_tracker)
@@ -241,7 +254,8 @@ async def test_drive_loop_skips_task_when_budget_exceeded(tmp_path: Path) -> Non
     factory.return_value = mock_agent
 
     task = _make_task()
-    await loop._run_task(task)
+    with patch.object(loop._settings.budget, "enabled", True):
+        await loop._run_task(task)
 
     mock_agent.run_turn.assert_not_called()
 
@@ -260,7 +274,8 @@ async def test_drive_loop_does_not_reenqueue_when_budget_exceeded(
     task = _make_task()
     assert loop._queue.empty()
 
-    await loop._run_task(task)
+    with patch.object(loop._settings.budget, "enabled", True):
+        await loop._run_task(task)
 
     # Queue must remain empty — no infinite re-enqueue loop
     assert loop._queue.empty()
@@ -290,7 +305,14 @@ async def test_drive_loop_records_cost_after_task(tmp_path: Path) -> None:
 
     task = _make_task()
 
-    with patch.object(loop._settings.cascade, "enabled", False):
+    with (
+        patch.object(loop._settings.cascade, "enabled", False),
+        patch.object(loop._settings.budget, "enabled", True),
+        # mock_agent's auto-generated _model attribute is not a real model id
+        # Bifröst (the real default pricing_source) could ever price — this
+        # test is about the flat-rate arithmetic below, not model pricing.
+        patch.object(loop._settings.budget, "pricing_source", "flat"),
+    ):
         await loop._run_task(task)
 
     # Expected cost: (100_000 * 3.0 + 10_000 * 15.0) / 1_000_000 = 0.45
@@ -604,8 +626,12 @@ def test_save_task_output_handles_write_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_trigger_watcher_handles_unexpected_exception(tmp_path: Path) -> None:
-    """_trigger_watcher catches non-CancelledError exceptions without propagating."""
+async def test_trigger_watcher_propagates_unexpected_exceptions(tmp_path: Path) -> None:
+    """_trigger_watcher must NOT catch-and-log a non-CancelledError exception
+    — a trigger source that gives up (e.g. ApiTriggerSource after too many
+    consecutive poll failures) must end the resident process, not degrade
+    into a watcher that silently stops updating while the resident keeps
+    running on a frozen trigger cache. See .claude/rules/no-fallbacks.md."""
     loop, _, _ = _make_drive_loop(tmp_path)
 
     from ravn.ports.trigger import TriggerPort
@@ -619,8 +645,8 @@ async def test_trigger_watcher_handles_unexpected_exception(tmp_path: Path) -> N
             raise RuntimeError("trigger exploded")
 
     trigger = BrokenTrigger()
-    # Should complete without raising
-    await loop._trigger_watcher(trigger)
+    with pytest.raises(RuntimeError, match="trigger exploded"):
+        await loop._trigger_watcher(trigger)
 
 
 # ---------------------------------------------------------------------------

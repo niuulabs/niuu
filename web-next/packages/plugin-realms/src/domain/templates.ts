@@ -2,7 +2,7 @@ import type { PersonaCreateRequest } from '@niuulabs/plugin-ravn';
 import { BALANCED_TRUST, type TrustPreset } from './realm';
 
 export interface TemplateJob {
-  kind: 'cron' | 'event' | 'webhook';
+  kind: 'cron' | 'event';
   spec: string;
   label: string;
 }
@@ -75,7 +75,7 @@ export const REALM_TEMPLATES: RealmTemplate[] = [
     recommended: true,
     jobs: [
       { kind: 'cron', spec: '*/15 * * * *', label: 'intake every 15 min' },
-      { kind: 'event', spec: 'github.pull_request.opened', label: 'QA loop on every pull request' },
+      { kind: 'event', spec: 'github.pr.opened', label: 'QA loop on every pull request' },
       { kind: 'cron', spec: '0 2 * * *', label: 'nightly health sweep' },
     ],
     trust: BALANCED_TRUST,
@@ -96,7 +96,7 @@ export const REALM_TEMPLATES: RealmTemplate[] = [
     needsBoard: true,
     needsBugBoard: true,
     jobs: [
-      { kind: 'event', spec: 'github.pull_request.opened', label: 'review every pull request' },
+      { kind: 'event', spec: 'github.pr.opened', label: 'review every pull request' },
       { kind: 'cron', spec: '0 */2 * * *', label: 'check the bug board every 2 h' },
     ],
     trust: { ...BALANCED_TRUST, deploy: 'never' },

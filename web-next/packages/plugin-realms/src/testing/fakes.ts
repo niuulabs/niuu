@@ -4,6 +4,7 @@
  */
 import { createMimirMockAdapter, type IMimirService } from '@niuulabs/plugin-mimir';
 import type {
+  CreatedTrigger,
   DeployResidentRequest,
   IPersonaStore,
   IRavenStream,
@@ -227,7 +228,11 @@ export function fakePersonas(log: CallLog): IPersonaStore {
   };
 }
 
-export function fakeTriggers(log: CallLog): ITriggerStore {
+export function fakeTriggers(
+  log: CallLog,
+  options: { executionEnabled?: boolean } = {},
+): ITriggerStore {
+  const { executionEnabled = true } = options;
   const triggers: Trigger[] = [];
   return {
     async listTriggers() {
@@ -241,7 +246,7 @@ export function fakeTriggers(log: CallLog): ITriggerStore {
         createdAt: '2026-09-13T00:00:00Z',
       } as Trigger;
       triggers.push(trigger);
-      return trigger;
+      return { ...trigger, executionEnabled } as CreatedTrigger;
     },
     async deleteTrigger() {},
   };

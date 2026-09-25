@@ -33,6 +33,8 @@ from pathlib import Path
 
 import httpx
 
+from ravn.domain.exceptions import ConfigurationError
+
 logger = logging.getLogger(__name__)
 
 # ISO-8601 timestamps carry the date in the first 10 characters (YYYY-MM-DD).
@@ -285,9 +287,14 @@ class ReflexInjector:
 
         Fail-open: when the entity feed is unreachable this logs an ERROR and
         returns None — the turn proceeds without injection, never crashes.
+        A ``ConfigurationError`` (e.g. workload auth misconfigured) is not
+        "unreachable" — it is a fixable setup defect — so it propagates
+        instead of being reported as a transient feed outage.
         """
         try:
             index = await self._cache.get()
+        except ConfigurationError:
+            raise
         except Exception:
             logger.error(
                 "mimir.reflex: entity feed unreachable — skipping pointer injection for session %s",
@@ -381,6 +388,7 @@ def _resolve_reflex_headers_provider(
                 exchange_url=getattr(auth, "exchange_url", ""),
                 audiences=tuple(getattr(auth, "audiences", ()) or ("mimir",)),
                 trust_domain=getattr(auth, "trust_domain", ""),
+                token_refresh_margin_seconds=getattr(auth, "token_refresh_margin_seconds", 30.0),
             ),
         )
         return adapter._build_headers

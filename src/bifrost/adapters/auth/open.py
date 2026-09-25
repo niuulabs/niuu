@@ -26,7 +26,7 @@ class OpenAuthAdapter(AuthPort):
     or behind a network-level access control layer).
     """
 
-    def extract(self, request: Request) -> AgentIdentity:
+    async def extract(self, request: Request) -> AgentIdentity:
         session_id, saga_id = _read_attribution_headers(request)
         return AgentIdentity(
             agent_id=read_agent_id(request),

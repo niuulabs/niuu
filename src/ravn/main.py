@@ -19,6 +19,7 @@ def create_app() -> FastAPI:
     app = create_ravn_app()
 
     @app.get("/health", tags=["Health"])
+    @app.get("/api/v1/ravn/health", include_in_schema=False)
     async def health() -> dict[str, str]:
         return {"status": "healthy"}
 

@@ -427,12 +427,55 @@ data:
       {{- else }}
       verifiers: []
       {{- end }}
-      {{- if .Values.workloadIdentity.mappings }}
+      {{- $wiMappings := .Values.workloadIdentity.mappings | default list }}
+      {{- if .Values.workloadIdentity.residentMapping.enabled }}
+      {{- $rm := .Values.workloadIdentity.residentMapping }}
+      {{- $rmNamespace := required "workloadIdentity.residentMapping.namespace is required when workloadIdentity.residentMapping.enabled=true" $rm.namespace }}
+      {{/*
+      WorkloadIdentityService.exchange() returns on the FIRST mapping that
+      matches — prepended, not appended, so residentMapping's specific
+      "...resident-" prefix is always tried before any broader operator
+      mapping on workloadIdentity.mappings (e.g. a catch-all
+      "system:serviceaccount:<ns>:" with no "resident-" requirement). An
+      operator mapping ordered first would otherwise silently win and every
+      resident would get that mapping's shared owner_id instead of its own.
+
+      owner_id_claim_pattern is restricted to UUID-shaped resident ids
+      (FluxPodManager names a per-runtime SA "resident-<runtime.id>", a
+      standard UUID) so this broad subject_prefix cannot shadow an existing,
+      non-UUID-named ServiceAccount a different, more specific mapping on
+      workloadIdentity.mappings owns exactly — e.g. valhalla's
+      "resident-muninn" or "resident-ravn" — WorkloadIdentityService._matches
+      treats a pattern non-match as "this mapping does not apply" and falls
+      through to try those mappings instead of raising.
+      */}}
+      {{- $wiMappings = prepend $wiMappings (dict
+            "name" $rm.name
+            "verifier" $rm.verifier
+            "subject_prefix" (printf "system:serviceaccount:%s:resident-" $rmNamespace)
+            "owner_id_claim" "sub"
+            "owner_id_claim_pattern" "^system:serviceaccount:[^:]+:resident-([0-9a-f-]{36})$"
+            "tenant_id" $rm.tenantId
+            "roles" $rm.roles
+          ) }}
+      {{- end }}
+      {{- if $wiMappings }}
       mappings:
-        {{- toYaml .Values.workloadIdentity.mappings | nindent 8 }}
+        {{- toYaml $wiMappings | nindent 8 }}
       {{- else }}
       mappings: []
       {{- end }}
+      tenant_resolver:
+        adapter: {{ .Values.workloadIdentity.tenantResolver.adapter | default "" | quote }}
+        kwargs: {{ .Values.workloadIdentity.tenantResolver.kwargs | default dict | toJson }}
+        {{- if .Values.workloadIdentity.tenantResolver.secretKwargs }}
+        secret_kwargs_env:
+          {{- range .Values.workloadIdentity.tenantResolver.secretKwargs }}
+          {{ .kwarg }}: WORKLOAD_TENANT_RESOLVER_SK_{{ .kwarg | upper }}
+          {{- end }}
+        {{- else }}
+        secret_kwargs_env: {}
+        {{- end }}
 
     workflow_execution_credentials:
       enabled: {{ .Values.workflowExecutionCredentials.enabled | default false }}

@@ -19,13 +19,11 @@ describe('TriggersView', () => {
     await waitFor(() => expect(screen.getByText(/cron/i)).toBeInTheDocument());
   });
 
-  it('shows all four kind groups', async () => {
+  it('shows both kind groups', async () => {
     render(<TriggersView />, { wrapper: wrap(services) });
     await waitFor(() => {
       expect(screen.getByRole('region', { name: /cron triggers/i })).toBeInTheDocument();
       expect(screen.getByRole('region', { name: /event triggers/i })).toBeInTheDocument();
-      expect(screen.getByRole('region', { name: /webhook triggers/i })).toBeInTheDocument();
-      expect(screen.getByRole('region', { name: /manual triggers/i })).toBeInTheDocument();
     });
   });
 

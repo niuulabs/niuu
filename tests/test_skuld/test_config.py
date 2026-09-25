@@ -531,7 +531,7 @@ class TestModelGatewayConfig:
         monkeypatch.delenv("SKULD__MODEL_GATEWAY__URL", raising=False)
         s = SkuldSettings()
         assert s.model_gateway.url == ""
-        assert s.model_gateway.token == "niuu-gateway"
+        assert s.model_gateway.token == ""
 
     def test_platform_sets_it_through_the_env(self, monkeypatch):
         monkeypatch.setenv("SKULD__MODEL_GATEWAY__URL", "http://niuu:8080/api/v1/bifrost")

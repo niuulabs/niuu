@@ -14,11 +14,23 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.config import EvidenceConfig
 from mimir.learning import compute_page_evidence, consolidate_source
 from mimir.router import MimirRouter
 from niuu.domain.mimir import MimirSource, compute_content_hash
+
+#: Headers satisfying both _require_write_auth (tenant + WRITE_ROLES) and
+#: _require_deploy_auth for the default EnvoyHeaderAuthenticationAdapter fixture
+#: these tests use — these tests exercise CRUD/search/ranking logic, not auth,
+#: so they get a fixed admin identity rather than testing auth per call.
+_ADMIN_HEADERS = {
+    "x-auth-user-id": "test-user",
+    "x-auth-tenant": "test-tenant",
+    "x-auth-roles": "volundr:admin",
+}
+
 
 NOW = datetime(2026, 6, 12, tzinfo=UTC)
 
@@ -90,10 +102,10 @@ def _source(content: str, title: str = "Quarterly widget update") -> MimirSource
 
 
 def _client(adapter: MarkdownMimirAdapter) -> TestClient:
-    router = MimirRouter(adapter=adapter)
+    router = MimirRouter(adapter=adapter, auth=EnvoyHeaderAuthenticationAdapter())
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
-    return TestClient(app)
+    return TestClient(app, headers=_ADMIN_HEADERS)
 
 
 # ---------------------------------------------------------------------------

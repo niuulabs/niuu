@@ -378,6 +378,52 @@ async def test_model_server_without_a_gateway_url_refuses_to_launch(session, pri
         await IntegrationContributor(integration_registry=registry).contribute(session, ctx)
 
 
+async def test_real_model_server_definition_emits_gateway_url_and_token(session, principal):
+    """End-to-end: cli.commands.platform.model_server_seed_connections seeds a
+    connection with both a "gateway_url" and a "token" in its config; the real
+    IntegrationDefinition for "model-server" in volundr.config must map both to
+    session env vars, or claude_env.py / codex_ws.py raise at spawn because the
+    gateway URL arrives with no token (see MODEL_GATEWAY_TOKEN_ENV)."""
+    from volundr.adapters.outbound.contributors.model_gateway import (
+        MODEL_GATEWAY_TOKEN_ENV,
+        OPEN_GATEWAY_TOKEN,
+    )
+
+    registry = IntegrationRegistry(
+        definitions_from_config([d.model_dump() for d in Settings().integrations.definitions])
+    )
+    conn = _model_server_connection(
+        {
+            "provider": "local",
+            "gateway_url": "http://niuu:8080/api/v1/bifrost",
+            "token": OPEN_GATEWAY_TOKEN,
+            "models": ["m"],
+        }
+    )
+    ctx = SessionContext(principal=principal, integration_connections=(conn,))
+
+    result = await IntegrationContributor(integration_registry=registry).contribute(session, ctx)
+
+    env = {var["name"]: var["value"] for var in result.values["envVars"]}
+    assert env["SKULD__MODEL_GATEWAY__URL"] == "http://niuu:8080/api/v1/bifrost"
+    assert env[MODEL_GATEWAY_TOKEN_ENV] == OPEN_GATEWAY_TOKEN
+
+
+async def test_real_model_server_definition_without_a_token_refuses_to_launch(session, principal):
+    """A seeded connection missing "token" must fail loudly here (no-fallbacks),
+    not spawn a session that then raises deep inside claude_env.py/codex_ws.py."""
+    registry = IntegrationRegistry(
+        definitions_from_config([d.model_dump() for d in Settings().integrations.definitions])
+    )
+    conn = _model_server_connection(
+        {"provider": "local", "gateway_url": "http://niuu:8080/api/v1/bifrost", "models": ["m"]}
+    )
+    ctx = SessionContext(principal=principal, integration_connections=(conn,))
+
+    with pytest.raises(ValueError, match="token"):
+        await IntegrationContributor(integration_registry=registry).contribute(session, ctx)
+
+
 async def test_http_oauth_config_contains_only_file_references(session):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock

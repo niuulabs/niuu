@@ -14,7 +14,6 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
-from bifrost.auth import AuthMode as BifrostAuthMode
 from bifrost.config import BifrostConfig
 from niuu.domain.observability import ObservabilityConfig
 from volundr.compute.config import ComputeConfig
@@ -657,16 +656,18 @@ def auth_adapter_env(auth: AuthConfig) -> dict[str, str]:
     selection from the same config, for every co-hosted service that reads
     these env vars: Völundr/Identity's shared ``IDENTITY__ADAPTER`` /
     ``AUTHORIZATION__ADAPTER`` slot, Ravn's own inbound API
-    (``RAVN_API_AUTH__*``), Ting's own inbound API (``AUTH__*``), and the
-    niuu root app's session-proxy identity (``HOST_IDENTITY__*``). ``none``
+    (``RAVN_API_AUTH__*``), Ting's own inbound API (``AUTH__*``), the
+    niuu root app's session-proxy identity (``HOST_IDENTITY__*``), and
+    Mímir's own inbound API (``MIMIR_AUTH__*``, read via
+    ``mimir.config.MimirServiceConfig.identity_adapter``). ``none``
     reproduces today's explicit allow-all wiring; ``oidc`` switches every one
     of those slots to in-process JWT verification via JWKS plus the bundled
-    Cedar policies, matching Kubernetes. Paths that do not yet read one of
-    these slots (Mimir, Bifröst, ...) are covered by the auth-mode guard
-    elsewhere, not by this function. Guild is not one of them: it forwards
-    only the caller's bearer token to a remote instance (see
-    ``niuu.adapters.inbound.remote_urls.forward_identity_headers``), so it
-    needs no guard here.
+    Cedar policies, matching Kubernetes. Bifröst does not read one of these
+    slots — it is a standalone process configured via ``BIFROST_CONFIG``
+    (see ``cli.commands.platform._resolve_local_pod_manager_env``). Guild
+    needs no slot either: it forwards only the caller's bearer token to a
+    remote instance (see
+    ``niuu.adapters.inbound.remote_urls.forward_identity_headers``).
     """
     if auth.mode == "none":
         return {
@@ -687,6 +688,9 @@ def auth_adapter_env(auth: AuthConfig) -> dict[str, str]:
             "HOST_IDENTITY__ADAPTER": (
                 "identity.adapters.identity.AllowAllHeaderAuthenticationAdapter"
             ),
+            "MIMIR_AUTH__ADAPTER": (
+                "identity.adapters.identity.AllowAllHeaderAuthenticationAdapter"
+            ),
             "AUTH__ALLOW_ANONYMOUS_DEV": "true",
             "AUTH_MODE": "none",
         }
@@ -703,6 +707,8 @@ def auth_adapter_env(auth: AuthConfig) -> dict[str, str]:
         "AUTH__KWARGS": oidc_kwargs_json,
         "HOST_IDENTITY__ADAPTER": "identity.adapters.jwks.JwksBearerAuthenticationAdapter",
         "HOST_IDENTITY__KWARGS": oidc_kwargs_json,
+        "MIMIR_AUTH__ADAPTER": "identity.adapters.jwks.JwksBearerAuthenticationAdapter",
+        "MIMIR_AUTH__KWARGS": oidc_kwargs_json,
         "AUTH__ALLOW_ANONYMOUS_DEV": "false",
         "AUTH_MODE": "oidc",
     }
@@ -789,9 +795,17 @@ class CLISettings(BaseSettings):
     #: oidc must not claim coverage a host does not actually have. Hardening
     #: any of these removes it from this list rather than adding an override.
     _OIDC_UNCOVERED_PLUGINS: ClassVar[dict[str, str]] = {
-        "mimir": (
-            "Mímir's own auth checks (_require_deploy_auth, enforce_instance_tenant) "
-            "trust x-auth-* headers directly and do not go through auth.mode"
+        "bifrost": (
+            "Bifröst's own inbound auth now verifies bearer tokens correctly under "
+            "oidc, but nothing yet supplies sessions or residents with a verifiable "
+            "credential to send it: skuld.config.ModelGatewayConfig.token has no "
+            "real default (it used to be the placeholder literal 'niuu-gateway', "
+            "meaningful only because 'open' mode ignores it), and "
+            "ravn.adapters.llm.bifrost.BifrostAdapter (used by local residents) "
+            "sends no Authorization header at all. Every model call routed through "
+            "Bifröst — every session and resident — would get 401. Minting and "
+            "threading a real per-session/per-resident PAT through both paths is "
+            "tracked as follow-up work"
         ),
     }
 
@@ -807,12 +821,4 @@ class CLISettings(BaseSettings):
                     "hardened, or set auth.mode: none to be honest that this host "
                     "runs without authentication."
                 )
-        if self.bifrost.auth_mode == BifrostAuthMode.OPEN:
-            raise ValueError(
-                "auth.mode: oidc is not enabled while bifrost.auth_mode is 'open': "
-                "the Bifröst gateway trusts every caller's headers unconditionally "
-                "and does not yet verify JWTs via JWKS. Set bifrost.auth_mode: 'pat' "
-                "or 'mesh' as a partial mitigation (full JWKS support for Bifröst is "
-                "tracked as follow-up work), or set auth.mode: none."
-            )
         return self

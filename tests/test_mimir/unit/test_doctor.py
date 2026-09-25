@@ -19,12 +19,24 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
+from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.doctor import DoctorCheck, DoctorReport, run_doctor, run_fixes
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
 from mimir.router import MimirRouter
 from niuu.adapters.search.sqlite import SqliteSearchAdapter
 from niuu.domain.mimir import MimirSource, compute_content_hash
+
+#: Headers satisfying both _require_write_auth (tenant + WRITE_ROLES) and
+#: _require_deploy_auth for the default EnvoyHeaderAuthenticationAdapter fixture
+#: these tests use — these tests exercise CRUD/search/ranking logic, not auth,
+#: so they get a fixed admin identity rather than testing auth per call.
+_ADMIN_HEADERS = {
+    "x-auth-user-id": "test-user",
+    "x-auth-tenant": "test-tenant",
+    "x-auth-roles": "volundr:admin",
+}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -505,7 +517,9 @@ async def test_run_fixes_noop_on_healthy_wiki_without_search_port(tmp_path: Path
 
 def _make_app(tmp_path: Path) -> FastAPI:
     adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
-    router = MimirRouter(adapter=adapter, name="test", role="local")
+    router = MimirRouter(
+        adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
+    )
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
     return app
@@ -513,7 +527,7 @@ def _make_app(tmp_path: Path) -> FastAPI:
 
 def test_doctor_fix_endpoint_runs_fixes_and_returns_fresh_report(tmp_path: Path) -> None:
     app = _make_app(tmp_path)
-    client = TestClient(app)
+    client = TestClient(app, headers=_ADMIN_HEADERS)
     # Break the wiki: page on disk that index.md does not know about.
     page = tmp_path / "mimir" / "wiki" / "technical" / "orphan.md"
     page.parent.mkdir(parents=True, exist_ok=True)
@@ -529,7 +543,7 @@ def test_doctor_fix_endpoint_runs_fixes_and_returns_fresh_report(tmp_path: Path)
 
 
 def test_doctor_endpoint_returns_report(tmp_path: Path) -> None:
-    client = TestClient(_make_app(tmp_path))
+    client = TestClient(_make_app(tmp_path), headers=_ADMIN_HEADERS)
     response = client.get("/mimir/doctor")
     assert response.status_code == 200
     payload = response.json()
@@ -556,10 +570,12 @@ def test_doctor_endpoint_requires_filesystem_adapter(tmp_path: Path) -> None:
     adapter = CompositeMimirAdapter(
         mounts=[MimirMount(name="local", port=local, role="local", read_priority=0)],
     )
-    router = MimirRouter(adapter=adapter, name="test", role="local")
+    router = MimirRouter(
+        adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
+    )
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
-    client = TestClient(app)
+    client = TestClient(app, headers=_ADMIN_HEADERS)
     response = client.get("/mimir/doctor")
     assert response.status_code == 501
 

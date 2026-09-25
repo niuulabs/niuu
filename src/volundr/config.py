@@ -46,6 +46,7 @@ from niuu.domain.delivery import AcceptancePolicy
 from niuu.domain.observability import ObservabilityConfig
 from ravn.config import LLMConfig, PersonaSourceConfig
 from volundr.compute.config import ComputeConfig
+from volundr.domain.model_gateway import MODEL_GATEWAY_TOKEN_ENV
 from volundr.domain.models import (
     IntegrationType,
     ResidentBackend,
@@ -1149,8 +1150,18 @@ GITLAB_DEVICE_AUTHORIZATION_URL = "https://gitlab.com/oauth/authorize_device"
 GITLAB_TOKEN_URL = "https://gitlab.com/oauth/token"
 
 
-# The seeded "Model server" provider (see cli.commands.platform) and the env var
-# that tells a session's Skuld to route Claude Code and Codex through the gateway.
+# The seeded "Model server" provider (see cli.commands.platform) and the env
+# vars that tell a session's Skuld to route Claude Code and Codex through the
+# gateway. MODEL_GATEWAY_TOKEN_ENV is imported from the contributor that owns
+# it (volundr.adapters.outbound.contributors.model_gateway) rather than
+# duplicated as a literal string here. The IntegrationContributor's
+# env_from_config path below (not ModelGatewayContributor, which isn't wired
+# in docker/mini mode) is what actually emits both env vars for a seeded
+# "model-server" connection — see model_server_seed_connections() in
+# cli.commands.platform, which supplies the "gateway_url" and "token" config
+# keys these map to. A connection missing either key fails loudly at session
+# creation (IntegrationContributor.contribute) rather than spawning a session
+# that can't reach the gateway.
 MODEL_SERVER_SLUG = "model-server"
 MODEL_GATEWAY_URL_ENV = "SKULD__MODEL_GATEWAY__URL"
 
@@ -1489,10 +1500,14 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "properties": {
                     "provider": {"label": "Gateway provider", "type": "string"},
                     "gateway_url": {"label": "Gateway URL", "type": "string"},
+                    "token": {"label": "Gateway token", "type": "string"},
                     "models": {"label": "Models", "type": "list"},
                 },
             },
-            env_from_config={MODEL_GATEWAY_URL_ENV: "gateway_url"},
+            env_from_config={
+                MODEL_GATEWAY_URL_ENV: "gateway_url",
+                MODEL_GATEWAY_TOKEN_ENV: "token",
+            },
         ),
         IntegrationDefinitionConfig(
             slug="telegram",

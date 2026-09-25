@@ -886,6 +886,30 @@ describe('buildRavnTriggerAdapter', () => {
     await buildRavnTriggerAdapter(client).deleteTrigger(rawTrigger.id);
     expect(client.delete).toHaveBeenCalledWith(`/triggers/${rawTrigger.id}`);
   });
+
+  it('surfaces execution_enabled from the create response', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({ ...rawTrigger, execution_enabled: true });
+    const created = await buildRavnTriggerAdapter(client).createTrigger({
+      kind: 'cron',
+      personaName: 'coder',
+      spec: '0 * * * *',
+      enabled: true,
+    });
+    expect(created.executionEnabled).toBe(true);
+  });
+
+  it('treats a missing execution_enabled as false, not a silent true', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue(rawTrigger); // no execution_enabled field at all
+    const created = await buildRavnTriggerAdapter(client).createTrigger({
+      kind: 'cron',
+      personaName: 'coder',
+      spec: '0 * * * *',
+      enabled: true,
+    });
+    expect(created.executionEnabled).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

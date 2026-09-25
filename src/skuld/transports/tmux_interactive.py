@@ -2098,79 +2098,104 @@ class TmuxInteractiveTransport(CLITransport):
             low = chosen.strip().casefold()
             if low not in {"allow", "allow & don't ask again", "deny"}:
                 raise ValueError("The requested answer is not a declared Claude permission option")
-            rows = await self._capture_menu_rows_wait(pane_id=pane_id)
-            digit = self._permission_menu_digit(low, rows)
-            if digit is None:
-                raise ValueError("The requested answer does not match the live Claude menu")
-            pending["answer_uncertain"] = True
-            await self._send_key("Escape" if low == "deny" else str(digit), pane_id=pane_id)
-            await self._resolve_tty_answer(request_id, "deny" if low == "deny" else chosen)
+            # Claimed for the rest of this branch (see the question-path comment below):
+            # `_capture_menu_rows_wait` is a bounded poll with real `await`s, and a
+            # concurrent turn-end signal must not clear this entry while we're waiting
+            # on it — `_clear_pending_tty_prompts` skips any entry with `answer_in_flight`.
+            pending["answer_in_flight"] = True
+            try:
+                rows = await self._capture_menu_rows_wait(pane_id=pane_id)
+                if self._pending_tty_prompts.get(request_id) is not pending:
+                    raise ValueError(
+                        "The native Claude permission prompt ended while its menu was rendering"
+                    )
+                digit = self._permission_menu_digit(low, rows)
+                if digit is None:
+                    raise ValueError("The requested answer does not match the live Claude menu")
+                pending["answer_uncertain"] = True
+                await self._send_key("Escape" if low == "deny" else str(digit), pane_id=pane_id)
+                await self._resolve_tty_answer(request_id, "deny" if low == "deny" else chosen)
+            finally:
+                pending.pop("answer_in_flight", None)
             return
 
         plans = self._question_answer_plans(pending.get("questions"), answers)
         if not pending.get("native_tool_use_id") or not pending.get("native_session_id"):
             raise ControlRecoveryError("This question has no verifiable native tool identity")
-        result = await self._native_question_result(pending)
-        if result is not None:
-            await self._reject_native_question(request_id, result, pane_id=pane_id)
-            raise ValueError("The native Claude question already completed before this answer")
-        # Validate the first page before claiming an attempt. Later transitions
-        # can already have consumed an answer, so any failure then is uncertain.
+        # Claimed for the REST of this call, not just while driving keys: the render wait
+        # below (`_wait_question_screen`) already spans real `await`s where a concurrent
+        # turn-end signal (Stop hook, synthetic-turn watchdog) can land. `_clear_pending_
+        # tty_prompts` skips any entry with `answer_in_flight` set, so setting it only
+        # once we start pressing keys left this validation window unprotected — a pending
+        # question could be silently dropped while we were still confirming its menu was
+        # live, which is the actual bug: the client's answer would be refused for a
+        # question that vanished attribution-free instead of failing loudly and visibly.
+        pending["answer_in_flight"] = True
         try:
-            await self._wait_question_screen(
-                lambda screen: self._question_page_matches(screen, plans[0]), pane_id=pane_id
-            )
-        except ValueError:
             result = await self._native_question_result(pending)
             if result is not None:
                 await self._reject_native_question(request_id, result, pane_id=pane_id)
-            raise
-        if self._pending_tty_prompts.get(request_id) is not pending:
-            raise ValueError("The native Claude question ended while its menu was rendering")
-        result = await self._native_question_result(pending)
-        if result is not None:
-            await self._reject_native_question(request_id, result, pane_id=pane_id)
-            raise ValueError("The native Claude question already completed before this answer")
-        pending["answer_uncertain"] = True
-        pending["answer_in_flight"] = True
-        try:
-            for plan in plans:
-                await self._drive_question_page(plan, pane_id=pane_id)
-            if len(plans) > 1 or any(plan["multi"] for plan in plans):
-                review = await self._wait_question_screen(
-                    lambda screen: self._question_review_matches(screen, plans), pane_id=pane_id
+                raise ValueError("The native Claude question already completed before this answer")
+            # Validate the first page before claiming an attempt. Later transitions
+            # can already have consumed an answer, so any failure then is uncertain.
+            try:
+                await self._wait_question_screen(
+                    lambda screen: self._question_page_matches(screen, plans[0]), pane_id=pane_id
                 )
-                digit = self._match_menu_digit("Submit answers", self._menu_rows(review))
-                await self._send_key(str(digit), pane_id=pane_id)
-            result = await self._wait_native_question_result(pending)
-            actual = result.get("answers")
-            matched = (
-                not result["is_error"]
-                and isinstance(actual, dict)
-                and set(actual) == {plan["text"] for plan in plans}
-                and all(self._question_answer_matches(actual[plan["text"]], plan) for plan in plans)
-            )
-            if not matched:
-                await self._reject_native_question(request_id, result, pane_id=pane_id)
-                raise ValueError("Claude did not consume the requested question answers")
-            decision = (
-                plans[0]["values"][0] if len(plans) == 1 and not plans[0]["multi"] else "answered"
-            )
-            await self._resolve_tty_answer(request_id, decision)
-        except Exception as exc:
-            if request_id in self._pending_tty_prompts:
+            except ValueError:
                 result = await self._native_question_result(pending)
-                if result is not None and not pending.get("resolution_pending"):
+                if result is not None:
                     await self._reject_native_question(request_id, result, pane_id=pane_id)
-                    raise ValueError(
-                        "Claude question completed outside the expected answer state"
+                raise
+            if self._pending_tty_prompts.get(request_id) is not pending:
+                raise ValueError("The native Claude question ended while its menu was rendering")
+            result = await self._native_question_result(pending)
+            if result is not None:
+                await self._reject_native_question(request_id, result, pane_id=pane_id)
+                raise ValueError("The native Claude question already completed before this answer")
+            pending["answer_uncertain"] = True
+            try:
+                for plan in plans:
+                    await self._drive_question_page(plan, pane_id=pane_id)
+                if len(plans) > 1 or any(plan["multi"] for plan in plans):
+                    review = await self._wait_question_screen(
+                        lambda screen: self._question_review_matches(screen, plans), pane_id=pane_id
+                    )
+                    digit = self._match_menu_digit("Submit answers", self._menu_rows(review))
+                    await self._send_key(str(digit), pane_id=pane_id)
+                result = await self._wait_native_question_result(pending)
+                actual = result.get("answers")
+                matched = (
+                    not result["is_error"]
+                    and isinstance(actual, dict)
+                    and set(actual) == {plan["text"] for plan in plans}
+                    and all(
+                        self._question_answer_matches(actual[plan["text"]], plan) for plan in plans
+                    )
+                )
+                if not matched:
+                    await self._reject_native_question(request_id, result, pane_id=pane_id)
+                    raise ValueError("Claude did not consume the requested question answers")
+                decision = (
+                    plans[0]["values"][0]
+                    if len(plans) == 1 and not plans[0]["multi"]
+                    else "answered"
+                )
+                await self._resolve_tty_answer(request_id, decision)
+            except Exception as exc:
+                if request_id in self._pending_tty_prompts:
+                    result = await self._native_question_result(pending)
+                    if result is not None and not pending.get("resolution_pending"):
+                        await self._reject_native_question(request_id, result, pane_id=pane_id)
+                        raise ValueError(
+                            "Claude question completed outside the expected answer state"
+                        ) from exc
+                    await self._emit_ask_user_question(request_id, pending["questions"])
+                    raise ControlRecoveryError(
+                        "Claude answer consumption is uncertain; inspect the native question "
+                        "before retrying"
                     ) from exc
-                await self._emit_ask_user_question(request_id, pending["questions"])
-                raise ControlRecoveryError(
-                    "Claude answer consumption is uncertain; inspect the native question "
-                    "before retrying"
-                ) from exc
-            raise
+                raise
         finally:
             pending.pop("answer_in_flight", None)
 

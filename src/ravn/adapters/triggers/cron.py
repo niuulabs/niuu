@@ -81,7 +81,14 @@ def _task_deadline(canonical: str, now: datetime) -> datetime | None:
 
 
 def _field_matches(value: int, spec: str) -> bool:
-    """Return True if *value* matches the cron field *spec*."""
+    """Return True if *value* matches the cron field *spec*.
+
+    :raises ValueError: *spec* has a step of zero (``*/0``, ``1-5/0``) —
+        never meaningful, and ``value % 0``/``(value - start) % 0`` would
+        otherwise raise ``ZeroDivisionError`` instead of a clean, callable
+        error ``trigger_validation.validate_trigger_spec`` can turn into a
+        422 at trigger-creation time.
+    """
     if spec == "*":
         return True
     for part in spec.split(","):
@@ -89,13 +96,25 @@ def _field_matches(value: int, spec: str) -> bool:
         if "/" in part:
             base, step_str = part.split("/", 1)
             step = int(step_str)
+            if step <= 0:
+                raise ValueError(f"cron field step must be positive, got {part!r}")
             if base == "*":
                 if value % step == 0:
                     return True
-            else:
-                start = int(base)
-                if value >= start and (value - start) % step == 0:
+                continue
+            if "-" in base:
+                # Range-with-step, e.g. "1-5/2": every `step`th value in
+                # [lo, hi] starting at lo — standard cron syntax. Must be
+                # checked before the bare `int(base)` parse below, which
+                # would otherwise raise ValueError on the "1-5" literal.
+                lo_str, hi_str = base.split("-", 1)
+                lo, hi = int(lo_str), int(hi_str)
+                if lo <= value <= hi and (value - lo) % step == 0:
                     return True
+                continue
+            start = int(base)
+            if value >= start and (value - start) % step == 0:
+                return True
         elif "-" in part:
             lo, hi = part.split("-", 1)
             if int(lo) <= value <= int(hi):
@@ -119,6 +138,81 @@ def _cron_matches(expr: str, dt: datetime) -> bool:
         and _field_matches(dt.month, month)
         and _field_matches((dt.weekday() + 1) % 7, dow)  # convert to cron: 0=Sun
     )
+
+
+class CronExpressionError(ValueError):
+    """A 5-field cron expression has a field ``_field_matches`` cannot
+    evaluate, an out-of-range value, a non-positive step, or otherwise
+    cannot be scheduled at all."""
+
+
+#: One regex per cron field position, capturing the numeric base/range/step
+#: parts so out-of-range values ("99 * * * *") are rejected, not just
+#: malformed ones ("abc * * * *"). ``_field_matches`` only supports digits,
+#: "*", ranges, and steps — no day-of-week/month names like "MON" or "JAN".
+_CRON_FIELD_RE = re.compile(r"^(\*|\d+)(?:-(\d+))?(?:/(\d+))?$")
+_CRON_FIELD_RANGES = (
+    ("minute", 0, 59),
+    ("hour", 0, 23),
+    ("day of month", 1, 31),
+    ("month", 1, 12),
+    ("day of week", 0, 6),
+)
+CRON_FIELD_COUNT = len(_CRON_FIELD_RANGES)
+
+
+def validate_cron_fields(canonical: str, *, spec: str | None = None) -> None:
+    """Raise :class:`CronExpressionError` when a 5-field cron expression
+    (already canonicalised by :func:`parse_schedule` — do not pass ``every:``
+    / ``once:`` forms here, they need no field validation) has a field this
+    module's own matcher cannot evaluate, an out-of-range value, or a
+    non-positive step — then exercises the real matcher (:func:`_cron_matches`)
+    so any future divergence between this check and the matcher is caught
+    here too, not at the first tick the scheduler evaluates it.
+
+    Shared by ``ravn.api.trigger_validation`` (``POST /api/v1/ravn/triggers``)
+    and ``ravn.adapters.tools.cron_tools`` (the agent's own ``cron_create``
+    tool) so a job persisted through EITHER path is guaranteed schedulable —
+    one that is not raises inside :func:`_field_matches` every tick
+    :meth:`CronTrigger._is_due_canonical` evaluates it (e.g. a day-of-week
+    name like ``MON-FRI``, which this parser does not support).
+
+    ``spec`` is the original, pre-canonicalisation string to quote in error
+    messages when the caller has one (natural-language forms canonicalise to
+    something less recognisable); it defaults to ``canonical``.
+    """
+    display = spec if spec is not None else canonical
+    fields = canonical.split()
+    if len(fields) != CRON_FIELD_COUNT:
+        raise CronExpressionError(
+            f"cron expression {display!r} does not have {CRON_FIELD_COUNT} fields"
+        )
+    for cron_field, (label, lo, hi) in zip(fields, _CRON_FIELD_RANGES, strict=True):
+        for part in cron_field.split(","):
+            match = _CRON_FIELD_RE.fullmatch(part)
+            if match is None:
+                raise CronExpressionError(
+                    f"cron expression {display!r} has an invalid field {cron_field!r}"
+                )
+            base, range_end, step = match.groups()
+            if step is not None and int(step) <= 0:
+                raise CronExpressionError(
+                    f"cron expression {display!r} has a non-positive step {step!r} in field "
+                    f"{cron_field!r} — a step of 0 never matches and divides by zero in "
+                    "the scheduler"
+                )
+            for value in (base, range_end):
+                if value is None or value == "*":
+                    continue
+                if not lo <= int(value) <= hi:
+                    raise CronExpressionError(
+                        f"cron expression {display!r} has {label} value {value!r} outside "
+                        f"{lo}-{hi} in field {cron_field!r}"
+                    )
+    try:
+        _cron_matches(canonical, datetime.now(UTC))
+    except Exception as exc:
+        raise CronExpressionError(f"cron expression {display!r} is not schedulable: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +444,13 @@ class CronTrigger(TriggerPort):
         self._tick = tick_seconds
         self._store = store
         self._counter = 0
+        # Job names/ids already logged as quarantined — evaluating a bad
+        # schedule fails identically every tick, so without this the same
+        # error would flood the log every _tick_seconds forever instead of
+        # once per process lifetime. Cleared implicitly on restart, so a
+        # fixed or deleted job stops being quarantined and a still-broken
+        # one is reported again (not silently forgotten).
+        self._quarantined: set[str] = set()
 
     @property
     def name(self) -> str:
@@ -436,6 +537,33 @@ class CronTrigger(TriggerPort):
     def _is_due(self, job: CronJob, now: datetime, state: dict[str, str]) -> bool:
         return self._is_due_canonical(job.canonical, job.name, now, state)
 
+    def _quarantine(self, job_id: str, name: str, schedule: str, exc: Exception) -> None:
+        """Log a job whose schedule cannot be evaluated and skip it for this
+        tick, instead of letting the exception propagate out of ``run()``.
+
+        A malformed schedule (e.g. a day-of-week name like ``MON-FRI``,
+        which ``_field_matches`` does not support) fails identically on
+        every tick and every restart — validated out at creation time going
+        forward (``ravn.api.trigger_validation`` / ``cron_tools
+        .CronCreateTool``), but an already-persisted job predating that
+        check must not crash-loop the whole resident process (``_trigger_
+        watcher`` deliberately does not catch trigger-source failures — see
+        its docstring — so an uncaught error here would end the process).
+        Logged once per job per process lifetime, not every tick.
+        """
+        if job_id in self._quarantined:
+            return
+        self._quarantined.add(job_id)
+        logger.error(
+            "cron: quarantining job %r (%s) — schedule %r is not schedulable: %s. "
+            "It will not fire until fixed or removed (cron_delete for a "
+            "runtime job; the config for a config-defined one).",
+            name,
+            job_id,
+            schedule,
+            exc,
+        )
+
     # ------------------------------------------------------------------
     # Main loop
     # ------------------------------------------------------------------
@@ -455,7 +583,12 @@ class CronTrigger(TriggerPort):
 
                     # -- Config-defined jobs --
                     for job in self._jobs:
-                        if not self._is_due(job, now, state):
+                        try:
+                            is_due = self._is_due(job, now, state)
+                        except Exception as exc:
+                            self._quarantine("config", job.name, job.raw_schedule, exc)
+                            continue
+                        if not is_due:
                             continue
 
                         task_id = self._make_task_id()
@@ -480,7 +613,14 @@ class CronTrigger(TriggerPort):
                             if not record.enabled:
                                 continue
                             canonical = parse_schedule(record.schedule)
-                            if not self._is_due_canonical(canonical, record.job_id, now, state):
+                            try:
+                                is_due = self._is_due_canonical(
+                                    canonical, record.job_id, now, state
+                                )
+                            except Exception as exc:
+                                self._quarantine(record.job_id, record.name, record.schedule, exc)
+                                continue
+                            if not is_due:
                                 continue
 
                             context = record.context

@@ -132,6 +132,345 @@ async def test_workload_identity_exchange_mints_owner_scoped_token() -> None:
     assert result.workload_name == "ravn-valkyrie"
 
 
+def _service_with_owner_id_claim(
+    proof_key: rsa.RSAPrivateKey,
+    *,
+    owner_id_claim: str = "sub",
+    owner_id_claim_pattern: str = "",
+    extra_mappings: list[SimpleNamespace] | None = None,
+) -> WorkloadIdentityService:
+    return create_workload_identity_service(
+        SimpleNamespace(
+            enabled=True,
+            issuer=EXCHANGE_ISSUER,
+            audiences=["volundr-api"],
+            token_ttl_seconds=900,
+            key_id="niuu-workload-test",
+            signing_key_pem="",
+            signing_key_env="",
+            verifiers=[
+                SimpleNamespace(
+                    name="kubernetes",
+                    adapter="niuu.adapters.workload_identity.jwt.JwtWorkloadIdentityVerifier",
+                    kwargs={
+                        "issuer": WORKLOAD_ISSUER,
+                        "audiences": ["volundr-api"],
+                        "static_jwks": {"keys": [_jwk_from_key(proof_key, kid="k8s-proof")]},
+                    },
+                    secret_kwargs_env={},
+                )
+            ],
+            mappings=[
+                SimpleNamespace(
+                    name="ravn-resident",
+                    verifier="kubernetes",
+                    subject="",
+                    subject_prefix="system:serviceaccount:valkyrie:resident-",
+                    issuer=WORKLOAD_ISSUER,
+                    claims={},
+                    owner_id="",
+                    owner_id_claim=owner_id_claim,
+                    owner_id_claim_pattern=owner_id_claim_pattern,
+                    tenant_id="default",
+                    email="",
+                    roles=["volundr:developer"],
+                    metadata={},
+                ),
+                *(extra_mappings or []),
+            ],
+        )
+    )
+
+
+def _fixed_mapping(*, name: str, subject: str, owner_id: str) -> SimpleNamespace:
+    """An exact-subject mapping with a fixed owner_id — the shape a
+    Fleet-managed, non-UUID-named ServiceAccount (e.g. valhalla's
+    resident-muninn) would use, distinct from residentMapping's broad,
+    per-runtime-UUID prefix mapping."""
+    return SimpleNamespace(
+        name=name,
+        verifier="kubernetes",
+        subject=subject,
+        subject_prefix="",
+        issuer=WORKLOAD_ISSUER,
+        claims={},
+        owner_id=owner_id,
+        owner_id_claim="",
+        owner_id_claim_pattern="",
+        tenant_id="default",
+        email="",
+        roles=["volundr:developer"],
+        metadata={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_owner_id_claim_gives_each_distinct_subject_its_own_principal() -> None:
+    """Two callers sharing one mapping's subject_prefix must not be conflated."""
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service_with_owner_id_claim(proof_key)
+
+    result_a = await service.exchange(
+        _workload_token(proof_key, subject="system:serviceaccount:valkyrie:resident-aaa")
+    )
+    result_b = await service.exchange(
+        _workload_token(proof_key, subject="system:serviceaccount:valkyrie:resident-bbb")
+    )
+
+    assert result_a.principal.user_id == "system:serviceaccount:valkyrie:resident-aaa"
+    assert result_b.principal.user_id == "system:serviceaccount:valkyrie:resident-bbb"
+    assert result_a.principal.user_id != result_b.principal.user_id
+
+
+class _FakeTenantResolver:
+    """A fake OwnerTenantResolverPort standing in for
+    volundr.adapters.outbound.resident_tenant_resolver's real, asyncpg-backed
+    one — a real Postgres connection is out of reach here (database.md:
+    mock/patch asyncpg, no Docker for tests)."""
+
+    def __init__(self, tenants: dict[str, str]) -> None:
+        self._tenants = tenants
+
+    async def tenant_id_for_owner(self, owner_id: str) -> str | None:
+        return self._tenants.get(owner_id)
+
+
+def _service_with_tenant_resolver(
+    proof_key: rsa.RSAPrivateKey, *, tenant_resolver: _FakeTenantResolver
+) -> WorkloadIdentityService:
+    """Same shape as _service_with_owner_id_claim, but wired with a fake
+    tenant resolver directly — bypassing create_workload_identity_service's
+    dynamic import, which needs a real importable dotted path."""
+    from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
+    from niuu.domain.services.workload_identity import WorkloadIdentityService
+
+    config = SimpleNamespace(
+        enabled=True,
+        issuer=EXCHANGE_ISSUER,
+        audiences=["volundr-api"],
+        token_ttl_seconds=900,
+        key_id="niuu-workload-test",
+        signing_key_pem="",
+        mappings=[
+            SimpleNamespace(
+                name="ravn-resident",
+                verifier="kubernetes",
+                subject="",
+                subject_prefix="system:serviceaccount:valkyrie:resident-",
+                issuer=WORKLOAD_ISSUER,
+                claims={},
+                owner_id="",
+                owner_id_claim="sub",
+                owner_id_claim_pattern="^system:serviceaccount:[^:]+:resident-(.+)$",
+                tenant_id="default",
+                email="",
+                roles=["volundr:developer"],
+                metadata={},
+            )
+        ],
+    )
+    verifier = JwtWorkloadIdentityVerifier(
+        issuer=WORKLOAD_ISSUER,
+        audiences=["volundr-api"],
+        static_jwks={"keys": [_jwk_from_key(proof_key, kid="k8s-proof")]},
+    )
+    return WorkloadIdentityService(
+        config,
+        verifiers={"kubernetes": verifier},
+        tenant_resolver=tenant_resolver,
+    )
+
+
+@pytest.mark.asyncio
+async def test_tenant_resolver_derives_tenant_per_caller_not_the_mapping_default() -> None:
+    """The MUST-FIX this closes: residentMapping's own tenant_id is one
+    fixed value shared by every resident it admits, wrong for every tenant
+    but one. With a resolver configured, each caller's REAL tenant (from
+    resident_runtimes.tenant_id in production) is used instead."""
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    resolver = _FakeTenantResolver({"aaa": "tenant-a", "bbb": "tenant-b"})
+    service = _service_with_tenant_resolver(proof_key, tenant_resolver=resolver)
+
+    result_a = await service.exchange(
+        _workload_token(proof_key, subject="system:serviceaccount:valkyrie:resident-aaa")
+    )
+    result_b = await service.exchange(
+        _workload_token(proof_key, subject="system:serviceaccount:valkyrie:resident-bbb")
+    )
+
+    assert result_a.principal.tenant_id == "tenant-a"
+    assert result_b.principal.tenant_id == "tenant-b"
+
+
+@pytest.mark.asyncio
+async def test_tenant_resolver_finding_nothing_raises_not_falls_back() -> None:
+    """A caller whose owner_id the resolver cannot find must be rejected
+    outright — silently placing it in the mapping's default tenant would put
+    its triggers/spend where the real owner can never see them."""
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    resolver = _FakeTenantResolver({})  # no records at all
+    service = _service_with_tenant_resolver(proof_key, tenant_resolver=resolver)
+
+    with pytest.raises(WorkloadIdentityError, match="no durable record"):
+        await service.exchange(
+            _workload_token(proof_key, subject="system:serviceaccount:valkyrie:resident-ccc")
+        )
+
+
+@pytest.mark.asyncio
+async def test_no_tenant_resolver_configured_falls_back_to_mapping_tenant_id() -> None:
+    """The sanctioned minimum: without a resolver, the mapping's own static
+    tenant_id is used verbatim — single-tenant-only, but explicit, not a
+    silent guess."""
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service_with_owner_id_claim(proof_key)  # no tenant_resolver at all
+
+    result = await service.exchange(
+        _workload_token(proof_key, subject="system:serviceaccount:valkyrie:resident-aaa")
+    )
+
+    assert result.principal.tenant_id == "default"
+
+
+@pytest.mark.asyncio
+async def test_owner_id_claim_mapping_marks_the_issued_token_owner_scoped() -> None:
+    """A caller a resident-scoping mapping matched must be distinguishable
+    from one that shares a fixed owner_id — resident_budget's startup check
+    (ravn.adapters.resident_budget.platform.PlatformBudgetReporter) relies on
+    this claim to refuse to run under a possibly-shared identity."""
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service_with_owner_id_claim(proof_key)
+
+    result = await service.exchange(
+        _workload_token(proof_key, subject="system:serviceaccount:valkyrie:resident-aaa")
+    )
+
+    jwk = PyJWKSet.from_dict(service.jwks()).keys[0]
+    claims = jwt.decode(
+        result.token,
+        key=jwk.key,
+        algorithms=["RS256"],
+        audience="volundr-api",
+        issuer=EXCHANGE_ISSUER,
+    )
+    assert claims["workload_owner_scoped"] is True
+
+
+@pytest.mark.asyncio
+async def test_fixed_owner_id_mapping_marks_the_issued_token_not_owner_scoped() -> None:
+    """The original, still-supported mapping shape (fixed owner_id shared by
+    every caller that matches) must report itself as NOT owner-scoped."""
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)  # the shared fixture: fixed owner_id, no owner_id_claim
+
+    result = await service.exchange(_workload_token(proof_key))
+
+    jwk = PyJWKSet.from_dict(service.jwks()).keys[0]
+    claims = jwt.decode(
+        result.token,
+        key=jwk.key,
+        algorithms=["RS256"],
+        audience="volundr-api",
+        issuer=EXCHANGE_ISSUER,
+    )
+    assert claims["workload_owner_scoped"] is False
+
+
+@pytest.mark.asyncio
+async def test_owner_id_claim_pattern_extracts_the_resident_id() -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service_with_owner_id_claim(
+        proof_key,
+        owner_id_claim_pattern=r"^system:serviceaccount:[^:]+:resident-(.+)$",
+    )
+
+    result = await service.exchange(
+        _workload_token(proof_key, subject="system:serviceaccount:valkyrie:resident-aaa-111")
+    )
+
+    assert result.principal.user_id == "aaa-111"
+
+
+@pytest.mark.asyncio
+async def test_owner_id_claim_pattern_mismatch_falls_through_not_raises() -> None:
+    """A pattern non-match means 'this mapping does not apply' — it must not
+    itself raise (that would abandon every mapping tried after it). With no
+    other mapping configured, the overall exchange still fails, but via the
+    generic 'no mapping matched' path, not this mapping's own error."""
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service_with_owner_id_claim(
+        proof_key,
+        owner_id_claim_pattern=r"^never-matches$",
+    )
+
+    with pytest.raises(WorkloadIdentityError, match="No workload identity mapping matched"):
+        await service.exchange(
+            _workload_token(proof_key, subject="system:serviceaccount:valkyrie:resident-aaa")
+        )
+
+
+@pytest.mark.asyncio
+async def test_owner_id_claim_pattern_mismatch_falls_through_to_a_specific_mapping() -> None:
+    """The MUST-FIX this closes: residentMapping's broad
+    "...resident-" subject_prefix must not shadow a specific, non-UUID-named
+    ServiceAccount (e.g. valhalla's Fleet-managed resident-muninn) a
+    different mapping owns exactly — the pattern rejects the non-UUID
+    caller, _matches falls through, and the specific mapping wins."""
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service_with_owner_id_claim(
+        proof_key,
+        owner_id_claim_pattern=r"^system:serviceaccount:[^:]+:resident-([0-9a-f-]{36})$",
+        extra_mappings=[
+            _fixed_mapping(
+                name="resident-muninn",
+                subject="system:serviceaccount:valkyrie:resident-muninn",
+                owner_id="muninn-owner",
+            )
+        ],
+    )
+
+    result = await service.exchange(
+        _workload_token(proof_key, subject="system:serviceaccount:valkyrie:resident-muninn")
+    )
+
+    assert result.principal.user_id == "muninn-owner"
+
+
+@pytest.mark.asyncio
+async def test_owner_id_claim_pattern_without_a_trailing_anchor_falls_through() -> None:
+    """re.fullmatch, not re.match: a pattern missing a trailing "$" (an easy
+    authoring mistake) must not silently accept a claim value with unmatched
+    trailing content — the unmatched suffix could be anything. That
+    incompatibility is a non-match, not a raise (see
+    test_owner_id_claim_pattern_mismatch_falls_through_not_raises)."""
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    # No trailing "$" — matches a PREFIX under re.match, but the subject the
+    # verified proof actually carries has trailing content this pattern
+    # never accounts for.
+    service = _service_with_owner_id_claim(
+        proof_key,
+        owner_id_claim_pattern=r"^system:serviceaccount:valkyrie:resident-(aaa)",
+    )
+
+    with pytest.raises(WorkloadIdentityError, match="No workload identity mapping matched"):
+        await service.exchange(
+            _workload_token(
+                proof_key, subject="system:serviceaccount:valkyrie:resident-aaa-and-then-more"
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_owner_id_claim_missing_raises_not_empty_owner() -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service_with_owner_id_claim(proof_key, owner_id_claim="nickname")
+
+    with pytest.raises(WorkloadIdentityError, match="requires claim 'nickname'"):
+        await service.exchange(
+            _workload_token(proof_key, subject="system:serviceaccount:valkyrie:resident-aaa")
+        )
+
+
 def test_workload_identity_issues_session_bound_token_for_verified_adapter() -> None:
     proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     service = _service(proof_key)
