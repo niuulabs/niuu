@@ -470,6 +470,7 @@ def test_local_runtime_helpers_cover_container_states() -> None:
     assert local_runtime._observed_state("unknown") is ResidentObservedState.PENDING
     assert local_runtime._published_port(SimpleNamespace(attrs={}), 9200) == 0
 
+
 class _FakeRealmRepository:
     def __init__(self, realms: dict) -> None:
         self._realms = realms
@@ -537,6 +538,7 @@ async def test_materialize_threads_the_resolved_realm_slug_into_the_container(
     ravn_config = yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])
     assert ravn_config["resident_evolution"]["realm_slug"] == "workshop"
     assert ravn_config["environment"]["charter_mimir_page"] == "realms/workshop/charter.md"
+
 
 def test_unreachable_docker_engine_fails_with_a_remedy(tmp_path, monkeypatch) -> None:
     def unreachable():
