@@ -18,8 +18,14 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from identity.ports import AuthorizationEvaluationError
+from niuu.domain.health_paths import DEFAULT_HEALTH_PATHS
 from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 
+#: Exact paths served without identity: the root and per-service health
+#: checks Guild probes (see DEFAULT_HEALTH_PATHS) and the workload JWKS.
+_UNAUTHENTICATED_READ_PATHS = frozenset(
+    {"/health", "/api/v1/tokens/workload/jwks", *DEFAULT_HEALTH_PATHS.values()}
+)
 #: Node-originated Guild endpoints carry no bearer JWT at all — they are
 #: authenticated by an Ed25519 signature over the request instead (see
 #: ``niuu.ports.node_verifier.RegisteredNodeVerifier``), verified inside the
@@ -91,11 +97,7 @@ class PATRevocationMiddleware:
             if self._authenticate_http and not (
                 (
                     scope.get("method") in ("GET", "HEAD")
-                    and scope["path"]
-                    in (
-                        "/health",
-                        "/api/v1/tokens/workload/jwks",
-                    )
+                    and scope["path"] in _UNAUTHENTICATED_READ_PATHS
                 )
                 or (scope.get("method") == "POST" and _NODE_SIGNED_PATH.fullmatch(scope["path"]))
             ):
