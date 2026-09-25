@@ -1,6 +1,7 @@
 """Tests for the broker's durable full-fidelity event log producer."""
 
 import asyncio
+import uuid
 from contextlib import suppress
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -328,3 +329,103 @@ class TestPermanentRejection:
             await b._stop_event_log()  # must not raise mid-teardown
 
         assert len(b._event_log_buffer) == 1  # loss is reported, not hidden
+
+
+class TestTraceSpanPostFailureIsVisible:
+    """A failed Forge trace-span POST stays best-effort but must not go silent.
+
+    These spans feed the session's trace visualization, not the durable
+    event log — a Volundr blip here must not fail the live tool call/turn
+    that triggered it. What it must not do is disappear at debug level with
+    no counter, which is what made a sustained failure invisible before.
+    """
+
+    async def test_start_span_http_error_is_warned_and_counted(self, tmp_path, caplog):
+        b = _broker(tmp_path)
+        client = AsyncMock()
+        client.post.return_value = _resp(503)
+
+        with (
+            patch.object(b, "_get_http_client", AsyncMock(return_value=client)),
+            patch.object(event_log_mod, "get_observability") as mock_get_observability,
+            caplog.at_level("WARNING", logger="skuld.broker"),
+        ):
+            result = await b._start_trace_span(kind="turn.local", name="turn")
+
+        assert result is None
+        assert any("Forge trace span start failed" in r.message for r in caplog.records)
+        mock_get_observability.return_value.count.assert_called_once()
+        assert (
+            mock_get_observability.return_value.count.call_args.kwargs["attributes"]["op"]
+            == "start"
+        )
+
+    async def test_complete_span_exception_is_warned_and_counted(self, tmp_path, caplog):
+        b = _broker(tmp_path)
+        client = AsyncMock()
+        client.post.side_effect = httpx.ConnectError("unreachable")
+
+        with (
+            patch.object(b, "_get_http_client", AsyncMock(return_value=client)),
+            patch.object(event_log_mod, "get_observability") as mock_get_observability,
+            caplog.at_level("WARNING", logger="skuld.broker"),
+        ):
+            result = await b._complete_trace_span(kind="turn.local", name="turn")
+
+        assert result is None
+        assert any("Forge trace span complete failed" in r.message for r in caplog.records)
+        mock_get_observability.return_value.count.assert_called_once()
+        assert (
+            mock_get_observability.return_value.count.call_args.kwargs["attributes"]["op"]
+            == "complete"
+        )
+
+    async def test_finish_span_http_error_is_warned_and_counted(self, tmp_path, caplog):
+        b = _broker(tmp_path)
+        client = AsyncMock()
+        client.post.return_value = _resp(503)
+        span_id = uuid.uuid4()
+
+        with (
+            patch.object(b, "_get_http_client", AsyncMock(return_value=client)),
+            patch.object(event_log_mod, "get_observability") as mock_get_observability,
+            caplog.at_level("WARNING", logger="skuld.broker"),
+        ):
+            await b._finish_trace_span(span_id)
+
+        assert any("Forge trace span finish failed" in r.message for r in caplog.records)
+        mock_get_observability.return_value.count.assert_called_once()
+        assert (
+            mock_get_observability.return_value.count.call_args.kwargs["attributes"]["op"]
+            == "finish"
+        )
+
+    async def test_finish_span_exception_is_warned_and_counted(self, tmp_path, caplog):
+        b = _broker(tmp_path)
+        client = AsyncMock()
+        client.post.side_effect = httpx.ConnectError("unreachable")
+        span_id = uuid.uuid4()
+
+        with (
+            patch.object(b, "_get_http_client", AsyncMock(return_value=client)),
+            patch.object(event_log_mod, "get_observability") as mock_get_observability,
+            caplog.at_level("WARNING", logger="skuld.broker"),
+        ):
+            await b._finish_trace_span(span_id)
+
+        assert any("Forge trace span finish failed" in r.message for r in caplog.records)
+        assert any(str(span_id) in r.message for r in caplog.records)
+        mock_get_observability.return_value.count.assert_called_once()
+
+    async def test_a_non_http_bug_is_not_downgraded_to_a_warning(self, tmp_path):
+        """The except only covers httpx.HTTPError (the network/status failure
+        this is meant to tolerate) — a bug elsewhere in the call, such as a
+        JSON-serialization TypeError from a bad payload value, must still
+        propagate as a real error, not disappear as best-effort telemetry."""
+        b = _broker(tmp_path)
+        client = AsyncMock()
+        client.post.side_effect = TypeError("Object of type Decimal is not JSON serializable")
+
+        with patch.object(b, "_get_http_client", AsyncMock(return_value=client)):
+            with pytest.raises(TypeError, match="not JSON serializable"):
+                await b._start_trace_span(kind="turn.local", name="turn")

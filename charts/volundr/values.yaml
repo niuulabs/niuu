@@ -1017,6 +1017,14 @@ config:
   logLevel: info
   # -- Log format (json, text)
   logFormat: json
+  # -- OpenTelemetry trace/metric export. Empty (the default) means
+  # unconfigured — observability.enabled defaults to false, which is a
+  # decision, not a degraded fallback. Set fields to match
+  # niuu.domain.observability.ObservabilityConfig, e.g.:
+  #   enabled: true
+  #   trace_endpoint: "http://otel-collector.observability:4317"
+  #   metric_endpoint: "http://otel-collector.observability:4318/v1/metrics"
+  observability: {}
   # -- Host to bind to
   host: "0.0.0.0"
   # -- Internal shared-host address injected into local Skuld brokers

@@ -188,6 +188,7 @@ async def _startup(
         # none). auth.mode: oidc verifies bearer tokens itself — trusting
         # the browser's own claims there would silently undo that.
         dev_identity=settings.mode == "mini" and settings.host_auth.mode == "none",
+        cli_settings=settings,
     )
     manager._root_server = root_server  # type: ignore[attr-defined]
 
