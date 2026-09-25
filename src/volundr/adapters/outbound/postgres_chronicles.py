@@ -76,6 +76,9 @@ class PostgresChronicleRepository(ChronicleRepository):
 
     async def list(
         self,
+        *,
+        tenant_id: str | None,
+        owner_id: str | None,
         project: str | None = None,
         repo: str | None = None,
         model: str | None = None,
@@ -83,10 +86,22 @@ class PostgresChronicleRepository(ChronicleRepository):
         limit: int = 50,
         offset: int = 0,
     ) -> list[Chronicle]:
-        """Retrieve chronicles with optional filters."""
+        """Retrieve chronicles within the given bounds, with optional filters."""
         conditions: list[str] = []
         params: list = []
         param_idx = 1
+
+        # A bound compares with ``=`` and excludes the empty string, so it never
+        # matches a NULL or blank attribution: those rows are unbounded-only.
+        if tenant_id is not None:
+            conditions.append(f"tenant_id = ${param_idx} AND tenant_id <> ''")
+            params.append(tenant_id)
+            param_idx += 1
+
+        if owner_id is not None:
+            conditions.append(f"owner_id = ${param_idx} AND owner_id <> ''")
+            params.append(owner_id)
+            param_idx += 1
 
         if project is not None:
             conditions.append(f"project = ${param_idx}")

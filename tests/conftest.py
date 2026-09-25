@@ -265,6 +265,9 @@ class InMemoryChronicleRepository(ChronicleRepository):
 
     async def list(
         self,
+        *,
+        tenant_id: str | None,
+        owner_id: str | None,
         project: str | None = None,
         repo: str | None = None,
         model: str | None = None,
@@ -274,6 +277,10 @@ class InMemoryChronicleRepository(ChronicleRepository):
     ) -> list[Chronicle]:
         results = list(self._chronicles.values())
 
+        if tenant_id is not None:
+            results = [c for c in results if c.tenant_id and c.tenant_id == tenant_id]
+        if owner_id is not None:
+            results = [c for c in results if c.owner_id and c.owner_id == owner_id]
         if project is not None:
             results = [c for c in results if c.project == project]
         if repo is not None:
