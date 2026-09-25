@@ -161,6 +161,7 @@ async def test_divergent_bundled_row_requires_explicit_same_id_replacement(tmp_p
         description="Administrator-owned divergent definition",
         read_only=False,
         source="postgres",
+        origin="authored",
     )
     target = FilesystemWorkflowRepository(str(tmp_path))
 
@@ -202,6 +203,79 @@ async def test_divergent_bundled_row_requires_explicit_same_id_replacement(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_bundled_superseded_row_is_skipped_without_error_or_flag(tmp_path) -> None:
+    """A package-seeded row from an older release is superseded, not divergent.
+
+    Reclassification migration 000046 relabels pre-#1012 legacy system rows'
+    version_origin as 'bundled'. If their content no longer matches the
+    currently packaged definition (e.g. the package moved on to a newer
+    version), that is not an authored edit under the same identity to
+    reconcile -- it is simply superseded by the current package, which the
+    filesystem catalog already serves for this id without any write.
+    """
+    packaged = load_system_workflows()[0]
+    stale_bundled = replace(
+        packaged,
+        description="Older packaged content before a version bump",
+        read_only=False,
+        source="postgres",
+        origin="bundled",
+    )
+    target = FilesystemWorkflowRepository(str(tmp_path))
+
+    report = await migrate_workflow_catalog(
+        source=_Source([stale_bundled]),
+        target=target,
+        persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
+        bundled_workflows=load_system_workflows(),
+        apply=True,
+    )
+
+    assert report.can_apply is True
+    assert report.bundled_superseded == 1
+    assert report.bundled_matches == 0
+    assert report.create_count == 0
+    assert report.errors == ()
+    assert report.applied is True
+
+    served = await target.get_workflow(packaged.id)
+    assert served is not None
+    assert served.description == packaged.description
+    assert served.read_only is True
+
+
+@pytest.mark.asyncio
+async def test_startup_guard_accepts_catalog_with_a_superseded_bundled_row(tmp_path) -> None:
+    """The startup guard passes after a migration that only skipped superseded rows."""
+    from ting.main import _assert_workflow_catalog_migrated
+
+    packaged = load_system_workflows()[0]
+    stale_bundled = replace(
+        packaged,
+        description="Older packaged content before a version bump",
+        read_only=False,
+        source="postgres",
+        origin="bundled",
+    )
+    target = FilesystemWorkflowRepository(str(tmp_path))
+    await migrate_workflow_catalog(
+        source=_Source([stale_bundled]),
+        target=target,
+        persona_source_for_workflow=_resolver(FilesystemPersonaAdapter()),
+        bundled_workflows=load_system_workflows(),
+        apply=True,
+    )
+
+    pool = SimpleNamespace(
+        fetchrow=AsyncMock(
+            return_value={"row_count": 1, "max_updated_at": stale_bundled.updated_at}
+        )
+    )
+
+    await _assert_workflow_catalog_migrated(target, pool, catalog_path=str(tmp_path))
+
+
+@pytest.mark.asyncio
 async def test_bundled_uuid_with_user_ownership_is_not_silently_skipped(tmp_path) -> None:
     packaged = load_system_workflows()[0]
     collision = replace(
@@ -211,6 +285,7 @@ async def test_bundled_uuid_with_user_ownership_is_not_silently_skipped(tmp_path
         tenant_id="tenant-a",
         read_only=False,
         source="postgres",
+        origin="authored",
     )
 
     report = await migrate_workflow_catalog(
@@ -347,12 +422,14 @@ def test_migration_report_to_dict() -> None:
         unchanged_count=0,
         errors=("boom",),
         applied=False,
+        bundled_superseded=2,
     )
 
     assert report.to_dict() == {
         "source_count": 3,
         "referenced_count": 1,
         "bundled_matches": 1,
+        "bundled_superseded": 2,
         "create_count": 1,
         "unchanged_count": 0,
         "errors": ["boom"],
@@ -468,6 +545,7 @@ async def test_workflow_migration_rejects_divergent_bundled_replacement_over_exi
         description="Admin-owned divergent v1",
         read_only=False,
         source="postgres",
+        origin="authored",
     )
     await migrate_workflow_catalog(
         source=_Source([first_replacement]),
@@ -483,6 +561,7 @@ async def test_workflow_migration_rejects_divergent_bundled_replacement_over_exi
         description="Admin-owned divergent v2 (different content)",
         read_only=False,
         source="postgres",
+        origin="authored",
     )
     report = await migrate_workflow_catalog(
         source=_Source([second_replacement]),

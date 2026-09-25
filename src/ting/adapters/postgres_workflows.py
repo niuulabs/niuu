@@ -78,6 +78,26 @@ class PostgresWorkflowRepository(WorkflowRepository):
         rows = await self._pool.fetch("SELECT * FROM workflows ORDER BY updated_at, created_at, id")
         return [self._row_to_workflow(row) for row in rows]
 
+    async def has_recorded_version_history(self, workflow_id: UUID) -> bool:
+        """True once at least one snapshot has actually been archived for this id.
+
+        Unlike ``list_workflow_versions`` (which always synthesizes the
+        current head as a version when none is archived, so a bare row
+        always returns non-empty), this checks ``workflow_versions``
+        directly. A row can only have zero archived snapshots if it has
+        never been written by the versioned save path (``save_workflow``/
+        ``_advance`` always archive on every write, including a row's very
+        first creation) — i.e. a pre-#1012 legacy row untouched since.
+        ``seed_system_workflows`` uses this to tell that apart from a row
+        this same seeding code created or last updated itself.
+        """
+        return bool(
+            await self._pool.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM workflow_versions WHERE workflow_id = $1)",
+                workflow_id,
+            )
+        )
+
     async def referenced_workflow_ids(self) -> set[UUID]:
         """Return workflow identities referenced by sagas or workflow campaigns."""
         rows = await self._pool.fetch(

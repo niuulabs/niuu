@@ -190,7 +190,16 @@ async def seed_system_workflows(
     A package restart is idempotent. Once an operator has created an authored
     successor for the same stable workflow identity, that head wins over future
     package seeding. Reusing one semantic version for different bundled content
-    is rejected because versions are immutable.
+    is rejected because versions are immutable -- but only once compared
+    against a row this seeding path (or an authored save) actually wrote
+    itself. A row with no recorded version history at all was never written
+    by either: it is a legacy row that predates persona pinning and schema
+    versioning (its ``version_origin`` was reclassified from ``authored`` to
+    ``bundled`` by migration 000046, having previously been skipped entirely
+    by the ``origin == "authored"`` check below). Comparing its stale shape
+    against the current packaged document would always disagree even when
+    the visible content (name, graph, version) matches, so it is replaced
+    outright with the packaged rendering instead of content-compared.
     """
     seeds = load_system_workflows(path)
     existing = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
@@ -199,6 +208,7 @@ async def seed_system_workflows(
         return []
 
     existing_by_id = {workflow.id: workflow for workflow in existing}
+    has_version_history = getattr(repo, "has_recorded_version_history", None)
 
     saved: list[WorkflowDefinition] = []
     for seed in seeds:
@@ -213,16 +223,20 @@ async def seed_system_workflows(
         if current.origin == "authored":
             saved.append(current)
             continue
-        current_document_revision = current.document_revision or workflow_document_revision(current)
-        seed_document_revision = seed.document_revision or workflow_document_revision(seed)
-        if current.version == seed.version:
-            if current_document_revision != seed_document_revision:
-                raise WorkflowDocumentError(
-                    f"Bundled workflow {seed.id} version {seed.version} changed content; "
-                    "publish it under a new version"
-                )
-            saved.append(current)
-            continue
+        never_versioned = has_version_history is not None and not await has_version_history(seed.id)
+        if not never_versioned:
+            current_document_revision = current.document_revision or workflow_document_revision(
+                current
+            )
+            seed_document_revision = seed.document_revision or workflow_document_revision(seed)
+            if current.version == seed.version:
+                if current_document_revision != seed_document_revision:
+                    raise WorkflowDocumentError(
+                        f"Bundled workflow {seed.id} version {seed.version} changed content; "
+                        "publish it under a new version"
+                    )
+                saved.append(current)
+                continue
         saved.append(
             await repo.save_workflow(
                 replace(

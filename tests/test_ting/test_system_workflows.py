@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -512,3 +513,102 @@ async def test_seed_system_workflows_records_distinct_bundle_upgrade(monkeypatch
     assert saved[0].origin == "bundled"
     assert saved[0].created_at == previous.created_at
     assert repo.save_calls == saved
+
+
+@pytest.mark.asyncio
+async def test_seed_reclassified_legacy_row_matching_package_is_replaced_not_compared(
+    monkeypatch,
+) -> None:
+    """Mirrors a real pre-#1012 system row after migration 000046.
+
+    000046 reclassifies such a row's version_origin from 'authored' to
+    'bundled', but the row itself was never touched by the post-#1012
+    versioned save path: no persona pins, schema_version defaulted to 1, and
+    (mirrored here via has_recorded_version_history returning False) no
+    workflow_versions entry. Even though its visible content (name,
+    description, version, graph) matches the package exactly -- one of the
+    real "6 matching rows" -- comparing its stale shape by document revision
+    would always disagree on the missing pins/schema_version and wrongly
+    raise "changed content". It must instead be replaced outright, and a
+    second pass (now with a recorded version history) must be a no-op.
+    """
+    seed = next(workflow for workflow in load_system_workflows() if workflow.persona_dependencies)
+    legacy = replace(
+        seed,
+        persona_dependencies={},
+        persona_definitions={},
+        schema_version=1,
+        based_on_revision=None,
+        document_revision=None,
+    )
+    repo = _InMemoryWorkflowRepository([legacy])
+    repo.has_recorded_version_history = AsyncMock(return_value=False)
+    monkeypatch.setattr("ting.system_workflows.load_system_workflows", lambda _path: [seed])
+
+    saved = await seed_system_workflows(repo)
+
+    assert repo.save_calls == saved
+    assert saved[0].id == seed.id
+    assert saved[0].version == seed.version
+    assert saved[0].graph == seed.graph
+    assert saved[0].persona_dependencies == seed.persona_dependencies
+    assert saved[0].schema_version == seed.schema_version
+    assert saved[0].origin == "bundled"
+    assert saved[0].read_only is True
+
+    repo.save_calls.clear()
+    repo.has_recorded_version_history = AsyncMock(return_value=True)
+
+    rerun = await seed_system_workflows(repo)
+
+    assert repo.save_calls == []
+    assert rerun[0].id == seed.id
+
+
+@pytest.mark.asyncio
+async def test_seed_reclassified_legacy_research_campaign_reseeds_current_version(
+    monkeypatch,
+) -> None:
+    """The real Research Campaign case: a legacy 1.0.0 row, package now 2.0.0.
+
+    A version mismatch already took the reseed branch before this fix (it
+    never reached the strict content-hash comparison), so this locks in that
+    a 000046-reclassified row at a stale version still reseeds correctly to
+    the current packaged definition, and that a second pass is a no-op.
+    """
+    seed = next(
+        workflow for workflow in load_system_workflows() if workflow.name == "Research Campaign"
+    )
+    assert seed.version == "2.0.0"
+    legacy = replace(
+        seed,
+        version="1.0.0",
+        graph={
+            "nodes": [{"id": "research-explore", "kind": "stage", "stageMembers": []}],
+            "edges": [],
+        },
+        persona_dependencies={},
+        persona_definitions={},
+        schema_version=1,
+        based_on_revision=None,
+        document_revision=None,
+    )
+    repo = _InMemoryWorkflowRepository([legacy])
+    repo.has_recorded_version_history = AsyncMock(return_value=False)
+    monkeypatch.setattr("ting.system_workflows.load_system_workflows", lambda _path: [seed])
+
+    saved = await seed_system_workflows(repo)
+
+    assert repo.save_calls == saved
+    assert saved[0].id == seed.id
+    assert saved[0].version == "2.0.0"
+    assert saved[0].graph == seed.graph
+    assert saved[0].origin == "bundled"
+
+    repo.save_calls.clear()
+    repo.has_recorded_version_history = AsyncMock(return_value=True)
+
+    rerun = await seed_system_workflows(repo)
+
+    assert repo.save_calls == []
+    assert rerun[0].version == "2.0.0"

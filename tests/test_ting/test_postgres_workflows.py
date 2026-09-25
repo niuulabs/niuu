@@ -472,3 +472,29 @@ class TestVersions:
     async def test_rejects_ambiguous_version_selectors(self, repo, versioned):
         with pytest.raises(ValueError, match="not both"):
             await repo.get_workflow_version(versioned.id, version="1.0.0", document_revision="hash")
+
+
+class TestHasRecordedVersionHistory:
+    """Distinguishes a row the versioned save path has touched from one it hasn't.
+
+    seed_system_workflows uses this to tell a genuine post-#1012 bundled row
+    apart from a pre-#1012 legacy row reclassified by migration 000046 --
+    the latter was never archived and cannot be safely content-compared.
+    """
+
+    async def test_true_when_a_snapshot_is_archived(self, repo, mock_pool, workflow):
+        mock_pool.fetchval = AsyncMock(return_value=True)
+
+        result = await repo.has_recorded_version_history(workflow.id)
+
+        assert result is True
+        query, workflow_id = mock_pool.fetchval.call_args.args
+        assert "workflow_versions" in query
+        assert workflow_id == workflow.id
+
+    async def test_false_for_a_never_versioned_legacy_row(self, repo, mock_pool, workflow):
+        mock_pool.fetchval = AsyncMock(return_value=False)
+
+        result = await repo.has_recorded_version_history(workflow.id)
+
+        assert result is False

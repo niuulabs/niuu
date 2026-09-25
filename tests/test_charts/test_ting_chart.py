@@ -42,6 +42,31 @@ def _config_from_rendered(rendered_yaml: str) -> dict:
     raise AssertionError("Ting config.yaml was not rendered")
 
 
+def _deployment_from_rendered(rendered_yaml: str) -> dict:
+    for document in yaml.safe_load_all(rendered_yaml):
+        if isinstance(document, dict) and document.get("kind") == "Deployment":
+            return document
+    pytest.fail("Ting Deployment was not rendered")
+    raise AssertionError("Ting Deployment was not rendered")
+
+
+def _render_ting_chart_expect_failure(tmp_path: Path, values: dict) -> str:
+    helm = shutil.which("helm")
+    if not helm:
+        pytest.skip("helm is not installed")
+
+    values_file = tmp_path / "values.yaml"
+    values_file.write_text(yaml.safe_dump(values), encoding="utf-8")
+    result = subprocess.run(
+        [helm, "template", "ting-test", str(CHART_DIR), "-f", str(values_file)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        pytest.fail(f"expected helm template to fail, but it rendered:\n{result.stdout}")
+    return result.stderr
+
+
 class TestChartMetadata:
     """Tests for Chart.yaml."""
 
@@ -175,6 +200,259 @@ class TestConfigMapTemplate:
             entry["condition_type"] for entry in workflow_execution["wait_observers"]
         }
         assert condition_types == {"timer"}
+
+
+class TestPodSecurityContext:
+    """Tests for the pod-level securityContext (writable RWO block volumes)."""
+
+    def test_fsgroup_rendered_by_default(self, tmp_path):
+        deployment = _deployment_from_rendered(_render_ting_chart(tmp_path, {}))
+
+        pod_security_context = deployment["spec"]["template"]["spec"]["securityContext"]
+
+        assert pod_security_context == {
+            "fsGroup": 65532,
+            "fsGroupChangePolicy": "OnRootMismatch",
+        }
+
+
+class TestDeploymentStrategy:
+    """Tests for the RWO-aware deployment update strategy."""
+
+    def test_read_write_many_keeps_no_strategy_field(self, tmp_path):
+        """Default install (ReadWriteMany) keeps today's behaviour: unset strategy."""
+        deployment = _deployment_from_rendered(_render_ting_chart(tmp_path, {}))
+
+        assert "strategy" not in deployment["spec"]
+
+    def test_read_write_once_forces_recreate_strategy(self, tmp_path):
+        deployment = _deployment_from_rendered(
+            _render_ting_chart(
+                tmp_path, {"workflowPersistence": {"accessModes": ["ReadWriteOnce"]}}
+            )
+        )
+
+        assert deployment["spec"]["strategy"] == {"type": "Recreate"}
+
+    def test_read_write_once_pod_forces_recreate_strategy(self, tmp_path):
+        deployment = _deployment_from_rendered(
+            _render_ting_chart(
+                tmp_path, {"workflowPersistence": {"accessModes": ["ReadWriteOncePod"]}}
+            )
+        )
+
+        assert deployment["spec"]["strategy"] == {"type": "Recreate"}
+
+    def test_read_write_once_with_replica_count_two_fails(self, tmp_path):
+        stderr = _render_ting_chart_expect_failure(
+            tmp_path,
+            {
+                "replicaCount": 2,
+                "workflowPersistence": {"accessModes": ["ReadWriteOnce"]},
+            },
+        )
+
+        assert "does not include ReadWriteMany" in stderr
+        assert "replicaCount must be 1" in stderr
+
+    def test_read_write_once_with_autoscaling_fails(self, tmp_path):
+        stderr = _render_ting_chart_expect_failure(
+            tmp_path,
+            {
+                "autoscaling": {"enabled": True},
+                "workflowPersistence": {"accessModes": ["ReadWriteOnce"]},
+            },
+        )
+
+        assert "does not include ReadWriteMany" in stderr
+
+    def test_existing_claim_with_non_rwx_access_mode_and_two_replicas_fails(self, tmp_path):
+        """accessModes is the operator's statement about an existingClaim too."""
+        stderr = _render_ting_chart_expect_failure(
+            tmp_path,
+            {
+                "replicaCount": 2,
+                "workflowPersistence": {
+                    "existingClaim": "pre-provisioned-pvc",
+                    "accessModes": ["ReadWriteOnce"],
+                },
+            },
+        )
+
+        assert "does not include ReadWriteMany" in stderr
+
+    def test_read_write_many_with_two_replicas_is_accepted(self, tmp_path):
+        deployment = _deployment_from_rendered(_render_ting_chart(tmp_path, {"replicaCount": 2}))
+
+        assert deployment["spec"]["replicas"] == 2
+        assert "strategy" not in deployment["spec"]
+
+    def test_explicit_rolling_update_on_read_write_once_fails(self, tmp_path):
+        stderr = _render_ting_chart_expect_failure(
+            tmp_path,
+            {
+                "strategy": {"type": "RollingUpdate"},
+                "workflowPersistence": {"accessModes": ["ReadWriteOnce"]},
+            },
+        )
+
+        assert "strategy.type must be Recreate" in stderr
+
+    def test_explicit_recreate_on_read_write_once_is_accepted(self, tmp_path):
+        deployment = _deployment_from_rendered(
+            _render_ting_chart(
+                tmp_path,
+                {
+                    "strategy": {"type": "Recreate"},
+                    "workflowPersistence": {"accessModes": ["ReadWriteOnce"]},
+                },
+            )
+        )
+
+        assert deployment["spec"]["strategy"] == {"type": "Recreate"}
+
+    def test_explicit_strategy_rendered_verbatim_on_read_write_many(self, tmp_path):
+        deployment = _deployment_from_rendered(
+            _render_ting_chart(
+                tmp_path,
+                {"strategy": {"type": "RollingUpdate", "rollingUpdate": {"maxSurge": 1}}},
+            )
+        )
+
+        assert deployment["spec"]["strategy"] == {
+            "type": "RollingUpdate",
+            "rollingUpdate": {"maxSurge": 1},
+        }
+
+
+class TestWorkflowMigrationInitContainer:
+    """Tests for the opt-in, automated workflow catalog cutover init container."""
+
+    _RWO_RECREATE = {"workflowPersistence": {"accessModes": ["ReadWriteOnce"]}}
+
+    def test_apply_on_start_renders_after_migrate(self, tmp_path):
+        deployment = _deployment_from_rendered(
+            _render_ting_chart(
+                tmp_path,
+                {**self._RWO_RECREATE, "workflowMigration": {"applyOnStart": True}},
+            )
+        )
+
+        init_containers = deployment["spec"]["template"]["spec"]["initContainers"]
+        assert [c["name"] for c in init_containers] == ["migrate", "workflow-catalog-migrate"]
+
+        migrate_catalog = init_containers[1]
+        assert migrate_catalog["command"] == ["python", "-m", "ting.migrate_workflows"]
+        assert migrate_catalog["args"] == [
+            "--catalog-path=/data/ting/workflows",
+            "--apply",
+            "--skip-if-migrated",
+            "--persona-database=volundr",
+        ]
+        env_names = [entry["name"] for entry in migrate_catalog["env"]]
+        assert env_names == [
+            "DATABASE__HOST",
+            "DATABASE__PORT",
+            "DATABASE__NAME",
+            "DATABASE__USER",
+            "DATABASE__PASSWORD",
+        ]
+        mount_names = {mount["name"] for mount in migrate_catalog["volumeMounts"]}
+        assert mount_names == {"config", "workflow-catalog"}
+
+    def test_apply_on_start_passes_replace_divergent_bundled(self, tmp_path):
+        deployment = _deployment_from_rendered(
+            _render_ting_chart(
+                tmp_path,
+                {
+                    **self._RWO_RECREATE,
+                    "workflowMigration": {
+                        "applyOnStart": True,
+                        "personaDatabase": "custom",
+                        "replaceDivergentBundled": True,
+                    },
+                },
+            )
+        )
+
+        init_containers = deployment["spec"]["template"]["spec"]["initContainers"]
+        migrate_catalog = next(
+            c for c in init_containers if c["name"] == "workflow-catalog-migrate"
+        )
+        assert migrate_catalog["args"] == [
+            "--catalog-path=/data/ting/workflows",
+            "--apply",
+            "--skip-if-migrated",
+            "--persona-database=custom",
+            "--replace-divergent-bundled",
+        ]
+
+    def test_apply_on_start_without_golang_migrate_renders_alone(self, tmp_path):
+        deployment = _deployment_from_rendered(
+            _render_ting_chart(
+                tmp_path,
+                {
+                    **self._RWO_RECREATE,
+                    "migrations": {"enabled": False},
+                    "workflowMigration": {"applyOnStart": True},
+                },
+            )
+        )
+
+        init_containers = deployment["spec"]["template"]["spec"]["initContainers"]
+        assert [c["name"] for c in init_containers] == ["workflow-catalog-migrate"]
+
+    def test_apply_on_start_requires_filesystem_adapter(self, tmp_path):
+        stderr = _render_ting_chart_expect_failure(
+            tmp_path,
+            {
+                **self._RWO_RECREATE,
+                "workflowRepository": {
+                    "adapter": "ting.adapters.postgres_workflows.PostgresWorkflowRepository"
+                },
+                "workflowMigration": {"applyOnStart": True},
+            },
+        )
+
+        assert "workflowMigration.applyOnStart requires workflowRepository.adapter" in stderr
+
+    def test_apply_on_start_requires_persistence_enabled(self, tmp_path):
+        stderr = _render_ting_chart_expect_failure(
+            tmp_path,
+            {
+                "workflowPersistence": {"enabled": False},
+                "workflowMigration": {"applyOnStart": True},
+            },
+        )
+
+        assert "workflowMigration.applyOnStart requires workflowPersistence.enabled" in stderr
+
+    def test_apply_on_start_requires_recreate_strategy(self, tmp_path):
+        """Default install is ReadWriteMany, so no Recreate strategy is forced."""
+        stderr = _render_ting_chart_expect_failure(
+            tmp_path,
+            {"workflowMigration": {"applyOnStart": True}},
+        )
+
+        assert "requires the Recreate deployment strategy" in stderr
+
+    def test_apply_on_start_allows_multiple_replicas_on_read_write_many(self, tmp_path):
+        """N concurrent init containers serialize on the catalog's own cutover lock."""
+        deployment = _deployment_from_rendered(
+            _render_ting_chart(
+                tmp_path,
+                {
+                    "strategy": {"type": "Recreate"},
+                    "replicaCount": 3,
+                    "workflowMigration": {"applyOnStart": True},
+                },
+            )
+        )
+
+        assert deployment["spec"]["replicas"] == 3
+        assert deployment["spec"]["strategy"] == {"type": "Recreate"}
+        init_containers = deployment["spec"]["template"]["spec"]["initContainers"]
+        assert "workflow-catalog-migrate" in [c["name"] for c in init_containers]
 
 
 class TestMigrationConfigMap:
