@@ -23,6 +23,7 @@ from niuu.adapters.outbound.http_observatory_topology import (
     HttpObservatoryTopologyClient,
 )
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
+from niuu.adapters.postgres_guild_join import PostgresGuildJoinRepository
 from niuu.adapters.postgres_instances import PostgresInstanceRepository
 from niuu.adapters.postgres_nodes import PostgresNodeRepository
 from niuu.adapters.postgres_observatory_fragments import (
@@ -190,11 +191,12 @@ def create_app(
             node_repository = PostgresNodeRepository(pool)
             guild_join_service = GuildJoinService(
                 pairing_codes=PostgresPairingCodeRepository(pool),
+                guild_join_repository=PostgresGuildJoinRepository(pool),
                 nodes=node_repository,
-                instance_service=instance_service,
                 instance_repository=instance_repository,
                 workload_identity=workload_identity_service,
                 identity_trust=_identity_trust_config(loaded_settings),
+                pairing_code_ttl_seconds=loaded_settings.niuu.node_join.pairing_code_ttl_seconds,
             )
             node_verifier = Ed25519NodeVerifier(
                 node_repository,

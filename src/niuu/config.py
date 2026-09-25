@@ -269,13 +269,7 @@ class InstanceHealthConfig(BaseModel):
 
 
 class NodeJoinConfig(BaseModel):
-    """`niuu join` — pairing and node-signed request policy.
-
-    The pairing code's own TTL is not configured here: it is minted as a
-    scoped workload JWT (see ``niuu.domain.services.guild_join``) and
-    inherits ``workload_identity.token_ttl_seconds``, so there is exactly one
-    TTL knob for every workload-scoped credential, pairing codes included.
-    """
+    """`niuu join` — pairing and node-signed request policy."""
 
     clock_skew_seconds: float = Field(
         default=30.0,
@@ -283,6 +277,17 @@ class NodeJoinConfig(BaseModel):
         description=(
             "Maximum allowed difference between a node's clock and Guild's for a "
             "signed node request (heartbeat/leave) to be accepted."
+        ),
+    )
+    pairing_code_ttl_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description=(
+            "How long a minted pairing code remains valid before it must be re-minted. "
+            "Deliberately its own, shorter knob — a pairing code is shown to an operator "
+            "once and used immediately, unlike the longer-lived workload_identity."
+            "token_ttl_seconds shared by other scoped credentials. The stored code is "
+            "never valid for longer than min(this, that JWT's own expiry)."
         ),
     )
 

@@ -14,34 +14,10 @@ class PostgresNodeRepository(NodeRepository):
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
-    async def create(
-        self,
-        *,
-        node_id: str,
-        name: str,
-        public_key: str,
-        tenant_id: str,
-        created_by: str,
-    ) -> RegisteredNode:
-        row = await self._pool.fetchrow(
-            """
-            INSERT INTO niuu_nodes (id, name, public_key, tenant_id, created_by)
-            VALUES ($1::uuid, $2, $3, $4, $5)
-            RETURNING id, name, public_key, tenant_id, created_by, created_at,
-                      last_seen_at, last_request_at
-            """,
-            node_id,
-            name,
-            public_key,
-            tenant_id,
-            created_by,
-        )
-        return self._row_to_node(row)
-
     async def get(self, node_id: str) -> RegisteredNode | None:
         row = await self._pool.fetchrow(
             """
-            SELECT id, name, public_key, tenant_id, created_by, created_at,
+            SELECT id, name, public_key, tenant_id, created_by, allow_plaintext, created_at,
                    last_seen_at, last_request_at
             FROM niuu_nodes WHERE id = $1::uuid
             """,
@@ -49,23 +25,45 @@ class PostgresNodeRepository(NodeRepository):
         )
         return self._row_to_node(row) if row is not None else None
 
+    async def list_for_tenant(self, tenant_id: str) -> list[RegisteredNode]:
+        rows = await self._pool.fetch(
+            """
+            SELECT id, name, public_key, tenant_id, created_by, allow_plaintext, created_at,
+                   last_seen_at, last_request_at
+            FROM niuu_nodes WHERE tenant_id = $1
+            ORDER BY created_at DESC
+            """,
+            tenant_id,
+        )
+        return [self._row_to_node(row) for row in rows]
+
     async def touch_heartbeat(self, node_id: str) -> RegisteredNode | None:
         row = await self._pool.fetchrow(
             """
             UPDATE niuu_nodes SET last_seen_at = NOW() WHERE id = $1::uuid
-            RETURNING id, name, public_key, tenant_id, created_by, created_at,
+            RETURNING id, name, public_key, tenant_id, created_by, allow_plaintext, created_at,
                       last_seen_at, last_request_at
             """,
             node_id,
         )
         return self._row_to_node(row) if row is not None else None
 
-    async def record_request(self, node_id: str, *, timestamp: int) -> None:
-        await self._pool.execute(
-            "UPDATE niuu_nodes SET last_request_at = $1 WHERE id = $2::uuid",
-            timestamp,
+    async def try_advance_watermark(self, node_id: str, *, timestamp_ms: int) -> bool:
+        # One atomic conditional UPDATE: the WHERE clause re-checks the
+        # watermark at write time under the row's lock, so two concurrent
+        # calls can never both succeed for a non-increasing timestamp pair —
+        # see the port docstring for why a separate check-then-write is unsafe.
+        row = await self._pool.fetchrow(
+            """
+            UPDATE niuu_nodes
+            SET last_request_at = $2
+            WHERE id = $1::uuid AND (last_request_at IS NULL OR last_request_at < $2)
+            RETURNING id
+            """,
             node_id,
+            timestamp_ms,
         )
+        return row is not None
 
     async def delete(self, node_id: str) -> None:
         await self._pool.execute("DELETE FROM niuu_nodes WHERE id = $1::uuid", node_id)
@@ -79,6 +77,7 @@ class PostgresNodeRepository(NodeRepository):
             tenant_id=row["tenant_id"],
             created_by=row["created_by"],
             created_at=row["created_at"],
+            allow_plaintext=row["allow_plaintext"],
             last_seen_at=row["last_seen_at"],
             last_request_at=row["last_request_at"],
         )

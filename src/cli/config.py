@@ -720,13 +720,31 @@ class GuildConfig(BaseModel):
     node_id: str = Field(
         default="", description="This host's node id, assigned by Guild at join time."
     )
+    heartbeat_interval_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        description="How often `niuu guild heartbeat` re-signs and sends a presence heartbeat.",
+    )
 
 
-def persist_guild_join(*, url: str, node_id: str, config_file: Path | None = None) -> None:
+def persist_guild_join(
+    *,
+    url: str,
+    node_id: str,
+    identity_trust: dict[str, Any] | None = None,
+    config_file: Path | None = None,
+) -> None:
     """Write ``guild.url``/``guild.node_id`` into the CLI's config.yaml.
 
     Merges into whatever config already exists rather than overwriting it —
     `niuu join` must not discard unrelated operator configuration.
+
+    ``identity_trust`` (the join response's ``identity`` field — Guild's own
+    ``{mode, issuers}``) is actually applied to ``host_auth``, not just
+    recorded: joining adopts the shared IdP Guild itself trusts, so this
+    host verifies the same tokens Guild does rather than leaving that
+    decision unactioned. ``mode: "none"`` clears any previously configured
+    OIDC issuers rather than leaving stale ones that no longer apply.
     """
     import yaml
 
@@ -736,6 +754,12 @@ def persist_guild_join(*, url: str, node_id: str, config_file: Path | None = Non
     if target.exists():
         existing = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
     existing["guild"] = {"url": url, "node_id": node_id}
+    if identity_trust is not None:
+        mode = identity_trust.get("mode", "none")
+        host_auth: dict[str, Any] = {"mode": mode}
+        if mode == "oidc":
+            host_auth["oidc"] = {"issuers": identity_trust.get("issuers", [])}
+        existing["host_auth"] = host_auth
     target.write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
 
 

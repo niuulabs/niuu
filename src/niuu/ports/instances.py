@@ -20,6 +20,10 @@ class InstanceRepository(ABC):
         """Get a registered instance by ID."""
 
     @abstractmethod
+    async def list_for_node(self, node_id: str) -> list[RegisteredInstance]:
+        """List instances owned by *node_id* (the real ownership column)."""
+
+    @abstractmethod
     async def save_instance(self, instance: RegisteredInstance) -> RegisteredInstance:
         """Create or update a registered instance."""
 

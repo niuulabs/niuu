@@ -279,10 +279,15 @@ def build_app(
         from cli.api.guild import GuildAPIError
         from cli.api.guild import join as guild_join
         from cli.auth.node_key import DEFAULT_NODE_KEY_FILENAME, NodeIdentity
-        from cli.commands.node_instances import offered_instances_for_host
+        from cli.commands.node_instances import UnreachableHostError, offered_instances_for_host
         from cli.config import DEFAULT_CONFIG_DIR, persist_guild_join
 
         node_name = name.strip() or os.uname().nodename
+        try:
+            offered = offered_instances_for_host(settings)
+        except UnreachableHostError as exc:
+            typer.echo(str(exc))
+            raise typer.Exit(1) from None
         identity = NodeIdentity.load_or_create(Path(DEFAULT_CONFIG_DIR) / DEFAULT_NODE_KEY_FILENAME)
         try:
             result = asyncio.run(
@@ -291,15 +296,25 @@ def build_app(
                     code=code,
                     node_name=node_name,
                     public_key=identity.public_key_b64,
-                    instances=offered_instances_for_host(settings),
+                    node_auth_mode=settings.host_auth.mode,
+                    instances=offered,
                 )
             )
         except GuildAPIError as exc:
             typer.echo(f"Failed to join {guild_url}: {exc}")
             raise typer.Exit(1) from None
 
-        persist_guild_join(url=guild_url, node_id=result["nodeId"])
+        # Adopt Guild's own identity trust — this host now verifies the same
+        # OIDC issuer(s) Guild does (or, under host_auth.mode: none, none at
+        # all) rather than leaving the returned config unapplied.
+        persist_guild_join(
+            url=guild_url, node_id=result["nodeId"], identity_trust=result["identity"]
+        )
         typer.echo(f"Joined {guild_url} as node {result['nodeId']} ({node_name}).")
+        typer.echo(
+            "Run `niuu guild heartbeat` (e.g. under a supervisor) to keep this node's "
+            "presence and offered instances current."
+        )
 
     @app.command()
     def leave() -> None:
@@ -309,14 +324,23 @@ def build_app(
 
         from cli.api.guild import GuildAPIError
         from cli.api.guild import leave as guild_leave
-        from cli.auth.node_key import DEFAULT_NODE_KEY_FILENAME, NodeIdentity
+        from cli.auth.node_key import DEFAULT_NODE_KEY_FILENAME, NodeIdentity, NodeKeyMissingError
         from cli.config import DEFAULT_CONFIG_DIR, clear_guild_join
 
         if not settings.guild.url or not settings.guild.node_id:
             typer.echo("This host has not joined a Guild.")
             raise typer.Exit(1)
 
-        identity = NodeIdentity.load_or_create(Path(DEFAULT_CONFIG_DIR) / DEFAULT_NODE_KEY_FILENAME)
+        try:
+            identity = NodeIdentity.load(Path(DEFAULT_CONFIG_DIR) / DEFAULT_NODE_KEY_FILENAME)
+        except NodeKeyMissingError as exc:
+            typer.echo(str(exc))
+            typer.echo(
+                "Refusing to generate a new key: it would not match what Guild has on "
+                "file. Ask an admin to revoke this node instead "
+                "(DELETE /api/v1/niuu/guild/nodes/{id})."
+            )
+            raise typer.Exit(1) from None
         try:
             asyncio.run(
                 guild_leave(settings.guild.url, node_id=settings.guild.node_id, identity=identity)
@@ -330,7 +354,7 @@ def build_app(
 
     from cli.commands.guild import create_guild_commands
 
-    app.add_typer(create_guild_commands(), name="guild")
+    app.add_typer(create_guild_commands(settings), name="guild")
 
     platform_app = create_platform_commands(registry, settings, manager)
     app.add_typer(platform_app, name="platform")

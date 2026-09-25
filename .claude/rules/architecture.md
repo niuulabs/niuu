@@ -85,3 +85,50 @@ scope to `KNOWN_WORKLOAD_SCOPES` and a `require_scope(...)` dependency on the
 route — scoped tokens are only as narrow as the enforcement coverage.
 `tests/test_niuu/test_token_scope.py` fails if the two drift apart in either
 direction.
+
+### Exception: Ed25519 node-request signing (`niuu join`)
+
+A joined node's heartbeat/leave calls (`POST /api/v1/niuu/guild/nodes/{id}/heartbeat`,
+`POST /api/v1/niuu/guild/nodes/{id}/leave`) carry no bearer token of any
+kind — not a JWT, not a PAT, not a scoped workload token. A node signs
+`f"{method}\n{path}\n{timestamp_ms}\n{sha256(body).hexdigest()}"` with an
+Ed25519 keypair generated on first `niuu join` and never uploaded (only the
+public key is; see `cli.auth.node_key.NodeIdentity`), and Guild verifies
+that signature against the stored public key
+(`niuu.ports.node_verifier.RegisteredNodeVerifier`, implemented by
+`niuu.adapters.node_signature.Ed25519NodeVerifier`). This is sanctioned
+because these two endpoints authenticate a *machine*, not a human or a
+service acting on a human's behalf — there is no OIDC principal to obtain a
+token for, and the alternative (a long-lived bearer credential embedded in
+every joined machine) is strictly worse than a private key that never
+leaves the host.
+
+Limits of this exception, enforced together, not individually:
+
+- **Replay protection is the timestamp, and only the timestamp.** It must
+  strictly increase per node, advanced by a single atomic conditional
+  `UPDATE ... WHERE last_request_at IS NULL OR last_request_at < $timestamp`
+  (`PostgresNodeRepository.try_advance_watermark`) — a read-then-write check
+  is not atomic and admits a race where two concurrent requests both pass.
+  Milliseconds, not seconds: two signed requests in the same second must
+  both be able to advance the watermark.
+- **A bounded clock-skew window** (`niuu.node_join.clock_skew_seconds`) —
+  an unbounded window would let a captured signed request replay
+  indefinitely up to the node's next legitimate call.
+- **Every rejection reason returns the identical 401** (unknown node id,
+  malformed node id, missing headers, bad signature, stale timestamp,
+  failed replay check) — distinguishing them would let a caller probe which
+  node ids exist.
+- **The signing scheme covers method, path, timestamp, and a body hash** —
+  omitting any of them (e.g. signing only the body) would let a captured
+  signature be replayed against a different route or a different node.
+- **This exception is scoped to exactly these two routes.** `POST
+  /api/v1/niuu/guild/join` is a *human-authorized* action gated by the
+  ordinary `node_join` scoped-workload-token mechanism above, not this one —
+  a node has no signing key yet when it joins. Do not extend Ed25519
+  signing to a new route without adding it to the same enforcement points
+  this one touches: the FastAPI dependency, the JWT-identity middleware
+  exemption (`niuu.adapters.pat_revocation_middleware`), and the Guild
+  chart's Envoy `jwt_authn` bypass (`charts/guild/templates/envoy-configmap.yaml`,
+  an exact `safe_regex` match — never a `prefix`, which would also exempt
+  routes that must stay JWT-gated).

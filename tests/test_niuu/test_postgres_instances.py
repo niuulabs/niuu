@@ -63,6 +63,7 @@ def _row(
         "last_seen_at": None,
         "last_checked_at": None,
         "last_error": None,
+        "node_id": None,
     }
 
 
@@ -139,6 +140,10 @@ async def test_save_and_delete_instance_send_expected_sql_payloads() -> None:
     assert "last_seen_at" not in update_clause
     assert "last_checked_at" not in update_clause
     assert "last_error" not in update_clause
+    # node_id is likewise excluded from the UPDATE SET — the real ownership
+    # column must be immutable once written, set only by GuildJoinRepository
+    # at INSERT time, never editable through a later metadata PATCH.
+    assert "node_id" not in update_clause
     assert insert_args[0] == instance.id
     assert insert_args[1] == "volundr"
     assert insert_args[5] == "tenant"
@@ -147,10 +152,25 @@ async def test_save_and_delete_instance_send_expected_sql_payloads() -> None:
     assert insert_args[15] is None  # last_seen_at
     assert insert_args[16] is None  # last_checked_at
     assert insert_args[17] is None  # last_error
+    assert insert_args[18] is None  # node_id
 
     delete_query, delete_args = pool.execute_calls[1]
     assert "DELETE FROM niuu_instances" in delete_query
     assert delete_args == (instance.id,)
+
+
+@pytest.mark.asyncio
+async def test_list_for_node_filters_by_the_node_id_column() -> None:
+    pool = FakePool()
+    pool.fetch_result = [_row("node-owned")]
+    repo = PostgresInstanceRepository(pool)
+
+    instances = await repo.list_for_node("node-1")
+
+    assert [i.id for i in instances] == ["node-owned"]
+    query, args = pool.fetch_calls[-1]
+    assert "WHERE node_id = $1" in query
+    assert args == ("node-1",)
 
 
 @pytest.mark.asyncio

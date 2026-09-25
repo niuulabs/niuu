@@ -14,7 +14,10 @@ class PairingCodeRepository(ABC):
     The code itself is a scoped workload JWT (see
     ``niuu.domain.services.guild_join``); this port tracks the hash of that
     JWT so it can be consumed exactly once even though the JWT itself stays
-    structurally valid until it expires.
+    structurally valid until it expires. Actually *consuming* a code happens
+    only through ``GuildJoinRepository.consume_and_register`` (atomic with
+    node creation and instance registration) — this port covers minting and
+    the read-only pre-check ``join()`` needs before attempting that.
     """
 
     @abstractmethod
@@ -24,21 +27,17 @@ class PairingCodeRepository(ABC):
         code_hash: str,
         created_by: str,
         tenant_id: str,
+        allow_plaintext: bool,
+        allow_untrusted_node_auth: bool,
         expires_at: datetime,
     ) -> PairingCode:
         """Persist a newly minted pairing code."""
 
     @abstractmethod
-    async def consume(self, code_hash: str) -> PairingCode | None:
-        """Atomically mark a code consumed and return it, or ``None``.
+    async def peek(self, code_hash: str) -> PairingCode | None:
+        """Read-only lookup, ignoring expiry/consumed state.
 
-        ``None`` covers every reason the code cannot be used: unknown hash,
-        already consumed, or past ``expires_at``. Implementations must do
-        this in a single statement (e.g. ``UPDATE ... WHERE consumed_at IS
-        NULL AND expires_at > NOW() RETURNING ...``) so two concurrent joins
-        presenting the same code can never both succeed.
+        Used to validate a join request (transport policy, tenant) *before*
+        attempting the atomic consume — never treated as authorization to
+        proceed; the atomic consume re-checks consumed/expired for real.
         """
-
-    @abstractmethod
-    async def attach_node(self, pairing_code_id: str, node_id: str) -> None:
-        """Record which node a consumed code ultimately registered, for audit."""

@@ -20,9 +20,11 @@ from niuu.domain.services.guild_join import (
     IdentityTrustConfig,
     JoinResult,
     MintedPairingCode,
+    NodeRegistrationConflictError,
     PairingCodeInvalidError,
+    PairingCodeMintingUnavailableError,
+    UntrustedNodeError,
 )
-from niuu.domain.services.instances import InstanceTransportSecurityError
 from niuu.domain.services.token_scope import VALKYRIE_BUILD_TOKEN_USE
 from niuu.ports.node_verifier import NodeSignatureError
 
@@ -60,7 +62,7 @@ def _instance() -> RegisteredInstance:
     return RegisteredInstance(
         id="instance-1",
         kind=InstanceKind.VOLUNDR,
-        slug="spark-1-volundr",
+        slug="node-abc-volundr",
         name="spark-1 (volundr)",
         base_url="http://127.0.0.1:8080",
         visibility=InstanceVisibility.TENANT,
@@ -68,9 +70,10 @@ def _instance() -> RegisteredInstance:
         tenant_id="tenant-a",
         enabled=True,
         is_default=False,
-        config={"node_id": "node-1"},
+        config={},
         created_at=now,
         updated_at=now,
+        node_id="node-1",
     )
 
 
@@ -79,23 +82,38 @@ class StubGuildJoinService:
         self.mint_result: MintedPairingCode | Exception = MintedPairingCode(
             code="minted-code", expires_at=datetime.now(UTC)
         )
+        self.mint_calls: list[dict] = []
         self.join_result: JoinResult | Exception = JoinResult(
             node=_node(),
             instances=[_instance()],
             identity=IdentityTrustConfig(mode="oidc", issuers=[]),
         )
+        self.join_calls: list[dict] = []
         self.heartbeat_result: tuple | Exception = (_node(), [_instance()])
         self.leave_error: Exception | None = None
-        self.join_calls: list[dict] = []
+        self.list_nodes_result: list[RegisteredNode] | Exception = [_node()]
+        self.revoke_result: bool | Exception = True
+        self.revoke_calls: list[str] = []
 
-    async def mint_pairing_code(self, principal):
+    async def mint_pairing_code(self, principal, *, allow_plaintext, allow_untrusted_node_auth):
+        self.mint_calls.append(
+            {
+                "allow_plaintext": allow_plaintext,
+                "allow_untrusted_node_auth": allow_untrusted_node_auth,
+            }
+        )
         if isinstance(self.mint_result, Exception):
             raise self.mint_result
         return self.mint_result
 
-    async def join(self, *, raw_code, node_name, public_key, instances):
+    async def join(self, *, raw_code, node_name, public_key, node_auth_mode, instances):
         self.join_calls.append(
-            {"raw_code": raw_code, "node_name": node_name, "public_key": public_key}
+            {
+                "raw_code": raw_code,
+                "node_name": node_name,
+                "public_key": public_key,
+                "node_auth_mode": node_auth_mode,
+            }
         )
         if isinstance(self.join_result, Exception):
             raise self.join_result
@@ -109,6 +127,17 @@ class StubGuildJoinService:
     async def leave(self, node):
         if self.leave_error is not None:
             raise self.leave_error
+
+    async def list_nodes(self, principal):
+        if isinstance(self.list_nodes_result, Exception):
+            raise self.list_nodes_result
+        return self.list_nodes_result
+
+    async def revoke_node(self, principal, node_id):
+        self.revoke_calls.append(node_id)
+        if isinstance(self.revoke_result, Exception):
+            raise self.revoke_result
+        return self.revoke_result
 
 
 class StubNodeVerifier:
@@ -149,18 +178,33 @@ def _auth_headers() -> dict[str, str]:
     }
 
 
+VALID_NODE_ID = "00000000-0000-0000-0000-000000000001"
+
+
 def test_mint_pairing_code_returns_the_code_and_expiry() -> None:
+    service, verifier = StubGuildJoinService(), StubNodeVerifier()
+    client = _client(service, verifier)
+
+    response = client.post(
+        "/api/v1/niuu/guild/pairing-codes",
+        json={"allowPlaintext": True, "allowUntrustedNodeAuth": False},
+        headers=_auth_headers(),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["code"] == "minted-code"
+    assert service.mint_calls == [{"allow_plaintext": True, "allow_untrusted_node_auth": False}]
+
+
+def test_mint_pairing_code_defaults_both_consents_to_false() -> None:
     service, verifier = StubGuildJoinService(), StubNodeVerifier()
     client = _client(service, verifier)
 
     response = client.post("/api/v1/niuu/guild/pairing-codes", headers=_auth_headers())
 
     assert response.status_code == 201
-    body = response.json()
-    assert body["code"] == "minted-code"
-    assert body["expiresAt"].startswith(
-        service.mint_result.expires_at.isoformat(timespec="seconds")[:19]
-    )
+    assert service.mint_calls == [{"allow_plaintext": False, "allow_untrusted_node_auth": False}]
 
 
 def test_mint_pairing_code_maps_access_error_to_403() -> None:
@@ -169,6 +213,66 @@ def test_mint_pairing_code_maps_access_error_to_403() -> None:
     client = _client(service, verifier)
 
     response = client.post("/api/v1/niuu/guild/pairing-codes", headers=_auth_headers())
+
+    assert response.status_code == 403
+
+
+def test_mint_pairing_code_maps_minting_unavailable_to_503() -> None:
+    service, verifier = StubGuildJoinService(), StubNodeVerifier()
+    service.mint_result = PairingCodeMintingUnavailableError("workload identity is disabled")
+    client = _client(service, verifier)
+
+    response = client.post("/api/v1/niuu/guild/pairing-codes", headers=_auth_headers())
+
+    assert response.status_code == 503
+
+
+def test_list_nodes_requires_auth_and_returns_nodes() -> None:
+    service, verifier = StubGuildJoinService(), StubNodeVerifier()
+    client = _client(service, verifier)
+
+    response = client.get("/api/v1/niuu/guild/nodes", headers=_auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()[0]["id"] == "node-1"
+
+
+def test_list_nodes_maps_access_error_to_403() -> None:
+    service, verifier = StubGuildJoinService(), StubNodeVerifier()
+    service.list_nodes_result = GuildJoinAccessError("nope")
+    client = _client(service, verifier)
+
+    response = client.get("/api/v1/niuu/guild/nodes", headers=_auth_headers())
+
+    assert response.status_code == 403
+
+
+def test_revoke_node_succeeds() -> None:
+    service, verifier = StubGuildJoinService(), StubNodeVerifier()
+    client = _client(service, verifier)
+
+    response = client.delete(f"/api/v1/niuu/guild/nodes/{VALID_NODE_ID}", headers=_auth_headers())
+
+    assert response.status_code == 204
+    assert service.revoke_calls == [VALID_NODE_ID]
+
+
+def test_revoke_node_returns_404_when_not_found() -> None:
+    service, verifier = StubGuildJoinService(), StubNodeVerifier()
+    service.revoke_result = False
+    client = _client(service, verifier)
+
+    response = client.delete(f"/api/v1/niuu/guild/nodes/{VALID_NODE_ID}", headers=_auth_headers())
+
+    assert response.status_code == 404
+
+
+def test_revoke_node_maps_access_error_to_403() -> None:
+    service, verifier = StubGuildJoinService(), StubNodeVerifier()
+    service.revoke_result = GuildJoinAccessError("nope")
+    client = _client(service, verifier)
+
+    response = client.delete(f"/api/v1/niuu/guild/nodes/{VALID_NODE_ID}", headers=_auth_headers())
 
     assert response.status_code == 403
 
@@ -197,6 +301,7 @@ def test_join_succeeds_with_a_node_join_scoped_token() -> None:
             "code": "the-code",
             "nodeName": "spark-1",
             "publicKey": "k",
+            "nodeAuthMode": "oidc",
             "instances": [{"kind": "volundr", "baseUrl": "http://127.0.0.1:8080"}],
         },
         headers={"authorization": f"Bearer {_scoped_token(['node_join'])}"},
@@ -208,15 +313,34 @@ def test_join_succeeds_with_a_node_join_scoped_token() -> None:
     assert body["instances"][0]["baseUrl"] == "http://127.0.0.1:8080"
     assert body["identity"] == {"mode": "oidc", "issuers": []}
     assert service.join_calls == [
-        {"raw_code": "the-code", "node_name": "spark-1", "public_key": "k"}
+        {
+            "raw_code": "the-code",
+            "node_name": "spark-1",
+            "public_key": "k",
+            "node_auth_mode": "oidc",
+        }
     ]
+
+
+def test_join_defaults_node_auth_mode_to_none() -> None:
+    service, verifier = StubGuildJoinService(), StubNodeVerifier()
+    client = _client(service, verifier)
+
+    client.post(
+        "/api/v1/niuu/guild/join",
+        json={"code": "c", "nodeName": "spark-1", "publicKey": "k", "instances": []},
+        headers={"authorization": f"Bearer {_scoped_token(['node_join'])}"},
+    )
+
+    assert service.join_calls[0]["node_auth_mode"] == "none"
 
 
 @pytest.mark.parametrize(
     ("exc", "status_code"),
     [
         (PairingCodeInvalidError("bad code"), 401),
-        (InstanceTransportSecurityError("insecure"), 422),
+        (UntrustedNodeError("untrusted"), 403),
+        (NodeRegistrationConflictError("taken"), 409),
         (GuildJoinError("bad request"), 400),
     ],
 )
@@ -238,7 +362,9 @@ def test_heartbeat_requires_signature_headers() -> None:
     service, verifier = StubGuildJoinService(), StubNodeVerifier()
     client = _client(service, verifier)
 
-    response = client.post("/api/v1/niuu/guild/nodes/node-1/heartbeat", json={"instances": []})
+    response = client.post(
+        f"/api/v1/niuu/guild/nodes/{VALID_NODE_ID}/heartbeat", json={"instances": []}
+    )
 
     assert response.status_code == 401
     assert verifier.calls == []
@@ -249,20 +375,20 @@ def test_heartbeat_verifies_signature_and_returns_instances() -> None:
     client = _client(service, verifier)
 
     response = client.post(
-        "/api/v1/niuu/guild/nodes/node-1/heartbeat",
+        f"/api/v1/niuu/guild/nodes/{VALID_NODE_ID}/heartbeat",
         json={"instances": []},
         headers={
-            "x-niuu-node-id": "node-1",
-            "x-niuu-timestamp": "1700000000",
+            "x-niuu-node-id": VALID_NODE_ID,
+            "x-niuu-timestamp": "1700000000123",
             "x-niuu-signature": "sig",
         },
     )
 
     assert response.status_code == 200
     assert response.json()["instances"][0]["id"] == "instance-1"
-    assert verifier.calls[0]["node_id"] == "node-1"
+    assert verifier.calls[0]["node_id"] == VALID_NODE_ID
     assert verifier.calls[0]["method"] == "POST"
-    assert verifier.calls[0]["timestamp"] == 1700000000
+    assert verifier.calls[0]["timestamp"] == 1700000000123
 
 
 def test_heartbeat_maps_signature_error_to_401() -> None:
@@ -271,11 +397,11 @@ def test_heartbeat_maps_signature_error_to_401() -> None:
     client = _client(service, verifier)
 
     response = client.post(
-        "/api/v1/niuu/guild/nodes/node-1/heartbeat",
+        f"/api/v1/niuu/guild/nodes/{VALID_NODE_ID}/heartbeat",
         json={"instances": []},
         headers={
-            "x-niuu-node-id": "node-1",
-            "x-niuu-timestamp": "1700000000",
+            "x-niuu-node-id": VALID_NODE_ID,
+            "x-niuu-timestamp": "1700000000123",
             "x-niuu-signature": "sig",
         },
     )
@@ -288,16 +414,16 @@ def test_leave_verifies_signature_and_calls_the_service() -> None:
     client = _client(service, verifier)
 
     response = client.post(
-        "/api/v1/niuu/guild/nodes/node-1/leave",
+        f"/api/v1/niuu/guild/nodes/{VALID_NODE_ID}/leave",
         headers={
-            "x-niuu-node-id": "node-1",
-            "x-niuu-timestamp": "1700000000",
+            "x-niuu-node-id": VALID_NODE_ID,
+            "x-niuu-timestamp": "1700000000123",
             "x-niuu-signature": "sig",
         },
     )
 
     assert response.status_code == 204
-    assert verifier.calls[0]["node_id"] == "node-1"
+    assert verifier.calls[0]["node_id"] == VALID_NODE_ID
 
 
 def test_node_id_header_mismatch_is_rejected() -> None:
@@ -305,13 +431,32 @@ def test_node_id_header_mismatch_is_rejected() -> None:
     client = _client(service, verifier)
 
     response = client.post(
-        "/api/v1/niuu/guild/nodes/node-1/leave",
+        f"/api/v1/niuu/guild/nodes/{VALID_NODE_ID}/leave",
         headers={
-            "x-niuu-node-id": "someone-else",
-            "x-niuu-timestamp": "1700000000",
+            "x-niuu-node-id": "00000000-0000-0000-0000-000000000099",
+            "x-niuu-timestamp": "1700000000123",
             "x-niuu-signature": "sig",
         },
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 401
+    assert verifier.calls == []
+
+
+def test_malformed_node_id_path_param_is_a_uniform_401() -> None:
+    """A malformed id must fail exactly like an unknown one — see the
+    _AUTH_FAILED constant — never a distinguishable 400/422."""
+    service, verifier = StubGuildJoinService(), StubNodeVerifier()
+    client = _client(service, verifier)
+
+    response = client.post(
+        "/api/v1/niuu/guild/nodes/not-a-uuid/leave",
+        headers={
+            "x-niuu-node-id": "not-a-uuid",
+            "x-niuu-timestamp": "1700000000123",
+            "x-niuu-signature": "sig",
+        },
+    )
+
+    assert response.status_code == 401
     assert verifier.calls == []

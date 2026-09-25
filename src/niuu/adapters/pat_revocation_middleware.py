@@ -25,7 +25,7 @@ from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 #: ``niuu.ports.node_verifier.RegisteredNodeVerifier``), verified inside the
 #: route itself. Exempted here the same way the workload JWKS endpoint is:
 #: a different, but equally real, authentication mechanism for this path.
-_NODE_SIGNED_PATH = re.compile(r"^/api/v1/niuu/guild/nodes/[^/]+/(heartbeat|leave)$")
+_NODE_SIGNED_PATH = re.compile(r"/api/v1/niuu/guild/nodes/[^/]+/(heartbeat|leave)")
 
 
 class PATRevocationMiddleware:
@@ -97,7 +97,7 @@ class PATRevocationMiddleware:
                         "/api/v1/tokens/workload/jwks",
                     )
                 )
-                or (scope.get("method") == "POST" and _NODE_SIGNED_PATH.match(scope["path"]))
+                or (scope.get("method") == "POST" and _NODE_SIGNED_PATH.fullmatch(scope["path"]))
             ):
                 if not isinstance(identity, HeaderAuthenticationPort):
                     await JSONResponse(

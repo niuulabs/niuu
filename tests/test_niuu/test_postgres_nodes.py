@@ -21,6 +21,7 @@ def _row(**kwargs) -> MagicMock:
         "public_key": "cHVibGljLWtleQ==",
         "tenant_id": "tenant-a",
         "created_by": "admin-1",
+        "allow_plaintext": False,
         "created_at": _NOW,
         "last_seen_at": None,
         "last_request_at": None,
@@ -37,26 +38,6 @@ def _repo() -> tuple[PostgresNodeRepository, AsyncMock]:
 
 
 @pytest.mark.asyncio
-async def test_create_inserts_and_returns_the_node() -> None:
-    repo, pool = _repo()
-    pool.fetchrow.return_value = _row()
-
-    node = await repo.create(
-        node_id=str(_NODE_ID),
-        name="spark-1",
-        public_key="cHVibGljLWtleQ==",
-        tenant_id="tenant-a",
-        created_by="admin-1",
-    )
-
-    assert node.id == str(_NODE_ID)
-    assert node.name == "spark-1"
-    sql, *params = pool.fetchrow.call_args.args
-    assert "INSERT INTO niuu_nodes" in sql
-    assert params == [str(_NODE_ID), "spark-1", "cHVibGljLWtleQ==", "tenant-a", "admin-1"]
-
-
-@pytest.mark.asyncio
 async def test_get_returns_none_when_missing() -> None:
     repo, pool = _repo()
     pool.fetchrow.return_value = None
@@ -67,12 +48,26 @@ async def test_get_returns_none_when_missing() -> None:
 @pytest.mark.asyncio
 async def test_get_maps_the_row() -> None:
     repo, pool = _repo()
-    pool.fetchrow.return_value = _row(last_request_at=1700000000)
+    pool.fetchrow.return_value = _row(last_request_at=1700000000123, allow_plaintext=True)
 
     node = await repo.get(str(_NODE_ID))
 
     assert node is not None
-    assert node.last_request_at == 1700000000
+    assert node.last_request_at == 1700000000123
+    assert node.allow_plaintext is True
+
+
+@pytest.mark.asyncio
+async def test_list_for_tenant_scopes_the_query() -> None:
+    repo, pool = _repo()
+    pool.fetch.return_value = [_row()]
+
+    nodes = await repo.list_for_tenant("tenant-a")
+
+    assert len(nodes) == 1
+    sql, tenant_id = pool.fetch.call_args.args
+    assert "WHERE tenant_id = $1" in sql
+    assert tenant_id == "tenant-a"
 
 
 @pytest.mark.asyncio
@@ -91,15 +86,37 @@ async def test_touch_heartbeat_updates_last_seen_at() -> None:
 
 
 @pytest.mark.asyncio
-async def test_record_request_persists_the_replay_watermark() -> None:
+async def test_touch_heartbeat_returns_none_when_missing() -> None:
     repo, pool = _repo()
+    pool.fetchrow.return_value = None
 
-    await repo.record_request(str(_NODE_ID), timestamp=1700000000)
+    assert await repo.touch_heartbeat(str(_NODE_ID)) is None
 
-    sql, timestamp, node_id = pool.execute.call_args.args
-    assert "last_request_at" in sql
-    assert timestamp == 1700000000
+
+@pytest.mark.asyncio
+async def test_try_advance_watermark_issues_the_atomic_conditional_update() -> None:
+    repo, pool = _repo()
+    pool.fetchrow.return_value = {"id": _NODE_ID}
+
+    advanced = await repo.try_advance_watermark(str(_NODE_ID), timestamp_ms=1700000000123)
+
+    assert advanced is True
+    sql, node_id, timestamp_ms = pool.fetchrow.call_args.args
+    assert "UPDATE niuu_nodes" in sql
+    assert "SET last_request_at = $2" in sql
+    assert "last_request_at IS NULL OR last_request_at < $2" in sql
     assert node_id == str(_NODE_ID)
+    assert timestamp_ms == 1700000000123
+
+
+@pytest.mark.asyncio
+async def test_try_advance_watermark_returns_false_when_no_row_matched() -> None:
+    repo, pool = _repo()
+    pool.fetchrow.return_value = None
+
+    advanced = await repo.try_advance_watermark(str(_NODE_ID), timestamp_ms=1700000000123)
+
+    assert advanced is False
 
 
 @pytest.mark.asyncio

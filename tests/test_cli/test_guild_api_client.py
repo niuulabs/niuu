@@ -24,8 +24,9 @@ class _FakeNodeRepository:
     async def get(self, node_id: str) -> RegisteredNode | None:
         return self._node if node_id == self._node.id else None
 
-    async def record_request(self, node_id: str, *, timestamp: int) -> None:
-        self.recorded.append(timestamp)
+    async def try_advance_watermark(self, node_id: str, *, timestamp_ms: int) -> bool:
+        self.recorded.append(timestamp_ms)
+        return True
 
 
 @pytest.mark.asyncio
@@ -70,6 +71,7 @@ async def test_join_authenticates_with_the_pairing_code_as_bearer_token() -> Non
             code="the-code",
             node_name="spark-1",
             public_key="pubkey",
+            node_auth_mode="oidc",
             instances=[OfferedInstance(kind="volundr", base_url="http://127.0.0.1:8080")],
         )
 
@@ -80,6 +82,7 @@ async def test_join_authenticates_with_the_pairing_code_as_bearer_token() -> Non
 
     payload = json.loads(sent.content)
     assert payload["instances"] == [{"kind": "volundr", "baseUrl": "http://127.0.0.1:8080"}]
+    assert payload["nodeAuthMode"] == "oidc"
 
 
 @pytest.mark.asyncio
@@ -124,4 +127,4 @@ async def test_heartbeat_signature_verifies_against_the_real_server_side_verifie
         )
 
     assert result["ok"] is True
-    assert repo.recorded  # record_request was called: signature verified
+    assert repo.recorded  # try_advance_watermark was called: signature verified

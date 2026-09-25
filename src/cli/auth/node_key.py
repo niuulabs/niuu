@@ -24,6 +24,16 @@ from cryptography.hazmat.primitives.serialization import (
 DEFAULT_NODE_KEY_FILENAME = "node_key"
 
 
+class NodeKeyMissingError(FileNotFoundError):
+    """Raised by ``NodeIdentity.load`` when no node key file exists.
+
+    `niuu leave` must fail with this rather than silently generating a new
+    keypair — a freshly generated key's public half would not match what
+    Guild has on file, so every subsequent signed request would fail
+    signature verification.
+    """
+
+
 class NodeIdentity:
     """A loaded or freshly generated Ed25519 keypair for signing node requests."""
 
@@ -41,15 +51,42 @@ class NodeIdentity:
         return base64.b64encode(self._private_key.sign(message)).decode("ascii")
 
     @classmethod
+    def load(cls, key_path: Path) -> NodeIdentity:
+        """Load the node key at *key_path*. Raises :class:`NodeKeyMissingError` if absent.
+
+        Used by `niuu leave`: this host must sign with the exact key Guild
+        already trusts, never a newly generated one.
+        """
+        if not key_path.exists():
+            raise NodeKeyMissingError(
+                f"No node key at {key_path}. This host has no `niuu join` identity to leave with."
+            )
+        raw = base64.b64decode(key_path.read_text(encoding="utf-8").strip())
+        return cls(Ed25519PrivateKey.from_private_bytes(raw))
+
+    @classmethod
     def load_or_create(cls, key_path: Path) -> NodeIdentity:
-        """Load the node key at *key_path*, generating and persisting one if absent."""
+        """Load the node key at *key_path*, generating and persisting one if absent.
+
+        Creation is atomic (``O_CREAT | O_EXCL``, mode ``0600``): if another
+        process wins the race to create the file first, this falls back to
+        loading whatever it wrote, never overwriting an existing key.
+        """
         if key_path.exists():
-            raw = base64.b64decode(key_path.read_text(encoding="utf-8").strip())
-            return cls(Ed25519PrivateKey.from_private_bytes(raw))
+            return cls.load(key_path)
 
         private_key = Ed25519PrivateKey.generate()
         raw = private_key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+        encoded = base64.b64encode(raw).decode("ascii")
         key_path.parent.mkdir(parents=True, exist_ok=True)
-        key_path.write_text(base64.b64encode(raw).decode("ascii"), encoding="utf-8")
-        os.chmod(key_path, 0o600)
+        try:
+            fd = os.open(str(key_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            return cls.load(key_path)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(encoded)
+        except BaseException:
+            key_path.unlink(missing_ok=True)
+            raise
         return cls(private_key)

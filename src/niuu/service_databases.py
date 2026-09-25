@@ -392,6 +392,8 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
         code_hash TEXT NOT NULL UNIQUE,
         created_by TEXT NOT NULL,
         tenant_id TEXT NOT NULL DEFAULT '',
+        allow_plaintext BOOLEAN NOT NULL DEFAULT false,
+        allow_untrusted_node_auth BOOLEAN NOT NULL DEFAULT false,
         expires_at TIMESTAMPTZ NOT NULL,
         consumed_at TIMESTAMPTZ,
         consumed_by_node_id UUID,
@@ -409,6 +411,7 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
         public_key TEXT NOT NULL,
         tenant_id TEXT NOT NULL DEFAULT '',
         created_by TEXT NOT NULL,
+        allow_plaintext BOOLEAN NOT NULL DEFAULT false,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         last_seen_at TIMESTAMPTZ,
         last_request_at BIGINT
@@ -421,6 +424,18 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS idx_niuu_nodes_tenant
         ON niuu_nodes(tenant_id);
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_niuu_nodes_tenant_name
+        ON niuu_nodes(tenant_id, name);
+    """,
+    """
+    ALTER TABLE niuu_instances ADD COLUMN IF NOT EXISTS node_id UUID
+        REFERENCES niuu_nodes(id) ON DELETE CASCADE;
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_niuu_instances_node_id
+        ON niuu_instances(node_id);
     """,
 )
 

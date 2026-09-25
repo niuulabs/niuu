@@ -54,12 +54,22 @@ def _raise_for_status(response: httpx.Response) -> None:
     raise GuildAPIError(f"Guild returned {response.status_code}: {detail}")
 
 
-async def mint_pairing_code(guild_url: str, *, access_token: str) -> dict[str, Any]:
+async def mint_pairing_code(
+    guild_url: str,
+    *,
+    access_token: str,
+    allow_plaintext: bool = False,
+    allow_untrusted_node_auth: bool = False,
+) -> dict[str, Any]:
     """POST /guild/pairing-codes as the authenticated operator. Admin/owner only."""
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
         response = await client.post(
             f"{guild_url.rstrip('/')}/api/v1/niuu/guild/pairing-codes",
             headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "allowPlaintext": allow_plaintext,
+                "allowUntrustedNodeAuth": allow_untrusted_node_auth,
+            },
         )
     _raise_for_status(response)
     return response.json()
@@ -71,6 +81,7 @@ async def join(
     code: str,
     node_name: str,
     public_key: str,
+    node_auth_mode: str,
     instances: list[OfferedInstance],
 ) -> dict[str, Any]:
     """POST /guild/join, authenticated by the pairing code itself."""
@@ -82,6 +93,7 @@ async def join(
                 "code": code,
                 "nodeName": node_name,
                 "publicKey": public_key,
+                "nodeAuthMode": node_auth_mode,
                 "instances": [item.to_payload() for item in instances],
             },
         )
@@ -92,7 +104,10 @@ async def join(
 def _signed_headers(
     identity: NodeIdentity, *, node_id: str, method: str, path: str, body: bytes
 ) -> dict[str, str]:
-    timestamp = int(time.time())
+    # Milliseconds, not seconds: a heartbeat and a leave issued within the
+    # same second must both be able to advance the strictly-increasing
+    # replay watermark (niuu.adapters.node_signature).
+    timestamp = int(time.time() * 1000)
     signature = identity.sign(signing_message(method, path, timestamp, body))
     return {
         "x-niuu-node-id": node_id,

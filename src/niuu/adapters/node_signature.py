@@ -13,15 +13,23 @@ from niuu.domain.models import RegisteredNode
 from niuu.ports.node_verifier import NodeSignatureError, RegisteredNodeVerifier
 from niuu.ports.nodes import NodeRepository
 
+#: Generic, uniform message for every rejection reason — an unknown node id
+#: and a bad signature must be indistinguishable to the caller, or a probe
+#: of node ids becomes an oracle for which ones exist.
+_AUTH_FAILED = "Node authentication failed"
 
-def signing_message(method: str, path: str, timestamp: int, body: bytes) -> bytes:
+
+def signing_message(method: str, path: str, timestamp_ms: int, body: bytes) -> bytes:
     """The exact bytes a node signs, and Guild re-derives, for one request.
 
-    Shared between the adapter and the CLI's node-signing code so the two
-    sides can never silently drift apart.
+    ``timestamp_ms`` is Unix time in MILLISECONDS (not seconds) — a heartbeat
+    and a leave issued within the same second must both be able to advance
+    the strictly-increasing replay watermark. Shared between the adapter and
+    the CLI's node-signing code so the two sides can never silently drift
+    apart.
     """
     body_hash = hashlib.sha256(body).hexdigest()
-    return f"{method.upper()}\n{path}\n{timestamp}\n{body_hash}".encode()
+    return f"{method.upper()}\n{path}\n{timestamp_ms}\n{body_hash}".encode()
 
 
 class Ed25519NodeVerifier(RegisteredNodeVerifier):
@@ -36,7 +44,7 @@ class Ed25519NodeVerifier(RegisteredNodeVerifier):
         if clock_skew_seconds <= 0:
             raise ValueError("clock_skew_seconds must be positive")
         self._nodes = node_repository
-        self._clock_skew_seconds = clock_skew_seconds
+        self._clock_skew_ms = clock_skew_seconds * 1000
 
     async def verify(
         self,
@@ -50,19 +58,11 @@ class Ed25519NodeVerifier(RegisteredNodeVerifier):
     ) -> RegisteredNode:
         node = await self._nodes.get(node_id)
         if node is None:
-            raise NodeSignatureError(f"Unknown node: {node_id}")
+            raise NodeSignatureError(_AUTH_FAILED)
 
-        now = time.time()
-        if abs(now - timestamp) > self._clock_skew_seconds:
-            raise NodeSignatureError(
-                f"Request timestamp outside the allowed {self._clock_skew_seconds}s clock-skew "
-                "window; check the node's clock"
-            )
-        if node.last_request_at is not None and timestamp <= node.last_request_at:
-            raise NodeSignatureError(
-                "Request timestamp does not strictly increase over the node's last "
-                "accepted request; rejected as a possible replay"
-            )
+        now_ms = time.time() * 1000
+        if abs(now_ms - timestamp) > self._clock_skew_ms:
+            raise NodeSignatureError(_AUTH_FAILED)
 
         try:
             public_key_bytes = base64.b64decode(node.public_key, validate=True)
@@ -71,7 +71,14 @@ class Ed25519NodeVerifier(RegisteredNodeVerifier):
                 signature_bytes, signing_message(method, path, timestamp, body)
             )
         except (InvalidSignature, ValueError) as exc:
-            raise NodeSignatureError(f"Signature verification failed for node {node_id}") from exc
+            raise NodeSignatureError(_AUTH_FAILED) from exc
 
-        await self._nodes.record_request(node_id, timestamp=timestamp)
+        # The watermark advance is the actual replay-protection boundary —
+        # it re-checks under the database row lock at write time, so a
+        # request that raced past the clock-skew check above still cannot
+        # replay or reorder against a concurrent request for the same node.
+        advanced = await self._nodes.try_advance_watermark(node_id, timestamp_ms=timestamp)
+        if not advanced:
+            raise NodeSignatureError(_AUTH_FAILED)
+
         return node
