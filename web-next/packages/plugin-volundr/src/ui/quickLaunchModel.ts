@@ -10,7 +10,7 @@ export const FORGE_STANDARDS = [
     definition: 'skuldClaudeInteractive',
     models: [
       { id: 'claude-fable-5-1', name: 'Claude Fable 5.1' },
-      { id: 'claude-opus-5', name: 'Claude Opus 5' },
+      { id: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
     ],
   },
   {
@@ -20,7 +20,7 @@ export const FORGE_STANDARDS = [
     definition: 'skuldCodex',
     models: [
       { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
-      { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' },
+      { id: 'gpt-6-sol', name: 'GPT-6 Sol' },
     ],
   },
 ] as const;

@@ -80,9 +80,25 @@ class TestBifrostConfig:
             "claude-fable-5 must not remain as a second Fable row"
         )
 
+    def test_opus_entry_is_opus_5_5(self):
+        # Claude Opus 5.5 (2026-09-22) is the catalogue's only Opus row. Older Opus ids
+        # stay served by Anthropic; they just no longer appear as choices here.
+        from bifrost.config import _default_models
+        from niuu.domain.model_catalog import ManagedModelTier
+
+        models = _default_models()
+        opus = next((m for m in models if m.id == "claude-opus-5-5"), None)
+        assert opus is not None, "claude-opus-5-5 missing from default model catalog"
+        assert opus.name == "Claude Opus 5.5"
+        assert opus.session_definition == "skuldClaude"
+        assert opus.tier == ManagedModelTier.FRONTIER
+        assert opus.effort_levels == ["low", "medium", "high", "xhigh", "max"]
+        assert opus.default_effort == "xhigh"
+        assert [m.id for m in models if m.id.startswith("claude-opus")] == ["claude-opus-5-5"]
+
     def test_codex_catalog_preserves_astra_sol_and_terra(self):
-        # Astra + Sol are the only two Codex choices, Astra the default (Damien,
-        # 2026-09-05). Terra was removed with the same decision.
+        # Astra is the default Codex model (Damien, 2026-09-05). GPT-6 Sol and Luna
+        # (2026-09-22) join it; GPT-5.6 Sol and Terra stay for existing launches.
         from bifrost.config import _default_models
         from niuu.domain.model_catalog import ManagedModelTier
 
@@ -98,10 +114,31 @@ class TestBifrostConfig:
         assert sol is not None, "gpt-5.6-sol must stay in the catalogue"
         assert sol.session_definition == "skuldCodex"
         openai_ids = [m.id for m in models if m.session_definition == "skuldCodex"]
-        assert openai_ids == ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra"], (
-            f"Codex catalogue must preserve Astra, Sol and upstream Terra, got {openai_ids}"
-        )
+        assert openai_ids == [
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+        ], f"Codex catalogue must list GPT-6 and keep GPT-5.6 Sol/Terra, got {openai_ids}"
         assert next(m for m in models if m.id == "gpt-5.6-terra").session_definition == "skuldCodex"
+
+    def test_gpt_6_sol_and_luna_use_codex_effort_vocabulary(self):
+        # Codex 0.157.0's bundled metadata: Sol accepts low..max plus ultra, Luna
+        # tops out at max.
+        from bifrost.config import _default_models
+        from niuu.domain.model_catalog import ManagedModelTier
+
+        by_id = {m.id: m for m in _default_models()}
+        sol = by_id["gpt-6-sol"]
+        luna = by_id["gpt-6-luna"]
+        assert sol.name == "GPT-6 Sol"
+        assert sol.tier == ManagedModelTier.FRONTIER
+        assert sol.effort_levels == ["low", "medium", "high", "xhigh", "max", "ultra"]
+        assert luna.name == "GPT-6 Luna"
+        assert luna.tier == ManagedModelTier.BALANCED
+        assert luna.effort_levels == ["low", "medium", "high", "xhigh", "max"]
+        assert sol.default_effort == luna.default_effort == "xhigh"
 
     def test_grok_models_resolve_to_skuld_grok_definition(self):
         # Regression: every Grok model must be registered in the managed-model
