@@ -1145,6 +1145,12 @@ async def test_contained_runner_provisions_dependencies_in_separate_bounded_runs
     assert ["python", "-m", "venv"] == create[-4:-1]
     assert "--network=bridge" in install
     assert "httpx==0.28.1" in install
+    # Binary wheels only, and the end-of-options marker ahead of the
+    # requirement itself — see _validate_pip_requirement's docstring for
+    # why --only-binary=:all: alone is not sufficient on its own.
+    assert "--only-binary=:all:" in install
+    assert "--no-cache-dir" in install
+    assert install.index("--") < install.index("httpx==0.28.1")
     assert "--network=none" in execute
     assert "/opt/ravn/venv/bin/python" in execute
     assert any("dst=/opt/ravn/venv,readonly" in arg for arg in execute)
