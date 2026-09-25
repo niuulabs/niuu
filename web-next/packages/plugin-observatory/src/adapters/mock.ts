@@ -258,7 +258,7 @@ const SEED_REGISTRY: Registry = {
       parentTypes: ['cluster', 'host'],
       category: 'infrastructure',
       description:
-        'Kubernetes workload — Sleipnir, Keycloak, OpenBao, Cerbos, Harbor, Grafana, vLLM, Ollama, etc.',
+        'Kubernetes workload — Sleipnir, Keycloak, OpenBao, Harbor, Grafana, vLLM, Ollama, etc.',
       fields: [
         {
           key: 'svcType',

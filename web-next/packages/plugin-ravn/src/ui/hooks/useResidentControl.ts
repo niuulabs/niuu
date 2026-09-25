@@ -147,12 +147,17 @@ export function useResidentSessions(ravn: Ravn, enabled: boolean) {
   });
 }
 
-export function useResidentLogs(ravn: Ravn, enabled: boolean) {
+export function useResidentLogs(
+  ravn: Ravn,
+  enabled: boolean,
+  refetchIntervalMs: number | false = false,
+) {
   const control = useControl();
   return useQuery({
     queryKey: ['ravn', 'resident-logs', ravn.id, ravn.instanceId],
     queryFn: () => control.getLogs(ravn),
     enabled,
+    refetchInterval: refetchIntervalMs,
   });
 }
 

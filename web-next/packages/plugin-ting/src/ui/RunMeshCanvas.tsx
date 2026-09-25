@@ -40,7 +40,6 @@ interface RunCluster {
   runName: string;
   phaseName: string;
   status: string;
-  confidence: number;
   ravens: string[];
 }
 
@@ -129,7 +128,6 @@ export function RunMeshCanvas({
                 runName: r.name,
                 phaseName: ph.name,
                 status: r.status,
-                confidence: r.confidence,
                 ravens: ['executor', 'reviewer', 'indexer'].slice(
                   0,
                   r.status === 'running' ? 3 : 2,
@@ -384,7 +382,7 @@ export function RunMeshCanvas({
             {hover.node.cluster.runName}
           </div>
           <div className="niuu:font-mono niuu:text-xs niuu:mt-0.5 niuu:text-text-muted">
-            {hover.node.cluster.phaseName} · conf {hover.node.cluster.confidence}%
+            {hover.node.cluster.phaseName}
           </div>
         </MeshTooltip>
       )}

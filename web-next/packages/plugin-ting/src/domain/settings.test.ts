@@ -23,7 +23,6 @@ const VALID_FLOCK: FlockConfig = {
 };
 
 const VALID_DISPATCH_DEFAULTS: DispatchDefaults = {
-  confidenceThreshold: 70,
   maxConcurrentRuns: 3,
   autoContinue: false,
   batchSize: 10,
@@ -79,18 +78,6 @@ describe('flockConfigSchema', () => {
 describe('dispatchDefaultsSchema', () => {
   it('parses valid dispatch defaults', () => {
     expect(dispatchDefaultsSchema.parse(VALID_DISPATCH_DEFAULTS)).toEqual(VALID_DISPATCH_DEFAULTS);
-  });
-
-  it('rejects confidenceThreshold > 100', () => {
-    expect(() =>
-      dispatchDefaultsSchema.parse({ ...VALID_DISPATCH_DEFAULTS, confidenceThreshold: 101 }),
-    ).toThrow();
-  });
-
-  it('rejects confidenceThreshold < 0', () => {
-    expect(() =>
-      dispatchDefaultsSchema.parse({ ...VALID_DISPATCH_DEFAULTS, confidenceThreshold: -1 }),
-    ).toThrow();
   });
 
   it('rejects non-positive maxConcurrentRuns', () => {

@@ -12,8 +12,11 @@ from ravn.adapters.tools.learned_tool_run import LearnedToolRunTool
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.learned_tools import (
     ContainedLearnedToolRunner,
+    LearnedTool,
     LearnedToolError,
+    LearnedToolInfrastructureError,
     LearnedToolResolver,
+    _ContainerProcessResult,
     learned_tool_storage,
     write_learned_tool,
     write_learned_tool_artifact,
@@ -232,6 +235,103 @@ class TestLearnedToolRunTool:
         assert shown["metadata"]["run_count"] == 1
         assert shown["metadata"]["success_count"] == 1
 
+    async def test_regression_beyond_threshold_archives_the_tool(self, tmp_path: Path) -> None:
+        """The YOLO invariant applies to the path every learned tool actually
+        runs through, not only the autonomous install loop: a tool that keeps
+        failing is automatically rolled back, not left to fail forever."""
+        _install_tool(
+            tmp_path,
+            "flaky_tool",
+            tool_code="def run(input):\n    raise RuntimeError('boom')\n",
+        )
+        manager = await self._manager(tmp_path, "flaky_tool")
+        dispatch = LearnedToolRunTool(
+            resolver=LearnedToolResolver(state_dir=tmp_path),
+            permission=AllowAllPermission(),
+            skill_manager=manager,
+            rollback_consecutive_failures=2,
+        )
+
+        first = await dispatch.execute({"name": "flaky_tool", "input": {}})
+        assert first.is_error
+        assert "archived" not in first.content
+
+        second = await dispatch.execute({"name": "flaky_tool", "input": {}})
+        assert second.is_error
+        assert "archived after 2 consecutive failures" in second.content
+        shown = await manager.show("flaky_tool", include_archived=True)
+        assert shown["metadata"]["status"] == "archived"
+
+        third = await dispatch.execute({"name": "flaky_tool", "input": {}})
+        assert third.is_error
+        assert "archived" in third.content
+
+    async def test_container_backend_infrastructure_failure_is_not_counted_toward_rollback(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The bug a reviewer's script confirmed: on the default 'container'
+        backend, every dispatch used to be handed a host_call the runner
+        refuses outright, so a perfectly healthy tool was archived after a
+        handful of calls. Fixed two ways, both exercised here: (1) the
+        container runner is never offered a host_call it cannot honor, and
+        (2) a genuine backend outage (docker unreachable) is classified as
+        infrastructure and never reaches record_usage/rollback at all."""
+
+        async def docker_daemon_unreachable(argv, stdin, timeout_seconds, name):
+            return _ContainerProcessResult(
+                returncode=127,
+                stderr=(
+                    b"docker: failed to connect to the docker API at "
+                    b"unix:///var/run/docker.sock: connect: no such file or directory\n"
+                ),
+            )
+
+        async def unused_host_call(_name: str, _arguments: dict) -> object:
+            return None  # never invoked; presence alone used to trip the old bug
+
+        artifact = _install_tool(tmp_path, "good_tool")
+        code_dir, _artifacts_dir = learned_tool_storage(tmp_path)
+        runner = ContainedLearnedToolRunner(
+            workspace_root=tmp_path,
+            command_runner=docker_daemon_unreachable,
+        )
+        tool = LearnedTool(
+            manifest=artifact.manifest,
+            tool_path=code_dir / "good_tool.py",
+            runner=runner,
+            host_call=unused_host_call,
+        )
+
+        class _FakeResolver:
+            def load(self, name: str, *, host_call=None) -> LearnedTool:
+                assert name == "good_tool"
+                return tool
+
+        manager = await self._manager(tmp_path, "good_tool")
+        dispatch = LearnedToolRunTool(
+            resolver=_FakeResolver(),  # type: ignore[arg-type]
+            permission=AllowAllPermission(),
+            skill_manager=manager,
+            rollback_consecutive_failures=2,
+        )
+
+        for _ in range(4):
+            result = await dispatch.execute({"name": "good_tool", "input": {}})
+            assert result.is_error
+            assert "backend error, not a tool failure" in result.content
+            # Proves host_call was withheld from the container runner (it was
+            # actually reached and ran the fake docker command), not that the
+            # runner refused up front with "cannot provide the host SDK".
+            assert "docker: failed to connect" in result.content
+            assert "cannot provide the host SDK" not in result.content
+            assert "archived" not in result.content
+
+        shown = await manager.show("good_tool")
+        assert shown["metadata"]["status"] == "active"
+        assert shown["metadata"]["run_count"] == 0
+        assert shown["metadata"]["consecutive_failures"] == 0
+
     async def test_archived_learned_tool_cannot_run(self, tmp_path: Path) -> None:
         _install_tool(tmp_path, "obsolete_probe")
         manager = await self._manager(tmp_path, "obsolete_probe")
@@ -364,3 +464,113 @@ class TestCapabilityKeyDedup:
             )
             is None
         )
+
+
+class TestContainedLearnedToolRunnerVerify:
+    """verify() runs in the SAME execution boundary as run() — the fix for
+    peer test_code/tool_code and pip-installed requirements running on the
+    resident's own host (its own network, its own filesystem access) during
+    re-verification, regardless of the configured execution backend."""
+
+    async def test_verify_runs_the_test_suite_inside_a_container(self, tmp_path: Path) -> None:
+        calls: list[list[str]] = []
+
+        async def fake_docker(argv, stdin, timeout_seconds, name):
+            calls.append(list(argv))
+            if "install" in argv:
+                return _ContainerProcessResult(returncode=0)
+            return _ContainerProcessResult(returncode=0, stdout=b"verify: ran 1 test callable(s)")
+
+        runner = ContainedLearnedToolRunner(
+            workspace_root=tmp_path,
+            command_runner=fake_docker,
+        )
+
+        result = await runner.verify(
+            tool_name="echo_tool",
+            tool_code="def run(input):\n    return {'ok': True}\n",
+            test_code=(
+                "import _verify_tool\n\n"
+                "def test_ok():\n"
+                "    assert _verify_tool.run({}) == {'ok': True}\n"
+            ),
+            requirements=["requests"],
+        )
+
+        assert result.ok
+        # Three container runs: venv creation, dependency install, then the
+        # test itself — never a bare host subprocess for any of them.
+        assert len(calls) == 3
+        assert any("install" in argv for argv in calls)
+        assert any("_verify_runner.py" in " ".join(argv) for argv in calls)
+        # The verify scratch dir is cleaned up, not left behind.
+        assert not (tmp_path / ".ravn" / "verify_runs").exists() or not list(
+            (tmp_path / ".ravn" / "verify_runs").iterdir()
+        )
+
+    async def test_verify_reports_a_failing_test_without_raising(self, tmp_path: Path) -> None:
+        async def fake_docker(argv, stdin, timeout_seconds, name):
+            if "install" in argv:
+                return _ContainerProcessResult(returncode=0)
+            return _ContainerProcessResult(
+                returncode=1,
+                stderr=b"AssertionError: expected True, got False",
+            )
+
+        runner = ContainedLearnedToolRunner(
+            workspace_root=tmp_path,
+            command_runner=fake_docker,
+        )
+
+        result = await runner.verify(
+            tool_name="broken_tool",
+            tool_code="def run(input):\n    return {'ok': False}\n",
+            test_code=(
+                "import _verify_tool\n\n"
+                "def test_ok():\n"
+                "    assert _verify_tool.run({}) == {'ok': True}\n"
+            ),
+            requirements=[],
+        )
+
+        assert not result.ok
+        assert "AssertionError" in result.logs
+
+    async def test_verify_backend_outage_raises_infrastructure_error(self, tmp_path: Path) -> None:
+        async def docker_daemon_unreachable(argv, stdin, timeout_seconds, name):
+            return _ContainerProcessResult(
+                returncode=1,
+                error="docker: failed to connect to the docker API",
+            )
+
+        runner = ContainedLearnedToolRunner(
+            workspace_root=tmp_path,
+            command_runner=docker_daemon_unreachable,
+        )
+
+        with pytest.raises(LearnedToolInfrastructureError):
+            await runner.verify(
+                tool_name="echo_tool",
+                tool_code="def run(input):\n    return {'ok': True}\n",
+                test_code="import _verify_tool\n\ndef test_ok():\n    pass\n",
+                requirements=[],
+            )
+
+    async def test_verify_skips_execution_for_static_defects(self, tmp_path: Path) -> None:
+        async def unreachable_docker(argv, stdin, timeout_seconds, name):
+            raise AssertionError("must never reach docker: static analysis should reject first")
+
+        runner = ContainedLearnedToolRunner(
+            workspace_root=tmp_path,
+            command_runner=unreachable_docker,
+        )
+
+        result = await runner.verify(
+            tool_name="undeclared_import_tool",
+            tool_code="import requests\n\ndef run(input):\n    return {}\n",
+            test_code="import _verify_tool\n\ndef test_ok():\n    pass\n",
+            requirements=[],  # 'requests' is used but never declared
+        )
+
+        assert not result.ok
+        assert result.missing_module == "requests"

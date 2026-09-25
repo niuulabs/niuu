@@ -729,6 +729,25 @@ describe('buildRavnSessionAdapter', () => {
     );
   });
 
+  it('keeps the owning target name', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      { ...rawSession, instance_id: 'target-a', instance_name: 'Local Forge' },
+    ]);
+    const [session] = await buildRavnSessionAdapter(client).listSessions();
+    expect(session).toMatchObject({ instanceId: 'target-a', instanceName: 'Local Forge' });
+  });
+
+  it('stops a Forge-backed session, scoped to its target when known', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({ status: 'stopped' });
+    const adapter = buildRavnSessionAdapter(client);
+    await adapter.stopSession('s/1');
+    expect(client.post).toHaveBeenCalledWith('/sessions/s%2F1/stop', {});
+    await adapter.stopSession('s-2', 'target/one');
+    expect(client.post).toHaveBeenCalledWith('/sessions/s-2/stop?instance_id=target%2Fone', {});
+  });
+
   it('maps resident usage and title fields', async () => {
     const client = makeClient();
     client.get.mockResolvedValue({

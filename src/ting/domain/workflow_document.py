@@ -39,6 +39,8 @@ _V1_DOCUMENT_KEYS = {
 _V2_DOCUMENT_KEYS = _V1_DOCUMENT_KEYS | {"workflow_dependencies"}
 _DEPENDENCY_KEYS = {"id", "revision", "digest", "path"}
 _REVIEW_ATTESTATION_KEYS = {"version", "scope", "eventType", "roles"}
+_PLACEMENT_KEYS = frozenset({"tags", "match", "instance"})
+_PLACEMENT_MATCH_VALUES = frozenset({"all", "any"})
 
 
 class _UniqueKeySafeLoader(yaml.SafeLoader):
@@ -81,6 +83,22 @@ class ReviewAttestationBinding:
     @property
     def personas(self) -> dict[str, str]:
         return {persona_id: role for role, persona_id in self.roles.items()}
+
+
+@dataclass(frozen=True)
+class WorkflowPlacement:
+    """Graph-level Guild target selector that places the whole workflow team.
+
+    Exactly one of ``tags`` or ``instance`` is set. ``tags`` selects among the
+    Guild targets visible to the launching principal that carry every
+    (``match="all"``, the default) or any (``match="any"``) of the given
+    tags. ``instance`` pins the launch to one specific registered instance by
+    id or name, ignoring tags entirely.
+    """
+
+    tags: tuple[str, ...] = ()
+    match: str = "all"
+    instance: str | None = None
 
 
 @dataclass(frozen=True)
@@ -207,6 +225,8 @@ def load_workflow_document(text: str) -> WorkflowDocument:
     _validate_wait_nodes(graph, schema_version=schema_version)
     _validate_tool_actions(graph)
     _validate_disabled_tools(graph)
+    _validate_no_stage_placement(graph)
+    load_workflow_placement(graph, schema_version=schema_version)
 
     dependencies_raw = raw["persona_dependencies"]
     if not isinstance(dependencies_raw, dict):
@@ -614,6 +634,78 @@ def _requires_review_attestation(graph: dict[str, Any]) -> bool:
         if isinstance(required, list) and "reviewReceipts" in required:
             return True
     return False
+
+
+def load_workflow_placement(
+    graph: dict[str, Any],
+    *,
+    schema_version: int = 2,
+) -> WorkflowPlacement | None:
+    """Parse and strictly validate the graph-level Guild target placement.
+
+    ``graph.placement`` is optional; a workflow without it launches with the
+    legacy unscoped selection. Present, it must be either a ``tags`` selector
+    or an ``instance`` pin — never both, never neither — so a launch can
+    always resolve to exactly one target selection strategy. It also requires
+    workflow schema_version 2, like every other structural graph addition
+    since v1 (subworkflow nodes, wait nodes, include nodes) — v1 stays a
+    closed, already-shipped contract. ``schema_version`` defaults to 2 for
+    callers (an already-pinned snapshot, an included child document) that
+    only ever see graphs that already passed this check once.
+    """
+    raw = graph.get("placement")
+    if raw is None:
+        return None
+    if schema_version < 2:
+        raise WorkflowDocumentError("Workflow graph placement requires workflow schema_version 2")
+    return _load_placement(raw, field="Workflow graph placement")
+
+
+def _load_placement(value: object, *, field: str) -> WorkflowPlacement:
+    if not isinstance(value, dict) or not value:
+        raise WorkflowDocumentError(f"{field} must be a mapping with 'tags' or 'instance'")
+    unknown = set(value) - _PLACEMENT_KEYS
+    if unknown:
+        raise WorkflowDocumentError(f"{field} has unknown field(s): " + ", ".join(sorted(unknown)))
+    has_tags = "tags" in value
+    has_instance = "instance" in value
+    if has_tags == has_instance:
+        raise WorkflowDocumentError(f"{field} must declare exactly one of 'tags' or 'instance'")
+    if has_instance:
+        if "match" in value:
+            raise WorkflowDocumentError(f"{field} must not combine 'instance' with 'match'")
+        instance = _required_string(value["instance"], f"{field}.instance")
+        return WorkflowPlacement(instance=instance)
+    raw_tags = value["tags"]
+    if not isinstance(raw_tags, list) or not raw_tags:
+        raise WorkflowDocumentError(f"{field}.tags must be a non-empty list of strings")
+    tags = tuple(_required_string(tag, f"{field}.tags item") for tag in raw_tags)
+    if len(set(tags)) != len(tags):
+        raise WorkflowDocumentError(f"{field}.tags must not repeat tag names")
+    match = value.get("match", "all")
+    if match not in _PLACEMENT_MATCH_VALUES:
+        raise WorkflowDocumentError(f"{field}.match must be 'all' or 'any'")
+    return WorkflowPlacement(tags=tags, match=match)
+
+
+def _validate_no_stage_placement(graph: dict[str, Any]) -> None:
+    """Reject a stage-level ``placement`` field rather than silently ignoring it.
+
+    Only the whole workflow can be placed today (``graph.placement``); running
+    individual stages on different targets is a later package. A node-level
+    ``placement`` field would do nothing if accepted, so it is fatal rather
+    than a silently ignored placeholder. Every caller runs this after
+    ``_validate_graph_structure``, which already guarantees every node is a
+    mapping, so there is no non-dict case left to guard against here.
+    """
+    for node in graph.get("nodes", []):
+        if "placement" not in node:
+            continue
+        node_id = str(node.get("id") or "").strip()
+        raise WorkflowDocumentError(
+            f"Workflow node {node_id!r} declares stage-level placement, which is not "
+            "supported yet; place the whole workflow with graph.placement"
+        )
 
 
 def _validate_tool_actions(graph: dict[str, Any]) -> None:
@@ -1250,6 +1342,8 @@ def validate_resolved_workflow_graph(
         raise WorkflowDocumentError(f"Invalid workflow evidence gate: {exc}") from exc
     _validate_review_verdict_policies(graph)
     _validate_wait_nodes(graph, schema_version=schema_version)
+    _validate_no_stage_placement(graph)
+    load_workflow_placement(graph, schema_version=schema_version)
     referenced_aliases = referenced_persona_aliases(graph)
     missing_aliases = referenced_aliases - set(persona_dependencies)
     if missing_aliases:

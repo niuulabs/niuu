@@ -39,20 +39,10 @@ describe('TingFooter', () => {
     });
   });
 
-  it('shows threshold value', async () => {
-    render(<TingFooter />, { wrapper: wrap(createMockDispatcherService()) });
-    // Mock threshold is 70 → 0.70
-    await waitFor(() => {
-      const chip = screen.getByTestId('footer-chip-threshold');
-      expect(chip.textContent).toContain('0.70');
-    });
-  });
-
   it('shows connecting when data is pending', () => {
     const slow: IDispatcherService = {
       getState: () => new Promise(() => {}),
       setRunning: async () => {},
-      setThreshold: async () => {},
       setAutoContinue: async () => {},
       getLog: async () => [],
     };

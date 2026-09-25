@@ -182,9 +182,13 @@ async def _startup(
         port=port,
         host_profile=host_profile,
         enabled_mounts=enabled_mounts,
-        # Mini mode is the local, IDP-less host: browser-asserted dev identity
-        # is its identity contract. Every other mode must not trust it.
-        dev_identity=settings.mode == "mini",
+        # Browser-asserted dev identity (client x-auth-*, devUserId/devRoles
+        # query params) is only the identity contract for a mini host that
+        # ALSO explicitly declared it has no authentication (auth.mode:
+        # none). auth.mode: oidc verifies bearer tokens itself — trusting
+        # the browser's own claims there would silently undo that.
+        dev_identity=settings.mode == "mini" and settings.host_auth.mode == "none",
+        cli_settings=settings,
     )
     manager._root_server = root_server  # type: ignore[attr-defined]
 
@@ -277,7 +281,9 @@ def _build_up_callback(
         if effective_settings.mode == "mini":
             _set_environment("LOCAL_MOUNTS__ENABLED", "true", only_if_missing=True)
             _set_environment("LOCAL_MOUNTS__MINI_MODE", "true", only_if_missing=True)
-            for key, value in _resolve_local_pod_manager_env(effective_settings).items():
+            local_env = _resolve_local_pod_manager_env(effective_settings)
+            _check_auth_env_conflicts(local_env, effective_settings.host_auth.mode)
+            for key, value in local_env.items():
                 _set_environment(
                     key,
                     value,
@@ -400,6 +406,45 @@ def _build_up_callback(
     return up
 
 
+#: Env vars auth_adapter_env() computes that select WHICH identity/authz
+#: adapter runs. An operator-set value here disagreeing with what auth.mode
+#: computes must raise, not silently be overwritten — the running host would
+#: then not match what config.yaml or /auth/config claims.
+_AUTH_ADAPTER_ENV_KEYS = frozenset(
+    {
+        "IDENTITY__ADAPTER",
+        "AUTHORIZATION__ADAPTER",
+        "RAVN_API_AUTH__ADAPTER",
+        "AUTH__ADAPTER",
+        "HOST_IDENTITY__ADAPTER",
+        "AUTH_MODE",
+    }
+)
+
+
+def _check_auth_env_conflicts(computed: dict[str, str], auth_mode: str) -> None:
+    """Raise if the operator's own environment disagrees with auth.mode.
+
+    Selecting the identity/authorization adapter used to unconditionally
+    overwrite whatever the operator had already exported — silently
+    discarding it. The running host would then not match what config.yaml
+    or /auth/config claims, which is exactly the "claims a security the
+    host doesn't have" failure mode this whole fix round exists to close.
+    """
+    for key in _AUTH_ADAPTER_ENV_KEYS:
+        existing = os.environ.get(key)
+        computed_value = computed.get(key)
+        if existing is None or computed_value is None or existing == computed_value:
+            continue
+        raise typer.BadParameter(
+            f"{key} is already set in the environment to {existing!r}, which "
+            f"disagrees with auth.mode: {auth_mode!r} (computed {computed_value!r}). "
+            f"Remove the operator-set {key} env var, or change auth.mode/"
+            "host_auth.oidc to match it.",
+            param_hint=key,
+        )
+
+
 MINI_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.local_process.LocalProcessPodManager"
 CLUSTER_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.direct_k8s_pod_manager.DirectK8sPodManager"
 OPENSHELL_POD_MANAGER_ADAPTER = (
@@ -408,6 +453,19 @@ OPENSHELL_POD_MANAGER_ADAPTER = (
 LOCAL_RESIDENT_RUNTIME_ADAPTER = (
     "volundr.adapters.outbound.local_resident_runtime.LocalContainerResidentRuntimeController"
 )
+HOST_PROCESS_RESIDENT_RUNTIME_ADAPTER = (
+    "volundr.adapters.outbound.host_resident_runtime.HostProcessResidentRuntimeController"
+)
+MINI_RESIDENTS_DIR = "~/.niuu/residents"
+MINI_RESIDENT_CODEX_MODEL = "gpt-5.6-sol"
+MINI_RESIDENT_CAPABILITIES = [
+    "chat",
+    "runtime.restart",
+    "runtime.suspend",
+    "logs",
+    "metrics",
+    "usage",
+]
 OPENCLAW_RESIDENT_SESSION_ADAPTER = (
     "volundr.adapters.outbound.openclaw_gateway.OpenClawResidentSessionController"
 )
@@ -492,13 +550,9 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
     if seeds:
         env["INTEGRATIONS__SEED_CONNECTIONS"] = json.dumps(seeds)
     if settings.mode == "mini":
-        env["RAVN_API_AUTH__ADAPTER"] = (
-            "identity.adapters.identity.AllowAllHeaderAuthenticationAdapter"
-        )
-        env["AUTH__ALLOW_ANONYMOUS_DEV"] = "true"
-        env["AUTHORIZATION__ADAPTER"] = (
-            "identity.adapters.authorization.AllowAllAuthorizationAdapter"
-        )
+        from cli.config import auth_adapter_env
+
+        env.update(auth_adapter_env(settings.host_auth))
     return env
 
 
@@ -558,13 +612,97 @@ def model_server_seed_connections(settings: CLISettings) -> list[dict[str, Any]]
 
 
 def _mini_resident_runtimes_config(settings: CLISettings) -> dict[str, Any]:
-    local_platform_url = "http://host.docker.internal:8080"
+    """Resident runtime configuration for the selected local resident runtime."""
+    builders = {
+        "process": _host_process_resident_runtimes,
+        "docker": _docker_resident_runtimes,
+    }
+    return builders[settings.residents.runtime](settings)
+
+
+def _host_resident_platform_url(settings: CLISettings) -> str:
+    """Where a resident process on this host reaches the platform."""
+    host = settings.server.host.strip()
+    if host in {"", "0.0.0.0", "::"}:
+        host = "127.0.0.1"
+    return f"http://{host}:{settings.server.port}"
+
+
+def _ravn_local_profile(
+    platform_url: str,
+    *,
+    description: str,
+    runtime_values: dict[str, Any],
+) -> dict[str, Any]:
+    """The ``ravn-local`` profile, identical across the local resident runtimes."""
+    return {
+        "id": "ravn-local",
+        "display_name": "Resident Ravn (Local)",
+        "description": description,
+        "backend": "local",
+        "engine": "ravn",
+        "capabilities": MINI_RESIDENT_CAPABILITIES,
+        "default_model": MINI_RESIDENT_CODEX_MODEL,
+        "allowed_models": [MINI_RESIDENT_CODEX_MODEL],
+        "catalog_vendors": [],
+        "labels": ["resident", "ravn", "local"],
+        "deployment": {
+            "values": {
+                **runtime_values,
+                "broker": {
+                    "cliType": "codex-ws",
+                    "transportAdapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
+                    "skipPermissions": True,
+                },
+                "session": {"reasoningEffort": "high"},
+                "resident": {
+                    "persona": "product-steward",
+                    "llm": {
+                        "provider": {
+                            "adapter": "ravn.adapters.llm.bifrost.BifrostAdapter",
+                            "kwargs": {"base_url": f"{platform_url}/api/v1/bifrost"},
+                        }
+                    },
+                    "platform": {"enabled": True, "baseUrl": platform_url},
+                    "wakefulness": {"enabled": True},
+                },
+            }
+        },
+    }
+
+
+def _host_process_resident_runtimes(settings: CLISettings) -> dict[str, Any]:
+    """Ravn residents as host processes; no container engine involved."""
+    platform_url = _host_resident_platform_url(settings)
+    return {
+        "controllers": [
+            {
+                "adapter": HOST_PROCESS_RESIDENT_RUNTIME_ADAPTER,
+                "kwargs": {
+                    "residents_dir": MINI_RESIDENTS_DIR,
+                    "volundr_api_url": platform_url,
+                },
+            }
+        ],
+        "session_controllers": [],
+        "profiles": [
+            _ravn_local_profile(
+                platform_url,
+                description="Long-lived Ravn resident running as processes on this host",
+                runtime_values={},
+            )
+        ],
+    }
+
+
+def _docker_resident_runtimes(settings: CLISettings) -> dict[str, Any]:
+    """Resident images through the local Docker Engine (``residents.runtime: docker``)."""
+    local_platform_url = f"http://host.docker.internal:{settings.server.port}"
     local_bifrost_url = f"{local_platform_url}/api/v1/bifrost"
     configured_models = [
         model for provider in settings.bifrost.providers.values() for model in provider.models
     ]
-    model_ids = list(dict.fromkeys(configured_models)) or ["gpt-5.6-sol"]
-    codex_model = "gpt-5.6-sol"
+    model_ids = list(dict.fromkeys(configured_models)) or [MINI_RESIDENT_CODEX_MODEL]
     resident_model_ids = [f"niuu/{model}" for model in model_ids]
     resident_default_model = resident_model_ids[0]
     openclaw_models = [
@@ -578,21 +716,16 @@ def _mini_resident_runtimes_config(settings: CLISettings) -> dict[str, Any]:
         }
         for model in model_ids
     ]
-    common_capabilities = [
-        "chat",
-        "runtime.restart",
-        "runtime.suspend",
-        "logs",
-        "metrics",
-        "usage",
-    ]
+    common_capabilities = MINI_RESIDENT_CAPABILITIES
     session_capabilities = ["session.list", "session.create", "session.delete"]
     return {
         "controllers": [
             {
                 "adapter": LOCAL_RESIDENT_RUNTIME_ADAPTER,
-                "residents_dir": "~/.niuu/residents",
-                "volundr_api_url": local_platform_url,
+                "kwargs": {
+                    "residents_dir": MINI_RESIDENTS_DIR,
+                    "volundr_api_url": local_platform_url,
+                },
             }
         ],
         "session_controllers": [
@@ -606,43 +739,14 @@ def _mini_resident_runtimes_config(settings: CLISettings) -> dict[str, Any]:
             },
         ],
         "profiles": [
-            {
-                "id": "ravn-local",
-                "display_name": "Resident Ravn (Local)",
-                "description": "Long-lived Ravn resident hosted by the local container engine",
-                "backend": "local",
-                "engine": "ravn",
-                "capabilities": common_capabilities,
-                "default_model": codex_model,
-                "allowed_models": [codex_model],
-                "catalog_vendors": [],
-                "labels": ["resident", "ravn", "local"],
-                "deployment": {
-                    "values": {
-                        "image": LOCAL_RAVN_IMAGE,
-                        "runtime": {"service": {"name": "skuld", "port": 9200}},
-                        "broker": {
-                            "cliType": "codex-ws",
-                            "transportAdapter": (
-                                "skuld.transports.codex_ws.CodexWebSocketTransport"
-                            ),
-                            "skipPermissions": True,
-                        },
-                        "session": {"reasoningEffort": "high"},
-                        "resident": {
-                            "persona": "product-steward",
-                            "llm": {
-                                "provider": {
-                                    "adapter": "ravn.adapters.llm.bifrost.BifrostAdapter",
-                                    "kwargs": {"base_url": local_bifrost_url},
-                                }
-                            },
-                            "platform": {"enabled": True, "baseUrl": local_platform_url},
-                            "wakefulness": {"enabled": True},
-                        },
-                    }
+            _ravn_local_profile(
+                local_platform_url,
+                description="Long-lived Ravn resident hosted by the local container engine",
+                runtime_values={
+                    "image": LOCAL_RAVN_IMAGE,
+                    "runtime": {"service": {"name": "skuld", "port": 9200}},
                 },
-            },
+            ),
             {
                 "id": "nemoclaw-local",
                 "display_name": "NemoClaw (Local)",
@@ -985,5 +1089,19 @@ def create_platform_commands(
         from skuld.broker import main as skuld_main
 
         skuld_main()
+
+    @platform_app.command(
+        hidden=True,
+        context_settings={
+            "allow_extra_args": True,
+            "ignore_unknown_options": True,
+            "help_option_names": [],
+        },
+    )
+    def ravn(ctx: typer.Context) -> None:
+        """Run the Ravn CLI (internal, host-process residents in a compiled binary)."""
+        from ravn.cli.commands import app as ravn_app
+
+        ravn_app(args=list(ctx.args), prog_name="ravn")
 
     return platform_app

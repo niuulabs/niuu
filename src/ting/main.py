@@ -21,7 +21,12 @@ from niuu.domain.models import Principal
 from niuu.ports.delivery import EvidenceAuthenticator
 from niuu.ports.integrations import IntegrationRepository
 from niuu.ports.workload_identity import WorkloadTokenIssuer
-from niuu.service_runtime import create_authorization_adapter, create_workload_identity_service
+from niuu.service_runtime import (
+    _get_auth_mode,
+    _validate_identity_adapter_class,
+    create_authorization_adapter,
+    create_workload_identity_service,
+)
 from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ravn.ports.persona import PersonaPort
@@ -584,6 +589,26 @@ def create_app(
         description="Decomposes specs into sagas, phases, and runs.",
         version="0.1.0",
     )
+
+    # Configured and instrumented here, not in lifespan: Starlette builds and
+    # caches its middleware stack on the app's first ASGI __call__ (which is
+    # also how the lifespan startup event arrives), so instrumenting from
+    # inside a lifespan handler has no effect.
+    from niuu.observability import (
+        configure_observability,
+        instrument_fastapi_app,
+        instrument_httpx_client,
+    )
+
+    telemetry = configure_observability(
+        settings.observability,
+        resource_attributes={"service.namespace": "ting"},
+        component="ting",
+        default_service_name="ting",
+    )
+    instrument_fastapi_app(app, telemetry, component="ting")
+    instrument_httpx_client(telemetry)
+
     app.state.authorization = create_authorization_adapter(settings)
 
     @app.exception_handler(AuthorizationDeniedError)
@@ -602,7 +627,9 @@ def create_app(
         )
 
     app.state.settings = settings
-    app.state.identity = import_class(settings.auth.adapter)(**settings.auth.kwargs)
+    _ting_identity_cls = import_class(settings.auth.adapter)
+    _validate_identity_adapter_class(_ting_identity_cls, _get_auth_mode(settings))
+    app.state.identity = _ting_identity_cls(**settings.auth.kwargs)
     app.state.workload_identity_service = create_workload_identity_service(
         settings.workload_identity
     )
@@ -651,6 +678,7 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         """Manage application lifecycle."""
         settings = app.state.settings
+
         async with (
             database_pool(settings.database) as pool,
             _integration_repository(settings, pool) as integration_repo,
@@ -1398,7 +1426,6 @@ def create_app(
                 event_bus=event_bus,
                 channel_factory=channel_factory,
                 public_origin=public_origin or settings.notification.public_origin,
-                confidence_threshold=settings.notification.confidence_threshold,
             )
             app.state.notification_service = notification_service
             if settings.notification.enabled:
@@ -1450,7 +1477,6 @@ def create_app(
                         volundr_factory=app.state.volundr_factory,
                         event_bus=event_bus,
                         config=et_cfg,
-                        initial_confidence=settings.review.initial_confidence,
                     )
                     await event_trigger_adapter.start()
                     app.state.event_trigger_adapter = event_trigger_adapter
@@ -1520,6 +1546,9 @@ def create_app(
             if hasattr(llm_adapter, "close"):
                 await llm_adapter.close()
             logger.info("Ting shutting down")
+        # Not shutdown_observability() here: this composition root may share
+        # the process with others (mini mode). configure_observability
+        # registers an atexit shutdown hook for process-exit cleanup instead.
 
     app.router.lifespan_context = lifespan
     apply_cors_middleware(app, settings.cors)

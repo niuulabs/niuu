@@ -19,7 +19,6 @@ from tests.test_ting.stubs import InMemorySagaRepository
 from ting.adapters.memory_event_bus import InMemoryEventBus
 from ting.config import ReviewConfig
 from ting.domain.models import (
-    ConfidenceEvent,
     Phase,
     PhaseStatus,
     PRStatus,
@@ -51,8 +50,6 @@ class StubTracker(TrackerPort):
     def __init__(self) -> None:
         # runs keyed by tracker_id (str)
         self.runs: dict[str, Run] = {}
-        # confidence events keyed by tracker_id (str)
-        self.events: dict[str, list[ConfidenceEvent]] = {}
         self.saga: Saga | None = None
         self.phase: Phase | None = None
         self.phases: list[Phase] = []
@@ -132,7 +129,6 @@ class StubTracker(TrackerPort):
         *,
         status: RunStatus | None = None,
         session_id: str | None = None,
-        confidence: float | None = None,
         pr_url: str | None = None,
         pr_id: str | None = None,
         retry_count: int | None = None,
@@ -156,7 +152,6 @@ class StubTracker(TrackerPort):
             declared_files=run.declared_files,
             estimate_hours=run.estimate_hours,
             status=status if status is not None else run.status,
-            confidence=confidence if confidence is not None else run.confidence,
             session_id=session_id if session_id is not None else run.session_id,
             branch=run.branch,
             chronicle_summary=run.chronicle_summary,
@@ -184,14 +179,6 @@ class StubTracker(TrackerPort):
     async def get_run_by_id(self, run_id: UUID) -> Run | None:
         return next((r for r in self.runs.values() if r.id == run_id), None)
 
-    # -- Confidence events --
-
-    async def add_confidence_event(self, tracker_id: str, event: ConfidenceEvent) -> None:
-        self.events.setdefault(tracker_id, []).append(event)
-
-    async def get_confidence_events(self, tracker_id: str) -> list[ConfidenceEvent]:
-        return self.events.get(tracker_id, [])
-
     # -- Phase gate management --
 
     async def all_runs_merged(self, phase_tracker_id: str) -> bool:
@@ -211,7 +198,6 @@ class StubTracker(TrackerPort):
                     number=p.number,
                     name=p.name,
                     status=status,
-                    confidence=p.confidence,
                 )
                 self.phases[i] = updated
                 return updated
@@ -318,7 +304,6 @@ def _make_run(
     run_id: UUID | None = None,
     tracker_id: str = TRACKER_ID,
     status: RunStatus = RunStatus.REVIEW,
-    confidence: float = 0.5,
     pr_id: str | None = "https://api.github.com/repos/org/repo/pulls/42",
     branch: str | None = "run/test-branch",
     declared_files: list[str] | None = None,
@@ -335,7 +320,6 @@ def _make_run(
         declared_files=declared_files or ["src/main.py", "tests/test_main.py"],
         estimate_hours=2.0,
         status=status,
-        confidence=confidence,
         session_id="session-1",
         branch=branch,
         chronicle_summary="All tests pass",
@@ -358,7 +342,6 @@ def _make_saga() -> Saga:
         repos=["org/repo"],
         feature_branch="feat/alpha",
         status=SagaStatus.ACTIVE,
-        confidence=0.5,
         created_at=NOW,
         base_branch="dev",
         owner_id=OWNER_ID,
@@ -377,7 +360,6 @@ def _make_phase(
         number=number,
         name=f"Phase {number}",
         status=status,
-        confidence=0.5,
     )
 
 
@@ -819,7 +801,6 @@ async def test_sync_phase_projection_marks_imported_saga_complete_without_persis
         feature_branch="feat/imported-proof",
         base_branch="dev",
         status=SagaStatus.ACTIVE,
-        confidence=0.0,
         created_at=NOW,
         owner_id="dev-user",
     )
@@ -889,7 +870,6 @@ class TestReviewConfig:
     def test_defaults(self) -> None:
         cfg = ReviewConfig()
         assert cfg.max_retries == 3
-        assert cfg.initial_confidence == 0.5
 
     def test_custom_config(self) -> None:
         cfg = ReviewConfig(max_retries=5)

@@ -253,6 +253,10 @@ config:
   port: 7477
   # -- Log level.
   logLevel: "info"
+  # -- OpenTelemetry trace/metric export. Empty (the default) means
+  # unconfigured — observability.enabled defaults to false, a decision, not
+  # a fallback. Fields match niuu.domain.observability.ObservabilityConfig.
+  observability: {}
 
 # Optional dynamic Flux deployment adapter configuration. Disabled by default.
 # Supply namespace, source_name, chart_versions, images and cluster in this map.

@@ -46,6 +46,8 @@ def _broker(tmp_path, *, api_url="http://forge.test"):
         "_report_timeline_event",
         "_on_result_publish_mesh",
         "_report_session_start",
+        "_start_trace_span",
+        "_finish_trace_span",
         "_complete_trace_span",
         "_emit_pipeline_event",
     ):

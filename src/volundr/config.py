@@ -43,6 +43,7 @@ from niuu.config_models import (
     default_session_definitions,
 )
 from niuu.domain.delivery import AcceptancePolicy
+from niuu.domain.observability import ObservabilityConfig
 from ravn.config import LLMConfig, PersonaSourceConfig
 from volundr.compute.config import ComputeConfig
 from volundr.domain.models import (
@@ -274,6 +275,12 @@ class LoggingConfig(BaseSettings):
 
     level: str = Field(default="info", validation_alias=AliasChoices("level", "LOG_LEVEL"))
     format: str = Field(default="text", validation_alias=AliasChoices("format", "LOG_FORMAT"))
+
+
+class VolundrObservabilityConfig(ObservabilityConfig):
+    """OpenTelemetry settings with Volundr's stable service identity."""
+
+    service_name: str = Field(default="volundr")
 
 
 class PodManagerConfig(BaseModel):
@@ -553,7 +560,30 @@ class RabbitMQConfig(BaseModel):
 
 
 class OtelConfig(BaseModel):
-    """OpenTelemetry event sink configuration.
+    """OpenTelemetry event *sink* configuration — GenAI spans from durable
+    ``SessionEvent`` rows, one span per already-recorded event
+    (``OtelEventSink``, wired via ``event_pipeline.otel``).
+
+    Distinct from top-level ``observability`` (``VolundrObservabilityConfig``,
+    on ``Settings.observability``), which drives the shared
+    ``niuu.observability`` facade: the FastAPI/httpx auto-instrumentation and
+    every ``get_observability()`` call site across the codebase (Ravn LLM
+    adapters, Bifröst, session contributors, ...). Two separate OTel
+    pipelines, each with its own ``TracerProvider``/exporter, because they
+    serve different questions:
+
+    * ``observability`` (this process's server/client spans) answers "what
+      did this request do, and in what larger trace" — real-time, one trace
+      id follows the work end to end.
+    * ``event_pipeline.otel`` (this sink) answers "replay this session's
+      already-recorded event history as spans" — after the fact, from
+      Postgres, keyed by ``session_id``, not tied to any live trace context.
+
+    Not consolidated into one pipeline: they run on different triggers (live
+    request vs. durable event replay) and would need one to synthesize
+    context for the other's spans to nest correctly, which neither
+    currently does. If you only want live traces, ``observability.enabled``
+    alone is enough — leave this at its default (disabled).
 
     Follows OTel GenAI semantic conventions (v1.39+).
     The exporter endpoint should point at an OTLP-compatible collector
@@ -2059,6 +2089,7 @@ class Settings(BaseSettings):
     )
 
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    observability: VolundrObservabilityConfig = Field(default_factory=VolundrObservabilityConfig)
     compute: ComputeConfig | None = None
 
     projects: ProjectsConfig = Field(default_factory=ProjectsConfig)
@@ -2176,6 +2207,18 @@ class Settings(BaseSettings):
     push: PushNotificationConfig = Field(default_factory=PushNotificationConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)
+    auth_mode: str = Field(
+        default="envoy",
+        description=(
+            "How this host trusts identity: 'envoy' (default — an Envoy sidecar "
+            "verifies JWTs and forwards trusted x-auth-* headers; unchanged "
+            "Kubernetes behaviour), 'none' (explicit no-auth for a host without "
+            "Envoy — mini/docker mode's default), or 'oidc' (in-process JWT "
+            "verification for a host without Envoy). Set by the mini/docker CLI "
+            "host from auth.mode (cli.config.AuthConfig); Kubernetes deployments "
+            "leave this at its default."
+        ),
+    )
     credential_store: CredentialStoreConfig = Field(default_factory=CredentialStoreConfig)
     codex_credential_broker: DynamicAdapterConfig = Field(
         default_factory=_default_codex_credential_broker,

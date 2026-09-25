@@ -44,8 +44,6 @@ export const retryPolicySchema = z.object({
 export type RetryPolicy = z.infer<typeof retryPolicySchema>;
 
 export const dispatchDefaultsSchema = z.object({
-  /** Minimum confidence score (0–100) required before a Run is dispatched. */
-  confidenceThreshold: z.number().min(0).max(100),
   /** Maximum concurrent Runs. */
   maxConcurrentRuns: z.number().int().positive(),
   /** Whether the dispatcher starts in auto-continue mode. */
@@ -100,7 +98,6 @@ export const auditEntryKindSchema = z.enum([
   'settings.notifications.updated',
   'dispatcher.started',
   'dispatcher.stopped',
-  'dispatcher.threshold_changed',
   'dispatcher.batch_size_changed',
   'run.dispatched',
   'run.merged',

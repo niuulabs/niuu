@@ -69,7 +69,6 @@ function makeSaga(overrides: Partial<Saga> = {}): Saga {
     featureBranch: 'feat/auth-rewrite',
     baseBranch: 'main',
     status: 'active',
-    confidence: 82,
     createdAt: '2026-01-10T09:00:00Z',
     phaseSummary: { total: 3, completed: 1 },
     workflow: 'ship',
@@ -89,7 +88,6 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     declaredFiles: ['src/auth/oidc.ts'],
     estimateHours: 8,
     status: 'merged',
-    confidence: 90,
     sessionId: 'sess-001',
     reviewerSessionId: null,
     reviewRound: 1,
@@ -110,7 +108,6 @@ function makePhase(runs: Run[] = []): Phase {
     number: 1,
     name: 'Plan',
     status: 'complete',
-    confidence: 90,
     runs,
   };
 }
@@ -212,7 +209,7 @@ describe('SagaDetailPage', () => {
     expect(screen.queryByText(runTrackerId)).not.toBeInTheDocument();
   });
 
-  it('renders workflow, stage progress, and confidence cards', async () => {
+  it('renders workflow and stage progress cards', async () => {
     render(<SagaDetailPage sagaId={SAGA_ID} />, {
       wrapper: wrap({ ting: createMockTingService(), 'ting.dispatch': mockDispatchBus }),
     });
@@ -220,7 +217,6 @@ describe('SagaDetailPage', () => {
       expect(screen.getByRole('region', { name: /workflow/i })).toBeInTheDocument(),
     );
     expect(screen.getByRole('region', { name: /stage progress/i })).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: /confidence signals/i })).toBeInTheDocument();
   });
 
   it('shows empty state when saga has no phases', async () => {

@@ -25,7 +25,7 @@ describe('useDispatcherState', () => {
     });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data).not.toBeNull();
-    expect(result.current.data?.threshold).toBe(70);
+    expect(result.current.data?.maxConcurrentRuns).toBe(5);
   });
 
   it('exposes loading state initially', () => {
@@ -41,7 +41,6 @@ describe('useDispatcherState', () => {
         throw new Error('dispatcher offline');
       },
       setRunning: async () => {},
-      setThreshold: async () => {},
       setAutoContinue: async () => {},
       getLog: async () => [],
     };

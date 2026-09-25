@@ -40,7 +40,6 @@ function toDispatchEntry(item: DispatchQueueItem): DispatchEntry {
     declaredFiles: [],
     estimateHours: item.estimate,
     status: toRunStatus(item.status),
-    confidence: 100,
     sessionId: null,
     reviewerSessionId: null,
     reviewRound: 0,
@@ -58,7 +57,6 @@ function toDispatchEntry(item: DispatchQueueItem): DispatchEntry {
     number: 1,
     name: item.phaseName,
     status: 'active',
-    confidence: 100,
     runs: [run],
   };
 
@@ -72,7 +70,6 @@ function toDispatchEntry(item: DispatchQueueItem): DispatchEntry {
     featureBranch: item.featureBranch,
     baseBranch: 'main',
     status: 'active',
-    confidence: 100,
     createdAt: now,
     phaseSummary: { total: 1, completed: 0 },
     workflowId: item.workflowId,

@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field
 
+from niuu.observability import get_observability
 from volundr.adapters.inbound.auth import check_session_or_resident_access
 from volundr.domain.models import SessionSpan, SessionSpanStatus
 from volundr.domain.ports import SessionSpanRepository
@@ -64,6 +65,12 @@ class SessionSpanResponse(BaseModel):
     actor_label: str | None
     source_service: str
     attributes: dict
+    #: The W3C trace id active when this span was recorded, or ``None`` —
+    #: distinct from ``trace_id`` above (this Forge trace system's own id,
+    #: the session UUID). Lets a Forge span be cross-referenced with the
+    #: OTLP trace it belongs to, without changing what ``trace_id`` means to
+    #: existing API consumers.
+    w3c_trace_id: str | None = None
 
     @classmethod
     def from_span(cls, span: SessionSpan) -> SessionSpanResponse:
@@ -83,6 +90,7 @@ class SessionSpanResponse(BaseModel):
             actor_label=span.actor_label,
             source_service=span.source_service,
             attributes=span.attributes,
+            w3c_trace_id=span.w3c_trace_id,
         )
 
 
@@ -226,6 +234,11 @@ def create_trace_router(
             actor_label=data.actor_label,
             source_service=data.source_service,
             attributes=data.attributes,
+            # Read server-side, not accepted from the caller: whichever W3C
+            # trace this POST itself arrived on (via the caller's propagated
+            # traceparent header and this app's own FastAPI instrumentation),
+            # not a value the poster would have to know how to produce.
+            w3c_trace_id=get_observability().trace_id() or None,
         )
         stored = await span_repository.upsert_span(span)
         return SessionSpanResponse.from_span(stored)
@@ -283,6 +296,7 @@ def create_trace_router(
             actor_label=data.actor_label,
             source_service=data.source_service,
             attributes=data.attributes,
+            w3c_trace_id=get_observability().trace_id() or None,
         )
         stored = await span_repository.upsert_span(span)
         return SessionSpanResponse.from_span(stored)

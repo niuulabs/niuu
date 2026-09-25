@@ -83,7 +83,11 @@ def bind_broker(getter: Callable[[], Any], log_buffer: deque[dict]) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    from niuu.observability import configure_observability, shutdown_observability
+    from niuu.observability import (
+        configure_observability,
+        instrument_httpx_client,
+        shutdown_observability,
+    )
 
     # Telegram embeds the bot credential in every Bot API URL. Suppress httpx's
     # request-level INFO records so the credential never enters a log record;
@@ -99,14 +103,37 @@ async def lifespan(app: FastAPI):
     previous_httpx_level = httpx_logger.level
     httpx_logger.setLevel(logging.WARNING)
 
-    configure_observability(
+    telemetry = configure_observability(
         broker._settings.observability,
         resource_attributes={
             "service.namespace": "skuld",
             "service.instance.id": broker.session_id,
             "niuu.session.id": broker.session_id,
         },
+        component="skuld",
+        default_service_name="skuld",
     )
+    instrument_httpx_client(telemetry)
+    # This broker process was spawned for one session, by a Volundr request
+    # that (per CoreSessionContributor) set TRACEPARENT/TRACESTATE in this
+    # process's own env — the same mechanism Claude Code itself uses to
+    # parent its spans. broker._settings.trace_context reads that back as
+    # typed settings (config-first.md), not a bare os.environ read.
+    # Attaching it here closes the chain end to end: Ravn -> Bifrost ->
+    # Volundr -> Skuld -> Claude Code, all one trace. See
+    # attach_ambient_context's docstring for the long-lived-session trade-off
+    # this accepts.
+    trace_context = broker._settings.trace_context
+    inbound_carrier = {
+        key: value
+        for key, value in (
+            ("traceparent", trace_context.traceparent),
+            ("tracestate", trace_context.tracestate),
+        )
+        if value
+    }
+    if inbound_carrier:
+        telemetry.attach_ambient_context(inbound_carrier)
     try:
         await broker.startup()
         yield

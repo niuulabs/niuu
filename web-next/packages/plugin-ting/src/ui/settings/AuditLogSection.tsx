@@ -9,7 +9,6 @@ const KIND_LABELS: Record<AuditEntryKind, string> = {
   'settings.notifications.updated': 'Notifications updated',
   'dispatcher.started': 'Dispatcher started',
   'dispatcher.stopped': 'Dispatcher stopped',
-  'dispatcher.threshold_changed': 'Threshold changed',
   'dispatcher.batch_size_changed': 'Batch size changed',
   'run.dispatched': 'Run dispatched',
   'run.merged': 'Run merged',
@@ -30,12 +29,7 @@ const KIND_GROUPS: { label: string; kinds: AuditEntryKind[] }[] = [
   },
   {
     label: 'Dispatcher',
-    kinds: [
-      'dispatcher.started',
-      'dispatcher.stopped',
-      'dispatcher.threshold_changed',
-      'dispatcher.batch_size_changed',
-    ],
+    kinds: ['dispatcher.started', 'dispatcher.stopped', 'dispatcher.batch_size_changed'],
   },
   {
     label: 'Runs',
