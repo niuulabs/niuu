@@ -196,7 +196,7 @@ planner:
 # land in REVIEW with no authoritative workflow outcome always escalate to a
 # human (see RunReviewService).
 review:
-  initial_confidence: 0.5
+  max_retries: 3
 
 llm:
   adapter: ting.adapters.bifrost.BifrostAdapter
