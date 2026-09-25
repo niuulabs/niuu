@@ -11,6 +11,7 @@ from tests.conftest import (
     InMemorySessionRepository,
     MockEventBroadcaster,
     MockPodManager,
+    make_session_participant_service,
 )
 from volundr.domain.models import Session, SessionStatus
 from volundr.domain.services.session import (
@@ -508,6 +509,9 @@ def _make_test_app(service: SessionService):
     from volundr.adapters.inbound.rest import create_router
 
     app = FastAPI()
-    router = create_router(session_service=service)
+    router = create_router(
+        session_service=service,
+        session_participant_service=make_session_participant_service(service),
+    )
     app.include_router(router)
     return app

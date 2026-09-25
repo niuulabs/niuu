@@ -12,6 +12,7 @@ from tests.conftest import (
     InMemoryStatsRepository,
     InMemoryTokenTracker,
     MockPodManager,
+    make_session_participant_service,
 )
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
@@ -66,7 +67,12 @@ def client(
     from fastapi import FastAPI
 
     app = FastAPI()
-    router = create_router(session_service, stats_service, token_service)
+    router = create_router(
+        session_service,
+        stats_service,
+        token_service,
+        session_participant_service=make_session_participant_service(session_service),
+    )
     app.include_router(router)
     return TestClient(app)
 
@@ -308,7 +314,12 @@ class TestReportUsageWithPricing:
         session_service = SessionService(session_repository, MockPodManager())
 
         app = FastAPI()
-        router = create_router(session_service, None, token_service)
+        router = create_router(
+            session_service,
+            None,
+            token_service,
+            session_participant_service=make_session_participant_service(session_service),
+        )
         app.include_router(router)
         client = TestClient(app)
 
@@ -344,7 +355,12 @@ class TestTokenServiceUnavailable:
 
         app = FastAPI()
         session_service = SessionService(InMemorySessionRepository(), MockPodManager())
-        router = create_router(session_service, None, None)
+        router = create_router(
+            session_service,
+            None,
+            None,
+            session_participant_service=make_session_participant_service(session_service),
+        )
         app.include_router(router)
         client = TestClient(app)
 

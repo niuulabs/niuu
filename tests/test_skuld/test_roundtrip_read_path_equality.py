@@ -723,6 +723,7 @@ class TestConfiguredVisibilityDefaultParityINV10:
 
         class _StubWS:
             query_params = {}
+            headers: dict = {}
 
             async def accept(self) -> None:
                 return None

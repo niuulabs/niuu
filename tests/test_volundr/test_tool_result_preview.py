@@ -37,7 +37,11 @@ from skuld.tool_result_preview import (
     extract_image_bytes,
     generate_preview_jpeg,
 )
-from tests.conftest import InMemorySessionRepository, MockPodManager
+from tests.conftest import (
+    InMemorySessionRepository,
+    MockPodManager,
+    make_session_participant_service,
+)
 from tests.test_domain.test_session_archive_service import InMemorySessionEventLog
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.outbound.archive_store import FileSystemArchiveStore
@@ -198,6 +202,7 @@ def _build(
             session_service,
             archive_service=archive_service,
             preview_cache=cache,
+            session_participant_service=make_session_participant_service(session_service),
         )
     )
 

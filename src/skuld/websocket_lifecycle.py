@@ -116,6 +116,45 @@ class WebSocketLifecycleMixin:
             logger.exception("WebSocket authorization failed")
             return False
 
+    _VALID_ROOM_ROLES = frozenset({"owner", "approver", "viewer"})
+
+    def _resolve_room_role(self, websocket: WebSocket) -> str:
+        """Resolve this connection's room role for per-message authorization.
+
+        A valid ``room_role_header`` always wins outright — it is the
+        session-proxy-verified value, which already encodes the dev-identity
+        default (session_proxy stamps "owner" under dev identity with no
+        resolver configured).
+
+        Otherwise this defers entirely to ``ws_auth.room_role_source``
+        (mirrors ``skuld.broker_api._effective_room_role`` exactly — the two
+        must never diverge, or the same caller gets a different room role on
+        the HTTP and WebSocket legs of the same session):
+
+        - "deployment" (the default — Kubernetes, OpenShell, VM, and any
+          backend other than a proxy-fronted process): this pod's own auth
+          boundary (ext_authz / enforce_ownership / the deployment's Gateway)
+          already gates every caller who reaches this pod at all, and
+          participants are not supported on these backends (invites are
+          refused with 409), so a missing header simply means owner —
+          identical to this pod's behavior before session_participants
+          existed.
+        - "proxy" (rendered only for the process backend): the session proxy
+          resolves and stamps the header itself from session_participants
+          grants, so trust it — a missing header means viewer, except a
+          loopback caller carrying no x-forwarded-for (same-pod tooling a
+          reverse proxy could never present as).
+        """
+        cfg = self._settings.ws_auth
+        header_role = websocket.headers.get(cfg.room_role_header, "").strip().lower()
+        if header_role in self._VALID_ROOM_ROLES:
+            return header_role
+        if cfg.room_role_source == "deployment":
+            return "owner"
+        if _is_loopback_ws_client(websocket) and not websocket.headers.get("x-forwarded-for"):
+            return "owner"
+        return "viewer"
+
     def _update_jwt_from_websocket(self, websocket: WebSocket) -> None:
         """Extract and store JWT from an incoming WebSocket connection.
 
@@ -163,8 +202,17 @@ class WebSocketLifecycleMixin:
             await websocket.close(code=1008, reason="Not authorized for this session")
             return
 
-        # Extract JWT before accepting — headers are available pre-accept
-        self._update_jwt_from_websocket(websocket)
+        # Pre-accept: the room-role header is only trustworthy from the raw
+        # request headers.
+        room_role = self._resolve_room_role(websocket)
+        # Extract JWT before accepting — headers are available pre-accept.
+        # Only an OWNER connection may update the broker's single stored
+        # _user_jwt/_user_claims: they are read later for actions taken "as
+        # the user" (e.g. the chronicle watcher's auth headers). A viewer or
+        # approver connecting after the owner must not silently swap the
+        # broker's notion of who it is acting as.
+        if room_role == "owner":
+            self._update_jwt_from_websocket(websocket)
 
         await websocket.accept()
         # Internal-visibility default comes from the ONE configured source (SRD
@@ -179,6 +227,7 @@ class WebSocketLifecycleMixin:
             max_frame_bytes=self._settings.live_frame_max_bytes,
             history_protocol=2 if protocol2 else 0,
             history_bootstrap_max_frames=self._settings.history_bootstrap_max_frames,
+            room_role=room_role,
         )
         if not protocol2:
             self._channels.add(channel)
