@@ -2297,7 +2297,7 @@ def test_resident_create_lifecycle_and_delete_proxy_target_control_plane(client:
         b'{"name":"Muninn","profile_id":"ravn-helm","persona_name":"","model":"",'
         b'"flock_id":"11111111-1111-4111-8111-111111111111",'
         b'"flock_member_id":"22222222-2222-4222-8222-222222222222",'
-        b'"flock_role":"coordinator","flock_peer_id":"ravn-muninn"}'
+        b'"flock_role":"coordinator","flock_peer_id":"ravn-muninn","realm_id":null}'
     )
     assert suspended.status_code == 200
     assert deleted.status_code == 204

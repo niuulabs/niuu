@@ -517,6 +517,7 @@ class ResidentDirectory:
         flock_id = str(runtime.get("flock_id") or runtime.get("flockId") or "")
         flock_member_id = str(runtime.get("flock_member_id") or runtime.get("flockMemberId") or "")
         flock_peer_id = str(runtime.get("flock_peer_id") or runtime.get("flockPeerId") or "")
+        realm_id = str(runtime.get("realm_id") or runtime.get("realmId") or "")
         return {
             "id": str(runtime.get("id") or ""),
             "persona_name": runtime.get("persona_name") or runtime.get("personaName") or "",
@@ -538,6 +539,7 @@ class ResidentDirectory:
             "flock_member_id": flock_member_id,
             "flock_role": runtime.get("flock_role") or runtime.get("flockRole") or "",
             "flock_peer_id": flock_peer_id,
+            "realm_id": realm_id,
             "desired_state": runtime.get("desired_state") or runtime.get("desiredState"),
             "observed_state": observed_state,
             "backend_ref": runtime.get("backend_ref") or runtime.get("backendRef") or {},

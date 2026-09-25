@@ -18,6 +18,7 @@ from typing import Any
 import docker
 from docker.errors import ImageNotFound, NotFound
 
+from niuu.ports.realm_repository import RealmRepository
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.resident_container_spec import (
     HERMES_API_SERVER_KEY_ENV,
@@ -107,6 +108,7 @@ class LocalContainerResidentRuntimeController(
         self._retain_data_on_delete = bool(retain_data_on_delete)
         self._credential_store: CredentialStorePort | None = None
         self._skuld_registry: Any | None = None
+        self._realm_repository: RealmRepository | None = None
         self._client = (
             docker.DockerClient(base_url=docker_base_url) if docker_base_url else docker.from_env()
         )
@@ -120,6 +122,15 @@ class LocalContainerResidentRuntimeController(
 
     def set_skuld_registry(self, registry: Any) -> None:
         self._skuld_registry = registry
+
+    def set_realm_repository(self, repository: RealmRepository) -> None:
+        """Enable resolving a resident's realm slug for its container config.
+
+        Optional: without it, deploying a resident with ``realm_id`` set
+        raises in ``_resolve_realm_slug`` rather than silently deploying with
+        no realm/charter binding.
+        """
+        self._realm_repository = repository
 
     def supports(self, profile: ResidentDeploymentProfile) -> bool:
         if profile.backend is not ResidentBackend.LOCAL:
@@ -357,7 +368,32 @@ class LocalContainerResidentRuntimeController(
             default_service_port=self._service_port,
             volundr_api_url=self._volundr_api_url,
             sandbox_command=self._sandbox_command,
+            realm_slug=await self._resolve_realm_slug(runtime),
         )
+
+    async def _resolve_realm_slug(self, runtime: ResidentRuntime) -> str:
+        """Return the slug of the realm this resident is bound to, or "".
+
+        A configured ``realm_id`` whose realm no longer resolves is a real
+        misconfiguration (the realm was deleted out from under a resident
+        that still names it) and fails loudly rather than deploying with a
+        silently dropped charter/realm binding.
+        """
+        if runtime.realm_id is None:
+            return ""
+        if self._realm_repository is None:
+            raise RuntimeError(
+                f"resident {runtime.name!r} has realm_id={runtime.realm_id} but this "
+                "controller has no realm repository configured; call set_realm_repository "
+                "at composition time."
+            )
+        realm = await self._realm_repository.get_realm(runtime.realm_id)
+        if realm is None:
+            raise RuntimeError(
+                f"resident {runtime.name!r} names realm_id={runtime.realm_id}, but no "
+                "such realm exists; clear the resident's realm binding or restore the realm."
+            )
+        return realm.slug
 
     async def _machine_environment(self, runtime: ResidentRuntime) -> dict[str, str]:
         if runtime.engine is ResidentEngine.RAVN:

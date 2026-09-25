@@ -79,6 +79,7 @@ class CreateResidentRuntimeRequest(BaseModel):
     flock_member_id: UUID | None = None
     flock_role: str = Field(default="", max_length=100)
     flock_peer_id: str = Field(default="", max_length=255)
+    realm_id: UUID | None = None
 
 
 class ResidentUsageRequest(BaseModel):
@@ -152,6 +153,7 @@ def create_resident_runtimes_router(service: ResidentRuntimeService) -> APIRoute
                 flock_member_id=body.flock_member_id,
                 flock_role=body.flock_role,
                 flock_peer_id=body.flock_peer_id,
+                realm_id=body.realm_id,
             )
         except Exception as exc:
             raise _resident_error(exc) from exc

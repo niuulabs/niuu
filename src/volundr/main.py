@@ -813,6 +813,10 @@ def create_app(
                 resident_controllers,
                 credential_store,
             )
+            # Built early (not just at realm-router mount time below) so
+            # ResidentRuntimeService can validate a create() call's realm_id
+            # as a 422 instead of a bare FK violation during background deploy.
+            realm_repository = PostgresRealmRepository(pool)
             resident_runtime_service = ResidentRuntimeService(
                 resident_runtime_repository,
                 resident_profile_provider,
@@ -820,6 +824,7 @@ def create_app(
                 resident_session_controllers,
                 span_repository=span_repository,
                 event_repository=pg_event_sink,
+                realm_repository=realm_repository,
             )
             resident_flock_adapter = (
                 ResidentFlockAdapter(
@@ -1263,9 +1268,15 @@ def create_app(
 
             # Realm governance — a Valkyrie's build capability, trust, and config
             # readable by ravn over HTTP (shared niuu postgres, no ravn-local db).
-            realm_repository = PostgresRealmRepository(pool)
+            # realm_repository was already built above, before
+            # ResidentRuntimeService, so it could validate realm_id at create().
             app.state.realm_service = RealmService(realm_repository)
             app.include_router(create_realms_router(extract_principal, prefix="/api/v1/realms"))
+            # Let resident deployment controllers resolve a resident's realm slug
+            # (for realm_slug/charter binding in the rendered container config).
+            for controller in resident_controllers:
+                if hasattr(controller, "set_realm_repository"):
+                    controller.set_realm_repository(realm_repository)
 
             git_router = create_git_router(
                 git_workflow_service,

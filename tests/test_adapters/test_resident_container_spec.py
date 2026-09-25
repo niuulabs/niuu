@@ -9,6 +9,8 @@ import yaml
 from volundr.adapters.outbound.resident_container_spec import (
     image_from_values,
     materialize_resident_container,
+    realm_charter_page_for,
+    realm_mount_name_for,
     resident_attribution_headers,
     resident_flock_environment,
     resident_flock_labels,
@@ -411,6 +413,180 @@ def test_materialize_ravn_container_extends_shared_mesh_configuration() -> None:
     assert ravn_config["wakefulness"] == {"enabled": True}
     assert ravn_config["mesh"]["own_peer_id"] == runtime.flock_peer_id
     assert skuld_config["mesh"]["realm_id"] == str(runtime.flock_id)
+
+
+def test_naming_convention_helpers_match_web_next_realm_ts() -> None:
+    # Mirrors web-next/packages/plugin-realms/src/domain/realm.ts
+    # charterPagePathFor / mountNameFor — keep these in lockstep.
+    assert realm_charter_page_for("workshop") == "realms/workshop/charter.md"
+    assert realm_mount_name_for("workshop") == "realm-workshop"
+
+
+def test_materialize_ravn_container_without_realm_slug_omits_realm_binding() -> None:
+    runtime = _runtime()
+    spec = materialize_resident_container(
+        runtime,
+        {"image": "example.test/ravn@sha256:123", **_flock_values()},
+        default_image="",
+        default_service_name="resident",
+        default_service_port=9000,
+        volundr_api_url="http://volundr",
+        sandbox_command=("skuld", "serve"),
+    )
+    ravn_config = yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])
+    assert "realm_slug" not in ravn_config["environment"]
+    assert "charter_mimir_page" not in ravn_config["environment"]
+    assert "resident_state" not in ravn_config
+    assert ravn_config["gateway"]["channels"]["http"]["resident_hud_enabled"] is False
+
+
+def test_materialize_ravn_container_renders_realm_binding() -> None:
+    runtime = _runtime()
+    values = {
+        "image": "example.test/ravn@sha256:123",
+        **_flock_values(),
+        "resident": {
+            **_flock_values()["resident"],
+            "hudEnabled": True,
+            "stewardshipIntervalSeconds": 45,
+            "mimir": {
+                "instances": [
+                    {"name": "realm-workshop", "adapter": "mimir.adapters.markdown"},
+                    {"name": "other-mount", "adapter": "mimir.adapters.markdown"},
+                ]
+            },
+        },
+    }
+
+    spec = materialize_resident_container(
+        runtime,
+        values,
+        default_image="",
+        default_service_name="resident",
+        default_service_port=9000,
+        volundr_api_url="http://volundr",
+        sandbox_command=("skuld", "serve"),
+        realm_slug="workshop",
+    )
+    ravn_config = yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])
+
+    assert ravn_config["environment"]["charter_mimir_page"] == "realms/workshop/charter.md"
+    assert ravn_config["resident_evolution"]["realm_slug"] == "workshop"
+    assert ravn_config["resident_evolution"]["realm_api_base_url"] == "http://volundr"
+    assert ravn_config["gateway"]["channels"]["http"]["resident_hud_enabled"] is True
+    assert ravn_config["resident_state"]["stewardship_interval_seconds"] == 45
+    assert [inst["name"] for inst in ravn_config["mimir"]["instances"]] == [
+        "realm-workshop",
+        "other-mount",
+    ]
+    assert ravn_config["mimir"]["write_routing"]["default"] == ["realm-workshop"]
+    assert ravn_config["mimir"]["write_routing"]["rules"] == [
+        ["realms/workshop/", ["realm-workshop"]]
+    ]
+
+
+def test_materialize_ravn_container_preserves_profile_write_routing_without_realm_mount() -> None:
+    """The normal hub-Mímir case: no mount is named realm-<slug>.
+
+    The profile's own write_routing must survive, not be discarded for an
+    empty default (the bug that sent resident writes nowhere without error).
+    """
+    runtime = _runtime()
+    values = {
+        "image": "example.test/ravn@sha256:123",
+        **_flock_values(),
+        "resident": {
+            **_flock_values()["resident"],
+            "mimir": {
+                "instances": [
+                    {"name": "hub-a", "adapter": "mimir.adapters.markdown"},
+                    {"name": "hub-b", "adapter": "mimir.adapters.markdown"},
+                ],
+                "writeRouting": {
+                    "rules": [["shared/", ["hub-b"]]],
+                    "default": ["hub-a"],
+                },
+            },
+        },
+    }
+
+    spec = materialize_resident_container(
+        runtime,
+        values,
+        default_image="",
+        default_service_name="resident",
+        default_service_port=9000,
+        volundr_api_url="http://volundr",
+        sandbox_command=("skuld", "serve"),
+        realm_slug="workshop",
+    )
+    ravn_config = yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])
+
+    assert ravn_config["mimir"]["write_routing"]["default"] == ["hub-a"]
+    assert ravn_config["mimir"]["write_routing"]["rules"] == [["shared/", ["hub-b"]]]
+
+
+def test_materialize_ravn_container_raises_when_no_mimir_write_target_resolves() -> None:
+    runtime = _runtime()
+    values = {
+        "image": "example.test/ravn@sha256:123",
+        **_flock_values(),
+        "resident": {
+            **_flock_values()["resident"],
+            "mimir": {
+                "instances": [
+                    {"name": "hub-a", "adapter": "mimir.adapters.markdown"},
+                    {"name": "hub-b", "adapter": "mimir.adapters.markdown"},
+                ],
+            },
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="no write target resolves"):
+        materialize_resident_container(
+            runtime,
+            values,
+            default_image="",
+            default_service_name="resident",
+            default_service_port=9000,
+            volundr_api_url="http://volundr",
+            sandbox_command=("skuld", "serve"),
+            realm_slug="workshop",
+        )
+
+
+def test_materialize_ravn_container_renders_signal_sources_when_supplied() -> None:
+    runtime = _runtime()
+    signal_sources = [
+        {
+            "id": "workshop-events",
+            "name": "Workshop events",
+            "kind": "generic",
+            "adapter": "ravn.adapters.environment_signals_nats.NatsJetStreamSignalAdapter",
+            "enabled": True,
+            "kwargs": {"subject": "workshop.events.>"},
+        }
+    ]
+    values = {
+        "image": "example.test/ravn@sha256:123",
+        **_flock_values(),
+        "resident": {
+            **_flock_values()["resident"],
+            "signalSources": signal_sources,
+        },
+    }
+
+    spec = materialize_resident_container(
+        runtime,
+        values,
+        default_image="",
+        default_service_name="resident",
+        default_service_port=9000,
+        volundr_api_url="http://volundr",
+        sandbox_command=("skuld", "serve"),
+    )
+    ravn_config = yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])
+    assert ravn_config["environment"]["signal_sources"] == signal_sources
 
 
 @pytest.mark.parametrize(

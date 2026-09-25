@@ -547,6 +547,7 @@ describe('buildRavnResidentControlAdapter', () => {
       flock_member_id: '22222222-2222-4222-8222-222222222222',
       flock_role: 'specialist',
       flock_peer_id: 'hermes-22222222',
+      realm_id: '33333333-3333-4333-8333-333333333333',
       capabilities: ['chat', 'session.create'],
       conditions: [],
       endpoints: [],
@@ -563,6 +564,7 @@ describe('buildRavnResidentControlAdapter', () => {
       flockMemberId: '22222222-2222-4222-8222-222222222222',
       flockRole: 'specialist',
       flockPeerId: 'hermes-22222222',
+      realmId: '33333333-3333-4333-8333-333333333333',
     });
 
     expect(client.post).toHaveBeenCalledWith('/ravens', {
@@ -575,6 +577,7 @@ describe('buildRavnResidentControlAdapter', () => {
       flock_member_id: '22222222-2222-4222-8222-222222222222',
       flock_role: 'specialist',
       flock_peer_id: 'hermes-22222222',
+      realm_id: '33333333-3333-4333-8333-333333333333',
     });
     expect(ravn).toMatchObject({
       managed: true,
@@ -582,6 +585,7 @@ describe('buildRavnResidentControlAdapter', () => {
       observedState: 'deploying',
       flockId: '11111111-1111-4111-8111-111111111111',
       flockPeerId: 'hermes-22222222',
+      realmId: '33333333-3333-4333-8333-333333333333',
     });
   });
 
