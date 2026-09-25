@@ -19,7 +19,6 @@ from identity.models import Resource
 from niuu.domain.models import Principal
 from ting.adapters.inbound.auth import extract_principal
 from ting.api.tracker import resolve_trackers
-from ting.config import ReviewConfig
 from ting.domain.exceptions import RunNotFoundError
 from ting.domain.models import RunStatus
 from ting.domain.services.run_review import (
@@ -112,14 +111,6 @@ async def _require_tracker_run(request, principal, tracker, run):
 # ---------------------------------------------------------------------------
 
 
-class ConfidenceEventResponse(BaseModel):
-    id: str
-    event_type: str
-    delta: float
-    score_after: float
-    created_at: str
-
-
 class ReviewResponse(BaseModel):
     run_id: str
     name: str
@@ -127,15 +118,12 @@ class ReviewResponse(BaseModel):
     chronicle_summary: str | None = None
     pr_url: str | None = None
     ci_passed: bool | None = None
-    confidence: float
-    confidence_events: list[ConfidenceEventResponse] = Field(default_factory=list)
 
 
 class RunResponse(BaseModel):
     id: str
     name: str
     status: str
-    confidence: float
     retry_count: int
     branch: str | None = None
     chronicle_summary: str | None = None
@@ -225,21 +213,12 @@ async def resolve_run_repo() -> SagaRepository:
 # ---------------------------------------------------------------------------
 
 
-def _get_review_config(request: Request) -> ReviewConfig:
-    """Extract ReviewConfig from app settings, with fallback defaults."""
-    settings = getattr(request.app.state, "settings", None)
-    if settings is None:
-        return ReviewConfig()
-    return settings.review
-
-
 def _build_review_service(
     request: Request, tracker: TrackerPort, owner_id: str
 ) -> RunReviewService:
-    """Construct a RunReviewService with config and event bus from app state."""
-    review_cfg = _get_review_config(request)
+    """Construct a RunReviewService with the event bus from app state."""
     event_bus = getattr(request.app.state, "event_bus", None)
-    return RunReviewService(tracker, owner_id, review_cfg, event_bus=event_bus)
+    return RunReviewService(tracker, owner_id, event_bus=event_bus)
 
 
 def _run_response(run, reason: str | None = None) -> RunResponse:
@@ -247,7 +226,6 @@ def _run_response(run, reason: str | None = None) -> RunResponse:
         id=str(run.id),
         name=run.name,
         status=run.status.value,
-        confidence=run.confidence,
         retry_count=run.retry_count,
         branch=run.branch,
         chronicle_summary=run.chronicle_summary,
@@ -310,7 +288,6 @@ class ActiveRunResponse(BaseModel):
     session_id: str | None = None
     reviewer_session_id: str | None = None
     review_round: int = 0
-    confidence: float = 0.0
     pr_url: str | None = None
     last_updated: str = ""
 
@@ -352,7 +329,6 @@ def create_runs_router() -> APIRouter:
                             session_id=run.session_id,
                             reviewer_session_id=run.reviewer_session_id,
                             review_round=run.review_round,
-                            confidence=run.confidence,
                             pr_url=run.pr_url,
                             last_updated=run.updated_at.isoformat() if run.updated_at else "",
                         )
@@ -367,7 +343,7 @@ def create_runs_router() -> APIRouter:
         tracker: TrackerPort = Depends(resolve_tracker),
         volundr_targets: list[VolundrPort] = Depends(resolve_volundr_targets),
     ) -> ReviewResponse:
-        """Get review state for a run: chronicle summary, CI status, confidence."""
+        """Get review state for a run: chronicle summary, CI status."""
         try:
             run = await _resolve_run_identifier(tracker, run_id)
             await _require_tracker_run(request, principal, tracker, run)
@@ -395,8 +371,6 @@ def create_runs_router() -> APIRouter:
                     exc_info=True,
                 )
 
-        events = await tracker.get_confidence_events(run.tracker_id)
-
         return ReviewResponse(
             run_id=str(run.id),
             name=run.name,
@@ -404,17 +378,6 @@ def create_runs_router() -> APIRouter:
             chronicle_summary=run.chronicle_summary,
             pr_url=pr_url,
             ci_passed=ci_passed,
-            confidence=run.confidence,
-            confidence_events=[
-                ConfidenceEventResponse(
-                    id=str(e.id),
-                    event_type=e.event_type.value,
-                    delta=e.delta,
-                    score_after=e.score_after,
-                    created_at=e.created_at.isoformat(),
-                )
-                for e in events
-            ],
         )
 
     @router.post("/{run_id}/approve", response_model=RunResponse)
@@ -429,8 +392,8 @@ def create_runs_router() -> APIRouter:
         """Approve a run: merge branch, update state, check phase gate.
 
         REST-specific pre/post steps (CI check, git merge, tracker update)
-        wrap the shared RunReviewService which handles confidence events,
-        state transition, and phase gate checks.
+        wrap the shared RunReviewService which handles the state transition
+        and phase gate checks.
         """
         svc = _build_review_service(request, tracker, principal.user_id)
 
@@ -482,7 +445,7 @@ def create_runs_router() -> APIRouter:
             except Exception:
                 logger.warning("Failed to delete branch %s", run.branch, exc_info=True)
 
-        # Core review: confidence event, state → MERGED, phase gate check
+        # Core review: state → MERGED, phase gate check
         try:
             result = await svc.approve(run.id)
         except RunNotFoundError:
@@ -519,11 +482,11 @@ def create_runs_router() -> APIRouter:
         principal: Principal = Depends(extract_principal),
         tracker: TrackerPort = Depends(resolve_tracker),
     ) -> RunResponse:
-        """Reject a run: set FAILED, record reason, apply confidence penalty."""
+        """Reject a run: set FAILED, record reason."""
         reason = body.reason if body else None
         svc = _build_review_service(request, tracker, principal.user_id)
 
-        # Core review: confidence event, state → FAILED
+        # Core review: state → FAILED
         try:
             # Look up run to get internal ID for the service
             run_obj = await _resolve_run_identifier(tracker, run_id)
@@ -564,7 +527,7 @@ def create_runs_router() -> APIRouter:
         """Retry a run: re-queue with incremented retry_count."""
         svc = _build_review_service(request, tracker, principal.user_id)
 
-        # Core review: confidence event, state → PENDING or QUEUED
+        # Core review: state → PENDING or QUEUED
         try:
             run_obj = await _resolve_run_identifier(tracker, run_id)
             await _require_tracker_run(request, principal, tracker, run_obj)

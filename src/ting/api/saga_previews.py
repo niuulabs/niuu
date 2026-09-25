@@ -64,7 +64,6 @@ def create_saga_previews_router() -> APIRouter:
             issue_count=sum(len(phase.runs) for phase in structure.phases),
             url="",
             base_branch="main",
-            confidence=0.0,
             created_at="",
         )
 

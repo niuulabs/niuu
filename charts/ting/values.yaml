@@ -452,10 +452,6 @@ sharedIntegrations:
   # -- HTTP timeout for shared integration requests
   timeoutSeconds: 30.0
 
-cerbos:
-  # -- Cerbos authorization service URL
-  url: "http://localhost:3592"
-
 auth:
   adapter: identity.adapters.identity.EnvoyHeaderAuthenticationAdapter
   kwargs: {}

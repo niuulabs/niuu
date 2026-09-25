@@ -4,7 +4,6 @@ import { useNavigate } from '@tanstack/react-router';
 import { useService } from '@niuulabs/plugin-sdk';
 import {
   StatusBadge,
-  ConfidenceBadge,
   LoadingState,
   ErrorState,
   Sparkline,
@@ -268,10 +267,6 @@ function DashboardContent() {
   const merged24hCount = merged24h.reduce((sum, value) => sum + value, 0);
   const completed24hCount = completed24h.reduce((sum, value) => sum + value, 0);
   const active24hUpdates = active24h.reduce((sum, value) => sum + value, 0);
-  const averageConfidence = activeSagas.length
-    ? Math.round(activeSagas.reduce((sum, saga) => sum + saga.confidence, 0) / activeSagas.length)
-    : 0;
-  const lowConfidenceCount = activeSagas.filter((saga) => saga.confidence < 50).length;
   const escalatedRuns = allRuns.filter((run) => run.status === 'escalated').length;
   const freshestRunUpdate = allRuns
     .map((run) => Date.parse(run.updatedAt))
@@ -316,10 +311,6 @@ function DashboardContent() {
         >
           <span className="ting-dash__stat">
             dispatcher <strong>{dispatcherState.running ? 'on' : 'off'}</strong>
-          </span>
-          <span className="ting-dash__stat-sep" aria-hidden="true" />
-          <span className="ting-dash__stat">
-            threshold <strong>{dispatcherState.threshold.toFixed(2)}</strong>
           </span>
           <span className="ting-dash__stat-sep" aria-hidden="true" />
           <span className="ting-dash__stat">
@@ -405,7 +396,6 @@ function DashboardContent() {
               <div className="ting-saga-card__meta">
                 <span>{saga.trackerId}</span>
                 <StatusBadge status={deriveSagaBadge(phases)} />
-                <ConfidenceBadge value={saga.confidence / 100} />
                 <span>{saga.repos[0]}</span>
               </div>
             </div>
@@ -510,22 +500,15 @@ function DashboardContent() {
       </div>
 
       <div className="ting-kpi ting-dash__wide">
-        <div className="ting-kpi__label">Confidence overview</div>
+        <div className="ting-kpi__label">Saga overview</div>
         <div
           className="ting-kpi__val"
           style={{ fontSize: 18, display: 'flex', alignItems: 'baseline', gap: 8 }}
         >
-          {averageConfidence}%<span className="ting-kpi__unit">average active saga confidence</span>
+          {activeSagas.length}
+          <span className="ting-kpi__unit">active sagas</span>
         </div>
         <div className="ting-kpi__stats-grid">
-          <div className="ting-kpi__stat-chip">
-            <span className="ting-kpi__stat-chip-label">active sagas</span>
-            <strong>{activeSagas.length}</strong>
-          </div>
-          <div className="ting-kpi__stat-chip">
-            <span className="ting-kpi__stat-chip-label">low confidence</span>
-            <strong>{lowConfidenceCount}</strong>
-          </div>
           <div className="ting-kpi__stat-chip">
             <span className="ting-kpi__stat-chip-label">review queue</span>
             <strong>{reviewRuns}</strong>

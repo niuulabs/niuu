@@ -1405,7 +1405,6 @@ def create_app(
                 event_bus=event_bus,
                 channel_factory=channel_factory,
                 public_origin=public_origin or settings.notification.public_origin,
-                confidence_threshold=settings.notification.confidence_threshold,
             )
             app.state.notification_service = notification_service
             if settings.notification.enabled:
@@ -1457,7 +1456,6 @@ def create_app(
                         volundr_factory=app.state.volundr_factory,
                         event_bus=event_bus,
                         config=et_cfg,
-                        initial_confidence=settings.review.initial_confidence,
                     )
                     await event_trigger_adapter.start()
                     app.state.event_trigger_adapter = event_trigger_adapter

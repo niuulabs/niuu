@@ -39,7 +39,6 @@ class FlockSettingsResponse(BaseModel):
 
 
 class DispatchDefaultsResponse(BaseModel):
-    confidence_threshold: float
     max_concurrent_runs: int
     auto_continue: bool
     batch_size: int
@@ -76,7 +75,6 @@ class RetryPolicyPatch(BaseModel):
 
 
 class DispatchDefaultsPatch(BaseModel):
-    confidence_threshold: float | None = Field(default=None, ge=0.0, le=100.0)
     max_concurrent_runs: int | None = Field(default=None, ge=1, le=20)
     auto_continue: bool | None = None
     batch_size: int | None = Field(default=None, ge=1)
@@ -140,16 +138,10 @@ def create_settings_router() -> APIRouter:
                 SettingsSectionSchema(
                     id="dispatch",
                     label="Dispatch rules",
-                    description="Confidence thresholds, concurrency, and retry policy.",
+                    description="Concurrency and retry policy.",
                     path="/settings/dispatch",
                     save_label="Save dispatch settings",
                     fields=[
-                        SettingsFieldSchema(
-                            key="confidence_threshold",
-                            label="Confidence Threshold",
-                            type="number",
-                            value=dispatch["confidence_threshold"],
-                        ),
                         SettingsFieldSchema(
                             key="max_concurrent_runs",
                             label="Max Concurrent Runs",
@@ -321,9 +313,6 @@ def create_settings_router() -> APIRouter:
         if retry_policy:
             dispatch["retry_policy"].update(retry_policy)
         dispatch["updated_at"] = now_utc()
-        request.app.state.settings.notification.confidence_threshold = dispatch[
-            "confidence_threshold"
-        ]
         request.app.state.settings.watcher.batch_size = dispatch["batch_size"]
         return DispatchDefaultsResponse.model_validate(dispatch)
 

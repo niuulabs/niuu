@@ -29,7 +29,6 @@ describe('DispatchDefaultsSection', () => {
     await waitFor(() => {
       expect(screen.getByRole('form', { name: /dispatch rules form/i })).toBeInTheDocument();
     });
-    expect(screen.getByDisplayValue('70')).toBeInTheDocument();
     expect(screen.getByDisplayValue('3')).toBeInTheDocument();
     expect(screen.getByDisplayValue('10')).toBeInTheDocument();
   });
@@ -48,17 +47,6 @@ describe('DispatchDefaultsSection', () => {
   it('shows section heading', async () => {
     render(<DispatchDefaultsSection />, { wrapper: wrap(defaultServices()) });
     await waitFor(() => expect(screen.getByText('Dispatch rules')).toBeInTheDocument());
-  });
-
-  it('shows validation error for out-of-range confidence threshold', async () => {
-    render(<DispatchDefaultsSection />, { wrapper: wrap(defaultServices()) });
-    await waitFor(() => expect(screen.getByLabelText(/confidence threshold/i)).toBeInTheDocument());
-
-    const input = screen.getByLabelText(/confidence threshold/i);
-    fireEvent.change(input, { target: { value: '150' } });
-    fireEvent.submit(screen.getByRole('form', { name: /dispatch rules form/i }));
-
-    await waitFor(() => expect(screen.getByText(/between 0 and 100/i)).toBeInTheDocument());
   });
 
   it('shows validation error for zero max concurrent runs', async () => {

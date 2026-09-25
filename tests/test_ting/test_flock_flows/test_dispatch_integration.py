@@ -42,7 +42,6 @@ def _make_saga(saga_id=None, repos=None) -> Saga:
         feature_branch="feat/test",
         base_branch="main",
         status=SagaStatus.ACTIVE,
-        confidence=0.5,
         created_at=_NOW,
         owner_id="test-owner",
     )

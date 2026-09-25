@@ -33,8 +33,8 @@ class PostgresSagaRepository(SagaRepository):
         executor = conn or self._pool
         await executor.execute(
             """
-            INSERT INTO phases (id, saga_id, tracker_id, number, name, status, confidence)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO phases (id, saga_id, tracker_id, number, name, status)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status
             """,
             phase.id,
@@ -43,7 +43,6 @@ class PostgresSagaRepository(SagaRepository):
             phase.number,
             phase.name,
             phase.status.value,
-            phase.confidence,
         )
 
     async def save_run(self, run: Run, *, conn: Any | None = None) -> None:
@@ -52,13 +51,13 @@ class PostgresSagaRepository(SagaRepository):
             """
             INSERT INTO runs
                 (id, phase_id, tracker_id, name, description, acceptance_criteria,
-                 declared_files, estimate_hours, status, confidence, session_id,
+                 declared_files, estimate_hours, status, session_id,
                  branch, chronicle_summary, retry_count, created_at, updated_at,
                  pr_url, pr_id, identifier, url, reviewer_session_id, review_round,
                  structured_outcome, outcome_event_type)
             VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb, $24
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                $14, $15, $16, $17, $18, $19, $20, $21, $22::jsonb, $23
             )
             ON CONFLICT (id) DO UPDATE SET
                 phase_id = EXCLUDED.phase_id,
@@ -69,7 +68,6 @@ class PostgresSagaRepository(SagaRepository):
                 declared_files = EXCLUDED.declared_files,
                 estimate_hours = EXCLUDED.estimate_hours,
                 status = EXCLUDED.status,
-                confidence = EXCLUDED.confidence,
                 session_id = EXCLUDED.session_id,
                 branch = EXCLUDED.branch,
                 chronicle_summary = EXCLUDED.chronicle_summary,
@@ -93,7 +91,6 @@ class PostgresSagaRepository(SagaRepository):
             run.declared_files,
             run.estimate_hours,
             run.status.value,
-            run.confidence,
             run.session_id,
             run.branch,
             run.chronicle_summary,
@@ -116,12 +113,12 @@ class PostgresSagaRepository(SagaRepository):
             """
             INSERT INTO sagas
                 (id, tracker_id, tracker_type, slug, name,
-                 repos, feature_branch, base_branch, status, confidence, created_at, owner_id,
+                 repos, feature_branch, base_branch, status, created_at, owner_id,
                  workflow_id, workflow_version, workflow_snapshot, instance_id,
                  repo_branches, target_tags, target_match, tenant_id, tracker_connection_id)
             VALUES
-                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16::uuid,
-                 $17::jsonb, $18, $19, $20, $21)
+                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15::uuid,
+                 $16::jsonb, $17, $18, $19, $20)
             ON CONFLICT (id) DO UPDATE SET
                 tracker_id = EXCLUDED.tracker_id,
                 tracker_type = EXCLUDED.tracker_type,
@@ -132,7 +129,6 @@ class PostgresSagaRepository(SagaRepository):
                 feature_branch = EXCLUDED.feature_branch,
                 base_branch = EXCLUDED.base_branch,
                 status = EXCLUDED.status,
-                confidence = EXCLUDED.confidence,
                 owner_id = EXCLUDED.owner_id,
                 workflow_id = EXCLUDED.workflow_id,
                 workflow_version = EXCLUDED.workflow_version,
@@ -153,7 +149,6 @@ class PostgresSagaRepository(SagaRepository):
             saga.feature_branch,
             saga.base_branch,
             saga.status.value,
-            saga.confidence,
             saga.created_at,
             saga.owner_id,
             saga.workflow_id,
@@ -432,7 +427,6 @@ class PostgresSagaRepository(SagaRepository):
             number=row["number"],
             name=row["name"],
             status=PhaseStatus(row.get("status", "PENDING") or "PENDING"),
-            confidence=row["confidence"] or 0.0,
         )
 
     @staticmethod
@@ -454,7 +448,6 @@ class PostgresSagaRepository(SagaRepository):
             declared_files=list(row.get("declared_files") or []),
             estimate_hours=row.get("estimate_hours"),
             status=RunStatus(row.get("status", "PENDING") or "PENDING"),
-            confidence=row.get("confidence") or 0.0,
             session_id=row.get("session_id"),
             branch=row.get("branch"),
             chronicle_summary=row.get("chronicle_summary"),
@@ -490,7 +483,6 @@ class PostgresSagaRepository(SagaRepository):
             feature_branch=row.get("feature_branch") or f"feat/{slug}",
             base_branch=row["base_branch"],
             status=SagaStatus(row.get("status", "ACTIVE") or "ACTIVE"),
-            confidence=row["confidence"] or 0.0,
             created_at=row["created_at"] or datetime.now(UTC),
             owner_id=row.get("owner_id") or "",
             tenant_id=row["tenant_id"],

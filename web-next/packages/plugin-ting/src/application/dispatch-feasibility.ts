@@ -1,7 +1,7 @@
 /**
  * Feasibility engine — pre-dispatch gate checks for runs.
  *
- * All four gates must pass before the Dispatch button is enabled.
+ * All three gates must pass before the Dispatch button is enabled.
  * Surface failing gates as per-row warning chips, never disable silently.
  */
 
@@ -12,8 +12,7 @@ import type { DispatcherState } from '../domain/dispatcher';
 // Types
 // ---------------------------------------------------------------------------
 
-export type FeasibilityGateName =
-  'raven_resolution' | 'confidence' | 'upstream_blocked' | 'cluster_healthy';
+export type FeasibilityGateName = 'raven_resolution' | 'upstream_blocked' | 'cluster_healthy';
 
 export interface FeasibilityGate {
   name: FeasibilityGateName;
@@ -50,13 +49,12 @@ export interface FeasibilityContext {
 // ---------------------------------------------------------------------------
 
 /**
- * Run all four feasibility gates against the supplied context.
+ * Run all three feasibility gates against the supplied context.
  * Returns a result with per-gate outcomes and a top-level `feasible` flag.
  */
 export function checkFeasibility(ctx: FeasibilityContext): FeasibilityResult {
   const gates: FeasibilityGate[] = [
     checkRavenResolution(ctx),
-    checkConfidence(ctx),
     checkUpstreamBlocked(ctx),
     checkClusterHealth(ctx),
   ];
@@ -75,17 +73,6 @@ export function checkRavenResolution(ctx: FeasibilityContext): FeasibilityGate {
     reason: ctx.ravenResolved
       ? 'Ravens available for assignment'
       : 'No ravens available — all slots occupied or cluster offline',
-  };
-}
-
-export function checkConfidence(ctx: FeasibilityContext): FeasibilityGate {
-  const passed = ctx.run.confidence >= ctx.dispatcherState.threshold;
-  return {
-    name: 'confidence',
-    passed,
-    reason: passed
-      ? `Confidence ${ctx.run.confidence}% meets threshold ${ctx.dispatcherState.threshold}%`
-      : `Confidence ${ctx.run.confidence}% is below threshold ${ctx.dispatcherState.threshold}%`,
   };
 }
 

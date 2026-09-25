@@ -45,8 +45,6 @@ describe('TingTopbar', () => {
     await user.click(trigger);
 
     expect(screen.getByRole('dialog', { name: 'Dispatcher status' })).toBeVisible();
-    expect(screen.getByText('Threshold')).toBeVisible();
-    expect(screen.getByText('0.70')).toBeVisible();
     expect(screen.getByText('Concurrent runs')).toBeVisible();
     expect(screen.getByText('5')).toBeVisible();
   });
@@ -65,7 +63,6 @@ describe('TingTopbar', () => {
     const slow: IDispatcherService = {
       getState: () => new Promise(() => {}), // never resolves
       setRunning: async () => {},
-      setThreshold: async () => {},
       setAutoContinue: async () => {},
       getLog: async () => [],
     };
@@ -82,7 +79,6 @@ describe('TingTopbar', () => {
       getState: async () => ({
         id: '00000000-0000-0000-0000-000000000999',
         running: false,
-        threshold: 55,
         maxConcurrentRuns: 2,
         autoContinue: false,
         updatedAt: '2026-07-11T12:00:00Z',
@@ -92,7 +88,6 @@ describe('TingTopbar', () => {
     const trigger = await screen.findByRole('button', { name: 'Dispatcher status: paused' });
     expect(screen.getByTestId('ting-chip-dispatcher-paused')).toBeInTheDocument();
     await user.click(trigger);
-    expect(screen.getByText('0.55')).toBeVisible();
     expect(screen.getByText('2')).toBeVisible();
   });
 

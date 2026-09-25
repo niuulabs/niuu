@@ -104,12 +104,6 @@ class FakeTracker(TrackerPort):
     async def get_run_by_id(self, run_id):  # noqa: ANN001
         return None
 
-    async def add_confidence_event(self, tracker_id, event):  # noqa: ANN001
-        pass
-
-    async def get_confidence_events(self, tracker_id):  # noqa: ANN001
-        return []
-
     async def all_runs_merged(self, phase_tracker_id):  # noqa: ANN001
         return False
 
@@ -194,12 +188,6 @@ class BoomTracker(TrackerPort):
 
     async def get_run_by_id(self, run_id):  # noqa: ANN001
         return None
-
-    async def add_confidence_event(self, tracker_id, event):  # noqa: ANN001
-        pass
-
-    async def get_confidence_events(self, tracker_id):  # noqa: ANN001
-        return []
 
     async def all_runs_merged(self, phase_tracker_id):  # noqa: ANN001
         return False

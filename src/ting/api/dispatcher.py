@@ -22,7 +22,6 @@ from ting.ports.event_bus import EventBusPort
 class DispatcherStateResponse(BaseModel):
     id: str
     running: bool
-    threshold: float
     max_concurrent_runs: int
     auto_continue: bool
     updated_at: datetime
@@ -30,7 +29,6 @@ class DispatcherStateResponse(BaseModel):
 
 class PatchDispatcherRequest(BaseModel):
     running: bool | None = None
-    threshold: float | None = Field(None, ge=0.0, le=1.0)
     max_concurrent_runs: int | None = Field(None, ge=1, le=20)
     auto_continue: bool | None = None
 
@@ -92,7 +90,6 @@ def create_dispatcher_router() -> APIRouter:
         return DispatcherStateResponse(
             id=str(state.id),
             running=state.running,
-            threshold=state.threshold,
             max_concurrent_runs=state.max_concurrent_runs,
             auto_continue=state.auto_continue,
             updated_at=state.updated_at,
@@ -110,7 +107,6 @@ def create_dispatcher_router() -> APIRouter:
         return DispatcherStateResponse(
             id=str(state.id),
             running=state.running,
-            threshold=state.threshold,
             max_concurrent_runs=state.max_concurrent_runs,
             auto_continue=state.auto_continue,
             updated_at=state.updated_at,

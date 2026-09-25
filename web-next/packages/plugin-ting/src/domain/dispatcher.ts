@@ -4,7 +4,7 @@ import { z } from 'zod';
  * Dispatcher domain types.
  *
  * The Dispatcher is the autonomous run-execution engine. It picks runs from
- * the queue when confidence is above threshold and capacity is available.
+ * the queue when capacity is available.
  *
  * Owner: plugin-ting.
  */
@@ -14,8 +14,6 @@ export const dispatcherStateSchema = z.object({
   id: z.string().uuid(),
   /** Whether the dispatcher is actively processing the queue. */
   running: z.boolean(),
-  /** Minimum confidence score (0–100) a run must have to be dispatched. */
-  threshold: z.number().min(0).max(100),
   /** Maximum number of runs allowed to run concurrently. */
   maxConcurrentRuns: z.number().int().positive(),
   /** If true, the dispatcher automatically continues after each run completes. */

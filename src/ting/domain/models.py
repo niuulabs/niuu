@@ -39,20 +39,6 @@ class RunStatus(StrEnum):
     FAILED = "FAILED"
 
 
-class ConfidenceEventType(StrEnum):
-    CI_PASS = "ci_pass"
-    CI_FAIL = "ci_fail"
-    SCOPE_BREACH = "scope_breach"
-    RETRY = "retry"
-    HUMAN_REJECT = "human_reject"
-    HUMAN_APPROVED = "human_approved"
-    AUTO_APPROVED = "auto_approved"
-    PR_CONFLICT = "pr_conflict"
-    PR_MERGEABLE = "pr_mergeable"
-    MESSAGE_SENT = "message_sent"
-    REVIEWER_SCORE = "reviewer_score"
-
-
 class WorkflowScope(StrEnum):
     SYSTEM = "system"
     USER = "user"
@@ -111,7 +97,6 @@ class Saga:
     repos: list[str]
     feature_branch: str
     status: SagaStatus
-    confidence: float
     created_at: datetime
     base_branch: str
     tracker_connection_id: str = ""
@@ -134,7 +119,6 @@ class Phase:
     number: int
     name: str
     status: PhaseStatus
-    confidence: float
 
 
 @dataclass(frozen=True)
@@ -148,7 +132,6 @@ class Run:
     declared_files: list[str]
     estimate_hours: float | None
     status: RunStatus
-    confidence: float
     session_id: str | None
     branch: str | None
     chronicle_summary: str | None
@@ -163,16 +146,6 @@ class Run:
     review_round: int = 0
     structured_outcome: dict[str, Any] | None = None
     outcome_event_type: str | None = None
-
-
-@dataclass(frozen=True)
-class ConfidenceEvent:
-    id: UUID
-    run_id: UUID
-    event_type: ConfidenceEventType
-    delta: float
-    score_after: float
-    created_at: datetime
 
 
 @dataclass(frozen=True)
@@ -226,7 +199,6 @@ class DispatcherState:
     id: UUID
     owner_id: str
     running: bool
-    threshold: float
     max_concurrent_runs: int
     auto_continue: bool
     updated_at: datetime

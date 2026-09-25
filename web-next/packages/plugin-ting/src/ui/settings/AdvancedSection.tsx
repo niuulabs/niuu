@@ -27,12 +27,6 @@ const ACTIONS: DangerAction[] = [
     confirmMessage:
       'Are you sure you want to reset the dispatcher? All running runs will be interrupted.',
   },
-  {
-    label: 'Rebuild confidence scores',
-    buttonText: 'Rebuild',
-    danger: false,
-    confirmMessage: 'Rebuild all confidence scores from scratch? This may take a few minutes.',
-  },
 ];
 
 export interface AdvancedSectionProps {

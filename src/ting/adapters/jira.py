@@ -2,7 +2,7 @@
 
 Maps Jira projects to sagas, versions to phases, and issues to runs.  Jira
 owns the visible work hierarchy while Ting's ``run_progress`` tables retain
-execution-only state such as sessions, confidence, and pull requests.
+execution-only state such as sessions and pull requests.
 """
 
 from __future__ import annotations
@@ -20,8 +20,6 @@ import asyncpg
 import httpx
 
 from ting.domain.models import (
-    ConfidenceEvent,
-    ConfidenceEventType,
     Phase,
     PhaseStatus,
     Run,
@@ -475,7 +473,6 @@ class JiraTrackerAdapter(TrackerPort):
         *,
         status: RunStatus | None = None,
         session_id: str | None = None,
-        confidence: float | None = None,
         pr_url: str | None = None,
         pr_id: str | None = None,
         retry_count: int | None = None,
@@ -492,31 +489,29 @@ class JiraTrackerAdapter(TrackerPort):
         await self._pool.execute(
             """
             INSERT INTO run_progress
-                (tracker_id, status, session_id, confidence, pr_url, pr_id,
+                (tracker_id, status, session_id, pr_url, pr_id,
                  retry_count, reason, owner_id, phase_tracker_id, saga_tracker_id,
                  chronicle_summary, reviewer_session_id, review_round, tracker_connection_id)
-            VALUES ($1, COALESCE($2, 'PENDING'), $3, $4, $5, $6,
-                    COALESCE($7, 0), $8, $9, $10, $11, $12, $13, COALESCE($14, 0), $15)
+            VALUES ($1, COALESCE($2, 'PENDING'), $3, $4, $5,
+                    COALESCE($6, 0), $7, $8, $9, $10, $11, $12, COALESCE($13, 0), $14)
             ON CONFLICT (tracker_connection_id, tracker_id) DO UPDATE SET
                 status = COALESCE($2, run_progress.status),
                 session_id = COALESCE($3, run_progress.session_id),
-                confidence = COALESCE($4, run_progress.confidence),
-                pr_url = COALESCE($5, run_progress.pr_url),
-                pr_id = COALESCE($6, run_progress.pr_id),
-                retry_count = COALESCE($7, run_progress.retry_count),
-                reason = COALESCE($8, run_progress.reason),
-                owner_id = COALESCE($9, run_progress.owner_id),
-                phase_tracker_id = COALESCE($10, run_progress.phase_tracker_id),
-                saga_tracker_id = COALESCE($11, run_progress.saga_tracker_id),
-                chronicle_summary = COALESCE($12, run_progress.chronicle_summary),
-                reviewer_session_id = COALESCE($13, run_progress.reviewer_session_id),
-                review_round = COALESCE($14, run_progress.review_round),
+                pr_url = COALESCE($4, run_progress.pr_url),
+                pr_id = COALESCE($5, run_progress.pr_id),
+                retry_count = COALESCE($6, run_progress.retry_count),
+                reason = COALESCE($7, run_progress.reason),
+                owner_id = COALESCE($8, run_progress.owner_id),
+                phase_tracker_id = COALESCE($9, run_progress.phase_tracker_id),
+                saga_tracker_id = COALESCE($10, run_progress.saga_tracker_id),
+                chronicle_summary = COALESCE($11, run_progress.chronicle_summary),
+                reviewer_session_id = COALESCE($12, run_progress.reviewer_session_id),
+                review_round = COALESCE($13, run_progress.review_round),
                 updated_at = NOW()
             """,
             tracker_id,
             status.value if status else None,
             session_id,
-            confidence,
             pr_url,
             pr_id,
             retry_count,
@@ -587,54 +582,6 @@ class JiraTrackerAdapter(TrackerPort):
                 return await self.get_run(row["tracker_id"])
         return None
 
-    async def add_confidence_event(self, tracker_id: str, event: ConfidenceEvent) -> None:
-        if self._pool is None:
-            raise RuntimeError("pool is required for add_confidence_event")
-        await self._pool.execute(
-            """
-            INSERT INTO run_confidence_events
-                (id, run_id, tracker_id, event_type, delta, score_after, created_at,
-                 tracker_connection_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            """,
-            event.id,
-            event.run_id,
-            tracker_id,
-            event.event_type.value,
-            event.delta,
-            event.score_after,
-            event.created_at,
-            self.connection_id,
-        )
-        await self._pool.execute(
-            "UPDATE run_progress SET confidence = $2, updated_at = NOW() "
-            "WHERE tracker_id = $1 AND tracker_connection_id = $3",
-            tracker_id,
-            event.score_after,
-            self.connection_id,
-        )
-
-    async def get_confidence_events(self, tracker_id: str) -> list[ConfidenceEvent]:
-        if self._pool is None:
-            return []
-        rows = await self._pool.fetch(
-            "SELECT * FROM run_confidence_events WHERE tracker_id = $1 "
-            "AND tracker_connection_id = $2 ORDER BY created_at",
-            tracker_id,
-            self.connection_id,
-        )
-        return [
-            ConfidenceEvent(
-                id=row["id"],
-                run_id=row["run_id"],
-                event_type=ConfidenceEventType(row["event_type"]),
-                delta=row["delta"],
-                score_after=row["score_after"],
-                created_at=row["created_at"],
-            )
-            for row in rows
-        ]
-
     async def all_runs_merged(self, phase_tracker_id: str) -> bool:
         if self._pool is None:
             return False
@@ -670,7 +617,6 @@ class JiraTrackerAdapter(TrackerPort):
                 number=item.sort_order,
                 name=item.name,
                 status=PhaseStatus.COMPLETE if item.progress >= 1 else PhaseStatus.PENDING,
-                confidence=0.0,
             )
             for item in milestones
         ]
@@ -859,7 +805,6 @@ class JiraTrackerAdapter(TrackerPort):
             repos=[],
             feature_branch=f"feat/{key.lower()}",
             status=SagaStatus.COMPLETE if node.get("archived") else SagaStatus.ACTIVE,
-            confidence=0.0,
             created_at=datetime.now(UTC),
             base_branch="",
         )
@@ -874,7 +819,6 @@ class JiraTrackerAdapter(TrackerPort):
             number=0,
             name=str(node.get("name") or ""),
             status=PhaseStatus.COMPLETE if node.get("released") else PhaseStatus.PENDING,
-            confidence=0.0,
         )
 
     def _node_to_run(self, node: dict[str, Any], *, progress: dict[str, Any] | None = None) -> Run:
@@ -895,7 +839,6 @@ class JiraTrackerAdapter(TrackerPort):
             declared_files=[],
             estimate_hours=issue.estimate,
             status=run_status,
-            confidence=float(progress.get("confidence") or 0.0) if progress else 0.0,
             session_id=progress.get("session_id") if progress else None,
             branch=None,
             chronicle_summary=progress.get("chronicle_summary") if progress else None,
@@ -917,7 +860,6 @@ class JiraTrackerAdapter(TrackerPort):
             number=row["number"],
             name=row["name"],
             status=PhaseStatus(row["status"]),
-            confidence=row["confidence"],
         )
 
     @staticmethod
