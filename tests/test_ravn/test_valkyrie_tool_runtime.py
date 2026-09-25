@@ -437,6 +437,12 @@ async def test_peer_adoption_reviews_canaries_and_installs_agent_tool(tmp_path) 
         tool_code=learned.tool_code,
         tool_entry_point=learned.manifest.entry_point,
         learned_tool_manifest=learned.manifest.to_dict(),
+        test_code=(
+            "import _verify_tool\n\n"
+            "def test_query():\n"
+            "    result = _verify_tool.run({'query': 'up'})\n"
+            "    assert result['query'] == 'up'\n"
+        ),
         canary_sample={"query": "up"},
     )
 

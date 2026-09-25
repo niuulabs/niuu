@@ -164,6 +164,8 @@ export interface ISessionStream {
   listSessions(): Promise<Session[]>;
   getSession(id: string, instanceId?: string, ravnId?: string): Promise<Session>;
   getMessages(sessionId: string, instanceId?: string, ravnId?: string): Promise<Message[]>;
+  /** Stop a Forge-backed ravn session (a flock session; residents use lifecycle commands). */
+  stopSession(sessionId: string, instanceId?: string): Promise<void>;
 }
 
 /** CRUD store for Triggers. */

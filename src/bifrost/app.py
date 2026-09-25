@@ -246,7 +246,7 @@ def create_app(config: BifrostConfig) -> FastAPI:
     event_emitter = _build_event_emitter(config)
 
     # ── SIGHUP handler — reload keys without restarting ──────────────────────
-    def _handle_sighup(signum: int, frame: object) -> None:  # noqa: ARG001
+    def _handle_sighup(signum: int, frame: object) -> None:
         logger.info("Received SIGHUP — reloading provider keys")
         router.reload_keys()
 
@@ -260,15 +260,20 @@ def create_app(config: BifrostConfig) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        yield
-        await router.close()
-        if hasattr(store, "close"):
-            await store.close()
-        await event_emitter.close()
-        await cache.close()
-        await audit.close()
-        if hasattr(obs_router, "http_client"):
-            await obs_router.http_client.aclose()
+        try:
+            yield
+        finally:
+            await router.close()
+            if hasattr(store, "close"):
+                await store.close()
+            await event_emitter.close()
+            await cache.close()
+            await audit.close()
+            if hasattr(obs_router, "http_client"):
+                await obs_router.http_client.aclose()
+            # Not shutdown_observability() here: this composition root may
+            # share the process with others (mini mode). configure_observability
+            # registers an atexit shutdown hook for process-exit cleanup instead.
 
     app = FastAPI(
         title="Bifröst LLM Gateway",
@@ -276,6 +281,25 @@ def create_app(config: BifrostConfig) -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    # Configured and instrumented here, not in lifespan: Starlette builds and
+    # caches its middleware stack on the app's first ASGI __call__ (which is
+    # also how the lifespan startup event arrives), so instrumenting from
+    # inside a lifespan handler has no effect.
+    from niuu.observability import (
+        configure_observability,
+        instrument_fastapi_app,
+        instrument_httpx_client,
+    )
+
+    telemetry = configure_observability(
+        config.observability,
+        resource_attributes={"service.namespace": "bifrost"},
+        component="bifrost",
+        default_service_name="bifrost",
+    )
+    instrument_fastapi_app(app, telemetry, component="bifrost")
+    instrument_httpx_client(telemetry)
 
     @app.middleware("http")
     async def correlation_id_middleware(request: Request, call_next):  # noqa: ANN001

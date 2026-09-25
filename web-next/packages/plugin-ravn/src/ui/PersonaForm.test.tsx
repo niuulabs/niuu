@@ -65,7 +65,7 @@ describe('PersonaForm', () => {
       wrapper: wrap(),
     });
     expect(screen.getByDisplayValue('A test persona')).toBeInTheDocument();
-    expect(screen.getByLabelText('system_prompt_template')).toHaveValue(
+    expect(screen.getByLabelText('System prompt')).toHaveValue(
       '# test-persona\nYou are {{name}}, a {{role}} persona.',
     );
   });
@@ -120,7 +120,7 @@ describe('PersonaForm', () => {
       wrapper: wrap(),
     });
 
-    fireEvent.change(screen.getByLabelText('system_prompt_template'), {
+    fireEvent.change(screen.getByLabelText('System prompt'), {
       target: { value: '# updated\nYou are a stricter reviewer.' },
     });
 
@@ -167,7 +167,7 @@ describe('PersonaForm', () => {
       wrapper: wrap(),
     });
     // Thinking is now a toggle button showing true/false
-    expect(screen.getByText('llm.thinking')).toBeInTheDocument();
+    expect(screen.getByText('Extended thinking')).toBeInTheDocument();
   });
 
   it('shows add consumed event button', () => {

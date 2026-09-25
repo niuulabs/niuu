@@ -123,8 +123,11 @@ export const ravnSchema = z
     residentName: z.string().optional(),
     /** Mesh peer id of the resident session (resident ravens only). */
     peerId: z.string().optional(),
-    /** What backs this ravn: a long-lived resident session or a persona deployment. */
-    kind: z.enum(['resident', 'persona']).optional(),
+    /**
+     * What backs this ravn: a long-lived resident, a persona deployment, or a
+     * Forge flock session (host processes on a Forge, listed only as a session).
+     */
+    kind: z.enum(['resident', 'persona', 'session']).optional(),
     /** Skuld WebSocket chat endpoint (same protocol as Volundr live sessions). */
     chatEndpoint: z.string().nullable().optional(),
     /** Backing session id (resident ravens only). */

@@ -17,8 +17,6 @@ from ting.adapters.linear import (
     _parse_progress,
 )
 from ting.domain.models import (
-    ConfidenceEvent,
-    ConfidenceEventType,
     Phase,
     PhaseStatus,
     Run,
@@ -352,7 +350,6 @@ class TestCreateSaga:
             repos=["org/repo"],
             feature_branch="feat/test",
             status=SagaStatus.ACTIVE,
-            confidence=0.0,
             created_at=now,
             base_branch="dev",
         )
@@ -377,7 +374,6 @@ class TestCreateSaga:
             repos=["org/repo"],
             feature_branch="feat/test",
             status=SagaStatus.ACTIVE,
-            confidence=0.0,
             created_at=now,
             base_branch="dev",
         )
@@ -406,7 +402,6 @@ class TestCreateSaga:
             repos=[],
             feature_branch="feat/test",
             status=SagaStatus.ACTIVE,
-            confidence=0.0,
             created_at=now,
             base_branch="dev",
         )
@@ -442,7 +437,6 @@ class TestCreatePhase:
             number=1,
             name="Phase 1",
             status=PhaseStatus.PENDING,
-            confidence=0.0,
         )
 
         result = await adapter.create_phase(phase)
@@ -480,7 +474,6 @@ class TestCreateRun:
             declared_files=[],
             estimate_hours=None,
             status=RunStatus.PENDING,
-            confidence=0.0,
             session_id=None,
             branch=None,
             chronicle_summary=None,
@@ -519,7 +512,6 @@ class TestCreateRun:
             declared_files=["src/main.py", "tests/test_main.py"],
             estimate_hours=2.0,
             status=RunStatus.PENDING,
-            confidence=0.0,
             session_id=None,
             branch=None,
             chronicle_summary=None,
@@ -566,7 +558,6 @@ class TestCreateRun:
             declared_files=[],
             estimate_hours=0.1,
             status=RunStatus.PENDING,
-            confidence=0.0,
             session_id=None,
             branch=None,
             chronicle_summary=None,
@@ -928,7 +919,7 @@ class TestUpdateRunProgress:
             {"data": {"issue": _issue_node(id="t-1")}}
         )
 
-        result = await adapter.update_run_progress("t-1", confidence=0.9)
+        result = await adapter.update_run_progress("t-1")
 
         # Only the get_run GQL call (no update_run_state calls)
         assert adapter._gql._client.post.call_count == 1
@@ -990,7 +981,6 @@ class TestCreatePhaseFailure:
             number=1,
             name="Phase Fail",
             status=PhaseStatus.PENDING,
-            confidence=0.0,
         )
 
         with pytest.raises(GraphQLError, match="Failed to create Linear milestone"):
@@ -998,44 +988,11 @@ class TestCreatePhaseFailure:
 
 
 # ---------------------------------------------------------------------------
-# create_run with confidence and failure
+# create_run failure
 # ---------------------------------------------------------------------------
 
 
 class TestCreateRunExtended:
-    async def test_includes_confidence_in_description(self):
-        adapter = _make_adapter()
-        adapter._gql._client = AsyncMock()
-        adapter._gql._client.post.return_value = _mock_response(
-            {"data": {"issueCreate": {"issue": {"id": "new-issue"}, "success": True}}}
-        )
-        now = datetime.now(UTC)
-        run = Run(
-            id=uuid4(),
-            phase_id=uuid4(),
-            tracker_id="proj-1",
-            name="Run",
-            description="desc",
-            acceptance_criteria=[],
-            declared_files=[],
-            estimate_hours=None,
-            status=RunStatus.PENDING,
-            confidence=0.75,
-            session_id=None,
-            branch=None,
-            chronicle_summary=None,
-            pr_url=None,
-            pr_id=None,
-            retry_count=0,
-            created_at=now,
-            updated_at=now,
-        )
-
-        await adapter.create_run(run)
-
-        payload = adapter._gql._client.post.call_args[1]["json"]
-        assert "75%" in payload["variables"]["description"]
-
     async def test_raises_when_issue_null(self):
         adapter = _make_adapter()
         adapter._gql._client = AsyncMock()
@@ -1053,7 +1010,6 @@ class TestCreateRunExtended:
             declared_files=[],
             estimate_hours=None,
             status=RunStatus.PENDING,
-            confidence=0.0,
             session_id=None,
             branch=None,
             chronicle_summary=None,
@@ -1440,76 +1396,6 @@ class TestGetRunById:
 
 
 # ---------------------------------------------------------------------------
-# add_confidence_event
-# ---------------------------------------------------------------------------
-
-
-class TestAddConfidenceEvent:
-    async def test_no_pool_raises(self):
-        adapter = _make_adapter()
-        event = ConfidenceEvent(
-            id=uuid4(),
-            run_id=uuid4(),
-            event_type=ConfidenceEventType.CI_PASS,
-            delta=0.05,
-            score_after=0.75,
-            created_at=datetime.now(UTC),
-        )
-        with pytest.raises(RuntimeError, match="pool is required for add_confidence_event"):
-            await adapter.add_confidence_event("t-1", event)
-
-    async def test_with_pool_inserts_event(self):
-        adapter, pool = _make_adapter_with_pool()
-        event = ConfidenceEvent(
-            id=uuid4(),
-            run_id=uuid4(),
-            event_type=ConfidenceEventType.CI_PASS,
-            delta=0.05,
-            score_after=0.75,
-            created_at=datetime.now(UTC),
-        )
-
-        await adapter.add_confidence_event("t-1", event)
-
-        assert pool.execute.call_count == 2
-        insert_sql = pool.execute.call_args_list[0][0][0]
-        assert "INSERT INTO run_confidence_events" in insert_sql
-        update_sql = pool.execute.call_args_list[1][0][0]
-        assert "UPDATE run_progress SET confidence" in update_sql
-
-
-# ---------------------------------------------------------------------------
-# get_confidence_events
-# ---------------------------------------------------------------------------
-
-
-class TestGetConfidenceEvents:
-    async def test_no_pool_returns_empty(self):
-        adapter = _make_adapter()
-        result = await adapter.get_confidence_events("t-1")
-        assert result == []
-
-    async def test_with_pool_returns_events(self):
-        adapter, pool = _make_adapter_with_pool()
-        run_id = uuid4()
-        pool.fetch.return_value = [
-            {
-                "id": uuid4(),
-                "run_id": run_id,
-                "event_type": "ci_pass",
-                "delta": 0.05,
-                "score_after": 0.8,
-                "created_at": datetime.now(UTC),
-            }
-        ]
-
-        result = await adapter.get_confidence_events("t-1")
-
-        assert len(result) == 1
-        assert result[0].event_type == ConfidenceEventType.CI_PASS
-
-
-# ---------------------------------------------------------------------------
 # all_runs_merged
 # ---------------------------------------------------------------------------
 
@@ -1581,7 +1467,6 @@ class TestListPhasesForSaga:
                 "number": 1,
                 "name": "Phase 1",
                 "status": "ACTIVE",
-                "confidence": 0.4,
             },
             {
                 "id": uuid4(),
@@ -1590,7 +1475,6 @@ class TestListPhasesForSaga:
                 "number": 2,
                 "name": "Phase 2",
                 "status": "GATED",
-                "confidence": 0.1,
             },
         ]
         pool.fetchval.return_value = 0
@@ -1701,7 +1585,6 @@ class TestListPhasesForSaga:
                 "number": 1,
                 "name": "Phase 1",
                 "status": "ACTIVE",
-                "confidence": 0.4,
             }
         ]
         pool.fetchval.return_value = 1
@@ -1734,7 +1617,6 @@ class TestUpdatePhaseStatus:
             "number": 2,
             "name": "Phase 2",
             "status": "ACTIVE",
-            "confidence": 0.25,
         }
 
         result = await adapter.update_phase_status("phase-tid", PhaseStatus.ACTIVE)
@@ -1798,7 +1680,6 @@ class TestGetSagaForRun:
             "feature_branch": "feat/proof-import",
             "base_branch": "dev",
             "status": "ACTIVE",
-            "confidence": 0.0,
             "created_at": created_at,
             "owner_id": "dev-user",
             "workflow_id": None,
@@ -2053,7 +1934,6 @@ class TestIssueToRun:
         progress = {
             "status": "RUNNING",
             "run_id": uuid4(),
-            "confidence": None,
             "session_id": None,
             "pr_url": None,
             "pr_id": None,

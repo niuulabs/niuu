@@ -12,7 +12,6 @@ from textual.widget import Widget
 from textual.widgets import Input, Static
 
 from cli.tui.theme import (
-    ACCENT_AMBER,
     ACCENT_CYAN,
     ACCENT_EMERALD,
     ACCENT_PURPLE,
@@ -24,7 +23,6 @@ from cli.tui.theme import (
 )
 from cli.tui.widgets.metric_card import MetricCard, MetricRow
 from cli.tui.widgets.tabs import NiuuTabs
-from ting.tui._helpers import format_confidence
 
 if TYPE_CHECKING:
     from niuu.cli_api_client import CLIAPIClient
@@ -68,17 +66,12 @@ class QueueItem(Widget):
         run = self._run
         name = run.get("name", "Unknown")
         run_id = str(run.get("id", ""))[:8]
-        confidence = run.get("confidence", 0.0)
-        conf_pct = format_confidence(confidence)
 
         check = "☑" if self._selected else "☐"
         check_color = ACCENT_EMERALD if self._selected else TEXT_MUTED
 
         return (
-            f"[{check_color}]{check}[/]  "
-            f"[bold {TEXT_PRIMARY}]{name}[/]  "
-            f"[{TEXT_MUTED}]{run_id}[/]  "
-            f"[{ACCENT_AMBER}]{conf_pct}[/]"
+            f"[{check_color}]{check}[/]  [bold {TEXT_PRIMARY}]{name}[/]  [{TEXT_MUTED}]{run_id}[/]"
         )
 
     def _refresh_display(self) -> None:
@@ -165,7 +158,6 @@ class DispatchPage(Widget):
         self._search_query: str = ""
         self._dispatch_config: dict[str, Any] = {
             "max_concurrent": 3,
-            "threshold": 0.7,
         }
 
     @property
@@ -282,11 +274,9 @@ class DispatchPage(Widget):
 
     def _render_config(self) -> str:
         max_conc = self._dispatch_config.get("max_concurrent", 3)
-        threshold = self._dispatch_config.get("threshold", 0.7)
         return (
             f"[{TEXT_MUTED}]Config:[/]  "
-            f"[{TEXT_SECONDARY}]max concurrent: [{ACCENT_CYAN}]{max_conc}[/][/]  "
-            f"[{TEXT_SECONDARY}]threshold: [{ACCENT_AMBER}]{threshold:.0%}[/][/]"
+            f"[{TEXT_SECONDARY}]max concurrent: [{ACCENT_CYAN}]{max_conc}[/][/]"
         )
 
     def _update_config_display(self) -> None:

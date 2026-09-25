@@ -24,6 +24,39 @@ The three **merge layers** are (last wins per field):
 
 ---
 
+## Node LLM resolution
+
+Every Ravn node in a flock session gets its `llm:` section from these layers, last wins per key:
+
+| Layer | Source |
+|-------|--------|
+| Forge default | Volundr `ravn_flock_llm_config` (Helm value `ravnFlockLlmConfig`) |
+| Launch override | `workload_config.llm_config` (Ting sends `dispatch.flock.llm_config` here) |
+| Persona override | `workload_config.personas[i].llm` |
+
+A deployment-wide `workload_config.ravn_config.llm` section is layered over the result.
+
+The session's `model` is not one of these layers. In a flock session it sets the model of the Skuld broker's own CLI agent, and Ting fills it with `dispatch.default_model`. To choose a Ravn's model, use `llm_config.model`.
+
+If a node still has no `model` after these layers, the launch **fails** and the session records why. It does not start on Ravn's built-in default model. Fix it by setting `ravn_flock_llm_config` on the Forge, by passing `llm_config` in the launch, or by giving each persona an `llm.model`.
+
+In mini mode, Volundr and Ting read the same `~/.niuu/config.yaml`, but each reads its own key. Direct Forge launches, such as the Ravn workbench, use `ravn_flock_llm_config`. Ting dispatch uses `dispatch.flock.llm_config`. Point both at a model your endpoint actually serves:
+
+```yaml
+ravn_flock_llm_config:
+  model: Qwen/Qwen3.8-27B
+  max_tokens: 8192
+  timeout: 300
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: https://vllm.example.internal
+```
+
+A standalone `ravn flock init` (outside the Forge) writes the `llm:` section of `~/.ravn/config.yaml` into every node config, or the section of the file you pass with `--llm-config`. With neither, the node configs carry no `llm:` section, and init reports that the nodes run on Ravn's built-in default.
+
+---
+
 ## Persona source backends
 
 Each Ravn sidecar needs a way to resolve persona definitions at startup. Three backends are available:

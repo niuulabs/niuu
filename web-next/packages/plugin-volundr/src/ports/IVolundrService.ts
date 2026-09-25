@@ -199,6 +199,8 @@ export interface IVolundrService {
     resourceConfig?: Record<string, string | undefined>;
     systemPrompt?: string;
     initialPrompt?: string;
+    /** What the session runs: an ordinary coding session (default) or `ravn_flock`. */
+    workloadType?: 'session' | 'ravn_flock';
     workloadConfig?: Record<string, unknown>;
   }): Promise<VolundrSession>;
   evaluatePermissionAutoApproval(

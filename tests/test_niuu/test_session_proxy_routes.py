@@ -291,6 +291,61 @@ class TestSessionProxyIdentityPolicy:
         connect.assert_not_called()
 
 
+class TestHttpProxyAttachGuard:
+    """The HTTP ``/s/{id}/api/{path}`` route must apply the same attach guard
+    as the WebSocket legs — a caller who cannot attach to a session's chat
+    must not be able to POST to its broker API either (e.g. workflow gate
+    resolution, room join)."""
+
+    def test_non_owner_denied(self, tmp_path) -> None:
+        async def deny(session_id, user_id, tenant_id, roles) -> bool:
+            return False
+
+        app, reg = _bare_app(tmp_path, guard=deny)
+        reg.register("sess", 9123)
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get("/s/sess/api/conversation/history")
+
+        assert resp.status_code == 403
+        mock_client.request.assert_not_called()
+
+    def test_owner_allowed(self, tmp_path) -> None:
+        seen: list[tuple] = []
+
+        async def guard(session_id, user_id, tenant_id, roles) -> bool:
+            seen.append((session_id, user_id, tenant_id, roles))
+            return user_id == "alice"
+
+        app, reg = _bare_app(tmp_path, guard=guard)
+        app.state.identity = _verifying_identity()
+        reg.register("sess", 9123)
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get(
+                "/s/sess/api/conversation/history",
+                headers={
+                    "x-verified-user": "alice",
+                    "x-verified-tenant": "t1",
+                    "x-verified-roles": "volundr:developer",
+                },
+            )
+
+        assert resp.status_code == 200
+        assert seen == [("sess", "alice", "t1", ("volundr:developer",))]
+
+    def test_refuses_to_attach_without_a_guard_outside_dev(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path, guard=None)
+        reg.register("sess", 9123)
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            with pytest.raises(SessionProxyGuardMissingError):
+                TestClient(app).get("/s/sess/api/conversation/history")
+            mock_client_cls.assert_not_called()
+
+
 class _SocketDouble:
     """In-memory transport only; no provider, gateway, or listening socket."""
 

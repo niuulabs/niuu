@@ -136,7 +136,6 @@ def _make_saga() -> Saga:
         repos=["org/repo-a", "org/repo-b"],
         feature_branch="feat/alpha",
         status=SagaStatus.ACTIVE,
-        confidence=0.0,
         created_at=datetime.now(UTC),
         base_branch="dev",
     )
@@ -419,7 +418,6 @@ class TestFindReadyIssues:
                     number=1,
                     name="Phase 1",
                     status=PhaseStatus.ACTIVE,
-                    confidence=0.0,
                 ),
                 Phase(
                     id=uuid4(),
@@ -428,7 +426,6 @@ class TestFindReadyIssues:
                     number=2,
                     name="Phase 2",
                     status=PhaseStatus.GATED,
-                    confidence=0.0,
                 ),
             ]
         )
@@ -520,7 +517,6 @@ class TestFindReadyIssues:
                 repos=["org/repo-b"],
                 feature_branch="feat/beta",
                 status=SagaStatus.ACTIVE,
-                confidence=0.0,
                 created_at=datetime.now(UTC),
                 base_branch="main",
             )
@@ -759,7 +755,6 @@ class TestDispatchIssues:
             repos=saga.repos,
             feature_branch=saga.feature_branch,
             status=saga.status,
-            confidence=saga.confidence,
             created_at=saga.created_at,
             base_branch=saga.base_branch,
             owner_id=saga.owner_id,
@@ -825,7 +820,6 @@ class TestDispatchIssues:
             repos=saga.repos,
             feature_branch=saga.feature_branch,
             status=saga.status,
-            confidence=saga.confidence,
             created_at=saga.created_at,
             base_branch=saga.base_branch,
             owner_id=saga.owner_id,
@@ -1003,7 +997,6 @@ class TestActiveSagaFiltering:
                 repos=["org/repo"],
                 feature_branch="feat/done",
                 status=SagaStatus.COMPLETE,
-                confidence=0.0,
                 created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
                 base_branch="dev",
             )
@@ -1058,7 +1051,6 @@ class TestActiveSagaFiltering:
             repos=["org/repo"],
             feature_branch="feat/done",
             status=SagaStatus.ACTIVE,
-            confidence=0.0,
             created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
             base_branch="dev",
         )
@@ -1255,7 +1247,6 @@ class TestBuildSpawnRequestPersonaOverrides:
             feature_branch="feat/alpha",
             base_branch="main",
             status=SagaStatus.ACTIVE,
-            confidence=0.5,
             created_at=datetime.now(UTC),
         )
 
@@ -1611,7 +1602,6 @@ class TestResolveWorkflowSnapshot:
             feature_branch="feat/alpha",
             base_branch="main",
             status=SagaStatus.ACTIVE,
-            confidence=0.5,
             created_at=datetime.now(UTC),
             owner_id="owner-1",
         )
@@ -1648,7 +1638,6 @@ class TestResolveWorkflowSnapshot:
             feature_branch="feat/alpha",
             base_branch="main",
             status=SagaStatus.ACTIVE,
-            confidence=0.5,
             created_at=datetime.now(UTC),
             owner_id="owner-1",
         )
@@ -1696,7 +1685,6 @@ def _make_phase(saga_id, number: int = 1) -> Phase:
         number=number,
         name="review",
         status=PhaseStatus.ACTIVE,
-        confidence=0.0,
     )
 
 
@@ -1713,7 +1701,6 @@ def _make_run(phase_id, persona: str = "reviewer") -> Run:
         declared_files=[],
         estimate_hours=1.0,
         status=RunStatus.PENDING,
-        confidence=0.0,
         session_id=None,
         branch=None,
         chronicle_summary=None,

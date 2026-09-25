@@ -769,7 +769,6 @@ class TestBuildEventTriggerAdapter:
             volundr_factory=StubVolundrFactory(),
             event_bus=InMemoryEventBus(),
             config=cfg,
-            initial_confidence=0.5,
         )
         assert len(adapter._rules) == 1
         assert adapter._rules[0].event_pattern == "github.pr.opened"
@@ -788,7 +787,6 @@ class TestBuildEventTriggerAdapter:
             volundr_factory=StubVolundrFactory(),
             event_bus=InMemoryEventBus(),
             config=cfg,
-            initial_confidence=0.5,
         )
         assert adapter._templates_dir == BUNDLED_TEMPLATES_DIR
 
@@ -830,7 +828,6 @@ class TestNotificationServiceNeedsApproval:
         svc = NotificationService(
             event_bus=event_bus,
             channel_factory=StubFactory(channel),
-            confidence_threshold=0.3,
         )
         await svc.start()
 
@@ -884,7 +881,6 @@ class TestNotificationServiceNeedsApproval:
         svc = NotificationService(
             event_bus=event_bus,
             channel_factory=StubFactory(channel),
-            confidence_threshold=0.3,
         )
         await svc.start()
 
@@ -1508,7 +1504,6 @@ class TestPersonaPassedToSpawnRequest:
             feature_branch="main",
             base_branch="main",
             status=SagaStatus.ACTIVE,
-            confidence=0.5,
             created_at=now,
             owner_id=_OWNER,
         )
@@ -1520,7 +1515,6 @@ class TestPersonaPassedToSpawnRequest:
             number=1,
             name="P1",
             status=PhaseStatus.ACTIVE,
-            confidence=0.5,
         )
         run_id = uuid.uuid4()
         run = Run(
@@ -1533,7 +1527,6 @@ class TestPersonaPassedToSpawnRequest:
             declared_files=[],
             estimate_hours=1.0,
             status=RunStatus.PENDING,
-            confidence=0.5,
             session_id=None,
             branch=None,
             chronicle_summary=None,

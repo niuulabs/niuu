@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -100,6 +101,20 @@ class MockVolundrFactory:
         return self._adapters[0] if self._adapters else None
 
 
+class FailingVolundrFactory:
+    """Simulates a Guild outage — for_owner raises rather than returning []."""
+
+    async def for_owner(self, owner_id: str) -> list[VolundrPort]:
+        del owner_id
+        from ting.adapters.volundr_factory import GuildRegistryUnavailableError
+
+        raise GuildRegistryUnavailableError("guild is unreachable")
+
+    async def primary_for_owner(self, owner_id: str) -> VolundrPort | None:
+        del owner_id
+        return None
+
+
 class MockTracker(TrackerPort):
     def __init__(self) -> None:
         now = datetime.now(UTC)
@@ -113,7 +128,6 @@ class MockTracker(TrackerPort):
             declared_files=[],
             estimate_hours=None,
             status=RunStatus.REVIEW,
-            confidence=0.82,
             session_id="sess-1",
             branch="feat/auth-refresh",
             chronicle_summary=None,
@@ -132,7 +146,6 @@ class MockTracker(TrackerPort):
             repos=["org/repo"],
             feature_branch="feat/auth-rewrite",
             status=SagaStatus.ACTIVE,
-            confidence=0.0,
             created_at=now,
             base_branch="main",
             owner_id="dev-user",
@@ -166,7 +179,6 @@ class MockTracker(TrackerPort):
             number=1,
             name="Phase 1",
             status=PhaseStatus.ACTIVE,
-            confidence=0.0,
         )
 
     async def get_run(self, tracker_id: str) -> Run:
@@ -201,12 +213,6 @@ class MockTracker(TrackerPort):
 
     async def get_run_by_id(self, run_id: UUID) -> Run | None:
         return self.run if run_id == self.run.id else None
-
-    async def add_confidence_event(self, tracker_id: str, event: object) -> None:  # noqa: ANN001
-        return None
-
-    async def get_confidence_events(self, tracker_id: str) -> list:
-        return []
 
     async def all_runs_merged(self, phase_tracker_id: str) -> bool:
         return False
@@ -258,6 +264,19 @@ def _auth_headers(user_id: str = "dev-user") -> dict[str, str]:
 
 
 class TestSessionsAPI:
+    def test_a_guild_outage_propagates_instead_of_silently_falling_back(self) -> None:
+        """The old behavior caught any factory.for_owner failure and fell
+        back to the single local adapter — indistinguishable from "the user
+        only has one connection". It must now propagate so Ting's own
+        exception handler can map it to a clear 503 (see main.py)."""
+        from ting.adapters.volundr_factory import GuildRegistryUnavailableError
+
+        client, _tracker = _client()
+        client.app.state.volundr_factory = FailingVolundrFactory()  # type: ignore[union-attr]
+
+        with pytest.raises(GuildRegistryUnavailableError):
+            client.get("/api/v1/ting/sessions", headers=_auth_headers())
+
     def test_lists_sessions_with_context(self) -> None:
         client, _tracker = _client()
 
@@ -270,7 +289,6 @@ class TestSessionsAPI:
                 "status": "awaiting_approval",
                 "chronicle_lines": ["line 1", "line 2"],
                 "branch": "feat/auth-refresh",
-                "confidence": 82.0,
                 "run_name": "Implement auth refresh",
                 "saga_name": "Auth Rewrite",
                 "cluster_name": "Mac mini",

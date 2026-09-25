@@ -18,12 +18,13 @@ from uuid import UUID
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 from starlette import status as http_status
 
 from niuu.adapters.inbound.auth import extract_principal
+from niuu.adapters.inbound.source_health import set_source_health_header
 from niuu.domain.models import Principal
 from niuu.settings_schema import (
     SettingsFieldSchema,
@@ -32,7 +33,11 @@ from niuu.settings_schema import (
 )
 from niuu.utils import import_class
 from ravn.adapters.platform_runtime import HttpPlatformRuntimeAdapter
-from ravn.api.residents import ResidentDirectory, forward_auth
+from ravn.api.residents import (
+    ResidentDirectory,
+    StandaloneDiscoveryUnavailableError,
+    forward_auth,
+)
 from ravn.api.valkyries import (
     ValkyrieDashboardProjection,
     build_nats_review_command_publisher_from_env,
@@ -157,6 +162,16 @@ def create_app(
             filesystem-backed location when omitted.
     """
     app = FastAPI(title="Ravn API", docs_url=None, redoc_url=None)
+
+    @app.exception_handler(StandaloneDiscoveryUnavailableError)
+    async def standalone_discovery_unavailable(
+        request: Request, exc: StandaloneDiscoveryUnavailableError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"detail": str(exc)},
+        )
+
     loaded_settings = settings or Settings()
     app.state.identity = import_class(loaded_settings.api_auth.adapter)(
         **loaded_settings.api_auth.kwargs
@@ -284,6 +299,7 @@ def create_app(
     @app.get("/api/v1/ravn/status")
     async def status_endpoint(
         request: Request,
+        response: Response,
         principal: Principal = Depends(extract_principal),
     ) -> dict:
         """Return status derived from live session and resident discovery."""
@@ -294,7 +310,7 @@ def create_app(
                 auth_headers,
                 auth_params,
             )
-            sessions = await resident_directory.list_sessions(
+            sessions_result = await resident_directory.list_sessions(
                 principal,
                 auth_headers,
                 auth_params,
@@ -305,16 +321,21 @@ def create_app(
                 status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Ravn runtime discovery is unavailable",
             ) from exc
+        set_source_health_header(response, sessions_result.source_failures)
         return {
             "service": "ravn",
-            "session_count": len(sessions),
+            "session_count": len(sessions_result.sessions),
             "fleet_member_count": len(ravens),
-            "healthy": True,
+            # A degraded contributor (e.g. standalone discovery down) means
+            # the session/fleet counts above are an undercount, not a clean
+            # "everything reachable" — do not claim healthy over that.
+            "healthy": not sessions_result.source_failures,
         }
 
     @app.get("/api/v1/ravn/settings", response_model=SettingsProviderSchema)
     async def settings_endpoint(
         request: Request,
+        response: Response,
         principal: Principal = Depends(extract_principal),
     ) -> SettingsProviderSchema:
         auth_headers, auth_params = forward_auth(request)
@@ -324,7 +345,7 @@ def create_app(
                 auth_headers,
                 auth_params,
             )
-            sessions = await resident_directory.list_sessions(
+            sessions_result = await resident_directory.list_sessions(
                 principal,
                 auth_headers,
                 auth_params,
@@ -335,6 +356,8 @@ def create_app(
                 status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Ravn runtime discovery is unavailable",
             ) from exc
+        sessions = sessions_result.sessions
+        set_source_health_header(response, sessions_result.source_failures)
         return SettingsProviderSchema(
             title="Ravn",
             subtitle="runtime and agent settings",
@@ -394,11 +417,14 @@ def create_app(
     @app.get("/api/v1/ravn/sessions")
     async def list_sessions_endpoint(
         request: Request,
+        response: Response,
         principal: Principal = Depends(extract_principal),
     ) -> list[dict]:
         """List the caller's live ravn sessions (flock rooms + residents)."""
         auth_headers, auth_params = forward_auth(request)
-        return await resident_directory.list_sessions(principal, auth_headers, auth_params)
+        result = await resident_directory.list_sessions(principal, auth_headers, auth_params)
+        set_source_health_header(response, result.source_failures)
+        return result.sessions
 
     @app.get("/api/v1/ravn/ravens")
     async def list_ravens_endpoint(

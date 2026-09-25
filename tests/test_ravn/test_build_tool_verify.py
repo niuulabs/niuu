@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 import ravn.adapters.tools.build_tool as build_tool_mod
 from ravn.adapters.tools.build_tool import DEFAULT_MAX_REPAIR_ATTEMPTS, BuildTool
 from ravn.ports.tool_build_backend import (
@@ -21,6 +23,14 @@ _ECHO_TEST = (
     "import _verify_tool\n\n"
     "def test_echo():\n"
     "    assert _verify_tool.run({'a': 1}) == {'echo': {'a': 1}}\n"
+)
+#: Loose enough to still pass against a revised tool that adds extra keys
+#: (test_a_genuinely_changed_tool_is_still_built) — only the 'echo' field is
+#: asserted.
+_ECHO_TEST_LOOSE = (
+    "import _verify_tool\n\n"
+    "def test_echo():\n"
+    "    assert _verify_tool.run({'a': 1})['echo'] == {'a': 1}\n"
 )
 
 
@@ -101,7 +111,7 @@ async def test_successful_install_records_resident_lifecycle_artifact(tmp_path) 
         {
             "manifest": _manifest("managed_echo"),
             "tool_code": _ECHO_TOOL,
-            "test_code": "",
+            "test_code": _ECHO_TEST,
         }
     )
 
@@ -109,7 +119,49 @@ async def test_successful_install_records_resident_lifecycle_artifact(tmp_path) 
     assert [artifact.title for artifact in recorded] == ["managed_echo"]
 
 
-async def test_verify_skipped_for_empty_test_code_still_installs(tmp_path) -> None:
+async def test_lifecycle_recorder_failure_raises_and_never_registers(tmp_path) -> None:
+    """A lifecycle-recording failure must never leave a tool live in this
+    session with no lifecycle record: require_verified_artifact, rollback
+    bookkeeping, and the dashboard inventory would never see it. The recorder
+    runs BEFORE registration, so a failure here raises and nothing is
+    registered — never the old "installed and registered, but its lifecycle
+    record could not be updated" partial-success state."""
+
+    async def record(_artifact) -> None:
+        raise RuntimeError("lifecycle store unavailable")
+
+    registered: list = []
+
+    def register(tool: Any, replace: bool = False) -> None:
+        registered.append((tool, replace))
+
+    tool = BuildTool(
+        tools_dir=tmp_path / "tools",
+        artifacts_dir=tmp_path / "arts",
+        register_tool=register,
+        autonomy_mode="autonomous",
+        installed_artifact_recorder=record,
+    )
+
+    with pytest.raises(RuntimeError, match="lifecycle store unavailable"):
+        await tool.execute(
+            {
+                "manifest": _manifest("unrecordable_echo"),
+                "tool_code": _ECHO_TOOL,
+                "test_code": _ECHO_TEST,
+            }
+        )
+
+    assert registered == []
+
+
+async def test_verify_skipped_for_empty_test_code_is_rejected_outright(tmp_path) -> None:
+    """A build with no test_code is only structurally validated — it has
+    never actually run. Holding it for operator review would lead nowhere:
+    approval cannot manufacture a test module, _verify_peer_artifact would
+    still skip re-verification (self-built), and require_verified_artifact
+    would refuse to ever run it. Reject outright instead (P6/no-fallbacks:
+    no silent auto-install, and no dead-end review either)."""
     tool, registered = _tool(tmp_path)
     result = await tool.execute(
         {
@@ -118,11 +170,39 @@ async def test_verify_skipped_for_empty_test_code_still_installs(tmp_path) -> No
             "test_code": "",
         }
     )
-    assert result.is_error is False
-    assert len(registered) == 1
+
+    assert result.is_error is True
+    assert not registered
+    assert "no test_code" in result.content
     verification = _persisted_provenance(tmp_path)["verification"]
     assert verification["ok"] is True
     assert "structural validation only" in verification["logs"]
+
+
+async def test_empty_test_code_is_rejected_even_with_a_review_requester_configured(
+    tmp_path,
+) -> None:
+    """A review requester does not change the outcome: rejection is
+    unconditional, never filed for an operator who cannot fix it."""
+    filed: list = []
+
+    class _Requester:
+        async def request(self, item):
+            filed.append(item)
+            return item
+
+    tool, registered = _tool(tmp_path, review_requester=_Requester())
+    result = await tool.execute(
+        {
+            "manifest": _manifest(),
+            "tool_code": _ECHO_TOOL,
+            "test_code": "",
+        }
+    )
+
+    assert result.is_error is True
+    assert not registered
+    assert filed == []
 
 
 async def test_dependency_heal_appends_missing_module_then_installs(tmp_path, monkeypatch) -> None:
@@ -441,7 +521,7 @@ async def test_rebuilding_an_installed_tool_writes_no_second_artifact(tmp_path) 
     the review, and a catalog that grows a near-duplicate entry each time.
     """
     tool, registered = _tool(tmp_path)
-    build = {"manifest": _manifest(), "tool_code": _ECHO_TOOL, "test_code": ""}
+    build = {"manifest": _manifest(), "tool_code": _ECHO_TOOL, "test_code": _ECHO_TEST_LOOSE}
 
     first = await tool.execute(build)
     assert first.is_error is False
@@ -461,13 +541,15 @@ async def test_rebuilding_an_installed_tool_writes_no_second_artifact(tmp_path) 
 
 async def test_rebuilding_under_a_new_name_returns_the_tool_already_installed(tmp_path) -> None:
     tool, _ = _tool(tmp_path)
-    await tool.execute({"manifest": _manifest(), "tool_code": _ECHO_TOOL, "test_code": ""})
+    await tool.execute(
+        {"manifest": _manifest(), "tool_code": _ECHO_TOOL, "test_code": _ECHO_TEST_LOOSE}
+    )
 
     renamed = await tool.execute(
         {
             "manifest": _manifest("echo_payload_v2"),
             "tool_code": _ECHO_TOOL,
-            "test_code": "",
+            "test_code": _ECHO_TEST_LOOSE,
         }
     )
 
@@ -480,13 +562,15 @@ async def test_rebuilding_under_a_new_name_returns_the_tool_already_installed(tm
 
 async def test_a_genuinely_changed_tool_is_still_built(tmp_path) -> None:
     tool, registered = _tool(tmp_path)
-    await tool.execute({"manifest": _manifest(), "tool_code": _ECHO_TOOL, "test_code": ""})
+    await tool.execute(
+        {"manifest": _manifest(), "tool_code": _ECHO_TOOL, "test_code": _ECHO_TEST_LOOSE}
+    )
 
     revised = await tool.execute(
         {
             "manifest": _manifest(),
             "tool_code": "def run(payload):\n    return {'echo': payload, 'v': 2}\n",
-            "test_code": "",
+            "test_code": _ECHO_TEST_LOOSE,
             "replace": True,
         }
     )
@@ -520,7 +604,7 @@ async def test_a_rename_with_new_code_chains_on_the_declared_capability(tmp_path
         {
             "manifest": _manifest(),
             "tool_code": _ECHO_TOOL,
-            "test_code": "",
+            "test_code": _ECHO_TEST_LOOSE,
             "capability_id": "echo.payload",
         }
     )
@@ -530,7 +614,7 @@ async def test_a_rename_with_new_code_chains_on_the_declared_capability(tmp_path
         {
             "manifest": _manifest("echo_payload_v2"),
             "tool_code": "def run(payload):\n    return {'echo': payload, 'v': 2}\n",
-            "test_code": "",
+            "test_code": _ECHO_TEST_LOOSE,
             "capability_id": "echo.payload",
         }
     )
@@ -578,7 +662,7 @@ async def test_rebuild_request_does_not_commission_a_workflow(tmp_path) -> None:
         {
             "manifest": _manifest(),
             "tool_code": _ECHO_TOOL,
-            "test_code": "",
+            "test_code": _ECHO_TEST_LOOSE,
             "capability_id": "echo.payload",
         }
     )
@@ -651,7 +735,9 @@ async def test_same_name_rerequest_is_caught_without_a_capability_id(tmp_path) -
     # The observed pair: the same tool name commissioned twice minutes apart.
     backend = CountingBackend()
     tool, _ = _tool(tmp_path, build_backend=backend)
-    await tool.execute({"manifest": _manifest(), "tool_code": _ECHO_TOOL, "test_code": ""})
+    await tool.execute(
+        {"manifest": _manifest(), "tool_code": _ECHO_TOOL, "test_code": _ECHO_TEST_LOOSE}
+    )
 
     result = await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
 

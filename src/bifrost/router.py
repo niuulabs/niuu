@@ -10,6 +10,7 @@ import importlib
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Protocol
 
 import httpx
 
@@ -20,8 +21,58 @@ from bifrost.ports.provider import ProviderError, ProviderPort
 from bifrost.ports.rules import RoutingContext, RuleEnginePort
 from bifrost.ports.selection import SelectionPort
 from bifrost.translation.models import AnthropicRequest, AnthropicResponse
+from niuu.observability import get_observability
 
 logger = logging.getLogger(__name__)
+
+
+class _UsageLike(Protocol):
+    """Structural type for the two usage shapes callers pass in.
+
+    ``bifrost.translation.models.UsageInfo`` (non-streaming) and
+    ``bifrost.domain.models.TokenUsage`` (streaming, accumulated from SSE
+    deltas) both carry these two fields but aren't related types.
+    """
+
+    input_tokens: int
+    output_tokens: int
+
+
+def record_genai_span_attributes(
+    *,
+    requested_model: str,
+    provider: str,
+    failover_attempts: int,
+    cache_hit: bool,
+    response_model: str = "",
+    usage: _UsageLike | None = None,
+) -> None:
+    """Enrich the active server span with GenAI semantic-convention attributes.
+
+    Bifröst does not open its own span per inference: once the composition
+    root instruments the app (``niuu.observability.instrument_fastapi_app``),
+    every inbound completion request already has a FastAPI server span open
+    for its whole duration — opening a second, nested span here would just
+    duplicate it. This attaches the GenAI attributes (requested model,
+    routed model, chosen provider, failover attempts, cache hit, token usage)
+    to that already-active span instead. A no-op when observability is
+    disabled.
+    """
+    attributes: dict[str, object] = {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.model": requested_model,
+        "bifrost.failover_attempts": failover_attempts,
+        "bifrost.cache_hit": cache_hit,
+    }
+    if provider:
+        attributes["gen_ai.provider.name"] = provider
+    if response_model:
+        attributes["gen_ai.response.model"] = response_model
+    if usage is not None:
+        attributes["gen_ai.usage.input_tokens"] = usage.input_tokens
+        attributes["gen_ai.usage.output_tokens"] = usage.output_tokens
+    get_observability().set_attributes(attributes)
+
 
 # HTTP status codes that trigger failover to an alternative provider.
 _FAILOVER_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
@@ -230,12 +281,20 @@ class ModelRouter:
         )
         last_exc: Exception | None = None
 
-        for pname, pmodel in candidates:
+        for attempt, (pname, pmodel) in enumerate(candidates):
             try:
                 adapter = self._get_adapter(pname)
                 t0 = time.monotonic()
                 result = await adapter.complete(request, pmodel)
                 self._record_latency(pname, time.monotonic() - t0)
+                record_genai_span_attributes(
+                    requested_model=request.model,
+                    provider=pname,
+                    failover_attempts=attempt,
+                    cache_hit=False,
+                    response_model=pmodel,
+                    usage=result.usage,
+                )
                 return result
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code not in _FAILOVER_STATUS_CODES:
@@ -280,13 +339,23 @@ class ModelRouter:
         )
         last_exc: Exception | None = None
 
-        for pname, pmodel in candidates:
+        for attempt, (pname, pmodel) in enumerate(candidates):
             try:
                 adapter = self._get_adapter(pname)
                 t0 = time.monotonic()
                 async for chunk in adapter.stream(request, pmodel):
                     yield chunk
                 self._record_latency(pname, time.monotonic() - t0)
+                # Token usage isn't known at this layer for streaming responses
+                # (it arrives as SSE deltas the inbound layer accumulates), so
+                # only the request/provider/failover attributes are recorded
+                # here; usage is left for the inbound layer to attach.
+                record_genai_span_attributes(
+                    requested_model=request.model,
+                    provider=pname,
+                    failover_attempts=attempt,
+                    cache_hit=False,
+                )
                 return
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code not in _FAILOVER_STATUS_CODES:

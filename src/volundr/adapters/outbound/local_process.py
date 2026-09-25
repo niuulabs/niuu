@@ -1525,6 +1525,9 @@ class LocalProcessPodManager(PodManager):
                 continue
 
             node_config = yaml.safe_load(node_path.read_text()) or {}
+            # `ravn flock init` renders the host operator's own LLM; a Forge
+            # session's nodes use only the LLM the session resolved.
+            node_config.pop("llm", None)
             node_config = _merge_flock_runtime_config(node_config, global_ravn_config)
             persona_override = persona_overrides.get(persona, {})
 
@@ -1533,6 +1536,10 @@ class LocalProcessPodManager(PodManager):
                 global_override=global_llm,
                 persona_override=persona_override.get("llm"),
             )
+            # Same order as pod sidecars: the workload ravn_config lands last.
+            ravn_config_llm = global_ravn_config.get("llm")
+            if isinstance(ravn_config_llm, dict):
+                effective_llm = _merge_flock_runtime_config(effective_llm, ravn_config_llm)
             if effective_llm:
                 node_config["llm"] = effective_llm
 

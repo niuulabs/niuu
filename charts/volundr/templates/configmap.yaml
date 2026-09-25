@@ -30,6 +30,11 @@ data:
       level: {{ .Values.config.logLevel | default "info" | quote }}
       format: {{ .Values.config.logFormat | default "json" | quote }}
 
+    {{- with .Values.config.observability }}
+    observability:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+
     server_host: {{ .Values.config.serverHost | default "127.0.0.1" | quote }}
     server_public_host: {{ .Values.config.serverPublicHost | default "127.0.0.1" | quote }}
     server_port: {{ .Values.service.targetPort | default 8080 }}
@@ -548,6 +553,7 @@ data:
     {{- end }}
 
     ravn_flock_image: {{ .Values.ravnFlockImage | default "" | quote }}
+    ravn_flock_llm_config: {{ .Values.ravnFlockLlmConfig | default dict | toJson }}
 
     {{- if .Values.sessionContributors }}
     session_contributors:

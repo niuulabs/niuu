@@ -483,6 +483,7 @@ function buildStartSessionBody(
     resource_config: config.resourceConfig,
     system_prompt: config.systemPrompt,
     initial_prompt: config.initialPrompt,
+    workload_type: config.workloadType,
     workload_config: config.workloadConfig ?? {},
     issue_id: config.trackerIssue?.id,
     issue_url: config.trackerIssue?.url,

@@ -583,6 +583,60 @@ class TestConfigMapTemplate:
 
         assert config["resident_runtimes"]["profiles"] == []
 
+    def test_observability_is_absent_by_default(self):
+        """config.observability: {} (the default) must not render a block
+        that would validate as enabled: false with no endpoints — Helm's
+        `with` treats an empty map as falsy, so the key should be omitted
+        entirely, matching ObservabilityConfig's own "unset, not disabled"
+        default."""
+        result = subprocess.run(
+            ["helm", "template", "test", str(CHART_DIR)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        configmap = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+        config = yaml.safe_load(configmap["data"]["config.yaml"])
+
+        assert "observability" not in config
+
+    def test_observability_block_renders_from_values(self):
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                "--set",
+                "config.observability.enabled=true",
+                "--set",
+                "config.observability.trace_endpoint=http://otel-collector:4317",
+                "--set",
+                "config.observability.metric_endpoint=http://otel-collector:4318/v1/metrics",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        configmap = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+        config = yaml.safe_load(configmap["data"]["config.yaml"])
+
+        assert config["observability"]["enabled"] is True
+        assert config["observability"]["trace_endpoint"] == "http://otel-collector:4317"
+        assert config["observability"]["metric_endpoint"] == "http://otel-collector:4318/v1/metrics"
+
     @staticmethod
     def _execution_credentials_config(*overrides: str) -> dict:
         result = subprocess.run(

@@ -152,6 +152,12 @@ class ToolRunResult:
     #: not express it (recorded honestly, never faked), ``""`` when the
     #: backend makes no reach claim at all (plain local subprocess).
     enforcement: str = ""
+    #: True when ``ok=False`` because the RUNNER/BACKEND could not execute
+    #: the tool at all (docker unavailable, venv/dependency provisioning
+    #: failed, the backend refused the call) — never because the tool's own
+    #: code failed. Callers must not count this toward regression/rollback
+    #: bookkeeping: a backend outage is not evidence the tool is broken.
+    infrastructure: bool = False
 
 
 def write_tool(*, tools_dir: str | Path, skill_name: str, tool_code: str) -> Path:
@@ -455,7 +461,11 @@ async def run_tool(
     """
     path = Path(tool_path)
     if not path.is_file():
-        return ToolRunResult(ok=False, error=f"tool implementation missing: {path}")
+        return ToolRunResult(
+            ok=False,
+            error=f"tool implementation missing: {path}",
+            infrastructure=True,
+        )
 
     env = sandbox_env()
     parent_sock: socket.socket | None = None

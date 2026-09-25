@@ -122,7 +122,7 @@ def _build_test_warden_store(tmp_path: Path, *, fail_on: str = "") -> WardenStor
 
 
 class TestFlockNodeConfig:
-    def test_default_node_config_uses_available_vllm_model(self, tmp_path: Path) -> None:
+    def test_default_node_config_bakes_in_no_model_or_endpoint(self, tmp_path: Path) -> None:
         flock_dir = tmp_path / ".flock"
         node = NodeDef(
             index=1,
@@ -145,7 +145,8 @@ class TestFlockNodeConfig:
         )
 
         config = (flock_dir / "node-reviewer.yaml").read_text(encoding="utf-8")
-        assert "model: Qwen/Qwen3.6-35B-A3B-FP8" in config
+        assert "model:" not in config
+        assert "base_url" not in config
 
 
 class TestPrintUsage:

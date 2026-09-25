@@ -242,7 +242,6 @@ describe('createMockDispatcherService', () => {
     const svc = createMockDispatcherService();
     const state = await svc.getState();
     expect(state?.running).toBe(true);
-    expect(state?.threshold).toBe(70);
     expect(state?.maxConcurrentRuns).toBe(5);
   });
 
@@ -251,13 +250,6 @@ describe('createMockDispatcherService', () => {
     await svc.setRunning(false);
     const state = await svc.getState();
     expect(state?.running).toBe(false);
-  });
-
-  it('setThreshold updates threshold', async () => {
-    const svc = createMockDispatcherService();
-    await svc.setThreshold(85);
-    const state = await svc.getState();
-    expect(state?.threshold).toBe(85);
   });
 
   it('setAutoContinue updates autoContinue', async () => {
@@ -992,7 +984,6 @@ describe('createMockTingSettingsService', () => {
   it('returns dispatch defaults', async () => {
     const svc = createMockTingSettingsService();
     const defaults = await svc.getDispatchDefaults();
-    expect(defaults.confidenceThreshold).toBe(70);
     expect(defaults.maxConcurrentRuns).toBe(3);
     expect(defaults.batchSize).toBe(10);
     expect(defaults.autoContinue).toBe(false);
@@ -1001,10 +992,10 @@ describe('createMockTingSettingsService', () => {
     expect(defaults.retryPolicy.escalateOnExhaustion).toBe(true);
   });
 
-  it('updateDispatchDefaults patches threshold', async () => {
+  it('updateDispatchDefaults patches maxConcurrentRuns', async () => {
     const svc = createMockTingSettingsService();
-    const updated = await svc.updateDispatchDefaults({ confidenceThreshold: 85 });
-    expect(updated.confidenceThreshold).toBe(85);
+    const updated = await svc.updateDispatchDefaults({ maxConcurrentRuns: 8 });
+    expect(updated.maxConcurrentRuns).toBe(8);
     expect(updated.batchSize).toBe(10);
   });
 
@@ -1020,9 +1011,9 @@ describe('createMockTingSettingsService', () => {
 
   it('updateDispatchDefaults persists changes', async () => {
     const svc = createMockTingSettingsService();
-    await svc.updateDispatchDefaults({ confidenceThreshold: 90 });
+    await svc.updateDispatchDefaults({ maxConcurrentRuns: 9 });
     const defaults = await svc.getDispatchDefaults();
-    expect(defaults.confidenceThreshold).toBe(90);
+    expect(defaults.maxConcurrentRuns).toBe(9);
   });
 
   it('returns notification settings', async () => {
@@ -1061,7 +1052,7 @@ describe('createMockAuditLogService', () => {
   it('returns all seed entries when no filter', async () => {
     const svc = createMockAuditLogService();
     const entries = await svc.listAuditEntries();
-    expect(entries.length).toBe(6);
+    expect(entries.length).toBe(4);
   });
 
   it('filters by kinds', async () => {
@@ -1082,8 +1073,9 @@ describe('createMockAuditLogService', () => {
 
   it('filters by since', async () => {
     const svc = createMockAuditLogService();
-    const entries = await svc.listAuditEntries({ since: '2026-01-13T00:00:00Z' });
-    expect(entries.every((e) => e.createdAt >= '2026-01-13T00:00:00Z')).toBe(true);
+    const entries = await svc.listAuditEntries({ since: '2026-01-11T00:00:00Z' });
+    expect(entries.every((e) => e.createdAt >= '2026-01-11T00:00:00Z')).toBe(true);
+    expect(entries).toHaveLength(1);
   });
 
   it('filters by until', async () => {
@@ -1107,12 +1099,7 @@ describe('createMockAuditLogService', () => {
   it('handles combined filters', async () => {
     const svc = createMockAuditLogService();
     const entries = await svc.listAuditEntries({
-      kinds: [
-        'dispatcher.started',
-        'dispatcher.stopped',
-        'dispatcher.threshold_changed',
-        'dispatcher.batch_size_changed',
-      ],
+      kinds: ['dispatcher.started', 'dispatcher.stopped', 'dispatcher.batch_size_changed'],
       actor: 'system',
     });
     expect(entries.every((e) => e.actor === 'system')).toBe(true);
