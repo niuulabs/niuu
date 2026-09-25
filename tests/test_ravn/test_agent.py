@@ -513,6 +513,11 @@ class TestRavnAgentToolUse:
             valkyrie_id="resident-a",
         )
         tool_code = "def run(input):\n    return {'installed': True}\n"
+        test_code = (
+            "import _verify_tool\n\n"
+            "def test_ok():\n"
+            "    assert _verify_tool.run({}) == {'installed': True}\n"
+        )
         installed = await tool.execute(
             {
                 "manifest": {
@@ -522,6 +527,7 @@ class TestRavnAgentToolUse:
                     "required_permission": "probe:read",
                 },
                 "tool_code": tool_code,
+                "test_code": test_code,
                 "canary_input": {},
             }
         )
@@ -582,6 +588,12 @@ class TestRavnAgentToolUse:
                 "tool_code": (
                     "def run(input):\n"
                     "    return {'widget_id': input.get('widget_id'), 'status': 'ok'}\n"
+                ),
+                "test_code": (
+                    "import _verify_tool\n\n"
+                    "def test_ok():\n"
+                    "    result = _verify_tool.run({'widget_id': 'x'})\n"
+                    "    assert result == {'widget_id': 'x', 'status': 'ok'}\n"
                 ),
                 "canary_input": {"widget_id": "canary"},
             },
@@ -657,6 +669,11 @@ class TestRavnAgentToolUse:
                     "declared_reach": [{"kind": "pure_compute", "access": "none"}],
                 },
                 "tool_code": "def run(input):\n    return {'ok': True}\n",
+                "test_code": (
+                    "import _verify_tool\n\n"
+                    "def test_ok():\n"
+                    "    assert _verify_tool.run({}) == {'ok': True}\n"
+                ),
                 "canary_input": {},
             }
         )
@@ -671,6 +688,11 @@ class TestRavnAgentToolUse:
         assert payload["tool_code"].startswith("def run")
         # P5a default preserved: without config the proposal travels at 0.74.
         assert payload["confidence"] == pytest.approx(0.74)
+        # NIU capability-propagation-contract: the one publisher carries
+        # test_code + builder_evidence to the peer, which build_tool's
+        # proposal used to omit entirely.
+        assert payload["test_code"].strip().startswith("import _verify_tool")
+        assert payload["builder_evidence"]["verification"]["ok"] is True
 
     async def test_build_tool_keeps_success_when_flock_publication_fails(self, tmp_path) -> None:
         class _UnavailablePublisher:
@@ -696,6 +718,11 @@ class TestRavnAgentToolUse:
                     "required_permission": "probe:read",
                 },
                 "tool_code": "def run(input):\n    return {'ok': True}\n",
+                "test_code": (
+                    "import _verify_tool\n\n"
+                    "def test_ok():\n"
+                    "    assert _verify_tool.run({}) == {'ok': True}\n"
+                ),
                 "canary_input": {},
             }
         )
@@ -740,6 +767,11 @@ class TestRavnAgentToolUse:
                     "declared_reach": [{"kind": "pure_compute", "access": "none"}],
                 },
                 "tool_code": "def run(input):\n    return {'ok': True}\n",
+                "test_code": (
+                    "import _verify_tool\n\n"
+                    "def test_ok():\n"
+                    "    assert _verify_tool.run({}) == {'ok': True}\n"
+                ),
                 "canary_input": {},
             }
         )
@@ -783,6 +815,11 @@ class TestRavnAgentToolUse:
                     "declared_reach": [{"kind": "kubernetes_write", "access": "write"}],
                 },
                 "tool_code": "def run(input):\n    return {'restarted': True}\n",
+                "test_code": (
+                    "import _verify_tool\n\n"
+                    "def test_ok():\n"
+                    "    assert _verify_tool.run({}) == {'restarted': True}\n"
+                ),
                 "canary_input": {"name": "canary"},
             }
         )
@@ -837,6 +874,11 @@ class TestRavnAgentToolUse:
                     "declared_reach": [{"kind": "pure_compute", "access": "none"}],
                 },
                 "tool_code": "def run(input):\n    return {'ok': True}\n",
+                "test_code": (
+                    "import _verify_tool\n\n"
+                    "def test_ok():\n"
+                    "    assert _verify_tool.run({}) == {'ok': True}\n"
+                ),
                 "canary_input": {},
             }
         )
@@ -883,6 +925,11 @@ class TestRavnAgentToolUse:
                     "declared_reach": [{"kind": "credential", "access": "read"}],
                 },
                 "tool_code": "def run(input):\n    return {'ok': True}\n",
+                "test_code": (
+                    "import _verify_tool\n\n"
+                    "def test_ok():\n"
+                    "    assert _verify_tool.run({}) == {'ok': True}\n"
+                ),
                 "canary_input": {},
             }
         )
@@ -917,6 +964,11 @@ class TestRavnAgentToolUse:
                     "declared_reach": [{"kind": "pure_compute", "access": "none"}],
                 },
                 "tool_code": "def run(input):\n    return {'backend': 'local'}\n",
+                "test_code": (
+                    "import _verify_tool\n\n"
+                    "def test_ok():\n"
+                    "    assert _verify_tool.run({}) == {'backend': 'local'}\n"
+                ),
                 "canary_input": {},
             }
         )

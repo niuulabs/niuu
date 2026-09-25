@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +18,11 @@ from ravn.adapters.reflection.flock_learning import (
     FlockLearningStore,
     FlockPeerDecision,
 )
+from ravn.domain.capability_proposal import (
+    CapabilityProposal,
+    CapabilityProposalError,
+    compute_artifact_digest,
+)
 from ravn.odin.review import (
     ReviewItem,
     ReviewKind,
@@ -29,6 +34,7 @@ from ravn.odin.review import (
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
+    LearnedToolError,
     LearnedToolRunner,
     LocalLearnedToolRunner,
     learned_tool_artifact_path,
@@ -55,11 +61,10 @@ from ravn.valkyrie_evolution.ports import EvolutionReviewPort
 from ravn.valkyrie_evolution.tool_runtime import (
     DEFAULT_TOOL_TIMEOUT_SECONDS,
     ToolRunResult,
-    run_tool,
     tool_path_for_skill,
     write_tool,
 )
-from ravn.valkyrie_evolution.tool_verification import verify_learned_tool_in_ephemeral_venv
+from ravn.valkyrie_evolution.tool_verification import VerificationResult
 from sleipnir.domain import registry
 from sleipnir.domain.catalog import (
     learning_adoption_recorded,
@@ -117,6 +122,15 @@ MAX_LEARNING_CONFIDENCE = 1.0
 
 _SKILL_ARTIFACT_TYPES = frozenset({"ravn_skill_tool", "tool_skill", "agent_tool"})
 _SAFE_REDACTION_STATES = frozenset({"", "none", "redacted", "safe"})
+
+#: Honest ``redaction_status`` for an artifact that travelled without any
+#: actual redaction step. Neither this module nor build_tool runs a
+#: redactor today, so stamping "redacted" here would be a claim nothing
+#: backs. Deliberately excluded from ``_SAFE_REDACTION_STATES`` — unlike the
+#: legacy "none"/"" default, accepting this value is an explicit policy
+#: choice made in ``ResidentLearningPolicy`` (``allow_unscrubbed``), not a
+#: silent default.
+UNSCRUBBED_STATUS = "unscrubbed"
 _SUBSCRIBED_EVENT_TYPES = [
     registry.LEARNING_PROMOTED,
     registry.FLOCK_LEARNING_PROPOSED,
@@ -175,6 +189,11 @@ class ResidentLearningArtifact:
     correlation_id: str = ""
     operator_command: bool = False
     command_action: str = ""
+    #: The builder's own, self-reported claims (its review outcome, its own
+    #: verification log) — never trusted on its own, carried only for audit.
+    #: Set from CapabilityProposal.builder_evidence on receipt so it is not
+    #: silently dropped between the wire contract and the persisted artifact.
+    builder_evidence: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -193,6 +212,19 @@ class ResidentLearningDecision:
 class ResidentLearningPolicy:
     """Decide whether a learning may be considered by this resident."""
 
+    def __init__(self, *, allow_unscrubbed: bool = True) -> None:
+        # No redactor exists anywhere in this codebase today: build_tool and
+        # the resident install pipeline broadcast tool_code/test_code/
+        # canary_sample/artifact_path to the flock exactly as authored.
+        # UNSCRUBBED_STATUS says so honestly and is EXCLUDED from
+        # _SAFE_REDACTION_STATES, so accepting it is an explicit policy
+        # choice, not a silent default. True matches this codebase's
+        # historical behavior (nothing has ever been redacted) and keeps the
+        # build->propose->adopt->run loop working without a redactor; an
+        # operator that wants adoption to refuse unscrubbed proposals until a
+        # real redactor exists sets this False.
+        self._allow_unscrubbed = allow_unscrubbed
+
     def evaluate(
         self,
         artifact: ResidentLearningArtifact,
@@ -204,7 +236,12 @@ class ResidentLearningPolicy:
             return False, f"unsupported artifact type: {artifact.artifact_type or 'unknown'}"
         if artifact.artifact_type != "agent_tool" and not artifact.content.strip():
             return False, "artifact content unavailable for local install"
-        if artifact.redaction_status.lower() not in _SAFE_REDACTION_STATES:
+        safe_redaction_states = (
+            _SAFE_REDACTION_STATES | {UNSCRUBBED_STATUS}
+            if self._allow_unscrubbed
+            else _SAFE_REDACTION_STATES
+        )
+        if artifact.redaction_status.lower() not in safe_redaction_states:
             return False, "artifact has not been redacted for peer adoption"
 
         scope = _normalise_scope(artifact.scope)
@@ -781,7 +818,7 @@ class ResidentLearningRuntime:
             if self.identity.flock_ids
             else "",
             domain=str(metadata.get("domain") or self.identity.domain),
-            redaction_status="redacted",
+            redaction_status=UNSCRUBBED_STATUS,
             correlation_id=signal.signal_id,
             command_action="auto_rollback_regression",
         )
@@ -897,9 +934,16 @@ class ResidentLearningRuntime:
             scope="environment",
             confidence=0.0,
             source_environment_id=self.identity.environment_id,
+            # This resident's own previous build, not a peer's: without this,
+            # _review_canary_install's self_built check ("" != valkyrie_id)
+            # misreads the restore as a peer proposal, sends it through
+            # _verify_peer_artifact, and a predecessor with no embedded
+            # test_code (common for an older build) is declined with a
+            # misleading "Peer proposal... carries no test_code" rejection.
+            source_valkyrie_id=self.identity.valkyrie_id,
             promotion_id=predecessor.artifact_id,
             domain=self.identity.domain,
-            redaction_status="redacted",
+            redaction_status=UNSCRUBBED_STATUS,
             tool_code=predecessor.tool_code,
             tool_entry_point=predecessor.manifest.entry_point,
             learned_tool_manifest=predecessor.manifest.to_dict(),
@@ -909,7 +953,14 @@ class ResidentLearningRuntime:
             correlation_id=signal.signal_id,
             command_action="restore_superseded_version",
         )
-        decision = await self._review_canary_install(restore_artifact, signal=signal)
+        predecessor_verification = predecessor.provenance.get("verification")
+        decision = await self._review_canary_install(
+            restore_artifact,
+            signal=signal,
+            verification_override=(
+                predecessor_verification if isinstance(predecessor_verification, dict) else None
+            ),
+        )
         if decision.action != "adopted":
             return (
                 "",
@@ -934,7 +985,11 @@ class ResidentLearningRuntime:
             "payload": signal.payload,
         }
         if tool_path.is_file():
-            return await run_tool(
+            # Route through the configured runner (the same one every learned
+            # tool executes and canaries through), never a bare host
+            # subprocess — a skill-attached script is otherwise the one
+            # remaining path that bypasses the sandbox boundary entirely.
+            return await self._learned_tool_runner.run(
                 tool_path,
                 payload,
                 entry_point=_tool_entry_point_from_content(str(skill.content)),
@@ -963,7 +1018,49 @@ class ResidentLearningRuntime:
         if event.event_type == registry.ODIN_REVIEW_DECIDED:
             await self._handle_review_decision(event)
             return
-        artifact = _artifact_from_event(event)
+        try:
+            artifact = _artifact_from_event(event)
+        except CapabilityProposalError as exc:
+            # Never a partial install: a proposal that fails strict parsing is
+            # declined with the reason recorded, exactly like any other
+            # rejection, instead of building a ResidentLearningArtifact from
+            # whatever fields happened to be present.
+            decision = ResidentLearningDecision("rejected", str(exc), relevant=True)
+            self._decisions.append(decision)
+            get_observability().event(
+                "ravn.resident_learning.proposal.declined",
+                attributes={
+                    "ravn.resident_learning.event_type": event.event_type,
+                },
+                content={"reason": str(exc)},
+            )
+            logger.warning("resident_learning: declined malformed capability proposal: %s", exc)
+            # A learning_id is enough to persist a durable rejection even
+            # though the rest of the payload failed strict parsing — without
+            # this, NIU-1034 dedupe never sees the decline and the same
+            # malformed proposal is re-evaluated (and re-logged) on every
+            # redelivery instead of being remembered as already declined.
+            learning_id = str(event.payload.get("learning_id") or "").strip()
+            if learning_id and self._learning_store is not None:
+                self._persist_learning_decision(
+                    ResidentLearningArtifact(
+                        learning_id=learning_id,
+                        title=str(event.payload.get("title") or learning_id),
+                        summary=str(exc),
+                        content="",
+                        artifact_type=str(event.payload.get("artifact_type") or ""),
+                        scope="flock",
+                        confidence=0.0,
+                        source_environment_id=str(event.payload.get("source_environment_id") or ""),
+                        source_valkyrie_id=str(event.payload.get("source_valkyrie_id") or ""),
+                        flock_id=_normalise_flock_id(str(event.payload.get("flock_id") or "")),
+                        domain=str(event.payload.get("domain") or event.domain or ""),
+                        correlation_id=event.correlation_id or event.event_id,
+                        causation_id=event.event_id,
+                    ),
+                    decision,
+                )
+            return
         if _is_retraction_event(event):
             decision = await self.retract(artifact)
         else:
@@ -1207,7 +1304,11 @@ class ResidentLearningRuntime:
             return "applied", decision.rationale, decision
         if item.requested_action == "canary":
             _request, build = review_inputs(artifact, self.identity)
-            canary = await self._canary_artifact(build, artifact.canary_sample)
+            canary = await self._canary_artifact(
+                build,
+                artifact.canary_sample,
+                requirements=artifact.requirements,
+            )
             if canary.ok:
                 return "applied", "canary passed", None
             return "apply_failed", f"canary failed: {canary.error}", None
@@ -1429,13 +1530,31 @@ class ResidentLearningRuntime:
         request: EvolutionRequest | None = None,
         signal: OperationalSignal | None = None,
         operator_item: ReviewItem | None = None,
+        verification_override: dict[str, Any] | None = None,
     ) -> ResidentLearningDecision:
-        """The one install pipeline: review, gate, canary, install, announce.
+        """The resident install pipeline: review, gate, canary, install, announce.
 
-        Self-built artifacts, peer flock learnings, and operator-approved
-        review items all flow through here. Blocking findings always reject;
-        a ``needs_approval`` outcome holds the build behind a review request
-        unless an operator decision is what brought us here.
+        Self-built artifacts reached via operator approval, peer flock
+        learnings, and restore-of-superseded all flow through here. Blocking
+        findings always reject; a ``needs_approval`` outcome holds the build
+        behind a review request unless an operator decision is what brought
+        us here.
+
+        NOT the only install path: ``build_tool._execute_pipeline`` (an
+        interactive session tool call, not an event-driven adoption) is a
+        second implementation of review->verify->canary->install. The two
+        share primitives — ``review_inputs``, ``review_allows_install``, the
+        same ``PolicyCourtReviewer`` — but are not unified into one function;
+        fully merging them would need composition-root changes outside this
+        module's scope. Keep behavior consistent between them by hand when
+        changing either.
+
+        ``verification_override`` carries an already-known-good verification
+        record for a self-built artifact that skips ``_verify_peer_artifact``
+        (self-built artifacts are not re-verified). Used by restore-of-
+        superseded: reinstalling a predecessor must not lose the
+        verification it already earned, or require_verified_artifact would
+        refuse to ever run the tool a rollback just restored.
         """
         if request is None or build is None:
             request, build = review_inputs(artifact, self.identity)
@@ -1480,14 +1599,20 @@ class ResidentLearningRuntime:
             await self._file_install_review(artifact, build, review, signal)
             return decision
 
-        verify_rejection = await self._verify_peer_artifact(artifact, review)
+        verify_rejection, verification = await self._verify_peer_artifact(artifact, review)
         if verify_rejection is not None:
             return verify_rejection
+        if verification is None:
+            verification = verification_override
 
         canary_payload = artifact.canary_sample or (
             dict(signal.payload) if signal is not None else {}
         )
-        canary = await self._canary_artifact(build, canary_payload)
+        canary = await self._canary_artifact(
+            build,
+            canary_payload,
+            requirements=artifact.requirements,
+        )
         if not canary.ok:
             if self_built and operator_item is None:
                 await self._publish_evolution_event(
@@ -1523,7 +1648,7 @@ class ResidentLearningRuntime:
             await self._publish_adoption(artifact, decision)
             return decision
 
-        skill_name = await self._install_skill(artifact, build)
+        skill_name = await self._install_skill(artifact, build, verification=verification)
         if operator_item is not None:
             authorization_rationale = (
                 f"operator {operator_item.decided_by} approved "
@@ -1554,7 +1679,7 @@ class ResidentLearningRuntime:
         self,
         artifact: ResidentLearningArtifact,
         review: ReviewResult,
-    ) -> ResidentLearningDecision | None:
+    ) -> tuple[ResidentLearningDecision | None, dict[str, Any] | None]:
         """Independently re-verify a peer artifact before install (P6.2).
 
         Never trust the teacher's own "it works": when a peer proposal carries
@@ -1562,24 +1687,47 @@ class ResidentLearningRuntime:
         venv here — with the tool's declared requirements installed — before
         anything touches this resident. A failure is a durable rejection in
         the ledger (same shape as every other rejection, so NIU-1034 dedupe
-        keeps working). Artifacts without test_code keep the canary-only path:
-        old proposals are weaker evidence, not punishable offences. Self-built
-        artifacts were already verified (and repaired) by build_tool.
+        keeps working). A non-tool skill proposal without test_code keeps the
+        canary-only path: old markdown-skill proposals are weaker evidence,
+        not a punishable offence. An ``agent_tool`` proposal with no test_code
+        is different — ``require_verified_artifact`` will refuse to ever run
+        it once installed (there is nothing to have verified it with), so
+        installing it would just be a capability the peer can see but never
+        call; it is declined here instead. Self-built artifacts were already
+        verified (and repaired) by build_tool.
+
+        Returns ``(decision, verification_record)``. ``decision`` is a
+        rejection when re-verification did not clear (missing test_code for
+        an agent_tool, or verification actually ran and failed), else
+        ``None``. ``verification_record`` is THIS resident's own fresh
+        verification outcome — never the builder's self-reported claim — and
+        must be what the installer stamps into the persisted artifact's
+        provenance, or ``require_verified_artifact`` refuses to ever run what
+        was just adopted (a peer install pipeline that installs but cannot
+        execute).
         """
         if artifact.source_valkyrie_id == self.identity.valkyrie_id:
-            return None
+            return None, None
+        if artifact.artifact_type == "agent_tool" and not artifact.test_code.strip():
+            decision = ResidentLearningDecision(
+                "rejected",
+                f"Peer proposal for {artifact.title!r} carries no test_code; an "
+                "agent_tool cannot be independently re-verified without one, so "
+                "it is declined rather than installed unrunnable",
+                review=review,
+                relevant=True,
+            )
+            await self._publish_adoption(artifact, decision)
+            return decision, None
         if not artifact.test_code.strip() or not artifact.tool_code.strip():
-            return None
-        result = await asyncio.to_thread(
-            verify_learned_tool_in_ephemeral_venv,
-            tool_name=artifact.title or "learned_tool",
-            tool_code=artifact.tool_code,
-            test_code=artifact.test_code,
-            requirements=list(artifact.requirements),
-            entry_point=artifact.tool_entry_point or "run",
-        )
+            return None, None
+        result = await self._verify_through_configured_runner(artifact)
         if result.ok:
-            return None
+            return None, _verification_record(
+                result,
+                verified_by=self.identity.valkyrie_id,
+                artifact=artifact,
+            )
         logs_tail = result.logs[-DEFAULT_VERIFY_LOG_EVIDENCE_CHARS:]
         decision = ResidentLearningDecision(
             "rejected",
@@ -1588,7 +1736,51 @@ class ResidentLearningRuntime:
             relevant=True,
         )
         await self._publish_adoption(artifact, decision)
-        return decision
+        return decision, None
+
+    async def _verify_through_configured_runner(
+        self,
+        artifact: ResidentLearningArtifact,
+    ) -> VerificationResult:
+        """Re-verify a peer's tool_code/test_code in the SAME boundary it runs in.
+
+        Verification used to always run through ``verify_learned_tool_in_
+        ephemeral_venv`` on the host: a peer's own requirements were
+        ``pip install``-ed and its test_code executed in this resident's own
+        process, with this resident's network and filesystem access,
+        regardless of the configured execution backend. That is what
+        ``LearnedToolRunner.verify()`` closes — the container backend
+        installs and tests inside the same fresh, disposable container
+        execution runs in; the local backend is the operator's explicit
+        choice to run on the host at all, so no boundary is lost there.
+
+        A backend without a verify() implementation raises rather than
+        silently falling back to host-side verification — the fallback IS
+        the vulnerability this replaces. An infrastructure-level failure
+        during verification (docker down, provisioning failed) also raises,
+        not a rejection: an outage is not evidence the peer's code is bad,
+        and a rejection here durably declines a proposal that may be fine.
+        """
+        runner = self._learned_tool_runner
+        if runner is None:
+            raise LearnedToolError(
+                "cannot re-verify a peer proposal: no learned-tool runner is configured "
+                "(this resident has neither tools_dir nor an injected learned_tool_runner)"
+            )
+        if not getattr(runner, "supports_verify", False):
+            raise LearnedToolError(
+                f"the configured learned-tool runner ({type(runner).__name__}) cannot verify "
+                "a peer proposal inside its own execution boundary; configure the 'local' or "
+                "'container' execution backend for peer adoption, or wait for verify() support "
+                "on this one — never silently verify on the host instead"
+            )
+        return await runner.verify(
+            tool_name=artifact.title or "learned_tool",
+            tool_code=artifact.tool_code,
+            test_code=artifact.test_code,
+            requirements=list(artifact.requirements),
+            entry_point=artifact.tool_entry_point or "run",
+        )
 
     async def _file_install_review(
         self,
@@ -1648,33 +1840,56 @@ class ResidentLearningRuntime:
         self,
         build: BuildResult,
         sample_payload: dict[str, Any],
+        *,
+        requirements: Sequence[str] = (),
     ) -> ToolRunResult:
         """Exercise an artifact's tool implementation before ACKing adoption.
 
         Instruction-only skills were already validated structurally by the
         reviewer, so they canary as a pass.  Tool implementations execute once
-        in the sandbox against the sample payload carried in the proposal.
+        THROUGH THE CONFIGURED RUNNER — the same one every learned tool
+        executes through — against the sample payload carried in the
+        proposal. A peer canary is untrusted, adopted code; it must never run
+        as a bare host subprocess just because it is only run once.
         """
         if not build.has_tool_implementation:
             return ToolRunResult(ok=True)
+        if self._learned_tool_runner is None:
+            raise LearnedToolError(
+                f"cannot canary {build.skill_name!r}: no learned-tool runner is configured "
+                "(this resident has neither tools_dir nor an injected learned_tool_runner); "
+                "configure one of them before adopting a tool-bearing artifact"
+            )
         import tempfile  # noqa: PLC0415
 
-        with tempfile.TemporaryDirectory(prefix="valkyrie-canary-") as canary_dir:
+        # Under the resident's own tools tree, not system /tmp: the Forge
+        # sandbox runner refuses any tool path outside its workspace_root,
+        # so a canary run against that backend failed outright once the
+        # canary started going through the configured runner instead of a
+        # bare host subprocess. Without a configured tools_dir there is no
+        # workspace to scope this to (this resident has no local capability
+        # storage at all), so system tmp remains the honest fallback.
+        canary_root = self._tools_dir.parent / ".ravn" / "canary_runs" if self._tools_dir else None
+        if canary_root is not None:
+            canary_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="valkyrie-canary-", dir=canary_root) as canary_dir:
             if build.artifact_type == "agent_tool":
                 artifact = _learned_tool_artifact_from_build(build)
                 tool_path = write_learned_tool(tools_dir=canary_dir, artifact=artifact)
-                return await run_tool(
+                return await self._learned_tool_runner.run(
                     tool_path,
                     sample_payload,
                     entry_point=artifact.manifest.entry_point,
                     timeout_seconds=self._tool_timeout_seconds,
+                    requirements=list(requirements),
+                    declared_reach=artifact.manifest.declared_reach,
                 )
             tool_path = write_tool(
                 tools_dir=canary_dir,
                 skill_name=build.skill_name or "canary",
                 tool_code=build.tool_code,
             )
-            return await run_tool(
+            return await self._learned_tool_runner.run(
                 tool_path,
                 {"payload": sample_payload},
                 entry_point=build.tool_entry_point or "run",
@@ -1718,6 +1933,8 @@ class ResidentLearningRuntime:
         self,
         artifact: ResidentLearningArtifact,
         build: BuildResult,
+        *,
+        verification: dict[str, Any] | None = None,
     ) -> str:
         skill_name = build.skill_name
         if build.artifact_type == "agent_tool":
@@ -1725,6 +1942,7 @@ class ResidentLearningRuntime:
                 tools_dir=self._tools_dir,
                 artifact=artifact,
                 build=build,
+                verification=verification,
             )
 
         await self._record_installed_skill(artifact, build, skill_name=skill_name)
@@ -1967,35 +2185,13 @@ class ResidentLearningRuntime:
     ) -> None:
         if not artifact.flock_id:
             return
-        await self._publisher.publish(
-            flock_learning_proposed_event(
-                source=self._source,
-                learning_id=artifact.learning_id,
-                title=artifact.title,
-                summary=artifact.summary,
-                flock_id=artifact.flock_id,
-                artifact_type=artifact.artifact_type,
-                content=artifact.content,
-                domain=artifact.domain,
-                environment_id=artifact.source_environment_id,
-                source_valkyrie_id=artifact.source_valkyrie_id,
-                confidence=artifact.confidence,
-                redaction_status=artifact.redaction_status,
-                promotion_id=artifact.promotion_id,
-                artifact_path=artifact.artifact_path,
-                tool_code=build.tool_code,
-                tool_entry_point=build.tool_entry_point,
-                learned_tool_manifest=artifact.learned_tool_manifest,
-                test_code=artifact.test_code,
-                requirements=list(artifact.requirements),
-                canary_sample=artifact.canary_sample,
-                review_outcome=review.outcome,
-                builder_evidence=build.evidence,
-                subject_domain=self.identity.domain or self.identity.environment_type,
-                correlation_id=artifact.correlation_id,
-                causation_id=artifact.causation_id,
-            )
+        proposal = capability_proposal_from_artifact(
+            artifact,
+            builder_evidence=build.evidence,
+            review_outcome=review.outcome,
+            subject_domain=self.identity.domain or self.identity.environment_type,
         )
+        await self._publisher.publish(capability_proposal_event(proposal, source=self._source))
 
     def _previously_declined(self, artifact: ResidentLearningArtifact) -> bool:
         """True when this environment durably declined the learning before.
@@ -2127,7 +2323,7 @@ def _candidate_from_artifact(artifact: ResidentLearningArtifact) -> FlockLearnin
         source_environment_id=artifact.source_environment_id,
         source_valkyrie_id=artifact.source_valkyrie_id,
         confidence=artifact.confidence,
-        redaction_status=artifact.redaction_status or "redacted",
+        redaction_status=artifact.redaction_status or UNSCRUBBED_STATUS,
         promotion_id=artifact.promotion_id,
         metadata={
             "domain": artifact.domain,
@@ -2140,19 +2336,65 @@ def _candidate_from_artifact(artifact: ResidentLearningArtifact) -> FlockLearnin
 
 
 def _artifact_from_event(event: SleipnirEvent) -> ResidentLearningArtifact:
+    """Parse any subscribed learning event into a :class:`ResidentLearningArtifact`.
+
+    A ``flock.learning.proposed`` event is a capability proposal: it is
+    parsed strictly through :class:`CapabilityProposal`, which raises
+    :class:`CapabilityProposalError` on anything an agent_tool needs to run
+    but does not carry. The caller declines with that message as the reason
+    rather than installing a partial artifact. Every other subscribed event
+    (promotion, rejection, rollback) is a lighter lifecycle update that never
+    carries a runnable capability, so it keeps the lenient parse below.
+    """
+    if event.event_type == registry.FLOCK_LEARNING_PROPOSED:
+        proposal = CapabilityProposal.from_event_payload(event.payload)
+        return _artifact_from_proposal(proposal, event=event)
+    return _artifact_from_lifecycle_event(event)
+
+
+def _artifact_from_proposal(
+    proposal: CapabilityProposal,
+    *,
+    event: SleipnirEvent,
+) -> ResidentLearningArtifact:
+    return ResidentLearningArtifact(
+        learning_id=proposal.learning_id,
+        title=proposal.title,
+        summary=proposal.summary or event.summary or proposal.title,
+        content=proposal.content,
+        artifact_type=proposal.artifact_type,
+        scope="flock",
+        confidence=proposal.confidence,
+        source_environment_id=proposal.source_environment_id,
+        source_valkyrie_id=proposal.source_valkyrie_id,
+        promotion_id=proposal.promotion_id or proposal.learning_id,
+        flock_id=_normalise_flock_id(proposal.flock_id),
+        domain=proposal.domain or event.domain or "",
+        redaction_status=proposal.redaction_status,
+        artifact_path=proposal.artifact_path,
+        tool_code=proposal.tool_code,
+        tool_entry_point=proposal.tool_entry_point,
+        learned_tool_manifest=dict(proposal.learned_tool_manifest),
+        test_code=proposal.test_code,
+        requirements=list(proposal.requirements),
+        supersedes=proposal.supersedes,
+        canary_sample=dict(proposal.canary_sample),
+        causation_id=event.event_id,
+        correlation_id=event.correlation_id or event.event_id,
+        builder_evidence=dict(proposal.builder_evidence),
+    )
+
+
+def _artifact_from_lifecycle_event(event: SleipnirEvent) -> ResidentLearningArtifact:
+    """Lenient parse for promotion/rejection/rollback events (not proposals)."""
     payload = event.payload
-    event_type = event.event_type
-    if event_type == registry.FLOCK_LEARNING_PROPOSED:
-        title = str(payload.get("title") or payload.get("artifact_name") or payload["learning_id"])
-        scope = "flock"
-    else:
-        title = str(
-            payload.get("artifact_name")
-            or payload.get("promoted_tool")
-            or payload.get("title")
-            or payload["learning_id"]
-        )
-        scope = str(payload.get("to_scope") or payload.get("target_scope") or payload.get("scope"))
+    title = str(
+        payload.get("artifact_name")
+        or payload.get("promoted_tool")
+        or payload.get("title")
+        or payload["learning_id"]
+    )
+    scope = str(payload.get("to_scope") or payload.get("target_scope") or payload.get("scope"))
     return ResidentLearningArtifact(
         learning_id=str(payload.get("learning_id") or ""),
         title=title,
@@ -2313,14 +2555,55 @@ def _learned_tool_artifact_from_build(build: BuildResult) -> LearnedToolArtifact
     )
 
 
+def _verification_record(
+    result: VerificationResult,
+    *,
+    verified_by: str,
+    artifact: ResidentLearningArtifact,
+) -> dict[str, Any]:
+    """Project a fresh :class:`VerificationResult` into a provenance record.
+
+    ``verified_by`` names whichever resident actually ran the verification —
+    the peer, not the builder — so the record is honest about whose claim it
+    is when both a builder's ``builder_evidence`` and a peer's own
+    verification travel together. ``artifact_digest`` ties this outcome to
+    the exact bytes verified — always recomputed here, never trusted from
+    the wire (see ``compute_artifact_digest``; proposal signing remains
+    separate, later work).
+    """
+    return {
+        "ok": result.ok,
+        "verified_by": verified_by,
+        "logs": result.logs[-DEFAULT_VERIFY_LOG_EVIDENCE_CHARS:],
+        "missing_module": result.missing_module,
+        "artifact_digest": compute_artifact_digest(
+            tool_code=artifact.tool_code,
+            test_code=artifact.test_code,
+            requirements=list(artifact.requirements),
+            manifest=artifact.learned_tool_manifest,
+        ),
+    }
+
+
 def _install_learned_tool_artifact(
     *,
     tools_dir: Path | None,
     artifact: ResidentLearningArtifact,
     build: BuildResult,
+    verification: dict[str, Any] | None = None,
 ) -> str:
     if tools_dir is None:
         raise ValueError("agent_tool install requires a resident tools directory")
+    provenance = dict(build.evidence)
+    if artifact.builder_evidence:
+        # The builder's own, self-reported claims — never trusted on their
+        # own, kept nested (not under "verification") so they are never
+        # confused with this resident's own re-verification outcome.
+        provenance["builder_evidence"] = dict(artifact.builder_evidence)
+    if verification is not None:
+        # This resident's own fresh re-verification — the only thing
+        # require_verified_artifact will accept once the tool is loaded back.
+        provenance["verification"] = verification
     learned = replace(
         _learned_tool_artifact_from_build(build),
         # Contract v2 payload travels with the proposal, not the build
@@ -2329,6 +2612,7 @@ def _install_learned_tool_artifact(
         test_code=artifact.test_code,
         requirements=list(artifact.requirements),
         supersedes=artifact.supersedes,
+        provenance=provenance,
     )
     # The resident tools dir lives under the state dir; learned tools live in
     # the one canonical location beside it, shared with build_tool authoring.
@@ -2449,82 +2733,79 @@ def _authority_boundary(autonomy_mode: str) -> str:
     return "yolo" if autonomy_mode.lower() == "yolo" else "human_review_required"
 
 
-def flock_learning_proposed_event(
+def capability_proposal_from_artifact(
+    artifact: ResidentLearningArtifact,
     *,
-    source: str,
-    learning_id: str,
-    title: str,
-    summary: str,
-    flock_id: str,
-    artifact_type: str,
-    content: str,
-    domain: str,
-    environment_id: str,
-    source_valkyrie_id: str,
-    confidence: float,
-    redaction_status: str,
-    promotion_id: str,
-    artifact_path: str = "",
-    tool_code: str = "",
-    tool_entry_point: str = "run",
-    learned_tool_manifest: dict[str, Any] | None = None,
-    test_code: str = "",
-    requirements: list[str] | None = None,
-    canary_sample: dict[str, Any] | None = None,
-    review_outcome: str = "",
-    builder_evidence: dict[str, Any] | None = None,
+    builder_evidence: Mapping[str, Any],
+    review_outcome: str,
     subject_domain: str = "",
-    correlation_id: str = "",
-    causation_id: str = "",
-) -> SleipnirEvent:
+) -> CapabilityProposal:
+    """Project any resident artifact into the one wire contract peers parse.
+
+    Both the resident install pipeline and build_tool call this — there is no
+    second, narrower proposal a peer might receive. ``builder_evidence`` is
+    the builder's own claim about what it did (its review, its own
+    verification); a peer never trusts it, but it travels for audit and so a
+    self-built install (which skips re-verification) can fall back to it.
+    """
+    return CapabilityProposal(
+        learning_id=artifact.learning_id,
+        title=artifact.title,
+        summary=artifact.summary,
+        artifact_type=artifact.artifact_type,
+        content=artifact.content,
+        scope=_normalise_scope(artifact.scope),
+        domain=artifact.domain,
+        subject_domain=subject_domain,
+        confidence=artifact.confidence,
+        redaction_status=artifact.redaction_status,
+        promotion_id=artifact.promotion_id,
+        flock_id=artifact.flock_id,
+        source_environment_id=artifact.source_environment_id,
+        source_valkyrie_id=artifact.source_valkyrie_id,
+        artifact_path=artifact.artifact_path,
+        tool_code=artifact.tool_code,
+        tool_entry_point=artifact.tool_entry_point,
+        learned_tool_manifest=dict(artifact.learned_tool_manifest),
+        test_code=artifact.test_code,
+        requirements=list(artifact.requirements),
+        canary_sample=dict(artifact.canary_sample),
+        supersedes=artifact.supersedes,
+        builder_evidence=dict(builder_evidence),
+        review_outcome=review_outcome,
+        correlation_id=artifact.correlation_id,
+        causation_id=artifact.causation_id,
+    )
+
+
+def capability_proposal_event(proposal: CapabilityProposal, *, source: str) -> SleipnirEvent:
     """The one shape of a flock learning proposal.
 
-    Every proposer (the resident install pipeline, build_tool) builds the
-    event here so the payload contract — including the scoped flock NATS
-    fan-out subject — cannot drift between publishers.
+    Every proposer (the resident install pipeline, build_tool) builds a
+    :class:`CapabilityProposal` and turns it into an event here, so the
+    payload contract — including the scoped flock NATS fan-out subject —
+    cannot drift between publishers.
     """
+    payload = proposal.to_event_payload()
+    payload["status"] = "candidate"
+    payload["nats_subject"] = "ravn.environment.flock.learning.proposed"
+    payload["additional_nats_subjects"] = [
+        _scoped_flock_subject(
+            proposal.subject_domain or proposal.domain,
+            proposal.source_environment_id,
+            registry.FLOCK_LEARNING_PROPOSED,
+        )
+    ]
     return SleipnirEvent(
         event_type=registry.FLOCK_LEARNING_PROPOSED,
         source=source,
-        payload={
-            "learning_id": learning_id,
-            "title": title,
-            "summary": summary,
-            "flock_id": flock_id,
-            "artifact_type": artifact_type,
-            "content": content,
-            "artifact_content": content,
-            "status": "candidate",
-            "domain": domain,
-            "source_environment_id": environment_id,
-            "source_valkyrie_id": source_valkyrie_id,
-            "confidence": confidence,
-            "redaction_status": redaction_status,
-            "promotion_id": promotion_id,
-            "artifact_path": artifact_path,
-            "tool_code": tool_code,
-            "tool_entry_point": tool_entry_point,
-            "learned_tool_manifest": dict(learned_tool_manifest or {}),
-            "test_code": test_code,
-            "requirements": list(requirements or []),
-            "canary_sample": dict(canary_sample or {}),
-            "review_outcome": review_outcome,
-            "builder_evidence": dict(builder_evidence or {}),
-            "nats_subject": "ravn.environment.flock.learning.proposed",
-            "additional_nats_subjects": [
-                _scoped_flock_subject(
-                    subject_domain or domain,
-                    environment_id,
-                    registry.FLOCK_LEARNING_PROPOSED,
-                )
-            ],
-        },
-        summary=f"flock.learning.proposed: {title}",
+        payload=payload,
+        summary=f"flock.learning.proposed: {proposal.title}",
         urgency=0.2,
         domain="infrastructure",
         timestamp=datetime.now(UTC),
-        correlation_id=correlation_id or learning_id,
-        causation_id=causation_id,
+        correlation_id=proposal.correlation_id or proposal.learning_id,
+        causation_id=proposal.causation_id,
     )
 
 

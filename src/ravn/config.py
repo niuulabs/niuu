@@ -2926,9 +2926,12 @@ class ResidentEvolutionConfig(BaseModel):
     )
     rollback_consecutive_failures: int = Field(
         default=3,
+        ge=1,
         description=(
             "Consecutive implementation failures before an installed skill is "
-            "auto-rolled-back (archived, regression published to the flock)."
+            "auto-rolled-back (archived, regression published to the flock). "
+            "Also applied by learned_tool_run, the dispatch path every "
+            "learned tool actually runs through."
         ),
     )
     feedback_confidence_bump: float = Field(
