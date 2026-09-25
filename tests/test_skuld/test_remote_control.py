@@ -6,6 +6,11 @@ the ANSI TUI, and emits a structured ``remote_control`` event.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import os
+import signal
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -15,6 +20,20 @@ from skuld.transports.remote_control import (
     _URL_RE,
     RemoteControlTransport,
 )
+
+
+async def _fast_timeout_wait_for(coro, timeout):
+    """Stand-in for ``asyncio.wait_for`` that times out immediately.
+
+    Mirrors the real timeout behaviour (cancel the inner coroutine, then
+    raise) without the test actually sleeping for the production 5s timeout.
+    """
+    del timeout
+    task = asyncio.ensure_future(coro)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    raise TimeoutError
 
 
 class TestCommandConstruction:
@@ -199,11 +218,12 @@ class TestStopAndResurface:
         transport = RemoteControlTransport("/tmp", session_id="tok12345")
 
         class _Proc:
+            pid = 4242
             returncode = None
-            signals: list[int] = []
+            signals: list[str] = []
 
-            def send_signal(self, sig):
-                self.signals.append(sig)
+            def terminate(self):
+                self.signals.append("terminate")
                 self.returncode = 0
 
             async def wait(self):
@@ -215,8 +235,53 @@ class TestStopAndResurface:
         with patch.object(transport, "_sweep_kill", side_effect=lambda sig: swept.append(sig) or 0):
             await transport.stop()
 
-        assert _signal.SIGTERM in proc.signals
+        assert "terminate" in proc.signals
         assert _signal.SIGTERM in swept
+
+    @pytest.mark.asyncio
+    async def test_stop_kills_and_awaits_process_that_ignores_terminate(self):
+        """A process that never exits from SIGTERM must still be killed and
+        awaited — regression test for the leaked subprocess transport where
+        `stop()` gave up after a timed-out `wait()` and left the process (and
+        its stdout pipe transport) to the raw-PID sweep, which never touches
+        the asyncio Process object at all.
+        """
+        import signal as _signal
+
+        transport = RemoteControlTransport("/tmp", session_id="tok12345")
+
+        class _StubbornProc:
+            pid = 4343
+            returncode = None
+            signals: list[str] = []
+            waited = False
+
+            def terminate(self):
+                self.signals.append("terminate")
+
+            def kill(self):
+                self.signals.append("kill")
+                self.returncode = -_signal.SIGKILL
+
+            async def wait(self):
+                if self.returncode is None:
+                    # First wait(): the process ignores SIGTERM and this call
+                    # would hang forever in production; stop() must not await
+                    # it without a timeout.
+                    await asyncio.sleep(3600)
+                self.waited = True
+                return self.returncode
+
+        proc = _StubbornProc()
+        transport._process = proc
+        with (
+            patch.object(transport, "_sweep_kill", return_value=0),
+            patch("niuu.adapters.cli.runtime.asyncio.wait_for", _fast_timeout_wait_for),
+        ):
+            await transport.stop()
+
+        assert proc.signals == ["terminate", "kill"]
+        assert proc.waited
 
     @pytest.mark.asyncio
     async def test_send_message_resurfaces_pairing_url(self):
@@ -232,3 +297,86 @@ class TestStopAndResurface:
 
         resurfaced = [e for e in events if e.get("type") == "remote_control"]
         assert resurfaced and resurfaced[0]["url"].endswith("env_abc")
+
+
+class TestStopDoesNotLeakSubprocessTransport:
+    """Executable proof for the intermittent Forge-unit-lane failure:
+
+        ExceptionGroup: multiple unraisable exception warnings
+        ResourceWarning: unclosed transport <_UnixSubprocessTransport ...>
+
+    The victim test was always unrelated to subprocesses — Python only warns
+    when the abandoned transport is garbage-collected, which can happen
+    during any later test, since asyncio only finishes closing a subprocess
+    transport once BOTH its exit code is known AND its pipes are drained —
+    and it only chases that down proactively for descendants a live event
+    loop is still watching. The real bug was `RemoteControlTransport.stop()`
+    giving up on the asyncio ``Process`` object after a timed-out ``wait()``
+    and relying solely on a raw-PID sweep (``os.kill``) that never touches
+    that ``Process``/its transport, so it was abandoned — still alive, still
+    holding its stdout pipe transport open — whenever the client ignored
+    SIGTERM. `gc.collect()` only reports the ``ResourceWarning`` once nothing
+    references the abandoned ``Process`` any more, which can be long after
+    the test that leaked it has finished; asserting on the reaped
+    `returncode` right after `stop()` catches the defect immediately and
+    deterministically instead of racing that GC timing.
+    """
+
+    def test_real_process_that_ignores_sigterm_is_killed_and_reaped(self):
+        if sys.platform == "win32":
+            pytest.skip("posix-only: relies on SIGTERM/SIGKILL reaping semantics")
+
+        transport = RemoteControlTransport("/tmp", session_id="leaktest123")
+        loop = asyncio.new_event_loop()
+        pid: int | None = None
+        try:
+
+            async def _spawn_and_stop() -> asyncio.subprocess.Process:
+                nonlocal pid
+                # A real child, started through the exact same
+                # `create_subprocess_exec(..., stdout=PIPE)` call `start()`
+                # uses, that ignores SIGTERM so `stop()` must escalate.
+                process = await asyncio.create_subprocess_exec(
+                    sys.executable,
+                    "-c",
+                    "import signal, time\n"
+                    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                    "print('ready', flush=True)\n"
+                    "time.sleep(20)\n",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                pid = process.pid
+                transport._process = process
+                # Block until the SIGTERM-ignoring handler is actually
+                # installed — otherwise a SIGTERM sent during interpreter
+                # start-up would kill the child via the *default* action and
+                # the escalation path this test exists to exercise would
+                # never run.
+                await asyncio.wait_for(process.stdout.readline(), timeout=10)
+                # The raw-PID sweep is a separate, independently-tested
+                # safety net (see TestSweepKill above); disabling it here
+                # isolates what `stop()` itself does with the `Process`
+                # object it owns.
+                with (
+                    patch.object(transport, "_sweep_kill", return_value=0),
+                    patch("asyncio.wait_for", _fast_timeout_wait_for),
+                ):
+                    await transport.stop()
+                return process
+
+            process = loop.run_until_complete(_spawn_and_stop())
+        finally:
+            # Mirrors pytest-asyncio's per-test loop teardown: close the loop
+            # right after the run, with no grace period for stray callbacks.
+            loop.close()
+            if pid is not None:
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
+
+        # `stop()` must reap the process through the `Process` object itself
+        # (terminate, then escalate to kill + wait on timeout) — not merely
+        # rely on the separate PID sweep, which is disabled above. A
+        # `returncode` of `None` here means the process (and its stdout pipe
+        # transport) was abandoned mid-shutdown.
+        assert process.returncode is not None
