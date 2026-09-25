@@ -25,7 +25,12 @@ def test_raises_when_sdk_is_missing():
 
 
 def test_builds_a_real_sink_when_the_sdk_is_installed():
+    # The sink needs the SDK *and* the OTLP gRPC exporter; lanes that install
+    # only part of the otel stack cannot build it, so skip rather than fail.
     pytest.importorskip("opentelemetry.sdk")
+    pytest.importorskip(
+        "opentelemetry.exporter.otlp.proto.grpc.trace_exporter", exc_type=ImportError
+    )
     cfg = OtelConfig(enabled=True, service_name="volundr-test", provider_name="anthropic")
 
     sink = _build_otel_event_sink(cfg)
