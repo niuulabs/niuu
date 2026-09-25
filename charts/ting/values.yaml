@@ -21,6 +21,27 @@ args: []
 nameOverride: ""
 fullnameOverride: ""
 
+# -- Pod-level securityContext. fsGroup matches the unified niuu image's
+# runtime user (65532, non-root — see containers/niuu/Dockerfile) so a
+# freshly provisioned workflowPersistence block volume is group-writable
+# on single-node (ReadWriteOnce) storage; without this, the filesystem
+# workflow catalog refuses to start on a root-owned mount.
+# fsGroupChangePolicy: OnRootMismatch skips the recursive chown once
+# ownership already matches, instead of doing it on every pod restart.
+podSecurityContext:
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+
+# -- Deployment update strategy override. Leave empty (the default) to let
+# the chart choose: RollingUpdate (Kubernetes' own default, unset here) for
+# ReadWriteMany or persistence-disabled installs, and an automatic
+# `{type: Recreate}` whenever workflowPersistence.accessModes is
+# ReadWriteOnce or ReadWriteOncePod — a surge pod cannot attach the same
+# block volume, so RollingUpdate would deadlock. Set this only to force a
+# specific strategy explicitly; on a ReadWriteOnce/ReadWriteOncePod volume,
+# only `{type: Recreate}` is accepted (the chart fails the render otherwise).
+strategy: {}
+
 serviceAccount:
   create: true
   automount: true
@@ -267,10 +288,44 @@ workflowPersistence:
   enabled: true
   existingClaim: ""
   storageClass: ""
+  # Existing PVCs' accessModes are immutable — changing this default would
+  # break upgrades of installs already running on it. Single-node
+  # (ReadWriteOnce/ReadWriteOncePod) block storage is supported and detected
+  # automatically (see `strategy` above); set it explicitly for a new install
+  # on storage that cannot do ReadWriteMany, such as most single-node CSI
+  # drivers (e.g. Harvester). replicaCount > 1 (or autoscaling.enabled)
+  # requires ReadWriteMany here — e.g. NFS, with the export owned by uid
+  # 65532 and attribute/lookup caching disabled, since kubelet does not
+  # apply podSecurityContext.fsGroup to NFS mounts — the chart fails the
+  # render otherwise. This also governs existingClaim: accessModes is read
+  # as the operator's statement about what that claim supports.
   accessModes:
     - ReadWriteMany
   size: 1Gi
   annotations: {}
+
+# Opt-in, automated database-to-file workflow catalog cutover: an init
+# container that runs `python -m ting.migrate_workflows --apply
+# --skip-if-migrated` ahead of the main container, after the golang-migrate
+# schema migration. Safe to leave enabled indefinitely — --skip-if-migrated
+# makes every start after the first a no-op. Safe with replicaCount > 1 too:
+# concurrent init containers serialize on the catalog's own cutover lock
+# (FilesystemWorkflowRepository.cutover_lock), so exactly one migrates and
+# the rest see its result and skip. See docs/operator/workflow-catalog.md
+# for the two-phase GitOps rollout this is meant to be turned on for.
+workflowMigration:
+  # -- Run the migration init container on every pod start.
+  applyOnStart: false
+  # -- Database name on the configured PostgreSQL host holding the persona
+  # registry rows referenced by workflows being migrated (--persona-database).
+  # Reuses Ting's own database.username/password secret against this other
+  # database name on the same PostgreSQL host -- not a separate credential.
+  personaDatabase: volundr
+  # -- Pass --replace-divergent-bundled: preserve database system rows that
+  # diverge from their packaged definition under their existing identity,
+  # instead of failing the migration.
+  replaceDivergentBundled: false
+  resources: {}
 
 # Envoy sidecar proxy (JWT validation, header extraction)
 envoy:

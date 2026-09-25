@@ -3,7 +3,7 @@ id: 1bfc01b1-4d01-5d20-86e1-2956dff11464
 name: Research Campaign
 description: Flexible deep-research workflow that frames a question, explores the evidence deeply through parallel
   threads, challenges the thesis, and distills durable memory into Mimir.
-version: 1.0.0
+version: 2.0.0
 persona_dependencies:
   research-analyst:
     id: research-analyst

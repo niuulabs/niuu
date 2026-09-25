@@ -52,6 +52,25 @@ def next_workflow_version(
     return f"{major}.{minor}.{patch + 1}"
 
 
+def workflow_version_tuple(version: str) -> tuple[int, int, int]:
+    """Parse a persisted semantic version label for ordering comparisons.
+
+    Uses the same ``_SEMVER`` shape ``next_workflow_version`` parses, so
+    ordering and increment agree on what counts as a valid version label.
+    """
+    normalized = version.strip()
+    if normalized == "draft":
+        return (0, 0, 0)
+    match = _SEMVER.fullmatch(normalized)
+    if match is None:
+        raise ValueError(
+            f"Workflow version {version!r} cannot be compared; "
+            "expected MAJOR.MINOR or MAJOR.MINOR.PATCH"
+        )
+    major, minor, patch = match.groups()
+    return (int(major), int(minor), int(patch or 0))
+
+
 def serialize_workflow_version(workflow: WorkflowDefinition) -> dict[str, Any]:
     """Serialize the complete immutable aggregate stored for one version."""
 

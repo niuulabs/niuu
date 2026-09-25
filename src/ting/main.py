@@ -133,6 +133,7 @@ from ting.domain.services.resource_authorization import (
 from ting.domain.services.review_engine import ReviewEngine
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.domain.services.workflow_execution import WorkflowExecutionService
+from ting.domain.services.workflow_migration import workflow_catalog_migration_is_current
 from ting.domain.services.workflow_wait import WorkflowWaitService
 from ting.infrastructure.database import database_pool
 from ting.ports.dispatcher_repository import DispatcherRepository
@@ -290,30 +291,12 @@ async def _assert_workflow_catalog_migrated(
         "SELECT COUNT(*) AS row_count, MAX(updated_at) AS max_updated_at FROM workflows"
     )
     legacy_count = int(legacy_state["row_count"])
-    if not legacy_count:
-        return
-    marker = workflow_repo.read_migration_marker()  # type: ignore[attr-defined]
-    legacy_max_updated_at = legacy_state["max_updated_at"]
-    marker_max_updated_at = marker.get("source_max_updated_at") if marker else None
-    marker_matches = bool(
-        marker
-        and marker.get("source_count") == legacy_count
-        and marker_max_updated_at
-        == (legacy_max_updated_at.isoformat() if legacy_max_updated_at is not None else None)
+    is_current = await workflow_catalog_migration_is_current(
+        workflow_repo,  # type: ignore[arg-type]
+        legacy_count=legacy_count,
+        legacy_max_updated_at=legacy_state["max_updated_at"],
     )
-    if marker_matches:
-        deleted_ids = set(marker.get("deleted_ids", []))
-        expected_ids = set(marker.get("inventory_ids", [])) - deleted_ids
-        for workflow_id in expected_ids:
-            try:
-                parsed_workflow_id = uuid.UUID(workflow_id)
-            except (TypeError, ValueError):
-                marker_matches = False
-                break
-            if await workflow_repo.get_workflow(parsed_workflow_id) is None:
-                marker_matches = False
-                break
-    if marker_matches:
+    if is_current:
         return
     raise RuntimeError(
         "File-backed workflow storage cannot start while PostgreSQL contains "

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,6 +27,7 @@ from ting.ports.workflow_repository import WorkflowRepository
 
 BUNDLED_SYSTEM_WORKFLOWS_PATH = (Path(__file__).parent / "workflows").resolve()
 BUNDLED_SYSTEM_PACKAGE_ROOT = BUNDLED_SYSTEM_WORKFLOWS_PATH.parent
+logger = logging.getLogger(__name__)
 
 
 def load_system_workflows(path: Path = BUNDLED_SYSTEM_WORKFLOWS_PATH) -> list[WorkflowDefinition]:
@@ -190,7 +192,25 @@ async def seed_system_workflows(
     A package restart is idempotent. Once an operator has created an authored
     successor for the same stable workflow identity, that head wins over future
     package seeding. Reusing one semantic version for different bundled content
-    is rejected because versions are immutable.
+    is rejected because versions are immutable -- but only once compared
+    against a row this seeding path (or an authored save) actually wrote
+    itself. A row with no recorded version history at all was never written
+    by either: it is a legacy row that predates persona pinning and schema
+    versioning (its ``version_origin`` was reclassified from ``authored`` to
+    ``bundled`` by migration 000046, having previously been skipped entirely
+    by the ``origin == "authored"`` check below). Comparing its stale shape
+    against the current packaged document would always disagree even when
+    the visible content (name, graph, version) matches, so it is instead
+    handed to ``adopt_legacy_bundled``, which publishes the packaged
+    rendering under its immutable identity without an intermediate content
+    comparison and without colliding the legacy and current snapshots in the
+    same archived version slot.
+
+    A never-versioned row reclassified by 000046 whose id is not in the
+    current package at all (an admin-created system row, not something
+    Ting ever packaged) is not deleted -- 000046 cannot tell that apart from
+    a legacy packaged row at the SQL level -- it is flipped back to
+    ``authored`` here instead, and logged.
     """
     seeds = load_system_workflows(path)
     existing = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
@@ -199,6 +219,22 @@ async def seed_system_workflows(
         return []
 
     existing_by_id = {workflow.id: workflow for workflow in existing}
+    seed_ids = {seed.id for seed in seeds}
+
+    for workflow_id, orphan in existing_by_id.items():
+        if workflow_id in seed_ids or orphan.origin != "bundled":
+            continue
+        if await repo.has_recorded_version_history(workflow_id):
+            continue
+        logger.warning(
+            "System workflow %s (%r) is not part of the current package and has no "
+            "recorded version history (likely a pre-#1012 admin-created row "
+            "migration 000046 could not tell apart from legacy packaged content); "
+            "reclassifying it as authored instead of deleting it.",
+            workflow_id,
+            orphan.name,
+        )
+        await repo.reclassify_orphaned_bundled_as_authored(workflow_id)
 
     saved: list[WorkflowDefinition] = []
     for seed in seeds:
@@ -212,6 +248,9 @@ async def seed_system_workflows(
             continue
         if current.origin == "authored":
             saved.append(current)
+            continue
+        if not await repo.has_recorded_version_history(seed.id):
+            saved.append(await repo.adopt_legacy_bundled(seed))
             continue
         current_document_revision = current.document_revision or workflow_document_revision(current)
         seed_document_revision = seed.document_revision or workflow_document_revision(seed)
