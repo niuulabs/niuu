@@ -37,6 +37,40 @@ The local host adapter's arguments sit directly under `pod_manager`. They are
 passed to the selected adapter. `server.external_host` controls a browser-facing
 host when it differs from the listen address; it does not configure TLS or login.
 
+### Authentication mode (`host_auth`)
+
+Mini mode and docker mode have no Envoy JWT filter in front of them, so
+`host_auth.mode` says explicitly how the host trusts a caller — it defaults
+to `none` (today's behaviour: every caller is admin) and is never inferred.
+It is named `host_auth`, not `auth`: Ting's own `Settings` reads a top-level
+`auth:` key from this same file for an unrelated, differently-shaped config.
+
+```yaml
+host_auth:
+  mode: none # or: oidc — see operations/security-and-permissions.md
+  oidc:
+    issuers:
+      - issuer: "https://keycloak.example.com/realms/volundr"
+        audiences: ["volundr-api"]
+        jwks_uri: "" # empty = resolve via OIDC discovery; must be HTTPS
+    clock_leeway_seconds: 60
+    jwks_cache_ttl_seconds: 300
+    jwks_timeout_seconds: 5.0
+    min_refresh_interval_seconds: 5.0
+    user_id_claim: sub
+    email_claim: email
+    tenant_claim: tenant_id
+    roles_claim: resource_access.volundr.roles
+```
+
+`host_auth.mode: oidc` requires at least one `host_auth.oidc.issuers` entry
+(issuer and one or more audiences); the CLI settings loader raises at
+config-load time otherwise, as it does when a plugin or Bifröst mode not yet
+covered by `oidc` (Mímir, Guild, an open Bifröst gateway) is still enabled.
+See [Authentication mode on hosts without
+Envoy](../operations/security-and-permissions.md#authentication-mode-on-hosts-without-envoy)
+for what each mode covers today, path by path.
+
 ## Environment overrides
 
 The Niuu CLI uses `NIUU_` and `__` for nested fields. For one foreground run on a

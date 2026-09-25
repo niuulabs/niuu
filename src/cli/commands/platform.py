@@ -182,9 +182,12 @@ async def _startup(
         port=port,
         host_profile=host_profile,
         enabled_mounts=enabled_mounts,
-        # Mini mode is the local, IDP-less host: browser-asserted dev identity
-        # is its identity contract. Every other mode must not trust it.
-        dev_identity=settings.mode == "mini",
+        # Browser-asserted dev identity (client x-auth-*, devUserId/devRoles
+        # query params) is only the identity contract for a mini host that
+        # ALSO explicitly declared it has no authentication (auth.mode:
+        # none). auth.mode: oidc verifies bearer tokens itself — trusting
+        # the browser's own claims there would silently undo that.
+        dev_identity=settings.mode == "mini" and settings.host_auth.mode == "none",
     )
     manager._root_server = root_server  # type: ignore[attr-defined]
 
@@ -277,7 +280,9 @@ def _build_up_callback(
         if effective_settings.mode == "mini":
             _set_environment("LOCAL_MOUNTS__ENABLED", "true", only_if_missing=True)
             _set_environment("LOCAL_MOUNTS__MINI_MODE", "true", only_if_missing=True)
-            for key, value in _resolve_local_pod_manager_env(effective_settings).items():
+            local_env = _resolve_local_pod_manager_env(effective_settings)
+            _check_auth_env_conflicts(local_env, effective_settings.host_auth.mode)
+            for key, value in local_env.items():
                 _set_environment(
                     key,
                     value,
@@ -400,6 +405,45 @@ def _build_up_callback(
     return up
 
 
+#: Env vars auth_adapter_env() computes that select WHICH identity/authz
+#: adapter runs. An operator-set value here disagreeing with what auth.mode
+#: computes must raise, not silently be overwritten — the running host would
+#: then not match what config.yaml or /auth/config claims.
+_AUTH_ADAPTER_ENV_KEYS = frozenset(
+    {
+        "IDENTITY__ADAPTER",
+        "AUTHORIZATION__ADAPTER",
+        "RAVN_API_AUTH__ADAPTER",
+        "AUTH__ADAPTER",
+        "HOST_IDENTITY__ADAPTER",
+        "AUTH_MODE",
+    }
+)
+
+
+def _check_auth_env_conflicts(computed: dict[str, str], auth_mode: str) -> None:
+    """Raise if the operator's own environment disagrees with auth.mode.
+
+    Selecting the identity/authorization adapter used to unconditionally
+    overwrite whatever the operator had already exported — silently
+    discarding it. The running host would then not match what config.yaml
+    or /auth/config claims, which is exactly the "claims a security the
+    host doesn't have" failure mode this whole fix round exists to close.
+    """
+    for key in _AUTH_ADAPTER_ENV_KEYS:
+        existing = os.environ.get(key)
+        computed_value = computed.get(key)
+        if existing is None or computed_value is None or existing == computed_value:
+            continue
+        raise typer.BadParameter(
+            f"{key} is already set in the environment to {existing!r}, which "
+            f"disagrees with auth.mode: {auth_mode!r} (computed {computed_value!r}). "
+            f"Remove the operator-set {key} env var, or change auth.mode/"
+            "host_auth.oidc to match it.",
+            param_hint=key,
+        )
+
+
 MINI_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.local_process.LocalProcessPodManager"
 CLUSTER_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.direct_k8s_pod_manager.DirectK8sPodManager"
 OPENSHELL_POD_MANAGER_ADAPTER = (
@@ -492,13 +536,9 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
     if seeds:
         env["INTEGRATIONS__SEED_CONNECTIONS"] = json.dumps(seeds)
     if settings.mode == "mini":
-        env["RAVN_API_AUTH__ADAPTER"] = (
-            "identity.adapters.identity.AllowAllHeaderAuthenticationAdapter"
-        )
-        env["AUTH__ALLOW_ANONYMOUS_DEV"] = "true"
-        env["AUTHORIZATION__ADAPTER"] = (
-            "identity.adapters.authorization.AllowAllAuthorizationAdapter"
-        )
+        from cli.config import auth_adapter_env
+
+        env.update(auth_adapter_env(settings.host_auth))
     return env
 
 
