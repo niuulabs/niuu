@@ -1994,6 +1994,54 @@ class TestPerClusterIsolationAndBackoff:
         assert slow_b.get_session_calls == 1
 
     @pytest.mark.asyncio
+    async def test_own_cluster_is_reconciled_on_its_own_resubscribe_after_outage(self) -> None:
+        """A cluster reconnecting after its own outage must reconcile its
+
+        own phantom RUNNING runs on this very resubscribe — it must not
+        skip itself as "still backing off" just because its backoff state
+        (from the failure that's ending right now) isn't cleared until
+        later in this same attempt. Regression test: reconcile now runs
+        right after ``ActivityStreamConnected``, exempting this cluster's
+        own key from the backoff skip.
+        """
+        run = _make_run(session_id="stale-session", tracker_id="issue-stale")
+        tracker = MockTracker(runs_by_session={"stale-session": run})
+        ymir = NamedVolundr(name="ymir", target_id="ymir-1")
+        ymir.sessions["stale-session"] = _make_volundr_session(
+            session_id="stale-session", status="stopped"
+        )
+        sub = SessionActivitySubscriber(
+            volundr_factory=MultiVolundrFactory([ymir]),
+            tracker_factory=MockTrackerFactory(trackers=[tracker]),
+            dispatcher_repo=ActiveOwnersDispatcherRepo([OWNER_ID]),
+            event_bus=InMemoryEventBus(),
+            config=_default_config(
+                reconnect_delay=0,
+                reconnect_initial_delay=0,
+                reconnect_max_delay=0,
+                reconnect_jitter=0,
+            ),
+        )
+        sub._running = True
+        # ymir just failed — its backoff entry is still present, exactly
+        # the window between "connected" and "backoff state cleared" this
+        # test guards.
+        sub._cluster_backoff[(OWNER_ID, "ymir-1")] = _ClusterBackoffState(
+            consecutive_failures=2, next_retry_at=0.0
+        )
+        task = asyncio.create_task(sub._adapter_subscription_loop(OWNER_ID, ymir))
+        sub._owner_tasks[OWNER_ID] = {"ymir-1": task}
+
+        task_result = await task
+
+        assert task_result is None
+        tracker.update_run_progress.assert_called_once()
+        progress_call = tracker.update_run_progress.call_args
+        assert progress_call.args[0] == "issue-stale"
+        assert progress_call.kwargs["status"] == RunStatus.FAILED
+        assert progress_call.kwargs["reason"] == "Session stopped"
+
+    @pytest.mark.asyncio
     async def test_reconcile_run_session_skips_when_a_cluster_is_unresolved(self) -> None:
         """A cluster the factory could not build an adapter for was never
         queried — "not found on every adapter we got" must not become

@@ -349,13 +349,22 @@ class SessionActivitySubscriber:
         connected = False
         stream_opened_at: float | None = None
         try:
-            await self._reconcile_running_runs(owner_id)
-            logger.info("SSE subscription started for owner %s cluster=%s", owner_id[:8], label)
             async for item in volundr.subscribe_activity():
                 if not _is_current():
                     return
                 if isinstance(item, ActivityStreamConnected):
                     stream_opened_at = time.monotonic()
+                    # Reconcile only once the connection is genuinely open —
+                    # not before, which left a window where a session status
+                    # change (or the outage this cluster just had) went
+                    # unnoticed until the *next* resubscribe, and skipped
+                    # this cluster's own runs as "still backing off" since
+                    # its backoff state isn't cleared until later in this
+                    # same attempt.
+                    await self._reconcile_running_runs(owner_id, exempt_cluster_key=key)
+                    logger.info(
+                        "SSE subscription started for owner %s cluster=%s", owner_id[:8], label
+                    )
                     continue
                 if not connected:
                     self._on_cluster_connected(owner_id, key, label)
@@ -390,16 +399,20 @@ class SessionActivitySubscriber:
         """
         return time.monotonic() - stream_opened_at >= self._config.reconnect_stable_after_seconds
 
-    async def _reconcile_running_runs(self, owner_id: str) -> None:
+    async def _reconcile_running_runs(
+        self, owner_id: str, *, exempt_cluster_key: str | None = None
+    ) -> None:
         """Fail tracker-side RUNNING runs whose backing Forge session is confirmed terminal.
 
-        Runs before every (re)subscribe attempt for *owner_id* — including
-        the resubscribe after a cluster's outage — so a session-status
-        change missed while that cluster was down is still caught up
-        promptly. This closes the restart gap where Volundr has reconciled
-        dead local sessions to ``stopped`` before Ting's SSE subscription
-        comes online; without this pass, ``try_auto_continue()`` can believe
-        all owner slots are still occupied by phantom RUNNING runs.
+        Called right after *this* cluster's SSE connection actually opens
+        (``ActivityStreamConnected``) — including the resubscribe after an
+        outage — so a session-status change missed while it was down is
+        caught up the moment it is back, and there is no gap between this
+        check and the stream actually starting. This closes the restart gap
+        where Volundr has reconciled dead local sessions to ``stopped``
+        before Ting's SSE subscription comes online; without this pass,
+        ``try_auto_continue()`` can believe all owner slots are still
+        occupied by phantom RUNNING runs.
 
         A ``Run`` does not record which Forge cluster its session lives on,
         so every one of the owner's currently registered adapters is asked
@@ -407,6 +420,14 @@ class SessionActivitySubscriber:
         verdict is kept scoped to clusters that were actually, successfully
         queried, so this pass run for one cluster's resubscribe can never
         raise (or fail a run) because a *different* cluster is down.
+
+        *exempt_cluster_key* is the cluster whose own resubscribe triggered
+        this call: it is always queried regardless of its recorded backoff
+        state, which — at this point — has not been cleared yet (that
+        happens once an event arrives or the stream ends). Without the
+        exemption, a cluster's own reconcile pass would skip itself as
+        "currently backing off" and its phantom RUNNING runs from the
+        outage that just ended would never get checked by anyone.
         """
         adapters, unresolved = await self._resolve_owner_adapters_for_reconcile(owner_id)
         if not adapters:
@@ -418,7 +439,14 @@ class SessionActivitySubscriber:
             for run in running_runs:
                 if not run.session_id:
                     continue
-                await self._reconcile_run_session(run, tracker, owner_id, adapters, unresolved)
+                await self._reconcile_run_session(
+                    run,
+                    tracker,
+                    owner_id,
+                    adapters,
+                    unresolved,
+                    exempt_cluster_key=exempt_cluster_key,
+                )
 
     async def _resolve_owner_adapters_for_reconcile(
         self, owner_id: str
@@ -429,7 +457,9 @@ class SessionActivitySubscriber:
         """
         return await self._factory.for_owner_with_unresolved(owner_id)
 
-    def _cluster_is_backing_off(self, owner_id: str, adapter: VolundrPort) -> bool:
+    def _cluster_is_backing_off(
+        self, owner_id: str, adapter: VolundrPort, *, exempt_cluster_key: str | None
+    ) -> bool:
         """Whether *adapter*'s cluster currently has recorded backoff state.
 
         A cluster with an active failure streak has an unknown status until
@@ -438,8 +468,16 @@ class SessionActivitySubscriber:
         the exact 404 misattribution ``_reconcile_run_session`` otherwise
         guards against. Its own ``_adapter_subscription_loop`` is already
         responsible for finding out when it recovers.
+
+        *exempt_cluster_key*, when it matches this adapter's key, means
+        this is that cluster's own resubscribe calling — it is never
+        skipped for itself, only for other clusters still in backoff (see
+        ``_reconcile_running_runs``).
         """
-        return (owner_id, self._cluster_key(adapter)) in self._cluster_backoff
+        key = self._cluster_key(adapter)
+        if key == exempt_cluster_key:
+            return False
+        return (owner_id, key) in self._cluster_backoff
 
     async def _reconcile_run_session(
         self,
@@ -448,6 +486,8 @@ class SessionActivitySubscriber:
         owner_id: str,
         adapters: list[VolundrPort],
         unresolved: int,
+        *,
+        exempt_cluster_key: str | None = None,
     ) -> None:
         """Resolve *run*'s session across *adapters* and fail it only on real evidence.
 
@@ -458,8 +498,9 @@ class SessionActivitySubscriber:
         failing it or letting anything raise out of this call (see
         .claude/rules/no-fallbacks.md):
 
-        - A cluster currently in backoff is skipped without being queried
-          at all (see ``_cluster_is_backing_off``).
+        - A cluster currently in backoff — other than *exempt_cluster_key*
+          — is skipped without being queried at all (see
+          ``_cluster_is_backing_off``).
         - A cluster that errored while being asked (down, timing out) — the
           remaining clusters are still queried, concurrently, so one down
           cluster never delays or blocks the others.
@@ -473,7 +514,11 @@ class SessionActivitySubscriber:
         cluster did.
         """
         queryable = [
-            adapter for adapter in adapters if not self._cluster_is_backing_off(owner_id, adapter)
+            adapter
+            for adapter in adapters
+            if not self._cluster_is_backing_off(
+                owner_id, adapter, exempt_cluster_key=exempt_cluster_key
+            )
         ]
         skipped_for_backoff = len(adapters) - len(queryable)
 
