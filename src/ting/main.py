@@ -47,7 +47,7 @@ from ting.adapters.postgres_sagas import PostgresSagaRepository
 from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRepository
 from ting.adapters.postgres_workflow_executions import PostgresWorkflowExecutionRepository
 from ting.adapters.tracker_factory import TrackerAdapterFactory
-from ting.adapters.volundr_factory import VolundrAdapterFactory
+from ting.adapters.volundr_factory import GuildRegistryUnavailableError, VolundrAdapterFactory
 from ting.adapters.workflow_execution_worker import ExecutionReconciler, WorkflowExecutionWorker
 from ting.api.a2a import create_a2a_router, resolve_a2a_launch_repo
 from ting.api.a2a_card import create_agent_card_router
@@ -593,6 +593,13 @@ def create_app(
     @app.exception_handler(AuthorizationEvaluationError)
     async def authorization_unavailable(request: Request, exc: AuthorizationEvaluationError):
         return JSONResponse(status_code=503, content={"detail": "Authorization unavailable"})
+
+    @app.exception_handler(GuildRegistryUnavailableError)
+    async def guild_registry_unavailable(request: Request, exc: GuildRegistryUnavailableError):
+        return JSONResponse(
+            status_code=503,
+            content={"detail": f"{exc} — retry once Guild's instance registry is reachable"},
+        )
 
     app.state.settings = settings
     app.state.identity = import_class(settings.auth.adapter)(**settings.auth.kwargs)

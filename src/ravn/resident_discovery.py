@@ -18,18 +18,23 @@ class CompositeResidentDiscoveryAdapter:
         self._adapters = adapters
 
     async def list_residents(self) -> list[StandaloneResident]:
-        """Return residents from all adapters, de-duplicated by id."""
+        """Return residents from all adapters, de-duplicated by id.
+
+        A failing adapter used to be logged and skipped, which made its
+        residents vanish from the fleet with no signal that anything was
+        wrong — indistinguishable from "this adapter simply has no
+        residents". Fail loud instead: a configured discovery adapter that
+        cannot answer is a fault, not an empty result (see
+        ``.claude/rules/no-fallbacks.md``).
+        """
         by_id: dict[str, StandaloneResident] = {}
         for adapter in self._adapters:
             try:
                 residents = await adapter.list_residents()
             except Exception as exc:
-                logger.warning(
-                    "Resident discovery adapter %s failed: %s",
-                    adapter.__class__.__name__,
-                    exc,
-                )
-                continue
+                raise RuntimeError(
+                    f"Resident discovery adapter {adapter.__class__.__name__} failed: {exc}"
+                ) from exc
             for resident in residents:
                 by_id[resident.id] = resident
         return sorted(by_id.values(), key=lambda item: (item.resident_name.lower(), item.id))

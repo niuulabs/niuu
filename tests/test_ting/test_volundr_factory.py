@@ -2,14 +2,28 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
 
 from niuu.domain.models import InstanceKind, InstanceVisibility, Principal, RegisteredInstance
 from tests.test_ting.conftest import StubCredentialStore
-from ting.adapters.volundr_factory import LocalVolundrAdapterFactory, VolundrAdapterFactory
+from ting.adapters.volundr_factory import (
+    CredentialBindingError,
+    GuildRegistryUnavailableError,
+    LocalVolundrAdapterFactory,
+    VolundrAdapterFactory,
+)
 from ting.adapters.volundr_http import VolundrHTTPAdapter
+
+
+class FailingCredentialStore:
+    """Simulates a credential-store outage on every lookup."""
+
+    async def get_value(self, owner_type: str, owner_id: str, name: str) -> dict[str, str] | None:
+        raise RuntimeError("credential store unreachable")
+
 
 _NOW = datetime.now(tz=UTC)
 
@@ -158,6 +172,167 @@ async def test_registered_instance_uses_configured_credential_name_for_api_key()
 
 
 @pytest.mark.asyncio
+async def test_credential_binding_is_the_canonical_shape_the_guild_ui_writes() -> None:
+    """The register dialog writes config.credentialBinding = {name, scope} —
+    Ting must read what the operator actually bound instead of a separate,
+    never-populated config.credential_name key."""
+    factory = VolundrAdapterFactory(
+        StubGuildRegistry(
+            [
+                _make_instance(
+                    instance_id="system-1",
+                    name="System Alpha",
+                    base_url="http://alpha:8000",
+                    config={"credentialBinding": {"name": "bound-pat", "scope": "user"}},
+                )
+            ]
+        ),
+        StubCredentialStore(values={"user:owner-1:bound-pat": {"token": "tok-bound"}}),
+    )
+
+    result = await factory.for_owner("owner-1")
+
+    assert len(result) == 1
+    assert result[0]._api_key == "tok-bound"
+
+
+@pytest.mark.asyncio
+async def test_tenant_scoped_credential_binding_resolves_against_the_instance_tenant() -> None:
+    """A tenant-scoped binding must not be looked up under the requesting
+    user's id — that always missed before, silently forcing every binding
+    to behave as user-scoped regardless of what the operator selected."""
+    instance = replace(
+        _make_instance(
+            instance_id="system-1",
+            name="System Alpha",
+            base_url="http://alpha:8000",
+            config={"credentialBinding": {"name": "shared-pat", "scope": "tenant"}},
+        ),
+        tenant_id="tenant-a",
+    )
+    factory = VolundrAdapterFactory(
+        StubGuildRegistry([instance]),
+        StubCredentialStore(values={"tenant:tenant-a:shared-pat": {"token": "tok-tenant"}}),
+    )
+
+    result = await factory.for_owner("owner-1")
+
+    assert len(result) == 1
+    assert result[0]._api_key == "tok-tenant"
+
+
+@pytest.mark.asyncio
+async def test_tenant_scoped_binding_without_an_instance_tenant_raises() -> None:
+    """Silently falling back to the requesting user's id would look up the
+    wrong credential store entry (or none at all) with no signal that the
+    operator's tenant-scoped binding cannot actually be resolved."""
+    factory = VolundrAdapterFactory(
+        StubGuildRegistry(
+            [
+                _make_instance(
+                    instance_id="system-1",
+                    name="System Alpha",
+                    base_url="http://alpha:8000",
+                    config={"credentialBinding": {"name": "shared-pat", "scope": "tenant"}},
+                )
+            ]
+        ),
+        StubCredentialStore(),
+    )
+
+    with pytest.raises(CredentialBindingError, match="tenant_id"):
+        await factory.for_owner("owner-1")
+
+
+@pytest.mark.asyncio
+async def test_unknown_credential_scope_raises_instead_of_reaching_the_store() -> None:
+    factory = VolundrAdapterFactory(
+        StubGuildRegistry(
+            [
+                _make_instance(
+                    instance_id="system-1",
+                    name="System Alpha",
+                    base_url="http://alpha:8000",
+                    config={"credentialBinding": {"name": "shared-pat", "scope": "planet"}},
+                )
+            ]
+        ),
+        StubCredentialStore(),
+    )
+
+    with pytest.raises(CredentialBindingError, match="planet"):
+        await factory.for_owner("owner-1")
+
+
+@pytest.mark.asyncio
+async def test_credential_binding_with_an_empty_name_raises() -> None:
+    factory = VolundrAdapterFactory(
+        StubGuildRegistry(
+            [
+                _make_instance(
+                    instance_id="system-1",
+                    name="System Alpha",
+                    base_url="http://alpha:8000",
+                    config={"credentialBinding": {"name": "  ", "scope": "user"}},
+                )
+            ]
+        ),
+        StubCredentialStore(),
+    )
+
+    with pytest.raises(CredentialBindingError, match="no name"):
+        await factory.for_owner("owner-1")
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_credential_binding_raises_instead_of_falling_back_to_legacy() -> None:
+    """Once credentialBinding is present it is authoritative — a malformed
+    value must not silently defer to a stale legacy credential_name."""
+    factory = VolundrAdapterFactory(
+        StubGuildRegistry(
+            [
+                _make_instance(
+                    instance_id="system-1",
+                    name="System Alpha",
+                    base_url="http://alpha:8000",
+                    config={
+                        "credentialBinding": "not-an-object",
+                        "credential_name": "stale-legacy-name",
+                    },
+                )
+            ]
+        ),
+        StubCredentialStore(values={"user:owner-1:stale-legacy-name": {"token": "tok"}}),
+    )
+
+    with pytest.raises(CredentialBindingError, match="must be an object"):
+        await factory.for_owner("owner-1")
+
+
+@pytest.mark.asyncio
+async def test_a_credential_store_outage_raises_instead_of_dropping_every_instance() -> None:
+    """The old code caught this around the whole per-instance body, so a
+    credential-store outage silently dropped every configured instance and
+    looked exactly like "no connections configured"."""
+    factory = VolundrAdapterFactory(
+        StubGuildRegistry(
+            [
+                _make_instance(
+                    instance_id="system-1",
+                    name="System Alpha",
+                    base_url="http://alpha:8000",
+                    config={"credentialBinding": {"name": "shared-pat", "scope": "user"}},
+                )
+            ]
+        ),
+        FailingCredentialStore(),
+    )
+
+    with pytest.raises(RuntimeError, match="credential store unreachable"):
+        await factory.for_owner("owner-1")
+
+
+@pytest.mark.asyncio
 async def test_target_without_configured_credential_is_allowed_for_request_time_auth() -> None:
     factory = VolundrAdapterFactory(
         StubGuildRegistry(
@@ -228,14 +403,18 @@ async def test_skips_credentialed_target_without_token_unless_dev_allows_it() ->
 
 
 @pytest.mark.asyncio
-async def test_registry_error_returns_empty() -> None:
+async def test_registry_error_raises_instead_of_looking_like_no_connections() -> None:
+    """A Guild outage must not be indistinguishable from "this user has no
+    Volundr connections configured" — dispatch and the activity subscriber
+    need to tell those two apart (see .claude/rules/no-fallbacks.md)."""
     factory = VolundrAdapterFactory(
         FailingGuildRegistry(),
         StubCredentialStore(),
         allow_unauthenticated=True,
     )
 
-    assert await factory.for_owner("owner-1") == []
+    with pytest.raises(GuildRegistryUnavailableError, match="owner-1"):
+        await factory.for_owner("owner-1")
 
 
 @pytest.mark.asyncio

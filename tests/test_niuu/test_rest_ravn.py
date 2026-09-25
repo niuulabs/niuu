@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -350,6 +351,15 @@ def test_list_ravens_ignores_failing_instances_and_bad_payloads() -> None:
 
     assert response.status_code == 200
     assert [item["id"] for item in response.json()] == ["huginn"]
+    # Additive, mirroring TopologySourceHealth: the dropped contributions are
+    # named on the response instead of silently vanishing from the merge.
+    failures = {
+        entry["instanceId"]: entry
+        for entry in json.loads(response.headers["X-Niuu-Source-Failures"])
+    }
+    assert failures["beta"]["error"] == "HTTP 503"
+    assert failures["delta"]["status"] == "unreachable"
+    assert "gamma" not in failures  # malformed 200 payload, not a transport failure
 
 
 @respx.mock
