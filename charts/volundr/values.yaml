@@ -330,6 +330,29 @@ podManager:
     code_scheme: "https"
     chat_path: "/session"
     code_path: "/"
+    # -- Base URL residents call for platform reachability (their own
+    # triggers/budget reporting). Empty (the default) means residents get no
+    # platform block at all — resident_triggers_enabled/resident_budget_enabled
+    # below then do nothing (rejected loudly by FluxPodManager.__init__, not
+    # silently — see .claude/rules/no-fallbacks.md) until this is set, e.g.
+    # http://niuu-volundr.volundr.svc.cluster.local.
+    resident_platform_base_url: ""
+    # -- Have deployed residents poll and execute triggers created via
+    # POST /api/v1/ravn/triggers (ravn.adapters.triggers.api_source
+    # .ApiTriggerSource). Requires resident_platform_base_url. Also set the
+    # skuld chart's resident.triggers.enabled (that is what actually runs the
+    # resident's poll loop) and this Ravn API deployment's
+    # trigger_execution.enabled (ravn.config.TriggerExecutionConfig) so
+    # /api/v1/ravn/settings and trigger-create responses stop reporting
+    # execution as off — none of these three is derived from another.
+    resident_triggers_enabled: false
+    # -- Have deployed residents durably report their own spend via
+    # PlatformBudgetReporter. Requires resident_platform_base_url, and the
+    # resident's own resident_budget.adapter (ravn config) must be set to
+    # ravn.adapters.resident_budget.PlatformBudgetReporter for this to do
+    # anything — this flag alone only reaches into the rendered resident
+    # config, it is not itself the adapter selection.
+    resident_budget_enabled: false
   # -- Secret kwargs from K8s Secrets, merged into kwargs at runtime
   # Each entry: { kwarg: "name", secretName: "k8s-secret", secretKey: "key" }
   secretKwargs: []
@@ -677,8 +700,82 @@ workloadIdentity:
   signingKey:
     existingSecret: ""
     key: private-key.pem
+  # -- Raw niuu WorkloadIdentityVerifierConfig entries (name/adapter/kwargs).
+  # Any mapping naming a `verifier:` that has no matching entry here never
+  # matches — the exchange fails loud with "Verifier not configured: <name>"
+  # rather than silently admitting nobody (niuu.domain.services.workload_identity
+  # .WorkloadIdentityService.exchange). In particular, `residentMapping` below
+  # sets `verifier: "kubernetes"` and needs a corresponding entry, e.g.:
+  #   verifiers:
+  #     - name: kubernetes
+  #       adapter: "niuu.adapters.workload_identity.jwt.JwtWorkloadIdentityVerifier"
+  #       kwargs:
+  #         issuer: "https://kubernetes.default.svc"       # cluster-specific
+  #         jwks_uri: "https://kubernetes.default.svc/openid/v1/jwks"
+  #         audiences: []  # must match the aud claim residents' SA tokens actually carry
+  # An operator must supply the cluster's real issuer/jwks_uri/audiences —
+  # this chart cannot guess them, and getting `audiences` wrong (e.g. it must
+  # include the CUSTOM audience the resident's projected serviceAccountToken
+  # volume actually carries — charts/skuld's resident.workloadIdentity.audience,
+  # mounted at /var/run/secrets/niuu-workload in deployment.yaml, not the
+  # cluster's default audience; automountServiceAccountToken is disabled on
+  # that ServiceAccount, so no default-audience token is ever mounted) fails
+  # verification the same loud way, not silently.
   verifiers: []
+  # -- Dynamic adapter resolving a per-caller tenant_id for residentMapping
+  # below from resident_runtimes.tenant_id, keyed by the same resident id
+  # owner_id_claim_pattern extracts — WITHOUT this, every resident matched by
+  # residentMapping gets the SAME tenantId (below), which is only correct for
+  # a single-tenant deployment: any other tenant's resident would poll an
+  # empty trigger list and write spend where GET /budget/{id} never sees it.
+  # Point it at the same Postgres this release's own database.existingSecret
+  # already names — resident_runtimes lives in this same database.
+  tenantResolver:
+    adapter: ""
+    # adapter: "volundr.adapters.outbound.resident_tenant_resolver.LazyPostgresResidentTenantResolver"
+    kwargs: {}
+    # kwargs:
+    #   dsn: ""  # prefer secretKwargs below over a plaintext DSN here
+    secretKwargs: []
+    # secretKwargs:
+    #   - kwarg: "dsn"
+    #     secretName: "volundr-postgres-app"
+    #     secretKey: "dsn"
+  # -- Extra mappings appended verbatim (raw niuu WorkloadIdentityMappingConfig
+  # objects — see residentMapping below for the one this chart synthesizes).
   mappings: []
+  # -- Admits the projected ServiceAccount token every resident pod carries
+  # (see charts/skuld's serviceaccount.yaml + resident's serviceAccountName,
+  # set by volundr.adapters.outbound.flux.FluxPodManager's
+  # resident_platform_base_url/*_enabled kwargs) and derives ravn_id from the
+  # verified subject per-caller — WITHOUT this, every resident matching a
+  # bare "system:serviceaccount:<namespace>:" mapping would share one
+  # owner_id/ravn_id, and GET/POST /api/v1/ravn/budget/* would key rows by
+  # that shared id instead of the resident_runtimes id the web passes.
+  #
+  # Enable residentMapping BEFORE setting podManager.kwargs
+  # .resident_platform_base_url (which starts every managed resident calling
+  # this platform for real). Flip the order and a resident's projected token
+  # only matches whatever's already in workloadIdentity.mappings — a bare
+  # "system:serviceaccount:<ns>:" catch-all, if one exists, admits it with a
+  # SHARED owner_id instead of its own, and budget/trigger rows land under
+  # that shared id until residentMapping is turned on and every resident
+  # cycles onto its own identity.
+  residentMapping:
+    enabled: false
+    name: "ravn-resident"
+    verifier: "kubernetes"
+    # -- Namespace resident pods run in — must match whatever namespace the
+    # ResidentRuntimeController (flux.py) deploys resident HelmReleases into.
+    namespace: ""
+    # -- Used ONLY when tenantResolver.adapter above is unset (the default) —
+    # every resident this mapping admits then gets this ONE tenantId, an
+    # explicit single-tenant-only choice, not a silent multi-tenant guess.
+    # Configure tenantResolver instead for a deployment with more than one
+    # tenant's residents.
+    tenantId: "default"
+    roles:
+      - "volundr:developer"
 
 workflowExecutionCredentials:
   enabled: false

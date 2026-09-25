@@ -124,8 +124,13 @@ def test_ravn_settings_available(client: TestClient) -> None:
     assert data["title"] == "Ravn"
     assert data["sections"][0]["id"] == "runtime"
     fields = {field["key"]: field for field in data["sections"][0]["fields"]}
+    # Both stores are opt-in (empty adapter by default — see
+    # TriggerStoreConfig/BudgetLedgerConfig) and this standalone app uses
+    # plain defaults, so neither is configured: an already-deployed chart
+    # with no new values set must keep reporting exactly this.
     assert fields["trigger_store_available"]["value"] is False
     assert fields["budget_store_available"]["value"] is False
+    assert fields["trigger_execution_enabled"]["value"] is False
 
 
 def test_personas_list_available(client: TestClient) -> None:

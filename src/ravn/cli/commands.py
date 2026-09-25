@@ -1746,6 +1746,7 @@ _TRIGGER_WIRING_NAMES = frozenset(
     (
         "_wire_mimir_triggers",
         "_wire_cron",
+        "_wire_api_triggers",
         "_wire_task_dispatch",
         "_derive_capabilities",
         "_wire_cascade",
@@ -1755,6 +1756,7 @@ _wire_mimir_triggers = _runtime_wrapper(
     _trigger_wiring, "_wire_mimir_triggers", _TRIGGER_WIRING_NAMES
 )
 _wire_cron = _runtime_wrapper(_trigger_wiring, "_wire_cron", _TRIGGER_WIRING_NAMES)
+_wire_api_triggers = _runtime_wrapper(_trigger_wiring, "_wire_api_triggers", _TRIGGER_WIRING_NAMES)
 _wire_task_dispatch = _runtime_wrapper(
     _trigger_wiring, "_wire_task_dispatch", _TRIGGER_WIRING_NAMES
 )

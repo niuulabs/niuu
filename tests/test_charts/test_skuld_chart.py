@@ -766,6 +766,121 @@ class TestResidentWorkloadIdentityConfigFirst:
         assert "NIUU_WORKLOAD_IDENTITY" not in rendered
 
 
+class TestResidentTriggersAndBudget:
+    """resident.triggers / resident.budget — render resident_triggers /
+    resident_budget into the ravn config, gated on resident.platform."""
+
+    BASE_VALUES = {
+        "resident": {
+            "enabled": True,
+            "environmentId": "environment-a",
+            "persona": "product-steward",
+            "platform": {
+                "enabled": True,
+                "baseUrl": "http://niuu-volundr.volundr.svc.cluster.local:80",
+            },
+        },
+    }
+
+    def test_triggers_disabled_by_default(self, tmp_path):
+        rendered = _render_skuld_chart(tmp_path, self.BASE_VALUES)
+        config = _ravn_config_from_rendered(rendered)
+        assert "resident_triggers" not in config
+
+    def test_budget_disabled_by_default(self, tmp_path):
+        rendered = _render_skuld_chart(tmp_path, self.BASE_VALUES)
+        config = _ravn_config_from_rendered(rendered)
+        assert "resident_budget" not in config
+
+    def test_triggers_enabled_renders_poll_config(self, tmp_path):
+        values = dict(self.BASE_VALUES)
+        values["resident"] = {
+            **values["resident"],
+            "triggers": {
+                "enabled": True,
+                "pollIntervalSeconds": 45,
+                "maxConsecutivePollFailures": 7,
+            },
+        }
+        rendered = _render_skuld_chart(tmp_path, values)
+        config = _ravn_config_from_rendered(rendered)
+        assert config["resident_triggers"] == {
+            "enabled": True,
+            "poll_interval_seconds": 45,
+            "max_consecutive_poll_failures": 7,
+        }
+
+    def test_triggers_enabled_without_platform_fails_the_render(self, tmp_path):
+        values = {
+            "resident": {
+                "enabled": True,
+                "environmentId": "environment-a",
+                "persona": "product-steward",
+                "triggers": {"enabled": True},
+            }
+        }
+        helm = shutil.which("helm")
+        if not helm:
+            pytest.skip("helm is not installed")
+        values_file = tmp_path / "values.yaml"
+        values_file.write_text(yaml.safe_dump(values), encoding="utf-8")
+        result = subprocess.run(
+            [helm, "template", "skuld-test", str(CHART_DIR), "-f", str(values_file)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "resident.triggers.enabled requires resident.platform.enabled" in result.stderr
+
+    def test_budget_enabled_renders_platform_reporter_adapter(self, tmp_path):
+        values = dict(self.BASE_VALUES)
+        values["resident"] = {**values["resident"], "budget": {"enabled": True}}
+        rendered = _render_skuld_chart(tmp_path, values)
+        config = _ravn_config_from_rendered(rendered)
+        assert config["resident_budget"]["adapter"] == (
+            "ravn.adapters.resident_budget.PlatformBudgetReporter"
+        )
+        assert config["resident_budget"]["kwargs"]["base_url"] == (
+            "http://niuu-volundr.volundr.svc.cluster.local:80"
+        )
+
+    def test_budget_enabled_without_platform_fails_the_render(self, tmp_path):
+        values = {
+            "resident": {
+                "enabled": True,
+                "environmentId": "environment-a",
+                "persona": "product-steward",
+                "budget": {"enabled": True},
+            }
+        }
+        helm = shutil.which("helm")
+        if not helm:
+            pytest.skip("helm is not installed")
+        values_file = tmp_path / "values.yaml"
+        values_file.write_text(yaml.safe_dump(values), encoding="utf-8")
+        result = subprocess.run(
+            [helm, "template", "skuld-test", str(CHART_DIR), "-f", str(values_file)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "resident.budget.enabled requires resident.platform.enabled" in result.stderr
+
+    def test_triggers_and_budget_can_both_be_enabled_together(self, tmp_path):
+        values = dict(self.BASE_VALUES)
+        values["resident"] = {
+            **values["resident"],
+            "triggers": {"enabled": True},
+            "budget": {"enabled": True},
+        }
+        rendered = _render_skuld_chart(tmp_path, values)
+        config = _ravn_config_from_rendered(rendered)
+        assert config["resident_triggers"]["enabled"] is True
+        assert config["resident_budget"]["adapter"] == (
+            "ravn.adapters.resident_budget.PlatformBudgetReporter"
+        )
+
+
 class TestVolundrReportingConfig:
     """Volundr reporting stays enabled for normal workflow sessions."""
 
@@ -1165,3 +1280,103 @@ def test_forge_controls_render_into_valid_skuld_configuration():
     assert settings.history_hydration_enabled is False
     assert settings.codex_receive_max_bytes == 123456
     assert settings.pi.binary == "/opt/pi"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestResidentServiceAccount:
+    """The resident release's own ServiceAccount — gives its projected
+    workload-identity token a subject unique to it (system:serviceaccount:
+    <ns>:resident-<uuid>), so the volundr chart's residentMapping can derive
+    a per-resident owner_id instead of every resident sharing one identity."""
+
+    @staticmethod
+    def _render(*extra_args: str) -> list[dict]:
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                "--set",
+                "resident.enabled=true",
+                "--set",
+                "resident.persona=product-resident",
+                "--set",
+                "serviceAccountName=resident-abc123",
+                # Content-focused tests below need the SA to actually render;
+                # the opt-in gate itself (default false) has its own tests.
+                "--set",
+                "resident.serviceAccount.create=true",
+                *extra_args,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+
+    def _service_account(self, docs: list[dict]) -> dict:
+        return next(doc for doc in docs if doc.get("kind") == "ServiceAccount")
+
+    def test_automount_service_account_token_is_disabled(self):
+        sa = self._service_account(self._render())
+        assert sa["automountServiceAccountToken"] is False
+
+    def test_name_matches_the_configured_service_account_name(self):
+        sa = self._service_account(self._render())
+        assert sa["metadata"]["name"] == "resident-abc123"
+
+    def test_no_service_account_rendered_without_a_name(self):
+        docs = self._render("--set", "serviceAccountName=")
+        assert not any(doc.get("kind") == "ServiceAccount" for doc in docs)
+
+    def test_no_service_account_rendered_for_a_non_resident_release(self):
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                "--set",
+                "serviceAccountName=resident-abc123",
+                "--set",
+                "resident.serviceAccount.create=true",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        docs = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        assert not any(doc.get("kind") == "ServiceAccount" for doc in docs)
+
+    def test_no_service_account_rendered_when_create_is_left_at_its_default(self):
+        """resident.serviceAccount.create defaults to false: a resident release
+        that names a ServiceAccount it does not own (e.g. one a Fleet bundle
+        or another release already created, such as valhalla's shared
+        resident-muninn / resident-ravn) must not attempt to create it too —
+        that would fail on Helm ownership, and uninstalling this release
+        would delete an SA other residents still use."""
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                "--set",
+                "resident.enabled=true",
+                "--set",
+                "resident.persona=product-resident",
+                "--set",
+                "serviceAccountName=resident-abc123",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        docs = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        assert not any(doc.get("kind") == "ServiceAccount" for doc in docs)
+
+    def test_service_account_rendered_when_create_is_explicitly_true(self):
+        docs = self._render("--set", "resident.serviceAccount.create=true")
+        sa = self._service_account(docs)
+        assert sa["metadata"]["name"] == "resident-abc123"
