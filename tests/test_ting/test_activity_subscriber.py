@@ -35,7 +35,13 @@ from ting.domain.services.activity_subscriber import (
 )
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.ports.dispatcher_repository import DispatcherRepository
-from ting.ports.volundr import ActivityEvent, SpawnRequest, VolundrPort, VolundrSession
+from ting.ports.volundr import (
+    ActivityEvent,
+    ActivityStreamConnected,
+    SpawnRequest,
+    VolundrPort,
+    VolundrSession,
+)
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 
 # ---------------------------------------------------------------------------
@@ -138,7 +144,10 @@ class StubVolundr(VolundrPort):
     async def get_conversation(self, session_id: str) -> dict:
         return {}
 
-    async def subscribe_activity(self) -> AsyncGenerator[ActivityEvent, None]:
+    async def subscribe_activity(
+        self,
+    ) -> AsyncGenerator[ActivityEvent | ActivityStreamConnected, None]:
+        yield ActivityStreamConnected()
         for event in self.activity_events:
             yield event
 
@@ -279,13 +288,20 @@ class StubVolundrFactory:
     async def for_owner(self, owner_id: str) -> list[StubVolundr]:
         return [self._adapter]
 
+    async def for_owner_with_unresolved(self, owner_id: str) -> tuple[list[StubVolundr], int]:
+        return [self._adapter], 0
+
 
 class NamedVolundr(StubVolundr):
     """StubVolundr with a configurable cluster identity and failure schedule.
 
     ``fail_times`` controls how many of the first ``subscribe_activity()``
     calls raise ``error_factory()`` before the stream starts succeeding
-    (streams that succeed yield ``self.activity_events`` and then end).
+    (streams that succeed yield ``ActivityStreamConnected`` then
+    ``self.activity_events`` and end). By default a failing attempt raises
+    before ever yielding ``ActivityStreamConnected`` — simulating a
+    connect that is refused or times out. Pass ``fail_after_connect=True``
+    to simulate a connection that opens successfully and then drops.
     """
 
     def __init__(
@@ -295,6 +311,7 @@ class NamedVolundr(StubVolundr):
         base_url: str = "",
         fail_times: int = 0,
         error_factory: object = None,
+        fail_after_connect: bool = False,
     ) -> None:
         super().__init__()
         self._cluster_name = name
@@ -302,8 +319,11 @@ class NamedVolundr(StubVolundr):
         self._cluster_base_url = base_url
         self._fail_times = fail_times
         self._error_factory = error_factory or (lambda: RuntimeError("boom"))
+        self._fail_after_connect = fail_after_connect
         self.attempts = 0
         self.get_session_error: Exception | None = None
+        self.get_session_delay: float = 0.0
+        self.get_session_calls = 0
 
     @property
     def name(self) -> str:
@@ -317,16 +337,24 @@ class NamedVolundr(StubVolundr):
     def base_url(self) -> str:
         return self._cluster_base_url
 
-    async def subscribe_activity(self) -> AsyncGenerator[ActivityEvent, None]:
+    async def subscribe_activity(
+        self,
+    ) -> AsyncGenerator[ActivityEvent | ActivityStreamConnected, None]:
         self.attempts += 1
         if self.attempts <= self._fail_times:
+            if self._fail_after_connect:
+                yield ActivityStreamConnected()
             raise self._error_factory()
+        yield ActivityStreamConnected()
         for event in self.activity_events:
             yield event
 
     async def get_session(
         self, session_id: str, *, auth_token: str | None = None
     ) -> VolundrSession | None:
+        self.get_session_calls += 1
+        if self.get_session_delay:
+            await asyncio.sleep(self.get_session_delay)
         if self.get_session_error is not None:
             raise self.get_session_error
         return await super().get_session(session_id, auth_token=auth_token)
@@ -363,6 +391,11 @@ class RaisingForOneOwnerFactory:
         if owner_id == self._bad_owner_id:
             raise RuntimeError("guild registry unavailable")
         return list(self._adapters)
+
+    async def for_owner_with_unresolved(self, owner_id: str) -> tuple[list[VolundrPort], int]:
+        if owner_id == self._bad_owner_id:
+            raise RuntimeError("guild registry unavailable")
+        return list(self._adapters), 0
 
 
 class MockTrackerFactory:
@@ -1494,7 +1527,7 @@ class TestFailureDetection:
     @pytest.mark.asyncio
     async def test_reconcile_running_runs_fails_stale_stopped_sessions(self) -> None:
         run = _make_run(session_id="stale-session", tracker_id="issue-stale")
-        volundr = StubVolundr()
+        volundr = NamedVolundr(name="ymir", target_id="ymir-1")
         volundr.sessions["stale-session"] = _make_volundr_session(
             session_id="stale-session",
             status="stopped",
@@ -1910,6 +1943,57 @@ class TestPerClusterIsolationAndBackoff:
         tracker.update_run_progress.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_reconcile_skips_querying_a_cluster_currently_in_backoff(self) -> None:
+        """A cluster with recorded backoff state has an unknown status —
+
+        it must not be queried at all (its own connect/read timeout would
+        otherwise delay this reconcile pass for no benefit; its recovery
+        is its own subscription loop's job), and skipping it must not fail
+        the run either.
+        """
+        run = _make_run(session_id="mystery-session", tracker_id="issue-mystery")
+        tracker = MockTracker(runs_by_session={"mystery-session": run})
+        backing_off = NamedVolundr(name="ymir", target_id="ymir-1")
+        healthy = NamedVolundr(name="valhalla", target_id="valhalla-1")
+        sub = self._build_subscriber([backing_off, healthy])
+        sub._cluster_backoff[(OWNER_ID, "ymir-1")] = _ClusterBackoffState(
+            consecutive_failures=1, next_retry_at=time.monotonic() + 60.0
+        )
+
+        await sub._reconcile_run_session(
+            run, tracker, OWNER_ID, [backing_off, healthy], unresolved=0
+        )
+
+        assert backing_off.get_session_calls == 0
+        assert healthy.get_session_calls == 1
+        tracker.update_run_progress.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reconcile_queries_multiple_clusters_concurrently(self) -> None:
+        """A slow cluster must not delay the others — every queryable
+
+        cluster is asked at once, not one after another. Two clusters each
+        sleeping 0.1s must together take about 0.1s, not 0.2s.
+        """
+        run = _make_run(session_id="mystery-session", tracker_id="issue-mystery")
+        tracker = MockTracker(runs_by_session={"mystery-session": run})
+        slow_a = NamedVolundr(name="ymir", target_id="ymir-1")
+        slow_a.get_session_delay = 0.1
+        slow_b = NamedVolundr(name="valhalla", target_id="valhalla-1")
+        slow_b.get_session_delay = 0.1
+        sub = self._build_subscriber([slow_a, slow_b])
+
+        started_at = time.monotonic()
+        await sub._reconcile_run_session(run, tracker, OWNER_ID, [slow_a, slow_b], unresolved=0)
+        elapsed = time.monotonic() - started_at
+
+        assert elapsed < 0.18, (
+            f"took {elapsed:.3f}s — clusters were queried serially, not concurrently"
+        )
+        assert slow_a.get_session_calls == 1
+        assert slow_b.get_session_calls == 1
+
+    @pytest.mark.asyncio
     async def test_reconcile_run_session_skips_when_a_cluster_is_unresolved(self) -> None:
         """A cluster the factory could not build an adapter for was never
         queried — "not found on every adapter we got" must not become
@@ -1958,14 +2042,23 @@ class TestPerClusterIsolationAndBackoff:
         assert unresolved == 2
 
     @pytest.mark.asyncio
-    async def test_resolve_owner_adapters_for_reconcile_falls_back_when_unsupported(self) -> None:
+    async def test_resolve_owner_adapters_for_reconcile_has_no_getattr_fallback(self) -> None:
+        """for_owner_with_unresolved is a required VolundrFactory port method,
+
+        called directly — a factory that doesn't implement it fails loudly
+        (AttributeError) rather than being silently degraded through a
+        getattr-based fallback (see .claude/rules/no-fallbacks.md).
+        """
+
+        class BareForOwnerFactory:
+            async def for_owner(self, owner_id: str) -> list[VolundrPort]:
+                return []
+
         sub = self._build_subscriber([])
-        sub._factory = StubVolundrFactory(StubVolundr())  # no for_owner_with_unresolved
+        sub._factory = BareForOwnerFactory()
 
-        adapters, unresolved = await sub._resolve_owner_adapters_for_reconcile(OWNER_ID)
-
-        assert len(adapters) == 1
-        assert unresolved == 0
+        with pytest.raises(AttributeError):
+            await sub._resolve_owner_adapters_for_reconcile(OWNER_ID)
 
     def test_attempt_was_stable_uses_configured_threshold(self) -> None:
         config = _default_config(reconnect_stable_after_seconds=100.0)
@@ -2006,6 +2099,52 @@ class TestPerClusterIsolationAndBackoff:
         assert sub._cluster_backoff[(OWNER_ID, "flaky-1")].consecutive_failures == 4
 
     @pytest.mark.asyncio
+    async def test_connect_that_hangs_to_timeout_never_counts_as_stable(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Regression test for the round-4 blocker: the stability clock
+
+        must start only once the connection is genuinely open, not at task
+        launch. A connect that hangs until its own timeout — even for
+        longer than the configured stability window — must never be
+        credited as "connected": the backoff keeps growing and no recovery
+        is logged.
+        """
+
+        class HangsUntilTimeout(NamedVolundr):
+            async def subscribe_activity(self):  # type: ignore[override]
+                self.attempts += 1
+                await asyncio.sleep(0.05)  # simulate hanging until the connect times out
+                raise TimeoutError("connect timed out")
+                yield  # pragma: no cover - keeps this an async generator
+
+        volundr = HangsUntilTimeout(name="slow", target_id="slow-1")
+        config = _default_config(
+            reconnect_delay=0,
+            reconnect_initial_delay=1.0,
+            reconnect_max_delay=60.0,
+            reconnect_jitter=0.0,
+            # Smaller than the simulated hang: under the old bug (clock
+            # started at task launch) this alone would have been enough to
+            # count the timed-out attempt as "stable".
+            reconnect_stable_after_seconds=0.01,
+        )
+        sub = self._build_subscriber([volundr], config=config)
+        sub._running = True
+        sub._cluster_backoff[(OWNER_ID, "slow-1")] = _ClusterBackoffState(
+            consecutive_failures=2, next_retry_at=0.0
+        )
+        task = asyncio.create_task(sub._adapter_subscription_loop(OWNER_ID, volundr))
+        sub._owner_tasks[OWNER_ID] = {"slow-1": task}
+
+        with caplog.at_level(logging.INFO, logger="ting.domain.services.activity_subscriber"):
+            task_result = await task
+
+        assert task_result is None
+        assert sub._cluster_backoff[(OWNER_ID, "slow-1")].consecutive_failures == 3
+        assert not any("recovered" in record.getMessage() for record in caplog.records)
+
+    @pytest.mark.asyncio
     async def test_stable_mid_stream_drop_resets_backoff(self) -> None:
         """An idle cluster (never has sessions) that stays connected long
         enough before dropping must reset its backoff — even though it
@@ -2016,8 +2155,8 @@ class TestPerClusterIsolationAndBackoff:
         class DropsAfterBeingStable(NamedVolundr):
             async def subscribe_activity(self):  # type: ignore[override]
                 self.attempts += 1
-                raise RuntimeError("dropped")
-                yield  # pragma: no cover - keeps this an async generator
+                yield ActivityStreamConnected()  # the connection genuinely opens...
+                raise RuntimeError("dropped")  # ...then drops, with zero events
 
         volundr = DropsAfterBeingStable(name="idle", target_id="idle-1")
         config = _default_config(

@@ -107,6 +107,22 @@ class ActivityEvent:
 
 
 @dataclass(frozen=True)
+class ActivityStreamConnected:
+    """Sentinel ``subscribe_activity()`` yields once the SSE connection is
+    actually open — the underlying request succeeded and the server
+    accepted the stream — before any ``ActivityEvent``. A connect that
+    hangs, times out, or fails raises before ever yielding this.
+
+    This is the signal a caller needs to start a "how long has this
+    genuinely been connected" clock: starting it at task start would count
+    a connect timeout as time spent healthily connected (the timeout and a
+    plausible "stable" threshold can be the same order of magnitude), and
+    waiting for the first real ``ActivityEvent`` never fires for a cluster
+    that legitimately has no sessions right now.
+    """
+
+
+@dataclass(frozen=True)
 class PublicSessionLogEntry:
     """One public Forge session-log record.
 
@@ -447,8 +463,16 @@ class VolundrPort(ABC):
         raise NotImplementedError("This Volundr adapter does not expose public session logs")
 
     @abstractmethod
-    async def subscribe_activity(self) -> AsyncGenerator[ActivityEvent, None]:
-        """Subscribe to the Volundr SSE stream for session_activity events."""
+    async def subscribe_activity(
+        self,
+    ) -> AsyncGenerator[ActivityEvent | ActivityStreamConnected, None]:
+        """Subscribe to the Volundr SSE stream for session_activity events.
+
+        Yields ``ActivityStreamConnected`` exactly once, as the first item,
+        once the connection is genuinely open — before any
+        ``ActivityEvent``. A connect that never succeeds (hangs to timeout,
+        refused, etc.) raises without ever yielding it.
+        """
         raise NotImplementedError
         yield  # type: ignore[misc]  # pragma: no cover
 
@@ -467,6 +491,22 @@ class VolundrFactory(Protocol):
         Returns an empty list when Guild has no visible Volundr targets.
         Callers must treat an empty result as a hard error or skip the
         operation with an explicit warning.
+        """
+        raise NotImplementedError
+
+    async def for_owner_with_unresolved(self, owner_id: str) -> tuple[list[VolundrPort], int]:
+        """Like ``for_owner``, but also reports how many of the owner's
+        registered instances could not be resolved into a usable adapter
+        this call (e.g. a missing credential, or adapter construction
+        failed).
+
+        A caller that must know it saw *every* registered cluster — not
+        just every cluster that happened to resolve cleanly — uses this
+        instead of ``for_owner``: treating a silently-skipped instance the
+        same as "this owner has no such cluster" is exactly the silent
+        degradation ``.claude/rules/no-fallbacks.md`` forbids. A factory
+        that never silently drops a registered instance (e.g. local/mini
+        mode) reports 0 unresolved.
         """
         raise NotImplementedError
 
