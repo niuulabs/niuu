@@ -112,11 +112,16 @@ data:
     {{- end }}
 
     watcher:
-      reconnect_delay: {{ .Values.watcher.reconnectDelay | default 5.0 }}
-      reconnect_initial_delay: {{ .Values.watcher.reconnectInitialDelay | default 2.0 }}
-      reconnect_max_delay: {{ .Values.watcher.reconnectMaxDelay | default 120.0 }}
-      reconnect_backoff_multiplier: {{ .Values.watcher.reconnectBackoffMultiplier | default 2.0 }}
-      reconnect_jitter: {{ .Values.watcher.reconnectJitter | default 0.2 }}
+      # No `| default` here: values.yaml already sets every one of these,
+      # and `| default` treats a deliberately-configured 0 (e.g. "retry
+      # immediately", "no jitter") the same as "unset", silently replacing
+      # it with the hardcoded default below instead of honouring it.
+      reconnect_delay: {{ .Values.watcher.reconnectDelay }}
+      reconnect_initial_delay: {{ .Values.watcher.reconnectInitialDelay }}
+      reconnect_max_delay: {{ .Values.watcher.reconnectMaxDelay }}
+      reconnect_backoff_multiplier: {{ .Values.watcher.reconnectBackoffMultiplier }}
+      reconnect_jitter: {{ .Values.watcher.reconnectJitter }}
+      reconnect_stable_after_seconds: {{ .Values.watcher.reconnectStableAfterSeconds }}
 
     dispatch:
       default_system_prompt: {{ .Values.dispatch.defaultSystemPrompt | quote }}

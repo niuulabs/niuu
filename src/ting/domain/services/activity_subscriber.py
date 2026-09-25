@@ -267,6 +267,15 @@ class SessionActivitySubscriber:
             backoff = self._cluster_backoff.get((owner_id, key))
             if backoff is not None and now < backoff.next_retry_at:
                 continue
+            if backoff is not None and self._workflow_campaign_projector is not None:
+                # This cluster just failed and is now due for its
+                # backed-off resubscribe — catch up on any campaign
+                # terminal events its outage could have missed, the same
+                # pass a brand-new owner gets (see the is_new_owner branch
+                # in _sync_owner_subscriptions). Without this, a workflow
+                # gate resolved or a campaign finished while this one
+                # cluster was down would never be picked up.
+                await self._workflow_campaign_projector.reconcile_owner(owner_id)
             clusters[key] = asyncio.create_task(
                 self._adapter_subscription_loop(owner_id, adapter),
                 name=f"sse-{owner_id[:8]}-{key}",
@@ -299,6 +308,15 @@ class SessionActivitySubscriber:
         still the task ``_owner_tasks`` has recorded for its ``(owner,
         key)`` — if sync has since rebuilt this cluster under a different
         task, this one stops silently instead of also processing events.
+
+        A cluster that legitimately has no sessions right now never gets
+        the "first event" backoff reset below — if it then drops mid-stream
+        (raises instead of closing cleanly) before ever sending an event,
+        that reset never fires either. So the connection's own age is also
+        a health signal: one that has stayed open at least
+        ``reconnect_stable_after_seconds`` still counts as a recovery even
+        though it ends in an exception, since a genuinely broken cluster
+        fails fast and repeatedly, not after a long stable connection.
         """
         key = self._cluster_key(volundr)
         label = self._cluster_label(volundr)
@@ -310,10 +328,11 @@ class SessionActivitySubscriber:
         if not _is_current():
             return
 
+        connected = False
+        attempt_started_at = time.monotonic()
         try:
             await self._reconcile_running_runs(owner_id)
             logger.info("SSE subscription started for owner %s cluster=%s", owner_id[:8], label)
-            connected = False
             async for event in volundr.subscribe_activity():
                 if not _is_current():
                     return
@@ -332,7 +351,13 @@ class SessionActivitySubscriber:
                 # recording a spurious failure for a cluster we're no longer
                 # tracking.
                 raise
+            if not connected and self._attempt_was_stable(attempt_started_at):
+                self._on_cluster_connected(owner_id, key, label)
             self._on_cluster_failure(owner_id, key, label, exc)
+
+    def _attempt_was_stable(self, attempt_started_at: float) -> bool:
+        """Whether a connect attempt stayed open long enough to count as healthy."""
+        return time.monotonic() - attempt_started_at >= self._config.reconnect_stable_after_seconds
 
     async def _reconcile_running_runs(self, owner_id: str) -> None:
         """Fail tracker-side RUNNING runs whose backing Forge session is confirmed terminal.
@@ -346,13 +371,13 @@ class SessionActivitySubscriber:
         all owner slots are still occupied by phantom RUNNING runs.
 
         A ``Run`` does not record which Forge cluster its session lives on,
-        so every one of the owner's currently registered adapters is asked.
-        A run is only treated as missing when NONE of them know its
-        session; a terminal status is only trusted from the cluster that
-        actually returned the session — a different cluster's 404 for a
-        session it never had must never fail a run it doesn't own.
+        so every one of the owner's currently registered adapters is asked
+        — see ``_reconcile_run_session`` for how a definitive "missing"
+        verdict is kept scoped to clusters that were actually, successfully
+        queried, so this pass run for one cluster's resubscribe can never
+        raise (or fail a run) because a *different* cluster is down.
         """
-        adapters = await self._resolve_owner_adapters(owner_id)
+        adapters, unresolved = await self._resolve_owner_adapters_for_reconcile(owner_id)
         if not adapters:
             return
 
@@ -362,7 +387,25 @@ class SessionActivitySubscriber:
             for run in running_runs:
                 if not run.session_id:
                     continue
-                await self._reconcile_run_session(run, tracker, owner_id, adapters)
+                await self._reconcile_run_session(run, tracker, owner_id, adapters, unresolved)
+
+    async def _resolve_owner_adapters_for_reconcile(
+        self, owner_id: str
+    ) -> tuple[list[VolundrPort], int]:
+        """Resolve adapters for a reconcile pass, plus how many registered
+        clusters could not be resolved into a usable adapter this cycle.
+
+        Prefers ``VolundrAdapterFactory.for_owner_with_unresolved`` so a
+        cluster the factory silently skipped (bad credential, failed
+        construction) is distinguished from a genuinely empty registration.
+        A factory without that method (local/mini mode, test stubs) never
+        silently drops a registered instance, so it reports 0 unresolved.
+        """
+        resolver = getattr(self._factory, "for_owner_with_unresolved", None)
+        if resolver is not None:
+            return await resolver(owner_id)
+        adapters = await self._factory.for_owner(owner_id)
+        return adapters, 0
 
     async def _reconcile_run_session(
         self,
@@ -370,29 +413,71 @@ class SessionActivitySubscriber:
         tracker: TrackerPort,
         owner_id: str,
         adapters: list[VolundrPort],
+        unresolved: int,
     ) -> None:
-        """Resolve *run*'s session across *adapters* and fail it only on real evidence."""
+        """Resolve *run*'s session across *adapters* and fail it only on real evidence.
+
+        A run is marked FAILED for a missing session only when EVERY
+        registered cluster gave a clean, error-free answer and none of them
+        recognised the session. Two things stop that verdict:
+
+        - A cluster that errored while being asked (down, timing out) — its
+          answer is caught here, per cluster, and never allowed to raise
+          out of this pass (see .claude/rules/no-fallbacks.md: cluster A's
+          outage must not silently masquerade as cluster B's task failing,
+          nor as "the run is gone" — the run's status is simply unknown
+          this cycle).
+        - Any cluster the factory could not even build an adapter for
+          (*unresolved* > 0) — it was never queried at all, so "not found
+          on every adapter we got" is not "not found on every registered
+          cluster".
+
+        A cluster that DID answer — found the session, healthy or terminal
+        — is always trusted for that verdict regardless of what any other
+        cluster did.
+        """
         session = None
+        every_queried_cluster_confirmed_absent = True
         for adapter in adapters:
-            session = await adapter.get_session(run.session_id)
-            if session is not None:
+            try:
+                candidate = await adapter.get_session(run.session_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "Could not check session %s on cluster %s for owner %s while "
+                    "reconciling run %s; leaving its status unknown this pass",
+                    run.session_id,
+                    self._cluster_label(adapter),
+                    owner_id[:8],
+                    run.tracker_id,
+                    exc_info=True,
+                )
+                every_queried_cluster_confirmed_absent = False
+                continue
+            if candidate is not None:
+                session = candidate
                 break
 
-        if session is None:
-            await self._handle_failure(
-                run,
-                tracker,
-                owner_id,
-                reason="Session not found on any registered Volundr cluster",
-            )
+        if session is not None:
+            if session.status in self._FAILED_STATUSES:
+                await self._handle_failure(
+                    run,
+                    tracker,
+                    owner_id,
+                    reason=f"Session {session.status}",
+                )
             return
-        if session.status in self._FAILED_STATUSES:
-            await self._handle_failure(
-                run,
-                tracker,
-                owner_id,
-                reason=f"Session {session.status}",
-            )
+
+        if not every_queried_cluster_confirmed_absent or unresolved > 0:
+            return
+
+        await self._handle_failure(
+            run,
+            tracker,
+            owner_id,
+            reason="Session not found on any registered Volundr cluster",
+        )
 
     def _cancel_owner_tasks(self, owner_id: str) -> None:
         """Cancel all SSE tasks for *owner_id* and clear its backoff state."""

@@ -110,6 +110,10 @@ watcher:
   # -- Fraction (0-1) randomly subtracted from each computed backoff delay
   # to avoid synchronized reconnect storms across clusters.
   reconnectJitter: 0.2
+  # -- Seconds a connection must stay open before it counts as healthy
+  # enough to reset a cluster's backoff, even if it drops without ever
+  # seeing an event (e.g. a cluster that legitimately has no sessions).
+  reconnectStableAfterSeconds: 30.0
 
 # Dispatcher configuration
 dispatch:

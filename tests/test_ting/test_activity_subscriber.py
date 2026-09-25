@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
@@ -302,6 +303,7 @@ class NamedVolundr(StubVolundr):
         self._fail_times = fail_times
         self._error_factory = error_factory or (lambda: RuntimeError("boom"))
         self.attempts = 0
+        self.get_session_error: Exception | None = None
 
     @property
     def name(self) -> str:
@@ -322,15 +324,32 @@ class NamedVolundr(StubVolundr):
         for event in self.activity_events:
             yield event
 
+    async def get_session(
+        self, session_id: str, *, auth_token: str | None = None
+    ) -> VolundrSession | None:
+        if self.get_session_error is not None:
+            raise self.get_session_error
+        return await super().get_session(session_id, auth_token=auth_token)
+
 
 class MultiVolundrFactory:
-    """Stub factory that returns a fixed list of adapters for any owner."""
+    """Stub factory that returns a fixed list of adapters for any owner.
 
-    def __init__(self, adapters: list[VolundrPort]) -> None:
+    ``unresolved`` simulates VolundrAdapterFactory.for_owner_with_unresolved
+    reporting registered-but-unresolvable clusters (bad credential, failed
+    construction) — set it to exercise callers that must not treat those
+    the same as "genuinely zero clusters registered".
+    """
+
+    def __init__(self, adapters: list[VolundrPort], unresolved: int = 0) -> None:
         self._adapters = adapters
+        self._unresolved = unresolved
 
     async def for_owner(self, owner_id: str) -> list[VolundrPort]:
         return list(self._adapters)
+
+    async def for_owner_with_unresolved(self, owner_id: str) -> tuple[list[VolundrPort], int]:
+        return list(self._adapters), self._unresolved
 
 
 class RaisingForOneOwnerFactory:
@@ -1545,11 +1564,10 @@ class TestFailureDetection:
 
         tracker.update_run_progress.assert_called_once()
         progress_call = tracker.update_run_progress.call_args
+        expected_reason = "Session not found on any registered Volundr cluster"
         assert progress_call.args[0] == "issue-orphan"
         assert progress_call.kwargs["status"] == RunStatus.FAILED
-        assert (
-            progress_call.kwargs["reason"] == "Session not found on any registered Volundr cluster"
-        )
+        assert progress_call.kwargs["reason"] == expected_reason
 
 
 # ---------------------------------------------------------------------------
@@ -1793,12 +1811,234 @@ class TestPerClusterIsolationAndBackoff:
         sub._owner_tasks[OWNER_ID] = {"ymir-1": placeholder}
 
         orphan = asyncio.create_task(sub._adapter_subscription_loop(OWNER_ID, volundr))
-        await orphan
+        orphan_result = await orphan
 
+        assert orphan_result is None
         assert volundr.attempts == 0
 
         placeholder.cancel()
         await asyncio.sleep(0)
+
+    # -- Round-3 review fixes -------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_reconcile_owner_runs_again_after_a_cluster_resubscribes_following_failure(
+        self,
+    ) -> None:
+        """reconcile_owner must fire again for a resubscribe after a failure.
+
+        It previously only ran once, for a brand-new owner — so a campaign
+        terminal event missed while one cluster was down was never caught
+        up once that cluster came back.
+        """
+        flaky = NamedVolundr(
+            name="laptop",
+            target_id="laptop-1",
+            fail_times=1,
+            error_factory=lambda: ConnectionRefusedError("refused"),
+        )
+        projector = AsyncMock()
+        projector.list_active_owner_ids = AsyncMock(return_value=[])
+        sub = self._build_subscriber([flaky])
+        sub._workflow_campaign_projector = projector
+        sub._running = True
+
+        await sub._sync_owner_subscriptions()  # new owner -> reconcile_owner #1; cluster fails
+        await asyncio.gather(*sub._owner_tasks[OWNER_ID].values())
+        assert projector.reconcile_owner.await_count == 1
+
+        await sub._sync_owner_subscriptions()  # cluster due -> reconcile_owner #2 (the fix)
+        await asyncio.gather(*sub._owner_tasks[OWNER_ID].values())
+
+        assert projector.reconcile_owner.await_count == 2
+        projector.reconcile_owner.assert_awaited_with(OWNER_ID)
+
+    @pytest.mark.asyncio
+    async def test_reconcile_run_session_skips_when_a_cluster_errors_during_lookup(self) -> None:
+        """A cluster that errors while being asked leaves the run's status unknown.
+
+        It must never be treated as a 404, and the error must never
+        propagate out of this call — a peer cluster's outage is not this
+        run's business.
+        """
+        run = _make_run(session_id="mystery-session", tracker_id="issue-mystery")
+        tracker = MockTracker(runs_by_session={"mystery-session": run})
+        down_cluster = NamedVolundr(name="ymir", target_id="ymir-1")
+        down_cluster.get_session_error = ConnectionRefusedError("ymir is down")
+        clean_cluster = NamedVolundr(name="valhalla", target_id="valhalla-1")
+        sub = self._build_subscriber([down_cluster, clean_cluster])
+
+        await sub._reconcile_run_session(
+            run, tracker, OWNER_ID, [down_cluster, clean_cluster], unresolved=0
+        )
+
+        tracker.update_run_progress.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reconcile_error_on_one_cluster_does_not_fail_a_peer_clusters_subscription(
+        self,
+    ) -> None:
+        """A down cluster's error during the shared reconcile pass must not get
+        misattributed to a healthy peer cluster's own subscription — the
+        peer's ``_adapter_subscription_loop`` must complete normally.
+        """
+        run = _make_run(session_id="shared-session", tracker_id="issue-shared")
+        tracker = MockTracker(runs_by_session={"shared-session": run})
+        down_cluster = NamedVolundr(name="ymir", target_id="ymir-1")
+        down_cluster.get_session_error = ConnectionRefusedError("ymir is down")
+        healthy_cluster = NamedVolundr(name="valhalla", target_id="valhalla-1")
+        sub = SessionActivitySubscriber(
+            volundr_factory=MultiVolundrFactory([down_cluster, healthy_cluster]),
+            tracker_factory=MockTrackerFactory(trackers=[tracker]),
+            dispatcher_repo=ActiveOwnersDispatcherRepo([OWNER_ID]),
+            event_bus=InMemoryEventBus(),
+            config=_default_config(
+                reconnect_delay=0,
+                reconnect_initial_delay=0,
+                reconnect_max_delay=0,
+                reconnect_jitter=0,
+            ),
+        )
+        sub._running = True
+        task = asyncio.create_task(sub._adapter_subscription_loop(OWNER_ID, healthy_cluster))
+        sub._owner_tasks[OWNER_ID] = {"valhalla-1": task}
+
+        task_result = await task
+
+        assert task_result is None
+        assert (OWNER_ID, "valhalla-1") not in sub._cluster_backoff
+        tracker.update_run_progress.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reconcile_run_session_skips_when_a_cluster_is_unresolved(self) -> None:
+        """A cluster the factory could not build an adapter for was never
+        queried — "not found on every adapter we got" must not become
+        "not found on every registered cluster".
+        """
+        run = _make_run(session_id="mystery-session", tracker_id="issue-mystery")
+        tracker = MockTracker(runs_by_session={"mystery-session": run})
+        known_cluster = NamedVolundr(name="ymir", target_id="ymir-1")
+        sub = self._build_subscriber([known_cluster])
+
+        await sub._reconcile_run_session(run, tracker, OWNER_ID, [known_cluster], unresolved=1)
+
+        tracker.update_run_progress.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reconcile_run_session_fails_when_every_cluster_answered_and_none_know_it(
+        self,
+    ) -> None:
+        """Regression guard: the original correct-failure path still works
+        once every registered cluster is accounted for and none of them
+        errored or went unresolved.
+        """
+        run = _make_run(session_id="mystery-session", tracker_id="issue-mystery")
+        tracker = MockTracker(runs_by_session={"mystery-session": run})
+        known_cluster = NamedVolundr(name="ymir", target_id="ymir-1")
+        sub = self._build_subscriber([known_cluster])
+
+        await sub._reconcile_run_session(run, tracker, OWNER_ID, [known_cluster], unresolved=0)
+
+        tracker.update_run_progress.assert_called_once()
+        progress_call = tracker.update_run_progress.call_args
+        assert progress_call.kwargs["status"] == RunStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_resolve_owner_adapters_for_reconcile_uses_factory_unresolved_count(
+        self,
+    ) -> None:
+        sub = self._build_subscriber([])
+        sub._factory = MultiVolundrFactory(
+            [NamedVolundr(name="ymir", target_id="ymir-1")], unresolved=2
+        )
+
+        adapters, unresolved = await sub._resolve_owner_adapters_for_reconcile(OWNER_ID)
+
+        assert len(adapters) == 1
+        assert unresolved == 2
+
+    @pytest.mark.asyncio
+    async def test_resolve_owner_adapters_for_reconcile_falls_back_when_unsupported(self) -> None:
+        sub = self._build_subscriber([])
+        sub._factory = StubVolundrFactory(StubVolundr())  # no for_owner_with_unresolved
+
+        adapters, unresolved = await sub._resolve_owner_adapters_for_reconcile(OWNER_ID)
+
+        assert len(adapters) == 1
+        assert unresolved == 0
+
+    def test_attempt_was_stable_uses_configured_threshold(self) -> None:
+        config = _default_config(reconnect_stable_after_seconds=100.0)
+        sub = self._build_subscriber([], config=config)
+
+        assert sub._attempt_was_stable(time.monotonic()) is False
+        assert sub._attempt_was_stable(time.monotonic() - 200.0) is True
+
+    @pytest.mark.asyncio
+    async def test_unstable_immediate_drop_does_not_reset_backoff(self) -> None:
+        """A cluster that fails fast keeps accumulating its failure streak."""
+
+        class DropsImmediately(NamedVolundr):
+            async def subscribe_activity(self):  # type: ignore[override]
+                self.attempts += 1
+                raise RuntimeError("dropped")
+                yield  # pragma: no cover - keeps this an async generator
+
+        volundr = DropsImmediately(name="flaky", target_id="flaky-1")
+        config = _default_config(
+            reconnect_delay=0,
+            reconnect_initial_delay=1.0,
+            reconnect_max_delay=60.0,
+            reconnect_jitter=0.0,
+            reconnect_stable_after_seconds=3600.0,
+        )
+        sub = self._build_subscriber([volundr], config=config)
+        sub._running = True
+        sub._cluster_backoff[(OWNER_ID, "flaky-1")] = _ClusterBackoffState(
+            consecutive_failures=3, next_retry_at=0.0
+        )
+        task = asyncio.create_task(sub._adapter_subscription_loop(OWNER_ID, volundr))
+        sub._owner_tasks[OWNER_ID] = {"flaky-1": task}
+
+        task_result = await task
+
+        assert task_result is None
+        assert sub._cluster_backoff[(OWNER_ID, "flaky-1")].consecutive_failures == 4
+
+    @pytest.mark.asyncio
+    async def test_stable_mid_stream_drop_resets_backoff(self) -> None:
+        """An idle cluster (never has sessions) that stays connected long
+        enough before dropping must reset its backoff — even though it
+        raised instead of closing cleanly, and even though it never sent a
+        single event.
+        """
+
+        class DropsAfterBeingStable(NamedVolundr):
+            async def subscribe_activity(self):  # type: ignore[override]
+                self.attempts += 1
+                raise RuntimeError("dropped")
+                yield  # pragma: no cover - keeps this an async generator
+
+        volundr = DropsAfterBeingStable(name="idle", target_id="idle-1")
+        config = _default_config(
+            reconnect_delay=0,
+            reconnect_initial_delay=1.0,
+            reconnect_max_delay=60.0,
+            reconnect_jitter=0.0,
+            reconnect_stable_after_seconds=0.0,
+        )
+        sub = self._build_subscriber([volundr], config=config)
+        sub._running = True
+        sub._cluster_backoff[(OWNER_ID, "idle-1")] = _ClusterBackoffState(
+            consecutive_failures=3, next_retry_at=0.0
+        )
+        task = asyncio.create_task(sub._adapter_subscription_loop(OWNER_ID, volundr))
+        sub._owner_tasks[OWNER_ID] = {"idle-1": task}
+
+        task_result = await task
+
+        assert task_result is None
+        assert sub._cluster_backoff[(OWNER_ID, "idle-1")].consecutive_failures == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1818,6 +2058,7 @@ class TestWatcherConfigNewFields:
         assert cfg.reconnect_max_delay == 120.0
         assert cfg.reconnect_backoff_multiplier == 2.0
         assert cfg.reconnect_jitter == 0.2
+        assert cfg.reconnect_stable_after_seconds == 30.0
 
     def test_custom(self) -> None:
         cfg = WatcherConfig(
@@ -1830,6 +2071,7 @@ class TestWatcherConfigNewFields:
             reconnect_max_delay=60.0,
             reconnect_backoff_multiplier=3.0,
             reconnect_jitter=0.1,
+            reconnect_stable_after_seconds=15.0,
         )
         assert cfg.idle_threshold == 60.0
         assert cfg.completion_check_delay == 10.0
@@ -1840,6 +2082,7 @@ class TestWatcherConfigNewFields:
         assert cfg.reconnect_max_delay == 60.0
         assert cfg.reconnect_backoff_multiplier == 3.0
         assert cfg.reconnect_jitter == 0.1
+        assert cfg.reconnect_stable_after_seconds == 15.0
 
 
 class TestFlockOutcomeCoercion:

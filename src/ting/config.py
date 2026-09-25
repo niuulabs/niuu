@@ -752,6 +752,19 @@ class WatcherConfig(BaseModel):
             "delay to avoid synchronized reconnect storms."
         ),
     )
+    reconnect_stable_after_seconds: float = Field(
+        default=30.0,
+        ge=0.0,
+        le=3600.0,
+        description=(
+            "Seconds an SSE connection must stay open before it counts as healthy "
+            "enough to reset a cluster's backoff — even if it never sees an event "
+            "and then drops. Without this, a cluster that legitimately has no "
+            "sessions right now (so it never gets the 'first event' reset) would "
+            "treat every ordinary periodic reconnect as a failure and grow its "
+            "backoff without bound."
+        ),
+    )
 
 
 class EventBusConfig(BaseModel):
