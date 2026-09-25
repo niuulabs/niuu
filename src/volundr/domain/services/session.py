@@ -739,6 +739,98 @@ class SessionService:
             return principal.tenant_id, None
         return principal.tenant_id, principal.user_id
 
+    @staticmethod
+    def within_scope(
+        scope: tuple[str | None, str | None],
+        *,
+        owner_id: str | None,
+        tenant_id: str | None,
+    ) -> bool:
+        """Return whether an owner/tenant attribution lies inside a ``visibility_scope``.
+
+        Missing owner or tenant never widens visibility: an unowned resource is
+        inside only an owner-unbounded (tenant admin) scope, and an untenanted
+        one inside no bounded scope.
+        """
+        tenant_scope, owner_scope = scope
+        if tenant_scope is not None and (tenant_id or None) != tenant_scope:
+            return False
+        if owner_scope is not None and (owner_id or None) != owner_scope:
+            return False
+        return True
+
+    @staticmethod
+    def attributed_resource(
+        resource_id: str,
+        *,
+        owner_id: str | None,
+        tenant_id: str | None,
+    ) -> Resource:
+        """Describe a session, or history attributed to one, to the authorization policy."""
+        return Resource(
+            kind="session",
+            id=resource_id,
+            attr={"owner_id": owner_id or None, "tenant_id": tenant_id or None},
+        )
+
+    async def authorizes(
+        self, principal: Principal | None, action: str, resource: Resource
+    ) -> bool:
+        """Return whether the configured authorization lets *principal* do *action*.
+
+        Without authorization every action is allowed. With authorization
+        configured, an absent principal is refused, never allowed.
+
+        Raises:
+            PermissionError: Authorization is configured and no principal was given.
+        """
+        if self._authorization is None:
+            return True
+        if principal is None:
+            raise PermissionError("An authenticated principal is required")
+        return await self._authorization.is_allowed(principal, action, resource)
+
+    async def filter_authorized(
+        self,
+        principal: Principal | None,
+        action: str,
+        resources: list[Resource],
+    ) -> list[Resource]:
+        """Return the *resources* the configured authorization lets *principal* act on.
+
+        Raises:
+            PermissionError: Authorization is configured and no principal was given.
+        """
+        if self._authorization is None:
+            return resources
+        if principal is None:
+            raise PermissionError("An authenticated principal is required")
+        return await self._authorization.filter_allowed(principal, action, resources)
+
+    async def get_authorized_session(
+        self, session_id: UUID, principal: Principal | None, action: str
+    ) -> Session:
+        """Return a session inside *principal*'s visibility scope that it may do *action* on.
+
+        Raises:
+            PermissionError: Authorization is configured and no principal was given.
+            SessionNotFoundError: No such session, or it is outside the scope.
+            SessionAccessDeniedError: The policy denies *action*.
+        """
+        scope = self.visibility_scope(principal)
+        session = await self._repository.get(session_id)
+        if session is None or not self.within_scope(
+            scope, owner_id=session.owner_id, tenant_id=session.tenant_id
+        ):
+            raise SessionNotFoundError(session_id)
+        resource = self.attributed_resource(
+            str(session.id), owner_id=session.owner_id, tenant_id=session.tenant_id
+        )
+        if not await self.authorizes(principal, action, resource):
+            user_id = principal.user_id if principal is not None else "unauthenticated"
+            raise SessionAccessDeniedError(session.id, user_id)
+        return session
+
     async def may_observe(
         self,
         principal: Principal | None,
@@ -754,21 +846,13 @@ class SessionService:
         never widens visibility: an unowned session is visible only to a tenant
         admin, and an untenanted one to no bounded principal.
         """
-        tenant_scope, owner_scope = self.visibility_scope(principal)
-        if tenant_scope is not None and (tenant_id or None) != tenant_scope:
+        scope = self.visibility_scope(principal)
+        if not self.within_scope(scope, owner_id=owner_id, tenant_id=tenant_id):
             return False
-        if owner_scope is not None and (owner_id or None) != owner_scope:
-            return False
-        if principal is None or self._authorization is None:
-            return True
-        return await self._authorization.is_allowed(
+        return await self.authorizes(
             principal,
             "list",
-            Resource(
-                kind="session",
-                id=session_id,
-                attr={"owner_id": owner_id or None, "tenant_id": tenant_id or None},
-            ),
+            self.attributed_resource(session_id, owner_id=owner_id, tenant_id=tenant_id),
         )
 
     async def update_session(
