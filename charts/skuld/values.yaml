@@ -694,12 +694,28 @@ wsAuth:
   admin_roles: ["volundr:admin"]
   allow_loopback: false
   # How a missing x-niuu-room-role header resolves. "deployment" (the
-  # correct value for every chart-deployed backend — this pod's own auth
-  # boundary already gates every caller who reaches it): a missing header
-  # means owner, unconditionally. "proxy" is rendered directly by the
-  # process-backend's local launcher (volundr.adapters.outbound
-  # .local_process), never by this chart — do not set it here.
+  # DEFAULT — unchanged, byte-identical behavior for every existing
+  # cluster): this pod's own auth boundary already gates every caller who
+  # reaches it, so a missing header means owner, unconditionally, and
+  # session_participants invites are refused with 409 for this backend.
+  # "proxy" is rendered directly by the process-backend's local launcher
+  # (volundr.adapters.outbound.local_process), never by this chart — do not
+  # set it here. "remote" asks Forge for the caller's grant on every
+  # request (room_role_remote below) and lifts the 409 — Forge's own
+  # pod_manager.room_role_source setting renders this automatically per
+  # session (see RoomRoleSourceContributor); only set it here directly for
+  # a standalone chart install Forge does not manage.
   room_role_source: deployment
+  # Dynamic adapter (skuld.room_role_port.RoomRoleResolverPort) used when
+  # room_role_source is "remote". volundr_api_url should match this chart's
+  # own volundr.apiUrl below — Forge's per-session contribution merges in
+  # "scope"/"cache_ttl_seconds" but never volundr_api_url, so a standalone
+  # install (or a values override) must set it explicitly here.
+  room_role_remote:
+    adapter: skuld.room_role_remote.RemoteAuthorizationAdapter
+    kwargs:
+      volundr_api_url: ""
+    secret_kwargs_env: {}
 
 # Limit pod ingress to the authenticated gateway, including direct pod-IP traffic.
 # Add explicit peer selectors/ports for direct Flokk mesh deployments.

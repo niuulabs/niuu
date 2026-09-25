@@ -306,6 +306,25 @@ class PodManagerConfig(BaseModel):
         default=None,
         description="Explicit contributor backend identity; VM deployments use vm.",
     )
+    room_role_source: Literal["deployment", "remote"] = Field(
+        default="deployment",
+        description=(
+            "ws_auth.room_role_source Volundr renders into this backend's session "
+            "pods (kubernetes/openshell/vm — see charts/skuld/values.yaml's wsAuth "
+            "and volundr/adapters/outbound/contributors/gateway.py). 'deployment' "
+            "(the default): unchanged pre-session_participants behavior — a caller "
+            "reaching the pod at all is owner, and session_participants invites are "
+            "refused with 409 for this backend (see rest_session_participants.py's "
+            "REMOTE_CAPABLE_RUNTIME_BACKENDS). 'remote': pods are deployed with "
+            "ws_auth.room_role_source: remote and a wsAuth.room_role_remote adapter "
+            "(RemoteAuthorizationAdapter) that asks Forge for each caller's grant, "
+            "so session_participants invites are honoured and the 409 is lifted. "
+            "This is a property of the WHOLE deployment, not a per-session choice — "
+            "flipping it changes every future session pod's trust boundary, so it "
+            "must be set deliberately, verified in a non-production cluster first, "
+            "and never enabled by inference from other settings."
+        ),
+    )
     kwargs: dict[str, Any] = Field(
         default_factory=dict,
         description="Extra kwargs forwarded to the adapter constructor.",

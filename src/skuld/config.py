@@ -412,7 +412,7 @@ class WsAuthConfig(BaseModel):
             "those endpoints cannot be reached through a reverse proxy."
         ),
     )
-    room_role_source: Literal["proxy", "deployment"] = Field(
+    room_role_source: Literal["proxy", "deployment", "remote"] = Field(
         default="deployment",
         description=(
             "How to resolve the room role when room_role_header is absent. "
@@ -430,9 +430,38 @@ class WsAuthConfig(BaseModel):
             "header itself from session_participants grants, so trust it — "
             "a missing header means viewer, except a loopback caller "
             "carrying no x-forwarded-for (same-pod tooling a reverse proxy "
-            "could never present as)."
+            "could never present as). 'remote' (Kubernetes/OpenShell/VM "
+            "pods deliberately opted into session_participants support — "
+            "see PodManagerConfig.room_role_source in volundr/config.py): "
+            "room_role_remote's dynamic adapter asks Forge for the caller's "
+            "grant on every request, so a missing header genuinely means "
+            "'ask Forge', not an implicit default — see "
+            "skuld.room_role_port.RoomRoleResolverPort. Requires "
+            "room_role_remote to be set; unreachable Forge or a resolution "
+            "error is a hard deny, never owner or viewer."
         ),
     )
+    room_role_remote: AuthorizationAdapterConfig | None = Field(
+        default=None,
+        description=(
+            "Dynamic adapter (skuld.room_role_port.RoomRoleResolverPort) used "
+            "when room_role_source is 'remote'. Required in that case — "
+            "config that asks for remote resolution and supplies no adapter "
+            "to do it is a configuration error, not an implicit fallback to "
+            "'deployment'."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _remote_room_role_requires_adapter(self) -> "WsAuthConfig":
+        if self.room_role_source == "remote" and self.room_role_remote is None:
+            raise ValueError(
+                "ws_auth.room_role_source is 'remote' but ws_auth.room_role_remote is not "
+                "set — configure its adapter (e.g. "
+                "skuld.room_role_remote.RemoteAuthorizationAdapter) and kwargs, or set "
+                "room_role_source back to 'deployment'."
+            )
+        return self
 
 
 class ActivityHeartbeatConfig(BaseModel):

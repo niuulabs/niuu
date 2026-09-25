@@ -378,3 +378,59 @@ async def test_revoke_without_a_notifier_configured_still_works():
     )
     await service.accept(session, INVITEE)
     await service.revoke(session, OWNER, "invitee")  # no notifier set; must not raise
+
+
+# --- effective_room_role: the single source of truth for "what role is X" ---
+#
+# Shared by volundr.main's in-process room-role resolver (mini-mode's
+# session proxy) and the GET .../participants/role endpoint a Kubernetes
+# session pod's RemoteAuthorizationAdapter calls remotely.
+
+
+async def test_effective_room_role_of_the_owner_is_owner():
+    service, session = await _service()
+    assert await service.effective_room_role(session, OWNER) == "owner"
+
+
+async def test_effective_room_role_of_an_active_viewer_grant_is_viewer():
+    service, session = await _service()
+    await service.invite(
+        session, OWNER, user_id="invitee", role=ParticipantRole.OBSERVER, expires_at=None
+    )
+    await service.accept(session, INVITEE)
+    assert await service.effective_room_role(session, INVITEE) == "viewer"
+
+
+async def test_effective_room_role_of_an_active_approver_grant_is_approver():
+    service, session = await _service()
+    await service.invite(
+        session, OWNER, user_id="invitee", role=ParticipantRole.APPROVER, expires_at=None
+    )
+    await service.accept(session, INVITEE)
+    assert await service.effective_room_role(session, INVITEE) == "approver"
+
+
+async def test_effective_room_role_with_no_grant_is_none():
+    """A real "no grant" answer — never a degraded default role."""
+    service, session = await _service()
+    assert await service.effective_room_role(session, OUTSIDER) is None
+
+
+async def test_effective_room_role_after_revoke_is_none():
+    service, session = await _service()
+    await service.invite(
+        session, OWNER, user_id="invitee", role=ParticipantRole.OBSERVER, expires_at=None
+    )
+    await service.accept(session, INVITEE)
+    await service.revoke(session, OWNER, "invitee")
+    assert await service.effective_room_role(session, INVITEE) is None
+
+
+async def test_effective_room_role_of_no_principal_raises_like_check_room_access():
+    """Matches check_room_access's contract: no principal is a caller error
+    (unauthenticated), not a "no grant" answer — callers resolve a principal
+    (or return None themselves, as volundr.main's WS resolver does on an
+    invalid token) before ever calling this."""
+    service, session = await _service()
+    with pytest.raises(PermissionError):
+        await service.effective_room_role(session, None)

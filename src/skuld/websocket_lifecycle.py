@@ -25,6 +25,7 @@ from skuld.conversation_snapshot import (
     prepare_history_page,
     prepare_recent_snapshot,
 )
+from skuld.room_role_port import RoomRoleResolutionError
 from skuld.websocket_auth import (
     _decode_jwt_claims,
     _extract_token_from_websocket,
@@ -118,7 +119,7 @@ class WebSocketLifecycleMixin:
 
     _VALID_ROOM_ROLES = frozenset({"owner", "approver", "viewer"})
 
-    def _resolve_room_role(self, websocket: WebSocket) -> str:
+    async def _resolve_room_role(self, websocket: WebSocket) -> str | None:
         """Resolve this connection's room role for per-message authorization.
 
         A valid ``room_role_header`` always wins outright — it is the
@@ -144,6 +145,13 @@ class WebSocketLifecycleMixin:
           grants, so trust it — a missing header means viewer, except a
           loopback caller carrying no x-forwarded-for (same-pod tooling a
           reverse proxy could never present as).
+        - "remote" (Kubernetes/OpenShell/VM pods deliberately opted in): asks
+          Forge for this caller's grant via ``self._room_role_resolver``
+          (``skuld.room_role_remote.RemoteAuthorizationAdapter``). Returns
+          ``None`` — a real "no grant" answer, never a default role — when
+          the caller has no verified identity headers or no active grant.
+          Raises ``RoomRoleResolutionError`` when Forge cannot be reached;
+          ``handle_websocket`` treats that as a deny, never a fallback role.
         """
         cfg = self._settings.ws_auth
         header_role = websocket.headers.get(cfg.room_role_header, "").strip().lower()
@@ -151,6 +159,27 @@ class WebSocketLifecycleMixin:
             return header_role
         if cfg.room_role_source == "deployment":
             return "owner"
+        if cfg.room_role_source == "remote":
+            principal = _resolve_ws_principal(
+                websocket,
+                user_id_header=cfg.user_id_header,
+                tenant_header=cfg.tenant_header,
+                roles_header=cfg.roles_header,
+            )
+            if principal is None:
+                return None
+            if self._room_role_resolver is None:
+                raise RoomRoleResolutionError(
+                    "ws_auth.room_role_source is 'remote' but no room_role_remote adapter "
+                    "was constructed — this should be unreachable (WsAuthConfig validates "
+                    "this at load time); check skuld broker startup logs."
+                )
+            return await self._room_role_resolver.resolve_role(
+                session_id=self.session_id,
+                user_id=principal.user_id,
+                tenant_id=principal.tenant_id,
+                roles=list(principal.roles),
+            )
         if _is_loopback_ws_client(websocket) and not websocket.headers.get("x-forwarded-for"):
             return "owner"
         return "viewer"
@@ -204,7 +233,17 @@ class WebSocketLifecycleMixin:
 
         # Pre-accept: the room-role header is only trustworthy from the raw
         # request headers.
-        room_role = self._resolve_room_role(websocket)
+        try:
+            room_role = await self._resolve_room_role(websocket)
+        except RoomRoleResolutionError:
+            logger.exception("Room role resolution failed")
+            await websocket.close(code=1011, reason="Room role authorization unavailable")
+            return
+        if room_role is None:
+            await websocket.close(
+                code=1008, reason="No active session_participants grant for this session"
+            )
+            return
         # Extract JWT before accepting — headers are available pre-accept.
         # Only an OWNER connection may update the broker's single stored
         # _user_jwt/_user_claims: they are read later for actions taken "as

@@ -380,6 +380,7 @@ def _create_contributors(
     can accept the ports they need and ignore others via **_extra.
     """
     from volundr.adapters.outbound.contributors.local_mount import LocalMountContributor
+    from volundr.adapters.outbound.contributors.room_role import RoomRoleSourceContributor
     from volundr.adapters.outbound.contributors.session_def import SessionDefinitionContributor
     from volundr.adapters.outbound.contributors.workload_config import WorkloadConfigContributor
     from volundr.adapters.outbound.contributors.workload_identity import (
@@ -434,6 +435,15 @@ def _create_contributors(
     if not _has_contributor("workload_identity"):
         contributors.append(WorkloadIdentityContributor())
         logger.info("Session contributor: workload_identity (auto-wired)")
+
+    if not _has_contributor("room_role_source"):
+        contributors.append(
+            RoomRoleSourceContributor(room_role_source=settings.pod_manager.room_role_source)
+        )
+        logger.info(
+            "Session contributor: room_role_source (auto-wired, %s)",
+            settings.pod_manager.room_role_source,
+        )
 
     # The integrations a launch attaches carry more than credentials: the
     # Claude auth mode, MCP servers, and the model gateway URL of a self-hosted

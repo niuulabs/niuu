@@ -1182,21 +1182,7 @@ def create_app(
                         # participant model; may_attach already approved this
                         # caller for full access, matching pre-existing behavior.
                         return "owner"
-                    grants = await session_participant_service.active_grants(resource_id)
-                    resource = SessionService.attributed_resource(
-                        session_id,
-                        owner_id=session.owner_id,
-                        tenant_id=session.tenant_id,
-                        room_viewers=grants.viewer_ids,
-                        room_approvers=grants.approver_ids,
-                    )
-                    if await authorization_adapter.is_allowed(principal, "admit", resource):
-                        return "owner"
-                    if await authorization_adapter.is_allowed(principal, "resolve_gate", resource):
-                        return "approver"
-                    if await authorization_adapter.is_allowed(principal, "read_room", resource):
-                        return "viewer"
-                    return None
+                    return await session_participant_service.effective_room_role(session, principal)
 
                 if hasattr(skuld_reg, "set_room_role_resolver"):
                     skuld_reg.set_room_role_resolver(_resolve_room_role)
@@ -1605,6 +1591,7 @@ def create_app(
                     session_participant_service,
                     session_service,
                     runtime_backend=runtime_backend,
+                    room_role_source=settings.pod_manager.room_role_source,
                 )
             )
 

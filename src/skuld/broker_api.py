@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from niuu.adapters.identity_headers import parse_roles_header
 from niuu.build_identity import build_identity
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
@@ -38,6 +39,7 @@ from skuld.path_security import (
     resolve_contained_path,
     resolve_path_in_roots,
 )
+from skuld.room_role_port import RoomRoleResolutionError
 from skuld.service_manager import ServiceCreateRequest, ServiceStatus
 from volundr.log_aggregate import aggregate_workspace_logs
 
@@ -176,7 +178,22 @@ def _is_loopback_http_client(request: Request) -> bool:
     return host in ("127.0.0.1", "::1", "localhost")
 
 
-def _effective_room_role(request: Request) -> str:
+def _resolve_http_principal(request: Request, cfg) -> tuple[str, str, list[str]] | None:
+    """Resolve identity projected by a trusted authentication proxy, for HTTP.
+
+    Mirrors ``skuld.websocket_auth._resolve_ws_principal`` for a FastAPI
+    ``Request`` — ``Request.headers`` is already case-insensitive, so this
+    reads it directly rather than building a lowercase dict.
+    """
+    user_id = request.headers.get(cfg.user_id_header, "").strip()
+    if not user_id:
+        return None
+    tenant_id = request.headers.get(cfg.tenant_header, "").strip()
+    roles = parse_roles_header(request.headers.get(cfg.roles_header, ""))
+    return user_id, tenant_id, list(roles)
+
+
+async def _effective_room_role(request: Request) -> str | None:
     """Return the ONE canonical room role for this HTTP request.
 
     Every place in this module that needs a caller's room role — the
@@ -187,7 +204,10 @@ def _effective_room_role(request: Request) -> str:
     under a different one (that mismatch is what silently rewrote Ting's
     ``source: "ting"`` to ``room_viewer`` and 403'd replies to a waiting
     peer even though the middleware had already let the same request
-    through as owner).
+    through as owner). "remote" mode's resolved role is cached briefly by
+    the ``RemoteAuthorizationAdapter`` itself (``room_role_remote.kwargs
+    .cache_ttl_seconds``), so a route handler's second call in the same
+    request is a cache hit, not a second Forge round trip.
 
     A valid ``x-niuu-room-role`` header always wins outright — it is the
     session-proxy-verified stamp. Otherwise this defers entirely to
@@ -216,12 +236,35 @@ def _effective_room_role(request: Request) -> str:
       tooling a reverse proxy could never present as: containers/skuld/svc,
       tmux_interactive.py's present-file/hooks calls, Ravn/Ting service
       clients dialing localhost).
+    - "remote" (Kubernetes/OpenShell/VM pods deliberately opted in — see
+      ``PodManagerConfig.room_role_source``): asks Forge for this caller's
+      grant via ``broker._room_role_resolver``
+      (``skuld.room_role_remote.RemoteAuthorizationAdapter``). Returns
+      ``None`` (a real "no grant" answer, never a default role) when the
+      caller has no verified identity headers or no active grant. Raises
+      ``RoomRoleResolutionError`` when Forge cannot be reached — callers must
+      treat that as a deny, per ``.claude/rules/no-fallbacks.md``.
     """
     room_role = request.headers.get(ROOM_ROLE_HEADER, "").strip().lower()
     if room_role in ROOM_ROLE_RANK:
         return room_role
-    if broker._settings.ws_auth.room_role_source == "deployment":
+    cfg = broker._settings.ws_auth
+    if cfg.room_role_source == "deployment":
         return "owner"
+    if cfg.room_role_source == "remote":
+        identity = _resolve_http_principal(request, cfg)
+        if identity is None:
+            return None
+        user_id, tenant_id, roles = identity
+        if broker._room_role_resolver is None:
+            raise RoomRoleResolutionError(
+                "ws_auth.room_role_source is 'remote' but no room_role_remote adapter "
+                "was constructed — this should be unreachable (WsAuthConfig validates "
+                "this at load time); check skuld broker startup logs."
+            )
+        return await broker._room_role_resolver.resolve_role(
+            session_id=broker.session_id, user_id=user_id, tenant_id=tenant_id, roles=roles
+        )
     if _is_loopback_http_client(request) and not request.headers.get("x-forwarded-for"):
         return "owner"
     return "viewer"
@@ -247,7 +290,16 @@ async def _enforce_room_role(request: Request, call_next):
     # would break preflight for every legitimate browser client.
     if not request.url.path.startswith("/api/") or request.method == "OPTIONS":
         return await call_next(request)
-    effective_role = _effective_room_role(request)
+    try:
+        effective_role = await _effective_room_role(request)
+    except RoomRoleResolutionError as exc:
+        logger.error("Room role resolution failed: %s", exc)
+        return JSONResponse({"detail": str(exc)}, status_code=503)
+    if effective_role is None:
+        return JSONResponse(
+            {"detail": "No active session_participants grant for this session"},
+            status_code=403,
+        )
     required_role = required_role_for_route(request.method, request.url.path.removeprefix("/api/"))
     if ROOM_ROLE_RANK[effective_role] < ROOM_ROLE_RANK[required_role]:
         return JSONResponse(
@@ -1169,7 +1221,7 @@ def _room_identity_fields(
 @app.post("/api/room/message")
 async def send_room_message(request: Request, body: _RoomMessageRequest) -> dict:
     """Inject a human-originated message into the active room session."""
-    role = _effective_room_role(request)
+    role = await _effective_room_role(request)
     participant_id, source = _room_identity_fields(role, body.participant_id, body.source)
     metadata = _sanitize_room_metadata(role, body.metadata)
     try:
@@ -1193,7 +1245,7 @@ async def send_room_message(request: Request, body: _RoomMessageRequest) -> dict
 @app.post("/api/room/direct")
 async def send_directed_room_message(request: Request, body: _DirectedRoomMessageRequest) -> dict:
     """Inject a human-originated directed room message."""
-    role = _effective_room_role(request)
+    role = await _effective_room_role(request)
     participant_id, source = _room_identity_fields(role, body.participant_id, body.source)
     if not broker._reply_context_consumption_allowed(body.target_peer_id, role):
         raise HTTPException(
@@ -1373,7 +1425,7 @@ async def get_help_requests() -> dict:
 @app.post("/api/help/requests/{request_id}/answer")
 async def answer_help_request(request: Request, request_id: str, body: _HelpAnswerRequest) -> dict:
     """Answer a pending help request; the answer routes to the asking peer."""
-    role = _effective_room_role(request)
+    role = await _effective_room_role(request)
     source = body.source if role == "owner" else f"room_{role}"
     try:
         message_id = await broker.answer_help_request(
@@ -1405,7 +1457,7 @@ async def resolve_workflow_gate(
     # (ws_auth.room_role_source) otherwise — the SAME function the
     # middleware and every other role-gated route here uses, so this can
     # never disagree with what already admitted the request.
-    if _effective_room_role(request) not in ROOM_ROLES_MAY_RESOLVE_GATES:
+    if await _effective_room_role(request) not in ROOM_ROLES_MAY_RESOLVE_GATES:
         raise HTTPException(403, "Only the session owner or an approver may resolve this gate")
     try:
         gate = await broker.resolve_workflow_gate(

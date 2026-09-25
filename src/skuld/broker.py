@@ -588,6 +588,20 @@ class Broker(
             if not isinstance(self._ws_authorization, AuthorizationPort):
                 raise TypeError("WebSocket authorization must implement AuthorizationPort")
 
+        self._room_role_resolver = None
+        if self._settings.ws_auth.room_role_source == "remote":
+            from skuld.room_role_port import RoomRoleResolverPort
+
+            # WsAuthConfig's own model_validator already guarantees
+            # room_role_remote is set whenever room_role_source == "remote";
+            # this is defense-in-depth, matching the isinstance checks above.
+            remote = self._settings.ws_auth.room_role_remote
+            self._room_role_resolver = import_class(remote.adapter)(
+                **resolve_secret_kwargs(remote.kwargs, remote.secret_kwargs_env)
+            )
+            if not isinstance(self._room_role_resolver, RoomRoleResolverPort):
+                raise TypeError("room_role_remote adapter must implement RoomRoleResolverPort")
+
         self._effort_lock = asyncio.Lock()
         self.session_id = self._settings.session.id
         self.model = self._settings.session.model

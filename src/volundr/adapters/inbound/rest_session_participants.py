@@ -12,10 +12,12 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
 
+from niuu.domain.services.token_scope import require_scope
 from volundr.adapters.inbound.auth import extract_principal
+from volundr.domain.models import Principal
 from volundr.domain.services.session import SessionAccessDeniedError, SessionService
 from volundr.domain.services.session_participants import SessionParticipantService
 from volundr.domain.session_participants import (
@@ -84,25 +86,37 @@ class ParticipantResponse(BaseModel):
         )
 
 
-# Runtime backends whose pod-level attach authorization actually consults
+class EffectiveRoomRoleResponse(BaseModel):
+    """A target principal's Cedar-derived room role, or None (no grant)."""
+
+    role: str | None = None
+
+
+# Runtime backends whose pod-level attach authorization ALWAYS consults
 # session_participants grants. Mini-mode's session proxy
 # (niuu.session_proxy.SkuldPortRegistry) resolves the room role from these
-# grants itself (see niuu.room_access), so "process" is safe. Every other
-# backend (kubernetes, openshell, vm) routes attach through the Kubernetes
-# Gateway's Envoy ext_authz check instead (charts/skuld/templates/
-# securitypolicy.yaml + httproute.yaml), which authorizes only "start" —
-# Cedar's owner/admin-only action; no session_participants grant is ever
-# authorized for it (see architecture.md's workload-identity section). An
-# invite issued there would show up in listings and accept successfully, but
-# every attach attempt would 403 against Envoy before reaching the session
-# pod at all — a grant nobody can ever use. Refusing the invite up front
-# (409, with the remedy) is more honest than shipping that.
+# grants itself (see niuu.room_access), so "process" is safe unconditionally.
+GRANT_HONORING_RUNTIME_BACKENDS = frozenset({"process"})
+
+# Runtime backends whose pods route attach through the Kubernetes Gateway's
+# Envoy ext_authz check (charts/skuld/templates/securitypolicy.yaml +
+# httproute.yaml) instead of the session proxy. That gate authorizes only
+# "start" — Cedar's owner/admin-only action — so a grant is usable there ONLY
+# once the pod itself is ALSO deployed with ws_auth.room_role_source: remote
+# (skuld.room_role_remote.RemoteAuthorizationAdapter asking Forge for the
+# grant on every request that reaches it — see PodManagerConfig.room_role_source
+# in volundr/config.py and charts/skuld/values.yaml's wsAuth.room_role_remote).
+# Without that, an invite would show up in listings and accept successfully,
+# but every attach attempt would 403 against Envoy before reaching the
+# session pod at all — a grant nobody can ever use. Refusing the invite up
+# front (409, with the remedy) is more honest than shipping that.
 #
 # This has only been verified for "kubernetes"; "openshell" and "vm" are
 # included defensively (they are also pod-based, Gateway-routed backends by
 # construction) but their attach path has not been independently traced in
-# this change.
-GRANT_HONORING_RUNTIME_BACKENDS = frozenset({"process"})
+# this change. "docker" is deliberately excluded — it is not routed through
+# the session proxy today and has no remote-adapter path either.
+REMOTE_CAPABLE_RUNTIME_BACKENDS = frozenset({"kubernetes", "openshell", "vm"})
 
 
 def create_session_participants_router(
@@ -111,9 +125,12 @@ def create_session_participants_router(
     *,
     prefix: str = "/api/v1/forge",
     runtime_backend: str = "process",
+    room_role_source: str = "deployment",
 ) -> APIRouter:
     router = APIRouter(prefix=prefix, tags=["Sessions"])
-    grants_are_attachable = runtime_backend in GRANT_HONORING_RUNTIME_BACKENDS
+    grants_are_attachable = runtime_backend in GRANT_HONORING_RUNTIME_BACKENDS or (
+        runtime_backend in REMOTE_CAPABLE_RUNTIME_BACKENDS and room_role_source == "remote"
+    )
 
     async def _get_session(session_id: UUID):
         session = await session_service.get_session(session_id)
@@ -143,14 +160,22 @@ def create_session_participants_router(
         principal = await extract_principal(request)
         session = await _get_session(session_id)
         if not grants_are_attachable:
+            remedy = (
+                f"session backend whose pod authorization consults "
+                f"session_participants grants (currently: "
+                f"{', '.join(sorted(GRANT_HONORING_RUNTIME_BACKENDS))})"
+            )
+            if runtime_backend in REMOTE_CAPABLE_RUNTIME_BACKENDS:
+                remedy += (
+                    ", or set pod_manager.room_role_source: remote (volundr/config.py's "
+                    "PodManagerConfig) to deploy this backend's session pods with "
+                    "ws_auth.room_role_source: remote"
+                )
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
                 "This deployment's session pods authorize attach by ownership "
                 "only (Kubernetes Gateway ext_authz), so a participant grant "
-                "could never be used to attach. Participant invites require a "
-                f"session backend whose pod authorization consults "
-                f"session_participants grants (currently: "
-                f"{', '.join(sorted(GRANT_HONORING_RUNTIME_BACKENDS))}).",
+                f"could never be used to attach. Participant invites require a {remedy}.",
             )
         try:
             participant = await service.invite(
@@ -224,5 +249,45 @@ def create_session_participants_router(
                 status.HTTP_403_FORBIDDEN, "Not authorized to list participants"
             ) from None
         return [ParticipantResponse.from_participant(p) for p in participants]
+
+    @router.get(
+        "/sessions/{session_id}/participants/role",
+        response_model=EffectiveRoomRoleResponse,
+        dependencies=[Depends(require_scope("forge:session:room-role"))],
+    )
+    async def get_effective_room_role(
+        request: Request,
+        session_id: UUID,
+        user_id: str = Query(min_length=1, max_length=200),
+        tenant_id: str = Query(default=""),
+        roles: str = Query(default=""),
+    ) -> EffectiveRoomRoleResponse:
+        """Resolve a target caller's Cedar-derived room role for this session.
+
+        Called remotely by a Kubernetes-backed session pod's
+        ``skuld.room_role_remote.RemoteAuthorizationAdapter`` — never by a
+        browser. The caller authenticates itself with its own workload
+        identity token (``extract_principal``, scope-gated by
+        ``forge:session:room-role``); ``user_id``/``tenant_id``/``roles``
+        name the TARGET principal whose role is being asked about, already
+        verified upstream by that pod's Envoy JWT filter into the
+        x-auth-* headers it forwards (this endpoint does not re-authenticate
+        that principal — it only evaluates Cedar for it). Read-only: no
+        state changes. Returns ``{"role": None}`` rather than 403/404 when
+        the target has no active grant, matching ``effective_room_role``'s
+        "no role" answer — this is what lets the remote adapter fail closed
+        on transport/auth errors while still treating "no grant" as its own,
+        distinct, expected outcome.
+        """
+        await extract_principal(request)
+        session = await _get_session(session_id)
+        target = Principal(
+            user_id=user_id,
+            email="",
+            tenant_id=tenant_id,
+            roles=[r for r in (role.strip() for role in roles.split(",")) if r],
+        )
+        role = await service.effective_room_role(session, target)
+        return EffectiveRoomRoleResponse(role=role)
 
     return router

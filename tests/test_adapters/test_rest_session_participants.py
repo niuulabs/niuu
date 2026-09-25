@@ -109,6 +109,78 @@ def test_invite_on_kubernetes_backend_is_409_before_any_service_call(
     service.invite.assert_not_awaited()
 
 
+@pytest.fixture
+def participants_api_on_kubernetes_remote():
+    """Kubernetes backend, but the deployment opted into room_role_source: remote."""
+    service, session_service = AsyncMock(), AsyncMock()
+    app = FastAPI()
+    app.include_router(
+        create_session_participants_router(
+            service, session_service, runtime_backend="kubernetes", room_role_source="remote"
+        )
+    )
+    sid = uuid4()
+    principal = Principal(user_id="owner", email="", tenant_id="acme", roles=["volundr:developer"])
+    with patch(
+        "volundr.adapters.inbound.rest_session_participants.extract_principal",
+        new=AsyncMock(return_value=principal),
+    ):
+        path = f"/api/v1/forge/sessions/{sid}/participants"
+        yield TestClient(app), service, session_service, path
+
+
+def test_invite_on_kubernetes_remote_backend_is_no_longer_409(
+    participants_api_on_kubernetes_remote,
+):
+    """room_role_source: remote lifts the 409 for a remote-capable backend."""
+    client, service, session_service, path = participants_api_on_kubernetes_remote
+    session_service.get_session.return_value = object()
+    service.invite.return_value = _participant()
+    response = client.post(path, json={"user_id": "invitee", "role": "observer"})
+    assert response.status_code == 201
+    service.invite.assert_awaited_once()
+
+
+def test_invite_on_kubernetes_backend_409_names_the_remote_remedy(
+    participants_api_on_kubernetes,
+):
+    """The default ("deployment") still 409s, and now names BOTH remedies:
+    switch to the process backend, or opt into pod_manager.room_role_source:
+    remote for this backend."""
+    client, service, session_service, path = participants_api_on_kubernetes
+    session_service.get_session.return_value = object()
+    response = client.post(path, json={"user_id": "invitee", "role": "observer"})
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert "process" in detail
+    assert "room_role_source: remote" in detail
+    service.invite.assert_not_awaited()
+
+
+def test_docker_backend_stays_409_even_with_room_role_source_remote():
+    """docker is deliberately excluded from REMOTE_CAPABLE_RUNTIME_BACKENDS —
+    it is not routed through the session proxy and has no remote-adapter path."""
+    service, session_service = AsyncMock(), AsyncMock()
+    app = FastAPI()
+    app.include_router(
+        create_session_participants_router(
+            service, session_service, runtime_backend="docker", room_role_source="remote"
+        )
+    )
+    sid = uuid4()
+    principal = Principal(user_id="owner", email="", tenant_id="acme", roles=["volundr:developer"])
+    with patch(
+        "volundr.adapters.inbound.rest_session_participants.extract_principal",
+        new=AsyncMock(return_value=principal),
+    ):
+        session_service.get_session.return_value = object()
+        response = TestClient(app).post(
+            f"/api/v1/forge/sessions/{sid}/participants",
+            json={"user_id": "invitee", "role": "observer"},
+        )
+    assert response.status_code == 409
+
+
 def test_invite_denied_for_non_owner_is_403(participants_api):
     client, service, session_service, path = participants_api
     session_service.get_session.return_value = object()
@@ -314,3 +386,89 @@ def test_actual_cedar_policy_enforces_invite_and_accept_end_to_end():
     import asyncio
 
     asyncio.run(scenario())
+
+
+# --- GET .../participants/role: what skuld.room_role_remote.RemoteAuthorizationAdapter calls ---
+
+
+def test_effective_role_endpoint_returns_the_service_answer(participants_api):
+    client, service, session_service, path = participants_api
+    session_service.get_session.return_value = object()
+    service.effective_room_role.return_value = "approver"
+    response = client.get(
+        path.rsplit("/participants", 1)[0] + "/participants/role",
+        params={"user_id": "bob", "tenant_id": "acme", "roles": "volundr:developer,other"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"role": "approver"}
+    target = service.effective_room_role.await_args.args[1]
+    assert target.user_id == "bob"
+    assert target.tenant_id == "acme"
+    assert target.roles == ["volundr:developer", "other"]
+
+
+def test_effective_role_endpoint_returns_null_role_for_no_grant(participants_api):
+    """A 200 with role: null, not a 403/404 — "no grant" is an answer, not a
+    failure, matching effective_room_role's own contract."""
+    client, service, session_service, path = participants_api
+    session_service.get_session.return_value = object()
+    service.effective_room_role.return_value = None
+    response = client.get(
+        path.rsplit("/participants", 1)[0] + "/participants/role",
+        params={"user_id": "stranger"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"role": None}
+
+
+def test_effective_role_endpoint_404s_for_a_missing_session(participants_api):
+    client, service, session_service, path = participants_api
+    session_service.get_session.return_value = None
+    response = client.get(
+        path.rsplit("/participants", 1)[0] + "/participants/role",
+        params={"user_id": "bob"},
+    )
+    assert response.status_code == 404
+    service.effective_room_role.assert_not_awaited()
+
+
+def test_effective_role_endpoint_requires_the_configured_scope_for_scoped_tokens():
+    """A scoped workload credential minted for something ELSE (missing
+    forge:session:room-role) must be refused, not silently admitted."""
+    import time
+
+    import jwt
+
+    from niuu.domain.services.token_scope import VALKYRIE_BUILD_TOKEN_USE
+
+    service, session_service = AsyncMock(), AsyncMock()
+    app = FastAPI()
+    app.include_router(create_session_participants_router(service, session_service))
+    sid = uuid4()
+    session_service.get_session.return_value = object()
+    principal = Principal(user_id="pod", email="", tenant_id="acme", roles=[])
+
+    now = int(time.time())
+    token = jwt.encode(
+        {
+            "sub": "pod",
+            "iat": now,
+            "exp": now + 600,
+            "token_use": VALKYRIE_BUILD_TOKEN_USE,
+            "scopes": ["forge:session:create"],
+        },
+        "test-only-signing-key-32-bytes-long!",
+        algorithm="HS256",
+    )
+
+    with patch(
+        "volundr.adapters.inbound.rest_session_participants.extract_principal",
+        new=AsyncMock(return_value=principal),
+    ):
+        response = TestClient(app).get(
+            f"/api/v1/forge/sessions/{sid}/participants/role",
+            params={"user_id": "bob"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert response.status_code == 403
+    service.effective_room_role.assert_not_awaited()
