@@ -85,9 +85,9 @@ describe('useCreateRealm', () => {
       'createTrigger:event:realm-lexi-api',
       'createTrigger:cron:realm-lexi-api',
       'importProject:board-1:niuulabs/lexi-api',
-      'deploy:lexi-api:realm-lexi-api',
       'listMounts',
       'upsertPage:realms/lexi-api/charter.md@realm-lexi-api',
+      'deploy:lexi-api:realm-lexi-api:realm-1',
     ]);
     expect(Object.values(result.current.progress.states).every((state) => state === 'done')).toBe(
       true,
@@ -123,7 +123,7 @@ describe('useCreateRealm', () => {
     });
 
     expect(log.calls).toContain('createRealm:lexi-api');
-    expect(log.calls.at(-1)).toBe('deploy:lexi-api:realm-lexi-api');
+    expect(log.calls.at(-1)).toBe('deploy:lexi-api:realm-lexi-api:realm-1');
     expect(result.current.progress.failedStep?.id).toBe('resident');
     expect(result.current.progress.failedStep?.advancedPath).toBe('/ravn/ravens');
   });
@@ -156,9 +156,21 @@ describe('useCreateRealm', () => {
     expect(result.current.progress.failedStep?.id).toBe('charter');
   });
 
-  it('lists eleven steps, validate first and charter last', () => {
+  it('lists eleven steps, validate first and resident last', () => {
     expect(RECIPE_STEPS[0]?.id).toBe('validate');
-    expect(RECIPE_STEPS.at(-1)?.id).toBe('charter');
+    expect(RECIPE_STEPS.at(-1)?.id).toBe('resident');
     expect(RECIPE_STEPS).toHaveLength(11);
+  });
+
+  it('writes the charter to memory before starting the resident', () => {
+    const charterIndex = RECIPE_STEPS.findIndex((step) => step.id === 'charter');
+    const residentIndex = RECIPE_STEPS.findIndex((step) => step.id === 'resident');
+    // The resident resolves its charter from realm memory at startup and
+    // exits if that page is configured but missing (see
+    // resident_runtime_wiring.py's _resolve_environment_charter), and the
+    // local controller has no restart policy — so charter must be written
+    // first.
+    expect(charterIndex).toBeGreaterThanOrEqual(0);
+    expect(residentIndex).toBeGreaterThan(charterIndex);
   });
 });

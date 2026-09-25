@@ -33,9 +33,9 @@ class PostgresResidentRuntimeRepository(ResidentRuntimeRepository):
                 (id, owner_id, tenant_id, name, persona_name, model, backend,
                  engine, profile_id, desired_state, observed_state, backend_ref,
                  endpoints, capabilities, conditions, flock_id, flock_member_id,
-                 flock_role, flock_peer_id, created_at, updated_at)
+                 flock_role, flock_peer_id, realm_id, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                    $13, $14, $15, $16, $17, $18, $19, $20, $21)
+                    $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
             """,
             runtime.id,
             runtime.owner_id,
@@ -56,6 +56,7 @@ class PostgresResidentRuntimeRepository(ResidentRuntimeRepository):
             runtime.flock_member_id,
             runtime.flock_role,
             runtime.flock_peer_id,
+            runtime.realm_id,
             runtime.created_at,
             runtime.updated_at,
         )
@@ -113,7 +114,7 @@ class PostgresResidentRuntimeRepository(ResidentRuntimeRepository):
                 observed_state = $9, backend_ref = $10, endpoints = $11,
                 capabilities = $12, conditions = $13, flock_id = $14,
                 flock_member_id = $15, flock_role = $16, flock_peer_id = $17,
-                updated_at = $18
+                realm_id = $18, updated_at = $19
             WHERE id = $1
             """,
             runtime.id,
@@ -133,6 +134,7 @@ class PostgresResidentRuntimeRepository(ResidentRuntimeRepository):
             runtime.flock_member_id,
             runtime.flock_role,
             runtime.flock_peer_id,
+            runtime.realm_id,
             runtime.updated_at,
         )
         return runtime
@@ -204,6 +206,7 @@ class PostgresResidentRuntimeRepository(ResidentRuntimeRepository):
             flock_member_id=row.get("flock_member_id"),
             flock_role=row.get("flock_role", ""),
             flock_peer_id=row.get("flock_peer_id", ""),
+            realm_id=row.get("realm_id"),
             desired_state=ResidentDesiredState(row["desired_state"]),
             observed_state=ResidentObservedState(row["observed_state"]),
             backend_ref=cls._json(row["backend_ref"], {}),

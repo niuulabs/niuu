@@ -7,6 +7,7 @@ import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
+from niuu.ports.realm_repository import RealmRepository
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.models import (
     Principal,
@@ -71,9 +72,16 @@ class ResidentRuntimeService:
         session_controllers: list[ResidentSessionController] | None = None,
         span_repository: SessionSpanRepository | None = None,
         event_repository: SessionEventRepository | None = None,
+        realm_repository: RealmRepository | None = None,
     ) -> None:
         self._repository = repository
         self._profiles = profiles
+        # Optional: validates realm_id at create() time so an unknown realm
+        # is a 422 (ResidentRuntimeValidationError), not a bare FK violation
+        # surfacing as a 500 during the background deploy task. Without it,
+        # the database foreign key still enforces referential integrity —
+        # this only makes the failure legible at the API boundary.
+        self._realm_repository = realm_repository
         self._controllers = {controller.backend: controller for controller in controllers or []}
         if len(self._controllers) != len(controllers or []):
             raise ValueError("Resident runtime controller backends must be unique")
@@ -108,6 +116,7 @@ class ResidentRuntimeService:
         flock_member_id: UUID | None = None,
         flock_role: str = "",
         flock_peer_id: str = "",
+        realm_id: UUID | None = None,
     ) -> ResidentRuntime:
         """Persist one resident and provision its backend asynchronously."""
         profile = self._require_profile(profile_id)
@@ -122,6 +131,7 @@ class ResidentRuntimeService:
             flock_member_id=flock_member_id,
             flock_role=flock_role,
             flock_peer_id=flock_peer_id,
+            realm_id=realm_id,
         )
         deploying = runtime.model_copy(
             update={
@@ -211,6 +221,7 @@ class ResidentRuntimeService:
         flock_member_id: UUID | None = None,
         flock_role: str = "",
         flock_peer_id: str = "",
+        realm_id: UUID | None = None,
     ) -> ResidentRuntime:
         """Create the durable record used by a real deployment adapter."""
         self._require_write_role(principal)
@@ -236,6 +247,10 @@ class ResidentRuntimeService:
             raise ResidentRuntimeValidationError(
                 f"Resident profile {profile_id} does not support flock membership"
             )
+        if realm_id is not None and self._realm_repository is not None:
+            realm = await self._realm_repository.get_realm(realm_id)
+            if realm is None:
+                raise ResidentRuntimeValidationError(f"Realm not found: {realm_id}")
 
         runtime = ResidentRuntime(
             owner_id=principal.user_id,
@@ -250,6 +265,7 @@ class ResidentRuntimeService:
             flock_member_id=flock_member_id,
             flock_role=flock_role.strip(),
             flock_peer_id=flock_peer_id.strip(),
+            realm_id=realm_id,
             capabilities=profile.capabilities,
         )
         try:

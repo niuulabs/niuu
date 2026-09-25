@@ -193,6 +193,23 @@ class TestListRavens:
         assert ravens[0]["instance_id"] == "target-local"
 
     @respx.mock
+    async def test_managed_resident_carries_its_realm_binding(self):
+        managed = _managed_runtime(realmId="55555555-5555-5555-5555-555555555555")
+        directory = _directory(managed=[managed])
+
+        ravens = await directory.list_ravens(_PRINCIPAL, {}, {})
+
+        assert ravens[0]["realm_id"] == "55555555-5555-5555-5555-555555555555"
+
+    @respx.mock
+    async def test_managed_resident_without_realm_binding_reports_empty_realm_id(self):
+        directory = _directory(managed=[_managed_runtime()])
+
+        ravens = await directory.list_ravens(_PRINCIPAL, {}, {})
+
+        assert ravens[0]["realm_id"] == ""
+
+    @respx.mock
     async def test_discovery_visibility_is_owner_and_tenant_scoped(self):
         directory = _directory(
             discovery=_StaticDiscovery(
