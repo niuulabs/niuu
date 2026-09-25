@@ -12,6 +12,7 @@ import pytest
 import respx
 from httpx import Response
 
+import ravn.adapters.mimir.http as http_module
 from niuu.domain.mimir import (
     MimirLintReport,
     MimirSource,
@@ -20,6 +21,7 @@ from niuu.domain.mimir import (
     compute_content_hash,
 )
 from ravn.adapters.mimir.http import HttpMimirAdapter
+from ravn.domain.exceptions import ConfigurationError
 from ravn.domain.mimir import MimirAuth
 
 # ---------------------------------------------------------------------------
@@ -363,6 +365,146 @@ async def test_workload_auth_uses_configured_identity_endpoints(
         b'{"token":"projected-proof","audiences":["mimir"]}'
     )
     assert request.calls[0].request.headers["authorization"] == "Bearer mimir-token"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_no_auth_configured_sends_no_authorization_header() -> None:
+    """No auth configured at all is an operator decision — send no credentials."""
+    route = respx.get("http://mimir.test/mimir/pages").mock(return_value=Response(200, json=[]))
+    adapter = HttpMimirAdapter(base_url="http://mimir.test")
+
+    await adapter.list_pages()
+
+    assert route.called
+    assert "authorization" not in route.calls[0].request.headers
+
+
+@pytest.mark.asyncio
+async def test_workload_auth_missing_token_file_raises_configuration_error(
+    tmp_path: Path,
+) -> None:
+    missing_file = tmp_path / "does-not-exist"
+    adapter = HttpMimirAdapter(
+        base_url="http://mimir.test",
+        auth=MimirAuth(
+            type="workload",
+            token_file=str(missing_file),
+            exchange_url="http://identity.test/exchange",
+        ),
+    )
+
+    with pytest.raises(ConfigurationError, match="http://mimir.test") as exc_info:
+        await adapter._resolve_workload_token()
+    assert str(missing_file) in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_workload_auth_empty_token_file_raises_configuration_error(
+    tmp_path: Path,
+) -> None:
+    empty_file = tmp_path / "workload-token"
+    empty_file.write_text("   ", encoding="utf-8")
+    adapter = HttpMimirAdapter(
+        base_url="http://mimir.test",
+        auth=MimirAuth(
+            type="workload",
+            token_file=str(empty_file),
+            exchange_url="http://identity.test/exchange",
+        ),
+    )
+
+    with pytest.raises(ConfigurationError, match="empty"):
+        await adapter._resolve_workload_token()
+
+
+@pytest.mark.asyncio
+async def test_workload_auth_missing_exchange_url_raises_configuration_error(
+    tmp_path: Path,
+) -> None:
+    proof_file = tmp_path / "workload-token"
+    proof_file.write_text("projected-proof", encoding="utf-8")
+    adapter = HttpMimirAdapter(
+        base_url="http://mimir.test",
+        auth=MimirAuth(type="workload", token_file=str(proof_file), exchange_url=None),
+    )
+
+    with pytest.raises(ConfigurationError, match="exchange_url"):
+        await adapter._resolve_workload_token()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_workload_token_is_cached_within_the_refresh_margin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proof_file = tmp_path / "workload-token"
+    proof_file.write_text("projected-proof", encoding="utf-8")
+    exchange = respx.post("http://identity.test/exchange").mock(
+        return_value=Response(200, json={"token": "mimir-token", "expiresAt": 1300.0})
+    )
+    respx.get("http://mimir.test/mimir/pages").mock(return_value=Response(200, json=[]))
+    monkeypatch.setattr(http_module, "time", _FakeTimeModule(1000.0, 1010.0))
+    adapter = HttpMimirAdapter(
+        base_url="http://mimir.test",
+        auth=MimirAuth(
+            type="workload",
+            token_file=str(proof_file),
+            exchange_url="http://identity.test/exchange",
+        ),
+    )
+
+    await adapter.list_pages()
+    await adapter.list_pages()
+
+    # 1300 - default 30s margin = 1270 > 1010 (second call's "now") — cache hit.
+    assert exchange.calls.call_count == 1
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_workload_token_refresh_margin_is_honoured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proof_file = tmp_path / "workload-token"
+    proof_file.write_text("projected-proof", encoding="utf-8")
+    exchange = respx.post("http://identity.test/exchange").mock(
+        return_value=Response(200, json={"token": "mimir-token", "expiresAt": 1300.0})
+    )
+    respx.get("http://mimir.test/mimir/pages").mock(return_value=Response(200, json=[]))
+    monkeypatch.setattr(http_module, "time", _FakeTimeModule(1000.0, 1010.0))
+    adapter = HttpMimirAdapter(
+        base_url="http://mimir.test",
+        auth=MimirAuth(
+            type="workload",
+            token_file=str(proof_file),
+            exchange_url="http://identity.test/exchange",
+        ),
+        workload_token_refresh_margin_seconds=500.0,
+    )
+
+    await adapter.list_pages()
+    await adapter.list_pages()
+
+    # 1300 - 500s margin = 800, which is *not* > 1010 — a fresh exchange fires.
+    assert exchange.calls.call_count == 2
+
+
+class _FakeTimeModule:
+    """Stand-in for the ``time`` module binding inside ``ravn.adapters.mimir.http``.
+
+    Replaces only that module's local ``time`` name (via monkeypatch), never the
+    real global ``time`` module — httpx's own internals also call ``time.time()``
+    per request and must keep seeing the real clock.
+    """
+
+    def __init__(self, *values: float) -> None:
+        self._remaining = list(values)
+
+    def time(self) -> float:
+        if len(self._remaining) > 1:
+            return self._remaining.pop(0)
+        return self._remaining[0]
 
 
 # ---------------------------------------------------------------------------
