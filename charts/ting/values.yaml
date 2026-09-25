@@ -94,6 +94,23 @@ config:
     allowCredentials: true
   extra: {}
 
+# Session activity watcher — per-cluster Volundr SSE subscriptions
+watcher:
+  # -- Seconds to wait before reconnecting after a clean SSE stream close,
+  # and between owner sync cycles.
+  reconnectDelay: 5.0
+  # -- Initial per-cluster backoff delay (seconds) after an SSE subscription
+  # failure, before reconnectBackoffMultiplier is applied.
+  reconnectInitialDelay: 2.0
+  # -- Ceiling (seconds) for a failing cluster's per-cluster backoff delay.
+  reconnectMaxDelay: 120.0
+  # -- Multiplier applied to a failing cluster's backoff delay after each
+  # consecutive failure.
+  reconnectBackoffMultiplier: 2.0
+  # -- Fraction (0-1) randomly subtracted from each computed backoff delay
+  # to avoid synchronized reconnect storms across clusters.
+  reconnectJitter: 0.2
+
 # Dispatcher configuration
 dispatch:
   flock:

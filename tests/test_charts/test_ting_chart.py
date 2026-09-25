@@ -150,6 +150,19 @@ class TestConfigMapTemplate:
         assert ".Values.workflowExecution.delivery.waitObservers" in template_yaml
         assert "admission_roles:" in template_yaml
 
+    def test_watcher_reconnect_settings_are_rendered_from_values(self, template_yaml):
+        assert "watcher:" in template_yaml
+        assert "reconnect_delay:" in template_yaml
+        assert "reconnect_initial_delay:" in template_yaml
+        assert "reconnect_max_delay:" in template_yaml
+        assert "reconnect_backoff_multiplier:" in template_yaml
+        assert "reconnect_jitter:" in template_yaml
+        assert ".Values.watcher.reconnectDelay" in template_yaml
+        assert ".Values.watcher.reconnectInitialDelay" in template_yaml
+        assert ".Values.watcher.reconnectMaxDelay" in template_yaml
+        assert ".Values.watcher.reconnectBackoffMultiplier" in template_yaml
+        assert ".Values.watcher.reconnectJitter" in template_yaml
+
     def test_default_values_render_a_config_ting_accepts(self, tmp_path):
         """A default install must start: both packs are off and the config loads."""
         config = _config_from_rendered(_render_ting_chart(tmp_path, {}))
@@ -158,6 +171,36 @@ class TestConfigMapTemplate:
 
         assert settings.workflow_execution.enabled is False
         assert settings.workflow_execution.delivery.enabled is False
+
+    def test_default_values_render_the_documented_watcher_defaults(self, tmp_path):
+        settings = Settings(**_config_from_rendered(_render_ting_chart(tmp_path, {})))
+
+        assert settings.watcher.reconnect_delay == 5.0
+        assert settings.watcher.reconnect_initial_delay == 2.0
+        assert settings.watcher.reconnect_max_delay == 120.0
+        assert settings.watcher.reconnect_backoff_multiplier == 2.0
+        assert settings.watcher.reconnect_jitter == 0.2
+
+    def test_watcher_values_override_render_into_settings(self, tmp_path):
+        rendered = _render_ting_chart(
+            tmp_path,
+            {
+                "watcher": {
+                    "reconnectDelay": 3.0,
+                    "reconnectInitialDelay": 1.5,
+                    "reconnectMaxDelay": 60.0,
+                    "reconnectBackoffMultiplier": 3.0,
+                    "reconnectJitter": 0.1,
+                }
+            },
+        )
+        settings = Settings(**_config_from_rendered(rendered))
+
+        assert settings.watcher.reconnect_delay == 3.0
+        assert settings.watcher.reconnect_initial_delay == 1.5
+        assert settings.watcher.reconnect_max_delay == 60.0
+        assert settings.watcher.reconnect_backoff_multiplier == 3.0
+        assert settings.watcher.reconnect_jitter == 0.1
 
     def test_ci_values_render_a_config_ting_accepts(self, tmp_path):
         """The values the Helm smoke test installs with must load too."""

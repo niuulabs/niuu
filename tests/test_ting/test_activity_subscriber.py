@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -25,6 +24,7 @@ from ting.domain.models import (
 )
 from ting.domain.services.activity_subscriber import (
     CompletionEvaluation,
+    DuplicateVolundrClusterError,
     SessionActivitySubscriber,
     _ClusterBackoffState,
     _coerce_bool,
@@ -333,6 +333,19 @@ class MultiVolundrFactory:
         return list(self._adapters)
 
 
+class RaisingForOneOwnerFactory:
+    """Stub factory that raises resolving one owner, and serves the rest normally."""
+
+    def __init__(self, bad_owner_id: str, adapters: list[VolundrPort]) -> None:
+        self._bad_owner_id = bad_owner_id
+        self._adapters = adapters
+
+    async def for_owner(self, owner_id: str) -> list[VolundrPort]:
+        if owner_id == self._bad_owner_id:
+            raise RuntimeError("guild registry unavailable")
+        return list(self._adapters)
+
+
 class MockTrackerFactory:
     """Stub TrackerFactory that returns a configurable list of tracker adapters."""
 
@@ -491,14 +504,28 @@ class TestSubscriberLifecycle:
         await sub.stop()  # Should not raise
 
     @pytest.mark.asyncio
+    async def test_stop_awaits_cancelled_cluster_tasks(self) -> None:
+        """stop() must not return while a cancelled cluster task is still mid-teardown."""
+        sub, _, _, _ = _make_subscriber()
+        task = asyncio.create_task(asyncio.sleep(60))
+        sub._owner_tasks[OWNER_ID] = {"cluster-a": task}
+
+        await sub.stop()
+
+        assert task.done()
+        assert task.cancelled()
+
+    @pytest.mark.asyncio
     async def test_campaign_owner_gets_subscription_without_dispatcher(self) -> None:
-        sub, volundr, _, _ = _make_subscriber(config=_default_config(reconnect_delay=0))
+        sub, _volundr, _, _ = _make_subscriber(
+            volundr=NamedVolundr(name="stub-cluster"),
+            config=_default_config(reconnect_delay=0),
+        )
         projector = AsyncMock()
         projector.list_active_owner_ids.return_value = [OWNER_ID]
         sub._workflow_campaign_projector = projector
         stale = asyncio.create_task(asyncio.sleep(60))
         sub._owner_tasks["stale-owner"] = {"stale-cluster": stale}
-        sub._owner_adapters["stale-owner"] = [volundr]
 
         await sub._sync_owner_subscriptions()
         await asyncio.sleep(0)
@@ -510,17 +537,52 @@ class TestSubscriberLifecycle:
 
     @pytest.mark.asyncio
     async def test_no_active_work_clears_existing_subscriptions(self) -> None:
-        sub, volundr, _, _ = _make_subscriber(config=_default_config(reconnect_delay=0))
+        sub, _volundr, _, _ = _make_subscriber(config=_default_config(reconnect_delay=0))
         stale = asyncio.create_task(asyncio.sleep(60))
         sub._owner_tasks[OWNER_ID] = {"cluster-a": stale}
-        sub._owner_adapters[OWNER_ID] = [volundr]
 
         await sub._sync_owner_subscriptions()
         await asyncio.sleep(0)
 
         assert sub._owner_tasks == {}
-        assert sub._owner_adapters == {}
-        assert stale.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_zero_adapters_are_not_recorded_as_reconciled(self) -> None:
+        """An owner with no Volundr adapters yet must not look "already synced".
+
+        If a zero-adapter owner were left in ``_owner_tasks`` (even as an
+        empty entry), the next cycle would see it as a known owner and never
+        call ``reconcile_owner`` again — so a PAT configured after the fact
+        would never get its catch-up pass. reconcile_owner must keep firing
+        every cycle until a cluster actually appears.
+        """
+        projector = AsyncMock()
+        projector.list_active_owner_ids.return_value = [OWNER_ID]
+        factory = MultiVolundrFactory([])
+        sub = SessionActivitySubscriber(
+            volundr_factory=factory,
+            tracker_factory=MockTrackerFactory(trackers=[]),
+            dispatcher_repo=StubDispatcherRepo(),
+            event_bus=InMemoryEventBus(),
+            config=_default_config(reconnect_delay=0),
+            workflow_campaign_projector=projector,
+        )
+
+        await sub._sync_owner_subscriptions()
+        assert OWNER_ID not in sub._owner_tasks
+        projector.reconcile_owner.assert_awaited_once_with(OWNER_ID)
+
+        await sub._sync_owner_subscriptions()
+        assert OWNER_ID not in sub._owner_tasks
+        assert projector.reconcile_owner.await_count == 2
+
+        # A cluster finally appears (e.g. the owner just added a PAT).
+        factory._adapters.append(NamedVolundr(name="ymir", target_id="ymir-1"))
+        await sub._sync_owner_subscriptions()
+        await asyncio.sleep(0)
+
+        assert projector.reconcile_owner.await_count == 3
+        assert "ymir-1" in sub._owner_tasks[OWNER_ID]
 
 
 # ---------------------------------------------------------------------------
@@ -1421,13 +1483,73 @@ class TestFailureDetection:
         tracker = MockTracker(runs_by_session={"stale-session": run})
         sub, _, _, _ = _make_subscriber(volundr=volundr, tracker=tracker, run=run)
 
-        await sub._reconcile_running_runs(OWNER_ID, volundr)
+        await sub._reconcile_running_runs(OWNER_ID)
 
         tracker.update_run_progress.assert_called_once()
         progress_call = tracker.update_run_progress.call_args
         assert progress_call.args[0] == "issue-stale"
         assert progress_call.kwargs["status"] == RunStatus.FAILED
         assert progress_call.kwargs["reason"] == "Session stopped"
+
+    @pytest.mark.asyncio
+    async def test_reconcile_running_runs_ignores_a_stranger_clusters_404(self) -> None:
+        """A ``Run`` doesn't record which Forge cluster its session lives on.
+
+        Regression test for the pre-existing bug: reconcile used to ask
+        whichever single cluster happened to be reconnecting about every
+        owner run, so a cluster that never had a given session (a 404)
+        could fail a run that is perfectly healthy on a different cluster.
+        With two clusters registered, only the one that actually knows the
+        session may speak for it.
+        """
+        run = _make_run(session_id="shared-session", tracker_id="issue-two-clusters")
+        tracker = MockTracker(runs_by_session={"shared-session": run})
+
+        owning_cluster = NamedVolundr(name="ymir", target_id="ymir-1")
+        owning_cluster.sessions["shared-session"] = _make_volundr_session(
+            session_id="shared-session", status="running"
+        )
+        stranger_cluster = NamedVolundr(name="valhalla", target_id="valhalla-1")
+        # stranger_cluster never heard of "shared-session" (get_session -> None).
+
+        sub = SessionActivitySubscriber(
+            volundr_factory=MultiVolundrFactory([stranger_cluster, owning_cluster]),
+            tracker_factory=MockTrackerFactory(trackers=[tracker]),
+            dispatcher_repo=StubDispatcherRepo(),
+            event_bus=InMemoryEventBus(),
+            config=_default_config(),
+        )
+
+        await sub._reconcile_running_runs(OWNER_ID)
+
+        tracker.update_run_progress.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reconcile_running_runs_fails_when_no_cluster_knows_the_session(self) -> None:
+        run = _make_run(session_id="orphan-session", tracker_id="issue-orphan")
+        tracker = MockTracker(runs_by_session={"orphan-session": run})
+
+        cluster_a = NamedVolundr(name="ymir", target_id="ymir-1")
+        cluster_b = NamedVolundr(name="valhalla", target_id="valhalla-1")
+        # Neither cluster has ever heard of "orphan-session".
+
+        sub = SessionActivitySubscriber(
+            volundr_factory=MultiVolundrFactory([cluster_a, cluster_b]),
+            tracker_factory=MockTrackerFactory(trackers=[tracker]),
+            dispatcher_repo=StubDispatcherRepo(),
+            event_bus=InMemoryEventBus(),
+            config=_default_config(),
+        )
+
+        await sub._reconcile_running_runs(OWNER_ID)
+
+        tracker.update_run_progress.assert_called_once()
+        progress_call = tracker.update_run_progress.call_args
+        assert progress_call.args[0] == "issue-orphan"
+        assert progress_call.kwargs["status"] == RunStatus.FAILED
+        assert (
+            progress_call.kwargs["reason"] == "Session not found on any registered Volundr cluster"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1461,6 +1583,13 @@ class TestPerClusterIsolationAndBackoff:
 
     @pytest.mark.asyncio
     async def test_one_failing_cluster_does_not_cancel_the_others(self) -> None:
+        """A cluster's task is a single connect attempt (see
+        ``_adapter_subscription_loop``): it records a failure and returns,
+        and sync rebuilds it. This drives several sync cycles — with zero
+        backoff/reconnect delay so each rebuild is immediate — and checks
+        that the flaky cluster's repeated failures never cancel or
+        otherwise disturb the healthy cluster's tasks.
+        """
         healthy = NamedVolundr(name="ymir", target_id="ymir-1")
         flaky = NamedVolundr(
             name="laptop",
@@ -1472,26 +1601,21 @@ class TestPerClusterIsolationAndBackoff:
         sub = self._build_subscriber([healthy, flaky])
         sub._running = True
 
-        await sub._sync_owner_subscriptions()
-        for _ in range(10):
-            await asyncio.sleep(0)
+        for _ in range(5):
+            await sub._sync_owner_subscriptions()
+            await asyncio.gather(*sub._owner_tasks[OWNER_ID].values())
 
         clusters = sub._owner_tasks[OWNER_ID]
         assert set(clusters) == {"ymir-1", "laptop-1"}
         assert not clusters["ymir-1"].cancelled()
-        assert not clusters["ymir-1"].done()
         assert not clusters["laptop-1"].cancelled()
-        assert not clusters["laptop-1"].done()
         # The flaky cluster accumulated failures; the healthy one has none.
-        assert sub._cluster_backoff[(OWNER_ID, "laptop-1")].consecutive_failures >= 2
+        assert sub._cluster_backoff[(OWNER_ID, "laptop-1")].consecutive_failures >= 3
         assert (OWNER_ID, "ymir-1") not in sub._cluster_backoff
+        assert healthy.attempts >= 3
+        assert flaky.attempts >= 3
 
         sub._running = False
-        for task in clusters.values():
-            task.cancel()
-        for task in clusters.values():
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
 
     def test_backoff_grows_and_caps(self) -> None:
         config = _default_config(
@@ -1603,17 +1727,78 @@ class TestPerClusterIsolationAndBackoff:
         task_a = asyncio.create_task(asyncio.sleep(60))
         task_b = asyncio.create_task(asyncio.sleep(60))
         sub._owner_tasks[OWNER_ID] = {"cluster-a": task_a, "cluster-b": task_b}
-        sub._owner_adapters[OWNER_ID] = []
         sub._cluster_backoff[(OWNER_ID, "cluster-a")] = _ClusterBackoffState(consecutive_failures=3)
 
         await sub._sync_owner_subscriptions()
         await asyncio.sleep(0)
 
         assert OWNER_ID not in sub._owner_tasks
-        assert OWNER_ID not in sub._owner_adapters
         assert (OWNER_ID, "cluster-a") not in sub._cluster_backoff
         assert task_a.cancelled()
         assert task_b.cancelled()
+
+    def test_cluster_key_raises_without_identity(self) -> None:
+        """No shared 'unknown' placeholder — an unidentified adapter is a hard error."""
+        volundr = StubVolundr()  # base VolundrPort defaults: name="" and target_id=""
+
+        with pytest.raises(ValueError, match="neither target_id nor name"):
+            SessionActivitySubscriber._cluster_key(volundr)
+
+    @pytest.mark.asyncio
+    async def test_duplicate_cluster_key_raises_instead_of_silently_dropping_one(self) -> None:
+        dup_a = NamedVolundr(name="ymir", target_id="dup-1")
+        dup_b = NamedVolundr(name="ymir-mirror", target_id="dup-1")
+        sub = self._build_subscriber([dup_a, dup_b])
+
+        with pytest.raises(DuplicateVolundrClusterError, match="dup-1"):
+            await sub._sync_owner_clusters(OWNER_ID)
+
+    @pytest.mark.asyncio
+    async def test_one_owners_sync_failure_does_not_abort_other_owners(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        good_owner = "user-good"
+        bad_owner = "user-bad"
+        healthy = NamedVolundr(name="ymir", target_id="ymir-1")
+        sub = SessionActivitySubscriber(
+            volundr_factory=RaisingForOneOwnerFactory(bad_owner, [healthy]),
+            tracker_factory=MockTrackerFactory(trackers=[]),
+            dispatcher_repo=ActiveOwnersDispatcherRepo([good_owner, bad_owner]),
+            event_bus=InMemoryEventBus(),
+            config=_default_config(reconnect_delay=0),
+        )
+
+        with caplog.at_level(logging.ERROR, logger="ting.domain.services.activity_subscriber"):
+            await sub._sync_owner_subscriptions()
+        await asyncio.sleep(0)
+
+        assert "ymir-1" in sub._owner_tasks[good_owner]
+        assert bad_owner not in sub._owner_tasks
+        error_messages = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        assert any(bad_owner[:8] in message for message in error_messages)
+
+    @pytest.mark.asyncio
+    async def test_orphaned_task_exits_without_doing_any_work(self) -> None:
+        """A task no longer recorded as the tracked one for its cluster must not run.
+
+        Simulates the defensive scenario the identity check guards: some
+        other task is (or becomes) the one ``_owner_tasks`` points to for
+        this ``(owner, key)`` before this one gets to run — it must not
+        subscribe, reconcile, or handle events.
+        """
+        volundr = NamedVolundr(name="ymir", target_id="ymir-1")
+        sub = self._build_subscriber([volundr])
+        sub._running = True
+        placeholder = asyncio.create_task(asyncio.sleep(60))
+        sub._owner_tasks[OWNER_ID] = {"ymir-1": placeholder}
+
+        orphan = asyncio.create_task(sub._adapter_subscription_loop(OWNER_ID, volundr))
+        await orphan
+
+        assert volundr.attempts == 0
+
+        placeholder.cancel()
+        await asyncio.sleep(0)
 
 
 # ---------------------------------------------------------------------------
