@@ -16,8 +16,19 @@ from niuu.domain.models import Principal
 from niuu.session_proxy import SessionProxyGuardMissingError
 
 
+class _FakeWebSocket(SimpleNamespace):
+    """SimpleNamespace defines __eq__ (attribute comparison), which makes
+    plain instances unhashable — but a real starlette WebSocket has no such
+    override and hashes by identity. SkuldPortRegistry.track_connection
+    puts the connection object in a set, so the fake needs identity hashing
+    too, or every test that reaches that code path fails with "unhashable
+    type" regardless of what it's actually testing."""
+
+    __hash__ = object.__hash__
+
+
 def _ws(headers: dict | None = None, query: dict | None = None):
-    return SimpleNamespace(
+    return _FakeWebSocket(
         app=SimpleNamespace(state=SimpleNamespace(identity=EnvoyHeaderAuthenticationAdapter())),
         scope={"type": "websocket"},
         url=SimpleNamespace(path="/ws"),

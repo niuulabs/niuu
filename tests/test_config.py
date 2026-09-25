@@ -170,6 +170,24 @@ class TestSettings:
         assert settings.forge_stream_keepalive_seconds == 10.0
         assert settings.forge_stream_queue_maxsize == 64
 
+    def test_guild_transport_timeout_defaults(self):
+        """The pin-handshake ceiling and the owner-probe timeout are
+        configured, not hardcoded — see niuu.adapters.outbound.guild_transport
+        and niuu.adapters.inbound.rest_ravn."""
+        settings = Settings()
+
+        assert settings.guild_transport_connect_timeout_seconds == 5.0
+        assert settings.guild_owner_probe_timeout_seconds == 15.0
+
+    def test_guild_transport_timeout_settings_are_configurable(self):
+        settings = Settings(
+            guild_transport_connect_timeout_seconds=2.0,
+            guild_owner_probe_timeout_seconds=30.0,
+        )
+
+        assert settings.guild_transport_connect_timeout_seconds == 2.0
+        assert settings.guild_owner_probe_timeout_seconds == 30.0
+
 
 class TestGitHubConfig:
     """Tests for GitHubConfig."""

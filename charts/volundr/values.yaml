@@ -576,6 +576,10 @@ envoy:
     email: x-auth-email
     tenant: x-auth-tenant
     roles: x-auth-roles
+    # A client-supplied copy must never reach the pod: only the session
+    # proxy (niuu.session_proxy) is trusted to stamp this, from a verified
+    # session_participants grant (see the room-scoped Cedar actions).
+    roomRole: x-niuu-room-role
   # JWT authentication (via Keycloak)
   # Uncomment and configure to enable JWT validation
   jwt:

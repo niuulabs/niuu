@@ -17,6 +17,8 @@ from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolInfrastructureError,
     LearnedToolResolver,
     _ContainerProcessResult,
+    _is_binary_wheel_resolution_failure,
+    _validate_pip_requirement,
     learned_tool_storage,
     write_learned_tool,
     write_learned_tool_artifact,
@@ -556,6 +558,43 @@ class TestContainedLearnedToolRunnerVerify:
                 requirements=[],
             )
 
+    async def test_verify_title_colliding_with_the_test_file_name_never_swaps_them(
+        self, tmp_path: Path
+    ) -> None:
+        """A peer that titles its tool `_verify_test` (the fixed test-file
+        name) must never have that title clobber the test file on disk. File
+        names are always fixed now, independent of the peer-controlled
+        title — before this fix, a colliding title made `write_text` for the
+        tool overwrite, then get overwritten by, the same path as the test
+        file: whichever write happened last silently won, so the tool's own
+        code could go completely untested while a crafted test module
+        verified itself and reported success."""
+        captured: dict[str, str] = {}
+
+        async def fake_docker(argv, stdin, timeout_seconds, name):
+            mount_arg = next(a for a in argv if "dst=/opt/ravn/verify" in a)
+            run_dir = Path(mount_arg.split("src=", 1)[1].split(",")[0])
+            captured["tool"] = (run_dir / "_verify_tool.py").read_text()
+            captured["test"] = (run_dir / "_verify_test.py").read_text()
+            return _ContainerProcessResult(returncode=0, stdout=b"verify: ran 1 test callable(s)")
+
+        runner = ContainedLearnedToolRunner(workspace_root=tmp_path, command_runner=fake_docker)
+
+        result = await runner.verify(
+            tool_name="_verify_test",
+            tool_code="def run(input):\n    return {'from': 'real_tool'}\n",
+            test_code=(
+                "import _verify_tool\n\n"
+                "def test_ok():\n"
+                "    assert _verify_tool.run({})['from'] == 'real_tool'\n"
+            ),
+        )
+
+        assert result.ok
+        assert "real_tool" in captured["tool"]
+        assert "_verify_tool.run" in captured["test"]
+        assert captured["tool"] != captured["test"]
+
     async def test_verify_skips_execution_for_static_defects(self, tmp_path: Path) -> None:
         async def unreachable_docker(argv, stdin, timeout_seconds, name):
             raise AssertionError("must never reach docker: static analysis should reject first")
@@ -574,3 +613,136 @@ class TestContainedLearnedToolRunnerVerify:
 
         assert not result.ok
         assert result.missing_module == "requests"
+
+    async def test_verify_declines_a_direct_url_reference_without_touching_docker(
+        self, tmp_path: Path
+    ) -> None:
+        """--only-binary=:all: alone is not enough: pip still builds a
+        direct reference (a PEP 508 "name @ url", a VCS URL, or a local
+        path) from source regardless of that flag, since it skips index
+        resolution entirely. The requirement must never reach `pip
+        install` — and, being the proposal's own fault, a declined
+        VerificationResult, never an infrastructure raise (which a peer
+        could otherwise abuse to look like an outage instead of a durable
+        rejection)."""
+
+        async def unreachable_docker(argv, stdin, timeout_seconds, name):
+            raise AssertionError("must never reach docker: the requirement must be rejected first")
+
+        runner = ContainedLearnedToolRunner(
+            workspace_root=tmp_path, command_runner=unreachable_docker
+        )
+
+        result = await runner.verify(
+            tool_name="net_tool",
+            tool_code="def run(input):\n    return {'ok': True}\n",
+            test_code="import _verify_tool\n\ndef test_ok():\n    pass\n",
+            requirements=["probe @ file:///tmp/evil"],
+        )
+
+        assert not result.ok
+        assert "direct reference" in result.logs
+
+    async def test_verify_binary_wheel_resolution_failure_is_a_declined_result_not_infra(
+        self, tmp_path: Path
+    ) -> None:
+        async def fake_docker(argv, stdin, timeout_seconds, name):
+            if "-m" in argv and "venv" in argv:
+                return _ContainerProcessResult(returncode=0)
+            return _ContainerProcessResult(
+                returncode=1,
+                stderr=(
+                    b"ERROR: Could not find a version that satisfies the requirement "
+                    b"not-a-real-pkg (from versions: none)\n"
+                    b"ERROR: No matching distribution found for not-a-real-pkg\n"
+                ),
+            )
+
+        runner = ContainedLearnedToolRunner(workspace_root=tmp_path, command_runner=fake_docker)
+
+        result = await runner.verify(
+            tool_name="net_tool",
+            tool_code="def run(input):\n    return {'ok': True}\n",
+            test_code="import _verify_tool\n\ndef test_ok():\n    pass\n",
+            requirements=["not-a-real-pkg"],
+        )
+
+        assert not result.ok
+        assert "No matching distribution found" in result.logs
+        assert "binary wheels only" in result.logs
+
+    async def test_verify_docker_outage_during_install_still_raises_infrastructure(
+        self, tmp_path: Path
+    ) -> None:
+        async def docker_daemon_unreachable(argv, stdin, timeout_seconds, name):
+            return _ContainerProcessResult(
+                returncode=1, error="docker: failed to connect to the docker API"
+            )
+
+        runner = ContainedLearnedToolRunner(
+            workspace_root=tmp_path, command_runner=docker_daemon_unreachable
+        )
+
+        with pytest.raises(LearnedToolInfrastructureError):
+            await runner.verify(
+                tool_name="net_tool",
+                tool_code="def run(input):\n    return {'ok': True}\n",
+                test_code="import _verify_tool\n\ndef test_ok():\n    pass\n",
+                requirements=["requests"],
+            )
+
+
+class TestValidatePipRequirement:
+    @pytest.mark.parametrize(
+        "requirement",
+        [
+            "probe @ https://evil.example/x.tar.gz",
+            "probe @ file:///tmp/evil",
+            "git+https://evil.example/repo.git",
+            "../../etc/passwd",
+            "/etc/passwd",
+            "sub/dir/pkg",
+            "",
+            "   ",
+            "-e git+https://evil.example/repo.git",
+            "not a valid requirement !!!",
+        ],
+    )
+    def test_rejects_direct_references_paths_and_garbage(self, requirement: str) -> None:
+        with pytest.raises(LearnedToolError):
+            _validate_pip_requirement(requirement)
+
+    @pytest.mark.parametrize(
+        "requirement",
+        ["requests", "numpy==1.26.4", "pandas>=2.0,<3.0", "foo[extra]==1.0"],
+    )
+    def test_accepts_plain_name_and_specifier(self, requirement: str) -> None:
+        _validate_pip_requirement(requirement)  # must not raise
+
+
+class TestIsBinaryWheelResolutionFailure:
+    def test_recognizes_no_matching_distribution(self) -> None:
+        message = (
+            "contained learned-tool dependency install failed: ERROR: No matching "
+            "distribution found for not-a-real-pkg"
+        )
+
+        assert _is_binary_wheel_resolution_failure(message) is True
+
+    def test_recognizes_could_not_find_a_version(self) -> None:
+        message = (
+            "contained learned-tool dependency install failed: Could not find a "
+            "version that satisfies the requirement not-a-real-pkg"
+        )
+
+        assert _is_binary_wheel_resolution_failure(message) is True
+
+    def test_venv_creation_failure_is_not_a_resolution_failure(self) -> None:
+        message = "contained learned-tool venv creation failed: docker: daemon unreachable"
+
+        assert _is_binary_wheel_resolution_failure(message) is False
+
+    def test_unrelated_install_failure_is_not_a_resolution_failure(self) -> None:
+        message = "contained learned-tool dependency install failed: timed out"
+
+        assert _is_binary_wheel_resolution_failure(message) is False

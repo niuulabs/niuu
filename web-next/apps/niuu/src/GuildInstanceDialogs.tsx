@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { AppIdentity } from '@niuulabs/plugin-sdk';
 import { Dialog, DialogContent } from '@niuulabs/ui';
 import {
+  isValidTlsFingerprint,
   parseTags,
   registryError,
   type InstanceRecord,
@@ -41,9 +42,15 @@ export function EditInstanceDialog({
   const [enabled, setEnabled] = useState(instance.enabled);
   const [isDefault, setIsDefault] = useState(instance.isDefault);
   const [visibility, setVisibility] = useState(instance.visibility);
+  const [allowPlaintext, setAllowPlaintext] = useState(instance.config.allow_plaintext === true);
+  const [tlsFingerprint, setTlsFingerprint] = useState(
+    String(instance.config.tls_fingerprint ?? ''),
+  );
   const [config, setConfig] = useState(() => {
     const extra = { ...instance.config };
     delete extra.defaultFolder;
+    delete extra.allow_plaintext;
+    delete extra.tls_fingerprint;
     return JSON.stringify(extra, null, 2);
   });
   const [validation, setValidation] = useState('');
@@ -71,12 +78,21 @@ export function EditInstanceDialog({
       const extra: unknown = JSON.parse(config);
       if (!extra || typeof extra !== 'object' || Array.isArray(extra))
         throw new Error('Advanced configuration must be a JSON object.');
-      if ('defaultFolder' in extra)
+      if ('defaultFolder' in extra || 'allow_plaintext' in extra || 'tls_fingerprint' in extra)
         throw new Error(
-          'Set the default folder in the field above, not in advanced configuration.',
+          'Set the default folder, plaintext, and TLS fingerprint in the fields above, ' +
+            'not in advanced configuration.',
+        );
+      const trimmedFingerprint = tlsFingerprint.trim();
+      if (!isValidTlsFingerprint(trimmedFingerprint))
+        throw new Error(
+          'TLS fingerprint must be a sha256 hex digest of the leaf certificate ' +
+            '(64 hex characters, optionally colon-separated).',
         );
       const updatedConfig: Record<string, unknown> = { ...extra };
       if (folder.trim()) updatedConfig.defaultFolder = folder.trim();
+      if (allowPlaintext) updatedConfig.allow_plaintext = true;
+      if (trimmedFingerprint) updatedConfig.tls_fingerprint = trimmedFingerprint;
       setValidation('');
       onSave({
         name: name.trim(),
@@ -132,6 +148,35 @@ export function EditInstanceDialog({
                 className={fieldClass}
               />
               <span>Use the server address and port, without /volundr or ?config=…</span>
+            </label>
+            <label className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm">
+              <input
+                type="checkbox"
+                className="niuu:appearance-auto niuu:accent-brand"
+                checked={allowPlaintext}
+                onChange={(e) => setAllowPlaintext(e.target.checked)}
+              />
+              Allow plaintext (trusted network only)
+            </label>
+            <p className="niuu:text-xs niuu:text-text-secondary">
+              A remote node must use https:// unless you opt in here. Only opt in when the network
+              path is already encrypted or otherwise trusted — for example a Tailscale tailnet,
+              where WireGuard encrypts the link end to end. Never opt in over the open internet or
+              an untrusted LAN.
+            </p>
+            <label className={labelClass}>
+              TLS fingerprint (optional)
+              <input
+                value={tlsFingerprint}
+                onChange={(e) => setTlsFingerprint(e.target.value)}
+                placeholder="sha256 leaf certificate fingerprint, e.g. AB:CD:…"
+                className={`${fieldClass} niuu:font-mono`}
+              />
+              <span>
+                Pin a self-signed certificate by its sha256 fingerprint. Every call to this node
+                then verifies the live certificate against this exact pin and refuses to connect on
+                any mismatch — leave blank to use the platform&rsquo;s normal certificate trust.
+              </span>
             </label>
             <label className={labelClass}>
               Default local folder

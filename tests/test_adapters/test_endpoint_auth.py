@@ -26,6 +26,7 @@ from tests.conftest import (
     InMemoryTimelineRepository,
     InMemoryTokenTracker,
     MockPodManager,
+    make_session_participant_service,
 )
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.inbound.rest_events import create_events_router
@@ -69,7 +70,11 @@ def test_forge_route_cannot_downgrade_failed_auth_to_no_principal(method, header
     identity.validate_token.side_effect = InvalidTokenError("invalid")
     app = FastAPI()
     app.state.identity = identity
-    app.include_router(create_router(service))
+    app.include_router(
+        create_router(
+            service, session_participant_service=make_session_participant_service(service)
+        )
+    )
     result = TestClient(app).request(
         method, f"/api/v1/forge/sessions/{session.id}" + query, headers=headers
     )
@@ -268,6 +273,7 @@ def _build_rest_app(session_repo, identity, authz):
         service,
         token_service=token_service,
         chronicle_service=chronicle_service,
+        session_participant_service=make_session_participant_service(service),
     )
 
     app = FastAPI()

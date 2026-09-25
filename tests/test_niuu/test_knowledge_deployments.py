@@ -22,7 +22,9 @@ HEADERS = {
 
 
 def instance(name, base):
-    return SimpleNamespace(id=name, name=name, base_url=base, enabled=True, kind=InstanceKind.MIMIR)
+    return SimpleNamespace(
+        id=name, name=name, base_url=base, enabled=True, kind=InstanceKind.MIMIR, config={}
+    )
 
 
 def setup(instances):

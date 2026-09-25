@@ -662,8 +662,11 @@ def auth_adapter_env(auth: AuthConfig) -> dict[str, str]:
     reproduces today's explicit allow-all wiring; ``oidc`` switches every one
     of those slots to in-process JWT verification via JWKS plus the bundled
     Cedar policies, matching Kubernetes. Paths that do not yet read one of
-    these slots (Mimir, Bifröst, the Guild knowledge-deployments router,
-    ...) are covered by the auth-mode guard elsewhere, not by this function.
+    these slots (Mimir, Bifröst, ...) are covered by the auth-mode guard
+    elsewhere, not by this function. Guild is not one of them: it forwards
+    only the caller's bearer token to a remote instance (see
+    ``niuu.adapters.inbound.remote_urls.forward_identity_headers``), so it
+    needs no guard here.
     """
     if auth.mode == "none":
         return {
@@ -789,10 +792,6 @@ class CLISettings(BaseSettings):
         "mimir": (
             "Mímir's own auth checks (_require_deploy_auth, enforce_instance_tenant) "
             "trust x-auth-* headers directly and do not go through auth.mode"
-        ),
-        "guild": (
-            "Guild's knowledge-deployments router forwards caller-supplied "
-            "x-auth-* headers to remote Mímir deployments unmodified"
         ),
     }
 

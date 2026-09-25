@@ -30,6 +30,19 @@ spec:
             path:
               type: ReplacePrefixMatch
               replacePrefixMatch: /
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            # This Gateway routes the browser straight to the session pod —
+            # unlike the mini-mode session proxy (niuu.session_proxy), whose
+            # own header-stripping this bypasses entirely. x-auth-* is
+            # overwritten by the JWT claimToHeaders extraction in
+            # securitypolicy.yaml, but x-niuu-room-role has no JWT claim to
+            # overwrite it with, so a client-supplied copy must be removed
+            # explicitly here or it would reach the broker's ASGI app
+            # trusted (see skuld.broker_api._enforce_room_role, which only
+            # checks the header's SHAPE, not who set it).
+            remove:
+              - {{ .Values.envoy.headerNames.roomRole | quote }}
       backendRefs:
         - name: {{ include "skuld.fullname" . }}
           port: {{ .Values.service.port }}

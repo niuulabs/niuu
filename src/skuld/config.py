@@ -16,7 +16,7 @@ import json
 import os
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
@@ -391,6 +391,15 @@ class WsAuthConfig(BaseModel):
     user_id_header: str = "x-auth-user-id"
     tenant_header: str = "x-auth-tenant"
     roles_header: str = "x-auth-roles"
+    room_role_header: str = Field(
+        default="x-niuu-room-role",
+        description=(
+            "Header the session proxy (niuu.session_proxy) stamps with the "
+            "caller's verified room role (owner/approver/viewer), used to gate "
+            "per-message-type WebSocket authorization. Must match the proxy's "
+            "own header name."
+        ),
+    )
     role_mapping: dict[str, str] = Field(default_factory=dict)
     admin_roles: list[str] = Field(
         default_factory=lambda: ["volundr:admin"],
@@ -401,6 +410,27 @@ class WsAuthConfig(BaseModel):
         description=(
             "Trust unauthenticated loopback CLI/Ravn peers. Enable only when "
             "those endpoints cannot be reached through a reverse proxy."
+        ),
+    )
+    room_role_source: Literal["proxy", "deployment"] = Field(
+        default="deployment",
+        description=(
+            "How to resolve the room role when room_role_header is absent. "
+            "'deployment' (the default, and what every non-process backend "
+            "gets — Kubernetes, OpenShell, VM, and docker unless routed "
+            "through the session proxy): this pod's own auth boundary "
+            "(ext_authz / enforce_ownership / the deployment's Gateway or "
+            "ingress) already gates every caller who reaches this pod, "
+            "participants are not supported on these backends (invites are "
+            "refused with 409 before this ever matters), so a missing "
+            "header simply means owner — identical to this pod's behavior "
+            "before session_participants existed. 'proxy' (rendered only "
+            "for the process backend, by the local process launcher): the "
+            "session proxy (niuu.session_proxy) resolves and stamps the "
+            "header itself from session_participants grants, so trust it — "
+            "a missing header means viewer, except a loopback caller "
+            "carrying no x-forwarded-for (same-pod tooling a reverse proxy "
+            "could never present as)."
         ),
     )
 

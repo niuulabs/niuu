@@ -9,7 +9,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import ConnectError, Response
 
-from tests.conftest import InMemorySessionRepository, MockPodManager
+from tests.conftest import (
+    InMemorySessionRepository,
+    MockPodManager,
+    make_session_participant_service,
+)
 from tests.test_niuu.test_rest_volundr import _client, _headers, _instance
 from volundr.adapters.inbound.rest import create_router
 from volundr.domain.models import Session
@@ -22,15 +26,17 @@ def runtime():
     repo = InMemorySessionRepository()
     asyncio.run(repo.create(session))
     app = FastAPI()
+    session_service = SessionService(repo, MockPodManager())
     app.include_router(
         create_router(
-            SessionService(repo, MockPodManager()),
+            session_service,
             runtime_build={
                 "revision": "new",
                 "source_sha256": "new-hash",
                 "build": "release",
                 "dirty": False,
             },
+            session_participant_service=make_session_participant_service(session_service),
         )
     )
     with TestClient(app) as client:

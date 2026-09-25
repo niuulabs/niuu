@@ -1,7 +1,8 @@
 """Discover and route knowledge deployments through visible Guild Mimir services.
 
-Each service owns its Flux/local targets and credentials. Guild forwards the
-caller's identity, never accepts a deployment URL or Kubernetes credentials.
+Each service owns its Flux/local targets and credentials. Guild forwards only
+the caller's bearer token, never a client-supplied identity assertion, a
+deployment URL, or Kubernetes credentials.
 """
 
 import asyncio
@@ -13,6 +14,10 @@ from pydantic import BaseModel, ConfigDict
 
 from niuu.adapters.inbound.auth import extract_principal
 from niuu.adapters.inbound.remote_urls import build_remote_url, forward_identity_headers
+from niuu.adapters.outbound.guild_transport import (
+    GuildTransportError,
+    build_guild_httpx_client,
+)
 from niuu.domain.models import InstanceKind, Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
 
@@ -52,11 +57,17 @@ def create_knowledge_deployments_router(
     async def call(instance, request, method, path, *, body=None, params=None):
         try:
             url = _deployment_url(instance, path)
-            async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=False) as client:
+            client = await build_guild_httpx_client(
+                instance,
+                dial_url=instance.base_url,
+                timeout_seconds=timeout_seconds,
+                follow_redirects=False,
+            )
+            async with client:
                 response = await client.request(
                     method, url, headers=forward_identity_headers(request), json=body, params=params
                 )
-        except (httpx.RequestError, ValueError) as exc:
+        except (httpx.RequestError, ValueError, GuildTransportError) as exc:
             raise HTTPException(502, f"{instance.name}: {exc}") from exc
         if response.status_code >= 300:
             try:

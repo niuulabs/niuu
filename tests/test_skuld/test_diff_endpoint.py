@@ -83,7 +83,9 @@ class TestDiffEndpoint:
         self._original_workspace = broker.workspace_dir
         broker.workspace_dir = str(tmp_path)
         self.workspace = tmp_path
-        self.client = TestClient(app, raise_server_exceptions=False)
+        self.client = TestClient(
+            app, raise_server_exceptions=False, headers={"x-niuu-room-role": "owner"}
+        )
         yield
         self.client.close()
         broker.workspace_dir = self._original_workspace

@@ -391,6 +391,10 @@ envoy:
     email: x-auth-email
     tenant: x-auth-tenant
     roles: x-auth-roles
+    # A client-supplied copy must never reach the broker: only the session
+    # proxy (niuu.session_proxy) is trusted to stamp this, from a verified
+    # session_participants grant (see the room-scoped Cedar actions).
+    roomRole: x-niuu-room-role
   # JWT authentication (via Keycloak)
   jwt:
     # -- Enable JWT authentication filter
@@ -725,6 +729,13 @@ wsAuth:
   websocket_check_interval: 5
   admin_roles: ["volundr:admin"]
   allow_loopback: false
+  # How a missing x-niuu-room-role header resolves. "deployment" (the
+  # correct value for every chart-deployed backend — this pod's own auth
+  # boundary already gates every caller who reaches it): a missing header
+  # means owner, unconditionally. "proxy" is rendered directly by the
+  # process-backend's local launcher (volundr.adapters.outbound
+  # .local_process), never by this chart — do not set it here.
+  room_role_source: deployment
 
 # Limit pod ingress to the authenticated gateway, including direct pod-IP traffic.
 # Add explicit peer selectors/ports for direct Flokk mesh deployments.

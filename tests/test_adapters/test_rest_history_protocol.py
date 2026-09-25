@@ -11,7 +11,11 @@ from fastapi.testclient import TestClient
 
 from niuu.domain.models import Principal
 from skuld.conversation_snapshot import prepare_history_page
-from tests.conftest import InMemorySessionRepository, MockPodManager
+from tests.conftest import (
+    InMemorySessionRepository,
+    MockPodManager,
+    make_session_participant_service,
+)
 from tests.test_skuld.test_history_paging import rows
 from volundr.adapters.inbound import rest
 from volundr.domain.models import Session, SessionStatus
@@ -36,7 +40,11 @@ async def setup_api(monkeypatch, *, mode="archive", source=None, upstream_status
     app = FastAPI()
     app.include_router(
         rest.create_router(
-            sessions, archive_service=archive, history_max_turns=5, history_max_bytes=8192
+            sessions,
+            archive_service=archive,
+            history_max_turns=5,
+            history_max_bytes=8192,
+            session_participant_service=make_session_participant_service(sessions),
         )
     )
     captures = []

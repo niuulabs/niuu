@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, patch
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import pytest
@@ -19,10 +21,12 @@ from starlette.websockets import WebSocketDisconnect
 from identity.adapters.identity import AllowAllIdentityAdapter
 from niuu.adapters.inbound.rest_ravn import (
     _safe_log_value,
+    _ws_connect_kwargs,
     create_ravn_router,
     create_ravn_session_proxy_router,
 )
 from niuu.domain.models import InstanceKind, InstanceVisibility, Principal, RegisteredInstance
+from tests.test_niuu.test_guild_transport import _LEAF_CERT_DER, _LEAF_FINGERPRINT
 
 
 def _instance(
@@ -36,6 +40,11 @@ def _instance(
     config: dict[str, Any] | None = None,
 ) -> RegisteredInstance:
     now = datetime.now(UTC)
+    # These fixtures exist to exercise aggregate-routing behavior, not the
+    # transport-security policy, so http:// fixtures opt into plaintext by
+    # default; a test exercising that policy itself overrides
+    # allow_plaintext explicitly.
+    merged_config: dict[str, Any] = {"allow_plaintext": True, **(config or {})}
     return RegisteredInstance(
         id=instance_id,
         kind=InstanceKind.VOLUNDR,
@@ -47,7 +56,7 @@ def _instance(
         tenant_id=tenant_id,
         enabled=enabled,
         is_default=is_default,
-        config=config or {},
+        config=merged_config,
         created_at=now,
         updated_at=now,
         tags=tags or [],
@@ -95,7 +104,6 @@ def _client(
     instances: list[RegisteredInstance],
     *,
     embedded_forge_app: FastAPI | None = None,
-    dev_identity: bool = False,
 ) -> TestClient:
     app = FastAPI()
     app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
@@ -110,13 +118,15 @@ def _client(
         create_ravn_session_proxy_router(
             service,
             embedded_forge_app=embedded_forge_app,
-            dev_identity=dev_identity,
         )
     )
     return TestClient(app)
 
 
 def _headers() -> dict[str, str]:
+    # A spoofed x-auth-* header on the inbound request: asserted throughout
+    # this file to never reach a remote Guild instance (see
+    # niuu.adapters.inbound.remote_urls.forward_identity_headers).
     return {
         "authorization": "Bearer test-token",
         "x-auth-user-id": "user-a",
@@ -157,7 +167,11 @@ def test_list_ravens_merges_visible_instances_and_forwards_auth() -> None:
         }
     ]
     assert ravens_route.calls.last.request.headers["authorization"] == "Bearer test-token"
-    assert ravens_route.calls.last.request.headers["x-auth-tenant"] == "tenant-a"
+    # A remote Guild instance never sees a client-supplied x-auth-* header,
+    # even one the local identity adapter would otherwise trust (AllowAll):
+    # only the caller's bearer token crosses the wire.
+    assert "x-auth-tenant" not in ravens_route.calls.last.request.headers
+    assert "x-auth-user-id" not in ravens_route.calls.last.request.headers
 
 
 @respx.mock
@@ -205,18 +219,119 @@ def test_ravn_session_proxy_finds_owner_and_relays_browser_auth() -> None:
     assert captured["url"] == (
         "wss://niuu.noatun.test/s/resident-id/session?access_token=browser-token"
     )
-    assert captured["kwargs"]["additional_headers"]["authorization"] == "Bearer test-token"
+    upstream = captured["kwargs"]["additional_headers"]
+    assert upstream["authorization"] == "Bearer test-token"
+    assert "x-auth-user-id" not in upstream
+    assert "x-auth-tenant" not in upstream
     assert owner.calls.last.request.headers["authorization"] == "Bearer test-token"
+    assert "x-auth-user-id" not in owner.calls.last.request.headers
+    assert "x-auth-tenant" not in owner.calls.last.request.headers
 
 
 @respx.mock
-@pytest.mark.parametrize("dev_identity", [False, True])
-def test_resident_session_proxy_promotes_query_token_to_upstream_authorization(
-    dev_identity: bool,
-) -> None:
+def test_ravn_session_proxy_pins_a_matching_certificate_across_probe_and_connect() -> None:
+    """The owner probe and the WS bridge both resolve TLS trust through the
+    same shared factory (niuu.adapters.outbound.guild_transport), so a
+    pinned instance's matching certificate results in an ssl= kwarg on the
+    real connect() call, not just the probe."""
     client = _client(
-        [_instance("noatun", base_url="https://niuu.noatun.test")], dev_identity=dev_identity
+        [
+            _instance(
+                "noatun",
+                base_url="https://niuu.noatun.test",
+                config={"tls_fingerprint": _LEAF_FINGERPRINT},
+            )
+        ]
     )
+    respx.get("https://niuu.noatun.test/api/v1/ravn/sessions/resident-id").mock(
+        return_value=Response(200, json={"id": "resident-id"})
+    )
+    captured: dict[str, Any] = {}
+
+    def _connect(url: str, **kwargs: Any):
+        captured["kwargs"] = kwargs
+        raise OSError("target unavailable after route resolution")
+
+    with (
+        patch("websockets.asyncio.client.connect", side_effect=_connect),
+        patch(
+            "niuu.adapters.outbound.guild_transport.fetch_leaf_certificate_der",
+            lambda *a, **k: _LEAF_CERT_DER,
+        ),
+    ):
+        with client.websocket_connect(
+            "/s/resident-id/session?access_token=browser-token",
+            headers=_headers(),
+        ) as websocket:
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+
+    assert "ssl" in captured["kwargs"]
+
+
+def test_ravn_session_proxy_closes_1011_when_the_only_instance_is_insecure_http() -> None:
+    """The owner-probe GuildTransportError path (an http instance without
+    config.allow_plaintext) — no owner is found, and since the only failure
+    was a transport-policy refusal (not an ordinary connection error), the
+    socket closes 1011 with the policy reason instead of the generic 4410
+    "no longer running"."""
+    client = _client(
+        [
+            _instance(
+                "volundr",
+                base_url="http://volundr",
+                config={"allow_plaintext": False},
+            )
+        ]
+    )
+
+    with pytest.raises(WebSocketDisconnect) as closed:
+        with client.websocket_connect(
+            "/s/resident-id/session",
+            headers=_headers(),
+        ) as websocket:
+            websocket.receive_text()
+
+    assert closed.value.code == 1011
+
+
+@respx.mock
+def test_ravn_session_proxy_refuses_insecure_base_url_at_connect_after_probe_passes() -> None:
+    """A split-service target's ravn_base_url can be https (so the owner
+    probe, which dials ravn_base_url, succeeds) while base_url — what the WS
+    bridge actually connects to — is plain http without the opt-in. The
+    refusal surfaces at connect time, after a successful probe, not before."""
+    client = _client(
+        [
+            _instance(
+                "volundr",
+                base_url="http://volundr",
+                config={"ravn_base_url": "https://ravn.noatun.test", "allow_plaintext": False},
+            )
+        ]
+    )
+    probe = respx.get("https://ravn.noatun.test/api/v1/ravn/sessions/resident-id").mock(
+        return_value=Response(200, json={"id": "resident-id"})
+    )
+
+    with pytest.raises(WebSocketDisconnect) as closed:
+        with client.websocket_connect(
+            "/s/resident-id/session",
+            headers=_headers(),
+        ) as websocket:
+            websocket.receive_text()
+
+    assert probe.called
+    assert closed.value.code == 1011
+
+
+@respx.mock
+def test_resident_session_proxy_promotes_query_token_to_upstream_authorization() -> None:
+    """A remote Guild instance never sees client-supplied x-auth-* headers or
+    devUserId-style query params — not even the router's own dev-identity
+    mode reaches a remote node, since a Guild proxy target may be on a
+    different machine and its own auth.mode is what decides trust there."""
+    client = _client([_instance("noatun", base_url="https://niuu.noatun.test")])
     owner = respx.get("https://niuu.noatun.test/api/v1/ravn/ravens/resident-id").mock(
         return_value=Response(200, json={"id": "resident-id"})
     )
@@ -235,18 +350,17 @@ def test_resident_session_proxy_promotes_query_token_to_upstream_authorization(
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
 
-    # Outside dev identity the asserted dev params never reach the target; it is
-    # told only the identity this router resolved (here via the dev adapter).
-    dev_query = "&devUserId=user-a&devTenantId=tenant-a" if dev_identity else ""
+    # The dev-identity query params never reach the target, unconditionally.
     assert captured["url"] == (
         "wss://niuu.noatun.test/api/v1/forge/resident-runtimes/"
-        f"resident-id/sessions/session-id/chat?token=machine-jwt{dev_query}"
+        "resident-id/sessions/session-id/chat?token=machine-jwt"
     )
     upstream = captured["kwargs"]["additional_headers"]
     assert upstream["authorization"] == "Bearer machine-jwt"
-    assert upstream["x-auth-user-id"] == "user-a"
-    assert upstream["x-auth-tenant"] == "tenant-a"
+    assert "x-auth-user-id" not in upstream
+    assert "x-auth-tenant" not in upstream
     assert owner.calls.last.request.headers["authorization"] == "Bearer machine-jwt"
+    assert "x-auth-user-id" not in owner.calls.last.request.headers
 
 
 def test_resident_session_proxy_bridges_embedded_forge_chat() -> None:
@@ -824,3 +938,78 @@ def test_get_raven_logs_searches_visible_targets_without_instance_hint() -> None
     assert response.status_code == 200
     assert response.json()["instance_id"] == "beta"
     assert beta.called
+
+
+class TestWsConnectKwargs:
+    """Direct tests of the resident/session WS bridge's TLS-pinning gate."""
+
+    async def test_returns_empty_kwargs_for_plain_http_with_allow_plaintext(self) -> None:
+        owner = _instance("noatun", base_url="http://noatun.test")
+        parsed = urlsplit("http://noatun.test")
+        websocket = AsyncMock()
+
+        result = await _ws_connect_kwargs(owner, parsed, websocket, timeout=15.0)
+
+        assert result == {}
+        websocket.close.assert_not_awaited()
+
+    async def test_closes_the_socket_when_plaintext_is_not_allowed(self) -> None:
+        owner = _instance(
+            "noatun", base_url="http://noatun.test", config={"allow_plaintext": False}
+        )
+        parsed = urlsplit("http://noatun.test")
+        websocket = AsyncMock()
+
+        result = await _ws_connect_kwargs(owner, parsed, websocket, timeout=15.0)
+
+        assert result is None
+        websocket.close.assert_awaited_once()
+        assert websocket.close.await_args.kwargs["code"] == 1011
+
+    async def test_returns_empty_kwargs_for_https_without_a_pinned_fingerprint(self) -> None:
+        owner = _instance("noatun", base_url="https://noatun.test")
+        parsed = urlsplit("https://noatun.test")
+        websocket = AsyncMock()
+
+        result = await _ws_connect_kwargs(owner, parsed, websocket, timeout=15.0)
+
+        assert result == {}
+        websocket.close.assert_not_awaited()
+
+    async def test_pins_a_matching_certificate(self) -> None:
+        owner = _instance(
+            "noatun",
+            base_url="https://noatun.test",
+            config={"tls_fingerprint": _LEAF_FINGERPRINT},
+        )
+        parsed = urlsplit("https://noatun.test")
+        websocket = AsyncMock()
+
+        with patch(
+            "niuu.adapters.outbound.guild_transport.fetch_leaf_certificate_der",
+            lambda *a, **k: _LEAF_CERT_DER,
+        ):
+            result = await _ws_connect_kwargs(owner, parsed, websocket, timeout=15.0)
+
+        assert "ssl" in result
+        websocket.close.assert_not_awaited()
+
+    async def test_closes_the_socket_on_a_pin_mismatch_and_never_returns_kwargs(self) -> None:
+        other_fingerprint = hashlib.sha256(b"a different certificate").hexdigest()
+        owner = _instance(
+            "noatun",
+            base_url="https://noatun.test",
+            config={"tls_fingerprint": other_fingerprint},
+        )
+        parsed = urlsplit("https://noatun.test")
+        websocket = AsyncMock()
+
+        with patch(
+            "niuu.adapters.outbound.guild_transport.fetch_leaf_certificate_der",
+            lambda *a, **k: _LEAF_CERT_DER,
+        ):
+            result = await _ws_connect_kwargs(owner, parsed, websocket, timeout=15.0)
+
+        assert result is None
+        websocket.close.assert_awaited_once()
+        assert websocket.close.await_args.kwargs["code"] == 1011

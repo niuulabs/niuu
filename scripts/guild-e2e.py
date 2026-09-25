@@ -32,6 +32,23 @@ def _headers(
     tenant_id: str,
     roles: list[str] | None = None,
 ) -> dict[str, str]:
+    """Dev-mode identity for the *central* Guild only.
+
+    These x-auth-* headers stand in for what Envoy would inject after
+    validating a real JWT (`identity: adapter: EnvoyHeaderIdentityAdapter`,
+    `auth.allow_anonymous_dev: true` in scripts/setups/configs/guild-central.yaml)
+    — they authenticate this script's calls to the central Guild at BASE_URL,
+    nothing past it. Guild's outbound calls to a registered remote instance
+    (Guild Alpha/Beta on :8181/:8282, started by `start-guild`) forward only
+    the caller's `Authorization` bearer token — never these headers — per
+    docs/site/get-started/shared-discovery-and-topology.md. This script never
+    sends a bearer (there is no real IDP in this local setup), so Guild
+    Alpha/Beta — also `EnvoyHeaderIdentityAdapter` + anonymous-dev — cannot
+    tell tenant A's proxied calls from tenant B's; every caller resolves to
+    the same anonymous dev principal there. See the comment at the
+    Tenant-B-vs-Guild-Alpha assertion below for what that does and does not
+    let this script prove.
+    """
     return {
         "x-auth-user-id": user_id,
         "x-auth-email": f"{user_id}@example.test",
@@ -617,15 +634,35 @@ def main() -> int:
             headers=tenant_b_headers,
             session_id=user_dispatch["dispatch_result"]["session_id"],
         )
+        # Both checks below are proven by Guild's own, local instance-visibility
+        # rules (InstanceService), never by a remote instance filtering its own
+        # session list — so they hold regardless of what crosses the wire to a
+        # registered instance: user_instance is visibility="user" (only user B),
+        # and the first tenant_dispatch ran on tenant_instance, visibility="tenant"
+        # (only tenant-a) — neither is ever in the other principal's
+        # _visible_instances() fan-out, so the other principal's aggregate call
+        # never even queries that instance.
         if user_dispatch["dispatch_result"]["session_id"] in tenant_aggregate_ids:
             raise AssertionError("Tenant A aggregate view must not contain User B's session")
         user_aggregate_ids = {session["id"] for session in aggregate_user_sessions}
         if tenant_dispatch["dispatch_result"]["session_id"] in user_aggregate_ids:
             raise AssertionError("Tenant B aggregate view must not contain Tenant A's session")
-        if tenant_cross_dispatch["dispatch_result"]["session_id"] in user_aggregate_ids:
-            raise AssertionError(
-                "Tenant B aggregate view must not contain Tenant A's cross-backend session"
-            )
+        # tenant_cross_dispatch ran on guild_alpha_target_id ("Guild Alpha"),
+        # visibility="system" — visible to every tenant by design, so this is
+        # deliberately NOT a not-in assertion the way the two checks above are.
+        # Session-level isolation on a shared instance depends on the instance
+        # itself resolving the caller's identity to filter its own /sessions
+        # response; per _headers()'s docstring, Guild only ever forwards the
+        # caller's bearer to a registered instance, and this local setup has no
+        # real bearer to forward, so Guild Alpha (anonymous-dev) cannot tell
+        # tenant A's session from tenant B's — it is expected to show up in
+        # both. That is the documented, accepted limitation of a `none`-style
+        # instance (shared-discovery-and-topology.md): "the remote simply
+        # admits every caller, so register `none`-mode instances only on a
+        # network you already trust." This script proves cross-tenant
+        # isolation at the instance-visibility layer (the two checks above,
+        # and the tenant/user target-visibility checks earlier); it does not
+        # claim session-level isolation on a shared, identity-blind instance.
         user_repo_file = (
             Path(user_activity["detail"]["code_endpoint"].removeprefix("file://"))
             / "repo"

@@ -28,7 +28,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(bmod.broker._channels, "broadcast", _fake_broadcast)
     monkeypatch.setattr(bmod.broker, "_conversation_turns", [])
     api_mod._presented_registry.clear()
-    c = TestClient(bmod.app)
+    c = TestClient(bmod.app, headers={"x-niuu-room-role": "owner"})
     c.logged = logged  # type: ignore[attr-defined]
     c.broadcast = broadcast  # type: ignore[attr-defined]
     return c
