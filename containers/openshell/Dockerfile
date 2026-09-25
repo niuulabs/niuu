@@ -82,6 +82,10 @@ COPY pyproject.toml uv.lock README.md /app/
 # edits; only the project itself is installed after src/ is copied.
 RUN uv sync --frozen --no-dev --no-editable --no-cache --no-install-project --extra nats --extra dsh
 COPY src/ /app/src/
+# vendor/envoy_authz_protos/ is one of the wheel's registered package roots
+# (see pyproject.toml); the build fails without it even though this image
+# does not run identity.authz_main.
+COPY vendor/ /app/vendor/
 COPY scripts/openshell-run-installed-skuld.sh /usr/local/bin/openshell-run-installed-skuld
 RUN uv sync --frozen --no-dev --no-editable --no-cache --extra nats --extra dsh \
     && mkdir -p /run/secrets \
