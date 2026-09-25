@@ -114,15 +114,18 @@ async def lifespan(app: FastAPI):
     # This broker process was spawned for one session, by a Volundr request
     # that (per CoreSessionContributor) set TRACEPARENT/TRACESTATE in this
     # process's own env — the same mechanism Claude Code itself uses to
-    # parent its spans. Reading it here closes the chain end to end: Ravn ->
-    # Bifrost -> Volundr -> Skuld -> Claude Code, all one trace. See
+    # parent its spans. broker._settings.trace_context reads that back as
+    # typed settings (config-first.md), not a bare os.environ read.
+    # Attaching it here closes the chain end to end: Ravn -> Bifrost ->
+    # Volundr -> Skuld -> Claude Code, all one trace. See
     # attach_ambient_context's docstring for the long-lived-session trade-off
     # this accepts.
+    trace_context = broker._settings.trace_context
     inbound_carrier = {
         key: value
         for key, value in (
-            ("traceparent", os.environ.get("TRACEPARENT", "")),
-            ("tracestate", os.environ.get("TRACESTATE", "")),
+            ("traceparent", trace_context.traceparent),
+            ("tracestate", trace_context.tracestate),
         )
         if value
     }

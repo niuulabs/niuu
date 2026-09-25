@@ -666,6 +666,34 @@ class ReflexConfig(BaseModel):
     )
 
 
+class TraceContextConfig(BaseSettings):
+    """The W3C trace context this broker process inherited at spawn time.
+
+    Not operator configuration — a per-process runtime carrier. Völundr's
+    ``CoreSessionContributor`` sets bare ``TRACEPARENT``/``TRACESTATE`` (no
+    ``SKULD__`` prefix, since these are the standard W3C env var names other
+    tools — including Claude Code itself — read the same way) in the env of
+    the pod/process it spawns for a session; this is Skuld reading that back
+    as typed settings instead of a bare ``os.environ.get`` (config-first.md).
+    A separate ``BaseSettings`` subclass, not a nested field on
+    ``SkuldSettings``, because pydantic-settings only resolves a field's own
+    ``validation_alias`` against nested env vars for a ``BaseSettings``
+    instance — a plain nested ``BaseModel`` field ignores it and only ever
+    sees ``SKULD__TRACE_CONTEXT__TRACEPARENT``, not the real env var.
+    """
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    traceparent: str = Field(
+        default="",
+        validation_alias=AliasChoices("traceparent", "TRACEPARENT"),
+    )
+    tracestate: str = Field(
+        default="",
+        validation_alias=AliasChoices("tracestate", "TRACESTATE"),
+    )
+
+
 class SkuldSettings(BaseSettings):
     """Skuld broker settings.
 
@@ -726,6 +754,7 @@ class SkuldSettings(BaseSettings):
     delivery: DeliveryConfig = Field(default_factory=DeliveryConfig)
     ws_auth: WsAuthConfig = Field(default_factory=WsAuthConfig)
     observation_relay: ObservationRelayConfig = Field(default_factory=ObservationRelayConfig)
+    trace_context: TraceContextConfig = Field(default_factory=TraceContextConfig)
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8081)
     volundr_api_url: str = Field(default="")

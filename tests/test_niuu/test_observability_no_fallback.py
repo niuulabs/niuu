@@ -82,6 +82,8 @@ class TestMultiComponentProcess:
 
     def test_second_component_with_matching_config_joins_the_same_pipeline(self):
         pytest.importorskip("opentelemetry.sdk")
+        pytest.importorskip("opentelemetry.exporter.otlp.proto.grpc.trace_exporter")
+        pytest.importorskip("opentelemetry.exporter.otlp.proto.http.metric_exporter")
         first = obs_module.configure_observability(
             ObservabilityConfig(**_ENABLED_KWARGS, service_name="volundr"),
             component="volundr",
@@ -96,6 +98,8 @@ class TestMultiComponentProcess:
 
     def test_second_component_with_different_endpoint_raises(self):
         pytest.importorskip("opentelemetry.sdk")
+        pytest.importorskip("opentelemetry.exporter.otlp.proto.grpc.trace_exporter")
+        pytest.importorskip("opentelemetry.exporter.otlp.proto.http.metric_exporter")
         obs_module.configure_observability(
             ObservabilityConfig(**_ENABLED_KWARGS, service_name="volundr"),
             component="volundr",
@@ -113,6 +117,8 @@ class TestMultiComponentProcess:
         """A service that explicitly says enabled: false is never instrumented,
         even though a sibling already enabled observability for the process."""
         pytest.importorskip("opentelemetry.sdk")
+        pytest.importorskip("opentelemetry.exporter.otlp.proto.grpc.trace_exporter")
+        pytest.importorskip("opentelemetry.exporter.otlp.proto.http.metric_exporter")
         obs_module.configure_observability(
             ObservabilityConfig(**_ENABLED_KWARGS, service_name="volundr"),
             component="volundr",
@@ -130,6 +136,8 @@ class TestMultiComponentProcess:
         default, enabled=false) inherits the process pipeline instead of being
         treated as an explicit opt-out."""
         pytest.importorskip("opentelemetry.sdk")
+        pytest.importorskip("opentelemetry.exporter.otlp.proto.grpc.trace_exporter")
+        pytest.importorskip("opentelemetry.exporter.otlp.proto.http.metric_exporter")
         shared = obs_module.configure_observability(
             ObservabilityConfig(**_ENABLED_KWARGS, service_name="volundr"),
             component="volundr",
