@@ -725,19 +725,23 @@ class KubernetesJobExecutor:
         on (their TTL is the backstop), not one worth losing the actual
         verification/run outcome over.
         """
-        cleanups: list[tuple[str, str, Any]] = []
+        # Each entry is (what failed to delete, coroutine). The Secret is
+        # described by its owning Job rather than by its own resource name.
+        cleanups: list[tuple[str, Any]] = []
         if job_name:
-            cleanups.append(("Job", job_name, self._delete_job(batch, job_name)))
+            cleanups.append((f"Job {job_name!r}", self._delete_job(batch, job_name)))
         if secret_name:
-            cleanups.append(("Secret", secret_name, self._delete_secret(core, secret_name)))
+            cleanups.append(
+                (f"payload Secret of Job {job_name!r}", self._delete_secret(core, secret_name))
+            )
         if not cleanups:
             return
         results = await asyncio.shield(
-            asyncio.gather(*(coro for _, _, coro in cleanups), return_exceptions=True)
+            asyncio.gather(*(coro for _, coro in cleanups), return_exceptions=True)
         )
-        for (kind, name, _), result in zip(cleanups, results, strict=True):
+        for (what, _), result in zip(cleanups, results, strict=True):
             if isinstance(result, Exception):
-                logger.error("k8s_job cleanup failed to delete %s %r: %s", kind, name, result)
+                logger.error("k8s_job cleanup failed to delete %s: %s", what, result)
 
     async def _create_verify_secret(
         self,
