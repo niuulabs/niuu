@@ -600,6 +600,7 @@ envoy:
       - /api/v1/tokens/workload/exchange
       - /api/v1/tokens/workload/jwks
       - /health
+      - /api/v1/forge/health
     # -- Additional JWT provider for short-lived Niuu workload tokens.
     # When enabled, Envoy accepts either Keycloak user tokens or workload tokens.
     workload:

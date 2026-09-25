@@ -116,6 +116,7 @@ envoy:
     extraClaimHeaders: []
     bypassPrefixes:
       - /health
+      - /api/v1/ravn/health
     workload:
       enabled: false
       issuer: ""

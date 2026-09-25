@@ -185,9 +185,16 @@ def test_build_instance_probe_imports_the_configured_adapter_and_injects_embedde
 
 def test_build_instance_probe_honours_a_different_configured_adapter_class() -> None:
     class _StubProbe:
-        def __init__(self, *, embedded_app=None, timeout_seconds: float = 1.0) -> None:
+        def __init__(
+            self,
+            *,
+            embedded_app=None,
+            timeout_seconds: float = 1.0,
+            health_paths: dict | None = None,
+        ) -> None:
             self.embedded_app = embedded_app
             self.timeout_seconds = timeout_seconds
+            self.health_paths = health_paths or {}
 
     import niuu.config as niuu_config_module
 

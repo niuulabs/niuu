@@ -250,6 +250,15 @@ class InstanceProbeConfig(BaseModel):
         gt=0,
         description="Per-probe HTTP timeout, for both the periodic loop and register-time checks.",
     )
+    health_paths: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Per-kind health path overrides (InstanceKind value -> path), merged on top of "
+            "HttpInstanceProbeAdapter.DEFAULT_HEALTH_PATHS — only the kinds being changed need "
+            "an entry here. An individual instance can also override its own path via "
+            "config.health_path on the registered instance, which wins over both."
+        ),
+    )
 
 
 class InstanceHealthConfig(BaseModel):

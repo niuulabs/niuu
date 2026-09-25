@@ -126,3 +126,11 @@ data:
         probe:
           adapter: {{ .Values.registry.health.probe.adapter | default "niuu.adapters.outbound.http_instance_probe.HttpInstanceProbeAdapter" | quote }}
           timeout_seconds: {{ .Values.registry.health.probe.timeoutSeconds | default 5.0 }}
+          {{- if .Values.registry.health.probe.healthPaths }}
+          health_paths:
+            {{- range $kind, $path := .Values.registry.health.probe.healthPaths }}
+            {{ $kind }}: {{ $path | quote }}
+            {{- end }}
+          {{- else }}
+          health_paths: {}
+          {{- end }}
