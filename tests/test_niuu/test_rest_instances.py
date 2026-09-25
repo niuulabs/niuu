@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -28,6 +29,7 @@ from niuu.domain.models import (
 from niuu.domain.services.instance_health import InstanceHealthCheckResult
 from niuu.domain.services.instances import (
     InstanceAccessError,
+    InstanceTransportSecurityError,
     InstanceValidationError,
 )
 from niuu.ports.instance_probe import InstanceProbeResult
@@ -428,6 +430,50 @@ def test_create_instance_passes_payload_to_service_and_maps_access_errors() -> N
     assert forbidden.json()["detail"] == "forbidden"
 
 
+def test_create_instance_maps_transport_security_error_to_422() -> None:
+    """An http:// remote instance without config.allow_plaintext is a 422
+    with the remedy in the message — not the generic 403 used for
+    authorization/validation errors — so the CLI/web can tell "malformed
+    request" apart from "not permitted"."""
+    service = StubInstanceService()
+    service.create_result = InstanceTransportSecurityError(
+        "http://insecure.example.com must use https:// for a remote Guild "
+        "instance; set config.allow_plaintext: true only when the network "
+        "path is already encrypted or otherwise trusted"
+    )
+    client = _client(service)
+
+    response = client.post(
+        "/api/v1/niuu/instances",
+        headers=_headers(),
+        json={
+            "slug": "insecure",
+            "name": "Insecure",
+            "baseUrl": "http://insecure.example.com",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "allow_plaintext" in response.json()["detail"]
+
+
+def test_update_instance_maps_transport_security_error_to_422() -> None:
+    service = StubInstanceService()
+    service.single_instance = _instance("existing")
+    service.update_result = InstanceTransportSecurityError(
+        "http://insecure.example.com must use https:// for a remote Guild instance"
+    )
+    client = _client(service)
+
+    response = client.patch(
+        "/api/v1/niuu/instances/existing",
+        headers=_headers(),
+        json={"baseUrl": "http://insecure.example.com"},
+    )
+
+    assert response.status_code == 422
+
+
 def test_create_instance_registers_even_when_the_initial_probe_fails() -> None:
     """Registering an instance that happens to be offline (e.g. a Spark not
     yet powered on) is a legitimate operator action — a failed register-time
@@ -644,13 +690,41 @@ def test_list_instance_sessions_forwards_headers_and_status_filter() -> None:
         }
     ]
     assert route.calls.last.request.headers["authorization"] == "Bearer test-token"
-    assert route.calls.last.request.headers["x-auth-tenant"] == "tenant-a"
+    # A remote Guild instance never sees a client-supplied x-auth-* header.
+    assert "x-auth-tenant" not in route.calls.last.request.headers
+    assert "x-auth-user-id" not in route.calls.last.request.headers
 
     respx.get("https://volundr.example.com/api/v1/forge/sessions").mock(
         side_effect=RuntimeError("boom")
     )
     failed = client.get("/api/v1/niuu/instances/instance-1/sessions", headers=_headers())
     assert failed.status_code == 502
+
+
+def test_list_instance_sessions_returns_502_on_a_tls_pin_mismatch(monkeypatch) -> None:
+    """_load_remote_sessions's own guild_transport enforcement
+    (build_guild_httpx_client raising GuildTransportError) maps to a 502 —
+    the upstream is never contacted at all when the pin fails."""
+    monkeypatch.setattr(
+        "niuu.adapters.outbound.guild_transport.fetch_leaf_certificate_der",
+        lambda *a, **k: b"not the pinned certificate",
+    )
+    pinned_fingerprint = hashlib.sha256(b"the actual expected certificate").hexdigest()
+    service = StubInstanceService()
+    service.single_instance = _instance(
+        "instance-1",
+        base_url="https://volundr.example.com",
+        config={"tls_fingerprint": pinned_fingerprint},
+    )
+    client = _client(service)
+
+    response = client.get(
+        "/api/v1/niuu/instances/instance-1/sessions",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 502
+    assert "does not match" in response.json()["detail"]
 
 
 def test_list_instance_sessions_rejects_invalid_remote_base_urls() -> None:

@@ -5,6 +5,10 @@ from __future__ import annotations
 import httpx
 from starlette.types import ASGIApp
 
+from niuu.adapters.outbound.guild_transport import (
+    GuildTransportError,
+    build_guild_httpx_client,
+)
 from niuu.domain.models import RegisteredInstance
 from niuu.ports.instance_probe import InstanceProbePort, InstanceProbeResult
 
@@ -60,11 +64,15 @@ class HttpInstanceProbeAdapter(InstanceProbePort):
     async def _probe_http(self, instance: RegisteredInstance) -> InstanceProbeResult:
         url = f"{instance.base_url}/health"
         try:
-            async with httpx.AsyncClient(
-                timeout=self._timeout_seconds, follow_redirects=True
-            ) as client:
+            client = await build_guild_httpx_client(
+                instance,
+                dial_url=instance.base_url,
+                timeout_seconds=self._timeout_seconds,
+                follow_redirects=True,
+            )
+            async with client:
                 response = await client.get(url)
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, GuildTransportError) as exc:
             # Several httpx transport errors stringify to "" (see
             # observatory_topology.py), which turns every unreachable
             # instance into a blank error. Fall back to the class name.

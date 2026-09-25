@@ -21,7 +21,15 @@ SESSIONS_URL = f"{BASE_URL}/api/v1/forge/sessions"
 
 @pytest.fixture
 def adapter() -> VolundrHTTPAdapter:
-    return VolundrHTTPAdapter(base_url=BASE_URL, timeout=5.0, name="test-cluster")
+    # These fixtures exercise adapter *behavior* (request shape, response
+    # parsing, error propagation), not the guild_transport policy itself —
+    # see test_volundr_http_transport_security.py for that — so a non-loopback
+    # http:// fixture URL opts into plaintext explicitly, matching the
+    # pattern used by other Guild-outbound test suites (e.g.
+    # test_rest_volundr.py's _instance helper).
+    return VolundrHTTPAdapter(
+        base_url=BASE_URL, timeout=5.0, name="test-cluster", config={"allow_plaintext": True}
+    )
 
 
 class StaticAuth:
@@ -1156,6 +1164,11 @@ class _FakeAsyncClient:
     def __init__(self, response: _FakeStreamResponse, expected_headers: dict[str, str]) -> None:
         self._response = response
         self._expected_headers = expected_headers
+        # VolundrHTTPAdapter._client() reads .timeout.connect back off the
+        # client build_guild_httpx_client() returned (to strip the read
+        # timeout for this streaming call) — a real httpx.AsyncClient always
+        # has one; this fake needs the same shape.
+        self.timeout = httpx.Timeout(30.0, connect=5.0)
 
     async def __aenter__(self):
         return self
@@ -1206,7 +1219,7 @@ class TestSubscribeActivity:
         monkeypatch.setattr(
             httpx,
             "AsyncClient",
-            lambda timeout=None: _FakeAsyncClient(response, expected_headers={}),
+            lambda *args, **kwargs: _FakeAsyncClient(response, expected_headers={}),
         )
 
         events = [event async for event in adapter.subscribe_activity()]
@@ -1223,6 +1236,7 @@ class TestSubscribeActivity:
         adapter = VolundrHTTPAdapter(
             base_url=BASE_URL,
             auth=StaticAuth({"Authorization": "Bearer service-token"}),
+            config={"allow_plaintext": True},
         )
         response = _FakeStreamResponse(
             [
@@ -1234,7 +1248,7 @@ class TestSubscribeActivity:
         monkeypatch.setattr(
             httpx,
             "AsyncClient",
-            lambda timeout=None: _FakeAsyncClient(
+            lambda *args, **kwargs: _FakeAsyncClient(
                 response,
                 expected_headers={"Authorization": "Bearer service-token"},
             ),

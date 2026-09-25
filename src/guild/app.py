@@ -15,6 +15,7 @@ from niuu.adapters.inbound.rest_ravn import (
     create_ravn_session_proxy_router,
 )
 from niuu.adapters.inbound.rest_volundr import create_volundr_router
+from niuu.adapters.outbound import guild_transport
 from niuu.adapters.outbound.http_agent_directory import HttpAgentDirectoryClient
 from niuu.adapters.outbound.http_observatory_topology import (
     HttpObservatoryTopologyClient,
@@ -27,6 +28,7 @@ from niuu.adapters.postgres_observatory_fragments import (
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.config import InstanceProbeConfig, InstanceSeedConfig
 from niuu.cors import apply_cors_middleware
+from niuu.domain import transport_security
 from niuu.domain.models import InstanceKind, InstanceVisibility
 from niuu.domain.services.agent_directory import AgentDirectoryAggregationService
 from niuu.domain.services.instance_health import InstanceHealthChecker
@@ -115,15 +117,23 @@ def create_app(
     settings: Settings | None = None,
     *,
     embedded_forge_app: ASGIApp | None = None,
-    dev_identity: bool = False,
 ) -> FastAPI:
     """Create the Guild FastAPI application.
 
-    ``dev_identity`` is set only by a local-dev host without an identity
-    provider; it lets the Ravn session proxy forward browser-asserted identity.
+    Every Guild route may proxy to another machine, so it never has a local
+    dev-identity mode of its own: the Ravn session proxy and every other
+    aggregate route forward only the caller's bearer token to a remote
+    instance (see ``niuu.adapters.inbound.remote_urls.forward_identity_headers``),
+    regardless of how this host authenticates locally.
     """
     loaded_settings = apply_service_database_settings(settings or _load_settings(), "guild")
     configure_logging(loaded_settings.logging)
+    guild_transport.configure_default_timeouts(
+        connect_timeout_ceiling_seconds=loaded_settings.guild_transport_connect_timeout_seconds
+    )
+    transport_security.configure_trusted_plaintext_host_suffixes(
+        loaded_settings.guild_transport_trusted_plaintext_host_suffixes
+    )
     directory_cfg = loaded_settings.observatory.directory
     agent_directory = AgentDirectoryAggregationService(
         client=HttpAgentDirectoryClient(
@@ -236,7 +246,9 @@ def create_app(
                     create_ravn_session_proxy_router(
                         instance_service,
                         embedded_forge_app=embedded_forge_app,
-                        dev_identity=dev_identity,
+                        owner_probe_timeout_seconds=(
+                            loaded_settings.guild_owner_probe_timeout_seconds
+                        ),
                     )
                 )
                 app.include_router(create_workload_identity_jwks_router())

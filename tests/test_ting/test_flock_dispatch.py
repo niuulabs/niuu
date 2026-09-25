@@ -744,7 +744,9 @@ class TestVolundrHTTPAdapterFlockPassthrough:
             }
             return resp
 
-        adapter = VolundrHTTPAdapter(base_url="http://volundr.local", api_key="tok")
+        adapter = VolundrHTTPAdapter(
+            base_url="http://volundr.local", api_key="tok", config={"allow_plaintext": True}
+        )
 
         workload_cfg = {
             "personas": ["coordinator", "reviewer"],
@@ -810,7 +812,9 @@ class TestVolundrHTTPAdapterFlockPassthrough:
             }
             return resp
 
-        adapter = VolundrHTTPAdapter(base_url="http://volundr.local", api_key="tok")
+        adapter = VolundrHTTPAdapter(
+            base_url="http://volundr.local", api_key="tok", config={"allow_plaintext": True}
+        )
         request = SpawnRequest(
             name="alpha-2",
             repo="https://github.com/org/repo",
