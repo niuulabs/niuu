@@ -386,7 +386,6 @@ def saga_repo() -> MockSagaRepo:
         repos=["org/repo"],
         feature_branch="feat/alpha",
         status=SagaStatus.ACTIVE,
-        confidence=0.0,
         created_at=datetime.now(UTC),
         base_branch="dev",
         owner_id="dev-user",
@@ -399,7 +398,6 @@ def saga_repo() -> MockSagaRepo:
         number=1,
         name="Phase 1",
         status=PhaseStatus.ACTIVE,
-        confidence=0.8,
     )
     repo.phases.append(phase)
     repo.runs.append(
@@ -413,7 +411,6 @@ def saga_repo() -> MockSagaRepo:
             declared_files=["src/feature.py"],
             estimate_hours=2.0,
             status=RunStatus.REVIEW,
-            confidence=0.7,
             session_id="sess-1",
             branch="feat/alpha",
             chronicle_summary="done",
@@ -461,7 +458,6 @@ class TestListSagas:
         assert saga["status"] == "active"
         assert saga["url"] == "https://linear.app/test/project/alpha-abc123"
         assert saga["base_branch"] == "dev"
-        assert saga["confidence"] == 0.0
         assert saga["created_at"]
         assert saga["phase_summary"] == {"total": 1, "completed": 0}
 
@@ -487,7 +483,6 @@ class TestGetSaga:
         assert data["name"] == "Alpha"
         assert data["description"] == "First project"
         assert data["base_branch"] == "dev"
-        assert data["confidence"] == 0.0
         assert data["created_at"]
         assert data["status"] == "active"
         assert data["phase_summary"] == {"total": 1, "completed": 0}
@@ -544,7 +539,6 @@ class TestGetSaga:
                 repos=["org/repo"],
                 feature_branch="feat/imported",
                 status=SagaStatus.COMPLETE,
-                confidence=0.0,
                 created_at=datetime.now(UTC),
                 base_branch="dev",
                 owner_id="dev-user",
@@ -583,7 +577,6 @@ class TestGetSaga:
             repos=saga.repos,
             feature_branch=saga.feature_branch,
             status=saga.status,
-            confidence=saga.confidence,
             created_at=saga.created_at,
             base_branch=saga.base_branch,
             owner_id=saga.owner_id,
@@ -1611,7 +1604,6 @@ class TestCommitSaga:
                 repos=["org/repo"],
                 feature_branch="feat/proof-saga",
                 status=SagaStatus.ACTIVE,
-                confidence=0.0,
                 created_at=datetime.now(UTC),
                 base_branch="dev",
                 owner_id="dev-user",

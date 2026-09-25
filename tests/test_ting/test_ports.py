@@ -38,8 +38,6 @@ class TestTrackerPort:
             "get_run_by_session",
             "list_runs_by_status",
             "get_run_by_id",
-            "add_confidence_event",
-            "get_confidence_events",
             "all_runs_merged",
             "list_phases_for_saga",
             "update_phase_status",

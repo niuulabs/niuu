@@ -66,7 +66,6 @@ class ConfigurableDispatcherRepo(MockDispatcherRepo):
             id=uuid4(),
             owner_id=owner_id,
             running=self._running,
-            threshold=0.5,
             max_concurrent_runs=self._max_concurrent,
             auto_continue=self._auto_continue,
             updated_at=NOW,
@@ -94,7 +93,6 @@ def _make_saga() -> Saga:
         repos=["org/repo-a"],
         feature_branch="feat/alpha",
         status=SagaStatus.ACTIVE,
-        confidence=0.0,
         created_at=NOW,
         base_branch="dev",
     )
@@ -111,7 +109,6 @@ def _make_run(status: RunStatus = RunStatus.RUNNING) -> Run:
         declared_files=[],
         estimate_hours=1.0,
         status=status,
-        confidence=0.5,
         session_id="ses-1",
         branch="run/test",
         chronicle_summary=None,
@@ -341,7 +338,7 @@ class TestReviewEngineAutoContinue:
         volundr = StubVolundr()
         saga = _make_saga()
 
-        run = _make_run(confidence=0.9)
+        run = _make_run()
         tracker.runs[run.tracker_id] = run
         tracker.saga = saga
 
@@ -406,7 +403,7 @@ class TestReviewEngineAutoContinue:
         tracker.phases = [phase1, phase2]
         tracker._all_merged = True  # All runs in phase merged
 
-        run = _make_run(confidence=0.9)
+        run = _make_run()
         tracker.runs[run.tracker_id] = run
 
         auto_continue_calls: list[tuple[str, str]] = []
@@ -458,7 +455,7 @@ class TestReviewEngineAutoContinue:
         volundr = StubVolundr()
         saga = _make_saga()
 
-        run = _make_run(confidence=0.9)
+        run = _make_run()
         tracker.runs[run.tracker_id] = run
         tracker.saga = saga
 
@@ -501,7 +498,7 @@ class TestReviewEngineAutoContinue:
         volundr = StubVolundr()
         saga = _make_saga()
 
-        run = _make_run(confidence=0.9)
+        run = _make_run()
         tracker.runs[run.tracker_id] = run
         tracker.saga = saga
 

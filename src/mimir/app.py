@@ -196,6 +196,25 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Configured and instrumented here, not in lifespan: Starlette builds and
+    # caches its middleware stack on the app's first ASGI __call__ (which is
+    # also how the lifespan startup event arrives), so instrumenting from
+    # inside a lifespan handler has no effect.
+    from niuu.observability import (
+        configure_observability,
+        instrument_fastapi_app,
+        instrument_httpx_client,
+    )
+
+    telemetry = configure_observability(
+        config.observability,
+        resource_attributes={"service.namespace": "mimir", "mimir.instance.name": config.name},
+        component="mimir",
+        default_service_name="mimir",
+    )
+    instrument_fastapi_app(app, telemetry, component="mimir")
+    instrument_httpx_client(telemetry)
+
     @app.middleware("http")
     async def enforce_instance_tenant(request: Request, call_next):
         health_paths = {"/health", "/mimir/health", "/api/v1/mimir/health"}

@@ -13,6 +13,7 @@ import httpx
 from fastapi import WebSocket
 
 from niuu.domain.conversation_timeline import TIMELINE_KEY, observation, timeline
+from niuu.observability import get_observability
 from skuld.conversation_models import ConversationTurn
 from skuld.session_artifacts import SessionArtifacts
 
@@ -147,6 +148,41 @@ class EventLogMixin:
             return value
         return value[: limit - 3].rstrip() + "..."
 
+    @staticmethod
+    def _record_trace_span_post_failure(
+        op: str,
+        *,
+        status_code: int | None = None,
+        detail: str = "",
+        exc_info: bool = False,
+    ) -> None:
+        """Surface a failed Forge trace-span POST — best-effort, but never silent.
+
+        These spans feed the session's trace visualization in Forge, not the
+        durable event log (which raises via ``EventLogRejectedError`` on
+        rejection): a Volundr blip here must not fail the live tool call or
+        turn that triggered it, so posting stays best-effort. What no-fallbacks
+        forbids is a SILENT best-effort — the old behaviour logged at
+        ``debug`` only, so a sustained failure (bad auth, Volundr down) never
+        surfaced anywhere an operator would see it. This logs at ``warning``
+        and counts the failure so it can be graphed and alerted on.
+        """
+        logger.warning(
+            "Forge trace span %s failed%s%s",
+            op,
+            f" ({status_code})" if status_code is not None else "",
+            f": {detail}" if detail else "",
+            # exc_info=True already puts the exception (type, message,
+            # traceback) in the log record — passing str(exc) as detail too
+            # would just repeat it.
+            exc_info=exc_info,
+        )
+        get_observability().count(
+            "skuld.trace_span.post_failed",
+            attributes={"op": op},
+            description="Forge trace-span POSTs that did not succeed (best-effort telemetry).",
+        )
+
     async def _start_trace_span(
         self,
         *,
@@ -187,13 +223,11 @@ class EventLogMixin:
             response = await client.post(FORGE_TRACE_SPANS_START_PATH, json=payload)
             if response.status_code < 300:
                 return span_id
-            logger.debug(
-                "Trace span start failed (%d): %s",
-                response.status_code,
-                response.text[:200],
+            self._record_trace_span_post_failure(
+                "start", status_code=response.status_code, detail=response.text[:200]
             )
-        except Exception:
-            logger.debug("Failed to start trace span", exc_info=True)
+        except httpx.HTTPError:
+            self._record_trace_span_post_failure("start", exc_info=True)
         return None
 
     async def _finish_trace_span(
@@ -221,13 +255,13 @@ class EventLogMixin:
             )
             if response.status_code < 300:
                 return
-            logger.debug(
-                "Trace span finish failed (%d): %s",
-                response.status_code,
-                response.text[:200],
+            self._record_trace_span_post_failure(
+                "finish", status_code=response.status_code, detail=response.text[:200]
             )
-        except Exception:
-            logger.debug("Failed to finish trace span id=%s", span_id, exc_info=True)
+        except httpx.HTTPError:
+            self._record_trace_span_post_failure(
+                "finish", detail=f"span_id={span_id}", exc_info=True
+            )
 
     async def _complete_trace_span(
         self,
@@ -278,16 +312,13 @@ class EventLogMixin:
             response = await client.post(FORGE_TRACE_SPANS_COMPLETE_PATH, json=payload)
             if response.status_code < 300:
                 return span_id
-            logger.debug(
-                "Trace span complete failed (%d): %s",
-                response.status_code,
-                response.text[:200],
+            self._record_trace_span_post_failure(
+                "complete", status_code=response.status_code, detail=response.text[:200]
             )
-        except Exception:
-            logger.debug(
-                "Failed to complete trace span kind=%s name=%s",
-                _sanitize_log(kind),
-                _sanitize_log(name),
+        except httpx.HTTPError:
+            self._record_trace_span_post_failure(
+                "complete",
+                detail=f"kind={_sanitize_log(kind)} name={_sanitize_log(name)}",
                 exc_info=True,
             )
         return None

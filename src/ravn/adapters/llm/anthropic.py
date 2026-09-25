@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator
 
 import httpx
 
+from niuu.observability import get_observability
 from ravn.domain.exceptions import LLMError
 from ravn.domain.models import (
     LLMResponse,
@@ -148,6 +149,10 @@ class AnthropicAdapter(LLMPort):
             "anthropic-version": ANTHROPIC_API_VERSION,
             "anthropic-beta": ",".join(betas),
             "content-type": "application/json",
+            # W3C traceparent/tracestate for the active span, when observability
+            # is enabled and a span is active. Empty dict (no keys) otherwise —
+            # this call is the leaf of the trace that reaches Bifröst.
+            **get_observability().inject(),
         }
 
     def _build_system(self, system: SystemPrompt) -> list[dict]:

@@ -15,7 +15,6 @@ from cli.tui.theme import (
     ACCENT_CYAN,
     ACCENT_EMERALD,
     ACCENT_PURPLE,
-    ACCENT_RED,
     BG_SECONDARY,
     TEXT_MUTED,
     TEXT_PRIMARY,
@@ -23,16 +22,11 @@ from cli.tui.theme import (
 )
 from cli.tui.widgets.metric_card import MetricCard, MetricRow
 from cli.tui.widgets.tabs import NiuuTabs
-from ting.tui._helpers import format_confidence, format_confidence_history
 
 if TYPE_CHECKING:
     from niuu.cli_api_client import CLIAPIClient
 
 _REVIEW_TABS = ["All", "In Review", "Auto-approved", "Escalated"]
-
-# Confidence color thresholds.
-_CONFIDENCE_HIGH = 0.8
-_CONFIDENCE_MED = 0.5
 
 
 class ReviewRow(Widget):
@@ -59,21 +53,10 @@ class ReviewRow(Widget):
         run = self._run
         name = run.get("name", "Unknown")
         run_id = str(run.get("id", ""))[:8]
-        confidence = run.get("confidence", 0.0)
         reviewer_session = run.get("reviewer_session_id") or "—"
         review_round = run.get("review_round", 0)
         status = run.get("status", "REVIEW")
         auto_approved = run.get("auto_approved", False)
-
-        conf_pct = format_confidence(confidence)
-
-        # Confidence color based on threshold.
-        if confidence >= _CONFIDENCE_HIGH:
-            conf_color = ACCENT_EMERALD
-        elif confidence >= _CONFIDENCE_MED:
-            conf_color = ACCENT_AMBER
-        else:
-            conf_color = ACCENT_RED
 
         status_label = "auto-approved" if auto_approved else status.lower()
         if auto_approved:
@@ -83,19 +66,12 @@ class ReviewRow(Widget):
         else:
             status_color = ACCENT_PURPLE
 
-        history_str = format_confidence_history(
-            run.get("confidence_history", []),
-            TEXT_MUTED,
-        )
-
         yield Static(
             f"[bold {TEXT_PRIMARY}]{name}[/]  "
             f"[{TEXT_MUTED}]{run_id}[/]  "
             f"[{status_color}]{status_label}[/]  "
-            f"[{conf_color}]{conf_pct}[/]  "
             f"[{TEXT_SECONDARY}]reviewer: {reviewer_session}[/]  "
-            f"[{TEXT_MUTED}]round: {review_round}[/]"
-            f"{history_str}",
+            f"[{TEXT_MUTED}]round: {review_round}[/]",
             id="review-row-content",
         )
 

@@ -6,7 +6,6 @@ import { Modal, cn } from '@niuulabs/ui';
 // ---------------------------------------------------------------------------
 
 export interface RulesFormState {
-  threshold: number;
   maxConcurrentRuns: number;
   autoContinue: boolean;
   retryCount: number;
@@ -25,7 +24,7 @@ export interface EditRulesModalProps {
 
 export function EditRulesModal({ open, onOpenChange, rules, onSave }: EditRulesModalProps) {
   const [isSaving, setIsSaving] = useState(false);
-  const rulesKey = `${rules.threshold}:${rules.maxConcurrentRuns}:${rules.autoContinue}:${rules.retryCount}`;
+  const rulesKey = `${rules.maxConcurrentRuns}:${rules.autoContinue}:${rules.retryCount}`;
   const [draft, setDraft] = useState<{ key: string; value: RulesFormState } | null>(null);
   const current = draft?.key === rulesKey ? draft.value : rules;
 
@@ -74,19 +73,6 @@ export function EditRulesModal({ open, onOpenChange, rules, onSave }: EditRulesM
       ]}
     >
       <div className="niuu:mt-2 niuu:flex niuu:flex-col niuu:gap-3">
-        <div className="niuu:flex niuu:items-center niuu:justify-between">
-          <label className="niuu:text-sm niuu:text-text-secondary">Confidence threshold</label>
-          <input
-            type="number"
-            min="0"
-            max="100"
-            value={current.threshold}
-            onChange={(e) => updateDraft({ threshold: parseFloat(e.target.value) || 0 })}
-            className={inputClass}
-            aria-label="Confidence threshold"
-          />
-        </div>
-
         <div className="niuu:flex niuu:items-center niuu:justify-between">
           <label className="niuu:text-sm niuu:text-text-secondary">Max concurrent runs</label>
           <input

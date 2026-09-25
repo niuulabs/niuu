@@ -54,6 +54,12 @@ ingress:
 config:
   logLevel: "info"
   logFormat: "json"
+  # -- OpenTelemetry trace/metric export for Ting's own process (distinct
+  # from dispatch.flock.observability below, which is for the Ravn/Skuld
+  # flock nodes Ting launches). Empty (the default) means unconfigured —
+  # observability.enabled defaults to false, a decision, not a fallback.
+  # Fields match niuu.domain.observability.ObservabilityConfig.
+  observability: {}
   host: "0.0.0.0"
   port: 8081
   workers: 2
@@ -451,10 +457,6 @@ sharedIntegrations:
   baseUrl: ""
   # -- HTTP timeout for shared integration requests
   timeoutSeconds: 30.0
-
-cerbos:
-  # -- Cerbos authorization service URL
-  url: "http://localhost:3592"
 
 auth:
   adapter: identity.adapters.identity.EnvoyHeaderAuthenticationAdapter

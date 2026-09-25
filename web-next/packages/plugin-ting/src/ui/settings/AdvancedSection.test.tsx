@@ -15,18 +15,16 @@ describe('AdvancedSection', () => {
     ).toBeInTheDocument();
   });
 
-  it('renders all 3 action rows', () => {
+  it('renders all 2 action rows', () => {
     render(<AdvancedSection />);
     expect(screen.getByText('Flush queue')).toBeInTheDocument();
     expect(screen.getByText('Reset dispatcher')).toBeInTheDocument();
-    expect(screen.getByText('Rebuild confidence scores')).toBeInTheDocument();
   });
 
   it('renders the action buttons', () => {
     render(<AdvancedSection />);
     expect(screen.getByText('Flush')).toBeInTheDocument();
     expect(screen.getByText('Reset')).toBeInTheDocument();
-    expect(screen.getByText('Rebuild')).toBeInTheDocument();
   });
 
   it('shows confirm message on first click of a danger button', () => {
@@ -61,10 +59,10 @@ describe('AdvancedSection', () => {
     expect(screen.getByRole('region', { name: /advanced settings/i })).toBeInTheDocument();
   });
 
-  it('renders 3 action buttons total', () => {
+  it('renders 2 action buttons total', () => {
     render(<AdvancedSection />);
     const buttons = screen.getAllByRole('button');
-    expect(buttons).toHaveLength(3);
+    expect(buttons).toHaveLength(2);
   });
 
   it('shows confirm message with specific text for each action', () => {

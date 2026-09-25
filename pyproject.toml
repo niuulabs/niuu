@@ -88,6 +88,8 @@ otel = [
     "opentelemetry-sdk>=1.44.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.44.0",
     "opentelemetry-exporter-otlp-proto-http>=1.44.0",
+    "opentelemetry-instrumentation-fastapi>=0.65b0",
+    "opentelemetry-instrumentation-httpx>=0.65b0",
 ]
 encryption = [
     "cryptography>=50.0.1",
@@ -104,6 +106,11 @@ cli = [
     "nuitka[onefile]>=4.2.1",
     "ordered-set>=4.1",
     "patchelf>=0.19.1.0; sys_platform == 'linux'",
+    # `niuu platform up` (mini mode) calls configure_observability itself —
+    # enabling observability.enabled: true without this extra would raise
+    # (no-fallbacks), turning on tracing into a broken local platform. The
+    # CLI binary always carries the otel packages so that choice always works.
+    "volundr[otel]",
 ]
 tui = [
     "textual>=8.2.8",

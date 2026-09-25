@@ -1,4 +1,4 @@
-"""Runs TUI page — list runs with status, confidence, and actions."""
+"""Runs TUI page — list runs with status and actions."""
 
 from __future__ import annotations
 
@@ -25,7 +25,6 @@ from cli.tui.theme import (
 )
 from cli.tui.widgets.metric_card import MetricCard, MetricRow
 from cli.tui.widgets.tabs import NiuuTabs
-from ting.tui._helpers import format_confidence, format_confidence_history
 
 if TYPE_CHECKING:
     from niuu.cli_api_client import CLIAPIClient
@@ -69,17 +68,11 @@ class RunRow(Widget):
         run = self._run
         name = run.get("name", "Unknown")
         status = run.get("status", "PENDING")
-        confidence = run.get("confidence", 0.0)
         session_id = run.get("session_id") or "—"
         run_id = str(run.get("id", ""))[:8]
         retry_count = run.get("retry_count", 0)
 
         color = _RUN_STATUS_COLORS.get(status, TEXT_MUTED)
-        conf_pct = format_confidence(confidence)
-        history_str = format_confidence_history(
-            run.get("confidence_history", []),
-            TEXT_MUTED,
-        )
 
         retry_str = f"  [{TEXT_MUTED}]retries: {retry_count}[/]" if retry_count else ""
 
@@ -87,9 +80,8 @@ class RunRow(Widget):
             f"[bold {TEXT_PRIMARY}]{name}[/]  "
             f"[{TEXT_MUTED}]{run_id}[/]  "
             f"[{color}]{status}[/]  "
-            f"[{ACCENT_AMBER}]{conf_pct}[/]  "
             f"[{TEXT_SECONDARY}]session: {session_id}[/]"
-            f"{retry_str}{history_str}",
+            f"{retry_str}",
             id="run-row-content",
         )
 

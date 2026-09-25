@@ -37,7 +37,6 @@ def saga() -> Saga:
         repos=["org/repo"],
         feature_branch="feat/alpha",
         status=SagaStatus.ACTIVE,
-        confidence=0.0,
         created_at=datetime.now(UTC),
         base_branch="dev",
     )
@@ -53,9 +52,9 @@ class TestSaveSaga:
         call_args = mock_pool.execute.call_args
         assert "INSERT INTO sagas" in call_args[0][0]
         assert call_args[0][1] == saga.id
+        assert call_args[0][12] is None
         assert call_args[0][13] is None
         assert call_args[0][14] is None
-        assert call_args[0][15] is None
         assert "ON CONFLICT (id) DO UPDATE SET" in call_args[0][0]
 
     @pytest.mark.asyncio
@@ -72,7 +71,6 @@ class TestSaveSaga:
             repos=saga.repos,
             feature_branch=saga.feature_branch,
             status=saga.status,
-            confidence=saga.confidence,
             created_at=saga.created_at,
             base_branch=saga.base_branch,
             owner_id="dev-user",
@@ -84,10 +82,10 @@ class TestSaveSaga:
         await repo.save_saga(updated)
 
         call_args = mock_pool.execute.call_args
-        assert call_args[0][12] == "dev-user"
-        assert call_args[0][13] == workflow_id
-        assert call_args[0][14] == "1.0.0"
-        assert call_args[0][15] == '{"name": "Review Flow"}'
+        assert call_args[0][11] == "dev-user"
+        assert call_args[0][12] == workflow_id
+        assert call_args[0][13] == "1.0.0"
+        assert call_args[0][14] == '{"name": "Review Flow"}'
 
 
 class TestSaveRun:
@@ -106,7 +104,6 @@ class TestSaveRun:
             declared_files=[],
             estimate_hours=1.0,
             status=RunStatus.RUNNING,
-            confidence=0.5,
             session_id="session-123",
             branch="feat/proof",
             chronicle_summary="summary",
@@ -130,9 +127,9 @@ class TestSaveRun:
         assert "INSERT INTO runs" in call_args[0][0]
         assert "ON CONFLICT (id) DO UPDATE SET" in call_args[0][0]
         assert call_args[0][9] == RunStatus.RUNNING.value
-        assert call_args[0][12] == "feat/proof"
-        assert call_args[0][18] == "1"
-        assert call_args[0][23] == '{"verdict": "approve"}'
+        assert call_args[0][11] == "feat/proof"
+        assert call_args[0][17] == "1"
+        assert call_args[0][22] == '{"verdict": "approve"}'
 
 
 class TestListSagas:
@@ -156,7 +153,6 @@ class TestListSagas:
                 "repos": saga.repos,
                 "feature_branch": saga.feature_branch,
                 "status": "ACTIVE",
-                "confidence": 0.0,
                 "created_at": saga.created_at,
                 "base_branch": "dev",
             }
@@ -180,7 +176,6 @@ class TestListSagas:
                 "repos": saga.repos,
                 "feature_branch": saga.feature_branch,
                 "status": "ACTIVE",
-                "confidence": 0.0,
                 "created_at": saga.created_at,
                 "base_branch": "dev",
             }
@@ -219,7 +214,6 @@ class TestGetSaga:
             "repos": saga.repos,
             "feature_branch": saga.feature_branch,
             "status": "ACTIVE",
-            "confidence": 0.0,
             "created_at": saga.created_at,
             "base_branch": "dev",
         }
@@ -241,7 +235,6 @@ class TestGetSaga:
             "repos": saga.repos,
             "feature_branch": saga.feature_branch,
             "status": "ACTIVE",
-            "confidence": 0.0,
             "created_at": saga.created_at,
             "base_branch": "dev",
         }

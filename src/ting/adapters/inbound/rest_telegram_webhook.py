@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Request, Response, status
 
-from ting.config import ReviewConfig, TelegramConfig
+from ting.config import TelegramConfig
 from ting.domain.services.dispatch_service import DispatchItem, DispatchService
 from ting.domain.services.run_review import (
     InvalidRunStateError,
@@ -487,12 +487,6 @@ def create_telegram_webhook_router() -> APIRouter:
             return TelegramConfig()
         return settings.telegram
 
-    def _get_review_config(request: Request) -> ReviewConfig:
-        settings = getattr(request.app.state, "settings", None)
-        if settings is None:
-            return ReviewConfig()
-        return settings.review
-
     def _get_sub_repo(request: Request) -> NotificationSubscriptionRepository:
         return request.app.state.notification_sub_repo
 
@@ -574,9 +568,8 @@ def create_telegram_webhook_router() -> APIRouter:
         volundr = _get_volundr(request)
         dispatcher_repo = _get_dispatcher_repo(request)
         dispatch_service = _get_dispatch_service(request)
-        review_config = _get_review_config(request)
         event_bus = getattr(request.app.state, "event_bus", None)
-        review_service = RunReviewService(tracker, owner_id, review_config, event_bus=event_bus)
+        review_service = RunReviewService(tracker, owner_id, event_bus=event_bus)
 
         try:
             reply = await _dispatch_command(
