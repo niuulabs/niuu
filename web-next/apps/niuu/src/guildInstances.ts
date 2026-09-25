@@ -3,6 +3,8 @@ import type { AppIdentity } from '@niuulabs/plugin-sdk';
 export type InstanceKind =
   'volundr' | 'ting' | 'mimir' | 'bifrost' | 'ravn' | 'observatory' | 'generic';
 export type VisibilityScope = 'user' | 'tenant' | 'system';
+export type InstanceHealth = 'unknown' | 'ok' | 'unreachable';
+
 export type InstanceRecord = {
   id: string;
   kind: InstanceKind;
@@ -18,7 +20,31 @@ export type InstanceRecord = {
   tags: string[];
   createdAt: string;
   updatedAt: string;
+  /** Server-recorded reachability — probed on register and on a periodic loop. */
+  health: InstanceHealth;
+  /** Last time a probe SUCCEEDED — never invented for a node that hasn't. */
+  lastSeenAt: string | null;
+  /** Last time a probe was ATTEMPTED, success or not — "when did we last look". */
+  lastCheckedAt: string | null;
+  lastError: string | null;
 };
+
+const KNOWN_INSTANCE_HEALTH_VALUES: readonly InstanceHealth[] = ['unknown', 'ok', 'unreachable'];
+
+/**
+ * Coerce a `health` value to a known InstanceHealth, defaulting to
+ * 'unknown' for anything else — including `undefined`/`null` from an older
+ * backend or a test fixture that predates this field, and any future value
+ * this build doesn't recognize yet. Without this, an unrecognized value
+ * would fail every `=== 'ok'` / `=== 'unreachable'` check silently, but
+ * could still slip through a loose comparison and render as unreachable by
+ * accident.
+ */
+export function normalizeHealth(value: unknown): InstanceHealth {
+  return KNOWN_INSTANCE_HEALTH_VALUES.includes(value as InstanceHealth)
+    ? (value as InstanceHealth)
+    : 'unknown';
+}
 
 export type InstanceUpdate = Pick<
   InstanceRecord,

@@ -110,3 +110,28 @@ async def test_list_volundr_targets_uses_configured_auth_without_request_bearer(
     sent = route.calls[0].request
     assert sent.headers["authorization"] == "Bearer service-jwt"
     assert sent.headers["x-auth-user-id"] == "user-1"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_volundr_targets_raises_on_a_malformed_payload() -> None:
+    """A 200 with a non-list body is a protocol violation, not "no
+    instances" — returning [] here would be indistinguishable from a user
+    with zero Volundr connections configured."""
+    respx.get("https://guild.test/api/v1/niuu/instances").mock(
+        return_value=httpx.Response(200, json={"not": "a list"})
+    )
+    client = GuildInstanceRegistryClient("https://guild.test")
+
+    try:
+        with pytest.raises(ValueError, match="non-list payload"):
+            await client.list_volundr_targets(
+                Principal(
+                    user_id="user-1",
+                    email="user-1@example.com",
+                    tenant_id="tenant-a",
+                    roles=["volundr:developer"],
+                )
+            )
+    finally:
+        await client.close()

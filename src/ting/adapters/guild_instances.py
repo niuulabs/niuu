@@ -50,8 +50,13 @@ class GuildInstanceRegistryClient:
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, list):
-            logger.warning("Guild instance registry returned non-list payload")
-            return []
+            # A 200 with a malformed body is a protocol violation, not "no
+            # instances" — treating it as an empty list would look exactly
+            # like a user with zero Volundr connections configured (see
+            # .claude/rules/no-fallbacks.md).
+            raise ValueError(
+                f"Guild instance registry returned a non-list payload: {type(payload).__name__}"
+            )
         return [_to_instance(item) for item in payload if isinstance(item, dict)]
 
     async def get_volundr_target(

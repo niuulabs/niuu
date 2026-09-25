@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 import asyncpg
 
 from niuu.domain.models import (
+    InstanceHealthStatus,
     InstanceKind,
     InstanceVisibility,
     RegisteredInstance,
@@ -46,15 +48,22 @@ class PostgresInstanceRepository(InstanceRepository):
         return self._row_to_instance(row) if row is not None else None
 
     async def save_instance(self, instance: RegisteredInstance) -> RegisteredInstance:
+        # Health/last_seen_at/last_checked_at/last_error are set on INSERT
+        # (a brand-new instance starts unknown) but deliberately left out of
+        # the ON CONFLICT UPDATE SET — those columns are owned exclusively by
+        # record_health. A metadata PATCH racing the periodic health loop
+        # must never clobber the loop's own, possibly newer, write with a
+        # stale value carried in this in-memory object.
         await self._pool.execute(
             """
             INSERT INTO niuu_instances (
                 id, kind, slug, name, base_url, visibility, owner_id, tenant_id,
-                enabled, is_default, config, created_at, updated_at, tags
+                enabled, is_default, config, created_at, updated_at, tags,
+                health, last_seen_at, last_checked_at, last_error
             )
             VALUES (
                 $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13,
-                $14::jsonb
+                $14::jsonb, $15, $16, $17, $18
             )
             ON CONFLICT (id) DO UPDATE SET
                 kind = EXCLUDED.kind,
@@ -84,11 +93,37 @@ class PostgresInstanceRepository(InstanceRepository):
             instance.created_at,
             instance.updated_at,
             json.dumps(list(instance.tags)),
+            str(instance.health),
+            instance.last_seen_at,
+            instance.last_checked_at,
+            instance.last_error,
         )
         return instance
 
     async def delete_instance(self, instance_id: str) -> None:
         await self._pool.execute("DELETE FROM niuu_instances WHERE id = $1::uuid", instance_id)
+
+    async def record_health(
+        self,
+        instance_id: str,
+        *,
+        health: InstanceHealthStatus,
+        last_seen_at: datetime | None,
+        last_checked_at: datetime,
+        last_error: str | None,
+    ) -> None:
+        await self._pool.execute(
+            """
+            UPDATE niuu_instances
+            SET health = $2, last_seen_at = $3, last_checked_at = $4, last_error = $5
+            WHERE id = $1::uuid
+            """,
+            instance_id,
+            str(health),
+            last_seen_at,
+            last_checked_at,
+            last_error,
+        )
 
     @staticmethod
     def _row_to_instance(row: asyncpg.Record) -> RegisteredInstance:
@@ -119,4 +154,10 @@ class PostgresInstanceRepository(InstanceRepository):
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             tags=tags,
+            # health is NOT NULL with a CHECK constraint (migration 000077),
+            # so this is a direct parse, never a guess at a missing value.
+            health=InstanceHealthStatus(row["health"]),
+            last_seen_at=row["last_seen_at"],
+            last_checked_at=row["last_checked_at"],
+            last_error=row["last_error"],
         )
