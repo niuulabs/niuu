@@ -549,15 +549,19 @@ class TestDriveLoopHeartbeat:
         publisher = _RecordingPublisher()
         dl = _make_drive_loop(heartbeat_seconds=1, event_publisher=publisher)
 
+        def heartbeat_events() -> list[object]:
+            return [e for e in publisher.events if getattr(e, "payload", {}).get("heartbeat")]
+
         loop_task = asyncio.create_task(dl.run())
-        await asyncio.sleep(1.1)  # wait for at least one heartbeat tick
+        # Wait for the first tick itself rather than a fixed sleep just past the
+        # interval, which misses the tick when the test runner is loaded.
+        deadline = asyncio.get_running_loop().time() + 10
+        while not heartbeat_events() and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.05)
         loop_task.cancel()
         await asyncio.gather(loop_task, return_exceptions=True)
 
-        heartbeat_events = [
-            e for e in publisher.events if getattr(e, "payload", {}).get("heartbeat")
-        ]
-        assert heartbeat_events, "Expected at least one heartbeat event"
+        assert heartbeat_events(), "Expected at least one heartbeat event"
 
 
 # ---------------------------------------------------------------------------
