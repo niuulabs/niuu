@@ -16,6 +16,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
+from packaging.requirements import InvalidRequirement, Requirement
+
 from ravn.domain.models import ToolResult
 from ravn.ports.tool import ToolPort
 from ravn.valkyrie_evolution.models import (
@@ -291,6 +293,65 @@ _DOCKER_PROXY_ENV = (
     "https_proxy",
     "no_proxy",
 )
+#: Substrings that mean a requirement is a direct reference (URL, VCS, or a
+#: local path) rather than a plain "name[extras]specifier" — pip still
+#: builds these from source (running arbitrary setup.py/PEP 517 build-backend
+#: code, or cloning a repo) even under ``--only-binary=:all:``, which only
+#: constrains ordinary *index* lookups. A cheap substring check first, a
+#: real PEP 508 parse afterward.
+_DIRECT_REFERENCE_MARKERS = ("://", " @ ", "git+")
+
+
+def _validate_pip_requirement(requirement: str) -> None:
+    """Refuse anything but a plain distribution name and version specifier.
+
+    ``--only-binary=:all:`` alone is not enough: a direct reference such as
+    ``probe @ file:///tmp/x`` or ``probe @ https://evil/x.tar.gz`` skips
+    index resolution entirely, so pip still builds it from source (or
+    clones a VCS repo) regardless of that flag. Reject the requirement
+    before it ever reaches a `pip install` argv.
+    """
+    stripped = requirement.strip()
+    if not stripped or stripped.startswith("-"):
+        raise LearnedToolError(f"unsafe learned-tool requirement argument: {requirement!r}")
+    lowered = stripped.lower()
+    if any(marker in lowered for marker in _DIRECT_REFERENCE_MARKERS):
+        raise LearnedToolError(
+            "learned-tool requirement must be a plain distribution name and version "
+            f"specifier, never a URL/VCS/direct reference: {requirement!r}"
+        )
+    if "/" in stripped or "\\" in stripped:
+        raise LearnedToolError(
+            f"learned-tool requirement must be a plain distribution name and version "
+            f"specifier, not a path: {requirement!r}"
+        )
+    try:
+        parsed = Requirement(stripped)
+    except InvalidRequirement as exc:
+        raise LearnedToolError(
+            f"unparseable learned-tool requirement: {requirement!r} ({exc})"
+        ) from exc
+    if parsed.url:
+        raise LearnedToolError(
+            "learned-tool requirement must be a plain distribution name and version "
+            f"specifier, never a direct URL reference: {requirement!r}"
+        )
+
+
+#: pip's own wording when --only-binary=:all: rules out every candidate for
+#: a requirement (no compatible wheel published) — distinct from a docker/
+#: venv-creation outage, which carries neither phrase.
+_PIP_RESOLUTION_FAILURE_MARKERS = (
+    "no matching distribution found",
+    "could not find a version that satisfies the requirement",
+)
+
+
+def _is_binary_wheel_resolution_failure(message: str) -> bool:
+    lowered = message.lower()
+    return "dependency install failed" in lowered and any(
+        marker in lowered for marker in _PIP_RESOLUTION_FAILURE_MARKERS
+    )
 
 
 class ContainedLearnedToolRunner:
@@ -454,6 +515,16 @@ class ContainedLearnedToolRunner:
                 logs="static verification failed:\n" + "\n".join(f"  - {d}" for d in defects),
                 missing_module=first_undeclared_import(tool_code, requirements),
             )
+        # A malformed or unsafe requirement is the proposal's own fault, not
+        # an outage — decline it the same way static_defects does, never as
+        # LearnedToolInfrastructureError. Checked before any docker/venv
+        # work: a peer that cannot even declare valid requirements gets no
+        # egress at all.
+        for requirement in requirements:
+            try:
+                _validate_pip_requirement(requirement)
+            except LearnedToolError as exc:
+                return VerificationResult(ok=False, logs=f"declared requirement rejected: {exc}")
         if not test_code.strip():
             return VerificationResult(
                 ok=True,
@@ -464,6 +535,20 @@ class ContainedLearnedToolRunner:
         try:
             venv_dir = await self._ensure_container_venv(f"verify-{safe_name}", requirements)
         except LearnedToolError as exc:
+            if _is_binary_wheel_resolution_failure(str(exc)):
+                # Not an outage: this specific requirement has no wheel pip
+                # can install under --only-binary=:all:. Durably decline the
+                # proposal with a hint, rather than raising infrastructure
+                # and letting the same doomed install retry forever.
+                return VerificationResult(
+                    ok=False,
+                    logs=(
+                        f"{exc}\n\nVerification installs binary wheels only "
+                        "(--only-binary=:all:) — a requirement with no published wheel "
+                        "for this platform cannot be verified here. Publish a wheel, or "
+                        "bake the dependency into a reviewed runner image instead."
+                    ),
+                )
             raise LearnedToolInfrastructureError(
                 f"verification dependency provisioning failed: {exc}"
             ) from exc
@@ -471,8 +556,14 @@ class ContainedLearnedToolRunner:
         run_dir = self._workspace_root / ".ravn" / "verify_runs" / uuid.uuid4().hex
         run_dir.mkdir(parents=True, exist_ok=True)
         try:
-            module_name = re.sub(r"[^a-zA-Z0-9_]+", "_", tool_name.strip()) or "learned_tool"
-            (run_dir / f"{module_name}.py").write_text(tool_code, encoding="utf-8")
+            # Fixed file names, never derived from the peer-controlled
+            # title: TEST_RUNNER_SCRIPT already registers the tool module as
+            # "_verify_tool" in sys.modules regardless of its on-disk name,
+            # so deriving the file name from `tool_name` bought nothing and
+            # let a tool titled "_verify_test" collide with the test file —
+            # last write wins, so the tool's own code silently never ran and
+            # the test module verified itself instead.
+            (run_dir / "_verify_tool.py").write_text(tool_code, encoding="utf-8")
             (run_dir / "_verify_test.py").write_text(test_code, encoding="utf-8")
             (run_dir / "_verify_runner.py").write_text(TEST_RUNNER_SCRIPT, encoding="utf-8")
 
@@ -499,7 +590,7 @@ class ContainedLearnedToolRunner:
                     self._policy.image,
                     python,
                     f"{_CONTAINER_VERIFY_PATH}/_verify_runner.py",
-                    f"{_CONTAINER_VERIFY_PATH}/{module_name}.py",
+                    f"{_CONTAINER_VERIFY_PATH}/_verify_tool.py",
                     f"{_CONTAINER_VERIFY_PATH}/_verify_test.py",
                 ]
             )
@@ -696,8 +787,7 @@ class ContainedLearnedToolRunner:
         if not requirements:
             return None
         for requirement in requirements:
-            if not requirement.strip() or requirement.lstrip().startswith("-"):
-                raise LearnedToolError(f"unsafe learned-tool requirement argument: {requirement!r}")
+            _validate_pip_requirement(requirement)
         safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", tool_name.strip())
         if not safe_name:
             raise LearnedToolError("cannot provision a venv for an empty tool name")
@@ -733,6 +823,17 @@ class ContainedLearnedToolRunner:
                     "pip",
                     "install",
                     "--disable-pip-version-check",
+                    # Binary wheels only, never an sdist: a peer-chosen sdist
+                    # can run arbitrary build-backend code (setup.py, PEP 517
+                    # build hooks) during install, with the network this step
+                    # already grants. --no-cache-dir keeps a previously
+                    # cached sdist-built wheel from slipping back in. `--`
+                    # marks the end of options so an injected leading '-' in
+                    # a requirement string (already rejected above, this is
+                    # defense in depth) can never be parsed as a pip flag.
+                    "--only-binary=:all:",
+                    "--no-cache-dir",
+                    "--",
                     *requirements,
                 ],
                 network=NETWORK_ALLOWED_DOCKER_NETWORK,

@@ -1063,6 +1063,63 @@ The final stitch deliberately adds no planner or objective service:
   no service-account token, denied ingress, non-root/seccomp/capability
   restrictions, resource and output bounds, and fail closed for reach the
   backend cannot enforce.
+- `KubernetesJobLearnedToolRunner.verify()` is now implemented
+  (`supports_verify = True`), closing the gap where peer-proposal adoption
+  raised loudly on `k8s_job` instead of completing. A peer's test suite runs
+  in the SAME denied-network, NetworkPolicy-verified Job shape `execute()`
+  uses. A peer proposal that declares requirements is declined outright, the
+  same posture `execute()` takes at invocation time — installing them would
+  need a throwaway Job with real egress for a tool that could never actually
+  run with those requirements on this backend anyway; the container runner
+  keeps installing (binary wheels only), but a requirement string is now
+  parsed with `packaging.requirements.Requirement` and refused whenever it
+  is a direct URL/VCS/local-path reference, since `--only-binary=:all:`
+  alone does not stop pip from building one of those from source.
+  `CapabilityProposal`'s own requirement validator already rejected the same
+  shapes structurally (confirmed by test), so a malicious peer proposal is
+  declined at parse time independent of this defense-in-depth check.
+  - Two budgets are deliberately decoupled: a separate,
+    `job_pod_start_timeout_seconds`-bounded window covers scheduling and
+    image pull, while the test's own timeout only starts counting once the
+    container's `state.running.startedAt` is observed — so a slow pull
+    never eats into the test's run time. `activeDeadlineSeconds` on the Job
+    covers both budgets combined.
+  - An API error, an image pull failure, an unschedulable pod, a kubelet
+    admission refusal (`OutOfcpu`/`NodeAffinity` — diagnosed by the
+    container's actual state, never by pod `phase` alone), or the container
+    never starting within its pod-start window all raise
+    `LearnedToolInfrastructureError`. A cluster-driven eviction (node
+    drain, preemption, the taint-manager) does too — but an eviction caused
+    by the pod's OWN resource usage (its ephemeral-storage/emptyDir volume
+    or memory exceeding its limit) is a failed verification, not
+    infrastructure, so a peer cannot force endless retries by writing past
+    its own limit.
+  - A test that hangs past the timeout AFTER its container has started is a
+    durable failed verification, never infrastructure: a peer whose tests
+    hang must be rejected once, not retried forever on redelivery because
+    every attempt "looks like" an outage.
+  - For a denied-network Job (verify(), and run() of a tool without network
+    reach), every NetworkPolicy in the namespace is enumerated (not only
+    the two verified by name, and evaluated against every selector operator
+    — In/NotIn/Exists/DoesNotExist, failing closed on anything else) to
+    catch an unrelated policy that also grants denied pods egress —
+    NetworkPolicies are additive, so a namespace-wide "allow DNS" policy
+    would otherwise silently widen what the deny policy appeared to
+    enforce. Skipped for an allowed-network `execute()` call, which has
+    nothing for the check to protect and would otherwise need the `list`
+    RBAC verb unconditionally. The deny/allow policies themselves must now
+    have a selector of exactly `{matchLabels: {label: value}}` — no extra
+    labels or `matchExpressions` that would select fewer than all
+    learned-tool pods carrying that label. Cluster-level policy layers
+    (`AdminNetworkPolicy`, Cilium, Calico) are not enumerated.
+  - Each Job's Secret now carries an `ownerReference` to that Job (its real
+    server-assigned UID, so the Job is created before the Secret), a third
+    garbage-collection backstop behind the explicit post-run delete and the
+    Job's own TTL.
+  `ForgeSandboxLearnedToolRunner` (the legacy Docker-daemon-dependent
+  `forge`/`devrunner` backend) still has no `verify()`; peer adoption on it
+  continues to raise rather than silently falling back to host-side
+  verification.
 - OpenTelemetry now follows the causal path through signal adapters, JetStream
   receive/ACK/NAK, queue admission, model turns, tool calls, capability
   discovery, authenticated HTTP and workload exchange, A2A tasks, build/

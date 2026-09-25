@@ -236,6 +236,7 @@ class WebSocketChannel(MessageChannel):
         max_frame_bytes: int | None = None,
         history_protocol: int = 0,
         history_bootstrap_max_frames: int = 256,
+        room_role: str = "owner",
     ) -> None:
         """Initialize with a FastAPI WebSocket instance.
 
@@ -245,6 +246,13 @@ class WebSocketChannel(MessageChannel):
             show_internal: Whether to forward tool_use/tool_result blocks
                 to this channel. Default ``False`` (hide), matching the
                 browser's default toggle position.
+            room_role: The verified room role ("owner"/"approver"/"viewer")
+                WebSocketLifecycleMixin.handle_websocket resolved for this
+                connection, used to gate per-message-type authorization in
+                Broker._dispatch_browser_message. Defaults to "owner" so any
+                other construction site (none currently exist outside
+                handle_websocket) keeps today's unrestricted behavior rather
+                than silently becoming the least-privileged role.
         """
         self._ws = ws
         self._closed = False
@@ -259,6 +267,7 @@ class WebSocketChannel(MessageChannel):
         self._bootstrap: list[str] | None = [] if history_protocol == 2 else None
         self._bootstrap_bytes = 0
         self._bootstrap_overflow = False
+        self._room_role = room_role
 
     async def finish_history_bootstrap(self) -> None:
         """Send only post-snapshot events, after the snapshot, in broadcast order.
@@ -350,6 +359,11 @@ class WebSocketChannel(MessageChannel):
     def ws(self) -> object:
         """Access the underlying WebSocket (for receive operations)."""
         return self._ws
+
+    @property
+    def room_role(self) -> str:
+        """The verified room role resolved for this connection."""
+        return self._room_role
 
 
 # ---------------------------------------------------------------------------

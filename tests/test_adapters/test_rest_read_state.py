@@ -10,7 +10,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from niuu.domain.models import Principal
-from tests.conftest import InMemorySessionRepository, MockPodManager
+from tests.conftest import (
+    InMemorySessionRepository,
+    MockPodManager,
+    make_session_participant_service,
+)
 from volundr.adapters.inbound.rest import create_router
 from volundr.domain.models import GitSource, Session, SessionStatus
 from volundr.domain.services.session import SessionService
@@ -45,7 +49,11 @@ def inbox():
     app = FastAPI()
     app.state.identity = SimpleNamespace(get_or_provision_user=AsyncMock())
     app.state.settings = SimpleNamespace()
-    app.include_router(create_router(service))
+    app.include_router(
+        create_router(
+            service, session_participant_service=make_session_participant_service(service)
+        )
+    )
     principal = Principal(
         user_id="reader-a", email="reader@example.test", tenant_id="tenant", roles=[]
     )

@@ -216,13 +216,26 @@ class TestOidcCoverageGate:
         with pytest.raises(ValueError, match="mimir"):
             CLISettings(host_auth=self._ISSUER_KWARGS)
 
-    def test_oidc_allowed_once_mimir_guild_disabled_and_bifrost_not_open(self) -> None:
+    def test_oidc_allowed_once_mimir_disabled_and_bifrost_not_open(self) -> None:
         settings = CLISettings(
             host_auth=self._ISSUER_KWARGS,
             plugins={"enabled": {"mimir": False, "guild": False}},
             bifrost={"auth_mode": "pat"},
         )
         assert settings.host_auth.mode == "oidc"
+
+    def test_oidc_allowed_with_guild_enabled(self) -> None:
+        """Guild forwards only the caller's bearer token to a remote instance
+        (see niuu.adapters.inbound.remote_urls.forward_identity_headers), so
+        it no longer needs to be disabled for auth.mode: oidc — unlike mimir,
+        which still trusts x-auth-* headers directly."""
+        settings = CLISettings(
+            host_auth=self._ISSUER_KWARGS,
+            plugins={"enabled": {"mimir": False}},
+            bifrost={"auth_mode": "pat"},
+        )
+        assert settings.host_auth.mode == "oidc"
+        assert settings.plugins.enabled.get("guild", True) is True
 
     def test_oidc_blocked_while_bifrost_auth_mode_open(self) -> None:
         with pytest.raises(ValueError, match="bifrost.auth_mode"):

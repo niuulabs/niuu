@@ -242,6 +242,30 @@ forgeStream:
   # -- Bound on the in-memory queue merging per-host session stream events
   queueMaxsize: 256
 
+# Timeouts for outbound calls this Guild instance makes to other Guild
+# instances (niuu.adapters.outbound.guild_transport / the Ravn owner-probe).
+guildTransport:
+  # -- Ceiling for the connect leg of every outbound Guild call, and the
+  # timeout for the bare handshake that fetches a pinned instance's live
+  # certificate.
+  connectTimeoutSeconds: 5.0
+  # -- Timeout for the Ravn resident/session proxy's owner-probe HTTP GET
+  # and its TLS-pin handshake.
+  ownerProbeTimeoutSeconds: 15.0
+  # -- Host suffixes (label-boundary match) exempt from the
+  # https-unless-allow_plaintext transport-security policy, the same way
+  # localhost is: in-cluster Kubernetes service DNS never leaves the
+  # cluster's pod network, so a seed like
+  # http://niuu-volundr.volundr.svc.cluster.local does not need its own
+  # config.allow_plaintext. Applies at seed/registration validation and at
+  # every outbound call (including Ting's). Set to [] to require the
+  # explicit allow_plaintext opt-in everywhere, including in-cluster
+  # addresses. Never exempts config.tls_fingerprint pinning, which always
+  # requires https://.
+  trustedPlaintextHostSuffixes:
+    - .svc.cluster.local
+    - .svc
+
 nodeSelector: {}
 tolerations: []
 affinity: {}

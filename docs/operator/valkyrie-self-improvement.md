@@ -121,13 +121,18 @@ Every built tool is re-verified on the Valkyrie's side (its `test_code` runs
 in a fresh venv with its `requirements`). Failures trigger deterministic
 dependency healing, then re-commission with the failure log; artifacts without
 tests pass structure-only (weaker signal, not a rejection). Peers re-run tests
-before adopting a flock-shared tool.
+before adopting a flock-shared tool — always in the SAME execution boundary
+the tool would later run in, never on the resident's own host. `container`,
+`local`, and `k8s_job` all implement this `verify()` re-check; `forge`/
+`devrunner` do not, so a peer proposal on those backends is declined outright
+rather than silently verified with the resident's own network/filesystem
+access.
 
 ### 5. Execution backend — WHERE installed tools run
 
 ```yaml
 resident_evolution:
-  learned_tool_execution_backend: container   # container | local | forge | devrunner
+  learned_tool_execution_backend: container   # container | local | forge | devrunner | k8s_job
 ```
 
 - `container` (default): one fresh OCI container per invocation. The runtime
@@ -151,11 +156,66 @@ resident_evolution:
 - `forge`/`devrunner`: legacy workspace-mounted persistent-container path.
   It scopes networking but exposes the workspace, so use `container` for
   autonomous generated code.
+- `k8s_job`: the production Kubernetes backend — one locked-down Job per
+  invocation, with no Docker daemon involved. Set it via
+  `charts/agent`'s `learnedToolRunner.enabled: true`, which also installs
+  the verified deny/allow NetworkPolicies and RBAC the runner checks live
+  before every Job. Requires explicit `learned_tool_k8s.namespace`,
+  `deny_policy_name`, and `allow_policy_name`; the runner refuses to start
+  without them (no silent unenforced fallback). Jobs run digest-pinned,
+  read-only-root, non-root/seccomp/capability-restricted, with no
+  service-account token, and requirements are never installed at invocation
+  time — bake them into a reviewed image instead.
+
+  Peer-adoption re-verification (`verify()`) is supported on `k8s_job`: a
+  peer's test suite runs in the SAME denied-network, NetworkPolicy-verified
+  Job shape `run()` uses. A peer proposal that declares requirements is
+  declined outright — same posture as `run()` — rather than spun up in a
+  throwaway Job with real egress to install packages a `k8s_job` invocation
+  could never actually use anyway.
+
+  Two budgets, deliberately decoupled: `job_pod_start_timeout_seconds`
+  bounds scheduling and image pull, and the verify timeout only starts
+  counting once the container's `state.running.startedAt` is observed — so
+  a slow pull never eats into the test's own run time (a 100s pull ahead of
+  a 30s test still gets the test its full 30s). `activeDeadlineSeconds` on
+  the Job covers both budgets combined, so Kubernetes itself never kills
+  the Job before either one has had its say. A container that never leaves
+  scheduling/image-pull within its own pod-start budget is infrastructure;
+  a container that started and then ran past the test timeout is a durable
+  failed verification, not infrastructure — retrying it on every
+  redelivery would never converge. An eviction is classified the same way:
+  one caused by the pod's own resource usage (its ephemeral-storage or
+  emptyDir volume, or memory, exceeding its limit) is a failed
+  verification; only a cluster-driven eviction (preemption, node drain, the
+  taint-manager) is infrastructure. A kubelet admission refusal
+  (`OutOfcpu`, `NodeAffinity`) is diagnosed as infrastructure too — the
+  container never actually ran, regardless of the pod's reported phase.
+
+  The live NetworkPolicy check additionally enumerates every OTHER policy
+  in the namespace (not only the two verified by name) for a
+  denied-network Job — NetworkPolicies are additive, so an unrelated
+  namespace-wide policy (e.g. "allow DNS for everyone") could otherwise
+  silently grant denied pods egress the deny policy appeared to forbid.
+  This needs the `list` RBAC verb on `networkpolicies` (the chart grants
+  it) and only runs for a denied-network invocation — an allowed-network
+  tool has nothing for it to protect, so it is skipped there. **Upgrade
+  note:** before enabling `k8s_job` (or upgrading into this check), run
+  `kubectl get netpol -n <resident-namespace>` and confirm no other policy
+  in the namespace selects the `niuu.world/tool-network: denied` label with
+  an egress rule — otherwise `verify()`/`run()` for denied-network tools
+  will refuse to start. Cluster-level policy layers (Kubernetes
+  `AdminNetworkPolicy`, Cilium `CiliumNetworkPolicy`/`CiliumClusterwideNetworkPolicy`,
+  Calico `GlobalNetworkPolicy`) are NOT enumerated by this check — only
+  namespaced `networking.k8s.io/v1` NetworkPolicies. An operator relying on
+  one of those layers must verify its egress posture for denied pods
+  separately.
 
 The `container` adapter currently requires a Docker-compatible daemon. If one
 is unavailable (for example, inside a Kubernetes pod without an execution
 service), learned-tool invocation fails loudly; it never falls back to local
-execution. Configure `local` only as a conscious risk acceptance.
+execution. Configure `local` only as a conscious risk acceptance. Use
+`k8s_job` for Kubernetes deployments instead.
 
 ### 5b. Injection mode — HOW installed tools reach the prompt
 
@@ -233,13 +293,15 @@ What each layer actually provides:
 | Scoped build tokens | Blast radius: a leaked build token can only launch builds | Scoping for PATs (a PAT keeps full owner authority) |
 | Env scrubbing | Hygiene: tools can't read tokens from `os.environ` (proven by test) | A wall — same-user file reads still work |
 | `local` backend | Crash/timeout isolation | Network isolation |
-| Docker backend | Container + network isolation where Docker exists | Anything in Kubernetes |
+| Docker backend (`container`) | Container + network isolation where Docker exists | Anything in Kubernetes |
+| `k8s_job` backend | Pod-per-run Kubernetes containment: verified NetworkPolicies, no SA token, non-root/seccomp/dropped capabilities, resource/time/output bounds — for both invocation and `verify()` | A Docker daemon (none needed); runtime dependency installation (bake into the pinned image) |
 | Audit + rollback + capability ledger | Detection and recovery | Prevention |
 
 There is **no hard runtime wall in-process**. Real runtime containment in
-Kubernetes means pod-per-run execution (future runner adapter). Until then,
-autonomy levels + reach gating + short-lived scoped credentials are the
-security budget — set trust levels accordingly.
+Kubernetes means pod-per-run execution via the `k8s_job` backend — set it in
+a Kubernetes deployment rather than accepting `local`'s weaker posture.
+Autonomy levels + reach gating + short-lived scoped credentials remain the
+security budget on every backend — set trust levels accordingly.
 
 ## Agent runbook: enable self-improvement end to end
 

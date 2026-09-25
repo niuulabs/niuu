@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from httpx import ASGITransport, AsyncClient, ConnectError
 
+from tests.conftest import make_session_participant_service
 from volundr.adapters.inbound.rest import create_router
 from volundr.domain.models import GitProviderType
 from volundr.domain.ports import (
@@ -165,6 +166,7 @@ def _make_app(provider: _StubProvider | None = None, *, repo_service=...):
         chronicle_service=None,
         broadcaster=None,
         repo_service=repo_service,
+        session_participant_service=make_session_participant_service(None),
     )
     app = FastAPI()
     app.include_router(router)

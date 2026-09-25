@@ -66,7 +66,7 @@ def test_send_user_file_tool_pair_serves_attachment_bytes(tmp_path):
         )
     ]
 
-    client = TestClient(app, raise_server_exceptions=False)
+    client = TestClient(app, raise_server_exceptions=False, headers={"x-niuu-room-role": "owner"})
     response = client.get(f"/api/conversation/tool-result/{tool_id}/files/{file_uuid}")
 
     assert response.status_code == 200, response.text
@@ -107,7 +107,7 @@ def test_send_user_file_route_rejects_unpaired_path(tmp_path):
         )
     ]
 
-    client = TestClient(app, raise_server_exceptions=False)
+    client = TestClient(app, raise_server_exceptions=False, headers={"x-niuu-room-role": "owner"})
     response = client.get(f"/api/conversation/tool-result/{tool_id}/files/{file_uuid}")
 
     assert response.status_code == 404

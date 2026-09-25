@@ -19,7 +19,9 @@ class TestFileDownloadEndpoint:
         broker._settings.__dict__["_home_override"] = str(tmp_path / "home")
         (tmp_path / "home").mkdir()
         self.workspace = tmp_path
-        self.client = TestClient(app, raise_server_exceptions=False)
+        self.client = TestClient(
+            app, raise_server_exceptions=False, headers={"x-niuu-room-role": "owner"}
+        )
         yield
         broker.workspace_dir = self._original_workspace
 
@@ -59,7 +61,9 @@ class TestFileUploadEndpoint:
         self._original_workspace = broker.workspace_dir
         broker.workspace_dir = str(tmp_path)
         self.workspace = tmp_path
-        self.client = TestClient(app, raise_server_exceptions=False)
+        self.client = TestClient(
+            app, raise_server_exceptions=False, headers={"x-niuu-room-role": "owner"}
+        )
         yield
         broker.workspace_dir = self._original_workspace
 
@@ -131,7 +135,9 @@ class TestFileUploadRawEndpoint:
         self._original_workspace = broker.workspace_dir
         broker.workspace_dir = str(tmp_path)
         self.workspace = tmp_path
-        self.client = TestClient(app, raise_server_exceptions=False)
+        self.client = TestClient(
+            app, raise_server_exceptions=False, headers={"x-niuu-room-role": "owner"}
+        )
         yield
         broker.workspace_dir = self._original_workspace
 
@@ -204,7 +210,9 @@ class TestMkdirEndpoint:
         self._original_workspace = broker.workspace_dir
         broker.workspace_dir = str(tmp_path)
         self.workspace = tmp_path
-        self.client = TestClient(app, raise_server_exceptions=False)
+        self.client = TestClient(
+            app, raise_server_exceptions=False, headers={"x-niuu-room-role": "owner"}
+        )
         yield
         broker.workspace_dir = self._original_workspace
 
@@ -258,7 +266,9 @@ class TestDeleteEndpoint:
         self._original_workspace = broker.workspace_dir
         broker.workspace_dir = str(tmp_path)
         self.workspace = tmp_path
-        self.client = TestClient(app, raise_server_exceptions=False)
+        self.client = TestClient(
+            app, raise_server_exceptions=False, headers={"x-niuu-room-role": "owner"}
+        )
         yield
         broker.workspace_dir = self._original_workspace
 
@@ -302,7 +312,9 @@ class TestFileListingWithRoot:
         broker.workspace_dir = str(tmp_path / "workspace")
         (tmp_path / "workspace").mkdir()
         self.workspace = tmp_path / "workspace"
-        self.client = TestClient(app, raise_server_exceptions=False)
+        self.client = TestClient(
+            app, raise_server_exceptions=False, headers={"x-niuu-room-role": "owner"}
+        )
         yield
         broker.workspace_dir = self._original_workspace
 
@@ -340,7 +352,7 @@ def test_manage_retained_scratch_in_real_configured_home(tmp_path, monkeypatch):
     (other_home / "private").write_text("keep")
     (owner_home / "escape").symlink_to(other_home, target_is_directory=True)
     monkeypatch.setattr(broker, "_settings", SkuldSettings(persistent_home_path=str(owner_home)))
-    client = TestClient(app, raise_server_exceptions=False)
+    client = TestClient(app, raise_server_exceptions=False, headers={"x-niuu-room-role": "owner"})
     listing = client.get("/api/files", params={"root": "home", "path": "tmp/sessions"})
     assert listing.status_code == 200
     assert "stopped-session" in listing.text

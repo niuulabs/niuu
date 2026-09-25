@@ -19,6 +19,7 @@ from identity.adapters.http_auth import extract_principal
 from niuu.config import NiuuSettings
 from niuu.domain.models import Principal
 from niuu.ports.session_proxy import SessionProxyTarget
+from niuu.room_access import ROOM_ROLE_HEADER, ROOM_ROLE_RANK, required_role_for_route
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +50,25 @@ class SkuldPortRegistry:
     only identity it verified itself and refuses to attach without a guard.
     """
 
-    def __init__(self, state_file: Path | None = None, *, dev_identity: bool = False) -> None:
+    def __init__(
+        self,
+        state_file: Path | None = None,
+        *,
+        dev_identity: bool = False,
+        revalidate_interval_seconds: float | None = None,
+    ) -> None:
         self._ports: dict[str, int] = {}
         self._state_file = state_file or Path(NiuuSettings().host.forge_state_file).expanduser()
         self._dev_identity = dev_identity
+        # Read once here (composition time), not per connection: _proxy_ws
+        # passes this straight to bridge_websocket's _revalidate_loop
+        # instead of constructing NiuuSettings() itself on every WebSocket
+        # connect.
+        self._revalidate_interval_seconds = (
+            revalidate_interval_seconds
+            if revalidate_interval_seconds is not None
+            else NiuuSettings().host.session_proxy_role_check_interval_seconds
+        )
         # Optional async hook invoked when the WS proxy cannot reach a live pod,
         # so the persisted Session row self-heals (status corrected, endpoint
         # cleared) instead of leaving a stale RUNNING tombstone. Set by the host
@@ -72,11 +88,31 @@ class SkuldPortRegistry:
             Callable[[str, str | None, str | None, tuple[str, ...]], Awaitable[bool]] | None
         ) = None
         self._target_resolver: Callable[[str], Awaitable[SessionProxyTarget | None]] | None = None
+        # Optional async resolver returning the caller's verified room role
+        # ("owner"/"approver"/"viewer") for the stamped x-niuu-room-role
+        # header (see ROOM_ROLE_HEADER). Set by the composition root
+        # alongside the ownership guard. Without it, a dev-identity registry
+        # stamps "owner" (unchanged legacy behavior); everywhere else the
+        # header is simply omitted, and the downstream broker treats its
+        # absence as no elevated room privilege.
+        self._room_role_resolver: (
+            Callable[[str, str | None, str | None, tuple[str, ...]], Awaitable[str | None]] | None
+        ) = None
+        # Live proxied browser sockets, keyed by (session_id, user_id), so a
+        # revoke/demotion can close an ALREADY-OPEN connection immediately
+        # (see close_connections) instead of relying solely on
+        # _revalidate_loop's interval poll.
+        self._live_connections: dict[tuple[str, str], set[WebSocket]] = {}
 
     @property
     def dev_identity(self) -> bool:
         """Whether client-asserted dev identity is honoured (local dev only)."""
         return self._dev_identity
+
+    @property
+    def revalidate_interval_seconds(self) -> float:
+        """Seconds between _revalidate_loop's attach/room-role re-checks."""
+        return self._revalidate_interval_seconds
 
     def set_reconcile_hook(self, hook: Callable[[str], Awaitable[bool]]) -> None:
         """Inject the session-row reconcile callback used on a dead-pod proxy.
@@ -103,6 +139,76 @@ class SkuldPortRegistry:
     ) -> None:
         """Inject resolution for non-local session service targets."""
         self._target_resolver = resolver
+
+    def set_room_role_resolver(
+        self,
+        resolver: Callable[[str, str | None, str | None, tuple[str, ...]], Awaitable[str | None]],
+    ) -> None:
+        """Inject the per-connection room-role resolver for the stamped header.
+
+        ``resolver(session_id, user_id, tenant_id, roles) -> "owner" |
+        "approver" | "viewer" | None``. Called only after
+        ``may_attach`` already allowed the connection; this resolves the
+        FINER-grained role the downstream broker uses to gate tool-permission
+        responses and gate resolution, distinct from the attach decision.
+        """
+        self._room_role_resolver = resolver
+
+    def track_connection(self, session_id: str, user_id: str, websocket: WebSocket) -> None:
+        """Register a live proxied socket so a later revoke can close it immediately."""
+        self._live_connections.setdefault((session_id, user_id), set()).add(websocket)
+
+    def untrack_connection(self, session_id: str, user_id: str, websocket: WebSocket) -> None:
+        key = (session_id, user_id)
+        sockets = self._live_connections.get(key)
+        if sockets is None:
+            return
+        sockets.discard(websocket)
+        if not sockets:
+            self._live_connections.pop(key, None)
+
+    async def close_connections(
+        self, session_id: str, user_id: str, *, reason: str = "Access revoked"
+    ) -> int:
+        """Immediately close every currently tracked socket for (session_id, user_id).
+
+        Best-effort: a socket that fails to close (already gone) is skipped,
+        never raised — ``_revalidate_loop``'s interval poll is the fallback
+        of record for anything this misses. Returns the number closed.
+        """
+        sockets = list(self._live_connections.get((session_id, user_id), ()))
+        closed = 0
+        for websocket in sockets:
+            try:
+                await websocket.close(code=1008, reason=reason)
+                closed += 1
+            except Exception:
+                logger.debug(
+                    "close_connections: socket already gone for session=%s user=%s",
+                    _sanitize_log(session_id),
+                    _sanitize_log(user_id),
+                )
+        return closed
+
+    async def resolve_room_role(
+        self,
+        session_id: str,
+        user_id: str | None,
+        tenant_id: str | None,
+        roles: tuple[str, ...],
+    ) -> str | None:
+        """Resolve the caller's verified room role, or None if it cannot be determined.
+
+        Dev-identity registries (no verified identity boundary) treat the
+        caller as owner, same as ``may_attach``. Without a resolver and
+        without dev identity, returns None: the header is omitted rather than
+        guessed, and the broker treats its absence as no elevated privilege.
+        """
+        if self._room_role_resolver is not None:
+            return await self._room_role_resolver(session_id, user_id, tenant_id, roles)
+        if self._dev_identity:
+            return "owner"
+        return None
 
     async def resolve_target(self, session_id: str) -> SessionProxyTarget | None:
         """Resolve an externally hosted session service, when configured."""
@@ -243,6 +349,17 @@ _IDENTITY_HEADERS = frozenset(
         "x-auth-roles",
     }
 )
+# The room role ("owner"/"approver"/"viewer") the proxy resolved for this
+# connection, stamped so Skuld's broker can gate tool-permission responses
+# and gate resolution to approver/owner. Never in the WS forward allowlist
+# and always dropped from the HTTP forward set, so a client-supplied copy on
+# a request that goes THROUGH THIS PROXY can never reach the broker — see
+# resolve_room_role(). This guarantee is scoped to the proxy path: a request
+# that reaches the broker some other way (an enforced-Kubernetes deployment
+# routes the browser straight to the pod, bypassing this module entirely) is
+# not covered here — the sidecar Envoy's header-stripping Lua filter
+# (charts/volundr and charts/skuld envoy.headerNames) and the broker's own
+# ext_authz/ws_auth checks are that path's defense, not this constant.
 # Dev-identity query params mapped onto x-auth-* headers for the broker leg.
 _DEV_QUERY_TO_HEADER = (
     ("devUserId", "x-auth-user-id"),
@@ -273,6 +390,7 @@ def _proxy_forward_headers(
     include_cookie: bool,
     dev_identity: bool,
     principal: Principal | None,
+    room_role: str | None = None,
 ) -> dict[str, str]:
     """Build the header set forwarded from the browser leg to the broker leg.
 
@@ -281,6 +399,10 @@ def _proxy_forward_headers(
     and dev query params are dropped and *principal* (resolved by the
     configured identity adapter) is projected instead. With ``dev_identity``
     the browser-asserted dev identity is forwarded as-is.
+
+    ``room_role``, when resolved, is stamped as ``ROOM_ROLE_HEADER``. It is
+    never in ``allow``, so a client-supplied copy on the incoming WebSocket is
+    never part of ``headers`` before this stamps the proxy's own value.
     """
     allow = {"authorization"}
     if include_cookie:
@@ -290,10 +412,12 @@ def _proxy_forward_headers(
     headers = {k: v for k, v in websocket.headers.items() if k.lower() in allow}
     if not dev_identity:
         headers.update(_verified_identity_headers(principal))
-        return headers
-    for query_key, header in _DEV_QUERY_TO_HEADER:
-        if value := websocket.query_params.get(query_key):
-            headers[header] = value
+    else:
+        for query_key, header in _DEV_QUERY_TO_HEADER:
+            if value := websocket.query_params.get(query_key):
+                headers[header] = value
+    if room_role is not None:
+        headers[ROOM_ROLE_HEADER] = room_role
     return headers
 
 
@@ -306,6 +430,47 @@ def _without_dev_params(
     return [(key, value) for key, value in params if key not in _DEV_QUERY_PARAMS]
 
 
+async def _revalidate_loop(
+    websocket: WebSocket,
+    revalidate: Callable[[], Awaitable[bool]],
+    interval: float,
+) -> None:
+    """Periodically re-check attach/room-role and close on revoke or demotion.
+
+    A session_participants grant revoked (or demoted) after connect must not
+    leave the live socket usable at its original privilege until the browser
+    happens to reconnect — this closes it within one interval. *revalidate*
+    itself is responsible for treating its own transient failures (a network
+    blip to the identity/authorization backend) as "still allowed" rather
+    than raising — only an explicit "no longer allowed" result closes the
+    socket in the ordinary path below.
+
+    A raise reaching this function is therefore an UNEXPECTED failure of the
+    loop itself, not a routine revalidation outcome, and must not be
+    swallowed: a silently-dead revalidation loop leaves an already-open
+    socket at its original privilege forever, which is exactly the gap this
+    loop exists to close. Fail closed and loud instead — log it and close
+    the socket, rather than leave it running unrevalidated with no signal.
+    """
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            if not await revalidate():
+                await websocket.close(code=1008, reason="Access revoked or downgraded")
+                return
+    except Exception:
+        logger.error(
+            "_revalidate_loop: revalidation loop failed unexpectedly; closing the "
+            "socket rather than leaving it un-revalidated for the rest of its life",
+            exc_info=True,
+        )
+        with suppress(Exception):
+            # The connection may already be gone (the reason this raised in
+            # the first place); closing it is a best-effort cleanup, not the
+            # signal — the log line above is.
+            await websocket.close(code=1011, reason="Revalidation failed")
+
+
 async def bridge_websocket(
     websocket: WebSocket,
     connect_url: str,
@@ -313,11 +478,19 @@ async def bridge_websocket(
     headers: Mapping[str, str],
     connect_kwargs: dict[str, object] | None = None,
     on_connected: Callable[[], None] | None = None,
+    revalidate: Callable[[], Awaitable[bool]] | None = None,
+    revalidate_interval: float = 5.0,
 ) -> None:
     """Bridge one accepted browser socket to a resolved session endpoint.
 
     *headers* is the complete upstream header set; build it with
     ``_proxy_forward_headers`` so identity policy is applied in one place.
+
+    *revalidate*, when given, is polled every *revalidate_interval* seconds
+    for as long as the connection stays open; a ``False`` result closes it
+    (see ``_revalidate_loop``) — this is how a revoked or demoted
+    session_participants grant reaches an ALREADY-OPEN socket, not just new
+    connection attempts.
     """
     import websockets.asyncio.client as ws_client
 
@@ -346,6 +519,10 @@ async def bridge_websocket(
             asyncio.create_task(browser_to_broker()),
             asyncio.create_task(broker_to_browser()),
         ]
+        if revalidate is not None:
+            pumps.append(
+                asyncio.create_task(_revalidate_loop(websocket, revalidate, revalidate_interval))
+            )
         try:
             done, _ = await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
         finally:
@@ -367,14 +544,20 @@ async def _proxy_ws(
     *,
     log_label: str,
     include_cookie: bool = False,
+    require_owner: bool = False,
 ) -> None:
     """Proxy a WebSocket to a session's Skuld broker (ownership-guarded).
 
     Shared by the browser ``/session`` and the ravn ``/ws/ravn/{peer}`` legs:
     identity guard → port lookup → bidirectional pump → M-8 self-heal on a
     never-connected broker leg. The only per-route differences are the broker
-    path, whether the browser cookie is forwarded, and the log label. Identity
-    forwarding follows the registry's ``dev_identity`` policy.
+    path, whether the browser cookie is forwarded, the log label, and whether
+    the leg is owner-only. Identity forwarding follows the registry's
+    ``dev_identity`` policy.
+
+    ``require_owner`` is for legs "attach" alone must not open — the ravn
+    peer leg lets a resident join ANOTHER session's room with full authority
+    over this one (a session_participants grant is never enough for that).
     """
     principal = await _proxy_principal(websocket)
     user_id, tenant_id, roles = (
@@ -384,6 +567,20 @@ async def _proxy_ws(
     )
     if not await skuld_reg.may_attach(session_id, user_id, tenant_id, roles):
         await websocket.close(code=1008, reason="Not authorized for this session")
+        return
+    room_role = await skuld_reg.resolve_room_role(session_id, user_id, tenant_id, roles)
+    if room_role is None:
+        # may_attach already allowed this connection, but no role resolver
+        # could name a specific role for it. Stamp the least-privilege
+        # value explicitly rather than omitting the header: the broker
+        # (ws_auth.room_role_source="proxy" on this, the process backend)
+        # treats a genuinely MISSING header from a loopback dial as owner,
+        # and this proxy always dials the broker over loopback — an
+        # omitted header here would silently hand out owner to a
+        # connection this proxy could not actually place a role on.
+        room_role = "viewer"
+    if require_owner and room_role != "owner":
+        await websocket.close(code=1008, reason="This connection requires the owner room role")
         return
 
     port = skuld_reg.get_port(session_id)
@@ -407,6 +604,23 @@ async def _proxy_ws(
         nonlocal connected
         connected = True
 
+    async def _revalidate() -> bool:
+        """Re-check attach and room role; False closes the live socket.
+
+        A single resolve_room_role call covers both: it is None exactly when
+        may_attach would now also refuse (read_room and attach are granted to
+        the identical principal set — see SessionService.attributed_resource),
+        and a lower-ranked result than the connection's original room_role is
+        a demotion, which must close it just as a full revoke does.
+        """
+        current_role = await skuld_reg.resolve_room_role(session_id, user_id, tenant_id, roles)
+        if current_role is None:
+            return False
+        original_rank = ROOM_ROLE_RANK.get(room_role or "", -1)
+        return ROOM_ROLE_RANK[current_role] >= original_rank
+
+    tracking_key = (session_id, user_id or "")
+    skuld_reg.track_connection(*tracking_key, websocket)
     try:
         connect_url = f"ws://127.0.0.1:{port}{broker_path}"
         connect_kwargs: dict[str, object] = {}
@@ -439,13 +653,17 @@ async def _proxy_ws(
                 include_cookie=include_cookie,
                 dev_identity=skuld_reg.dev_identity,
                 principal=principal,
+                room_role=room_role,
             ),
             connect_kwargs=connect_kwargs,
             on_connected=_mark_connected,
+            revalidate=_revalidate,
+            revalidate_interval=skuld_reg.revalidate_interval_seconds,
         )
     except Exception:
         logger.debug("%s ended for session %s", log_label, _sanitize_log(session_id))
     finally:
+        skuld_reg.untrack_connection(*tracking_key, websocket)
         # M-8 self-heal: if the broker leg never connected, only drop a stale
         # RUNNING port when the pod-authoritative reconcile CONFIRMS the
         # session is dead — never on a transient blip against a live pod.
@@ -540,7 +758,9 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
         gateway (session_join): the browser chat endpoint is proxied at
         ``/s/{id}/session``, and the sibling ravn endpoint must be proxied
         too, or cross-session joins only work in strip-prefix k8s ingress
-        and fail in mini/gateway mode. Same ownership guard.
+        and fail in mini/gateway mode. Owner-only: this leg gives a peer
+        full authority over the session, which no session_participants
+        grant (however senior) is ever enough for.
         """
         await _proxy_ws(
             websocket,
@@ -548,6 +768,7 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
             skuld_reg,
             f"/ws/ravn/{peer_id}",
             log_label="Ravn WS proxy",
+            require_owner=True,
         )
 
     @app.api_route(
@@ -571,6 +792,12 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
         )
         if not await skuld_reg.may_attach(session_id, user_id, tenant_id, roles):
             return JSONResponse({"detail": "Not authorized for this session"}, status_code=403)
+        room_role = await skuld_reg.resolve_room_role(session_id, user_id, tenant_id, roles)
+        if room_role is None:
+            # See the matching comment in _proxy_ws: stamp least privilege
+            # explicitly rather than omit the header, which a loopback-dialed
+            # proxy connection could otherwise have read as owner.
+            room_role = "viewer"
 
         port = skuld_reg.get_port(session_id)
         target = None if port is not None else await skuld_reg.resolve_target(session_id)
@@ -592,6 +819,18 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
                 return JSONResponse({"detail": "Invalid path"}, status_code=400)
             normalized_segments.append(seg)
 
+        unquoted_path = "/".join(normalized_segments)
+        required_role = required_role_for_route(request.method, unquoted_path)
+        # An unresolvable role (may_attach passed, but resolve_room_role could
+        # not name one) is least privilege, "viewer" — never "no access at
+        # all", which would 403 even the routes every attached caller may use.
+        effective_role = room_role or "viewer"
+        if ROOM_ROLE_RANK[effective_role] < ROOM_ROLE_RANK[required_role]:
+            return JSONResponse(
+                {"detail": f"This route requires the {required_role} room role"},
+                status_code=403,
+            )
+
         sanitized_path = "/".join(quote(seg, safe="") for seg in normalized_segments)
         proxy_path = f"/api/{sanitized_path}"
         url = f"http://127.0.0.1:{port}{proxy_path}"
@@ -601,13 +840,17 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
             )
         )
         # Same identity policy as the WebSocket legs: outside local dev the
-        # session only ever sees x-auth-* the proxy resolved itself.
-        dropped = {"host", "content-length", "transfer-encoding"}
+        # session only ever sees x-auth-* the proxy resolved itself. The room
+        # role header is always dropped from the client's own request and
+        # replaced with the proxy's own resolution, never conditionally.
+        dropped = {"host", "content-length", "transfer-encoding", ROOM_ROLE_HEADER}
         if not skuld_reg.dev_identity:
             dropped |= _IDENTITY_HEADERS
         headers = {k: v for k, v in request.headers.items() if k.lower() not in dropped}
         if not skuld_reg.dev_identity:
             headers.update(_verified_identity_headers(await _proxy_principal(request)))
+        if room_role is not None:
+            headers[ROOM_ROLE_HEADER] = room_role
         if target is not None:
             url, service_host = _session_http_connect_url(target, proxy_path)
             headers["Host"] = service_host
