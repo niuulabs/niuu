@@ -31,6 +31,7 @@ OPENSHELL_RESIDENT_TOKEN_USE = "openshell_resident"
 KNOWN_WORKLOAD_SCOPES: frozenset[str] = frozenset(
     {
         "forge:session:create",
+        "forge:session:room-role",
         "ting:workflow:launch",
         "ting:workflow:coordinate",
         "observatory:topology:push",
@@ -178,6 +179,11 @@ def credential_allows_route(token: str, method: str, path: str) -> bool:
         return True
     routes = [
         ("POST", r"/api/v1/forge/sessions", "forge:session:create"),
+        (
+            "GET",
+            r"/api/v1/forge/sessions/[^/?%]+/participants/role",
+            "forge:session:room-role",
+        ),
         ("POST", r"/api/v1/ting/a2a", "ting:workflow:launch"),
         ("POST", r"/api/v1/ting/workflows/[^/?%]+/launch", "ting:workflow:launch"),
         (

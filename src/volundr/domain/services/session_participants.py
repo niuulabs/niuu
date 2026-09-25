@@ -287,3 +287,40 @@ class SessionParticipantService:
         if not await self._session_service.authorizes(principal, action, resource):
             user_id = principal.user_id if principal is not None else "unauthenticated"
             raise SessionAccessDeniedError(session.id, user_id)
+
+    async def effective_room_role(
+        self, session: Session, principal: Principal | None
+    ) -> str | None:
+        """Return *principal*'s most senior room role for *session*, or None.
+
+        Derived from the SAME Cedar decisions ``check_room_access`` and the
+        REST API use (``admit``/``resolve_gate``/``read_room``) — never a
+        hand-written owner_id/admin-role comparison, which silently stops
+        matching the moment authority is granted any way other than literal
+        ownership or a tenant-admin role. Ranked most-to-least senior: a
+        principal who can ``admit`` is owner, one who can ``resolve_gate`` is
+        approver, one who can only ``read_room`` is viewer, and one who can
+        do none of these has no room role at all (``None`` — a real "no
+        grant" answer, not a degraded default).
+
+        This is the single source of truth for room-role resolution shared
+        by the mini-mode session proxy's in-process resolver
+        (``volundr.main``) and the ``POST .../participants/role`` endpoint
+        that a Kubernetes-backed session pod's ``RemoteAuthorizationAdapter``
+        (``skuld.room_role_remote``) calls over HTTP.
+        """
+        grants = await self.active_grants(session.id)
+        resource = SessionService.attributed_resource(
+            str(session.id),
+            owner_id=session.owner_id,
+            tenant_id=session.tenant_id,
+            room_viewers=grants.viewer_ids,
+            room_approvers=grants.approver_ids,
+        )
+        if await self._session_service.authorizes(principal, "admit", resource):
+            return "owner"
+        if await self._session_service.authorizes(principal, "resolve_gate", resource):
+            return "approver"
+        if await self._session_service.authorizes(principal, "read_room", resource):
+            return "viewer"
+        return None

@@ -82,6 +82,8 @@ data:
       {{- if .Values.podManager.runtimeBackend }}
       runtime_backend: {{ .Values.podManager.runtimeBackend | quote }}
       {{- end }}
+      room_role_source: {{ .Values.podManager.roomRoleSource | default "deployment" | quote }}
+      room_role_cache_ttl_seconds: {{ .Values.podManager.roomRoleCacheTtlSeconds | default 5.0 }}
       kwargs: {{ .Values.podManager.kwargs | toJson }}
       {{- if .Values.podManager.secretKwargs }}
       secret_kwargs_env:

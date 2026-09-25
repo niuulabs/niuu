@@ -307,6 +307,38 @@ class PodManagerConfig(BaseModel):
         default=None,
         description="Explicit contributor backend identity; VM deployments use vm.",
     )
+    room_role_source: Literal["deployment", "remote"] = Field(
+        default="deployment",
+        description=(
+            "ws_auth.room_role_source Volundr renders into this backend's session "
+            "pods (kubernetes only — see charts/skuld/values.yaml's wsAuth and "
+            "volundr/adapters/outbound/contributors/room_role.py). 'deployment' "
+            "(the default): unchanged pre-session_participants behavior — a caller "
+            "reaching the pod at all is owner, and session_participants invites are "
+            "refused with 409 for this backend (see rest_session_participants.py's "
+            "REMOTE_CAPABLE_RUNTIME_BACKENDS). 'remote': pods are deployed with "
+            "ws_auth.room_role_source: remote and a wsAuth.room_role_remote adapter "
+            "(RemoteAuthorizationAdapter) that asks Forge for each caller's grant, "
+            "so session_participants invites are honoured and the 409 is lifted. "
+            "Also requires wsAuth.enforce_ownership: false (the chart's Helm render "
+            "fails otherwise — the ext_authz sidecar's owner/admin-only 'start' gate "
+            "would block every participant before a remote lookup ever ran). This is "
+            "a property of the WHOLE deployment, not a per-session choice — flipping "
+            "it changes every future session pod's trust boundary, so it must be set "
+            "deliberately, verified in a non-production cluster first, and never "
+            "enabled by inference from other settings."
+        ),
+    )
+    room_role_cache_ttl_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Rendered as room_role_remote.kwargs.cache_ttl_seconds when "
+            "room_role_source is 'remote' — how long RemoteAuthorizationAdapter "
+            "caches a resolved role before re-asking Forge, bounding how quickly "
+            "a revoked or demoted grant takes effect on an already-open connection."
+        ),
+    )
     kwargs: dict[str, Any] = Field(
         default_factory=dict,
         description="Extra kwargs forwarded to the adapter constructor.",
