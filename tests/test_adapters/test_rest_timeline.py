@@ -1,6 +1,7 @@
 """Tests for Chronicle Timeline REST endpoints."""
 
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -15,8 +16,13 @@ from tests.conftest import (
 )
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.outbound.identity import AllowAllIdentityAdapter
-from volundr.domain.models import GitSource, TimelineEvent, TimelineEventType
+from volundr.domain.models import GitSource, Principal, TimelineEvent, TimelineEventType
 from volundr.domain.services import ChronicleService, SessionService
+
+# The principal AllowAllIdentityAdapter resolves for every request.
+DEV_PRINCIPAL = Principal(
+    user_id="dev-user", email="dev@localhost", tenant_id="default", roles=["volundr:admin"]
+)
 
 
 @pytest.fixture
@@ -50,7 +56,7 @@ def chronicle_svc_no_timeline(
 @pytest.fixture
 def app(session_service: SessionService, chronicle_svc: ChronicleService) -> FastAPI:
     app = FastAPI()
-    app.state.identity = AllowAllIdentityAdapter(user_repository=None)
+    app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
     router = create_router(session_service, chronicle_service=chronicle_svc)
     app.include_router(router)
     return app
@@ -66,7 +72,7 @@ def app_no_timeline(
     session_service: SessionService, chronicle_svc_no_timeline: ChronicleService
 ) -> FastAPI:
     app = FastAPI()
-    app.state.identity = AllowAllIdentityAdapter(user_repository=None)
+    app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
     router = create_router(session_service, chronicle_service=chronicle_svc_no_timeline)
     app.include_router(router)
     return app
@@ -102,6 +108,7 @@ class TestGetTimeline:
     ):
         """Returns full timeline with events, files, commits, and token_burn."""
         session = await session_service.create_session(
+            principal=DEV_PRINCIPAL,
             name="Test",
             model="sonnet",
             source=GitSource(
@@ -109,7 +116,7 @@ class TestGetTimeline:
                 branch="main",
             ),
         )
-        chronicle = await chronicle_svc.create_chronicle(session.id)
+        chronicle = await chronicle_svc.create_chronicle(session.id, principal=None)
 
         # Add various events
         await timeline_repository.add_event(
@@ -200,6 +207,7 @@ class TestGetTimeline:
     ):
         """Returns empty timeline when chronicle has no events."""
         session = await session_service.create_session(
+            principal=DEV_PRINCIPAL,
             name="Test",
             model="sonnet",
             source=GitSource(
@@ -207,7 +215,7 @@ class TestGetTimeline:
                 branch="main",
             ),
         )
-        await chronicle_svc.create_chronicle(session.id)
+        await chronicle_svc.create_chronicle(session.id, principal=None)
 
         response = client.get(f"/api/v1/forge/chronicles/{session.id}/timeline")
 
@@ -250,6 +258,7 @@ class TestAddTimelineEvent:
     ):
         """Adding a timeline event returns 201 with the event."""
         session = await session_service.create_session(
+            principal=DEV_PRINCIPAL,
             name="Test",
             model="sonnet",
             source=GitSource(
@@ -257,7 +266,7 @@ class TestAddTimelineEvent:
                 branch="main",
             ),
         )
-        await chronicle_svc.create_chronicle(session.id)
+        await chronicle_svc.create_chronicle(session.id, principal=None)
 
         response = client.post(
             f"/api/v1/forge/chronicles/{session.id}/timeline",
@@ -284,6 +293,7 @@ class TestAddTimelineEvent:
     ):
         """Adding a file event with ins/del/action."""
         session = await session_service.create_session(
+            principal=DEV_PRINCIPAL,
             name="Test",
             model="sonnet",
             source=GitSource(
@@ -291,7 +301,7 @@ class TestAddTimelineEvent:
                 branch="main",
             ),
         )
-        await chronicle_svc.create_chronicle(session.id)
+        await chronicle_svc.create_chronicle(session.id, principal=None)
 
         response = client.post(
             f"/api/v1/forge/chronicles/{session.id}/timeline",
@@ -319,6 +329,7 @@ class TestAddTimelineEvent:
     ):
         """Adding a git event with hash."""
         session = await session_service.create_session(
+            principal=DEV_PRINCIPAL,
             name="Test",
             model="sonnet",
             source=GitSource(
@@ -326,7 +337,7 @@ class TestAddTimelineEvent:
                 branch="main",
             ),
         )
-        await chronicle_svc.create_chronicle(session.id)
+        await chronicle_svc.create_chronicle(session.id, principal=None)
 
         response = client.post(
             f"/api/v1/forge/chronicles/{session.id}/timeline",
@@ -350,6 +361,7 @@ class TestAddTimelineEvent:
     ):
         """Adding a terminal event with exit code."""
         session = await session_service.create_session(
+            principal=DEV_PRINCIPAL,
             name="Test",
             model="sonnet",
             source=GitSource(
@@ -357,7 +369,7 @@ class TestAddTimelineEvent:
                 branch="main",
             ),
         )
-        await chronicle_svc.create_chronicle(session.id)
+        await chronicle_svc.create_chronicle(session.id, principal=None)
 
         response = client.post(
             f"/api/v1/forge/chronicles/{session.id}/timeline",
@@ -412,6 +424,7 @@ class TestTimelineRoundTrip:
     ):
         """Events added via POST appear in GET timeline."""
         session = await session_service.create_session(
+            principal=DEV_PRINCIPAL,
             name="Test",
             model="sonnet",
             source=GitSource(
@@ -419,7 +432,7 @@ class TestTimelineRoundTrip:
                 branch="main",
             ),
         )
-        await chronicle_svc.create_chronicle(session.id)
+        await chronicle_svc.create_chronicle(session.id, principal=None)
 
         # Add events
         for ev in [
