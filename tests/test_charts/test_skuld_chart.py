@@ -1080,6 +1080,12 @@ def test_websocket_auth_configuration_reaches_broker(enabled):
     )
     assert config["ws_auth"]["enforce_ownership"] is enabled
     assert config["ws_auth"]["allow_loopback"] is False
+    # "deployment" regardless of enforce_ownership: chart-deployed pods
+    # (Kubernetes) always rely on this pod's own auth boundary, never the
+    # session proxy's stamped header. Only the process backend's local
+    # launcher (volundr.adapters.outbound.local_process) renders "proxy",
+    # outside this chart entirely.
+    assert config["ws_auth"]["room_role_source"] == "deployment"
     policy = next(d for d in docs if d and d["kind"] == "SecurityPolicy")
     headers = {c["header"] for c in policy["spec"]["jwt"]["providers"][0]["claimToHeaders"]}
     assert {"x-auth-user-id", "x-auth-tenant", "x-auth-roles"} <= headers

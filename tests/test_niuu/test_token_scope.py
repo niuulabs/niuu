@@ -8,7 +8,7 @@ from pathlib import Path
 
 import jwt
 import pytest
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from niuu.domain.services import token_scope
@@ -17,7 +17,6 @@ from niuu.domain.services.token_scope import (
     VALKYRIE_BUILD_TOKEN_USE,
     bound_workload_scopes,
     credential_allows_route,
-    request_carries_scope,
     require_scope,
     token_has_scope,
     token_requires_scope_check,
@@ -52,18 +51,7 @@ def _enforced_scopes() -> set[str]:
     are resolved against this module's own constants and the caller's — a
     guard that only saw literals would report a false gap.
     """
-    _arg = r"""([A-Za-z_][\w.]*|["'][^"']+["'])"""
-    # require_scope(scope) and request_carries_scope(request, scope) both
-    # exist for the same reason (a hard, named authorization gate) but put
-    # the scope in a different argument position — request_carries_scope
-    # takes the request object first because, unlike require_scope, it is
-    # not a bare FastAPI dependency factory. token_has_scope(token, scope)
-    # is the permissive narrowing check and also takes the scope second.
-    call = re.compile(
-        rf"""require_scope\(\s*{_arg}"""
-        rf"""|token_has_scope\(\s*[^,()]+,\s*{_arg}"""
-        rf"""|request_carries_scope\(\s*[^,()]+,\s*{_arg}"""
-    )
+    call = re.compile(r"""(?:require_scope|token_has_scope)\(\s*([A-Za-z_][\w.]*|["'][^"']+["'])""")
     assignment = re.compile(r"""^([A-Z][A-Z0-9_]*)\s*=\s*["']([^"']+)["']""", re.MULTILINE)
     known = {
         name: value
@@ -76,14 +64,10 @@ def _enforced_scopes() -> set[str]:
         if path.samefile(token_scope.__file__):
             continue  # the definition, not an enforcement point
         text = path.read_text(encoding="utf-8")
-        if not any(
-            marker in text
-            for marker in ("require_scope(", "token_has_scope(", "request_carries_scope(")
-        ):
+        if "require_scope(" not in text and "token_has_scope(" not in text:
             continue
         local = dict(assignment.findall(text))
-        for match in call.finditer(text):
-            raw = next(g for g in match.groups() if g is not None)
+        for raw in call.findall(text):
             if raw[:1] in {'"', "'"}:
                 found.add(raw[1:-1])
                 continue
@@ -104,7 +88,6 @@ class TestKnownWorkloadScopes:
                 "ting:workflow:coordinate",
                 "ting:workflow:launch",
                 "observatory:topology:push",
-                "skuld:gate:resolve",
             }
         )
 
@@ -311,52 +294,3 @@ class TestRequireScopeDependency:
         client = TestClient(_app_with_scope("ting:workflow:launch"))
         response = client.post("/build", headers={"Authorization": "Basic abc"})
         assert response.status_code == 200
-
-
-def _app_with_scope_gate(scope: str) -> FastAPI:
-    """A route that hard-gates on request_carries_scope, mirroring how
-    skuld.broker_api.resolve_workflow_gate uses it: unlike require_scope,
-    an unscoped or missing token must be DENIED, not admitted."""
-    app = FastAPI()
-
-    @app.post("/gate")
-    async def gate(request: Request) -> dict:
-        if not request_carries_scope(request, scope):
-            raise HTTPException(403, f"missing scope: {scope}")
-        return {"ok": True}
-
-    return app
-
-
-class TestRequestCarriesScope:
-    def test_scoped_token_with_scope_admitted(self) -> None:
-        client = TestClient(_app_with_scope_gate("skuld:gate:resolve"))
-        token = _build_token(["skuld:gate:resolve"])
-        response = client.post("/gate", headers={"Authorization": f"Bearer {token}"})
-        assert response.status_code == 200
-
-    def test_scoped_token_missing_scope_denied(self) -> None:
-        client = TestClient(_app_with_scope_gate("skuld:gate:resolve"))
-        token = _build_token(["ting:workflow:launch"])
-        response = client.post("/gate", headers={"Authorization": f"Bearer {token}"})
-        assert response.status_code == 403
-
-    def test_unscoped_pat_denied(self) -> None:
-        # Strict, unlike token_has_scope: an unscoped credential is NOT
-        # admitted here, because the scope check IS the authorization
-        # decision at this gate (substituting for a header an upstream
-        # Gateway stripped), not a narrowing of an already-authorized route.
-        client = TestClient(_app_with_scope_gate("skuld:gate:resolve"))
-        token = _encode({"type": "pat"})
-        response = client.post("/gate", headers={"Authorization": f"Bearer {token}"})
-        assert response.status_code == 403
-
-    def test_no_auth_header_denied(self) -> None:
-        client = TestClient(_app_with_scope_gate("skuld:gate:resolve"))
-        response = client.post("/gate")
-        assert response.status_code == 403
-
-    def test_malformed_token_denied(self) -> None:
-        client = TestClient(_app_with_scope_gate("skuld:gate:resolve"))
-        response = client.post("/gate", headers={"Authorization": "Bearer not-a-jwt"})
-        assert response.status_code == 403

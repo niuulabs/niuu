@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import fields
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -341,3 +341,91 @@ async def test_no_sender_ws_is_trusted_as_owner(tmp_path):
     await broker._dispatch_browser_message({"type": "interrupt"})
 
     broker._transport.send_control.assert_awaited_once_with("interrupt")
+
+
+class TestSanitizeDirectedMetadata:
+    """skuld.broker._sanitize_directed_metadata: the shared filter behind
+    both the WS directed_message/default-chat dispatch paths and (a
+    separate copy of the same policy) skuld.broker_api's HTTP room/direct
+    route."""
+
+    def test_none_passes_through(self):
+        from skuld.broker import _sanitize_directed_metadata
+
+        assert _sanitize_directed_metadata("viewer", None) is None
+
+    def test_owner_metadata_passes_through_unchanged(self):
+        from skuld.broker import _sanitize_directed_metadata
+
+        metadata = {"participant_id": "ravn-peer-x", "reply_context": {"case": "1"}, "source": "x"}
+        assert _sanitize_directed_metadata("owner", metadata) == metadata
+
+    @pytest.mark.parametrize("role", ["viewer", "approver"])
+    def test_sub_owner_strips_participant_id_reply_context_and_source(self, role):
+        from skuld.broker import _sanitize_directed_metadata
+
+        metadata = {
+            "participant_id": "ravn-peer-x",
+            "reply_context": {"case": "1"},
+            "source": "sneaky",
+            "thread_id": "keep-me",
+        }
+        result = _sanitize_directed_metadata(role, metadata)
+        assert result == {"thread_id": "keep-me"}
+
+
+async def test_viewer_directed_message_cannot_impersonate_another_participant(tmp_path):
+    """The reviewer's exploit pattern: a viewer sets metadata.participant_id
+    to a Ravn peer's id, hoping handle_directed_room_message (which reads
+    participant_id from metadata, not a separate argument) attributes the
+    message to that peer instead of the viewer who actually sent it."""
+    broker = _broker(tmp_path)
+    ws = _connect(broker, "viewer")
+    broker._room_bridge = MagicMock(pending_reply_peer_ids=lambda: ())
+    broker.handle_directed_room_message = AsyncMock(return_value="msg-1")
+
+    await broker._dispatch_browser_message(
+        {
+            "type": "directed_message",
+            "targetPeerId": "peer-1",
+            "content": "hello",
+            "metadata": {
+                "participant_id": "ravn-peer-x",
+                "reply_context": {"forged": "context"},
+                "source": "sneaky",
+                "thread_id": "keep-me",
+            },
+        },
+        sender_ws=ws,
+    )
+
+    broker.handle_directed_room_message.assert_awaited_once()
+    call = broker.handle_directed_room_message.await_args
+    assert call.kwargs["metadata"] == {"thread_id": "keep-me"}
+    assert call.kwargs["source"] == "browser"
+
+
+async def test_owner_directed_message_keeps_participant_id_and_reply_context(tmp_path):
+    broker = _broker(tmp_path)
+    ws = _connect(broker, "owner")
+    broker._room_bridge = MagicMock(pending_reply_peer_ids=lambda: ())
+    broker.handle_directed_room_message = AsyncMock(return_value="msg-1")
+
+    metadata = {
+        "participant_id": "ravn-peer-x",
+        "reply_context": {"case": "1"},
+        "thread_id": "keep-me",
+    }
+    await broker._dispatch_browser_message(
+        {
+            "type": "directed_message",
+            "targetPeerId": "peer-1",
+            "content": "hello",
+            "metadata": dict(metadata),
+        },
+        sender_ws=ws,
+    )
+
+    broker.handle_directed_room_message.assert_awaited_once()
+    call = broker.handle_directed_room_message.await_args
+    assert call.kwargs["metadata"] == metadata

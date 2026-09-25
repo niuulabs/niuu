@@ -5285,11 +5285,18 @@ class TestHandleWebSocket:
         mock_transport.capabilities = TransportCapabilities()
         test_broker._transport = mock_transport
         test_broker._user_jwt = "owners-original-token"
+        # room_role_source="proxy": the process-backend topology, where a
+        # missing header means viewer. The Kubernetes "deployment" default
+        # (a missing header means owner, unconditionally) is covered by
+        # test_handle_websocket_owner_connection_updates_user_jwt's header
+        # case and by test_enforce_room_role_middleware.py.
+        test_broker._settings.ws_auth.room_role_source = "proxy"
 
         mock_ws = AsyncMock()
-        # No x-niuu-room-role header and enforce_ownership defaults False ->
-        # _resolve_room_role resolves "viewer" for this connection.
+        # No x-niuu-room-role header, not loopback -> _resolve_room_role
+        # resolves "viewer" for this connection under room_role_source=proxy.
         mock_ws.headers = {"authorization": "Bearer a-viewers-token"}
+        mock_ws.client = SimpleNamespace(host="203.0.113.9")
         mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=[WebSocketDisconnect()])
 

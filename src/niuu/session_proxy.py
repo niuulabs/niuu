@@ -569,6 +569,16 @@ async def _proxy_ws(
         await websocket.close(code=1008, reason="Not authorized for this session")
         return
     room_role = await skuld_reg.resolve_room_role(session_id, user_id, tenant_id, roles)
+    if room_role is None:
+        # may_attach already allowed this connection, but no role resolver
+        # could name a specific role for it. Stamp the least-privilege
+        # value explicitly rather than omitting the header: the broker
+        # (ws_auth.room_role_source="proxy" on this, the process backend)
+        # treats a genuinely MISSING header from a loopback dial as owner,
+        # and this proxy always dials the broker over loopback — an
+        # omitted header here would silently hand out owner to a
+        # connection this proxy could not actually place a role on.
+        room_role = "viewer"
     if require_owner and room_role != "owner":
         await websocket.close(code=1008, reason="This connection requires the owner room role")
         return
@@ -783,6 +793,11 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
         if not await skuld_reg.may_attach(session_id, user_id, tenant_id, roles):
             return JSONResponse({"detail": "Not authorized for this session"}, status_code=403)
         room_role = await skuld_reg.resolve_room_role(session_id, user_id, tenant_id, roles)
+        if room_role is None:
+            # See the matching comment in _proxy_ws: stamp least privilege
+            # explicitly rather than omit the header, which a loopback-dialed
+            # proxy connection could otherwise have read as owner.
+            room_role = "viewer"
 
         port = skuld_reg.get_port(session_id)
         target = None if port is not None else await skuld_reg.resolve_target(session_id)

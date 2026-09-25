@@ -501,6 +501,36 @@ def _message_role_requirement(msg_type: str | None) -> str:
     return "viewer"
 
 
+# Client-controllable metadata keys that let a sub-owner caller impersonate
+# another participant or forge continuation state on a directed message.
+# ``participant_id`` picks WHICH registered room participant the message is
+# attributed to (handle_directed_room_message reads it from metadata, not a
+# separate argument). ``reply_context`` can override the SERVER's own
+# tracked continuation state: niuu.collaboration.room.route_directed_message
+# starts from its stored pending reply_context and then applies the
+# caller's metadata OVER it, so a client-supplied reply_context silently
+# replaces genuine case-continuation data. ``source`` inside metadata is
+# stripped for the same reason as the (already hardcoded) top-level source
+# argument these dispatch cases pass. Mirrors
+# skuld.broker_api._SUB_OWNER_STRIPPED_METADATA_KEYS for the HTTP path —
+# kept as a separate constant rather than a shared import to avoid coupling
+# this domain module to the inbound HTTP adapter.
+_SUB_OWNER_STRIPPED_METADATA_KEYS = frozenset({"participant_id", "reply_context", "source"})
+
+
+def _sanitize_directed_metadata(
+    role: str, metadata: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Strip client-controllable identity/continuation fields for callers below owner.
+
+    Only the session owner's own client may set ``participant_id``,
+    ``reply_context``, or ``source`` inside a directed message's metadata.
+    """
+    if metadata is None or role == "owner":
+        return metadata
+    return {k: v for k, v in metadata.items() if k not in _SUB_OWNER_STRIPPED_METADATA_KEYS}
+
+
 class Broker(
     EffortControlMixin,
     TransportLifecycleMixin,
@@ -4285,8 +4315,11 @@ class Broker(
                         str(content),
                         source="browser",
                         request_id=self._extract_request_id(data),
-                        metadata=(
-                            data.get("metadata") if isinstance(data.get("metadata"), dict) else None
+                        metadata=_sanitize_directed_metadata(
+                            actual_role,
+                            data.get("metadata")
+                            if isinstance(data.get("metadata"), dict)
+                            else None,
                         ),
                     )
                 except LookupError as exc:
@@ -4401,8 +4434,11 @@ class Broker(
                     if source == "telegram":
                         metadata = _telegram_directed_metadata(data)
                     else:
-                        metadata = (
-                            data.get("metadata") if isinstance(data.get("metadata"), dict) else None
+                        metadata = _sanitize_directed_metadata(
+                            actual_role,
+                            data.get("metadata")
+                            if isinstance(data.get("metadata"), dict)
+                            else None,
                         )
                     try:
                         await self.handle_directed_room_message(

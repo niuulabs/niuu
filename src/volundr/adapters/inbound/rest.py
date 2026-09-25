@@ -20,12 +20,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
-from niuu.domain.services.token_scope import (
-    OPENSHELL_SESSION_TOKEN_USE,
-    SKULD_GATE_RESOLVE_SCOPE,
-    VALKYRIE_BUILD_TOKEN_USE,
-    require_scope,
-)
+from niuu.domain.services.token_scope import OPENSHELL_SESSION_TOKEN_USE, require_scope
 from niuu.domain.session_endpoint import public_session_endpoint
 from niuu.domain.text_projection import projection_revision
 from niuu.room_access import ROOM_ROLE_HEADER
@@ -4310,30 +4305,21 @@ def create_router(
         # are Cedar's only permit rules for it), so it always satisfies the
         # broker's own ROOM_ROLES_MAY_RESOLVE_GATES gate. This header is only
         # trustworthy when it survives to the broker unmodified: the mini-mode
-        # session proxy forwards it as-is, but the Skuld Gateway (Kubernetes)
-        # strips any client-supplied copy on the way in (it has no JWT claim
-        # to re-derive it from) and this stamped copy is no exception — see
-        # charts/skuld/templates/httproute.yaml.
+        # session proxy forwards it as-is (ws_auth.room_role_source: proxy).
+        # Every other backend (Kubernetes, OpenShell, VM) strips any
+        # client-supplied copy on the way in and ignores it entirely
+        # (ws_auth.room_role_source: deployment, the default) — that pod's
+        # own auth boundary already gates every caller who reaches it, and
+        # participants (so a non-owner "approver" grant) are not supported
+        # there at all, so this header is simply inert on that path, not
+        # load-bearing. Do not try to authenticate that hop with a separate
+        # scoped credential: the sidecar ext_authz routes have no
+        # required_scope concept, so a scoped token is refused there and the
+        # deployment-mode middleware refuses it before that check even runs
+        # on a non-enforced pod — there is no topology where a Skuld-side
+        # scoped token for this route actually works. The Kubernetes owner
+        # already resolves via room_role_source=deployment instead.
         headers[ROOM_ROLE_HEADER] = "approver"
-        # For the Gateway-routed hop, authenticate with a scoped workload
-        # token instead (architecture.md's workload-identity exception):
-        # Envoy's "workload" JWT provider (securitypolicy.yaml) verifies it
-        # independently of the stripped header. Skipped only when workload
-        # identity issuance itself is unconfigured for this deployment (an
-        # operator decision — e.g. mini mode, which dials the broker pod
-        # directly and never needs it); that is not a fallback, since the
-        # header path above is the deployment's own chosen mechanism then.
-        workload_identity_service = getattr(request.app.state, "workload_identity_service", None)
-        if workload_identity_service is not None and workload_identity_service.enabled:
-            issued = workload_identity_service.issue_token(
-                principal=principal,
-                workload_subject=f"forge-gate-resolve:{session_id}",
-                workload_name="volundr-rest",
-                audiences=[],
-                token_use=VALKYRIE_BUILD_TOKEN_USE,
-                claims={"scopes": [SKULD_GATE_RESOLVE_SCOPE], "gate_id": gate_id},
-            )
-            headers["Authorization"] = f"Bearer {issued.token}"
 
         try:
             proxy_url, routing_headers = _http_proxy_target(

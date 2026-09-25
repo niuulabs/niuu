@@ -3,7 +3,6 @@
 import asyncio
 import json
 from decimal import Decimal
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -1637,120 +1636,6 @@ class TestWorkflowGateProxy:
             },
             json={"decision": "approved", "notes": "looks good", "source": "human"},
         )
-
-    @pytest.mark.asyncio
-    async def test_resolve_workflow_gate_mints_a_scoped_workload_token_when_configured(
-        self,
-        client: TestClient,
-        service: SessionService,
-        app: FastAPI,
-    ) -> None:
-        """When workload identity issuance is configured, the outbound call to
-        the broker also carries a skuld:gate:resolve-scoped Authorization
-        bearer token — the mechanism that survives the Kubernetes Gateway
-        stripping x-niuu-room-role on this hop (see
-        charts/skuld/templates/httproute.yaml). The header is still stamped
-        too, for the direct/mini-mode topology where it is not stripped."""
-        from niuu.ports.workload_identity import IssuedWorkloadToken
-
-        session = await service.create_session(
-            "test",
-            "claude-sonnet-4",
-            source=GitSource(repo="https://github.com/org/repo", branch="main"),
-        )
-        await service.start_session(session.id)
-
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.json.return_value = {"status": "resolved"}
-        mock_response.raise_for_status.return_value = None
-
-        issue_token = MagicMock(
-            return_value=IssuedWorkloadToken(token="scoped-jwt", expires_at=9999999999)
-        )
-        app.state.workload_identity_service = SimpleNamespace(enabled=True, issue_token=issue_token)
-
-        with (
-            patch(
-                "volundr.adapters.inbound.rest.extract_principal",
-                new=AsyncMock(
-                    return_value=Principal(
-                        user_id="dev-user",
-                        email="dev@example.com",
-                        tenant_id="default",
-                        roles=[],
-                    )
-                ),
-            ),
-            patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls,
-        ):
-            mock_client = AsyncMock()
-            mock_client.post.return_value = mock_response
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
-
-            response = client.post(
-                f"/api/v1/forge/sessions/{session.id}/workflow/gates/g1/resolve",
-                json={"decision": "approved", "notes": "", "source": "human"},
-                headers={"x-niuu-workflow-gate-intent": "resolve"},
-            )
-
-        assert response.status_code == 200
-        issue_token.assert_called_once()
-        assert issue_token.call_args.kwargs["claims"]["scopes"] == ["skuld:gate:resolve"]
-        sent_headers = mock_client.post.await_args.kwargs["headers"]
-        assert sent_headers["Authorization"] == "Bearer scoped-jwt"
-        assert sent_headers["x-niuu-room-role"] == "approver"
-
-    @pytest.mark.asyncio
-    async def test_resolve_workflow_gate_skips_minting_when_workload_identity_disabled(
-        self,
-        client: TestClient,
-        service: SessionService,
-        app: FastAPI,
-    ) -> None:
-        """Deployments with no workload identity configured (mini mode) keep
-        relying on the header alone — this is the operator's own choice not
-        to run workload identity, not a degraded fallback."""
-        session = await service.create_session(
-            "test",
-            "claude-sonnet-4",
-            source=GitSource(repo="https://github.com/org/repo", branch="main"),
-        )
-        await service.start_session(session.id)
-
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.json.return_value = {"status": "resolved"}
-        mock_response.raise_for_status.return_value = None
-
-        app.state.workload_identity_service = SimpleNamespace(enabled=False, issue_token=None)
-
-        with (
-            patch(
-                "volundr.adapters.inbound.rest.extract_principal",
-                new=AsyncMock(
-                    return_value=Principal(
-                        user_id="dev-user",
-                        email="dev@example.com",
-                        tenant_id="default",
-                        roles=[],
-                    )
-                ),
-            ),
-            patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls,
-        ):
-            mock_client = AsyncMock()
-            mock_client.post.return_value = mock_response
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
-
-            response = client.post(
-                f"/api/v1/forge/sessions/{session.id}/workflow/gates/g1/resolve",
-                json={"decision": "approved", "notes": "", "source": "human"},
-                headers={"x-niuu-workflow-gate-intent": "resolve"},
-            )
-
-        assert response.status_code == 200
-        sent_headers = mock_client.post.await_args.kwargs["headers"]
-        assert "Authorization" not in sent_headers
-        assert sent_headers["x-niuu-room-role"] == "approver"
 
     @pytest.mark.asyncio
     async def test_get_conversation_returns_503_without_archive_or_file_workspace(

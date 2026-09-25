@@ -35,6 +35,12 @@ def _fake_broker(monkeypatch, **overrides):
         "handle_human_room_message": AsyncMock(return_value="msg-1"),
         "handle_directed_room_message": AsyncMock(return_value="msg-2"),
         "_reply_context_consumption_allowed": lambda *_a, **_kw: True,
+        # "proxy": these tests use a header-less fake request with no
+        # .client at all to mean "no verified role" -> viewer, matching the
+        # process-backend/session-proxy topology these routes are reached
+        # through in practice. K8s ("deployment") is covered separately in
+        # test_enforce_room_role_middleware.py.
+        "_settings": SimpleNamespace(ws_auth=SimpleNamespace(room_role_source="proxy")),
     }
     attrs.update(overrides)
     fake = SimpleNamespace(**attrs)

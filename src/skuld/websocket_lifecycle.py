@@ -121,27 +121,37 @@ class WebSocketLifecycleMixin:
     def _resolve_room_role(self, websocket: WebSocket) -> str:
         """Resolve this connection's room role for per-message authorization.
 
-        Least privilege by default. A missing/invalid room-role header is
-        only ever treated as "owner" when ``_authorize_websocket`` already
-        ran with ``ws_auth.enforce_ownership`` and this connection reached
-        this point — that check grants only the "start" action, which no
-        session_participants grant is ever authorized for (see
-        session-participant-* Cedar policies), so a connection that got this
-        far under enforced ownership genuinely IS the owner/admin. This
-        covers the enforced-Kubernetes path, where the browser reaches this
-        pod directly through Envoy and never passes through
-        niuu.session_proxy's header stamping at all.
+        A valid ``room_role_header`` always wins outright — it is the
+        session-proxy-verified value, which already encodes the dev-identity
+        default (session_proxy stamps "owner" under dev identity with no
+        resolver configured).
 
-        Everywhere else (header present) uses the session-proxy-verified
-        value, which already encodes the dev-identity default (session_proxy
-        stamps "owner" under dev identity with no resolver configured) — this
-        method does not need a separate dev-identity branch.
+        Otherwise this defers entirely to ``ws_auth.room_role_source``
+        (mirrors ``skuld.broker_api._effective_room_role`` exactly — the two
+        must never diverge, or the same caller gets a different room role on
+        the HTTP and WebSocket legs of the same session):
+
+        - "deployment" (the default — Kubernetes, OpenShell, VM, and any
+          backend other than a proxy-fronted process): this pod's own auth
+          boundary (ext_authz / enforce_ownership / the deployment's Gateway)
+          already gates every caller who reaches this pod at all, and
+          participants are not supported on these backends (invites are
+          refused with 409), so a missing header simply means owner —
+          identical to this pod's behavior before session_participants
+          existed.
+        - "proxy" (rendered only for the process backend): the session proxy
+          resolves and stamps the header itself from session_participants
+          grants, so trust it — a missing header means viewer, except a
+          loopback caller carrying no x-forwarded-for (same-pod tooling a
+          reverse proxy could never present as).
         """
         cfg = self._settings.ws_auth
         header_role = websocket.headers.get(cfg.room_role_header, "").strip().lower()
         if header_role in self._VALID_ROOM_ROLES:
             return header_role
-        if cfg.enforce_ownership:
+        if cfg.room_role_source == "deployment":
+            return "owner"
+        if _is_loopback_ws_client(websocket) and not websocket.headers.get("x-forwarded-for"):
             return "owner"
         return "viewer"
 

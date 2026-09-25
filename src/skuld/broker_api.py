@@ -25,7 +25,6 @@ from pydantic import BaseModel, Field
 from niuu.build_identity import build_identity
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
-from niuu.domain.services.token_scope import SKULD_GATE_RESOLVE_SCOPE, request_carries_scope
 from niuu.domain.text_projection import projection_revision
 from niuu.room_access import ROOM_ROLE_HEADER, ROOM_ROLE_RANK, required_role_for_route
 from skuld.conversation_models import ConversationTurn
@@ -177,6 +176,57 @@ def _is_loopback_http_client(request: Request) -> bool:
     return host in ("127.0.0.1", "::1", "localhost")
 
 
+def _effective_room_role(request: Request) -> str:
+    """Return the ONE canonical room role for this HTTP request.
+
+    Every place in this module that needs a caller's room role — the
+    ``_enforce_room_role`` middleware below, and every route handler that
+    makes its own role-gated decision (room/message, room/direct, gate
+    resolve, help answers) — calls this SAME function, so a request can
+    never be admitted by the middleware under one role and then handled
+    under a different one (that mismatch is what silently rewrote Ting's
+    ``source: "ting"`` to ``room_viewer`` and 403'd replies to a waiting
+    peer even though the middleware had already let the same request
+    through as owner).
+
+    A valid ``x-niuu-room-role`` header always wins outright — it is the
+    session-proxy-verified stamp. Otherwise this defers entirely to
+    ``ws_auth.room_role_source`` (see ``skuld.config.WsAuthConfig`` and
+    ``skuld.websocket_lifecycle._resolve_room_role``, which mirrors this
+    exactly so the WebSocket and HTTP legs of the same session never
+    disagree):
+
+    - "deployment" (the default — Kubernetes, OpenShell, VM, and any backend
+      other than a proxy-fronted process): this pod's own auth boundary
+      (ext_authz / enforce_ownership / the deployment's Gateway) already
+      gates every caller who reaches this pod at all, and participants are
+      not supported on these backends (invites are refused with 409), so a
+      missing header simply means owner — identical to this pod's behavior
+      before session_participants existed. This is NOT gated on
+      ``enforce_ownership``: a non-enforced Kubernetes deployment's nginx
+      sidecar always sets x-forwarded-for on every request it proxies
+      (charts/skuld/templates/nginx-configmap.yaml), so a loopback-based
+      heuristic can never distinguish the genuine owner from anyone else on
+      that backend — "deployment" mode does not try to.
+    - "proxy" (rendered only for the process backend, by the local process
+      launcher — volundr.adapters.outbound.local_process): the session proxy
+      (niuu.session_proxy) resolves and stamps the header itself from
+      session_participants grants, so trust it — a missing header means
+      viewer, except a loopback caller carrying no x-forwarded-for (same-pod
+      tooling a reverse proxy could never present as: containers/skuld/svc,
+      tmux_interactive.py's present-file/hooks calls, Ravn/Ting service
+      clients dialing localhost).
+    """
+    room_role = request.headers.get(ROOM_ROLE_HEADER, "").strip().lower()
+    if room_role in ROOM_ROLE_RANK:
+        return room_role
+    if broker._settings.ws_auth.room_role_source == "deployment":
+        return "owner"
+    if _is_loopback_http_client(request) and not request.headers.get("x-forwarded-for"):
+        return "owner"
+    return "viewer"
+
+
 @app.middleware("http")
 async def _enforce_room_role(request: Request, call_next):
     """Defense-in-depth room-role gate for every ``/api/*`` route.
@@ -185,37 +235,11 @@ async def _enforce_room_role(request: Request, call_next):
     ``niuu.room_access.required_role_for_route`` before it ever dials this
     pod, using the SAME table — but this pod can also be reached directly
     (the generic proxy passthrough resolves only the coarse "may attach"
-    guard before consulting the table, and an enforced-Kubernetes deployment
-    may route the browser straight to this pod, bypassing the proxy's header
-    stamping entirely). A viewer must not gain the run of every broker route
-    just because one enforcement layer was skipped or misconfigured.
-
-    ``x-niuu-room-role`` is trustworthy as a proxy-verified stamp only for a
-    request that actually went THROUGH the proxy (or the Gateway, whose
-    filter strips any client-supplied copy before forwarding — see
-    charts/skuld/templates/httproute.yaml); a direct dial straight to this
-    pod's port (docker, or loopback inside the pod itself) bypasses both and
-    could set the header to anything. That is not a gap this middleware
-    closes: anything able to dial this pod directly, over docker or
-    loopback, is already in a fully-trusted zone by construction (see the
-    loopback case below) — same posture as containers/skuld/svc's other
-    unauthenticated same-pod calls. The two cases below are what let a
-    MISSING header still resolve to more than "viewer": (1) Envoy's ext_authz already ran
-    a stricter, owner/admin-only check (``ws_auth.enforce_ownership``, the
-    "start" Cedar action — no session_participants grant is ever authorized
-    for it) before this request arrived at all, so a missing header here
-    means "the verifying layer doesn't carry this header", not "no one
-    verified this caller"; or (2) the caller is inside the SAME pod, over
-    loopback, with no proxy hop in front of it to have stripped anything
-    (containers/skuld/svc, tmux_interactive.py's present-file/hooks calls,
-    Ravn/Ting service clients dialing localhost) — nothing external can
-    present as loopback AND carry no x-forwarded-for at once, since any
-    reverse proxy in front adds that header. Neither case is gated on
-    ws_auth.allow_loopback: that flag is scoped to the WS ownership bypass
-    for CLI/Ravn peers specifically, not a general "is this pod-internal"
-    signal, and this same-pod HTTP tooling has always run unauthenticated
-    regardless of it. Only when NEITHER applies is a missing header least
-    privilege: "viewer".
+    guard before consulting the table, and a deployment backend routes the
+    browser straight to this pod, bypassing the proxy's header stamping
+    entirely). A viewer must not gain the run of every broker route just
+    because one enforcement layer was skipped or misconfigured. See
+    ``_effective_room_role`` for how a missing header is resolved.
     """
     # CORS preflight carries no credentials and must reach CORSMiddleware
     # unimpeded (added before this middleware, so it runs on the INSIDE —
@@ -223,15 +247,7 @@ async def _enforce_room_role(request: Request, call_next):
     # would break preflight for every legitimate browser client.
     if not request.url.path.startswith("/api/") or request.method == "OPTIONS":
         return await call_next(request)
-    room_role = request.headers.get(ROOM_ROLE_HEADER, "").strip().lower()
-    if room_role in ROOM_ROLE_RANK:
-        effective_role = room_role
-    elif broker._settings.ws_auth.enforce_ownership:
-        effective_role = "owner"
-    elif _is_loopback_http_client(request) and not request.headers.get("x-forwarded-for"):
-        effective_role = "owner"
-    else:
-        effective_role = "viewer"
+    effective_role = _effective_room_role(request)
     required_role = required_role_for_route(request.method, request.url.path.removeprefix("/api/"))
     if ROOM_ROLE_RANK[effective_role] < ROOM_ROLE_RANK[required_role]:
         return JSONResponse(
@@ -1108,18 +1124,29 @@ async def send_message_to_session(body: _SendMessageRequest) -> dict:
     return {"status": "sent", "target_session_id": body.session_id}
 
 
-def _verified_room_role(request: Request) -> str:
-    """Return the proxy/Gateway-verified room role for this HTTP request.
+# Client-controllable metadata keys that let a sub-owner caller impersonate
+# another participant or forge continuation state. ``participant_id`` picks
+# WHICH registered room participant a directed message is attributed to
+# (handle_directed_room_message reads it from metadata, not a separate
+# argument — see broker.py). ``reply_context`` can override the SERVER's own
+# tracked continuation state: niuu.collaboration.room.route_directed_message
+# starts from its stored pending reply_context and then applies the caller's
+# metadata OVER it, so a client-supplied reply_context silently replaces
+# genuine case-continuation data. ``source`` inside metadata is stripped for
+# the same reason as the top-level source field. Only the owner's own client
+# may set any of these.
+_SUB_OWNER_STRIPPED_METADATA_KEYS = frozenset({"participant_id", "reply_context", "source"})
 
-    Only ``ROOM_ROLE_HEADER`` is consulted — the same header ``_enforce_room_role``
-    trusts, never a client-suppliable body field.
-    """
-    role = request.headers.get(ROOM_ROLE_HEADER, "").strip().lower()
-    return role if role in ROOM_ROLE_RANK else "viewer"
+
+def _sanitize_room_metadata(role: str, metadata: dict[str, Any]) -> dict[str, Any]:
+    """Strip client-controllable identity/continuation fields for callers below owner."""
+    if role == "owner":
+        return dict(metadata)
+    return {k: v for k, v in metadata.items() if k not in _SUB_OWNER_STRIPPED_METADATA_KEYS}
 
 
 def _room_identity_fields(
-    request: Request, participant_id: str | None, source: str
+    role: str, participant_id: str | None, source: str
 ) -> tuple[str | None, str]:
     """Derive (participant_id, source) a caller below owner may not choose.
 
@@ -1134,7 +1161,6 @@ def _room_identity_fields(
     to a channel the caller never came from. The session owner keeps full
     control of both fields — this only narrows sub-owner callers.
     """
-    role = _verified_room_role(request)
     if role == "owner":
         return participant_id, source
     return None, f"room_{role}"
@@ -1143,13 +1169,15 @@ def _room_identity_fields(
 @app.post("/api/room/message")
 async def send_room_message(request: Request, body: _RoomMessageRequest) -> dict:
     """Inject a human-originated message into the active room session."""
-    participant_id, source = _room_identity_fields(request, body.participant_id, body.source)
+    role = _effective_room_role(request)
+    participant_id, source = _room_identity_fields(role, body.participant_id, body.source)
+    metadata = _sanitize_room_metadata(role, body.metadata)
     try:
         message_id = await broker.handle_human_room_message(
             body.content,
             source=source,
             participant_id=participant_id,
-            metadata=body.metadata,
+            metadata=metadata,
             deliver_to_transport=body.deliver_to_transport,
         )
     except ValueError as exc:
@@ -1165,22 +1193,23 @@ async def send_room_message(request: Request, body: _RoomMessageRequest) -> dict
 @app.post("/api/room/direct")
 async def send_directed_room_message(request: Request, body: _DirectedRoomMessageRequest) -> dict:
     """Inject a human-originated directed room message."""
-    participant_id, source = _room_identity_fields(request, body.participant_id, body.source)
-    role = _verified_room_role(request)
+    role = _effective_room_role(request)
+    participant_id, source = _room_identity_fields(role, body.participant_id, body.source)
     if not broker._reply_context_consumption_allowed(body.target_peer_id, role):
         raise HTTPException(
             403,
             "This participant is awaiting an operator reply; only the session "
             "owner or an approver may answer it",
         )
+    metadata = _sanitize_room_metadata(role, body.metadata)
+    if participant_id:
+        metadata = {**metadata, "participant_id": participant_id}
     try:
         message_id = await broker.handle_directed_room_message(
             body.target_peer_id,
             body.content,
             source=source,
-            metadata={**body.metadata, "participant_id": participant_id}
-            if participant_id
-            else body.metadata,
+            metadata=metadata,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -1342,13 +1371,15 @@ async def get_help_requests() -> dict:
 
 
 @app.post("/api/help/requests/{request_id}/answer")
-async def answer_help_request(request_id: str, body: _HelpAnswerRequest) -> dict:
+async def answer_help_request(request: Request, request_id: str, body: _HelpAnswerRequest) -> dict:
     """Answer a pending help request; the answer routes to the asking peer."""
+    role = _effective_room_role(request)
+    source = body.source if role == "owner" else f"room_{role}"
     try:
         message_id = await broker.answer_help_request(
             request_id,
             body.answer,
-            source=body.source,
+            source=source,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -1369,21 +1400,12 @@ async def resolve_workflow_gate(
         != WORKFLOW_GATE_INTENT_RESOLVE
     ):
         raise HTTPException(428, "Missing explicit workflow gate intent header")
-    # Two independent, non-degrading paths admit this call:
-    #  - x-niuu-room-role: set by Volundr's REST layer after its own Cedar
-    #    check, trustworthy when this pod is dialed directly (mini mode) or
-    #    through the session proxy (both strip any client-supplied copy).
-    #  - a skuld:gate:resolve-scoped workload token: required when this pod
-    #    is reached through the Skuld Gateway, which strips x-niuu-room-role
-    #    on this hop (see charts/skuld/templates/httproute.yaml) because it
-    #    has no JWT claim to re-derive it from. Envoy's "workload" JWT
-    #    provider (securitypolicy.yaml) verifies the signature before this
-    #    code ever runs; request_carries_scope only reads already-trusted
-    #    claims (same posture as token_scope.py's other checks).
-    room_role = request.headers.get(ROOM_ROLE_HEADER, "").strip().lower()
-    if room_role not in ROOM_ROLES_MAY_RESOLVE_GATES and not request_carries_scope(
-        request, SKULD_GATE_RESOLVE_SCOPE
-    ):
+    # x-niuu-room-role, set by Volundr's REST layer after its own Cedar
+    # check when reachable, or _effective_room_role's own resolution
+    # (ws_auth.room_role_source) otherwise — the SAME function the
+    # middleware and every other role-gated route here uses, so this can
+    # never disagree with what already admitted the request.
+    if _effective_room_role(request) not in ROOM_ROLES_MAY_RESOLVE_GATES:
         raise HTTPException(403, "Only the session owner or an approver may resolve this gate")
     try:
         gate = await broker.resolve_workflow_gate(

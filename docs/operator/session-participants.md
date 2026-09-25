@@ -48,7 +48,39 @@ of the whole deployment's `pod_manager.runtime_backend` setting.
 This has been verified specifically for the `kubernetes` backend. The
 `openshell` and `vm` backends are refused defensively for the same reason
 (both are pod-based and Gateway-routed by construction), but their attach
-path has not been independently traced.
+path has not been independently traced. The `docker` backend is refused for
+the same reason and has not been independently traced either — it is not
+routed through the session proxy today, so it stays on the `deployment`
+room-role default (see below) like every other non-process backend.
+
+Room-role resolution itself follows the same split, via Skuld's
+`ws_auth.room_role_source` setting (`process` renders `proxy`; every other
+backend keeps the default, `deployment`):
+
+- `deployment` (Kubernetes, OpenShell, VM, docker): this pod's own auth
+  boundary (ext_authz / enforce_ownership / the deployment's Gateway)
+  already gates every caller who reaches the pod at all, so a caller
+  reaching it is owner — identical to this pod's behavior before
+  `session_participants` existed. This is intentionally **not** derived
+  from loopback/`x-forwarded-for` heuristics: every Skuld pod's nginx
+  sidecar sets `x-forwarded-for` on every request it proxies
+  (`charts/skuld/templates/nginx-configmap.yaml`), so such a heuristic could
+  never distinguish the genuine owner from anyone else on these backends.
+- `proxy` (process backend only): the session proxy resolves the role from
+  `session_participants` grants and stamps it; trusted directly.
+
+## Same-OS-user risk on the `process` backend
+
+On the `process` backend, every session's agent runs as the **same OS
+user** as every other session on that host. A loopback caller with no
+`x-forwarded-for` header is treated as owner (the same-pod-tooling
+exception `ws_auth.room_role_source="proxy"` needs for `containers/skuld/
+svc`, hooks, and present-file). Any other process co-located on that host
+— including another session's own agent, if it can reach the loopback
+broker port directly — inherits that same trust. Prefer viewer-only
+invitees for participants you do not fully trust on a shared host, and do
+not rely on room-role gating alone as an isolation boundary between
+co-located sessions on this backend.
 
 ## Observer risk when permission mode is permissive
 
@@ -68,8 +100,13 @@ inviting an observer you do not fully trust.
 
 Room-role is resolved once, from Cedar (`admit` / `resolve_gate` /
 `read_room` — never a hand-written owner_id/admin-role comparison), and
-carried as a verified `x-niuu-room-role` header from the session proxy (mini
-mode) or trusted-loopback/`enforce_ownership` signal (Kubernetes) into
-Skuld's broker. See `src/niuu/room_access.py` for the exact HTTP allowlist
-and `src/skuld/broker.py`'s `_message_role_requirement` for the WebSocket
+carried as a verified `x-niuu-room-role` header from the session proxy on
+the `process` backend, or governed by `ws_auth.room_role_source`'s
+`deployment` default everywhere else (see above) into Skuld's broker. Both
+the HTTP middleware and every role-gated HTTP route call the SAME
+`skuld.broker_api._effective_room_role`, and the WebSocket leg's
+`skuld.websocket_lifecycle._resolve_room_role` mirrors it exactly, so a
+caller can never get a different room role on the two legs of the same
+session. See `src/niuu/room_access.py` for the exact HTTP allowlist and
+`src/skuld/broker.py`'s `_message_role_requirement` for the WebSocket
 message-type allowlist.

@@ -37,7 +37,14 @@ def _body() -> _WorkflowGateResolveRequest:
 
 
 @pytest.mark.parametrize("role", ["viewer", "not-a-real-role", "", None])
-async def test_insufficient_or_missing_room_role_is_refused(role):
+async def test_insufficient_or_missing_room_role_is_refused(role, monkeypatch):
+    """room_role_source="proxy": this is the process-backend/session-proxy
+    topology this defense-in-depth check exists for — a missing header
+    means least privilege there, unlike the K8s "deployment" default."""
+    fake_broker = SimpleNamespace(
+        _settings=SimpleNamespace(ws_auth=SimpleNamespace(room_role_source="proxy"))
+    )
+    monkeypatch.setattr("skuld.broker_api.broker", fake_broker)
     with pytest.raises(HTTPException) as exc_info:
         await resolve_workflow_gate(_request(role), "gate-1", _body())
     assert exc_info.value.status_code == 403

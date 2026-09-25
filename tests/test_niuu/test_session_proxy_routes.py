@@ -485,7 +485,14 @@ class TestRoomRoleHeader:
 
         assert captured["headers"]["x-niuu-room-role"] == "approver"
 
-    def test_ws_omits_the_header_when_no_role_can_be_resolved(self, tmp_path) -> None:
+    def test_ws_stamps_viewer_when_no_role_can_be_resolved(self, tmp_path) -> None:
+        """may_attach allowed the connection, but no resolver could name a
+        role for it. Stamp least privilege explicitly rather than omit the
+        header: this proxy always dials the broker over loopback, and an
+        omitted header there can read as owner under
+        ws_auth.room_role_source="proxy" (the process backend this proxy
+        serves) — an omitted header would silently hand out owner to a
+        connection this proxy could not actually place a role on."""
         from starlette.websockets import WebSocketDisconnect
 
         app, reg = _bare_app(tmp_path)
@@ -499,7 +506,7 @@ class TestRoomRoleHeader:
                 ) as ws:
                     ws.receive_text()
 
-        assert "x-niuu-room-role" not in captured["headers"]
+        assert captured["headers"]["x-niuu-room-role"] == "viewer"
 
     def test_ws_dev_identity_without_a_resolver_stamps_owner(self, tmp_path) -> None:
         from starlette.websockets import WebSocketDisconnect
@@ -539,7 +546,7 @@ class TestRoomRoleHeader:
         headers = mock_client.request.await_args.kwargs["headers"]
         assert headers["x-niuu-room-role"] == "viewer"
 
-    def test_http_omits_the_header_when_no_role_can_be_resolved(self, tmp_path) -> None:
+    def test_http_stamps_viewer_when_no_role_can_be_resolved(self, tmp_path) -> None:
         app, reg = _bare_app(tmp_path)
         reg.register("sess", 9123)
 
@@ -552,7 +559,7 @@ class TestRoomRoleHeader:
 
         assert resp.status_code == 200
         headers = mock_client.request.await_args.kwargs["headers"]
-        assert "x-niuu-room-role" not in headers
+        assert headers["x-niuu-room-role"] == "viewer"
 
 
 class _CloseableSocketDouble(_SocketDouble):
