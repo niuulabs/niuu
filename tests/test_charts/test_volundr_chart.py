@@ -1,5 +1,6 @@
 """Tests for Volundr Helm chart templates."""
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -974,3 +975,73 @@ class TestNewValuesDefaults:
         """Test network policy is configured."""
         np = values_yaml["networkPolicy"]
         assert np["enabled"] is False
+
+
+def _rendered_configmap(*extra_args: str) -> dict:
+    command = ["helm", "template", "test", str(CHART_DIR), *extra_args]
+    docs = list(yaml.safe_load_all(subprocess.check_output(command)))
+    return next(
+        yaml.safe_load(d["data"]["config.yaml"])
+        for d in docs
+        if d and d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
+    )
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestPodManagerRoomRoleSource:
+    """pod_manager.room_role_source — the single setting the 409 gate and
+    RoomRoleSourceContributor both read (see rest_session_participants.py)."""
+
+    def test_defaults_to_deployment(self):
+        config = _rendered_configmap()
+        assert config["pod_manager"]["room_role_source"] == "deployment"
+        assert config["pod_manager"]["room_role_cache_ttl_seconds"] == 5.0
+
+    def test_renders_remote_and_a_custom_cache_ttl(self):
+        config = _rendered_configmap(
+            "--set",
+            "podManager.roomRoleSource=remote",
+            "--set",
+            "podManager.roomRoleCacheTtlSeconds=12",
+        )
+        assert config["pod_manager"]["room_role_source"] == "remote"
+        assert config["pod_manager"]["room_role_cache_ttl_seconds"] == 12
+
+    def test_config_parses_as_settings(self):
+        from volundr.config import PodManagerConfig
+
+        config = _rendered_configmap(
+            "--set",
+            "podManager.roomRoleSource=remote",
+        )
+        pm = PodManagerConfig(**config["pod_manager"])
+        assert pm.room_role_source == "remote"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_forge_envoy_authorization_route_for_room_role_endpoint_is_valid():
+    """Without this route, Forge's own ext_authz sidecar denies the scoped
+    workload token before it ever reaches the FastAPI-level scope check —
+    see identity/policies/authorization.cedar's gateway-scoped-credential rule."""
+    from identity.authz_config import AuthorizationGatewayConfig, JWTMetadataProvider
+
+    with open(CHART_DIR / "values.yaml") as fh:
+        values = yaml.safe_load(fh)
+    routes = values["envoy"]["authorization"]["routes"]
+    role_route = next(
+        r for r in routes if r["path"] == "/api/v1/forge/sessions/{session_id}/participants/role"
+    )
+    assert role_route["required_scope"] == "forge:session:room-role"
+    assert role_route["methods"] == ["GET"]
+    assert role_route.get("path_template") is True
+
+    config = AuthorizationGatewayConfig(
+        routes=routes,
+        providers=[JWTMetadataProvider(issuer="https://issuer.test", audiences=["volundr"])],
+    )
+    matched = next(
+        r
+        for r in config.routes
+        if "GET" in r.methods and r.matches("/api/v1/forge/sessions/abc-123/participants/role")
+    )
+    assert matched.required_scope == "forge:session:room-role"

@@ -9,6 +9,7 @@ substitute a default role.
 from __future__ import annotations
 
 import time
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -130,8 +131,8 @@ async def test_repeated_calls_within_ttl_hit_the_cache_not_the_network(tmp_path)
 async def test_revocation_takes_effect_once_the_cache_ttl_elapses(tmp_path, monkeypatch):
     """A short cache TTL bounds how long a revoked grant keeps working."""
     adapter = _adapter(tmp_path, cache_ttl_seconds=1.0)
-    fake_now = [1_000_000.0]
-    monkeypatch.setattr(time, "time", lambda: fake_now[0])
+    fake_monotonic = [500_000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: fake_monotonic[0])
 
     responses = iter(
         [
@@ -142,7 +143,7 @@ async def test_revocation_takes_effect_once_the_cache_ttl_elapses(tmp_path, monk
     with respx.mock(assert_all_called=True) as router:
         router.post(EXCHANGE_URL).mock(
             return_value=httpx.Response(
-                200, json={"token": "workload-jwt", "expiresAt": fake_now[0] + 300}
+                200, json={"token": "workload-jwt", "expiresAt": time.time() + 300}
             )
         )
         role_route = router.get(ROLE_URL).mock(side_effect=lambda _request: next(responses))
@@ -160,7 +161,7 @@ async def test_revocation_takes_effect_once_the_cache_ttl_elapses(tmp_path, monk
         assert role_route.call_count == 1
 
         # Past the TTL: revocation is now visible.
-        fake_now[0] += 2.0
+        fake_monotonic[0] += 2.0
         revoked = await adapter.resolve_role(
             session_id="sess-1", user_id="alice", tenant_id="acme", roles=[]
         )
@@ -214,6 +215,96 @@ async def test_exchange_returning_no_token_fails_closed(tmp_path):
             await adapter.resolve_role(
                 session_id="sess-1", user_id="alice", tenant_id="acme", roles=[]
             )
+
+
+@pytest.mark.asyncio
+async def test_missing_expires_at_fails_closed_instead_of_a_default_lifetime(tmp_path):
+    adapter = _adapter(tmp_path)
+    with respx.mock(assert_all_called=True) as router:
+        router.post(EXCHANGE_URL).mock(return_value=httpx.Response(200, json={"token": "wjwt"}))
+        with pytest.raises(RoomRoleResolutionError, match="expiresAt"):
+            await adapter.resolve_role(
+                session_id="sess-1", user_id="alice", tenant_id="acme", roles=[]
+            )
+
+
+@pytest.mark.asyncio
+async def test_non_numeric_expires_at_fails_closed(tmp_path):
+    adapter = _adapter(tmp_path)
+    with respx.mock(assert_all_called=True) as router:
+        router.post(EXCHANGE_URL).mock(
+            return_value=httpx.Response(200, json={"token": "wjwt", "expiresAt": "soon"})
+        )
+        with pytest.raises(RoomRoleResolutionError, match="non-numeric expiresAt"):
+            await adapter.resolve_role(
+                session_id="sess-1", user_id="alice", tenant_id="acme", roles=[]
+            )
+
+
+@pytest.mark.asyncio
+async def test_malformed_json_response_fails_closed(tmp_path):
+    adapter = _adapter(tmp_path)
+    with respx.mock(assert_all_called=True) as router:
+        router.post(EXCHANGE_URL).mock(
+            return_value=httpx.Response(
+                200, content=b"not json", headers={"content-type": "application/json"}
+            )
+        )
+        with pytest.raises(RoomRoleResolutionError, match="not valid JSON"):
+            await adapter.resolve_role(
+                session_id="sess-1", user_id="alice", tenant_id="acme", roles=[]
+            )
+
+
+@pytest.mark.asyncio
+async def test_non_object_json_response_fails_closed(tmp_path):
+    adapter = _adapter(tmp_path)
+    with respx.mock(assert_all_called=True) as router:
+        router.post(EXCHANGE_URL).mock(return_value=httpx.Response(200, json=["not", "a", "dict"]))
+        with pytest.raises(RoomRoleResolutionError, match="expected an object"):
+            await adapter.resolve_role(
+                session_id="sess-1", user_id="alice", tenant_id="acme", roles=[]
+            )
+
+
+@pytest.mark.asyncio
+async def test_token_file_permission_error_fails_closed(tmp_path):
+    adapter = _adapter(tmp_path)
+    with patch("pathlib.Path.read_text", side_effect=PermissionError("denied")):
+        with pytest.raises(RoomRoleResolutionError, match="Failed to read"):
+            await adapter.resolve_role(
+                session_id="sess-1", user_id="alice", tenant_id="acme", roles=[]
+            )
+
+
+def test_constructor_rejects_unknown_kwargs(tmp_path):
+    """No **_extra swallowing — a typo'd kwarg must fail loudly."""
+    with pytest.raises(TypeError):
+        RemoteAuthorizationAdapter(volundr_api_url="http://volundr.test", bogus_kwarg="x")
+
+
+def test_constructor_rejects_a_non_positive_cache_bound():
+    with pytest.raises(ValueError, match="cache_max_entries"):
+        RemoteAuthorizationAdapter(volundr_api_url="http://volundr.test", cache_max_entries=0)
+
+
+@pytest.mark.asyncio
+async def test_role_cache_is_bounded(tmp_path):
+    adapter = _adapter(tmp_path, cache_ttl_seconds=60.0, cache_max_entries=2)
+    with respx.mock(assert_all_called=False) as router:
+        router.post(EXCHANGE_URL).mock(
+            return_value=httpx.Response(
+                200, json={"token": "workload-jwt", "expiresAt": time.time() + 300}
+            )
+        )
+        router.get(ROLE_URL).mock(return_value=httpx.Response(200, json={"role": "viewer"}))
+        for user in ("a", "b", "c"):
+            await adapter.resolve_role(
+                session_id="sess-1", user_id=user, tenant_id="acme", roles=[]
+            )
+    assert len(adapter._role_cache) == 2
+    # The oldest entry ("a") was evicted first.
+    assert not any(key[1] == "a" for key in adapter._role_cache)
 
 
 @pytest.mark.asyncio

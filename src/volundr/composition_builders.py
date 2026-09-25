@@ -438,7 +438,10 @@ def _create_contributors(
 
     if not _has_contributor("room_role_source"):
         contributors.append(
-            RoomRoleSourceContributor(room_role_source=settings.pod_manager.room_role_source)
+            RoomRoleSourceContributor(
+                room_role_source=settings.pod_manager.room_role_source,
+                cache_ttl_seconds=settings.pod_manager.room_role_cache_ttl_seconds,
+            )
         )
         logger.info(
             "Session contributor: room_role_source (auto-wired, %s)",

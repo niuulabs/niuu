@@ -53,16 +53,19 @@ async def test_remote_on_process_backend_contributes_nothing():
     assert contribution.values == {}
 
 
-async def test_remote_on_openshell_and_vm_also_renders_the_contribution():
-    """Defensive inclusion, matching REMOTE_CAPABLE_RUNTIME_BACKENDS — not yet
-    independently verified end-to-end for these backends."""
+async def test_remote_on_openshell_and_vm_contributes_nothing():
+    """Neither backend mounts a projected niuu-workload service-account
+    token (WorkloadIdentityContributor skips them), so
+    RemoteAuthorizationAdapter would have no credential to exchange —
+    rendering the contribution there would let an invite succeed with no
+    way for the pod to ever honour it."""
     contributor = RoomRoleSourceContributor(room_role_source="remote")
 
     for backend in ("openshell", "vm"):
         contribution = await contributor.contribute(
             _session(), SessionContext(runtime_backend=backend)
         )
-        assert contribution.values["wsAuth"]["room_role_source"] == "remote"
+        assert contribution.values == {}
 
 
 async def test_custom_adapter_scope_and_ttl_are_forwarded():

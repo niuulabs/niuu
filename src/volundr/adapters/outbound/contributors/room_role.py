@@ -22,17 +22,14 @@ class RoomRoleSourceContributor(SessionContributor):
     render byte-identical values until they deliberately opt in (see
     ``PodManagerConfig.room_role_source`` in ``volundr/config.py``).
 
-    Only "kubernetes" has been independently verified end-to-end; "openshell"
-    and "vm" are included defensively for the same reason
-    ``rest_session_participants.REMOTE_CAPABLE_RUNTIME_BACKENDS`` includes
-    them (they are pod-based, Gateway-routed backends by construction), but
-    neither currently mounts a projected workload-identity token (see
-    ``WorkloadIdentityContributor``), so ``RemoteAuthorizationAdapter`` has no
-    credential to exchange there yet — rendering the values contribution
-    anyway costs nothing and documents the intended end state.
+    Limited to "kubernetes" — the only backend both independently verified
+    end-to-end AND the only one ``WorkloadIdentityContributor`` projects a
+    niuu-workload service-account token onto (see
+    ``rest_session_participants.REMOTE_CAPABLE_RUNTIME_BACKENDS``, which this
+    mirrors exactly).
     """
 
-    _REMOTE_CAPABLE_BACKENDS = frozenset({"kubernetes", "openshell", "vm"})
+    _REMOTE_CAPABLE_BACKENDS = frozenset({"kubernetes"})
 
     def __init__(
         self,

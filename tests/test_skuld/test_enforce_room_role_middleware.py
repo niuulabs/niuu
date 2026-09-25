@@ -209,12 +209,35 @@ class TestEffectiveRoomRoleRemoteMode:
         )
         assert result is None
 
-    async def test_no_verified_identity_headers_is_none_without_calling_the_adapter(
-        self, monkeypatch
-    ):
+    async def test_no_verified_identity_headers_non_loopback_is_none(self, monkeypatch):
         resolver = _FakeResolver("owner")
         _set_remote_room_role_source(monkeypatch, resolver)
-        result = await _effective_room_role(_remote_request())
+        result = await _effective_room_role(_remote_request(client_host="203.0.113.9"))
+        assert result is None
+        assert resolver.calls == []
+
+    async def test_no_verified_identity_headers_loopback_no_xff_is_owner(self, monkeypatch):
+        """Same-pod tooling exception "proxy" mode already carries:
+        containers/skuld/svc, hooks, present-file, in-pod Ravn/Ting service
+        clients dialing localhost — none of them present verified identity
+        headers, and only an in-pod caller can be loopback with no XFF."""
+        resolver = _FakeResolver("owner")
+        _set_remote_room_role_source(monkeypatch, resolver)
+        result = await _effective_room_role(
+            _remote_request(client_host="127.0.0.1", x_forwarded_for=None)
+        )
+        assert result == "owner"
+        assert resolver.calls == []
+
+    async def test_no_verified_identity_headers_loopback_with_xff_is_none(self, monkeypatch):
+        """A reverse proxy in front of a loopback-presenting caller always
+        adds x-forwarded-for — its presence means this is NOT a genuine
+        same-pod caller."""
+        resolver = _FakeResolver("owner")
+        _set_remote_room_role_source(monkeypatch, resolver)
+        result = await _effective_room_role(
+            _remote_request(client_host="127.0.0.1", x_forwarded_for="203.0.113.5")
+        )
         assert result is None
         assert resolver.calls == []
 

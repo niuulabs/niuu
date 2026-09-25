@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from niuu.domain.models import Principal
+from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 from volundr.adapters.inbound.rest_session_participants import create_session_participants_router
 from volundr.domain.services.session import SessionAccessDeniedError
 from volundr.domain.session_participants import (
@@ -165,6 +166,33 @@ def test_docker_backend_stays_409_even_with_room_role_source_remote():
     app.include_router(
         create_session_participants_router(
             service, session_service, runtime_backend="docker", room_role_source="remote"
+        )
+    )
+    sid = uuid4()
+    principal = Principal(user_id="owner", email="", tenant_id="acme", roles=["volundr:developer"])
+    with patch(
+        "volundr.adapters.inbound.rest_session_participants.extract_principal",
+        new=AsyncMock(return_value=principal),
+    ):
+        session_service.get_session.return_value = object()
+        response = TestClient(app).post(
+            f"/api/v1/forge/sessions/{sid}/participants",
+            json={"user_id": "invitee", "role": "observer"},
+        )
+    assert response.status_code == 409
+
+
+@pytest.mark.parametrize("backend", ["openshell", "vm"])
+def test_openshell_and_vm_stay_409_even_with_room_role_source_remote(backend):
+    """Neither backend mounts a projected workload-identity token today
+    (WorkloadIdentityContributor skips them), so the pod would have no
+    credential to call the remote role endpoint with — REMOTE_CAPABLE_RUNTIME_BACKENDS
+    is limited to "kubernetes" until that changes."""
+    service, session_service = AsyncMock(), AsyncMock()
+    app = FastAPI()
+    app.include_router(
+        create_session_participants_router(
+            service, session_service, runtime_backend=backend, room_role_source="remote"
         )
     )
     sid = uuid4()
@@ -389,86 +417,236 @@ def test_actual_cedar_policy_enforces_invite_and_accept_end_to_end():
 
 
 # --- GET .../participants/role: what skuld.room_role_remote.RemoteAuthorizationAdapter calls ---
+#
+# Only registered when room_role_source == "remote" (see
+# test_route_absent_unless_room_role_source_is_remote), and gated by a
+# session-scoped, forge:session:room-role-scoped workload credential —
+# a much stricter bar than every other route on this router, which relies
+# on extract_principal's ordinary Cedar checks.
+
+_ROOM_ROLE_SIGNING_KEY = "test-only-signing-key-32-bytes-long!"
 
 
-def test_effective_role_endpoint_returns_the_service_answer(participants_api):
-    client, service, session_service, path = participants_api
-    session_service.get_session.return_value = object()
-    service.effective_room_role.return_value = "approver"
-    response = client.get(
-        path.rsplit("/participants", 1)[0] + "/participants/role",
-        params={"user_id": "bob", "tenant_id": "acme", "roles": "volundr:developer,other"},
-    )
-    assert response.status_code == 200
-    assert response.json() == {"role": "approver"}
-    target = service.effective_room_role.await_args.args[1]
-    assert target.user_id == "bob"
-    assert target.tenant_id == "acme"
-    assert target.roles == ["volundr:developer", "other"]
-
-
-def test_effective_role_endpoint_returns_null_role_for_no_grant(participants_api):
-    """A 200 with role: null, not a 403/404 — "no grant" is an answer, not a
-    failure, matching effective_room_role's own contract."""
-    client, service, session_service, path = participants_api
-    session_service.get_session.return_value = object()
-    service.effective_room_role.return_value = None
-    response = client.get(
-        path.rsplit("/participants", 1)[0] + "/participants/role",
-        params={"user_id": "stranger"},
-    )
-    assert response.status_code == 200
-    assert response.json() == {"role": None}
-
-
-def test_effective_role_endpoint_404s_for_a_missing_session(participants_api):
-    client, service, session_service, path = participants_api
-    session_service.get_session.return_value = None
-    response = client.get(
-        path.rsplit("/participants", 1)[0] + "/participants/role",
-        params={"user_id": "bob"},
-    )
-    assert response.status_code == 404
-    service.effective_room_role.assert_not_awaited()
-
-
-def test_effective_role_endpoint_requires_the_configured_scope_for_scoped_tokens():
-    """A scoped workload credential minted for something ELSE (missing
-    forge:session:room-role) must be refused, not silently admitted."""
+def _scoped_workload_token(
+    session_id, *, scopes=("forge:session:room-role",), workload_sub=None, **overrides
+):
     import time
 
     import jwt
 
     from niuu.domain.services.token_scope import VALKYRIE_BUILD_TOKEN_USE
 
+    now = int(time.time())
+    claims = {
+        "sub": "niuu-workload",
+        "iat": now,
+        "exp": now + 600,
+        "token_use": VALKYRIE_BUILD_TOKEN_USE,
+        "scopes": list(scopes),
+        "workload_sub": (
+            workload_sub
+            if workload_sub is not None
+            else f"system:serviceaccount:volundr-sessions:openbao-session-{session_id}"
+        ),
+    }
+    claims.update(overrides)
+    return jwt.encode(claims, _ROOM_ROLE_SIGNING_KEY, algorithm="HS256")
+
+
+@pytest.fixture
+def remote_participants_api():
+    """runtime_backend/room_role_source combo that registers the role endpoint."""
     service, session_service = AsyncMock(), AsyncMock()
     app = FastAPI()
-    app.include_router(create_session_participants_router(service, session_service))
+    app.state.identity = None
+    app.include_router(
+        create_session_participants_router(
+            service,
+            session_service,
+            runtime_backend="kubernetes",
+            room_role_source="remote",
+        )
+    )
     sid = uuid4()
-    session_service.get_session.return_value = object()
-    principal = Principal(user_id="pod", email="", tenant_id="acme", roles=[])
+    yield TestClient(app), service, session_service, sid
 
+
+def test_route_absent_unless_room_role_source_is_remote(participants_api):
+    """The default ("deployment") router never registers this route at all —
+    it must not go live on a production deployment that hasn't opted in."""
+    client, _service, session_service, path = participants_api
+    session_service.get_session.return_value = object()
+    response = client.get(
+        path.rsplit("/participants", 1)[0] + "/participants/role",
+        params={"user_id": "bob"},
+        headers={"Authorization": f"Bearer {_scoped_workload_token(uuid4())}"},
+    )
+    assert response.status_code == 405
+
+
+def test_effective_role_endpoint_returns_the_service_answer(remote_participants_api):
+    client, service, session_service, sid = remote_participants_api
+    session_service.get_session.return_value = object()
+    service.effective_room_role.return_value = "approver"
+    token = _scoped_workload_token(sid)
+    response = client.get(
+        f"/api/v1/forge/sessions/{sid}/participants/role",
+        params={"user_id": "bob", "tenant_id": "acme", "roles": "developer,other"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"role": "approver"}
+    target = service.effective_room_role.await_args.args[1]
+    assert target.user_id == "bob"
+    assert target.tenant_id == "acme"
+    # No identity adapter configured (app.state.identity is None) falls
+    # through to the raw, unmapped roles — see
+    # test_target_roles_are_mapped_through_the_identity_adapter for the
+    # mapped case.
+    assert target.roles == ["developer", "other"]
+
+
+def test_effective_role_endpoint_returns_null_role_for_no_grant(remote_participants_api):
+    """A 200 with role: null, not a 403/404 — "no grant" is an answer, not a
+    failure, matching effective_room_role's own contract."""
+    client, service, session_service, sid = remote_participants_api
+    session_service.get_session.return_value = object()
+    service.effective_room_role.return_value = None
+    token = _scoped_workload_token(sid)
+    response = client.get(
+        f"/api/v1/forge/sessions/{sid}/participants/role",
+        params={"user_id": "stranger"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"role": None}
+
+
+def test_effective_role_endpoint_404s_for_a_missing_session(remote_participants_api):
+    client, service, session_service, sid = remote_participants_api
+    session_service.get_session.return_value = None
+    token = _scoped_workload_token(sid)
+    response = client.get(
+        f"/api/v1/forge/sessions/{sid}/participants/role",
+        params={"user_id": "bob"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 404
+    service.effective_room_role.assert_not_awaited()
+
+
+def test_unscoped_human_jwt_is_refused(remote_participants_api):
+    """require_scope alone would admit this — an ordinary unscoped JWT must
+    still be refused, since this endpoint discloses grant existence."""
+    import time
+
+    import jwt
+
+    client, service, session_service, sid = remote_participants_api
+    session_service.get_session.return_value = object()
     now = int(time.time())
     token = jwt.encode(
-        {
-            "sub": "pod",
-            "iat": now,
-            "exp": now + 600,
-            "token_use": VALKYRIE_BUILD_TOKEN_USE,
-            "scopes": ["forge:session:create"],
-        },
-        "test-only-signing-key-32-bytes-long!",
+        {"sub": "alice", "iat": now, "exp": now + 600},
+        _ROOM_ROLE_SIGNING_KEY,
         algorithm="HS256",
     )
-
-    with patch(
-        "volundr.adapters.inbound.rest_session_participants.extract_principal",
-        new=AsyncMock(return_value=principal),
-    ):
-        response = TestClient(app).get(
-            f"/api/v1/forge/sessions/{sid}/participants/role",
-            params={"user_id": "bob"},
-            headers={"Authorization": f"Bearer {token}"},
-        )
+    response = client.get(
+        f"/api/v1/forge/sessions/{sid}/participants/role",
+        params={"user_id": "bob"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
     assert response.status_code == 403
+    service.effective_room_role.assert_not_awaited()
+
+
+def test_missing_bearer_token_is_refused(remote_participants_api):
+    client, service, session_service, sid = remote_participants_api
+    session_service.get_session.return_value = object()
+    response = client.get(
+        f"/api/v1/forge/sessions/{sid}/participants/role", params={"user_id": "bob"}
+    )
+    assert response.status_code == 403
+    service.effective_room_role.assert_not_awaited()
+
+
+def test_effective_role_endpoint_requires_the_configured_scope_for_scoped_tokens(
+    remote_participants_api,
+):
+    """A scoped workload credential minted for something ELSE (missing
+    forge:session:room-role) must be refused, not silently admitted."""
+    client, service, session_service, sid = remote_participants_api
+    session_service.get_session.return_value = object()
+    token = _scoped_workload_token(sid, scopes=["forge:session:create"])
+    response = client.get(
+        f"/api/v1/forge/sessions/{sid}/participants/role",
+        params={"user_id": "bob"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 403
+    service.effective_room_role.assert_not_awaited()
+
+
+def test_credential_scoped_to_a_different_session_is_refused(remote_participants_api):
+    """The scope alone is not enough — a token minted for session A's pod
+    must not be usable to probe session B's participants."""
+    client, service, session_service, sid = remote_participants_api
+    session_service.get_session.return_value = object()
+    other_session = uuid4()
+    token = _scoped_workload_token(other_session)
+    response = client.get(
+        f"/api/v1/forge/sessions/{sid}/participants/role",
+        params={"user_id": "bob"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 403
+    service.effective_room_role.assert_not_awaited()
+
+
+def test_target_roles_are_mapped_through_the_identity_adapter(remote_participants_api):
+    """The raw, IdP-namespace-less roles a pod forwards ("developer") must be
+    mapped the SAME way every other entry point maps them — an unmapped
+    Principal here is the same demotion-to-403 class of incident this
+    project has already hit once."""
+    client, service, session_service, sid = remote_participants_api
+    session_service.get_session.return_value = object()
+    service.effective_room_role.return_value = "owner"
+
+    mapped_principal = Principal(
+        user_id="owner-1", email="", tenant_id="acme", roles=["volundr:developer"]
+    )
+
+    class _FakeHeaderIdentity(HeaderAuthenticationPort):
+        async def validate_headers(self, headers: dict[str, str]) -> Principal:
+            assert headers["x-auth-roles"] == "developer"
+            return mapped_principal
+
+    client.app.state.identity = _FakeHeaderIdentity()
+    token = _scoped_workload_token(sid)
+    response = client.get(
+        f"/api/v1/forge/sessions/{sid}/participants/role",
+        params={"user_id": "owner-1", "tenant_id": "acme", "roles": "developer"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    target = service.effective_room_role.await_args.args[1]
+    assert target.roles == ["volundr:developer"]
+
+
+def test_identity_adapter_rejection_yields_no_role_not_an_error(remote_participants_api):
+    client, service, session_service, sid = remote_participants_api
+    session_service.get_session.return_value = object()
+
+    class _RejectingIdentity(HeaderAuthenticationPort):
+        async def validate_headers(self, headers: dict[str, str]) -> Principal:
+            raise InvalidTokenError("unknown user")
+
+    client.app.state.identity = _RejectingIdentity()
+    token = _scoped_workload_token(sid)
+    response = client.get(
+        f"/api/v1/forge/sessions/{sid}/participants/role",
+        params={"user_id": "ghost"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"role": None}
     service.effective_room_role.assert_not_awaited()

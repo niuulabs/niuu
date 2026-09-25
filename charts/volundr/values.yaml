@@ -314,6 +314,12 @@ podManager:
   runtimeBackend: ""
   # -- Fully-qualified class path for the PodManager adapter
   adapter: "volundr.adapters.outbound.flux.FluxPodManager"
+  # -- "deployment" (default, unchanged) or "remote" (Kubernetes-only —
+  # session_participants invites honoured; requires session pods deployed
+  # with wsAuth.enforce_ownership: false). See PodManagerConfig.room_role_source.
+  roomRoleSource: "deployment"
+  # -- RemoteAuthorizationAdapter's cache TTL when roomRoleSource is "remote"
+  roomRoleCacheTtlSeconds: 5.0
   # -- Existing secret containing the backend API token (mounted as POD_MANAGER_TOKEN)
   existingSecret: ""
   # -- Key in secret containing the token
@@ -660,6 +666,10 @@ envoy:
       - path: /api/v1/forge/sessions
         methods: [POST]
         required_scope: "forge:session:create"
+      - path: /api/v1/forge/sessions/{session_id}/participants/role
+        path_template: true
+        methods: [GET]
+        required_scope: "forge:session:room-role"
       - path: /api/v1/forge
         prefix: true
         methods: [GET, HEAD, POST, PUT, PATCH, DELETE]

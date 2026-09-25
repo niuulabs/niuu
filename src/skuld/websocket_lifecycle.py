@@ -16,6 +16,7 @@ from identity.ports import AuthorizationEvaluationError
 from niuu.domain.history_control import history_gap
 from niuu.domain.text_projection import projection_revision
 from niuu.domain.transcript_reducer import PER_CONNECT_MARKER
+from niuu.room_access import ROOM_ROLE_RANK
 from skuld.channels import WebSocketChannel, _is_expected_ws_disconnect
 from skuld.control_errors import control_error_frame
 from skuld.conversation_read import conversation_rows, wait_history_quiet
@@ -167,6 +168,12 @@ class WebSocketLifecycleMixin:
                 roles_header=cfg.roles_header,
             )
             if principal is None:
+                # Same-pod tooling exception "proxy" mode already carries —
+                # only an in-pod caller can present as loopback with no XFF.
+                if _is_loopback_ws_client(websocket) and not websocket.headers.get(
+                    "x-forwarded-for"
+                ):
+                    return "owner"
                 return None
             if self._room_role_resolver is None:
                 raise RoomRoleResolutionError(
@@ -183,6 +190,59 @@ class WebSocketLifecycleMixin:
         if _is_loopback_ws_client(websocket) and not websocket.headers.get("x-forwarded-for"):
             return "owner"
         return "viewer"
+
+    async def _revalidate_remote_room_role(self, websocket: WebSocket, original_role: str) -> bool:
+        """Re-check a 'remote'-mode connection's room role; False closes it.
+
+        A grant revoked (or demoted) after connect must not leave the live
+        socket usable at its original privilege until the browser happens to
+        reconnect — mirrors ``niuu.session_proxy._revalidate_loop`` exactly,
+        including its asymmetric failure handling: a *transient*
+        ``RoomRoleResolutionError`` (a momentary Forge blip) is treated as
+        "still allowed" here, so a flapping network connection never tears
+        down an otherwise-healthy session — only an explicit demotion or
+        revoke (a real answer from Forge) closes the socket. The wrapping
+        loop still fails closed on an UNEXPECTED failure of revalidation
+        itself (anything other than this specific, typed error).
+        """
+        try:
+            current_role = await self._resolve_room_role(websocket)
+        except RoomRoleResolutionError:
+            logger.warning(
+                "Room role revalidation failed transiently; keeping the connection "
+                "open rather than closing on a momentary Forge blip",
+                exc_info=True,
+            )
+            return True
+        if current_role is None:
+            return False
+        return ROOM_ROLE_RANK[current_role] >= ROOM_ROLE_RANK[original_role]
+
+    async def _room_role_revalidation_loop(self, websocket: WebSocket, original_role: str) -> None:
+        """Periodically re-check a 'remote'-mode room role; close on revoke/demotion.
+
+        See ``_revalidate_remote_room_role`` for what counts as "still
+        allowed". A raise reaching THIS function is an unexpected failure of
+        the loop itself (not a routine revalidation outcome) and must not be
+        swallowed: a silently-dead loop leaves an already-open socket at its
+        original privilege forever — the exact gap this loop exists to
+        close. Fail closed and loud instead.
+        """
+        interval = self._settings.ws_auth.room_role_revalidate_interval_seconds
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                if not await self._revalidate_remote_room_role(websocket, original_role):
+                    await websocket.close(code=1008, reason="Access revoked or downgraded")
+                    return
+        except Exception:
+            logger.error(
+                "Room role revalidation loop failed unexpectedly; closing the socket "
+                "rather than leaving it un-revalidated for the rest of its life",
+                exc_info=True,
+            )
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1011, reason="Revalidation failed")
 
     def _update_jwt_from_websocket(self, websocket: WebSocket) -> None:
         """Extract and store JWT from an incoming WebSocket connection.
@@ -272,6 +332,19 @@ class WebSocketLifecycleMixin:
             self._channels.add(channel)
         conn_count = self._channels.count
         logger.info("WebSocket connected, total channels: %d", conn_count)
+
+        # A revoked or demoted session_participants grant must not leave
+        # this already-open socket usable at its original privilege until
+        # the browser happens to reconnect (see docs/operator/session
+        # -participants.md's "within a few seconds" claim) — only "remote"
+        # mode needs this: "deployment" and "proxy" never change mid
+        # -connection (the pod's own auth boundary, or the session proxy's
+        # OWN revalidation loop upstream of this pod, already cover those).
+        revalidate_task: asyncio.Task | None = None
+        if self._settings.ws_auth.room_role_source == "remote":
+            revalidate_task = asyncio.create_task(
+                self._room_role_revalidation_loop(websocket, room_role)
+            )
 
         try:
             if not self._transport:
@@ -539,6 +612,8 @@ class WebSocketLifecycleMixin:
             except Exception:
                 logger.debug("Failed to send error response to WebSocket", exc_info=True)
         finally:
+            if revalidate_task is not None:
+                revalidate_task.cancel()
             self._channels.remove(channel)
             remaining = self._channels.count
             logger.info("Connection closed, remaining channels: %d", remaining)

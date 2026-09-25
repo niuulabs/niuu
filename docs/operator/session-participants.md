@@ -48,11 +48,12 @@ ws_auth.room_role_source: remote."
 
 1. Run the session you want to share on the `process` backend (mini mode).
 2. Set Forge's `pod_manager.room_role_source: remote` (default:
-   `deployment`, unchanged). This is a property of the **whole deployment**,
-   not a per-session override — flipping it changes every future session
-   pod's trust boundary, so verify it on a non-production cluster first.
-   With it set, Forge:
-   - lifts the 409 for `kubernetes`/`openshell`/`vm` session invites, and
+   `deployment`, unchanged), **and** deploy Kubernetes session pods with
+   `wsAuth.enforce_ownership: false`. This is a property of the **whole
+   deployment**, not a per-session override — flipping it changes every
+   future session pod's trust boundary, so verify it on a non-production
+   cluster first. With it set, Forge:
+   - lifts the 409 for `kubernetes` session invites, and
    - renders `wsAuth.room_role_source: remote` plus a
      `wsAuth.room_role_remote` dynamic adapter
      (`skuld.room_role_remote.RemoteAuthorizationAdapter`) into each new
@@ -60,27 +61,64 @@ ws_auth.room_role_source: remote."
      asks Forge for the caller's grant on every request instead of trusting
      ownership alone.
 
+   **`enforce_ownership` and `remote` are mutually exclusive, enforced at
+   render time.** The pod-local ext_authz sidecar (`enforce_ownership: true`
+   — this is what ymir's production `values-cedar.yaml` sets) authorizes
+   only Cedar's owner/admin-only `start` action, and it runs BEFORE a
+   remote room-role lookup ever would: a participant would still 403 at the
+   sidecar no matter what `room_role_source` says. The Helm chart's
+   `skuld-configmap.yaml` `fail`s the render if both are set together, and
+   `WsAuthConfig`'s own validator fails pod startup the same way as a second
+   line of defense. On a deployment that runs `enforce_ownership: true`
+   (like ymir today), `remote` mode is therefore **not currently usable** —
+   moving the ext_authz gate itself from `start` to an `attach` decision
+   backed by a remote grant lookup is tracked as follow-up work, not done
+   here.
+
    The adapter authenticates with the pod's own projected workload-identity
    token (the same `niuu-workload` service-account-token exchange used for
    chronicle/event-log calls), requesting the `forge:session:room-role`
    scope so a leaked token minted for this purpose cannot be replayed
    against any other Forge endpoint. It calls
    `GET /api/v1/forge/sessions/{id}/participants/role` and caches the
-   answer for `room_role_remote.kwargs.cache_ttl_seconds` (default 5s) —
-   short enough that a revoked grant stops working within a few seconds,
-   without a round trip to Forge on every message. **Fails closed:** an
-   unreachable Forge, a timeout, or a malformed response denies the caller
-   outright (the connection or request is refused) — it never falls back to
-   owner-only or allow-all.
+   answer for `pod_manager.room_role_cache_ttl_seconds` (default 5s) — short
+   enough that a revoked grant stops working within a few seconds on a
+   fresh request, and an already-open browser WebSocket additionally
+   re-checks its own role on `ws_auth.room_role_revalidate_interval_seconds`
+   (default 5s) and closes on revoke or demotion, mirroring the same
+   revalidation loop mini mode's session proxy already runs
+   (`niuu.session_proxy._revalidate_loop`). **Fails closed:** an unreachable
+   Forge, a timeout, or a malformed response denies the caller outright (the
+   connection or request is refused, and an already-open connection is
+   *kept* open only on a transient failure — an explicit "no longer
+   entitled" answer still closes it) — it never falls back to owner-only or
+   allow-all.
 
-This has been verified specifically for the `kubernetes` backend. The
-`openshell` and `vm` backends are included defensively for the same reason
-(both are pod-based, Gateway-routed backends by construction), but neither
-independently traced end-to-end, and neither currently mounts a projected
-workload-identity token (`WorkloadIdentityContributor` skips them), so
-`RemoteAuthorizationAdapter` has no credential to exchange there yet. The
-`docker` backend is refused unconditionally — it is not routed through the
-session proxy today and has no remote-adapter path either.
+   The role endpoint itself (`GET .../participants/role`) is registered
+   ONLY when `room_role_source: remote` is configured — it never goes live
+   on a deployment that hasn't opted in — and is gated more strictly than
+   every other route on this router: the caller's bearer token must be a
+   scoped workload credential (`token_use=valkyrie_build`) carrying the
+   `forge:session:room-role` scope, AND its `workload_sub` claim must name
+   the specific session being asked about (session pods use the
+   `openbao-session-{id}` service account — see
+   `OpenBaoAgentInjectionAdapter`), so a token minted for session A's pod
+   can never be replayed to probe session B's participants.
+
+**Limited to the `kubernetes` backend only.** `openshell` and `vm` are
+refused unconditionally regardless of `room_role_source`, because neither
+currently mounts a projected `niuu-workload` service-account token
+(`WorkloadIdentityContributor` skips them — OpenShell owns its own workload
+identity, and VM sessions have no Kubernetes token issuer at all), so
+`RemoteAuthorizationAdapter` would have no credential to exchange there. The
+`docker` backend is refused for the same underlying reason (not routed
+through the session proxy, no remote-adapter path).
+
+**Status: implemented and covered by unit and Helm-render tests, not yet
+verified against a live cluster.** Do not describe `remote` mode as
+"verified" on Kubernetes until an actual invite → attach → revoke round
+trip has been exercised against a running deployment with
+`enforce_ownership: false`.
 
 Room-role resolution follows Skuld's `ws_auth.room_role_source` setting
 (`process` renders `proxy`; every other backend keeps the default,
@@ -97,10 +135,14 @@ Room-role resolution follows Skuld's `ws_auth.room_role_source` setting
   never distinguish the genuine owner from anyone else on these backends.
 - `proxy` (process backend only): the session proxy resolves the role from
   `session_participants` grants and stamps it; trusted directly.
-- `remote` (Kubernetes/OpenShell/VM, opted in via
-  `pod_manager.room_role_source: remote`): `RemoteAuthorizationAdapter` asks
-  Forge for the caller's grant on every request (subject to its cache), and
-  denies outright — never a default role — when it cannot get an answer.
+- `remote` (`kubernetes` only, opted in via `pod_manager.room_role_source:
+  remote`, and requiring `wsAuth.enforce_ownership: false`):
+  `RemoteAuthorizationAdapter` asks Forge for the caller's grant on every
+  request (subject to its cache), and denies outright — never a default
+  role — when it cannot get an answer. A genuine loopback caller presenting
+  no verified identity headers and no `x-forwarded-for` still gets the
+  same same-pod-tooling exception `proxy` mode grants (`containers/skuld/
+  svc`, hooks, present-file, in-pod Ravn/Ting clients).
 
 ## Same-OS-user risk on the `process` backend
 

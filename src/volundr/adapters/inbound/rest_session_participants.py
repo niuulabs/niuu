@@ -15,7 +15,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
 
-from niuu.domain.services.token_scope import require_scope
+from niuu.adapters.inbound.auth_context import extract_bearer_token
+from niuu.domain.services.token_scope import require_scope, scoped_credential_claims
+from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 from volundr.adapters.inbound.auth import extract_principal
 from volundr.domain.models import Principal
 from volundr.domain.services.session import SessionAccessDeniedError, SessionService
@@ -41,6 +43,96 @@ _INVITE_NOT_ALLOWED = (
     SelfInviteError,
     OwnerInviteError,
 )
+
+# The scope a Kubernetes session pod's RemoteAuthorizationAdapter requests
+# when exchanging its projected workload-identity token — see
+# niuu.domain.services.token_scope.KNOWN_WORKLOAD_SCOPES and
+# skuld.room_role_remote.RemoteAuthorizationAdapter.
+_ROOM_ROLE_SCOPE = "forge:session:room-role"
+
+# The K8s ServiceAccount naming convention session pods use (see
+# volundr.adapters.outbound.openbao_secret_injection
+# .OpenBaoAgentInjectionAdapter._service_account_name), baked into the
+# exchanged workload JWT's workload_sub claim by
+# niuu.domain.services.workload_identity.WorkloadIdentityService.issue_token.
+# A session id's own string form is always a substring of that service
+# account name, so this is what binds a scoped credential to the ONE
+# session it may ask about.
+_SESSION_SERVICE_ACCOUNT_PREFIX = "openbao-session-"
+
+
+def _require_session_scoped_workload_credential(request: Request, session_id: UUID) -> None:
+    """Refuse anything but a workload credential scoped to THIS session.
+
+    Unlike every other route on this router (gated by extract_principal's
+    ordinary Cedar-backed access checks), this endpoint discloses "does user
+    X have role Y on session Z" to whoever calls it — read-only, but still a
+    real information disclosure if left open to any authenticated caller.
+    ``require_scope`` alone is not enough here: it admits UNSCOPED
+    credentials unchanged by design (see token_scope.token_has_scope), so it
+    would let any ordinary human JWT or PAT through. This requires the
+    stronger, positive claim that the token IS a scoped workload credential
+    for this exact session.
+    """
+    token = extract_bearer_token(request) or ""
+    claims = scoped_credential_claims(token)
+    if claims is None:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "This route requires a scoped workload credential "
+            f"(token_use=valkyrie_build, scope={_ROOM_ROLE_SCOPE!r}).",
+        )
+    granted_scopes = claims.get("scopes", [])
+    if not isinstance(granted_scopes, list) or _ROOM_ROLE_SCOPE not in granted_scopes:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"Token is missing the required scope: {_ROOM_ROLE_SCOPE}",
+        )
+    workload_sub = str(claims.get("workload_sub", ""))
+    session_marker = f"{_SESSION_SERVICE_ACCOUNT_PREFIX}{session_id}"
+    if session_marker not in workload_sub and str(session_id) not in workload_sub:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "This workload credential is not scoped to this session — a session's "
+            "pod may only ask about its own participants.",
+        )
+
+
+async def _resolve_target_principal(
+    request: Request, *, user_id: str, tenant_id: str, roles: list[str]
+) -> Principal | None:
+    """Re-derive the TARGET caller's platform-role-mapped Principal.
+
+    Mirrors volundr.main's _resolve_ws_principal (the session proxy's own
+    ownership/room-role guards) so a Kubernetes session pod's raw,
+    Envoy-forwarded x-auth-roles ("developer") maps to Cedar's expected
+    "volundr:developer" the SAME way every other entry point does — an
+    unmapped Principal here would silently demote every owner whose IdP role
+    is not already namespaced, the exact class of incident
+    project history already hit once (see identity_adapter role mapping in
+    volundr/main.py). Returns None (never a bare, unmapped Principal) when
+    the configured identity adapter rejects the target outright.
+    """
+    principal = Principal(user_id=user_id, email="", tenant_id=tenant_id, roles=list(roles))
+    identity = getattr(request.app.state, "identity", None)
+    from identity.adapters.jwks import JwksIdentityAdapter
+
+    if isinstance(identity, JwksIdentityAdapter):
+        try:
+            return await identity.revalidate_verified_principal(principal)
+        except InvalidTokenError:
+            return None
+    if not isinstance(identity, HeaderAuthenticationPort):
+        return principal
+    headers = {
+        "x-auth-user-id": principal.user_id,
+        "x-auth-tenant": principal.tenant_id,
+        "x-auth-roles": ",".join(principal.roles),
+    }
+    try:
+        return await identity.validate_headers(headers)
+    except InvalidTokenError:
+        return None
 
 
 class ParticipantInviteRequest(BaseModel):
@@ -111,12 +203,15 @@ GRANT_HONORING_RUNTIME_BACKENDS = frozenset({"process"})
 # session pod at all — a grant nobody can ever use. Refusing the invite up
 # front (409, with the remedy) is more honest than shipping that.
 #
-# This has only been verified for "kubernetes"; "openshell" and "vm" are
-# included defensively (they are also pod-based, Gateway-routed backends by
-# construction) but their attach path has not been independently traced in
-# this change. "docker" is deliberately excluded — it is not routed through
-# the session proxy today and has no remote-adapter path either.
-REMOTE_CAPABLE_RUNTIME_BACKENDS = frozenset({"kubernetes", "openshell", "vm"})
+# Limited to "kubernetes" only: it is the sole backend independently verified
+# end-to-end, and the only one WorkloadIdentityContributor projects a
+# niuu-workload service-account token onto — RemoteAuthorizationAdapter has
+# no credential to exchange on "openshell" (owns its own workload identity)
+# or "vm" (no Kubernetes token issuer or projected-volume implementation at
+# all), so including them here would let an invite succeed with no way for
+# the pod to ever honour it. "docker" is excluded for the same underlying
+# reason (not routed through the session proxy, no remote-adapter path).
+REMOTE_CAPABLE_RUNTIME_BACKENDS = frozenset({"kubernetes"})
 
 
 def create_session_participants_router(
@@ -250,44 +345,82 @@ def create_session_participants_router(
             ) from None
         return [ParticipantResponse.from_participant(p) for p in participants]
 
-    @router.get(
-        "/sessions/{session_id}/participants/role",
-        response_model=EffectiveRoomRoleResponse,
-        dependencies=[Depends(require_scope("forge:session:room-role"))],
-    )
-    async def get_effective_room_role(
-        request: Request,
-        session_id: UUID,
-        user_id: str = Query(min_length=1, max_length=200),
-        tenant_id: str = Query(default=""),
-        roles: str = Query(default=""),
-    ) -> EffectiveRoomRoleResponse:
-        """Resolve a target caller's Cedar-derived room role for this session.
+    if room_role_source == "remote":
 
-        Called remotely by a Kubernetes-backed session pod's
-        ``skuld.room_role_remote.RemoteAuthorizationAdapter`` — never by a
-        browser. The caller authenticates itself with its own workload
-        identity token (``extract_principal``, scope-gated by
-        ``forge:session:room-role``); ``user_id``/``tenant_id``/``roles``
-        name the TARGET principal whose role is being asked about, already
-        verified upstream by that pod's Envoy JWT filter into the
-        x-auth-* headers it forwards (this endpoint does not re-authenticate
-        that principal — it only evaluates Cedar for it). Read-only: no
-        state changes. Returns ``{"role": None}`` rather than 403/404 when
-        the target has no active grant, matching ``effective_room_role``'s
-        "no role" answer — this is what lets the remote adapter fail closed
-        on transport/auth errors while still treating "no grant" as its own,
-        distinct, expected outcome.
-        """
-        await extract_principal(request)
-        session = await _get_session(session_id)
-        target = Principal(
-            user_id=user_id,
-            email="",
-            tenant_id=tenant_id,
-            roles=[r for r in (role.strip() for role in roles.split(",")) if r],
+        @router.get(
+            "/sessions/{session_id}/participants/role",
+            response_model=EffectiveRoomRoleResponse,
+            # Defense-in-depth: this rejects a scoped credential that lacks
+            # the scope entirely (and is also what the KNOWN_WORKLOAD_SCOPES
+            # <-> enforcement-coverage guard in test_token_scope.py finds).
+            # It does NOT reject an ordinary unscoped human JWT/PAT —
+            # require_scope admits those unchanged by design — so
+            # _require_session_scoped_workload_credential below still does
+            # the real, positive "this MUST be a scoped workload credential
+            # naming THIS session" check.
+            dependencies=[Depends(require_scope("forge:session:room-role"))],
         )
-        role = await service.effective_room_role(session, target)
-        return EffectiveRoomRoleResponse(role=role)
+        async def get_effective_room_role(
+            request: Request,
+            session_id: UUID,
+            user_id: str = Query(min_length=1, max_length=200),
+            tenant_id: str = Query(default=""),
+            roles: str = Query(default=""),
+        ) -> EffectiveRoomRoleResponse:
+            """Resolve a target caller's Cedar-derived room role for this session.
+
+            Called remotely by a Kubernetes-backed session pod's
+            ``skuld.room_role_remote.RemoteAuthorizationAdapter`` — never by a
+            browser, and only registered at all when this deployment is
+            configured for remote room-role resolution (``room_role_source
+            == "remote"``; see ``PodManagerConfig.room_role_source``).
+
+            Authorization is intentionally stricter than every other route on
+            this router:
+
+            1. The bearer token must be a scoped workload credential
+               (``scoped_credential_claims`` — ``token_use ==
+               "valkyrie_build"``) carrying the ``forge:session:room-role``
+               scope. An ordinary human JWT or unscoped PAT is refused
+               outright: this endpoint discloses "does user X have role Y on
+               session Z", which nothing but this session's own pod should
+               ever be able to ask.
+            2. The credential's ``workload_sub`` claim (the K8s
+               ServiceAccount subject baked into the exchanged token by
+               ``WorkloadIdentityService.issue_token`` — see
+               ``niuu.domain.services.workload_identity``) must name THIS
+               session: session pods use the ``openbao-session-{id}``
+               service account (``OpenBaoAgentInjectionAdapter
+               ._service_account_name``), so a token minted for session A's
+               pod can never be used to probe session B's participants.
+
+            ``user_id``/``tenant_id``/``roles`` name the TARGET principal
+            whose role is being asked about — already verified upstream by
+            that pod's Envoy JWT filter into the x-auth-* headers it
+            forwards, but re-derived through Forge's own identity adapter
+            (``_resolve_target_principal``) so IdP-raw roles (e.g.
+            "developer") map to Cedar's expected "volundr:developer" the
+            SAME way every other entry point maps them — an unmapped
+            Principal here would demote every owner to 403, the exact class
+            of incident this project has already hit once.
+
+            Read-only: no state changes. Returns ``{"role": None}`` rather
+            than 403/404 when the target has no active grant, matching
+            ``effective_room_role``'s "no role" answer — this is what lets
+            the remote adapter fail closed on transport/auth errors while
+            still treating "no grant" as its own, distinct, expected outcome.
+            """
+            _require_session_scoped_workload_credential(request, session_id)
+            session = await _get_session(session_id)
+            target = await _resolve_target_principal(
+                request,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                roles=[r for r in (role.strip() for role in roles.split(",")) if r],
+            )
+            if target is None:
+                return EffectiveRoomRoleResponse(role=None)
+            role = await service.effective_room_role(session, target)
+            return EffectiveRoomRoleResponse(role=role)
 
     return router

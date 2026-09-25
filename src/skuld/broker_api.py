@@ -254,6 +254,14 @@ async def _effective_room_role(request: Request) -> str | None:
     if cfg.room_role_source == "remote":
         identity = _resolve_http_principal(request, cfg)
         if identity is None:
+            # Same-pod tooling exception "proxy" mode already carries
+            # (containers/skuld/svc, hooks, present-file, in-pod Ravn/Ting
+            # service clients dialing localhost): a genuine loopback caller
+            # presenting no verified identity headers AND no x-forwarded-for
+            # cannot be a browser routed through the deployment's Gateway —
+            # only in-pod callers can present as loopback with no XFF.
+            if _is_loopback_http_client(request) and not request.headers.get("x-forwarded-for"):
+                return "owner"
             return None
         user_id, tenant_id, roles = identity
         if broker._room_role_resolver is None:

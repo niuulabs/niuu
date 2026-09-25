@@ -49,8 +49,11 @@ def _fake_self(resolver):
     )
 
 
-def _websocket(headers: dict[str, str]):
-    return SimpleNamespace(headers=headers)
+def _websocket(headers: dict[str, str], *, client_host: str | None = None):
+    return SimpleNamespace(
+        headers=headers,
+        client=SimpleNamespace(host=client_host) if client_host is not None else None,
+    )
 
 
 @pytest.mark.parametrize("role", ["owner", "approver", "viewer"])
@@ -73,10 +76,33 @@ async def test_no_grant_is_none_not_a_default_role():
     assert result is None
 
 
-async def test_no_verified_identity_headers_is_none_without_calling_the_adapter():
+async def test_no_verified_identity_headers_non_loopback_is_none():
     resolver = _FakeResolver("owner")
-    result = await WebSocketLifecycleMixin._resolve_room_role(_fake_self(resolver), _websocket({}))
+    result = await WebSocketLifecycleMixin._resolve_room_role(
+        _fake_self(resolver), _websocket({}, client_host="203.0.113.9")
+    )
     assert result is None
+    assert resolver.calls == []
+
+
+async def test_no_verified_identity_headers_loopback_no_xff_is_owner():
+    """Same-pod tooling exception "proxy" mode already carries."""
+    resolver = _FakeResolver("owner")
+    result = await WebSocketLifecycleMixin._resolve_room_role(
+        _fake_self(resolver), _websocket({}, client_host="127.0.0.1")
+    )
+    assert result == "owner"
+    assert resolver.calls == []
+
+
+async def test_no_verified_identity_headers_loopback_with_xff_is_none():
+    resolver = _FakeResolver("owner")
+    result = await WebSocketLifecycleMixin._resolve_room_role(
+        _fake_self(resolver),
+        _websocket({"x-forwarded-for": "203.0.113.5"}, client_host="127.0.0.1"),
+    )
+    assert result is None
+    assert resolver.calls == []
     assert resolver.calls == []
 
 
