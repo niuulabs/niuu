@@ -6,7 +6,7 @@ Re-exports all public names for backward compatibility so that
 
 from __future__ import annotations
 
-from .chronicle import ChronicleNotFoundError, ChronicleService
+from .chronicle import ChronicleAccessDeniedError, ChronicleNotFoundError, ChronicleService
 from .delivery import DeliveryPolicyNotFoundError, DeliveryService
 from .external_sessions import (
     ExternalSessionAlreadyImportedError,
@@ -45,6 +45,7 @@ from .workspace import WorkspaceService
 
 __all__ = [
     # Exceptions
+    "ChronicleAccessDeniedError",
     "ChronicleNotFoundError",
     "DeliveryPolicyNotFoundError",
     "ExternalSessionAlreadyImportedError",

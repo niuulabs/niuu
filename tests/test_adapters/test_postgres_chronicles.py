@@ -204,10 +204,10 @@ class TestPostgresChronicleRepositoryList:
     async def test_list_no_filters(
         self, repository: PostgresChronicleRepository, mock_pool, sample_row
     ):
-        """Test that list without filters uses base query."""
+        """An unbounded list without filters uses the base query."""
         mock_pool.fetch.return_value = [sample_row]
 
-        result = await repository.list()
+        result = await repository.list(tenant_id=None, owner_id=None)
 
         assert len(result) == 1
         call_args = mock_pool.fetch.call_args
@@ -220,7 +220,7 @@ class TestPostgresChronicleRepositoryList:
         """Test that list with project filter adds WHERE clause."""
         mock_pool.fetch.return_value = []
 
-        await repository.list(project="my-project")
+        await repository.list(tenant_id=None, owner_id=None, project="my-project")
 
         call_args = mock_pool.fetch.call_args
         sql = call_args[0][0]
@@ -231,17 +231,46 @@ class TestPostgresChronicleRepositoryList:
         """Test that list with tags filter uses @> operator."""
         mock_pool.fetch.return_value = []
 
-        await repository.list(tags=["python", "testing"])
+        await repository.list(tenant_id=None, owner_id=None, tags=["python", "testing"])
 
         call_args = mock_pool.fetch.call_args
         sql = call_args[0][0]
         assert "tags @>" in sql
 
+    async def test_list_binds_tenant_and_owner_in_sql(
+        self, repository: PostgresChronicleRepository, mock_pool
+    ):
+        """A bounded caller's scope is part of the query, ahead of filters and paging."""
+        mock_pool.fetch.return_value = []
+
+        await repository.list(tenant_id="t1", owner_id="alice", project="p", limit=5, offset=10)
+
+        sql, *params = mock_pool.fetch.call_args[0]
+        where = sql.split("ORDER BY")[0]
+        assert "tenant_id = $1 AND tenant_id <> ''" in where
+        assert "owner_id = $2 AND owner_id <> ''" in where
+        assert "project = $3" in where
+        assert "LIMIT $4 OFFSET $5" in sql
+        assert params == ["t1", "alice", "p", 5, 10]
+
+    async def test_list_tenant_admin_bound_leaves_owner_open(
+        self, repository: PostgresChronicleRepository, mock_pool
+    ):
+        """A tenant admin is bounded by tenant only."""
+        mock_pool.fetch.return_value = []
+
+        await repository.list(tenant_id="t1", owner_id=None)
+
+        sql, *params = mock_pool.fetch.call_args[0]
+        assert "tenant_id = $1" in sql
+        assert "owner_id" not in sql.split("ORDER BY")[0]
+        assert params == ["t1", 50, 0]
+
     async def test_list_returns_empty(self, repository: PostgresChronicleRepository, mock_pool):
         """Test that list returns empty list when no results."""
         mock_pool.fetch.return_value = []
 
-        result = await repository.list()
+        result = await repository.list(tenant_id="t1", owner_id="alice")
 
         assert result == []
 

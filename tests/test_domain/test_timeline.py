@@ -78,12 +78,12 @@ class TestGetTimeline:
         chronicle_svc_no_timeline: ChronicleService,
     ):
         """Returns None when timeline repository is not configured."""
-        result = await chronicle_svc_no_timeline.get_timeline(uuid4())
+        result = await chronicle_svc_no_timeline.get_timeline(uuid4(), principal=None)
         assert result is None
 
     async def test_returns_none_when_no_chronicle(self, chronicle_svc: ChronicleService):
         """Returns None when no chronicle exists for session."""
-        result = await chronicle_svc.get_timeline(uuid4())
+        result = await chronicle_svc.get_timeline(uuid4(), principal=None)
         assert result is None
 
     async def test_returns_empty_timeline(
@@ -100,9 +100,9 @@ class TestGetTimeline:
                 branch="main",
             ),
         )
-        await chronicle_svc.create_chronicle(session.id)
+        await chronicle_svc.create_chronicle(session.id, principal=None)
 
-        timeline = await chronicle_svc.get_timeline(session.id)
+        timeline = await chronicle_svc.get_timeline(session.id, principal=None)
 
         assert timeline is not None
         assert timeline.events == []
@@ -125,7 +125,7 @@ class TestGetTimeline:
                 branch="main",
             ),
         )
-        chronicle = await chronicle_svc.create_chronicle(session.id)
+        chronicle = await chronicle_svc.create_chronicle(session.id, principal=None)
 
         ev3 = _make_event(chronicle.id, session.id, t=30, label="third")
         ev1 = _make_event(chronicle.id, session.id, t=0, label="first")
@@ -134,7 +134,7 @@ class TestGetTimeline:
         await timeline_repository.add_event(ev1)
         await timeline_repository.add_event(ev2)
 
-        timeline = await chronicle_svc.get_timeline(session.id)
+        timeline = await chronicle_svc.get_timeline(session.id, principal=None)
 
         assert timeline is not None
         assert [e.t for e in timeline.events] == [0, 10, 30]
@@ -159,14 +159,51 @@ class TestAddTimelineEvent:
                 branch="main",
             ),
         )
-        chronicle = await chronicle_svc.create_chronicle(session.id)
+        chronicle = await chronicle_svc.create_chronicle(session.id, principal=None)
 
-        event = _make_event(chronicle.id, session.id, t=5)
-        stored = await chronicle_svc.add_timeline_event(session.id, event)
+        stored = await chronicle_svc.add_timeline_event(
+            session.id, principal=None, t=5, type=TimelineEventType.MESSAGE, label="test"
+        )
 
         assert stored.t == 5
+        assert (stored.chronicle_id, stored.session_id) == (chronicle.id, session.id)
         events = await timeline_repository.get_events(chronicle.id)
         assert len(events) == 1
+
+    async def test_first_event_creates_the_chronicle(
+        self,
+        chronicle_svc: ChronicleService,
+        session_service: SessionService,
+        chronicle_repository: InMemoryChronicleRepository,
+        timeline_repository: InMemoryTimelineRepository,
+    ):
+        """A session without a chronicle gets one, attributed like the session."""
+        from volundr.domain.models import Principal
+
+        session = await session_service.create_session(
+            name="Test",
+            model="sonnet",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            principal=Principal(user_id="alice", email="", tenant_id="t1", roles=[]),
+        )
+
+        stored = await chronicle_svc.add_timeline_event(
+            session.id,
+            principal=None,
+            t=3,
+            type=TimelineEventType.FILE,
+            label="main.py",
+            action="modified",
+            ins=4,
+            del_=1,
+        )
+
+        chronicle = await chronicle_repository.get_by_session(session.id)
+        assert chronicle is not None
+        assert (chronicle.owner_id, chronicle.tenant_id) == ("alice", "t1")
+        assert stored.chronicle_id == chronicle.id
+        (event,) = await timeline_repository.get_events(chronicle.id)
+        assert (event.action, event.ins, event.del_) == ("modified", 4, 1)
 
     async def test_publishes_sse_event(
         self,
@@ -183,10 +220,11 @@ class TestAddTimelineEvent:
                 branch="main",
             ),
         )
-        chronicle = await chronicle_svc.create_chronicle(session.id)
+        await chronicle_svc.create_chronicle(session.id, principal=None)
 
-        event = _make_event(chronicle.id, session.id, t=10)
-        await chronicle_svc.add_timeline_event(session.id, event)
+        await chronicle_svc.add_timeline_event(
+            session.id, principal=None, t=10, type=TimelineEventType.MESSAGE, label="test"
+        )
 
         chronicle_events = [e for e in broadcaster.events if e.type.value == "chronicle_event"]
         assert len(chronicle_events) == 1
@@ -207,10 +245,10 @@ class TestAddTimelineEvent:
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
             principal=Principal(user_id="alice", email="", tenant_id="t1", roles=[]),
         )
-        chronicle = await chronicle_svc.create_chronicle(session.id)
+        await chronicle_svc.create_chronicle(session.id, principal=None)
 
         await chronicle_svc.add_timeline_event(
-            session.id, _make_event(chronicle.id, session.id, t=0)
+            session.id, principal=None, t=0, type=TimelineEventType.MESSAGE, label="test"
         )
 
         (published,) = [e for e in broadcaster.events if e.type.value == "chronicle_event"]
@@ -219,24 +257,52 @@ class TestAddTimelineEvent:
     async def test_unknown_session_is_refused_before_storing(
         self,
         chronicle_svc: ChronicleService,
-        timeline_repository: InMemoryTimelineRepository,
+        chronicle_repository: InMemoryChronicleRepository,
     ):
-        """An event that cannot be scoped for the stream is not persisted either."""
+        """An event for a session with no history is not persisted, nor a chronicle made."""
         from volundr.domain.services import SessionNotFoundError
 
-        chronicle_id = uuid4()
+        session_id = uuid4()
         with pytest.raises(SessionNotFoundError):
-            await chronicle_svc.add_timeline_event(uuid4(), _make_event(chronicle_id, uuid4(), t=0))
-        assert await timeline_repository.get_events(chronicle_id) == []
+            await chronicle_svc.add_timeline_event(
+                session_id, principal=None, t=0, type=TimelineEventType.MESSAGE, label="x"
+            )
+        assert await chronicle_repository.get_by_session(session_id) is None
+
+    async def test_deleted_session_is_refused_before_storing(
+        self,
+        chronicle_svc: ChronicleService,
+        session_service: SessionService,
+        repository: InMemorySessionRepository,
+        timeline_repository: InMemoryTimelineRepository,
+    ):
+        """History outlives its session, but an event that cannot be scoped for the
+        stream is not persisted either."""
+        from volundr.domain.services import SessionNotFoundError
+
+        session = await session_service.create_session(
+            name="Gone",
+            model="sonnet",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        chronicle = await chronicle_svc.create_chronicle(session.id, principal=None)
+        await repository.delete(session.id)
+
+        with pytest.raises(SessionNotFoundError):
+            await chronicle_svc.add_timeline_event(
+                session.id, principal=None, t=0, type=TimelineEventType.MESSAGE, label="x"
+            )
+        assert await timeline_repository.get_events(chronicle.id) == []
 
     async def test_raises_when_no_timeline_repo(
         self,
         chronicle_svc_no_timeline: ChronicleService,
     ):
         """Raises RuntimeError when timeline repository is not configured."""
-        event = _make_event(uuid4(), uuid4(), t=0)
         with pytest.raises(RuntimeError, match="Timeline repository not configured"):
-            await chronicle_svc_no_timeline.add_timeline_event(uuid4(), event)
+            await chronicle_svc_no_timeline.add_timeline_event(
+                uuid4(), principal=None, t=0, type=TimelineEventType.MESSAGE, label="x"
+            )
 
 
 class TestAggregateFiles:
@@ -257,7 +323,7 @@ class TestAggregateFiles:
                 branch="main",
             ),
         )
-        chronicle = await chronicle_svc.create_chronicle(session.id)
+        chronicle = await chronicle_svc.create_chronicle(session.id, principal=None)
 
         await timeline_repository.add_event(
             _make_event(
@@ -296,7 +362,7 @@ class TestAggregateFiles:
             )
         )
 
-        timeline = await chronicle_svc.get_timeline(session.id)
+        timeline = await chronicle_svc.get_timeline(session.id, principal=None)
 
         assert timeline is not None
         assert len(timeline.files) == 2
@@ -329,7 +395,7 @@ class TestAggregateCommits:
                 branch="main",
             ),
         )
-        chronicle = await chronicle_svc.create_chronicle(session.id)
+        chronicle = await chronicle_svc.create_chronicle(session.id, principal=None)
 
         await timeline_repository.add_event(
             _make_event(
@@ -352,7 +418,7 @@ class TestAggregateCommits:
             )
         )
 
-        timeline = await chronicle_svc.get_timeline(session.id)
+        timeline = await chronicle_svc.get_timeline(session.id, principal=None)
 
         assert timeline is not None
         assert len(timeline.commits) == 2
@@ -380,7 +446,7 @@ class TestAggregateTokenBurn:
                 branch="main",
             ),
         )
-        chronicle = await chronicle_svc.create_chronicle(session.id)
+        chronicle = await chronicle_svc.create_chronicle(session.id, principal=None)
 
         # Bucket 0: 0-299s
         await timeline_repository.add_event(_make_event(chronicle.id, session.id, t=10, tokens=100))
@@ -392,7 +458,7 @@ class TestAggregateTokenBurn:
             _make_event(chronicle.id, session.id, t=350, tokens=500)
         )
 
-        timeline = await chronicle_svc.get_timeline(session.id)
+        timeline = await chronicle_svc.get_timeline(session.id, principal=None)
 
         assert timeline is not None
         assert len(timeline.token_burn) == 2
@@ -414,7 +480,7 @@ class TestAggregateTokenBurn:
                 branch="main",
             ),
         )
-        chronicle = await chronicle_svc.create_chronicle(session.id)
+        chronicle = await chronicle_svc.create_chronicle(session.id, principal=None)
 
         # Only a non-message event
         await timeline_repository.add_event(
@@ -427,7 +493,7 @@ class TestAggregateTokenBurn:
             )
         )
 
-        timeline = await chronicle_svc.get_timeline(session.id)
+        timeline = await chronicle_svc.get_timeline(session.id, principal=None)
 
         assert timeline is not None
         # token_burn has buckets but all zeros
