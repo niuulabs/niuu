@@ -455,6 +455,20 @@ class ServerConfig(BaseModel):
     )
 
 
+class ResidentsConfig(BaseModel):
+    """How mini mode hosts long-lived residents on this machine."""
+
+    runtime: Literal["process", "docker"] = Field(
+        default="process",
+        description=(
+            "'process' runs Ravn residents as Skuld and Ravn processes on this host and "
+            "needs no container engine. 'docker' runs resident images through the local "
+            "Docker Engine, which must be running, and also offers the NemoClaw and "
+            "NemoHermes profiles."
+        ),
+    )
+
+
 class ServiceConfig(BaseModel):
     """Service management configuration."""
 
@@ -714,6 +728,7 @@ class CLISettings(BaseSettings):
     host_auth: AuthConfig = Field(default_factory=AuthConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+    residents: ResidentsConfig = Field(default_factory=ResidentsConfig)
     docker: DockerConfig = Field(default_factory=DockerConfig)
     plugins: PluginConfig = Field(default_factory=PluginConfig)
     services: ServiceConfig = Field(default_factory=ServiceConfig)
