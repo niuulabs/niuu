@@ -1527,6 +1527,26 @@ describe('buildVolundrHttpAdapter', () => {
     });
   });
 
+  it('startSession launches a ravn flock when asked', async () => {
+    const client = makeClient();
+    await buildVolundrHttpAdapter(client).startSession({
+      name: 'scout',
+      source: { type: 'git', repo: '', branch: 'main' },
+      model: 'claude-fable-5',
+      workloadType: 'ravn_flock',
+      workloadConfig: { personas: ['research-analyst'] },
+    });
+    expect(client.post).toHaveBeenCalledWith('/sessions', {
+      name: 'scout',
+      source: { type: 'git', repo: '', branch: 'main' },
+      model: 'claude-fable-5',
+      terminal_restricted: false,
+      instance_id: null,
+      workload_type: 'ravn_flock',
+      workload_config: { personas: ['research-analyst'] },
+    });
+  });
+
   it('evaluatePermissionAutoApproval calls the session policy endpoint', async () => {
     const client = makeClient();
     client.post.mockResolvedValueOnce({

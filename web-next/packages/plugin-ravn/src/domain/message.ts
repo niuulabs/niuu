@@ -26,7 +26,7 @@ export type MessageKind = z.infer<typeof messageKindSchema>;
 /**
  * A single entry in a Session transcript.
  *
- * Owner: plugin-ravn (SessionStream, SessionsView).
+ * Owner: plugin-ravn (SessionStream, workbench Chat tab).
  */
 export const messageSchema = z.object({
   /** Unique identifier (UUID). */
