@@ -31,6 +31,7 @@ from niuu.version import package_version
 from ting.api.workflows import resolve_workflow_repo
 from ting.config import A2AConfig
 from ting.domain.models import WorkflowDefinition, WorkflowScope
+from ting.domain.workflow_document import load_workflow_placement
 from ting.ports.workflow_repository import WorkflowRepository
 
 A2A_ENDPOINT_PATH = "/api/v1/ting/a2a"
@@ -81,14 +82,22 @@ def build_agent_card(
 def _workflow_skill(workflow: WorkflowDefinition) -> AgentSkill:
     graph = workflow.graph or {}
     tags = [str(tag).strip() for tag in list(graph.get("tags") or []) if str(tag).strip()]
+    connection_note = "connectionId selects an execution connection."
+    if load_workflow_placement(graph) is not None:
+        connection_note = (
+            "connectionId selects an execution connection; this workflow pins "
+            "graph.placement, so a supplied connectionId must satisfy it "
+            "(the same instance, or eligible by its tags) or the launch is "
+            "rejected with a 422."
+        )
     return AgentSkill(
         id=str(workflow.id),
         name=workflow.name,
         description=(
             f"{workflow.description}\n\n"
             "Launch context may be supplied in A2A message metadata: repo is a "
-            "repository URL, branch selects its starting branch, and connectionId "
-            "selects an execution connection."
+            "repository URL, branch selects its starting branch, and "
+            f"{connection_note}"
         ),
         tags=tags or ["workflow"],
         examples=[

@@ -18,7 +18,12 @@ from ravn.domain.persona_document import (
 )
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition
-from ting.domain.workflow_document import load_workflow_document, workflow_document_revision
+from ting.domain.workflow_document import (
+    WorkflowPlacement,
+    load_workflow_document,
+    load_workflow_placement,
+    workflow_document_revision,
+)
 from ting.domain.workflow_includes import (
     graph_has_include_nodes,
     include_resolver_from_workflow_definitions,
@@ -308,6 +313,32 @@ def workflow_artifact_paths_from_snapshot(
         if path not in paths:
             paths.append(path)
     return paths
+
+
+def workflow_placement_from_snapshot(snapshot: dict[str, Any]) -> WorkflowPlacement | None:
+    """Extract the pinned graph-level Guild target placement from a snapshot.
+
+    The snapshot's graph is the pinned closure a launch actually runs, so
+    placement is read from there rather than re-loaded from the live
+    workflow definition — a later edit to the workflow must not retarget an
+    already-launched execution.
+
+    Every launch path hands this a snapshot it just built or already has
+    pinned — never an absent or malformed one — so a missing snapshot or a
+    graph that is not a mapping is a corrupt pin, not an absent optional
+    value. It raises rather than reading that as "no placement", which would
+    silently launch an unplaced team for a workflow that asked to be placed.
+    """
+    if not snapshot:
+        raise WorkflowDocumentError("Workflow snapshot is required to resolve placement")
+    graph = snapshot.get("graph")
+    if not isinstance(graph, dict):
+        raise WorkflowDocumentError("Workflow snapshot graph must be a mapping")
+    schema_version = snapshot.get("schema_version")
+    return load_workflow_placement(
+        graph,
+        schema_version=schema_version if isinstance(schema_version, int) else 1,
+    )
 
 
 def workflow_stage_models_from_snapshot(snapshot: dict[str, Any] | None) -> list[str]:
