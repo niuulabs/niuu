@@ -561,10 +561,15 @@ class ModelGatewayConfig(BaseModel):
         description="Bifrost base URL as reachable from the session, e.g. http://niuu:8080/api/v1/bifrost.",
     )
     token: str = Field(
-        default="niuu-gateway",
+        default="",
         description=(
-            "Bearer token the CLIs present to the gateway. The bundle's gateway is open "
-            "and ignores it; a PAT-protected gateway needs a real token here."
+            "Bearer token the CLIs present to the gateway. Empty (the default) sends "
+            "no meaningful credential — fine for a gateway running auth_mode: open "
+            "(it ignores whatever is sent), a hard 401 from any other gateway auth "
+            "mode. A 'pat'/'mesh'/'oidc' gateway needs a real PAT configured here; "
+            "there is no platform-computed default yet (see "
+            "cli.config.CLISettings._OIDC_UNCOVERED_PLUGINS['bifrost'] for the "
+            "current state of automatically minting one)."
         ),
     )
 

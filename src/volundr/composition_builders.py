@@ -455,7 +455,11 @@ def _create_contributors(
         )
 
         contributors.append(
-            ModelGatewayContributor(gateway_url=settings.bifrost.session_gateway_url, **ports)
+            ModelGatewayContributor(
+                gateway_url=settings.bifrost.session_gateway_url,
+                auth_mode=settings.auth_mode,
+                **ports,
+            )
         )
         logger.info("Session contributor: model_gateway (auto-wired)")
 

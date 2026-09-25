@@ -158,3 +158,59 @@ class TestMessagesEndpoint:
         assert "usage" in body
         assert body["usage"]["input_tokens"] == 5
         assert body["usage"]["output_tokens"] == 3
+
+
+class TestBuildPatRevocationValidator:
+    """bifrost.app._build_pat_revocation_validator — startup-time guards."""
+
+    def _config(self, **pat_revocation) -> BifrostConfig:
+        return BifrostConfig(
+            providers={"openai": ProviderConfig(models=["gpt-4o"])},
+            auth_mode="pat",
+            pat_secret="test-secret-key-that-is-at-least-32-bytes-long!",
+            pat_revocation=pat_revocation,
+        )
+
+    def test_wrong_type_raises_type_error(self):
+        import pytest
+
+        from bifrost.app import _build_pat_revocation_validator
+
+        # Any importable class that isn't a PATValidator but tolerates
+        # **kwargs (repo=/cache_ttl=/revoked_cache_ttl=) at construction.
+        cfg = self._config(adapter="identity.adapters.identity.AllowAllHeaderAuthenticationAdapter")
+        with pytest.raises(TypeError, match="PATValidator"):
+            _build_pat_revocation_validator(cfg)
+
+    def test_repo_dependent_validator_rejected_at_startup(self):
+        """The plain PATValidator base class does not override is_valid(), so
+
+        it would dereference self._repo — but this composition root always
+        passes repo=None (Bifröst has no database pool). Catch this at
+        startup, not on the first PAT-checked request.
+        """
+        import pytest
+
+        from bifrost.app import _build_pat_revocation_validator
+
+        cfg = self._config(adapter="niuu.domain.services.pat_validator.PATValidator")
+        with pytest.raises(ValueError, match="self._repo"):
+            _build_pat_revocation_validator(cfg)
+
+    def test_remote_pat_validator_is_accepted(self):
+        """RemotePATValidator overrides is_valid() and never reads repo."""
+        from bifrost.app import _build_pat_revocation_validator
+        from niuu.adapters.remote_pats import RemotePATValidator
+
+        cfg = self._config(
+            adapter="niuu.adapters.remote_pats.RemotePATValidator",
+            kwargs={"authority_url": "https://identity.test"},
+        )
+        validator = _build_pat_revocation_validator(cfg)
+        assert isinstance(validator, RemotePATValidator)
+
+    def test_disabled_returns_none_even_with_adapter_configured(self):
+        from bifrost.app import _build_pat_revocation_validator
+
+        cfg = self._config(enabled=False, adapter="niuu.adapters.remote_pats.RemotePATValidator")
+        assert _build_pat_revocation_validator(cfg) is None

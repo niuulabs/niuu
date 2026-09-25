@@ -313,3 +313,33 @@ class TestPiModeConfig:
     def test_pi_config_ollama_free_cost(self):
         cfg = _load_config(str(_PI_CONFIG))
         assert cfg.providers["ollama"].cost_per_token == 0.0
+
+
+class TestPatModeRequiresRevocationDecision:
+    """BifrostConfig._pat_mode_requires_revocation_decision — auth_mode: pat
+
+    must not silently run with no revocation check; the operator must
+    configure a real check or explicitly opt out.
+    """
+
+    def test_default_pat_revocation_with_pat_mode_raises(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="pat_revocation"):
+            BifrostConfig(auth_mode=AuthMode.PAT)
+
+    def test_explicit_enabled_false_is_accepted(self):
+        cfg = BifrostConfig(auth_mode=AuthMode.PAT, pat_revocation={"enabled": False})
+        assert cfg.pat_revocation.enabled is False
+
+    def test_configured_adapter_is_accepted_even_with_enabled_defaulted_true(self):
+        cfg = BifrostConfig(
+            auth_mode=AuthMode.PAT,
+            pat_revocation={"adapter": "niuu.adapters.remote_pats.RemotePATValidator"},
+        )
+        assert cfg.pat_revocation.adapter
+
+    def test_non_pat_modes_are_unaffected(self):
+        BifrostConfig(auth_mode=AuthMode.OPEN)  # must not raise
+        BifrostConfig(auth_mode=AuthMode.MESH)  # must not raise
+        BifrostConfig(auth_mode=AuthMode.OIDC)  # must not raise

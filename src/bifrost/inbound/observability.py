@@ -1,11 +1,20 @@
 """Observability endpoints for Bifröst.
 
-Exposes three routes:
+Exposes three routes, all unauthenticated:
 
 * ``GET /metrics``  — Prometheus text-format metrics.
 * ``GET /healthz``  — Liveness probe (always 200 if the process is alive).
 * ``GET /readyz``   — Readiness probe (200 when at least one provider is
                        reachable and the usage store is responsive).
+
+``/metrics`` is deliberately exempt from auth, same as the two probes: it is
+scraped by Prometheus on the app port with no credential (see
+``charts/bifrost`` values, and Envoy's own bypass for it in the mesh's
+authz policy), so gating it here would silently stop metrics collection the
+moment any cluster's ``auth_mode`` leaves ``open`` — a regression nobody
+would notice until dashboards went blank. Serving it on a separate,
+network-restricted port is a real alternative but out of scope for this
+change; exempting it here matches what Envoy already does in front of it.
 """
 
 from __future__ import annotations
@@ -39,7 +48,8 @@ def create_observability_router(
         store:  Usage store (used for DB liveness checks in /readyz).
 
     Returns:
-        A configured ``APIRouter``.
+        A configured ``APIRouter``. None of its routes require a credential —
+        see the module docstring for why ``/metrics`` is exempt too.
     """
     obs_router = APIRouter()
     _http_client = httpx.AsyncClient(timeout=5.0)
@@ -107,7 +117,7 @@ def create_observability_router(
 
     @obs_router.get("/metrics", response_class=PlainTextResponse)
     async def metrics() -> PlainTextResponse:
-        """Prometheus text-format metrics endpoint.
+        """Prometheus text-format metrics endpoint — unauthenticated, see module docstring.
 
         Exposes all Bifröst gateway metrics in the standard Prometheus
         text exposition format (version 0.0.4).

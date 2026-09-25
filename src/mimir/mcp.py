@@ -40,11 +40,17 @@ from datetime import UTC, datetime
 from typing import IO, Any
 
 import yaml
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from mimir.router import WRITE_ROLES
 from niuu.domain.mimir import MimirSource, compute_content_hash
+from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 from niuu.ports.mimir import MimirPort
+
+#: Tool names that mutate the knowledge base — the same routes
+#: MimirRouter._require_write_auth gates on the REST side.
+_WRITE_TOOLS = frozenset({"mimir_write", "mimir_ingest"})
 
 logger = logging.getLogger(__name__)
 
@@ -269,11 +275,32 @@ class MimirMcpServer:
     Args:
         adapter: The MimirPort implementation to delegate tool calls to.
         name:    Server name reported in the ``initialize`` response.
+        auth:    Identity source used by ``router()``'s HTTP endpoint to gate
+            ``_WRITE_TOOLS`` (mirrors ``MimirRouter._require_write_auth`` —
+            same ``WRITE_ROLES``). ``None`` (the default) leaves the HTTP
+            endpoint ungated, matching this class's behaviour before this
+            gate existed — stdio mode (``run_stdio``, the ``python -m mimir
+            mcp`` entry point) never has HTTP headers to check and always
+            passes ``None``. ``mimir.app.create_app`` always passes the
+            host's configured identity adapter.
+        auth_mode: The host's declared auth mode. The write-role gate only
+            applies under ``"oidc"`` — see ``MimirRouter._require_write_auth``
+            for why ``envoy``/``none`` keep their pre-existing (ungated)
+            behaviour for now.
     """
 
-    def __init__(self, adapter: MimirPort, name: str = "mimir") -> None:
+    def __init__(
+        self,
+        adapter: MimirPort,
+        name: str = "mimir",
+        *,
+        auth: HeaderAuthenticationPort | None = None,
+        auth_mode: str = "envoy",
+    ) -> None:
         self._adapter = adapter
         self._name = name
+        self._auth = auth
+        self._auth_mode = auth_mode
 
     # ------------------------------------------------------------------
     # Public API
@@ -289,6 +316,37 @@ class MimirMcpServer:
             responses = [r for item in payload if (r := await self._handle_one(item)) is not None]
             return responses or None
         return await self._handle_one(payload)
+
+    @staticmethod
+    def _calls_a_write_tool(body: Any) -> bool:
+        items = body if isinstance(body, list) else [body]
+        return any(
+            isinstance(item, dict)
+            and item.get("method") == "tools/call"
+            and isinstance(item.get("params"), dict)
+            and item["params"].get("name") in _WRITE_TOOLS
+            for item in items
+        )
+
+    async def _require_write_auth(self, request: Request) -> None:
+        """Mirror MimirRouter._require_write_auth for the MCP write tools.
+
+        Gated to ``auth_mode: oidc`` only (see that method's docstring for
+        why). ``self._auth is None`` also leaves the gate open — see the
+        ``auth`` arg's docstring on ``__init__``.
+        """
+        if self._auth_mode != "oidc" or self._auth is None:
+            return
+        try:
+            principal = await self._auth.validate_headers(dict(request.headers))
+        except InvalidTokenError:
+            principal = None
+        if (
+            principal is None
+            or not principal.tenant_id
+            or not WRITE_ROLES.intersection(principal.roles)
+        ):
+            raise HTTPException(403, "Knowledge writes require an authenticated write role")
 
     def router(self) -> APIRouter:
         """Return a FastAPI ``APIRouter`` with a ``POST /`` endpoint for MCP."""
@@ -308,6 +366,18 @@ class MimirMcpServer:
                     },
                     status_code=400,
                 )
+            if server._calls_a_write_tool(body):
+                try:
+                    await server._require_write_auth(request)
+                except HTTPException as exc:
+                    return JSONResponse(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": body.get("id") if isinstance(body, dict) else None,
+                            "error": {"code": -32603, "message": str(exc.detail)},
+                        },
+                        status_code=exc.status_code,
+                    )
             try:
                 response = await server.handle(body)
                 if response is None:

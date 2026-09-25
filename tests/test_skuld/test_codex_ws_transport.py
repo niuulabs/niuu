@@ -3733,6 +3733,31 @@ class TestModelGateway:
         assert mock_exec.call_args.kwargs["env"]["NIUU_MODEL_GATEWAY_TOKEN"] == "niuu-gateway"
 
     @pytest.mark.asyncio
+    async def test_blank_token_with_a_gateway_url_raises(self, tmp_path):
+        """Codex reads NIUU_MODEL_GATEWAY_TOKEN as its provider key and
+
+        refuses an empty value — never a silent, unauthenticated session.
+        """
+        t = _make_transport(
+            tmp_path,
+            model_gateway_url="http://niuu:8080/api/v1/bifrost",
+            model_gateway_token="",
+        )
+        with (
+            patch(
+                "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ),
+            patch("skuld.transports.codex_ws.resolve_codex_cli", return_value="/bin/codex"),
+            patch(
+                "skuld.transports.codex_ws.ensure_codex_tool_shims",
+                return_value=(tmp_path / ".skuld-tools" / "bin", {}),
+            ),
+            pytest.raises(ValueError, match="model_gateway_token is blank"),
+        ):
+            await t._spawn_app_server()
+
+    @pytest.mark.asyncio
     async def test_read_only_mcp_spawn_disables_other_native_capability_sources(self, tmp_path):
         t = _make_transport(
             tmp_path,
