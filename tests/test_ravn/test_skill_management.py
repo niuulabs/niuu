@@ -121,6 +121,36 @@ async def test_lifecycle_archive_restore_pin_promote_and_usage(tmp_path: Path) -
     assert telemetry.action_safety_class == "diagnostic"
 
 
+async def test_restore_resets_consecutive_failures(tmp_path: Path) -> None:
+    """A restored skill must not inherit the failure streak that caused the
+    earlier archive/rollback — otherwise one more failure after restore
+    immediately re-triggers rollback without a fresh regression threshold."""
+    skill_port = await _adapter(tmp_path)
+    manager = SkillManagementRegistry(skill_port, metadata_path=tmp_path / "meta.json")
+    await manager.create(name="flaky probe", content="Inspect with `probe`.")
+    await manager.record_usage("flaky probe", success=False)
+    await manager.record_usage("flaky probe", success=False)
+    assert manager.lifecycle_metadata("flaky probe")["consecutive_failures"] == 2
+
+    await manager.archive("flaky probe")
+    restored = await manager.restore("flaky probe")
+
+    assert restored.consecutive_failures == 0
+
+
+async def test_update_resets_consecutive_failures(tmp_path: Path) -> None:
+    """A revision is new code: it starts with a clean failure count."""
+    skill_port = await _adapter(tmp_path)
+    manager = SkillManagementRegistry(skill_port, metadata_path=tmp_path / "meta.json")
+    await manager.create(name="revised probe", content="Inspect with `probe`.")
+    await manager.record_usage("revised probe", success=False)
+    assert manager.lifecycle_metadata("revised probe")["consecutive_failures"] == 1
+
+    await manager.update(name="revised probe", content="Inspect with `probe --v2`.")
+
+    assert manager.lifecycle_metadata("revised probe")["consecutive_failures"] == 0
+
+
 async def test_lifecycle_metadata_returns_detached_discovery_snapshot(tmp_path: Path) -> None:
     skill_port = await _adapter(tmp_path)
     manager = SkillManagementRegistry(skill_port, metadata_path=tmp_path / "meta.json")

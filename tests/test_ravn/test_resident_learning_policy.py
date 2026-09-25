@@ -66,6 +66,28 @@ def test_irrelevant_learnings_are_rejected_with_a_reason(overrides, expected) ->
     assert expected in reason
 
 
+def test_unscrubbed_redaction_status_is_accepted_by_default() -> None:
+    """No redactor exists anywhere in this codebase; the default policy
+    matches the historical (nothing has ever been redacted) behavior so the
+    build->propose->adopt->run loop keeps working without one."""
+    ok, _reason = ResidentLearningPolicy().evaluate(
+        _artifact(redaction_status="unscrubbed"),
+        _identity(),
+    )
+    assert ok
+
+
+def test_unscrubbed_redaction_status_can_be_refused_explicitly() -> None:
+    """An operator that wants adoption to refuse unscrubbed proposals until a
+    real redactor exists sets allow_unscrubbed=False."""
+    ok, reason = ResidentLearningPolicy(allow_unscrubbed=False).evaluate(
+        _artifact(redaction_status="unscrubbed"),
+        _identity(),
+    )
+    assert not ok
+    assert "has not been redacted" in reason
+
+
 def test_agent_tool_skips_the_skill_content_requirement() -> None:
     # agent tools carry executable code, not skill markdown, so empty content
     # is fine for them.
