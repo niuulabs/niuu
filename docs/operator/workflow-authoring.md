@@ -78,6 +78,62 @@ checks/reviews and their trusted producer IDs. Authors select requirements;
 operators configure the services that produce and authenticate those receipts.
 An ordinary agent's assertion that a check passed is not a signed receipt.
 
+## Placing a workflow team on a Guild target
+
+`placement` is an optional graph declaration that pins the whole workflow team
+to a specific Guild target instead of the default unscoped selection. Declare
+either a tag selector or an exact instance pin — never both:
+
+```yaml
+placement:
+  tags: [dgx-spark]
+  match: all   # "all" (default) requires every tag; "any" requires one
+```
+
+```yaml
+placement:
+  instance: spark-01   # matches a registered instance by id or name
+```
+
+At launch, Ting resolves `placement` against the Guild targets visible to the
+launching principal. `instance` pins that exact connection. `tags` selects
+among the targets carrying the requested tags, using the same balancing rule
+as an untargeted launch when more than one matches. If nothing visible
+satisfies the placement, the launch is rejected with a 422 naming both the
+requested placement and every visible target's tags — it never falls back to
+the default instance. A workflow with no `placement` launches exactly as
+before, balanced across whatever is visible.
+
+`placement` requires workflow `schema_version: 2`, like every other
+structural graph addition since v1.
+
+Placement is a whole-team decision today: it places every persona in the
+graph together. A `placement` field on an individual node is rejected at
+validation time rather than silently ignored — per-stage placement onto
+different targets is a later capability.
+
+### connectionId must satisfy placement
+
+A launch can also name an explicit `connectionId` — in the REST launch body,
+in A2A `SendMessage` metadata, or supplied by default on every launch a Ravn
+resident starts through its `a2a_task` tool. When the target workflow also
+declares `placement`, that `connectionId` is validated against it: it must
+resolve to the placement's pinned instance, or to a target eligible by the
+placement's tags. A `connectionId` that conflicts is rejected with a 422
+naming both — it can never silently strip a workflow's placement. A
+`connectionId` compatible with the placement still resolves directly, without
+being re-balanced among the placement's other eligible targets.
+
+### Includes and placement
+
+An `include` node pulls stages or gates from another pinned workflow, but
+never that workflow's own `graph.placement` — only stage/gate nodes cross the
+include boundary. If the included (child) workflow declares its own
+`placement`, it must match the including (parent) workflow's `placement`
+exactly (tags compared as a set, not by list order), or the include is
+rejected at resolution time. A child with no `placement` of its own never
+conflicts, whatever the parent declares.
+
 ## A subworkflow node's templates
 
 A `kind: subworkflow` node fans out into a bounded generation of child

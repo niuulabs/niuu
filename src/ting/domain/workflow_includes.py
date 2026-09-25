@@ -38,6 +38,7 @@ from ting.domain.workflow_document import (
     WorkflowDocument,
     graph_has_include_nodes,
     load_workflow_document,
+    load_workflow_placement,
     referenced_persona_aliases,
 )
 
@@ -93,6 +94,12 @@ def resolve_workflow_includes(
     unchanged: those already name the id the copied node takes. Raises
     rather than dropping an include that cannot be resolved — an
     unresolvable include is a fatal document, never a silently smaller graph.
+
+    An included document's own ``graph.placement`` is never copied in — only
+    stage/gate nodes cross the include boundary, so a child's placement is
+    otherwise silently irrelevant to where the combined team runs. Rather
+    than let that go unnoticed, an included child that declares a placement
+    different from the parent's own is rejected outright.
     """
     nodes = list(graph.get("nodes") or [])
 
@@ -103,6 +110,7 @@ def resolve_workflow_includes(
     if not include_nodes:
         return copy.deepcopy(graph)
 
+    parent_placement = _placement_signature(graph)
     kept_nodes = [node for node in nodes if not _is_include(node)]
     claimed_local_ids = {str(node.get("id") or "") for node in kept_nodes if isinstance(node, dict)}
     resolved_nodes: list[dict[str, Any]] = copy.deepcopy(kept_nodes)
@@ -115,11 +123,23 @@ def resolve_workflow_includes(
             workflow_dependencies=workflow_dependencies,
             resolve_alias=resolve_alias,
             claimed_local_ids=claimed_local_ids,
+            parent_placement=parent_placement,
         )
         resolved_nodes.extend(new_nodes)
         resolved_edges.extend(new_edges)
 
     return {**copy.deepcopy(graph), "nodes": resolved_nodes, "edges": resolved_edges}
+
+
+_PlacementSignature = tuple[str | None, tuple[str, ...], str]
+
+
+def _placement_signature(graph: dict[str, Any]) -> _PlacementSignature | None:
+    """Return a placement's order-independent identity, or ``None`` if absent."""
+    placement = load_workflow_placement(graph)
+    if placement is None:
+        return None
+    return (placement.instance, tuple(sorted(placement.tags)), placement.match)
 
 
 def _resolve_one_include(
@@ -129,6 +149,7 @@ def _resolve_one_include(
     workflow_dependencies: Mapping[str, WorkflowDependency],
     resolve_alias: WorkflowIncludeResolver,
     claimed_local_ids: set[str],
+    parent_placement: _PlacementSignature | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     include_id = str(include_node.get("id") or "").strip()
     alias = str(include_node.get("workflow") or "").strip()
@@ -144,6 +165,13 @@ def _resolve_one_include(
         )
 
     document = resolve_alias(alias)
+    child_placement = _placement_signature(document.graph)
+    if child_placement is not None and child_placement != parent_placement:
+        raise WorkflowDocumentError(
+            f"Include node {include_id!r} pulls workflow dependency {alias!r}, which declares "
+            "its own graph.placement; an included workflow's placement must match the "
+            "including workflow's placement exactly"
+        )
     included_nodes = {
         str(node.get("id") or ""): node
         for node in document.graph.get("nodes") or []

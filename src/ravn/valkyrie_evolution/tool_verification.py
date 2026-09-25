@@ -192,7 +192,14 @@ def _verify_env() -> dict[str, str]:
 _venv_python = tool_venv_python
 
 
-_TEST_RUNNER = """
+#: The one test-running bootstrap: given a tool module path and a test module
+#: path as argv[1]/argv[2], imports both (the tool as ``_verify_tool``, which
+#: is what test_code imports) and runs every zero-argument ``test*`` callable.
+#: Shared by the local ephemeral-venv verifier below and
+#: ``ContainedLearnedToolRunner.verify`` — one runner script, so local and
+#: containerized verification can never quietly diverge in what counts as
+#: "the tests passed".
+TEST_RUNNER_SCRIPT = """
 import importlib.util
 import inspect
 import sys
@@ -319,7 +326,7 @@ def _run_verification(
     runner_path = tempdir / "_verify_runner.py"
     tool_path.write_text(tool_code, encoding="utf-8")
     test_path.write_text(test_code, encoding="utf-8")
-    runner_path.write_text(_TEST_RUNNER, encoding="utf-8")
+    runner_path.write_text(TEST_RUNNER_SCRIPT, encoding="utf-8")
 
     return _run_test(
         python,

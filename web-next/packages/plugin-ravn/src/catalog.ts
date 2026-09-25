@@ -2,7 +2,7 @@
  * Seed EventCatalog and ToolRegistry constants.
  *
  * These are the canonical lists for the Ravn plugin.
- * EventCatalog grows as personas are created via the PersonasPage.
+ * EventCatalog grows as personas are created via the persona library.
  * ToolRegistry mirrors the backend TOOL_REGISTRY in src/ravn/tools/.
  */
 

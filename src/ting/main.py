@@ -21,7 +21,12 @@ from niuu.domain.models import Principal
 from niuu.ports.delivery import EvidenceAuthenticator
 from niuu.ports.integrations import IntegrationRepository
 from niuu.ports.workload_identity import WorkloadTokenIssuer
-from niuu.service_runtime import create_authorization_adapter, create_workload_identity_service
+from niuu.service_runtime import (
+    _get_auth_mode,
+    _validate_identity_adapter_class,
+    create_authorization_adapter,
+    create_workload_identity_service,
+)
 from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ravn.ports.persona import PersonaPort
@@ -47,7 +52,7 @@ from ting.adapters.postgres_sagas import PostgresSagaRepository
 from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRepository
 from ting.adapters.postgres_workflow_executions import PostgresWorkflowExecutionRepository
 from ting.adapters.tracker_factory import TrackerAdapterFactory
-from ting.adapters.volundr_factory import VolundrAdapterFactory
+from ting.adapters.volundr_factory import GuildRegistryUnavailableError, VolundrAdapterFactory
 from ting.adapters.workflow_execution_worker import ExecutionReconciler, WorkflowExecutionWorker
 from ting.api.a2a import create_a2a_router, resolve_a2a_launch_repo
 from ting.api.a2a_card import create_agent_card_router
@@ -594,8 +599,17 @@ def create_app(
     async def authorization_unavailable(request: Request, exc: AuthorizationEvaluationError):
         return JSONResponse(status_code=503, content={"detail": "Authorization unavailable"})
 
+    @app.exception_handler(GuildRegistryUnavailableError)
+    async def guild_registry_unavailable(request: Request, exc: GuildRegistryUnavailableError):
+        return JSONResponse(
+            status_code=503,
+            content={"detail": f"{exc} — retry once Guild's instance registry is reachable"},
+        )
+
     app.state.settings = settings
-    app.state.identity = import_class(settings.auth.adapter)(**settings.auth.kwargs)
+    _ting_identity_cls = import_class(settings.auth.adapter)
+    _validate_identity_adapter_class(_ting_identity_cls, _get_auth_mode(settings))
+    app.state.identity = _ting_identity_cls(**settings.auth.kwargs)
     app.state.workload_identity_service = create_workload_identity_service(
         settings.workload_identity
     )

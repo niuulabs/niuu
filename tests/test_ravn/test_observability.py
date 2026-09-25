@@ -207,7 +207,11 @@ async def test_learned_tool_lifecycle_has_explicit_trace_spans(
                 "required_permission": "tool:run",
             },
             "tool_code": "def run(payload):\n    return {'ok': True}\n",
-            "test_code": "",
+            "test_code": (
+                "import _verify_tool\n\n"
+                "def test_ok():\n"
+                "    assert _verify_tool.run({}) == {'ok': True}\n"
+            ),
         }
     )
 

@@ -164,6 +164,27 @@ class TestWorkflowExecutionRouterMounting:
         assert any("delivery-executions" in path for path in paths)
 
 
+def test_guild_registry_unavailable_maps_to_503_with_the_error_as_the_remedy() -> None:
+    """A Guild outage must surface as a clear 503, not a generic 500 — the
+    old fallback made it indistinguishable from "no connections configured"
+    (see .claude/rules/no-fallbacks.md)."""
+    import asyncio
+    import json
+
+    from ting.adapters.volundr_factory import GuildRegistryUnavailableError
+    from ting.config import Settings
+    from ting.main import create_app
+
+    app = create_app(Settings())
+    handler = app.exception_handlers[GuildRegistryUnavailableError]
+
+    response = asyncio.run(handler(None, GuildRegistryUnavailableError("guild is down")))
+
+    assert response.status_code == 503
+    body = json.loads(bytes(response.body))
+    assert "guild is down" in body["detail"]
+
+
 def test_delivery_enabled_without_review_authenticator_raises_with_remedy():
     """Startup fails loudly instead of silently running an unconfigured pack."""
     from unittest.mock import AsyncMock, MagicMock, patch

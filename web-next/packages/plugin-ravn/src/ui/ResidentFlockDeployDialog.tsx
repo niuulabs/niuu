@@ -10,6 +10,7 @@ import {
   selectedResidentProfile,
   type ResidentMemberDraft,
 } from './ResidentDeployFields';
+import './residentDialogs.css';
 
 interface ResidentFlockDeployDialogProps {
   open: boolean;

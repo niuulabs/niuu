@@ -121,15 +121,11 @@ async def _resolve_volundr_adapters(
     if factory is None:
         return [fallback]
 
-    try:
-        adapters = await factory.for_owner(owner_id)
-    except Exception:
-        logger.warning(
-            "Failed to resolve Volundr adapters for owner %s",
-            _sanitize_log(owner_id),
-            exc_info=True,
-        )
-        return [fallback]
+    # A Guild outage must not look like "this user has no connections" — let
+    # GuildRegistryUnavailableError (and anything else) propagate. Ting's own
+    # exception handler maps it to a 503 with the remedy (see main.py); see
+    # .claude/rules/no-fallbacks.md.
+    adapters = await factory.for_owner(owner_id)
 
     return adapters or [fallback]
 

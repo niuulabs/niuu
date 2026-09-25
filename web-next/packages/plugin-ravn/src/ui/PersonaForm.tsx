@@ -297,11 +297,11 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
         {/* Identity — full-width fields with mono labels, matching web2 */}
         <Section title="Identity" subtitle="What this persona is for.">
           <label className="rv-pf-field">
-            <span className="rv-pf-field__label">name</span>
+            <span className="rv-pf-field__label">Name</span>
             <input className="niuu-form-control niuu:font-mono" value={form.name} readOnly />
           </label>
           <label className="rv-pf-field">
-            <span className="rv-pf-field__label">role</span>
+            <span className="rv-pf-field__label">Role</span>
             <input
               className="niuu-form-control niuu:font-mono"
               value={form.role}
@@ -309,7 +309,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
             />
           </label>
           <label className="rv-pf-field">
-            <span className="rv-pf-field__label">summary</span>
+            <span className="rv-pf-field__label">Summary</span>
             <input
               className="niuu-form-control"
               value={form.summary}
@@ -317,7 +317,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
             />
           </label>
           <label className="rv-pf-field">
-            <span className="rv-pf-field__label">description</span>
+            <span className="rv-pf-field__label">Description</span>
             <input
               className="niuu-form-control"
               value={form.description}
@@ -325,7 +325,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
             />
           </label>
           <label className="rv-pf-field">
-            <span className="rv-pf-field__label">system_prompt_template</span>
+            <span className="rv-pf-field__label">System prompt</span>
             <textarea
               className="niuu-form-control niuu:font-mono"
               value={form.systemPromptTemplate}
@@ -343,7 +343,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
         >
           <div className="rv-pf-grid-2">
             <label className="rv-pf-field">
-              <span className="rv-pf-field__label">iteration_budget</span>
+              <span className="rv-pf-field__label">Iteration budget</span>
               <input
                 type="number"
                 className="niuu-form-control niuu:font-mono"
@@ -354,7 +354,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
               />
             </label>
             <label className="rv-pf-field">
-              <span className="rv-pf-field__label">permission_mode</span>
+              <span className="rv-pf-field__label">Permission mode</span>
               <select
                 className="niuu-form-control niuu:font-mono"
                 value={form.permissionMode}
@@ -370,7 +370,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
           </div>
           <div className="rv-pf-grid-2">
             <label className="rv-pf-field">
-              <span className="rv-pf-field__label">llm.thinking</span>
+              <span className="rv-pf-field__label">Extended thinking</span>
               <button
                 type="button"
                 className={`rv-pf-toggle ${form.llmThinkingEnabled ? 'rv-pf-toggle--on' : ''}`}
@@ -383,7 +383,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
               </button>
             </label>
             <label className="rv-pf-field">
-              <span className="rv-pf-field__label">llm.max_tokens</span>
+              <span className="rv-pf-field__label">Max tokens</span>
               <input
                 type="number"
                 className="niuu-form-control niuu:font-mono"

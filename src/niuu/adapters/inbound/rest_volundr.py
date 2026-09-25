@@ -36,6 +36,10 @@ from niuu.adapters.inbound.remote_urls import (
 from niuu.adapters.inbound.remote_urls import (
     forward_identity_headers as _forward_headers,
 )
+from niuu.adapters.inbound.source_health import (
+    instance_source_failures,
+    set_source_health_header,
+)
 from niuu.adapters.inbound.ws_forge_replay import forward_replay
 from niuu.domain.models import InstanceKind, Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
@@ -1206,6 +1210,8 @@ def create_volundr_router(
             ),
             reverse=True,
         )
+        if not selected:
+            set_source_health_header(response, instance_source_failures(instances, results))
         return sessions
 
     @router.get("/sessions/stream")

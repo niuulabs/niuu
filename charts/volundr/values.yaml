@@ -883,6 +883,21 @@ gateway:
 # Image for the regular per-persona Ravn containers; pin alongside the runtime image.
 ravnFlockImage: ""
 
+# -- Default LLM for the Ravn nodes of flock sessions, in Ravn's `llm:` shape.
+# workload_config.llm_config and per-persona llm overrides are merged over it.
+# When empty, a flock session that names no model fails to launch. Keep
+# credentials out of this block: point the provider at them with
+# `secret_kwargs_env`.
+#   ravnFlockLlmConfig:
+#     model: Qwen/Qwen3.8-27B
+#     max_tokens: 8192
+#     timeout: 300
+#     provider:
+#       adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+#       kwargs:
+#         base_url: https://vllm.example.internal
+ravnFlockLlmConfig: {}
+
 sessionContributors:
   - adapter: "volundr.adapters.outbound.contributors.core.CoreSessionContributor"
     kwargs:

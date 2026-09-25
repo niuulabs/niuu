@@ -25,14 +25,17 @@ from niuu.adapters.postgres_observatory_fragments import (
     PostgresObservatoryFragmentRepository,
 )
 from niuu.adapters.postgres_pats import PostgresPATRepository
+from niuu.config import InstanceProbeConfig, InstanceSeedConfig
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import InstanceKind, InstanceVisibility
 from niuu.domain.services.agent_directory import AgentDirectoryAggregationService
+from niuu.domain.services.instance_health import InstanceHealthChecker
 from niuu.domain.services.instances import InstanceService
 from niuu.domain.services.observatory_fragments import ObservatoryFragmentInboxService
 from niuu.domain.services.observatory_topology import (
     ObservatoryTopologyAggregationService,
 )
+from niuu.ports.instance_probe import InstanceProbePort
 from niuu.service_databases import apply_service_database_settings, database_pool
 from niuu.service_instances import seed_configured_instances
 from niuu.service_runtime import (
@@ -42,6 +45,7 @@ from niuu.service_runtime import (
     create_pat_validator,
     create_workload_identity_service,
 )
+from niuu.utils import import_class
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.config import Settings
 
@@ -51,7 +55,14 @@ def _load_settings() -> Settings:
     return Settings()
 
 
-async def _seed_embedded_forge_instance(instance_service: InstanceService) -> None:
+async def _seed_embedded_forge_instance(
+    instance_service: InstanceService,
+    seeded_instances: list[InstanceSeedConfig],
+) -> None:
+    # A configured Volundr instance that asked to be the default must win —
+    # list_visible sorts default-before-name, so an unconditional
+    # is_default=True here would let the embedded seed silently outrank an
+    # operator's explicit choice every time the app restarts.
     await instance_service.upsert_seed_instance(
         kind=InstanceKind.VOLUNDR,
         slug="local",
@@ -59,10 +70,45 @@ async def _seed_embedded_forge_instance(instance_service: InstanceService) -> No
         base_url="embedded://local-forge",
         visibility=InstanceVisibility.SYSTEM,
         enabled=True,
-        is_default=True,
+        is_default=not _has_configured_default_volundr(seeded_instances),
         config={"transport": "embedded"},
         tags=["local"],
     )
+
+
+def _has_configured_local_forge(seeded_instances: list[InstanceSeedConfig]) -> bool:
+    """Whether the operator explicitly configured their own ``local`` Volundr slug.
+
+    Registering a remote instance must not make the embedded Local Forge
+    disappear on a fresh database — the two are independent unless the
+    operator deliberately names their own entry ``local``.
+    """
+    return any(
+        item.kind == InstanceKind.VOLUNDR and item.slug.strip() == "local"
+        for item in seeded_instances
+    )
+
+
+def _has_configured_default_volundr(seeded_instances: list[InstanceSeedConfig]) -> bool:
+    """Whether any configured Volundr seed already claims is_default."""
+    return any(item.kind == InstanceKind.VOLUNDR and item.is_default for item in seeded_instances)
+
+
+def _build_instance_probe(
+    config: InstanceProbeConfig,
+    *,
+    embedded_app: ASGIApp | None,
+) -> InstanceProbePort:
+    """Instantiate the configured InstanceProbePort (dynamic adapter + kwargs).
+
+    ``embedded_app`` is the one exception to "every key is a kwarg": it is a
+    live ASGI object the composition root holds, not something a config file
+    can express, so it is injected here rather than read from ``config``
+    (see .claude/rules/dynamic-adapters.md).
+    """
+    probe_cls = import_class(config.adapter)
+    kwargs = config.model_dump(exclude={"adapter"})
+    return probe_cls(embedded_app=embedded_app, **kwargs)
 
 
 def create_app(
@@ -118,60 +164,86 @@ def create_app(
                     instance_service,
                     list(loaded_settings.niuu.instances),
                 )
-            elif embedded_forge_app is not None:
-                await _seed_embedded_forge_instance(instance_service)
+            # Independent of the branch above: a configured remote instance
+            # must not make the embedded Local Forge disappear on a fresh
+            # database (see .claude/rules/no-fallbacks.md — "configured but
+            # impossible" is not the case here; the two are unrelated seeds).
+            if embedded_forge_app is not None and not _has_configured_local_forge(
+                list(loaded_settings.niuu.instances)
+            ):
+                await _seed_embedded_forge_instance(
+                    instance_service, list(loaded_settings.niuu.instances)
+                )
 
             fragment_inbox = ObservatoryFragmentInboxService(
                 PostgresObservatoryFragmentRepository(pool),
                 ttl_seconds=loaded_settings.observatory.fragments.ttl_seconds,
                 authorization=create_authorization_adapter(loaded_settings),
             )
-            app.include_router(
-                create_instances_router(
-                    instance_service,
-                    embedded_forge_app=embedded_forge_app,
-                    agent_directory=agent_directory,
-                    fragment_inbox=fragment_inbox,
-                    topology=ObservatoryTopologyAggregationService(
-                        client=HttpObservatoryTopologyClient(
-                            timeout_seconds=directory_cfg.guild_timeout_seconds,
-                        ),
-                        max_concurrency=directory_cfg.guild_max_concurrency,
+            health_checker = InstanceHealthChecker(
+                repository=instance_repository,
+                probe=_build_instance_probe(
+                    loaded_settings.niuu.health.probe, embedded_app=embedded_forge_app
+                ),
+                interval_seconds=loaded_settings.niuu.health.interval_seconds,
+            )
+            app.state.instance_health_checker = health_checker
+            # The try/finally starts immediately after start(): if any of the
+            # router construction below raises, the task must still be
+            # stopped rather than leaked as an orphaned background sweep.
+            health_checker.start()
+            try:
+                app.include_router(
+                    create_instances_router(
+                        instance_service,
+                        health_checker=health_checker,
+                        embedded_forge_app=embedded_forge_app,
+                        agent_directory=agent_directory,
                         fragment_inbox=fragment_inbox,
-                    ),
+                        topology=ObservatoryTopologyAggregationService(
+                            client=HttpObservatoryTopologyClient(
+                                timeout_seconds=directory_cfg.guild_timeout_seconds,
+                            ),
+                            max_concurrency=directory_cfg.guild_max_concurrency,
+                            fragment_inbox=fragment_inbox,
+                        ),
+                    )
                 )
-            )
-            app.include_router(
-                create_volundr_router(
-                    instance_service,
-                    embedded_forge_app=embedded_forge_app,
-                    forge_stream_remote_timeout_seconds=(
-                        loaded_settings.forge_stream_remote_timeout_seconds
-                    ),
-                    forge_stream_remote_connect_timeout_seconds=(
-                        loaded_settings.forge_stream_remote_connect_timeout_seconds
-                    ),
-                    forge_stream_retry_seconds=loaded_settings.forge_stream_retry_seconds,
-                    forge_stream_keepalive_seconds=loaded_settings.forge_stream_keepalive_seconds,
-                    forge_stream_queue_maxsize=loaded_settings.forge_stream_queue_maxsize,
+                app.include_router(
+                    create_volundr_router(
+                        instance_service,
+                        embedded_forge_app=embedded_forge_app,
+                        forge_stream_remote_timeout_seconds=(
+                            loaded_settings.forge_stream_remote_timeout_seconds
+                        ),
+                        forge_stream_remote_connect_timeout_seconds=(
+                            loaded_settings.forge_stream_remote_connect_timeout_seconds
+                        ),
+                        forge_stream_retry_seconds=loaded_settings.forge_stream_retry_seconds,
+                        forge_stream_keepalive_seconds=(
+                            loaded_settings.forge_stream_keepalive_seconds
+                        ),
+                        forge_stream_queue_maxsize=loaded_settings.forge_stream_queue_maxsize,
+                    )
                 )
-            )
-            app.include_router(
-                create_ravn_router(
-                    instance_service,
-                    embedded_forge_app=embedded_forge_app,
+                app.include_router(
+                    create_ravn_router(
+                        instance_service,
+                        embedded_forge_app=embedded_forge_app,
+                    )
                 )
-            )
-            app.include_router(
-                create_ravn_session_proxy_router(
-                    instance_service,
-                    embedded_forge_app=embedded_forge_app,
-                    dev_identity=dev_identity,
+                app.include_router(
+                    create_ravn_session_proxy_router(
+                        instance_service,
+                        embedded_forge_app=embedded_forge_app,
+                        dev_identity=dev_identity,
+                    )
                 )
-            )
-            app.include_router(create_workload_identity_jwks_router())
+                app.include_router(create_workload_identity_jwks_router())
 
-            yield
+                yield
+            finally:
+                await health_checker.stop()
 
     app.router.lifespan_context = lifespan
 

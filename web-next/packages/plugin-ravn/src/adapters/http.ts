@@ -324,6 +324,7 @@ interface RawSession {
   cost?: number | string;
   chat_endpoint?: string | null;
   instance_id?: string;
+  instance_name?: string;
   flock_id?: string;
   flock_member_id?: string;
   flock_role?: string;
@@ -546,6 +547,7 @@ function toSession(raw: RawSession): Session {
     costUsd: raw.cost === undefined ? undefined : Number(raw.cost),
     chatEndpoint: withInstanceQuery(raw.chat_endpoint, raw.instance_id),
     instanceId: raw.instance_id,
+    ...(raw.instance_name && { instanceName: raw.instance_name }),
     flockId: raw.flock_id,
     flockMemberId: raw.flock_member_id,
     flockRole: raw.flock_role,
@@ -897,6 +899,10 @@ export function buildRavnSessionAdapter(client: ApiClient): ISessionStream {
         `/sessions/${encodeURIComponent(sessionId)}/messages${query}`,
       );
       return raw.map(toMessage);
+    },
+    async stopSession(sessionId, instanceId) {
+      const query = instanceId ? `?instance_id=${encodeURIComponent(instanceId)}` : '';
+      await client.post<unknown>(`/sessions/${encodeURIComponent(sessionId)}/stop${query}`, {});
     },
   };
 }

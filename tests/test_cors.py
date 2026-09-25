@@ -128,6 +128,19 @@ class TestServiceCorsWiring:
         assert options["allow_origins"] == ["https://ui.example.com"]
         assert options["allow_credentials"] is False
 
+    def test_source_failures_header_is_exposed_for_browser_clients(self) -> None:
+        """A custom response header is invisible to cross-origin JS unless
+        explicitly exposed — without this, the additive
+        X-Niuu-Source-Failures header would be unreadable from a browser
+        even though the server sends it."""
+        app = create_volundr_app(
+            VolundrSettings(cors=CorsConfig(allowed_origins=["https://ui.example.com"]))
+        )
+
+        options = _cors_options(app)
+
+        assert "X-Niuu-Source-Failures" in options["expose_headers"]
+
     def test_niuu_shared_uses_settings_cors(self) -> None:
         app = create_niuu_app(
             git_config=GitConfig(),

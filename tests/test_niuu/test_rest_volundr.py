@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -595,6 +596,18 @@ def test_list_sessions_ignores_errors_and_sorts_last_active_descending() -> None
 
     assert response.status_code == 200
     assert [item["id"] for item in response.json()] == ["s2", "s1"]
+    # A failed instance's contribution is dropped from the merged list, but
+    # not silently — it is named, additively, on the response so a caller
+    # can tell "nothing reported" apart from "one node was unreachable".
+    failures = json.loads(response.headers["X-Niuu-Source-Failures"])
+    assert failures == [
+        {
+            "instanceId": "gamma",
+            "name": "Instance gamma",
+            "status": "unreachable",
+            "error": "HTTP 503",
+        }
+    ]
 
 
 @pytest.mark.parametrize("archived", [False, True])

@@ -12,9 +12,10 @@ and the read-action check on session read routes (GET /sessions/{id},
 """
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -619,6 +620,135 @@ class TestEventsEndpointAuth:
                 },
             )
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Tests: Workflow gate resolve authorization
+# ---------------------------------------------------------------------------
+
+
+class TestWorkflowGateResolveAuth:
+    """POST /sessions/{id}/workflow/gates/{gate_id}/resolve authorization checks.
+
+    Regression coverage for a hole where the route authorized with a
+    hand-rolled ``session.owner_id != principal.user_id`` comparison: an
+    empty ``owner_id`` made that comparison falsy, so ANY authenticated
+    caller could resolve any ownerless session's gates. The route now
+    delegates to ``SessionService._check_access`` (the "update" action,
+    same as ``update_session``/rename), which the bundled Cedar policy never
+    grants for an empty owner_id.
+    """
+
+    @pytest.fixture
+    def cedar_authz(self):
+        from identity.adapters.cedar import CedarAuthorizationAdapter
+
+        return CedarAuthorizationAdapter()
+
+    @staticmethod
+    def _resolve(client: TestClient, session_id, gate_id: str = "g1"):
+        return client.post(
+            f"/api/v1/forge/sessions/{session_id}/workflow/gates/{gate_id}/resolve",
+            json={"decision": "approved", "notes": "", "source": "human"},
+        )
+
+    @staticmethod
+    def _live_session(**kwargs) -> Session:
+        return _make_session(**kwargs).with_endpoints(
+            "wss://pod.example.com/session", "https://pod.example.com/session"
+        )
+
+    def test_empty_owner_session_denied_for_non_admin(self, session_repo, cedar_authz):
+        session = self._live_session(owner_id="")
+        _seed_session(session_repo, session)
+
+        app = _build_rest_app(session_repo, StubIdentityAdapter(OTHER_PRINCIPAL), cedar_authz)
+        with TestClient(app) as client:
+            resp = self._resolve(client, session.id)
+
+        assert resp.status_code == 403
+
+    def test_non_owner_denied(self, session_repo, cedar_authz):
+        session = self._live_session()
+        _seed_session(session_repo, session)
+
+        app = _build_rest_app(session_repo, StubIdentityAdapter(OTHER_PRINCIPAL), cedar_authz)
+        with TestClient(app) as client:
+            resp = self._resolve(client, session.id)
+
+        assert resp.status_code == 403
+
+    def test_owner_can_resolve_gate(self, session_repo, cedar_authz):
+        session = self._live_session()
+        _seed_session(session_repo, session)
+
+        app = _build_rest_app(session_repo, StubIdentityAdapter(OWNER_PRINCIPAL), cedar_authz)
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.return_value = {"status": "resolved"}
+        mock_response.raise_for_status.return_value = None
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            with TestClient(app) as client:
+                resp = self._resolve(client, session.id)
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "resolved"}
+
+
+class TestWorkflowGateReadAuth:
+    """GET /sessions/{id}/workflow/gates requires read access to the session.
+
+    The route previously proxied gate state for any session to any
+    authenticated caller without an authorization check.
+    """
+
+    @pytest.fixture
+    def cedar_authz(self):
+        from identity.adapters.cedar import CedarAuthorizationAdapter
+
+        return CedarAuthorizationAdapter()
+
+    @staticmethod
+    def _live_session(**kwargs) -> Session:
+        return _make_session(**kwargs).with_endpoints(
+            "wss://pod.example.com/session", "https://pod.example.com/session"
+        )
+
+    def test_non_owner_denied(self, session_repo, cedar_authz):
+        session = self._live_session()
+        _seed_session(session_repo, session)
+
+        app = _build_rest_app(session_repo, StubIdentityAdapter(OTHER_PRINCIPAL), cedar_authz)
+        with TestClient(app) as client:
+            resp = client.get(f"/api/v1/forge/sessions/{session.id}/workflow/gates")
+
+        assert resp.status_code == 403
+
+    def test_owner_reads_gates(self, session_repo, cedar_authz):
+        session = self._live_session()
+        _seed_session(session_repo, session)
+
+        app = _build_rest_app(session_repo, StubIdentityAdapter(OWNER_PRINCIPAL), cedar_authz)
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.return_value = {"gates": [{"id": "g1"}]}
+        mock_response.raise_for_status.return_value = None
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            with TestClient(app) as client:
+                resp = client.get(f"/api/v1/forge/sessions/{session.id}/workflow/gates")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"gates": [{"id": "g1"}]}
 
 
 # ---------------------------------------------------------------------------

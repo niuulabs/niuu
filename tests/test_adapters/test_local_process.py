@@ -1706,6 +1706,90 @@ class TestProcessSpawning:
         assert "broker_url: ws://127.0.0.1:9101/ws/ravn" in node_config
         assert f"workspace_root: {repo_dir}" in node_config
 
+    async def _start_single_node_flock(
+        self,
+        manager: LocalProcessPodManager,
+        workspace: Path,
+        session: Session,
+        flock_values: dict,
+        init_node_yaml: str,
+    ) -> dict:
+        """Run _start_flock over a node file `ravn flock init` wrote; return the node."""
+        workspace.mkdir(parents=True)
+        flock_dir = workspace / ".flock"
+        flock_dir.mkdir()
+        (flock_dir / "cluster.yaml").write_text("peers: []\n", encoding="utf-8")
+        (flock_dir / "node-reviewer.yaml").write_text(init_node_yaml, encoding="utf-8")
+        spec = SessionSpec(
+            values={"flock": {"personas": [{"name": "reviewer"}], **flock_values}},
+            pod_spec=PodSpecAdditions(
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
+            ),
+        )
+        with (
+            patch("subprocess.run"),
+            patch("ravn.adapters.personas.loader.FilesystemPersonaAdapter") as loader_cls,
+        ):
+            loader_cls.return_value.load.return_value = MagicMock(allowed_tools=[])
+            await manager._start_flock(
+                session,
+                spec,
+                workspace,
+                FlockPortPlan(
+                    session_base_port=7484,
+                    ravn_base_port=7486,
+                    skuld_pub_port=7484,
+                    skuld_rep_port=7485,
+                    skuld_handshake_port=7584,
+                ),
+                skuld_port=9101,
+            )
+        return yaml.safe_load((flock_dir / "node-reviewer.yaml").read_text(encoding="utf-8"))
+
+    async def test_start_flock_never_inherits_the_host_llm_from_init(
+        self,
+        manager: LocalProcessPodManager,
+        tmp_workspaces: Path,
+        git_session: Session,
+    ) -> None:
+        """`ravn flock init` renders the host's own llm:; the session's LLM replaces it."""
+        node = await self._start_single_node_flock(
+            manager,
+            tmp_workspaces / "session-host-llm",
+            git_session,
+            {"llm_config": {"model": "Qwen/Qwen3.8-27B"}},
+            "persona: reviewer\n"
+            "llm:\n"
+            "  model: host/operator-model\n"
+            "  provider:\n"
+            "    adapter: ravn.adapters.llm.anthropic.AnthropicAdapter\n"
+            "    kwargs:\n"
+            "      api_key: host-secret\n",
+        )
+
+        assert node["llm"] == {"model": "Qwen/Qwen3.8-27B"}
+
+    async def test_start_flock_layers_workload_ravn_config_llm_last(
+        self,
+        manager: LocalProcessPodManager,
+        tmp_workspaces: Path,
+        git_session: Session,
+    ) -> None:
+        """Local nodes use the same LLM order as pod sidecars: ravn_config.llm lands last."""
+        node = await self._start_single_node_flock(
+            manager,
+            tmp_workspaces / "session-ravn-config-llm",
+            git_session,
+            {
+                "llm_config": {"model": "Qwen/Qwen3.8-27B", "max_tokens": 8192},
+                "ravn_config": {"llm": {"max_tokens": 2048, "timeout": 300}},
+            },
+            "persona: reviewer\n",
+        )
+
+        assert node["llm"] == {"model": "Qwen/Qwen3.8-27B", "max_tokens": 2048, "timeout": 300}
+
     async def test_start_flock_materializes_mimir_runtime_and_local_paths(
         self,
         manager: LocalProcessPodManager,

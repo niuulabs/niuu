@@ -31,24 +31,24 @@ All commits MUST follow the [Conventional Commits](https://www.conventionalcommi
 
 ### Scopes
 
-Use the region or module name as scope:
+Use the package or area name as scope:
 
-- `skoll`, `hati`, `saga`, `modi`, `vali`, `vidarr` - Region changes
-- `ports`, `adapters` - Infrastructure layer changes
-- `cli` - CLI changes
-- `config` - Configuration changes
-- `synapse` - Communication layer changes
+- `volundr`, `skuld`, `ravn`, `ting`, `niuu`, `bifrost`, `mimir`, `sleipnir`,
+  `observatory`, `guild`, `identity`, `cli` - Package changes
+- `web` (or the plugin, e.g. `plugin-ting`) - `web-next/` changes
+- `charts`, `ci`, `deps` - Deployment, CI and dependency changes
+- Omit the scope for repo-wide changes (`docs: …`, `chore: …`)
 
 ### Examples
 
 ```
-feat(skoll): add threat detection for file system events
+feat(ravn): commission a tool build when a capability is missing
 
-fix(saga): prevent memory leak in vector store connection
+fix(skuld): stop swallowing Sleipnir mesh delivery failures
 
-refactor(ports): simplify LLM port interface
+refactor(ting): remove the legacy run-confidence scoring pipeline
 
-test(hati): add pattern recognition unit tests
+test(volundr): cover the session read-state migration
 
 docs: update README with installation instructions
 
