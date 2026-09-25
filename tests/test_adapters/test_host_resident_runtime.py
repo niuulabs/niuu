@@ -263,11 +263,13 @@ async def test_host_resident_lifecycle_runs_without_a_container_engine(
     assert restarted.observed_state is ResidentObservedState.ACTIVE
     assert restarted.backend_ref["pids"] != resumed.backend_ref["pids"]
 
-    assert await controller.delete(runtime) is True
+    deleted = await controller.delete(runtime)
+    assert deleted is True
     assert str(runtime.id) not in registry.ports
     assert not (tmp_path / "residents" / str(runtime.id)).exists()
     assert not any(_alive(pid) for pid in restarted.backend_ref["pids"].values())
-    assert await controller.delete(runtime) is False
+    deleted_again = await controller.delete(runtime)
+    assert deleted_again is False
 
 
 @pytest.mark.asyncio
@@ -409,7 +411,8 @@ async def test_orphans_from_a_previous_platform_run_are_stopped_before_start(
         deployed = await controller.deploy(runtime, _profile())
 
         assert deployed.observed_state is ResidentObservedState.ACTIVE
-        assert orphan.wait(timeout=5) is not None
+        orphan_exit = orphan.wait(timeout=5)
+        assert orphan_exit is not None
         assert unrelated.poll() is None
         recorded = json.loads(record.read_text())
         assert [entry["pid"] for entry in recorded["processes"]] == list(
@@ -679,7 +682,8 @@ async def test_redeploying_a_healthy_resident_keeps_its_processes(
         second = await controller.deploy(runtime, _profile())
         assert second.backend_ref["pids"] == first.backend_ref["pids"]
 
-        assert await controller.delete(runtime) is True
+        deleted = await controller.delete(runtime)
+        assert deleted is True
         assert (_root(tmp_path, runtime) / "config" / "ravn.yaml").is_file()
     finally:
         await controller.close()
