@@ -175,6 +175,7 @@ def _loopback_tls_server(
                 handle.write(chain_cert.public_bytes(Encoding.PEM))
             handle.write(key_pem)
         server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         server_ctx.load_cert_chain(cert_path)
     finally:
         os.unlink(cert_path)
@@ -777,6 +778,7 @@ class TestRealLoopbackServer:
         leaf_key, leaf_cert = _leaf_issued_by(ca_key, ca_cert)
         with _loopback_tls_server(leaf_key, leaf_cert) as port:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
             context.check_hostname = False
             context.verify_mode = ssl.CERT_REQUIRED
             context.load_verify_locations(

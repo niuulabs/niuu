@@ -190,6 +190,7 @@ def fetch_leaf_certificate_der(host: str, port: int, *, timeout: float) -> bytes
     does not itself cover) with ``asyncio.wait_for``.
     """
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
     with socket.create_connection((host, port), timeout=timeout) as raw_sock:
@@ -300,6 +301,7 @@ async def resolve_guild_ssl_context(
         )
     pem = ssl.DER_cert_to_PEM_cert(der)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.check_hostname = False
     context.verify_mode = ssl.CERT_REQUIRED
     # A pinned leaf may be CA-issued (Issuer != Subject) rather than
