@@ -11,6 +11,7 @@ subscription to their Volundr instance.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import math
@@ -349,27 +350,30 @@ class SessionActivitySubscriber:
         connected = False
         stream_opened_at: float | None = None
         try:
-            async for item in volundr.subscribe_activity():
-                if not _is_current():
-                    return
-                if isinstance(item, ActivityStreamConnected):
-                    stream_opened_at = time.monotonic()
-                    # Reconcile only once the connection is genuinely open —
-                    # not before, which left a window where a session status
-                    # change (or the outage this cluster just had) went
-                    # unnoticed until the *next* resubscribe, and skipped
-                    # this cluster's own runs as "still backing off" since
-                    # its backoff state isn't cleared until later in this
-                    # same attempt.
-                    await self._reconcile_running_runs(owner_id, exempt_cluster_key=key)
-                    logger.info(
-                        "SSE subscription started for owner %s cluster=%s", owner_id[:8], label
-                    )
-                    continue
-                if not connected:
-                    self._on_cluster_connected(owner_id, key, label)
-                    connected = True
-                await self._on_activity_event(item, volundr, owner_id)
+            # aclosing: close the SSE stream as soon as this attempt ends, even on
+            # an early return or a reconcile failure, not at garbage collection.
+            async with contextlib.aclosing(volundr.subscribe_activity()) as stream:
+                async for item in stream:
+                    if not _is_current():
+                        return
+                    if isinstance(item, ActivityStreamConnected):
+                        stream_opened_at = time.monotonic()
+                        # Reconcile only once the connection is genuinely open —
+                        # not before, which left a window where a session status
+                        # change (or the outage this cluster just had) went
+                        # unnoticed until the *next* resubscribe, and skipped
+                        # this cluster's own runs as "still backing off" since
+                        # its backoff state isn't cleared until later in this
+                        # same attempt.
+                        await self._reconcile_running_runs(owner_id, exempt_cluster_key=key)
+                        logger.info(
+                            "SSE subscription started for owner %s cluster=%s", owner_id[:8], label
+                        )
+                        continue
+                    if not connected:
+                        self._on_cluster_connected(owner_id, key, label)
+                        connected = True
+                    await self._on_activity_event(item, volundr, owner_id)
             if not connected and stream_opened_at is not None:
                 self._on_cluster_connected(owner_id, key, label)
         except asyncio.CancelledError:
