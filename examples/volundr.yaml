@@ -115,6 +115,19 @@ launch_specs:
   #       branch: main
   #   setup_scripts: []
 
+# Default LLM for the Ravn nodes of ravn_flock sessions, in Ravn's `llm:` shape.
+# A launch's workload_config.llm_config and per-persona llm overrides are merged
+# over it. Leave it unset and every flock launch must name its own model, or it
+# fails with the remedy in the session error.
+# ravn_flock_llm_config:
+#   model: Qwen/Qwen3.8-27B
+#   max_tokens: 8192
+#   timeout: 300
+#   provider:
+#     adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+#     kwargs:
+#       base_url: https://vllm.example.internal
+
 # Available MCP servers (shown in the launch wizard for users to select)
 mcp_servers:
   - name: linear

@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -43,7 +43,7 @@ from niuu.config_models import (
     default_session_definitions,
 )
 from niuu.domain.delivery import AcceptancePolicy
-from ravn.config import PersonaSourceConfig
+from ravn.config import LLMConfig, PersonaSourceConfig
 from volundr.compute.config import ComputeConfig
 from volundr.domain.models import (
     IntegrationType,
@@ -2228,6 +2228,16 @@ class Settings(BaseSettings):
             "config files. When empty, the contributor's built-in default is used."
         ),
     )
+    ravn_flock_llm_config: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Default LLM for the Ravn nodes of flock sessions, in Ravn's `llm:` shape "
+            "(model, max_tokens, timeout, provider). It is the base layer: "
+            "workload_config.llm_config and per-persona llm overrides are merged over "
+            "it. When empty, every flock session must name its own model or its "
+            "launch fails."
+        ),
+    )
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
         default_factory=default_session_definitions,
         description="Session definitions keyed by name (e.g. skuldClaude, skuldCodex).",
@@ -2248,6 +2258,14 @@ class Settings(BaseSettings):
     )
     ravn: RavnConfig = Field(default_factory=RavnConfig)
     observatory: ObservatoryConfig = Field(default_factory=ObservatoryConfig)
+
+    @field_validator("ravn_flock_llm_config")
+    @classmethod
+    def _validate_ravn_flock_llm_config(cls, value: dict[str, Any]) -> dict[str, Any]:
+        """Reject a flock LLM default Ravn could not load, at startup, not per node."""
+        if value:
+            LLMConfig.model_validate(value)
+        return value
 
     @model_validator(mode="after")
     def _merge_built_in_session_definitions(self) -> "Settings":

@@ -25,7 +25,7 @@ from typing import Any
 
 import yaml
 
-from niuu.domain.llm_merge import _SECURITY_KEYS, merge_llm
+from niuu.domain.llm_merge import _SECURITY_KEYS, is_empty, merge_llm
 from niuu.mesh import nng_gateway_port_for as _gateway_port_for
 from niuu.mesh import nng_ports_for as _ports_for
 from volundr.domain.models import (
@@ -781,6 +781,56 @@ def _default_flock_trigger_config(
     }
 
 
+def _resolve_flock_llm(*, default_llm: dict[str, Any], workload_llm: object) -> dict[str, Any]:
+    """Return the flock-wide LLM config every node starts from.
+
+    ``workload_config.llm_config`` is merged over the Forge default
+    (``ravn_flock_llm_config``), last wins per key; per-persona ``llm``
+    overrides are merged over the result for each node.
+
+    The session ``model`` is deliberately not a layer: in a flock it is the
+    Skuld broker's own CLI model, and Ting fills it with its dispatch default,
+    so reading it here would hand a Ravn a model meant for another agent.
+    """
+    if workload_llm is not None and not isinstance(workload_llm, dict):
+        raise ValueError(
+            "workload_config.llm_config must be a mapping in Ravn's llm: shape "
+            f"(model, max_tokens, provider), got {type(workload_llm).__name__}"
+        )
+    return merge_llm(defaults=default_llm, global_override=workload_llm)
+
+
+def _persona_model(persona_dict: dict[str, Any]) -> object:
+    persona_llm = persona_dict.get("llm")
+    return persona_llm.get("model") if isinstance(persona_llm, dict) else None
+
+
+def _require_node_models(
+    persona_dicts: list[dict[str, Any]],
+    global_llm: dict[str, Any],
+    extra_ravn_config: dict[str, Any] | None,
+) -> None:
+    """Refuse to launch a flock whose nodes would start without a named model.
+
+    A node config without ``llm.model`` runs on Ravn's built-in default — a
+    model nobody chose for this flock, discovered only when every reply fails.
+    """
+    if not is_empty(global_llm.get("model")):
+        return
+    ravn_config_llm = (extra_ravn_config or {}).get("llm")
+    if isinstance(ravn_config_llm, dict) and not is_empty(ravn_config_llm.get("model")):
+        return
+    missing = [pd["name"] for pd in persona_dicts if is_empty(_persona_model(pd))]
+    if not missing:
+        return
+    raise ValueError(
+        f"ravn_flock: no LLM model configured for persona(s) {', '.join(missing)}. "
+        "Name one with workload_config.llm_config.model or a per-persona llm.model, "
+        "or configure the Forge default ravn_flock_llm_config "
+        "(Helm value ravnFlockLlmConfig)."
+    )
+
+
 class RavnFlockContributor(SessionContributor):
     """Contributes flock pod spec when workload_type == 'ravn_flock'.
 
@@ -791,6 +841,11 @@ class RavnFlockContributor(SessionContributor):
       - Emits per-sidecar initContainer + emptyDir volume for mounted config
       - Emits a Mimir emptyDir volume
       - Emits Sleipnir webhook env vars for both skuld and ravn containers
+
+    Each node's LLM is layered from *default_llm_config* (the Forge default),
+    ``workload_config.llm_config`` and per-persona ``llm`` overrides. A launch
+    that leaves any node without a model raises instead of starting nodes on
+    Ravn's built-in default.
 
     No-ops silently when workload_type != 'ravn_flock'.
     """
@@ -811,9 +866,11 @@ class RavnFlockContributor(SessionContributor):
         workload_identity_mount_path: str = _DEFAULT_WORKLOAD_IDENTITY_MOUNT_PATH,
         workload_identity_token_file_env: str = "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE",
         execution_credential_service: object | None = None,
+        default_llm_config: dict[str, Any] | None = None,
         **_extra: object,
     ) -> None:
         self._launch_spec_provider = launch_spec_provider
+        self._default_llm_config = dict(default_llm_config or {})
         self._ravn_image = ravn_image
         self._base_port = base_port
         self._mesh_host = mesh_host
@@ -871,7 +928,10 @@ class RavnFlockContributor(SessionContributor):
         global_max_concurrent_tasks: int = wc.get(
             "max_concurrent_tasks", _DEFAULT_MAX_CONCURRENT_TASKS
         )
-        global_llm: dict | None = wc.get("llm_config") or None
+        global_llm = _resolve_flock_llm(
+            default_llm=self._default_llm_config,
+            workload_llm=wc.get("llm_config") or None,
+        )
         provenance = wc.get("provenance")
         provenance = provenance if isinstance(provenance, dict) else {}
         extra_ravn_config = wc.get("ravn_config")
@@ -941,6 +1001,13 @@ class RavnFlockContributor(SessionContributor):
             initiative_context,
             trace_context,
             wc.get("workflow_result_schema"),
+        )
+
+        _require_node_models(persona_dicts, global_llm, extra_ravn_config)
+        logger.info(
+            "ravn_flock: session=%s llm model=%s",
+            str(session.id)[:8],
+            global_llm.get("model") or "(set per node)",
         )
 
         values, pod_spec = self._build_flock_spec(
