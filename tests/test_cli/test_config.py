@@ -212,19 +212,29 @@ class TestOidcCoverageGate:
         },
     }
 
-    _CLEAR_UNCOVERED = {"enabled": {"guild": False, "bifrost": False}}
+    _CLEAR_UNCOVERED = {"enabled": {"bifrost": False}}
 
     def test_oidc_allowed_with_mimir_plugin_enabled_by_default(self) -> None:
         """Mímir's own auth checks now go through auth_mode (see mimir.config.
 
         MimirServiceConfig.auth_mode/identity_adapter and
         niuu.service_runtime._validate_identity_adapter_class), so it no
-        longer needs plugins.enabled.mimir: false to run oidc — only guild
-        and bifrost (its client-credential gap — see the 'bifrost' entry in
-        _OIDC_UNCOVERED_PLUGINS) still need disabling.
+        longer needs plugins.enabled.mimir: false to run oidc — only bifrost
+        (its client-credential gap — see the 'bifrost' entry in
+        _OIDC_UNCOVERED_PLUGINS) still needs disabling.
         """
         settings = CLISettings(host_auth=self._ISSUER_KWARGS, plugins=self._CLEAR_UNCOVERED)
         assert settings.host_auth.mode == "oidc"
+
+    def test_oidc_allowed_with_guild_enabled(self) -> None:
+        """Guild forwards only the caller's bearer token to a remote instance
+
+        (see niuu.adapters.inbound.remote_urls.forward_identity_headers), so
+        it does not need to be disabled for auth.mode: oidc.
+        """
+        settings = CLISettings(host_auth=self._ISSUER_KWARGS, plugins=self._CLEAR_UNCOVERED)
+        assert settings.host_auth.mode == "oidc"
+        assert settings.plugins.enabled.get("guild", True) is True
 
     def test_oidc_allowed_regardless_of_bifrost_auth_mode_once_bifrost_plugin_disabled(
         self,
@@ -246,10 +256,6 @@ class TestOidcCoverageGate:
         assert settings.host_auth.mode == "oidc"
         assert settings.bifrost.auth_mode == "open"  # untouched here; platform.py overrides it
 
-    def test_oidc_blocked_while_guild_plugin_enabled_by_default(self) -> None:
-        with pytest.raises(ValueError, match="guild"):
-            CLISettings(host_auth=self._ISSUER_KWARGS, plugins={"enabled": {"bifrost": False}})
-
     def test_oidc_blocked_while_bifrost_plugin_enabled_by_default(self) -> None:
         """Bifröst's inbound auth is verified now, but sessions/residents have
 
@@ -259,11 +265,7 @@ class TestOidcCoverageGate:
         'bifrost' entry in _OIDC_UNCOVERED_PLUGINS for the full reasoning.
         """
         with pytest.raises(ValueError, match="bifrost"):
-            CLISettings(host_auth=self._ISSUER_KWARGS, plugins={"enabled": {"guild": False}})
-
-    def test_oidc_allowed_once_guild_and_bifrost_disabled(self) -> None:
-        settings = CLISettings(host_auth=self._ISSUER_KWARGS, plugins=self._CLEAR_UNCOVERED)
-        assert settings.host_auth.mode == "oidc"
+            CLISettings(host_auth=self._ISSUER_KWARGS)
 
     def test_none_mode_ignores_uncovered_plugins(self) -> None:
         settings = CLISettings()

@@ -25,7 +25,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from tests.conftest import InMemorySessionRepository, MockPodManager
+from tests.conftest import (
+    InMemorySessionRepository,
+    MockPodManager,
+    make_session_participant_service,
+)
 from volundr.adapters.inbound.rest import create_router
 from volundr.config import LocalMountsConfig
 from volundr.domain.models import Session, SessionLogEntry, SessionStatus
@@ -134,7 +138,13 @@ def _build_client(
     )
 
     app = FastAPI()
-    app.include_router(create_router(session_service, archive_service=archive_service))
+    app.include_router(
+        create_router(
+            session_service,
+            archive_service=archive_service,
+            session_participant_service=make_session_participant_service(session_service),
+        )
+    )
 
     class _SettingsStub:
         local_mounts = LocalMountsConfig()

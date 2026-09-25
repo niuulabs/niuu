@@ -391,6 +391,10 @@ envoy:
     email: x-auth-email
     tenant: x-auth-tenant
     roles: x-auth-roles
+    # A client-supplied copy must never reach the broker: only the session
+    # proxy (niuu.session_proxy) is trusted to stamp this, from a verified
+    # session_participants grant (see the room-scoped Cedar actions).
+    roomRole: x-niuu-room-role
   # JWT authentication (via Keycloak)
   jwt:
     # -- Enable JWT authentication filter
@@ -594,6 +598,17 @@ resident:
   # -- Secrets injected only into the resident Ravn daemon.
   # Uses the same envVar/secretName/secretKey shape as top-level envSecrets.
   envSecrets: []
+  # -- Realm (Simple mode) this resident is deployed for. Empty slug = no
+  # realm binding, unchanged behavior. Distinct from resident.flock, which
+  # names a Flock mesh group, not a niuu governance Realm.
+  realm:
+    # -- niuu Realm slug, e.g. from ResidentRuntime.realmId.
+    slug: ""
+  # -- Expose the resident's read-only HUD endpoints (ravn gateway.channels.http).
+  hudEnabled: false
+  # -- Seconds between the resident's own stewardship/home-wake passes.
+  # Empty uses ravn's own default (resident_state.stewardship_interval_seconds).
+  stewardshipIntervalSeconds: ""
   # -- Optional heterogeneous flock membership supplied by Volundr.
   flock:
     id: ""
@@ -678,6 +693,13 @@ wsAuth:
   websocket_check_interval: 5
   admin_roles: ["volundr:admin"]
   allow_loopback: false
+  # How a missing x-niuu-room-role header resolves. "deployment" (the
+  # correct value for every chart-deployed backend — this pod's own auth
+  # boundary already gates every caller who reaches it): a missing header
+  # means owner, unconditionally. "proxy" is rendered directly by the
+  # process-backend's local launcher (volundr.adapters.outbound
+  # .local_process), never by this chart — do not set it here.
+  room_role_source: deployment
 
 # Limit pod ingress to the authenticated gateway, including direct pod-IP traffic.
 # Add explicit peer selectors/ports for direct Flokk mesh deployments.

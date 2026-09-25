@@ -8,6 +8,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from tests.conftest import make_session_participant_service
 from volundr.adapters.inbound.rest import SessionCreate, SessionResponse, create_router
 from volundr.domain.models import Principal, SessionStatus
 from volundr.domain.ports import SessionContribution
@@ -178,7 +179,13 @@ async def test_receipts_survive_service_replacement_and_export_retry(rig):
 async def test_public_api_project_filter_and_legacy_sessions(rig):
     service, _, project, _, _ = rig
     app = FastAPI()
-    app.include_router(create_router(service.sessions, project_service=service))
+    app.include_router(
+        create_router(
+            service.sessions,
+            project_service=service,
+            session_participant_service=make_session_participant_service(service.sessions),
+        )
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app), base_url="http://test"
     ) as client:

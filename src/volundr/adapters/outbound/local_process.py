@@ -1176,6 +1176,14 @@ class LocalProcessPodManager(PodManager):
             env["SKULD__SESSION__OWNER_ID"] = session.owner_id
         if session.tenant_id:
             env["SKULD__SESSION__TENANT_ID"] = session.tenant_id
+        # This pod is reached exclusively through niuu.session_proxy on the
+        # process backend (never a Kubernetes-style Gateway/ext_authz
+        # boundary), so it is the one backend where the proxy's own
+        # session_participants-derived room-role header is the correct
+        # source of truth for a missing header, instead of "this pod's own
+        # auth boundary already gates every caller" (skuld.config.WsAuthConfig
+        # .room_role_source, default "deployment" — every other backend).
+        env["SKULD__WS_AUTH__ROOM_ROLE_SOURCE"] = "proxy"
         model = str(session.model or spec.values.get("model", "") or "").strip()
         env["SKULD__SESSION__MODEL"] = model
         env["SKULD__SESSION__WORKSPACE_DIR"] = str(workspace)

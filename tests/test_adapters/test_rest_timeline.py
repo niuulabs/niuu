@@ -13,6 +13,7 @@ from tests.conftest import (
     InMemorySessionRepository,
     InMemoryTimelineRepository,
     MockPodManager,
+    make_session_participant_service,
 )
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.outbound.identity import AllowAllIdentityAdapter
@@ -57,7 +58,11 @@ def chronicle_svc_no_timeline(
 def app(session_service: SessionService, chronicle_svc: ChronicleService) -> FastAPI:
     app = FastAPI()
     app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
-    router = create_router(session_service, chronicle_service=chronicle_svc)
+    router = create_router(
+        session_service,
+        chronicle_service=chronicle_svc,
+        session_participant_service=make_session_participant_service(session_service),
+    )
     app.include_router(router)
     return app
 
@@ -73,7 +78,11 @@ def app_no_timeline(
 ) -> FastAPI:
     app = FastAPI()
     app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
-    router = create_router(session_service, chronicle_service=chronicle_svc_no_timeline)
+    router = create_router(
+        session_service,
+        chronicle_service=chronicle_svc_no_timeline,
+        session_participant_service=make_session_participant_service(session_service),
+    )
     app.include_router(router)
     return app
 
@@ -86,7 +95,10 @@ def client_no_timeline(app_no_timeline: FastAPI) -> TestClient:
 @pytest.fixture
 def app_no_chronicles(session_service: SessionService) -> FastAPI:
     app = FastAPI()
-    router = create_router(session_service)
+    router = create_router(
+        session_service,
+        session_participant_service=make_session_participant_service(session_service),
+    )
     app.include_router(router)
     return app
 

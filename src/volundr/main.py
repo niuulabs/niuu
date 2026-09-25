@@ -62,6 +62,9 @@ from volundr.adapters.inbound.rest_resident_runtimes import create_resident_runt
 from volundr.adapters.inbound.rest_resources import create_resources_router
 from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
+from volundr.adapters.inbound.rest_session_participants import (
+    create_session_participants_router,
+)
 from volundr.adapters.inbound.rest_trace import create_trace_router
 from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
 from volundr.adapters.inbound.rest_user_storage import create_user_storage_router
@@ -96,6 +99,9 @@ from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepositor
 from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
 from volundr.adapters.outbound.postgres_resident_runtimes import (
     PostgresResidentRuntimeRepository,
+)
+from volundr.adapters.outbound.postgres_session_participants import (
+    PostgresSessionParticipantRepository,
 )
 from volundr.adapters.outbound.postgres_spans import PostgresSpanRepository
 from volundr.adapters.outbound.postgres_stats import PostgresStatsRepository
@@ -154,6 +160,7 @@ from volundr.domain.services.resident_runtime import (
     ResidentRuntimeService,
 )
 from volundr.domain.services.session_events import SessionEventStream
+from volundr.domain.services.session_participants import SessionParticipantService
 from volundr.domain.services.telegram_ingress import TelegramIngressService
 from volundr.domain.services.tracker import TrackerService
 from volundr.domain.services.tracker_factory import TrackerFactory
@@ -860,6 +867,10 @@ def create_app(
                 resident_controllers,
                 credential_store,
             )
+            # Built early (not just at realm-router mount time below) so
+            # ResidentRuntimeService can validate a create() call's realm_id
+            # as a 422 instead of a bare FK violation during background deploy.
+            realm_repository = PostgresRealmRepository(pool)
             resident_runtime_service = ResidentRuntimeService(
                 resident_runtime_repository,
                 resident_profile_provider,
@@ -867,6 +878,7 @@ def create_app(
                 resident_session_controllers,
                 span_repository=span_repository,
                 event_repository=pg_event_sink,
+                realm_repository=realm_repository,
             )
             resident_flock_adapter = (
                 ResidentFlockAdapter(
@@ -1056,7 +1068,41 @@ def create_app(
             # this is the check that actually covers proxied browser traffic.
             if skuld_reg is not None and hasattr(skuld_reg, "set_ownership_guard"):
                 from niuu.domain.models import Principal
-                from volundr.domain.ports import Resource
+
+                async def _resolve_ws_principal(
+                    user_id: str | None, tenant_id: str | None, roles: tuple[str, ...]
+                ) -> Principal:
+                    """Validate the caller's asserted identity, same as every other
+                    proxy guard — shared so _may_attach and _resolve_room_role can
+                    never resolve different principals for one connection.
+
+                    Raises:
+                        InvalidTokenError: The identity adapter rejected the headers.
+                    """
+                    from identity.adapters.jwks import JwksIdentityAdapter
+                    from niuu.ports.identity import HeaderAuthenticationPort
+
+                    principal = Principal(
+                        user_id=user_id or "",
+                        email="",
+                        tenant_id=tenant_id or "",
+                        roles=list(roles),
+                    )
+                    if isinstance(identity_adapter, JwksIdentityAdapter):
+                        # The proxy already verified this caller's bearer JWT
+                        # once (extract_principal, before the guard runs), so
+                        # there is no fresh token to re-verify here. Re-derive
+                        # role mapping and membership for that identity instead.
+                        return await identity_adapter.revalidate_verified_principal(principal)
+                    if not isinstance(identity_adapter, HeaderAuthenticationPort):
+                        return principal
+                    keys = settings.identity.kwargs
+                    headers = {
+                        keys.get("user_id_header", "x-auth-user-id"): principal.user_id,
+                        keys.get("tenant_header", "x-auth-tenant"): principal.tenant_id,
+                        keys.get("roles_header", "x-auth-roles"): ",".join(principal.roles),
+                    }
+                    return await identity_adapter.validate_headers(headers)
 
                 async def _may_attach(
                     session_id: str,
@@ -1068,40 +1114,12 @@ def create_app(
                         resource_id = UUID(session_id)
                     except ValueError:
                         return False
-                    from identity.adapters.jwks import JwksIdentityAdapter
-                    from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
+                    from niuu.ports.identity import InvalidTokenError
 
-                    principal = Principal(
-                        user_id=user_id or "",
-                        email="",
-                        tenant_id=tenant_id or "",
-                        roles=list(roles),
-                    )
-                    if isinstance(identity_adapter, JwksIdentityAdapter):
-                        # The proxy already verified this caller's bearer JWT
-                        # once (extract_principal, before calling may_attach)
-                        # — there is no fresh token to re-verify here, only
-                        # the already-trusted (user_id, tenant_id, roles) the
-                        # proxy resolved from it. Re-derive current
-                        # role-mapping/membership for that identity instead
-                        # of demanding a signature this call site can't have.
-                        try:
-                            principal = await identity_adapter.revalidate_verified_principal(
-                                principal
-                            )
-                        except InvalidTokenError:
-                            return False
-                    elif isinstance(identity_adapter, HeaderAuthenticationPort):
-                        keys = settings.identity.kwargs
-                        headers = {
-                            keys.get("user_id_header", "x-auth-user-id"): principal.user_id,
-                            keys.get("tenant_header", "x-auth-tenant"): principal.tenant_id,
-                            keys.get("roles_header", "x-auth-roles"): ",".join(principal.roles),
-                        }
-                        try:
-                            principal = await identity_adapter.validate_headers(headers)
-                        except InvalidTokenError:
-                            return False
+                    try:
+                        principal = await _resolve_ws_principal(user_id, tenant_id, roles)
+                    except InvalidTokenError:
+                        return False
                     session = await repository.get(resource_id)
                     if session is None:
                         try:
@@ -1111,19 +1129,77 @@ def create_app(
                         return True
                     # Delegate to the ONE authorization policy (the same adapter
                     # the REST API uses) so the WS attach check can never drift
-                    # from it. "start" is the mutating action-class the ladder
-                    # gates on owner match.
-                    resource = Resource(
-                        kind="session",
-                        id=session_id,
-                        attr={
-                            "owner_id": session.owner_id,
-                            "tenant_id": session.tenant_id,
-                        },
+                    # from it. "attach" is the room-entry action: it is granted
+                    # to the owner/admin AND to any ACTIVE, unexpired
+                    # session_participants grant (see
+                    # SessionParticipantService.active_grants), unlike "start"
+                    # which is owner/admin only.
+                    grants = await session_participant_service.active_grants(resource_id)
+                    resource = SessionService.attributed_resource(
+                        session_id,
+                        owner_id=session.owner_id,
+                        tenant_id=session.tenant_id,
+                        room_viewers=grants.viewer_ids,
+                        room_approvers=grants.approver_ids,
                     )
-                    return await authorization_adapter.is_allowed(principal, "start", resource)
+                    return await authorization_adapter.is_allowed(principal, "attach", resource)
 
                 skuld_reg.set_ownership_guard(_may_attach)
+
+                async def _resolve_room_role(
+                    session_id: str,
+                    user_id: str | None,
+                    tenant_id: str | None,
+                    roles: tuple[str, ...],
+                ) -> str | None:
+                    """Resolve the caller's room role for the stamped proxy header.
+
+                    Derived from the SAME Cedar decisions ``_may_attach`` and the
+                    REST API use — never a hand-written owner_id/admin-role
+                    comparison (the pattern #1032 removed from this exact file):
+                    that silently stops matching the moment authority is granted
+                    any way other than literal ownership or a tenant-admin role,
+                    which is exactly how it dropped dev-identity callers to no
+                    role at all. Only called after ``_may_attach`` already
+                    allowed the connection, so this never needs to deny outright
+                    — it picks the most senior of owner/approver/viewer Cedar
+                    actually grants, for Skuld's broker to gate tool-permission
+                    responses and gate resolution.
+                    """
+                    try:
+                        resource_id = UUID(session_id)
+                    except ValueError:
+                        return None
+                    from niuu.ports.identity import InvalidTokenError
+
+                    try:
+                        principal = await _resolve_ws_principal(user_id, tenant_id, roles)
+                    except InvalidTokenError:
+                        return None
+                    session = await repository.get(resource_id)
+                    if session is None:
+                        # Resident runtimes and other non-Forge subjects have no
+                        # participant model; may_attach already approved this
+                        # caller for full access, matching pre-existing behavior.
+                        return "owner"
+                    grants = await session_participant_service.active_grants(resource_id)
+                    resource = SessionService.attributed_resource(
+                        session_id,
+                        owner_id=session.owner_id,
+                        tenant_id=session.tenant_id,
+                        room_viewers=grants.viewer_ids,
+                        room_approvers=grants.approver_ids,
+                    )
+                    if await authorization_adapter.is_allowed(principal, "admit", resource):
+                        return "owner"
+                    if await authorization_adapter.is_allowed(principal, "resolve_gate", resource):
+                        return "approver"
+                    if await authorization_adapter.is_allowed(principal, "read_room", resource):
+                        return "viewer"
+                    return None
+
+                if hasattr(skuld_reg, "set_room_role_resolver"):
+                    skuld_reg.set_room_role_resolver(_resolve_room_role)
 
             stats_service = StatsService(stats_repository, session_service)
             token_service = TokenService(
@@ -1143,6 +1219,27 @@ def create_app(
                 broadcaster=broadcaster,
                 timeline_repository=timeline_repository,
             )
+            session_participant_repository = PostgresSessionParticipantRepository(pool)
+            session_participant_service = SessionParticipantService(
+                session_participant_repository,
+                session_service,
+                user_repository,
+            )
+            app.state.session_participant_service = session_participant_service
+            if skuld_reg is not None and hasattr(skuld_reg, "close_connections"):
+
+                async def _close_revoked_connections(session_id: UUID, user_id: str) -> None:
+                    # Immediate effect: the session proxy's interval
+                    # revalidation (SkuldPortRegistry / _revalidate_loop) is
+                    # the mechanism of record and would close this socket
+                    # within one interval regardless — this just does not
+                    # make a revoked participant wait for the next tick.
+                    await skuld_reg.close_connections(
+                        str(session_id), user_id, reason="Participant grant revoked"
+                    )
+
+                session_participant_service.set_revocation_notifier(_close_revoked_connections)
+
             archive_store = _create_archive_store(settings)
             archive_service = SessionArchiveService(
                 session_service,
@@ -1236,6 +1333,7 @@ def create_app(
                 runtime_health_timeout=settings.runtime_health_timeout_seconds,
                 history_max_turns=settings.conversation_recent_max_turns,
                 history_max_bytes=settings.conversation_recent_max_bytes,
+                session_participant_service=session_participant_service,
             )
             app.include_router(forge_router)
             app.include_router(create_resident_runtimes_router(resident_runtime_service))
@@ -1325,9 +1423,15 @@ def create_app(
 
             # Realm governance — a Valkyrie's build capability, trust, and config
             # readable by ravn over HTTP (shared niuu postgres, no ravn-local db).
-            realm_repository = PostgresRealmRepository(pool)
+            # realm_repository was already built above, before
+            # ResidentRuntimeService, so it could validate realm_id at create().
             app.state.realm_service = RealmService(realm_repository)
             app.include_router(create_realms_router(extract_principal, prefix="/api/v1/realms"))
+            # Let resident deployment controllers resolve a resident's realm slug
+            # (for realm_slug/charter binding in the rendered container config).
+            for controller in resident_controllers:
+                if hasattr(controller, "set_realm_repository"):
+                    controller.set_realm_repository(realm_repository)
 
             git_router = create_git_router(
                 git_workflow_service,
@@ -1495,6 +1599,13 @@ def create_app(
             app.include_router(session_log_router)
             app.include_router(
                 create_message_delivery_router(PostgresMessageDelivery(pool), session_service)
+            )
+            app.include_router(
+                create_session_participants_router(
+                    session_participant_service,
+                    session_service,
+                    runtime_backend=runtime_backend,
+                )
             )
 
             # Replay-as-live: paced re-emit of recorded frames over a WebSocket,

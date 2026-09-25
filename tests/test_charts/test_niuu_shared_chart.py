@@ -55,6 +55,18 @@ def test_shared_db_does_not_embed_volundr_session_migrations() -> None:
         assert "ALTER TABLE sessions" not in block
 
 
+def test_shared_db_does_not_embed_resident_runtimes_migrations() -> None:
+    # resident_runtimes (000055) is a volundr-only table; 000079 ALTERs it and
+    # would fail against a standalone niuu-shared database that never created it.
+    template = (CHART_DIR / "templates" / "migrations-configmap.yaml").read_text()
+    blocks = _migration_blocks(template)
+
+    assert "000055_resident_runtimes.up.sql" not in blocks
+    assert "000079_resident_realm_binding.up.sql" not in blocks
+    for block in blocks.values():
+        assert "resident_runtimes" not in block
+
+
 def _rendered_documents(*extra_args: str) -> list[dict]:
     result = subprocess.run(
         ["helm", "template", "test", str(CHART_DIR), *extra_args],

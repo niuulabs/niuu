@@ -36,11 +36,18 @@ from niuu.adapters.inbound.remote_urls import (
 from niuu.adapters.inbound.remote_urls import (
     forward_identity_headers as _forward_headers,
 )
+from niuu.adapters.inbound.remote_urls import (
+    forward_local_identity_headers as _forward_local_headers,
+)
 from niuu.adapters.inbound.source_health import (
     instance_source_failures,
     set_source_health_header,
 )
 from niuu.adapters.inbound.ws_forge_replay import forward_replay
+from niuu.adapters.outbound.guild_transport import (
+    GuildTransportError,
+    build_guild_httpx_client,
+)
 from niuu.domain.models import InstanceKind, Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
 
@@ -282,7 +289,13 @@ async def _request_remote(
     embedded_app: ASGIApp | None = None,
     timeout: float = 30.0,
 ) -> httpx.Response:
-    headers = _forward_headers(request)
+    embedded = _uses_embedded_transport(instance)
+    # An embedded target shares this process (ASGITransport, no network hop),
+    # so it is not a separate trust domain and gets the caller's full resolved
+    # identity, same as today. A non-embedded target is a genuinely remote
+    # Guild instance and gets only the bearer token — see
+    # niuu.adapters.inbound.remote_urls.forward_identity_headers.
+    headers = _forward_local_headers(request) if embedded else _forward_headers(request)
     if extra_headers:
         headers.update(extra_headers)
     request_kwargs: dict[str, Any] = {
@@ -293,7 +306,7 @@ async def _request_remote(
         request_kwargs["content"] = content_body
     elif json_body is not None:
         request_kwargs["json"] = json_body
-    if _uses_embedded_transport(instance):
+    if embedded:
         if embedded_app is None:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -311,14 +324,19 @@ async def _request_remote(
                 **request_kwargs,
             )
 
+    dial_url = base_url or instance.base_url
     try:
-        remote_url = build_remote_url(base_url or instance.base_url, remote_prefix, path)
+        remote_url = build_remote_url(dial_url, remote_prefix, path)
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(timeout, connect=min(timeout, 5.0)), follow_redirects=False
-    ) as client:
+    try:
+        client = await build_guild_httpx_client(
+            instance, dial_url=dial_url, timeout_seconds=timeout
+        )
+    except GuildTransportError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    async with client:
         response = await client.request(
             method,
             remote_url,
@@ -1260,12 +1278,17 @@ def create_volundr_router(
                     yield event.type.value, _with_instance(event.data, instance)
             else:
                 url = build_remote_url(instance.base_url, "/api/v1/forge", "/sessions/stream")
-                async for name, payload in remote_events(
-                    url,
-                    headers,
+                # A GuildTransportError here (policy refusal or pin mismatch)
+                # is not caught specially: it propagates to merge_events'
+                # own per-source Exception handler, which already logs and
+                # retries this source exactly like any other stream failure.
+                client = await build_guild_httpx_client(
+                    instance,
+                    dial_url=instance.base_url,
                     timeout_seconds=forge_stream_remote_timeout_seconds,
                     connect_timeout_seconds=forge_stream_remote_connect_timeout_seconds,
-                ):
+                )
+                async for name, payload in remote_events(client, url, headers):
                     yield name, _with_instance(payload, instance)
 
         return StreamingResponse(

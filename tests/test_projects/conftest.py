@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from tests.conftest import make_session_participant_service
 from volundr.adapters.outbound.contributors.prompt import PromptContributor
 from volundr.domain.project_ports import ProjectConflictError, ProjectRepository, ProjectWorkspace
 from volundr.domain.projects import ForgeProject
@@ -94,6 +95,10 @@ async def rig(repository, pod_manager):
         ForgeProject(slug="lexi", name="Lexi", repo_url="https://github.com/xteo/project-lexi"),
         None,
     )
-    forge = ForgeService(sessions, project_service=service)
+    forge = ForgeService(
+        sessions,
+        project_service=service,
+        session_participant_service=make_session_participant_service(sessions),
+    )
     yield service, forge, project, repository, pod_manager
     await asyncio.gather(*sessions._provisioning_tasks.values(), return_exceptions=True)

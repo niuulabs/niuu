@@ -79,3 +79,15 @@ export function registryError(error: unknown): string {
     return error.detail;
   return error instanceof Error ? error.message : 'The registry request failed. Please try again.';
 }
+
+/**
+ * An empty fingerprint is valid (the field is optional); a non-empty one
+ * must be a sha256 hex digest (64 hex characters, colons optional) — the
+ * same shape the backend requires (niuu.domain.tls_fingerprint), checked
+ * here too so a malformed pin never round-trips to the server.
+ */
+export function isValidTlsFingerprint(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  return /^[0-9a-f]{64}$/i.test(trimmed.replaceAll(':', ''));
+}

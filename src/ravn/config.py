@@ -2891,6 +2891,47 @@ class LearnedToolKubernetesConfig(BaseModel):
         default="niuu.world/tool-network",
         description="Pod label selected by both verified learned-tool NetworkPolicies.",
     )
+    job_cpu_request: str = Field(
+        default="50m",
+        description="CPU request for every learned-tool Job container (run() and verify()).",
+    )
+    job_memory_request: str = Field(
+        default="64Mi",
+        description="Memory request for every learned-tool Job container (run() and verify()).",
+    )
+    job_cpu_limit: str = Field(
+        default="1",
+        description="CPU limit for every learned-tool Job container (run() and verify()).",
+    )
+    job_memory_limit: str = Field(
+        default="512Mi",
+        description="Memory limit for every learned-tool Job container (run() and verify()).",
+    )
+    job_tmp_size: str = Field(
+        default="64Mi",
+        description="Size of the writable /tmp emptyDir mounted into every learned-tool Job.",
+    )
+    job_pod_start_timeout_seconds: float = Field(
+        default=120.0,
+        gt=0,
+        description=(
+            "verify()-only: separate budget for a Job's pod to leave Pending and "
+            "start running (scheduling, image pull) before it is treated as an "
+            "infrastructure failure. Decoupled from the verify timeout, which only "
+            "starts counting once the container is actually running, so a slow "
+            "image pull is never confused with the tool's own code hanging. run() "
+            "has no separate pod-start budget and does not consult this field."
+        ),
+    )
+    job_ttl_seconds_after_finished: int = Field(
+        default=3600,
+        ge=0,
+        description=(
+            "Kubernetes ttlSecondsAfterFinished on every learned-tool Job, as a backup "
+            "sweep if the explicit post-run delete never executes (process crash). "
+            "0 disables the TTL and relies solely on the explicit delete."
+        ),
+    )
 
 
 class ResidentEvolutionConfig(BaseModel):
@@ -3762,7 +3803,19 @@ class EnvironmentConfig(BaseModel):
         description=(
             "The human seed for this resident: a few sentences describing what the "
             "Valkyrie stewards and what 'better' means for its environment. Injected "
-            "into every autonomous task and surfaced on the dashboard."
+            "into every autonomous task and surfaced on the dashboard. Ignored when "
+            "charter_mimir_page is set — that page is the source of truth."
+        ),
+    )
+    charter_mimir_page: str = Field(
+        default="",
+        description=(
+            "Mímir page path holding this resident's charter, e.g. "
+            "'realms/<slug>/charter.md'. When set, the resident reads its charter "
+            "from this page at startup instead of the static 'charter' string, and "
+            "fails to start if the page does not exist or Mímir is disabled — a "
+            "configured-but-missing charter is a fatal misconfiguration, not a "
+            "silent fallback to the static charter."
         ),
     )
     topology: EnvironmentTopologyConfig = Field(

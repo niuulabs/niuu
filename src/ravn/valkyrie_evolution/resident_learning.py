@@ -1770,9 +1770,9 @@ class ResidentLearningRuntime:
         if not getattr(runner, "supports_verify", False):
             raise LearnedToolError(
                 f"the configured learned-tool runner ({type(runner).__name__}) cannot verify "
-                "a peer proposal inside its own execution boundary; configure the 'local' or "
-                "'container' execution backend for peer adoption, or wait for verify() support "
-                "on this one — never silently verify on the host instead"
+                "a peer proposal inside its own execution boundary; configure the 'local', "
+                "'container', or 'k8s_job' execution backend for peer adoption, or wait for "
+                "verify() support on this one — never silently verify on the host instead"
             )
         return await runner.verify(
             tool_name=artifact.title or "learned_tool",

@@ -92,6 +92,7 @@ class ResidentCreateRequest(BaseModel):
     flock_member_id: UUID | None = None
     flock_role: str = Field(default="", max_length=100)
     flock_peer_id: str = Field(default="", max_length=255)
+    realm_id: UUID | None = None
 
 
 def _raise_platform_error(exc: httpx.HTTPStatusError) -> None:

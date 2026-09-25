@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests.conftest import make_session_participant_service
 from tests.test_domain.test_external_session_service import FakeProvider, _record
 from volundr.adapters.inbound.rest import create_router
 from volundr.domain.history_import import (
@@ -164,7 +165,13 @@ def test_rest_backfill_maps_failures(recovery, error, status):
     service, _, session_service, _ = recovery
     service.backfill_session = AsyncMock(side_effect=error)
     app = FastAPI()
-    app.include_router(create_router(session_service, external_session_service=service))
+    app.include_router(
+        create_router(
+            session_service,
+            external_session_service=service,
+            session_participant_service=make_session_participant_service(session_service),
+        )
+    )
     with TestClient(app) as client:
         response = client.post(f"/api/v1/forge/sessions/{uuid4()}/history/import")
     assert response.status_code == status
@@ -177,13 +184,24 @@ def test_rest_backfill_success_and_unavailable(recovery):
     result = {"session_id": str(sid), "imported_frames": 15}
     service.backfill_session = AsyncMock(return_value=result)
     app = FastAPI()
-    app.include_router(create_router(session_service, external_session_service=service))
+    app.include_router(
+        create_router(
+            session_service,
+            external_session_service=service,
+            session_participant_service=make_session_participant_service(session_service),
+        )
+    )
     with TestClient(app) as client:
         response = client.post(f"/api/v1/forge/sessions/{sid}/history/import")
     assert response.status_code == 200
     assert response.json() == result
     app = FastAPI()
-    app.include_router(create_router(session_service))
+    app.include_router(
+        create_router(
+            session_service,
+            session_participant_service=make_session_participant_service(session_service),
+        )
+    )
     with TestClient(app) as client:
         assert client.post(f"/api/v1/forge/sessions/{sid}/history/import").status_code == 503
 
@@ -202,7 +220,13 @@ def test_history_mutations_require_valid_identity_when_configured(recovery, head
     identity = AsyncMock(spec=IdentityPort)
     identity.validate_token.side_effect = InvalidTokenError("Invalid token")
     app.state.identity = identity
-    app.include_router(create_router(session_service, external_session_service=service))
+    app.include_router(
+        create_router(
+            session_service,
+            external_session_service=service,
+            session_participant_service=make_session_participant_service(session_service),
+        )
+    )
     with TestClient(app) as client:
         response = client.post(
             f"/api/v1/forge/{endpoint}",

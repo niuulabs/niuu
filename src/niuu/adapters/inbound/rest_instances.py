@@ -20,7 +20,14 @@ from niuu.adapters.inbound.remote_urls import (
 from niuu.adapters.inbound.remote_urls import (
     forward_identity_headers as _forward_headers,
 )
+from niuu.adapters.inbound.remote_urls import (
+    forward_local_identity_headers as _forward_local_headers,
+)
 from niuu.adapters.inbound.rest_knowledge_deployments import create_knowledge_deployments_router
+from niuu.adapters.outbound.guild_transport import (
+    GuildTransportError,
+    build_guild_httpx_client,
+)
 from niuu.domain.agent_directory import (
     AgentDirectoryEntry,
     AgentDirectoryFilters,
@@ -43,6 +50,7 @@ from niuu.domain.services.instance_health import InstanceHealthChecker
 from niuu.domain.services.instances import (
     InstanceAccessError,
     InstanceService,
+    InstanceTransportSecurityError,
     InstanceValidationError,
 )
 from niuu.domain.services.observatory_fragments import ObservatoryFragmentInboxService
@@ -289,7 +297,7 @@ async def _load_remote_sessions(
         ) as client:
             response = await client.get(
                 "/api/v1/forge/sessions",
-                headers=_forward_headers(request),
+                headers=_forward_local_headers(request),
                 params=params,
             )
             response.raise_for_status()
@@ -302,7 +310,13 @@ async def _load_remote_sessions(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     params = {"status": status_filter} if status_filter else None
-    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+    try:
+        client = await build_guild_httpx_client(
+            instance, dial_url=instance.base_url, timeout_seconds=20.0, follow_redirects=True
+        )
+    except GuildTransportError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    async with client:
         response = await client.get(
             remote_url,
             headers=_forward_headers(request),
@@ -375,6 +389,10 @@ def create_instances_router(
                 tenant_id=body.tenant_id,
                 tags=body.tags,
             )
+        except InstanceTransportSecurityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
         except (InstanceAccessError, InstanceValidationError) as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
         # Registering an instance that happens to be offline (e.g. a Spark not
@@ -428,6 +446,10 @@ def create_instances_router(
             )
         except LookupError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except InstanceTransportSecurityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
         except (InstanceAccessError, InstanceValidationError) as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
         if before is not None and (

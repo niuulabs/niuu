@@ -395,6 +395,20 @@ class NiuuHostConfig(BaseSettings):
         default=5432,
         validation_alias=AliasChoices("external_database_port", "DATABASE__PORT"),
     )
+    session_proxy_role_check_interval_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        validation_alias=AliasChoices(
+            "session_proxy_role_check_interval_seconds",
+            "NIUU_SESSION_PROXY_ROLE_CHECK_INTERVAL_SECONDS",
+        ),
+        description=(
+            "How often a proxied session WebSocket re-validates attach and room "
+            "role while connected, so a revoked or demoted session_participants "
+            "grant closes the live socket instead of only blocking new "
+            "connections. Mirrors skuld.config.WsAuthConfig.websocket_check_interval."
+        ),
+    )
     external_database_user: str = Field(
         default="postgres",
         validation_alias=AliasChoices("external_database_user", "DATABASE__USER"),

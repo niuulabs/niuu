@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tests.conftest import InMemorySessionRepository, MockPodManager
+from tests.conftest import (
+    InMemorySessionRepository,
+    MockPodManager,
+    make_session_participant_service,
+)
 from volundr.domain.models import GitSource, SessionStatus
 from volundr.domain.ports import SessionCapacity
 from volundr.domain.services import ForgeService, SessionCapacityError, SessionService
@@ -91,7 +95,10 @@ async def test_create_and_start_checks_capacity_before_creating_a_record() -> No
     session_service = AsyncMock(spec=SessionService)
     full = SessionCapacity(limit=1, active=1, remedy="raise pod_manager.max_concurrent")
     session_service.ensure_capacity.side_effect = SessionCapacityError(full)
-    forge = ForgeService(session_service)
+    forge = ForgeService(
+        session_service,
+        session_participant_service=make_session_participant_service(session_service),
+    )
     data = SimpleNamespace(
         name="demo",
         model="claude",

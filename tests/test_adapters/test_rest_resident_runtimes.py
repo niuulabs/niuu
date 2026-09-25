@@ -233,6 +233,7 @@ def test_native_resident_session_crud_uses_authenticated_service() -> None:
 def test_create_and_lifecycle_routes_use_authenticated_service() -> None:
     flock_id = uuid4()
     member_id = uuid4()
+    realm_id = uuid4()
     runtime = ResidentRuntime(
         id=uuid4(),
         owner_id="user-a",
@@ -260,6 +261,7 @@ def test_create_and_lifecycle_routes_use_authenticated_service() -> None:
             "flockMemberId": str(member_id),
             "flockRole": "coordinator",
             "flockPeerId": f"ravn-{member_id}",
+            "realmId": str(realm_id),
         },
     )
     restarted = client.post(f"/api/v1/forge/resident-runtimes/{runtime.id}/restart")
@@ -280,6 +282,7 @@ def test_create_and_lifecycle_routes_use_authenticated_service() -> None:
         flock_member_id=member_id,
         flock_role="coordinator",
         flock_peer_id=f"ravn-{member_id}",
+        realm_id=realm_id,
     )
     service.delete.assert_awaited_once_with(_PRINCIPAL, runtime.id)
 

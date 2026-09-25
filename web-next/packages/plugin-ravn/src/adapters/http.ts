@@ -261,6 +261,7 @@ interface RawRavn {
   flock_member_id?: string;
   flock_role?: string;
   flock_peer_id?: string;
+  realm_id?: string;
   desired_state?: string;
   observed_state?: string;
   backend_ref?: Record<string, unknown>;
@@ -511,6 +512,7 @@ function toRavn(raw: RawRavn): Ravn {
     ...(raw.flock_member_id && { flockMemberId: raw.flock_member_id }),
     ...(raw.flock_role && { flockRole: raw.flock_role }),
     ...(raw.flock_peer_id && { flockPeerId: raw.flock_peer_id }),
+    ...(raw.realm_id && { realmId: raw.realm_id }),
     ...(raw.desired_state !== undefined && {
       desiredState: raw.desired_state as Ravn['desiredState'],
     }),
@@ -823,6 +825,7 @@ export function buildRavnResidentControlAdapter(client: ApiClient): IResidentCon
         ...(request.flockMemberId && { flock_member_id: request.flockMemberId }),
         ...(request.flockRole && { flock_role: request.flockRole }),
         ...(request.flockPeerId && { flock_peer_id: request.flockPeerId }),
+        ...(request.realmId && { realm_id: request.realmId }),
       });
       return toRavn(raw);
     },

@@ -30,6 +30,9 @@ from volundr.adapters.outbound.identity import EnvoyHeaderIdentityAdapter
 from volundr.adapters.outbound.postgres import PostgresSessionRepository
 from volundr.adapters.outbound.postgres_chronicles import PostgresChronicleRepository
 from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
+from volundr.adapters.outbound.postgres_session_participants import (
+    PostgresSessionParticipantRepository,
+)
 from volundr.adapters.outbound.postgres_stats import PostgresStatsRepository
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
 from volundr.adapters.outbound.postgres_tokens import PostgresTokenTracker
@@ -45,6 +48,7 @@ from volundr.domain.services import (
     TenantService,
     TokenService,
 )
+from volundr.domain.services.session_participants import SessionParticipantService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -170,6 +174,9 @@ async def volundr_app(
 
     # Routers
     chronicle_service = ChronicleService(PostgresChronicleRepository(txn_pool), session_service)
+    session_participant_service = SessionParticipantService(
+        PostgresSessionParticipantRepository(txn_pool), session_service, user_repo
+    )
     session_router = create_session_router(
         session_service,
         stats_service,
@@ -177,6 +184,7 @@ async def volundr_app(
         pricing,
         broadcaster=broadcaster,
         chronicle_service=chronicle_service,
+        session_participant_service=session_participant_service,
     )
     app.include_router(session_router)
 

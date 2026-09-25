@@ -65,15 +65,16 @@ COPY pyproject.toml uv.lock README.md /app/
 RUN uv sync --frozen --no-dev --no-editable --no-install-project --extra cli --extra k8s --extra nats \
     --extra openshell --extra otel --extra switchyard --no-install-package nemo-switchyard
 COPY src/ /app/src/
+# vendor/envoy_authz_protos/ provides the envoy.service.auth.v3 ext_authz
+# bindings identity/authz_main.py needs (see its README); vendored instead of
+# depending on xds-protos, which bundled a copy of opentelemetry/proto/** that
+# collided with the otel extra installed above.
+COPY vendor/ /app/vendor/
 RUN uv sync --frozen --no-dev --no-editable --extra cli --extra k8s --extra nats --extra openshell \
     --extra otel --extra switchyard --no-install-package nemo-switchyard \
     && mkdir -p /dist-root/data/mimir
 # cli.resources.web_dist_dir() falls back to the installed package data.
 COPY --from=web-build /app/apps/niuu/dist /opt/venv/lib/python3.14/site-packages/cli/web/dist
-# xds-protos also ships obsolete OpenTelemetry modules. Restore the locked
-# official package after installation so enabled OTLP exporters can start.
-RUN uv pip install --python /opt/venv/bin/python --no-deps --reinstall \
-    "opentelemetry-proto==$(/opt/venv/bin/python -c 'from importlib.metadata import version; print(version("opentelemetry-proto"))')"
 RUN --mount=type=bind,from=switchyard-wheel,source=/wheels,target=/wheels \
     uv pip install --python /opt/venv/bin/python --offline --no-deps --no-build /wheels/*.whl \
     && mkdir -p /opt/venv/share/niuu \

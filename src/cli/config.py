@@ -664,9 +664,10 @@ def auth_adapter_env(auth: AuthConfig) -> dict[str, str]:
     of those slots to in-process JWT verification via JWKS plus the bundled
     Cedar policies, matching Kubernetes. Bifröst does not read one of these
     slots — it is a standalone process configured via ``BIFROST_CONFIG``
-    (see ``cli.commands.platform._resolve_local_pod_manager_env``) — and the
-    Guild knowledge-deployments router is covered by the auth-mode guard
-    elsewhere, not by this function.
+    (see ``cli.commands.platform._resolve_local_pod_manager_env``). Guild
+    needs no slot either: it forwards only the caller's bearer token to a
+    remote instance (see
+    ``niuu.adapters.inbound.remote_urls.forward_identity_headers``).
     """
     if auth.mode == "none":
         return {
@@ -794,10 +795,6 @@ class CLISettings(BaseSettings):
     #: oidc must not claim coverage a host does not actually have. Hardening
     #: any of these removes it from this list rather than adding an override.
     _OIDC_UNCOVERED_PLUGINS: ClassVar[dict[str, str]] = {
-        "guild": (
-            "Guild's knowledge-deployments router forwards caller-supplied "
-            "x-auth-* headers to remote Mímir deployments unmodified"
-        ),
         "bifrost": (
             "Bifröst's own inbound auth now verifies bearer tokens correctly under "
             "oidc, but nothing yet supplies sessions or residents with a verifiable "

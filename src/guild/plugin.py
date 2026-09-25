@@ -31,11 +31,10 @@ class GuildPlugin(ServicePlugin):
         self,
         *,
         embedded_forge_app: Any | None = None,
-        dev_identity: bool = False,
     ) -> Any:
         from guild.app import create_app
 
-        return create_app(embedded_forge_app=embedded_forge_app, dev_identity=dev_identity)
+        return create_app(embedded_forge_app=embedded_forge_app)
 
     def api_route_domains(self) -> tuple[APIRouteDomain, ...]:
         route_domains = [

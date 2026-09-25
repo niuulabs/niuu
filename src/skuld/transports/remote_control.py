@@ -34,6 +34,9 @@ import signal
 import subprocess
 from contextlib import suppress
 
+from niuu.adapters.cli.runtime import (
+    stop_subprocess as _stop_process,
+)
 from niuu.ports.cli import CLITransport, TransportCapabilities
 
 logger = logging.getLogger("skuld.transport")
@@ -275,14 +278,14 @@ class RemoteControlTransport(CLITransport):
             with suppress(Exception, asyncio.CancelledError):
                 await self._reader_task
             self._reader_task = None
-        # Kill the foreground client first (graceful), then sweep any token-tagged
-        # survivor (the detached worker), escalating to SIGKILL.
+        # Kill the foreground client first (graceful, escalating to SIGKILL and
+        # always awaiting the process so its transport is closed rather than
+        # abandoned — a bare `send_signal` + timed-out `wait()` leaves the
+        # stdout pipe transport open until the interpreter GCs it), then sweep
+        # any token-tagged survivor (the detached worker).
         proc = self._process
         if proc is not None and proc.returncode is None:
-            with suppress(ProcessLookupError):
-                proc.send_signal(signal.SIGTERM)
-            with suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(proc.wait(), timeout=5)
+            await _stop_process(proc)
         self._sweep_kill(signal.SIGTERM)
         await asyncio.sleep(1)
         self._sweep_kill(signal.SIGKILL)

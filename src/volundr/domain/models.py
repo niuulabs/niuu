@@ -1556,6 +1556,7 @@ class ResidentRuntime(BaseModel):
     flock_member_id: UUID | None = None
     flock_role: str = Field(default="", max_length=100)
     flock_peer_id: str = Field(default="", max_length=255)
+    realm_id: UUID | None = None
     desired_state: ResidentDesiredState = ResidentDesiredState.RUNNING
     observed_state: ResidentObservedState = ResidentObservedState.PENDING
     backend_ref: dict[str, Any] = Field(default_factory=dict)

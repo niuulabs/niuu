@@ -44,6 +44,7 @@ from uuid import UUID
 import yaml
 
 from niuu.mesh.ipc import cleanup_ipc_socket_dir, flock_socket_dir, ipc_address
+from niuu.ports.realm_repository import RealmRepository
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.local_resident_storage import (
     LOCAL_PLATFORM_ACCESS_TOKEN,
@@ -290,6 +291,7 @@ class HostProcessResidentRuntimeController(
         self._residents: dict[UUID, _HostResident] = {}
         self._profiles: dict[UUID, ResidentDeploymentProfile] = {}
         self._locks: dict[UUID, asyncio.Lock] = {}
+        self._realm_repository: RealmRepository | None = None
 
     @property
     def backend(self) -> ResidentBackend:
@@ -297,6 +299,39 @@ class HostProcessResidentRuntimeController(
 
     def set_skuld_registry(self, registry: Any) -> None:
         self._skuld_registry = registry
+
+    def set_realm_repository(self, repository: RealmRepository) -> None:
+        """Enable resolving a resident's realm slug for its container config.
+
+        Optional: without it, deploying a resident with ``realm_id`` set
+        raises in ``_resolve_realm_slug`` rather than silently deploying with
+        no realm/charter binding.
+        """
+        self._realm_repository = repository
+
+    async def _resolve_realm_slug(self, runtime: ResidentRuntime) -> str:
+        """Return the slug of the realm this resident is bound to, or "".
+
+        Mirrors LocalContainerResidentRuntimeController._resolve_realm_slug:
+        a configured realm_id that cannot be resolved is a real
+        misconfiguration and fails loudly rather than deploying with a
+        silently dropped charter/realm binding.
+        """
+        if runtime.realm_id is None:
+            return ""
+        if self._realm_repository is None:
+            raise RuntimeError(
+                f"resident {runtime.name!r} has realm_id={runtime.realm_id} but this "
+                "controller has no realm repository configured; call set_realm_repository "
+                "at composition time."
+            )
+        realm = await self._realm_repository.get_realm(runtime.realm_id)
+        if realm is None:
+            raise RuntimeError(
+                f"resident {runtime.name!r} names realm_id={runtime.realm_id}, but no "
+                "such realm exists; clear the resident's realm binding or restore the realm."
+            )
+        return realm.slug
 
     def supports(self, profile: ResidentDeploymentProfile) -> bool:
         if profile.backend is not ResidentBackend.LOCAL:
@@ -455,6 +490,7 @@ class HostProcessResidentRuntimeController(
             resident_profile_values(profile.id, profile.deployment),
             service_port,
         )
+        realm_slug = await self._resolve_realm_slug(runtime)
         spec = materialize_resident_runtime(
             runtime,
             values,
@@ -462,6 +498,7 @@ class HostProcessResidentRuntimeController(
             default_service_port=service_port,
             volundr_api_url=self._volundr_api_url,
             sandbox_command=(*self._entrypoint, "skuld"),
+            realm_slug=realm_slug,
         )
         layout = _HostLayout(root=root, ravn_http_port=ravn_http_port)
         files = {
@@ -750,6 +787,7 @@ class HostProcessResidentRuntimeController(
                     "flock_member_id",
                     "flock_role",
                     "flock_peer_id",
+                    "realm_id",
                 },
             ),
             "values": resident_profile_values(profile.id, profile.deployment),

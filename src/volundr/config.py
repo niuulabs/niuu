@@ -2134,6 +2134,39 @@ class Settings(BaseSettings):
         gt=0,
         description="Bound on the in-memory queue merging per-host session stream events.",
     )
+    guild_transport_connect_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Ceiling for the connect leg of every outbound Guild call "
+            "(niuu.adapters.outbound.guild_transport), and the timeout for the bare "
+            "handshake that fetches a pinned instance's live certificate."
+        ),
+    )
+    guild_owner_probe_timeout_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        description=(
+            "Timeout for the Ravn resident/session proxy's owner-probe HTTP GET "
+            "(niuu.adapters.inbound.rest_ravn) and its TLS-pin handshake."
+        ),
+    )
+    guild_transport_trusted_plaintext_host_suffixes: list[str] = Field(
+        default_factory=lambda: [".svc.cluster.local", ".svc"],
+        description=(
+            "Host suffixes (label-boundary match, e.g. a host ending in "
+            "'.svc.cluster.local') exempt from the https-unless-allow_plaintext "
+            "policy in niuu.domain.transport_security, the same way localhost is: "
+            "in-cluster Kubernetes service DNS never leaves the cluster's pod "
+            "network, so an operator does not have to set config.allow_plaintext "
+            "on every in-cluster seed. Applies at both registration/seed-time "
+            "validation and outbound call-time enforcement — the same choke "
+            "point Ting's Volundr calls also go through. Set to [] to require "
+            "the explicit allow_plaintext opt-in everywhere, including "
+            "in-cluster addresses. Never exempts config.tls_fingerprint pinning, "
+            "which always requires https:// regardless of hostname."
+        ),
+    )
     conversation_recent_max_turns: int = Field(default=15, gt=0)
     conversation_recent_max_bytes: int = Field(default=256 * 1024, ge=4096)
     server_host: str = Field(

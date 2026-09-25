@@ -924,6 +924,46 @@ class TestResidentMemoryPersistence:
         assert config["memory"]["backend"] == "sqlite"
 
 
+class TestResidentRealmBinding:
+    """A realm-deployed resident must carry its realm_slug/charter/HUD/stewardship.
+
+    Before this, the chart's resident mode rendered only environment id/name;
+    a resident deployed for a realm had no way to know which realm's charter
+    to resolve, no HUD, and no configurable stewardship cadence.
+    """
+
+    def test_realm_fields_absent_by_default(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(
+            tmp_path, {"resident": {"enabled": True, "persona": "product-steward"}}
+        )
+        config = _ravn_config_from_rendered(rendered)
+        assert "charter_mimir_page" not in config["environment"]
+        assert "resident_state" not in config
+        assert "resident_evolution" not in config
+        assert config["gateway"]["channels"]["http"]["resident_hud_enabled"] is False
+
+    def test_realm_slug_renders_charter_page_and_hud_and_stewardship(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(
+            tmp_path,
+            {
+                "resident": {
+                    "enabled": True,
+                    "persona": "product-steward",
+                    "realm": {"slug": "workshop"},
+                    "hudEnabled": True,
+                    "stewardshipIntervalSeconds": 30,
+                    "platform": {"enabled": True, "baseUrl": "https://volundr.example.test"},
+                }
+            },
+        )
+        config = _ravn_config_from_rendered(rendered)
+        assert config["environment"]["charter_mimir_page"] == "realms/workshop/charter.md"
+        assert config["resident_evolution"]["realm_slug"] == "workshop"
+        assert config["resident_evolution"]["realm_api_base_url"] == "https://volundr.example.test"
+        assert config["gateway"]["channels"]["http"]["resident_hud_enabled"] is True
+        assert config["resident_state"]["stewardship_interval_seconds"] == 30
+
+
 class TestRavnHomeVolume:
     """Ravn must see the persistent home claim, not only the emptyDir workspace.
 
@@ -1080,6 +1120,12 @@ def test_websocket_auth_configuration_reaches_broker(enabled):
     )
     assert config["ws_auth"]["enforce_ownership"] is enabled
     assert config["ws_auth"]["allow_loopback"] is False
+    # "deployment" regardless of enforce_ownership: chart-deployed pods
+    # (Kubernetes) always rely on this pod's own auth boundary, never the
+    # session proxy's stamped header. Only the process backend's local
+    # launcher (volundr.adapters.outbound.local_process) renders "proxy",
+    # outside this chart entirely.
+    assert config["ws_auth"]["room_role_source"] == "deployment"
     policy = next(d for d in docs if d and d["kind"] == "SecurityPolicy")
     headers = {c["header"] for c in policy["spec"]["jwt"]["providers"][0]["claimToHeaders"]}
     assert {"x-auth-user-id", "x-auth-tenant", "x-auth-roles"} <= headers
