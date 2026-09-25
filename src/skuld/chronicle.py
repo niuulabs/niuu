@@ -211,6 +211,7 @@ class ChronicleMixin:
         # session typically commits before finishing.  Fall back to
         # uncommitted working-tree changes (diff HEAD).
         for diff_args in (["git", "diff", "HEAD~1..HEAD"], ["git", "diff", "HEAD"]):
+            proc: asyncio.subprocess.Process | None = None
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *diff_args,
@@ -220,6 +221,14 @@ class ChronicleMixin:
                 )
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             except Exception:
+                # A timed-out `communicate()` cancels the read, not the child:
+                # without this, a hung `git` leaves its stdout pipe transport
+                # referenced only by this now-abandoned `proc`, unclosed until
+                # the interpreter GCs it (surfacing as a ResourceWarning in an
+                # unrelated later test).
+                if proc is not None and proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
                 return ""
             raw = stdout.decode(errors="replace")
             if raw.strip():
