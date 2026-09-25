@@ -7,6 +7,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from niuu.adapters.outbound.guild_transport import build_guild_httpx_client
 from niuu.domain.agent_directory import AgentDirectoryFilters, AgentDirectoryPage
 from niuu.domain.models import RegisteredInstance
 from niuu.ports.agent_directory import AgentDirectoryClientPort
@@ -62,11 +63,14 @@ class HttpAgentDirectoryClient(AgentDirectoryClientPort):
         headers: Mapping[str, str],
         filters: AgentDirectoryFilters,
     ) -> AgentDirectoryPage:
-        async with httpx.AsyncClient(
-            timeout=self._timeout_seconds,
+        client = await build_guild_httpx_client(
+            instance,
+            dial_url=instance.base_url,
+            timeout_seconds=self._timeout_seconds,
             follow_redirects=False,
             transport=self._transport,
-        ) as client:
+        )
+        async with client:
             response = await client.get(
                 _agents_url(instance.base_url),
                 headers=dict(headers),

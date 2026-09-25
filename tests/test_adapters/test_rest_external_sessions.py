@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests.conftest import make_session_participant_service
 from volundr.adapters.inbound.rest import create_router
 from volundr.domain.models import (
     ExternalSessionRecord,
@@ -102,6 +103,7 @@ def app(repository, session_service, claude_record) -> FastAPI:
     router = create_router(
         session_service=session_service,
         external_session_service=external_service,
+        session_participant_service=make_session_participant_service(session_service),
     )
     app.include_router(router)
     return app
@@ -132,7 +134,12 @@ class TestListExternalSessions:
 
     def test_unavailable_without_service(self, session_service) -> None:
         app = FastAPI()
-        app.include_router(create_router(session_service=session_service))
+        app.include_router(
+            create_router(
+                session_service=session_service,
+                session_participant_service=make_session_participant_service(session_service),
+            )
+        )
         client = TestClient(app)
 
         response = client.get("/api/v1/forge/external-sessions")
@@ -212,6 +219,7 @@ class TestImportSession:
             create_router(
                 session_service=session_service,
                 external_session_service=external_service,
+                session_participant_service=make_session_participant_service(session_service),
             )
         )
         client = TestClient(app)
@@ -253,6 +261,7 @@ class TestImportSession:
             create_router(
                 session_service=session_service,
                 external_session_service=external_service,
+                session_participant_service=make_session_participant_service(session_service),
             )
         )
         client = TestClient(app)

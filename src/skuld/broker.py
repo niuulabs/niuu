@@ -436,6 +436,101 @@ def _workflow_terminal_requirements_satisfied(
 # WebSocket auth helpers are imported above for compatibility.
 
 
+# Per-message authorization for browser WebSocket traffic, keyed to the
+# room role WebSocketLifecycleMixin.handle_websocket resolved and stored on
+# the connection's WebSocketChannel (see _room_role_for). This is an
+# ALLOWLIST, not a denylist: any message type not explicitly classified here
+# defaults to OWNER-only in _message_role_requirement below, EXCEPT the
+# "default chat" fallback (case _ in _dispatch_browser_message, which every
+# unrecognized/absent "type" already falls into and which was already
+# viewer-level content before this gate existed).
+#
+# tests/test_skuld/test_room_role_message_gating.py asserts these three sets,
+# plus the default-chat bucket, cover every case label in
+# _dispatch_browser_message's match statement — a new case added there
+# without updating this classification fails that test instead of silently
+# defaulting to owner-only (safe) or silently being reachable by a viewer
+# (unsafe, and the thing this whole gate exists to prevent).
+_VIEWER_MESSAGE_TYPES = frozenset(
+    {
+        "directed_message",
+        "steer_active_turn",
+        "set_internal_visibility",
+        "discover_slash_commands",
+        "get_effort",
+        "get_runtime_options",
+    }
+)
+# Approver additionally resolves the tool-permission / operator-question wait.
+_APPROVER_ONLY_MESSAGE_TYPES = frozenset({"permission_response", "ask_user_answer"})
+# Every other named case: mutating transport/session controls, owner only.
+_OWNER_ONLY_MESSAGE_TYPES = frozenset(
+    {
+        "set_permission_mode",
+        "rewind_files",
+        "mcp_set_servers",
+        "terminal_input",
+        "terminal_key",
+        "terminal_resize",
+        "slash_command",
+        "interrupt",
+        "set_model",
+        "set_effort",
+        "set_runtime_options",
+        "set_max_thinking_tokens",
+        "resend_initial_prompt",
+        "publish_event",
+    }
+)
+_ROOM_ROLE_RANK = {"viewer": 0, "approver": 1, "owner": 2}
+
+
+def _message_role_requirement(msg_type: str | None) -> str:
+    """Minimum room role required to send this browser message type.
+
+    A type this repo recognizes as a *command* (any case label in
+    _dispatch_browser_message) must be classified in one of the three sets
+    above; silence is never "allow". Anything else — no "type" at all, or a
+    genuinely unrecognized string — falls through to the default chat
+    handler, which is viewer-level, same as any other chat content.
+    """
+    if msg_type in _OWNER_ONLY_MESSAGE_TYPES:
+        return "owner"
+    if msg_type in _APPROVER_ONLY_MESSAGE_TYPES:
+        return "approver"
+    return "viewer"
+
+
+# Client-controllable metadata keys that let a sub-owner caller impersonate
+# another participant or forge continuation state on a directed message.
+# ``participant_id`` picks WHICH registered room participant the message is
+# attributed to (handle_directed_room_message reads it from metadata, not a
+# separate argument). ``reply_context`` can override the SERVER's own
+# tracked continuation state: niuu.collaboration.room.route_directed_message
+# starts from its stored pending reply_context and then applies the
+# caller's metadata OVER it, so a client-supplied reply_context silently
+# replaces genuine case-continuation data. ``source`` inside metadata is
+# stripped for the same reason as the (already hardcoded) top-level source
+# argument these dispatch cases pass. Mirrors
+# skuld.broker_api._SUB_OWNER_STRIPPED_METADATA_KEYS for the HTTP path —
+# kept as a separate constant rather than a shared import to avoid coupling
+# this domain module to the inbound HTTP adapter.
+_SUB_OWNER_STRIPPED_METADATA_KEYS = frozenset({"participant_id", "reply_context", "source"})
+
+
+def _sanitize_directed_metadata(
+    role: str, metadata: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Strip client-controllable identity/continuation fields for callers below owner.
+
+    Only the session owner's own client may set ``participant_id``,
+    ``reply_context``, or ``source`` inside a directed message's metadata.
+    """
+    if metadata is None or role == "owner":
+        return metadata
+    return {k: v for k, v in metadata.items() if k not in _SUB_OWNER_STRIPPED_METADATA_KEYS}
+
+
 class Broker(
     EffortControlMixin,
     TransportLifecycleMixin,
@@ -3891,6 +3986,77 @@ class Broker(
         "discover_slash_commands": "slash_commands",
     }
 
+    def _room_role_for(self, sender_ws: WebSocket | None) -> str:
+        """Return the verified room role for the channel behind *sender_ws*.
+
+        ``sender_ws is None`` means this dispatch did not originate from a
+        live browser connection (an internally-synthesized call, e.g. replay
+        or resume) — those call sites already established their own
+        authority before reaching here, so they are trusted as "owner".  A
+        live connection whose channel cannot be found (torn down mid-dispatch,
+        or never registered — protocol2 registers it only after synchronous
+        history capture) gets the least-privilege default, "viewer": a
+        missing channel must never read as elevated privilege.
+        """
+        if sender_ws is None:
+            return "owner"
+        for ch in self._channels.channels:
+            if isinstance(ch, WebSocketChannel) and ch.ws is sender_ws:
+                return ch.room_role
+        return "viewer"
+
+    def _reply_context_consumption_allowed(self, target_peer_id: str, actual_role: str) -> bool:
+        """Return whether *actual_role* may deliver into *target_peer_id*'s reply wait.
+
+        A directed message (explicit ``directed_message``, default chat routed
+        to the room's default target, or the equivalent HTTP room/direct call)
+        to a peer with a pending ``reply_context``
+        (niuu.collaboration.room.set_reply_context, set when a Ravn case
+        suspends waiting for an operator) DELIVERS that reply and consumes the
+        context — functionally the same act as answering
+        ``ask_user_answer``/``permission_response``, which is already
+        approver-only. Ordinary chat to a peer with NO pending reply is
+        unaffected; this only blocks the specific peer/moment a case is
+        actually waiting. Shared by both the WS dispatch and the
+        ``/api/room/direct`` HTTP route so a viewer cannot reach the same
+        privileged act by calling the HTTP surface directly.
+        """
+        if self._room_bridge is None:
+            return True
+        if target_peer_id not in self._room_bridge.pending_reply_peer_ids():
+            return True
+        return _ROOM_ROLE_RANK[actual_role] >= _ROOM_ROLE_RANK["approver"]
+
+    async def _guard_reply_context_consumption(
+        self,
+        target_peer_id: str,
+        actual_role: str,
+        data: dict,
+        sender_ws: WebSocket | None,
+    ) -> bool:
+        """WS wrapper: deny and notify the sender when the predicate above fails.
+
+        Returns True when the send may proceed.
+        """
+        if self._reply_context_consumption_allowed(target_peer_id, actual_role):
+            return True
+        logger.warning(
+            "_dispatch_browser_message: denied reply-context consumption for peer=%s role=%s",
+            _sanitize_log(target_peer_id),
+            actual_role,
+        )
+        if sender_ws:
+            await self._send_broker_frame_to(
+                sender_ws,
+                control_error_frame(
+                    "This participant is awaiting an operator reply; only the "
+                    "session owner or an approver may answer it",
+                    data,
+                    code="forbidden",
+                ),
+            )
+        return False
+
     @history_write
     async def _dispatch_browser_message(
         self,
@@ -3911,6 +4077,22 @@ class Broker(
             _sanitize_log(msg_type),
             self._transport.is_alive,
         )
+
+        required_role = _message_role_requirement(msg_type)
+        actual_role = self._room_role_for(sender_ws)
+        if _ROOM_ROLE_RANK[actual_role] < _ROOM_ROLE_RANK[required_role]:
+            error_msg = f"{msg_type or 'this message'} requires the {required_role} room role"
+            logger.warning(
+                "_dispatch_browser_message: denied type=%s role=%s requires=%s",
+                _sanitize_log(msg_type),
+                actual_role,
+                required_role,
+            )
+            if sender_ws:
+                await self._send_broker_frame_to(
+                    sender_ws, control_error_frame(error_msg, data, code="forbidden")
+                )
+            return
 
         # Guard: reject control messages the transport does not support.
         cap_field = self._CONTROL_CAPABILITY_MAP.get(msg_type or "")
@@ -3935,11 +4117,16 @@ class Broker(
                 if request_id in self._unrestored_permissions:
                     raise ControlRecoveryError("This approval belongs to a previous native process")
                 behavior = data.get("behavior", "deny")
+                # An approver (below owner) may allow/deny the pending tool
+                # call, but must not also rewrite it: updated_input can
+                # change WHAT command runs, and updated_permissions can grant
+                # a broader mode (e.g. bypassPermissions) than this one
+                # decision implies. Only the owner may set either.
                 response = {
                     "behavior": behavior,
-                    "updatedInput": data.get("updated_input", {}),
+                    "updatedInput": data.get("updated_input", {}) if actual_role == "owner" else {},
                 }
-                if data.get("updated_permissions"):
+                if actual_role == "owner" and data.get("updated_permissions"):
                     response["updatedPermissions"] = data["updated_permissions"]
                 if "content" in data:
                     # Opaque structured content for native form elicitations.
@@ -4118,14 +4305,21 @@ class Broker(
                 content = data.get("content", "")
                 if not target or not content:
                     return
+                if not await self._guard_reply_context_consumption(
+                    str(target), actual_role, data, sender_ws
+                ):
+                    return
                 try:
                     await self.handle_directed_room_message(
                         str(target),
                         str(content),
                         source="browser",
                         request_id=self._extract_request_id(data),
-                        metadata=(
-                            data.get("metadata") if isinstance(data.get("metadata"), dict) else None
+                        metadata=_sanitize_directed_metadata(
+                            actual_role,
+                            data.get("metadata")
+                            if isinstance(data.get("metadata"), dict)
+                            else None,
                         ),
                     )
                 except LookupError as exc:
@@ -4190,10 +4384,16 @@ class Broker(
                 # trace context outside the browser's nested metadata object.
                 # Give the channel adapter first refusal before the resident's
                 # default browser route so that context is not discarded.
-                if await self._try_route_pending_help_reply(data, content_str):
-                    return
-                if await self._try_route_single_room_peer_message(data, content_str):
-                    return
+                # sender_ws is None ONLY for the real Telegram channel's own
+                # on_message callback (see chronicle.py's TelegramChannel
+                # wiring) — a live browser connection claiming
+                # {"source": "telegram"} must never reach this "answer a
+                # pending operator wait" shortcut just by asserting it.
+                if sender_ws is None:
+                    if await self._try_route_pending_help_reply(data, content_str):
+                        return
+                    if await self._try_route_single_room_peer_message(data, content_str):
+                        return
 
                 # Resident sessions: untargeted messages route to the
                 # configured default participant as directed messages. Normalize
@@ -4219,15 +4419,26 @@ class Broker(
                             )
                         return
                 if default_target:
+                    if not await self._guard_reply_context_consumption(
+                        default_target, actual_role, data, sender_ws
+                    ):
+                        return
                     request_id = data.get("request_id")
                     request_id = request_id if isinstance(request_id, str) and request_id else None
+                    # A live browser connection can never claim "telegram" —
+                    # only the real Telegram channel dispatches with no
+                    # sender_ws (see the sender_ws is None guard above).
                     incoming_source = str(data.get("source") or "").strip().lower()
-                    source = "telegram" if incoming_source == "telegram" else "browser"
+                    is_telegram = sender_ws is None and incoming_source == "telegram"
+                    source = "telegram" if is_telegram else "browser"
                     if source == "telegram":
                         metadata = _telegram_directed_metadata(data)
                     else:
-                        metadata = (
-                            data.get("metadata") if isinstance(data.get("metadata"), dict) else None
+                        metadata = _sanitize_directed_metadata(
+                            actual_role,
+                            data.get("metadata")
+                            if isinstance(data.get("metadata"), dict)
+                            else None,
                         )
                     try:
                         await self.handle_directed_room_message(

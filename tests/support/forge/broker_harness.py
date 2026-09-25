@@ -68,8 +68,16 @@ class FakeWebSocket:
         # Set by ``kill`` to make the NEXT receive raise WebSocketDisconnect,
         # unwinding handle_websocket exactly like a dropped browser socket.
         self._disconnect = False
-        # Headers are read pre-accept by _update_jwt_from_websocket.
-        self.headers: dict[str, str] = {}
+        # Headers are read pre-accept by _update_jwt_from_websocket AND by
+        # WebSocketLifecycleMixin._resolve_room_role. This harness models a
+        # single trusted local browser connection (not a multi-role
+        # scenario), so it defaults to the owner room role — every existing
+        # harness-based test exercises owner-level actions (interrupt,
+        # steering, permission responses, ...) and none of them stand up a
+        # session_participants grant, so "owner" is the only role that keeps
+        # their existing behavior. A test that wants a non-owner connection
+        # sets ``ws.headers["x-niuu-room-role"]`` before calling ``connect``.
+        self.headers: dict[str, str] = {"x-niuu-room-role": "owner"}
         # Production reconnect reads the browser's history query preference.
         # Model the empty default rather than terminating the fake connection
         # with AttributeError before the reconnect behavior can be exercised.

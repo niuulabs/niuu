@@ -24,9 +24,11 @@ if TYPE_CHECKING:
     from volundr.domain.services.chronicle import ChronicleService
     from volundr.domain.services.repo import ProviderInfo, RepoService
     from volundr.domain.services.session_archive import SessionArchiveService
+    from volundr.domain.services.session_participants import SessionParticipantService
     from volundr.domain.services.stats import StatsService
     from volundr.domain.services.token import TokenService
     from volundr.domain.services.workspace import WorkspaceService
+    from volundr.domain.session_participants import SessionParticipant
     from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 
     from .session import SessionService
@@ -47,6 +49,7 @@ class ForgeService:
         archive_service: SessionArchiveService | None = None,
         workspace_service: WorkspaceService | None = None,
         project_service=None,
+        session_participant_service: SessionParticipantService,
     ) -> None:
         self._session_service = session_service
         self._stats_service = stats_service
@@ -57,6 +60,7 @@ class ForgeService:
         self._archive_service = archive_service
         self._workspace_service = workspace_service
         self._project_service = project_service
+        self._session_participant_service = session_participant_service
 
     @property
     def has_broadcaster(self) -> bool:
@@ -73,6 +77,7 @@ class ForgeService:
             archive_service=self._archive_service,
             workspace_service=workspace_service,
             project_service=self._project_service,
+            session_participant_service=self._session_participant_service,
         )
 
     async def list_sessions(
@@ -87,6 +92,34 @@ class ForgeService:
             include_archived=include_archived,
             principal=principal,
         )
+
+    async def list_participant_only_sessions(
+        self,
+        *,
+        status=None,
+        include_archived: bool = False,
+        principal: Principal | None = None,
+        exclude_ids: frozenset[UUID] = frozenset(),
+    ) -> list[tuple[Session, SessionParticipant]]:
+        """Sessions *principal* actively participates in but does not own.
+
+        Returns each session paired with the caller's own grant (for
+        rendering a room summary that shows their role). Excludes
+        ``exclude_ids`` (the caller's own ``list_sessions`` result, so a
+        session already owned/tenant-visible is never duplicated) and honors
+        the status filter, matching ``list_sessions``'s own contract. Cedar
+        authorizes these for ``read_room``, not ``read`` — the caller must
+        never render the full session detail for one of these (see
+        SessionParticipantService.list_participant_sessions).
+        """
+        if principal is None:
+            return []
+        pairs = await self._session_participant_service.list_participant_sessions(
+            principal, include_archived=include_archived
+        )
+        if status is not None:
+            pairs = [(s, g) for s, g in pairs if s.status == status]
+        return [(s, g) for s, g in pairs if s.id not in exclude_ids]
 
     async def archive_stopped_sessions(self) -> list[UUID]:
         return await self._session_service.archive_stopped_sessions()

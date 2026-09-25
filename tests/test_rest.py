@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
-from tests.conftest import MockEventBroadcaster
+from tests.conftest import MockEventBroadcaster, make_session_participant_service
 from volundr.adapters.inbound.rest import (
     _server_side_http_proxy_target,
     _server_side_ws_connect_overrides,
@@ -93,6 +93,7 @@ class TestDeviceEndpoints:
             stats_service=StatsService(stats_repository, session_service),
             pricing_provider=pricing_provider,
             device_repository=device_repo,
+            session_participant_service=make_session_participant_service(session_service),
         )
         app.include_router(router)
         return TestClient(app)
@@ -162,6 +163,7 @@ class TestDeviceEndpoints:
             session_service=session_service,
             stats_service=StatsService(stats_repository, session_service),
             pricing_provider=pricing_provider,
+            session_participant_service=make_session_participant_service(session_service),
         )
         app.include_router(router)
         client = TestClient(app)
@@ -194,6 +196,7 @@ class TestSSEEndpoint:
             stats_service=stats_service,
             pricing_provider=pricing_provider,
             broadcaster=None,
+            session_participant_service=make_session_participant_service(session_service),
         )
         app.include_router(router)
 
@@ -247,6 +250,7 @@ class TestSSEEndpoint:
             stats_service=stats_service,
             pricing_provider=pricing_provider,
             broadcaster=broadcaster,
+            session_participant_service=make_session_participant_service(session_service),
         )
         app.include_router(router)
 
@@ -287,6 +291,7 @@ class TestSSEEndpoint:
                 stats_service=StatsService(stats_repository, session_service),
                 pricing_provider=pricing_provider,
                 broadcaster=broadcaster,
+                session_participant_service=make_session_participant_service(session_service),
             )
         )
         return app
@@ -394,11 +399,13 @@ class TestSSEEndpoint:
     def test_router_refuses_a_stream_without_stats(self, repository, pod_manager, pricing_provider):
         """The stream cannot serve stats_updated without a stats service, so say so."""
         broadcaster = InMemoryEventBroadcaster()
+        session_service = SessionService(repository=repository, pod_manager=pod_manager)
         with pytest.raises(ValueError, match="stats_service"):
             create_router(
-                session_service=SessionService(repository=repository, pod_manager=pod_manager),
+                session_service=session_service,
                 pricing_provider=pricing_provider,
                 broadcaster=broadcaster,
+                session_participant_service=make_session_participant_service(session_service),
             )
 
 
@@ -421,6 +428,7 @@ class TestStatsScope:
             create_router(
                 session_service=session_service,
                 stats_service=StatsService(stats_repository, session_service),
+                session_participant_service=make_session_participant_service(session_service),
             )
         )
         return TestClient(app)
@@ -474,6 +482,7 @@ class TestSessionEndpoints:
             stats_service=stats_service,
             pricing_provider=pricing_provider,
             broadcaster=mock_broadcaster,
+            session_participant_service=make_session_participant_service(session_service),
         )
         app.include_router(router)
         return app
@@ -595,6 +604,7 @@ class TestStatsEndpoint:
             session_service=session_service,
             stats_service=stats_service,
             pricing_provider=pricing_provider,
+            session_participant_service=make_session_participant_service(session_service),
         )
         app.include_router(router)
         return app

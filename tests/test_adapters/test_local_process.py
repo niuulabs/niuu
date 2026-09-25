@@ -1133,6 +1133,39 @@ class TestProcessSpawning:
         assert env["SKULD__PORT"] == "9100"
         assert env["SKULD__SESSION__ID"] == str(git_session.id)
 
+    async def test_spawn_renders_proxy_room_role_source(
+        self,
+        manager: LocalProcessPodManager,
+        git_session: Session,
+        default_spec: SessionSpec,
+        tmp_workspaces: Path,
+    ) -> None:
+        """This pod is reached exclusively through niuu.session_proxy on the
+        process backend, never a Kubernetes-style Gateway/ext_authz
+        boundary — the one backend where the proxy's own room-role header
+        is the correct source of truth for a missing header
+        (skuld.config.WsAuthConfig.room_role_source; every other backend
+        keeps the "deployment" default and renders nothing here)."""
+        workspace = tmp_workspaces / str(git_session.id)
+        workspace.mkdir(parents=True)
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 42
+
+        with (
+            patch.object(manager, "_resolve_skuld_command", return_value=["python", "-m", "skuld"]),
+            patch.object(manager, "_resolve_claude_binary", return_value="/usr/bin/fake-claude"),
+            patch(
+                "asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                return_value=mock_proc,
+            ) as mock_exec,
+        ):
+            await manager._spawn_skuld(git_session, default_spec, workspace, 9100)
+
+        env = mock_exec.call_args.kwargs["env"]
+        assert env["SKULD__WS_AUTH__ROOM_ROLE_SOURCE"] == "proxy"
+
     async def test_spawn_closes_log_file(
         self,
         manager: LocalProcessPodManager,

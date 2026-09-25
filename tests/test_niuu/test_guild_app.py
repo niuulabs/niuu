@@ -128,13 +128,16 @@ def test_create_app_seeds_embedded_forge_when_no_workers_configured(monkeypatch)
     instance_repo.ensure_schema.assert_awaited_once()
 
 
-def test_create_app_threads_dev_identity_to_the_ravn_session_proxy(monkeypatch) -> None:
+def test_create_app_never_threads_dev_identity_to_the_ravn_session_proxy(monkeypatch) -> None:
+    """Guild has no local dev-identity mode: every route may proxy to another
+    machine, so the Ravn session proxy is built with no dev_identity kwarg at
+    all — it forwards only the caller's bearer token regardless of host mode."""
     from fastapi import APIRouter
 
-    received: list[bool] = []
+    received_kwargs: list[dict] = []
 
-    def _router(_service, *, embedded_forge_app=None, dev_identity=False):
-        received.append(dev_identity)
+    def _router(_service, **kwargs):
+        received_kwargs.append(kwargs)
         return APIRouter()
 
     monkeypatch.setattr(guild_app, "database_pool", _fake_database_pool)
@@ -146,11 +149,35 @@ def test_create_app_threads_dev_identity_to_the_ravn_session_proxy(monkeypatch) 
     monkeypatch.setattr(guild_app, "seed_configured_instances", AsyncMock(return_value=0))
     monkeypatch.setattr(guild_app, "create_ravn_session_proxy_router", _router)
 
-    for dev_identity in (False, True):
-        with TestClient(guild_app.create_app(settings=Settings(), dev_identity=dev_identity)):
-            pass
+    with TestClient(guild_app.create_app(settings=Settings())):
+        pass
 
-    assert received == [False, True]
+    assert received_kwargs == [{"embedded_forge_app": None, "owner_probe_timeout_seconds": 15.0}]
+
+
+def test_create_app_configures_guild_transport_from_settings(monkeypatch) -> None:
+    """The pin-handshake connect-timeout ceiling is a Settings field, not a
+    hardcoded module constant — create_app must push it into
+    guild_transport's process-wide default on every startup."""
+    from niuu.adapters.outbound import guild_transport
+
+    monkeypatch.setattr(guild_app, "database_pool", _fake_database_pool)
+    monkeypatch.setattr(
+        guild_app, "PostgresInstanceRepository", lambda _pool: _DummyInstanceRepository()
+    )
+    monkeypatch.setattr(guild_app, "PostgresPATRepository", lambda _pool: object())
+    monkeypatch.setattr(guild_app, "create_pat_validator", lambda *_args: _DummyPATValidator())
+    monkeypatch.setattr(guild_app, "seed_configured_instances", AsyncMock(return_value=0))
+
+    original = guild_transport.default_connect_timeout_ceiling_seconds()
+    try:
+        with TestClient(
+            guild_app.create_app(settings=Settings(guild_transport_connect_timeout_seconds=2.5))
+        ):
+            pass
+        assert guild_transport.default_connect_timeout_ceiling_seconds() == 2.5
+    finally:
+        guild_transport.configure_default_timeouts(connect_timeout_ceiling_seconds=original)
 
 
 def test_instance_health_config_rejects_non_positive_interval_and_timeout() -> None:

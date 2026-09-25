@@ -81,7 +81,7 @@ class LocalVolundrAdapterFactory:
     """
 
     def __init__(self, url: str) -> None:
-        self._adapter = VolundrHTTPAdapter(base_url=url, name="local")
+        self._adapter = VolundrHTTPAdapter(base_url=url, name="local", config={})
 
     async def for_owner(self, owner_id: str) -> list[VolundrPort]:
         return [self._adapter]
@@ -208,6 +208,7 @@ class VolundrAdapterFactory:
                         target_id=instance.id,
                         tags=instance.tags,
                         auth=self._target_auth,
+                        config=instance.config,
                     )
                 )
             except Exception:

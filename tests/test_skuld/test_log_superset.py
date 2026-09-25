@@ -325,11 +325,16 @@ class TestFirstConnectSupersetOverPerChannelSends:
         assert "slash_commands" in self._logged_kinds(b)
 
     async def test_room_prompt_resent_ack_is_logged(self, tmp_path):
+        from skuld.channels import WebSocketChannel
+
         b = _broker(tmp_path)
         transport = AsyncMock()
         transport.capabilities = TransportCapabilities()
         b._transport = transport
         ws = AsyncMock()
+        # resend_initial_prompt is owner-only; register this connection as
+        # owner so the room-role gate doesn't preempt the behavior under test.
+        b._channels.add(WebSocketChannel(ws, room_role="owner"))
 
         async def _resend(**_kwargs):
             return "msg-99"

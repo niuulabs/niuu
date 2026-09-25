@@ -23,6 +23,7 @@ from niuu.domain.json_text import json_text_safe
 from niuu.domain.services.token_scope import OPENSHELL_SESSION_TOKEN_USE, require_scope
 from niuu.domain.session_endpoint import public_session_endpoint
 from niuu.domain.text_projection import projection_revision
+from niuu.room_access import ROOM_ROLE_HEADER
 from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turns, is_elided_input
 from skuld.conversation_snapshot import (
     ConversationSnapshotTooLargeError,
@@ -110,6 +111,8 @@ from volundr.domain.services import (
 from volundr.domain.services.permission_auto_approval import (
     evaluate_permission_auto_approval,
 )
+from volundr.domain.services.session_participants import SessionParticipantService
+from volundr.domain.session_participants import SessionParticipant
 from volundr.domain.session_read_state import (
     SessionReadState,
     SessionReadStateChange,
@@ -1083,6 +1086,34 @@ class SessionResponse(BaseModel):
         )
 
 
+class SessionRoomInfo(BaseModel):
+    """The caller's own durable grant on a session they participate in."""
+
+    role: str = Field(description="observer/teacher/debugger/approver")
+    participant_status: str = Field(description="invited/active/revoked")
+    expires_at: str | None = Field(default=None, description="ISO 8601 grant expiry, if any")
+
+
+class SessionRoomSummary(BaseModel):
+    """Room-visibility shape for a session the caller participates in but does
+    not own. Deliberately excludes everything ``SessionResponse`` exposes
+    beyond identity/status: repo, branch, local_path, code_endpoint, pod_name,
+    error, activity_metadata, and external ids stay owner/admin-only — Cedar
+    authorizes this shape through ``read_room``, never ``read`` (see
+    ForgeService.list_participant_only_sessions). The web client uses
+    ``room.role`` to decide whether it can attach at all, and if so with what
+    proxied capability; the actual attach/message gating still runs
+    server-side (session proxy + Skuld broker), this is only for rendering.
+    """
+
+    kind: Literal["room_summary"] = "room_summary"
+    id: UUID = Field(description="Unique session identifier")
+    name: str = Field(description="Human-readable session name")
+    status: SessionStatus = Field(description="Current lifecycle status")
+    owner_id: str | None = Field(default=None, description="User ID of the session owner")
+    room: SessionRoomInfo
+
+
 class SessionEndpoints(BaseModel):
     """Response model for session endpoints after start."""
 
@@ -1562,6 +1593,7 @@ def create_router(
     runtime_health_timeout: float = 3.0,
     history_max_turns: int = 15,
     history_max_bytes: int = 256 * 1024,
+    session_participant_service: SessionParticipantService,
 ) -> APIRouter:
     """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
     router = APIRouter(prefix=prefix)
@@ -1603,6 +1635,7 @@ def create_router(
         chronicle_service=chronicle_service,
         archive_service=archive_service,
         project_service=project_service,
+        session_participant_service=session_participant_service,
     )
 
     def _require_bound_workload_session(request: Request, session_id: UUID) -> None:
@@ -1680,6 +1713,22 @@ def create_router(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
             ) from exc
 
+    async def _check_room_access(
+        session: Session, principal: Principal | None, action: str
+    ) -> None:
+        """Authorize a room-scoped action (``read_room``/``resolve_gate``).
+
+        Delegates to ``SessionParticipantService`` so an ACTIVE, unexpired
+        participant grant (not just the owner/admin) is honoured.
+        ``session_participant_service`` is a required dependency of this
+        router (see ``create_router``'s signature) — there is no degraded
+        owner/admin-only path when it is missing, because that would
+        silently narrow every room grant back to ownership alone the moment
+        the wiring drifted, which is exactly the failure mode this service
+        exists to prevent.
+        """
+        await session_participant_service.check_room_access(session, principal, action)
+
     if project_service is not None:
 
         async def project_principal(request: Request):
@@ -1749,34 +1798,14 @@ def create_router(
         """Bind the shared Forge facade to the request-scoped workspace service."""
         return forge.with_workspace_service(request.app.state.workspace_service)
 
-    @router.get("/sessions", response_model=list[SessionResponse], tags=["Sessions"])
-    async def list_sessions(
-        request: Request,
-        response: Response,
-        scope: Literal["local", "guild"] = Query(
-            default="local", description="Standalone Forge always serves its own local sessions"
-        ),
-        status_filter: SessionStatus | None = Query(
-            default=None, alias="status", description="Filter by session status"
-        ),
-        include_archived: bool = Query(
-            default=False, description="Include archived sessions in results"
-        ),
-        project_id: UUID | None = Query(default=None),
-        role: str | None = Query(default=None),
-        parent_session_id: UUID | None = Query(default=None),
-        parent_instance_id: str | None = Query(default=None),
-    ) -> list[SessionResponse]:
-        """List all sessions. Archived sessions are excluded by default."""
-        response.headers["X-Forge-Session-Scope"] = "local"
-        principal = await _optional_principal(request)
-        if principal is None and _strict_identity_enabled(request):
-            return []
-        sessions = await forge.list_sessions(
-            status=status_filter,
-            include_archived=include_archived,
-            principal=principal,
-        )
+    def _coordination_filtered(
+        sessions: list[Session],
+        *,
+        project_id: UUID | None,
+        role: str | None,
+        parent_session_id: UUID | None,
+        parent_instance_id: str | None,
+    ) -> list[Session]:
         if project_id is not None:
             sessions = [
                 s for s in sessions if s.coordination and s.coordination.project_id == project_id
@@ -1798,8 +1827,86 @@ def create_router(
                     or s.coordination.parent.instance_id == parent_instance_id
                 )
             ]
+        return sessions
+
+    def _room_summary(session: Session, grant: SessionParticipant) -> SessionRoomSummary:
+        return SessionRoomSummary(
+            id=session.id,
+            name=session.name,
+            status=session.status,
+            owner_id=session.owner_id,
+            room=SessionRoomInfo(
+                role=grant.role.value,
+                participant_status=grant.status.value,
+                expires_at=grant.expires_at.isoformat() if grant.expires_at else None,
+            ),
+        )
+
+    @router.get("/sessions", response_model=None, tags=["Sessions"])
+    async def list_sessions(
+        request: Request,
+        response: Response,
+        scope: Literal["local", "guild"] = Query(
+            default="local", description="Standalone Forge always serves its own local sessions"
+        ),
+        status_filter: SessionStatus | None = Query(
+            default=None, alias="status", description="Filter by session status"
+        ),
+        include_archived: bool = Query(
+            default=False, description="Include archived sessions in results"
+        ),
+        project_id: UUID | None = Query(default=None),
+        role: str | None = Query(default=None),
+        parent_session_id: UUID | None = Query(default=None),
+        parent_instance_id: str | None = Query(default=None),
+    ) -> list[SessionResponse | SessionRoomSummary]:
+        """List all sessions. Archived sessions are excluded by default.
+
+        A session the caller owns (or is tenant-admin/viewer for) renders as
+        the full ``SessionResponse``. A session the caller only actively
+        participates in (an invited, accepted session_participants grant)
+        renders as the smaller ``SessionRoomSummary`` instead — it is
+        authorized through Cedar's ``read_room``, never ``read``, so it must
+        never carry what ``read`` alone unlocks (repo/branch/local_path,
+        pod_name, error, activity_metadata, external ids).
+        """
+        response.headers["X-Forge-Session-Scope"] = "local"
+        principal = await _optional_principal(request)
+        if principal is None and _strict_identity_enabled(request):
+            return []
+        sessions = await forge.list_sessions(
+            status=status_filter,
+            include_archived=include_archived,
+            principal=principal,
+        )
+        sessions = _coordination_filtered(
+            sessions,
+            project_id=project_id,
+            role=role,
+            parent_session_id=parent_session_id,
+            parent_instance_id=parent_instance_id,
+        )
         sessions = await forge.with_read_states(sessions, principal)
-        return [_session_response(s) for s in sessions]
+        result: list[SessionResponse | SessionRoomSummary] = [
+            _session_response(s) for s in sessions
+        ]
+
+        room_pairs = await forge.list_participant_only_sessions(
+            status=status_filter,
+            include_archived=include_archived,
+            principal=principal,
+            exclude_ids=frozenset(s.id for s in sessions),
+        )
+        room_sessions = _coordination_filtered(
+            [s for s, _grant in room_pairs],
+            project_id=project_id,
+            role=role,
+            parent_session_id=parent_session_id,
+            parent_instance_id=parent_instance_id,
+        )
+        room_session_ids = {s.id for s in room_sessions}
+        result.extend(_room_summary(s, g) for s, g in room_pairs if s.id in room_session_ids)
+        return result
 
     @router.get(
         "/sessions/stream",
@@ -2103,6 +2210,59 @@ def create_router(
 
         session = (await forge.with_read_states([session], principal))[0]
         return _session_response(session)
+
+    @router.get(
+        "/sessions/{session_id}/room",
+        response_model=SessionRoomSummary,
+        responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+        tags=["Sessions"],
+    )
+    async def get_session_room(
+        request: Request, session_id: UUID = Path(description="Unique session identifier")
+    ) -> SessionRoomSummary:
+        """Room-scoped session view for a participant who does not own the session.
+
+        ``GET /sessions/{id}`` requires "read" (owner/admin/tenant-viewer
+        only) and 403s a participant. This is the room-scoped equivalent,
+        authorized by "read_room" instead — the same action that lets a
+        participant open the room's websocket, gates, and transcript. The
+        owner/admin may call it too; Cedar grants them read_room as well.
+        """
+        session = await forge.get_session(session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        principal = await _optional_principal(request)
+        try:
+            await _check_room_access(session, principal, "read_room")
+        except PermissionError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication is required to open this room",
+            )
+        except SessionAccessDeniedError:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied to session {session_id}",
+            )
+
+        grant = None
+        if principal is not None:
+            grant = await session_participant_service.get_own_grant(session_id, principal.user_id)
+        if grant is not None and grant.is_active:
+            return _room_summary(session, grant)
+        # No active grant: read_room passed some other way (owner/admin),
+        # which Cedar only ever grants that role without a room_* attribute
+        # match.
+        return SessionRoomSummary(
+            id=session.id,
+            name=session.name,
+            status=session.status,
+            owner_id=session.owner_id,
+            room=SessionRoomInfo(role="owner", participant_status="active"),
+        )
 
     @router.get("/sessions/{session_id}/runtime-version", tags=["Sessions"])
     async def get_runtime_version(request: Request, session_id: UUID) -> dict:
@@ -4020,12 +4180,24 @@ def create_router(
             )
         principal = await _optional_principal(request)
         try:
-            await forge.ensure_access(session, principal, "read")
-        except SessionAccessDeniedError:
+            # read_room OR read: the gate list is room state, visible to any
+            # active session_participants grant (read_room), but must not
+            # take away what a tenant volundr:viewer already had under
+            # plain "read" — session-viewer grants "read", never "read_room".
+            await _check_room_access(session, principal, "read_room")
+        except PermissionError:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to read gates for this session",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication is required to read gates for this session",
             )
+        except SessionAccessDeniedError:
+            try:
+                await forge.ensure_access(session, principal, "read")
+            except SessionAccessDeniedError:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to read gates for this session",
+                )
         if not session.chat_endpoint:
             return {"gates": []}
 
@@ -4105,14 +4277,16 @@ def create_router(
             )
         # An empty owner_id must never grant access: delegate to the same
         # Cedar-backed authorization path every other mutating session route
-        # uses (SessionService._check_access) instead of a hand-rolled
-        # owner_id comparison. "update" is the declared action other
-        # session-mutation routes (e.g. rename/update_session) authorize
-        # with; Cedar has no dedicated "resolve"/"attach" action for
-        # sessions, and "update" is covered by the session-owner and
-        # session-admin policy rules.
+        # uses. "resolve_gate" (not "update"): only the owner/admin or an
+        # ACTIVE, unexpired session_participants grant with role=approver may
+        # resolve a gate (session-owner / session-participant-approver).
         try:
-            await forge.ensure_access(session, principal, "update")
+            await _check_room_access(session, principal, "resolve_gate")
+        except PermissionError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication is required to resolve gates for this session",
+            )
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -4126,6 +4300,26 @@ def create_router(
         intent = request.headers.get(WORKFLOW_GATE_INTENT_HEADER)
         if intent:
             headers[WORKFLOW_GATE_INTENT_HEADER] = intent
+        # "approver" is the minimum tier check_room_access("resolve_gate") above
+        # could have just accepted (session-owner or session-participant-approver
+        # are Cedar's only permit rules for it), so it always satisfies the
+        # broker's own ROOM_ROLES_MAY_RESOLVE_GATES gate. This header is only
+        # trustworthy when it survives to the broker unmodified: the mini-mode
+        # session proxy forwards it as-is (ws_auth.room_role_source: proxy).
+        # Every other backend (Kubernetes, OpenShell, VM) strips any
+        # client-supplied copy on the way in and ignores it entirely
+        # (ws_auth.room_role_source: deployment, the default) — that pod's
+        # own auth boundary already gates every caller who reaches it, and
+        # participants (so a non-owner "approver" grant) are not supported
+        # there at all, so this header is simply inert on that path, not
+        # load-bearing. Do not try to authenticate that hop with a separate
+        # scoped credential: the sidecar ext_authz routes have no
+        # required_scope concept, so a scoped token is refused there and the
+        # deployment-mode middleware refuses it before that check even runs
+        # on a non-enforced pod — there is no topology where a Skuld-side
+        # scoped token for this route actually works. The Kubernetes owner
+        # already resolves via room_role_source=deployment instead.
+        headers[ROOM_ROLE_HEADER] = "approver"
 
         try:
             proxy_url, routing_headers = _http_proxy_target(

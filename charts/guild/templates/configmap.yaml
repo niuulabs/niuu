@@ -106,6 +106,15 @@ data:
     forge_stream_keepalive_seconds: {{ .Values.forgeStream.keepaliveSeconds | default 15.0 }}
     forge_stream_queue_maxsize: {{ .Values.forgeStream.queueMaxsize | default 256 }}
 
+    guild_transport_connect_timeout_seconds: {{ .Values.guildTransport.connectTimeoutSeconds | default 5.0 }}
+    guild_owner_probe_timeout_seconds: {{ .Values.guildTransport.ownerProbeTimeoutSeconds | default 15.0 }}
+    {{- $trustedPlaintextHostSuffixes := .Values.guildTransport.trustedPlaintextHostSuffixes }}
+    {{- if not (kindIs "invalid" $trustedPlaintextHostSuffixes) }}
+    guild_transport_trusted_plaintext_host_suffixes: {{ $trustedPlaintextHostSuffixes | toJson }}
+    {{- else }}
+    guild_transport_trusted_plaintext_host_suffixes: [".svc.cluster.local", ".svc"]
+    {{- end }}
+
     niuu:
       {{- if .Values.registry.instances }}
       instances:

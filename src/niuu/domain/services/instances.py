@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from identity.models import Resource
@@ -15,6 +16,12 @@ from niuu.domain.models import (
     RegisteredInstance,
 )
 from niuu.domain.tags import matches_tags
+from niuu.domain.tls_fingerprint import normalize_tls_fingerprint
+from niuu.domain.transport_security import (
+    configured_dial_urls,
+    insecure_transport_reason,
+    normalize_allow_plaintext,
+)
 from niuu.ports.instances import InstanceRepository
 
 
@@ -28,6 +35,60 @@ class InstanceAccessError(PermissionError):
 
 class InstanceValidationError(ValueError):
     """Raised when the instance payload is invalid."""
+
+
+class InstanceTransportSecurityError(InstanceValidationError):
+    """Raised when a remote instance's transport does not meet the LAN policy.
+
+    See the "LAN transport" owner decision: Tailscale/an already-encrypted
+    network first, a pinned self-signed certificate second, plaintext only as
+    an explicit per-instance opt-in. A distinct subclass so the REST layer can
+    map this to 422 (a malformed request) rather than the 403 used for the
+    other ``InstanceValidationError`` cases (a request that is well-formed but
+    not permitted).
+
+    This write-time check is a fail-fast convenience, not the enforcement
+    boundary: a row that predates this validation (or was written before a
+    ``ravn_base_url`` was added) is still stopped at every outbound call by
+    ``niuu.adapters.outbound.guild_transport`` — see that module's own
+    enforcement of the same policy against whichever URL is actually dialled.
+    """
+
+
+def _require_secure_transport(base_url: str, config: dict) -> None:
+    """Enforce https:// for every URL this instance may be dialled on.
+
+    A write-time fail-fast check covering both ``base_url`` and a configured
+    ``ravn_base_url`` — see ``InstanceTransportSecurityError`` for why this
+    alone is not the enforcement boundary. A configured ``tls_fingerprint``
+    is validated here too (well-formed, and only meaningful over https) so a
+    malformed or unusable pin is rejected at registration, not discovered at
+    the first outbound call.
+    """
+    try:
+        allow_plaintext = normalize_allow_plaintext(config)
+    except ValueError as exc:
+        raise InstanceTransportSecurityError(str(exc)) from exc
+    fingerprint = config.get("tls_fingerprint")
+    if fingerprint is not None:
+        try:
+            normalize_tls_fingerprint(str(fingerprint))
+        except ValueError as exc:
+            raise InstanceTransportSecurityError(str(exc)) from exc
+    for url in configured_dial_urls(base_url, config):
+        reason = insecure_transport_reason(url, allow_plaintext=allow_plaintext)
+        if reason:
+            raise InstanceTransportSecurityError(reason)
+        if fingerprint is not None and urlsplit(url).scheme != "https":
+            raise InstanceTransportSecurityError(
+                f"{url}: config.tls_fingerprint requires https:// on every "
+                "URL this instance may be dialled on"
+            )
+
+
+def _touches_transport_fields(base_url: str | None, config: dict | None) -> bool:
+    """Whether an ``update_instance`` call is changing where/how this instance is dialled."""
+    return base_url is not None or config is not None
 
 
 class InstanceService:
@@ -118,18 +179,21 @@ class InstanceService:
             tenant_id=tenant_id,
         )
         now = datetime.now(UTC)
+        normalized_base_url = base_url.strip().rstrip("/")
+        normalized_config = dict(config or {})
+        _require_secure_transport(normalized_base_url, normalized_config)
         instance = RegisteredInstance(
             id=str(uuid4()),
             kind=kind,
             slug=slug.strip(),
             name=name.strip(),
-            base_url=base_url.strip().rstrip("/"),
+            base_url=normalized_base_url,
             visibility=visibility,
             owner_id=owner_id,
             tenant_id=tenant_id,
             enabled=enabled,
             is_default=is_default,
-            config=dict(config or {}),
+            config=normalized_config,
             created_at=now,
             updated_at=now,
             tags=list(tags or []),
@@ -166,17 +230,41 @@ class InstanceService:
             owner_id=owner_id if visibility is not None else existing.owner_id,
             tenant_id=tenant_id if visibility is not None else existing.tenant_id,
         )
+        resolved_base_url = (
+            base_url.strip().rstrip("/") if base_url is not None else existing.base_url
+        )
+        resolved_config = dict(config) if config is not None else existing.config
+        # A row can predate this validation (or predate ravn_base_url), so an
+        # update that does not touch base_url/config, or that disables the
+        # instance, must not be trapped behind a security check it isn't
+        # asking to change — the caller may be trying to turn the insecure
+        # instance OFF. Call-time enforcement (guild_transport.py) is the
+        # real boundary regardless: it re-checks every dialled URL on every
+        # outbound call, so a legacy row is never silently used insecurely
+        # even when its own update sails through here.
+        #
+        # Re-enabling is treated the same as touching the transport fields:
+        # PATCH {base_url: "http://x", enabled: false} correctly skips the
+        # check (it is disabling), but a later, separate
+        # PATCH {enabled: true} on that same row — base_url/config untouched
+        # by *this* call — must not silently re-enable an instance this
+        # service already knows is insecure just because neither field was
+        # part of this particular request.
+        resulting_enabled = enabled if enabled is not None else existing.enabled
+        re_enabling = enabled is True and not existing.enabled
+        if resulting_enabled and (_touches_transport_fields(base_url, config) or re_enabling):
+            _require_secure_transport(resolved_base_url, resolved_config)
         updated = replace(
             existing,
             slug=slug.strip() if slug is not None else existing.slug,
             name=name.strip() if name is not None else existing.name,
-            base_url=base_url.strip().rstrip("/") if base_url is not None else existing.base_url,
+            base_url=resolved_base_url,
             visibility=resolved_visibility,
             owner_id=resolved_owner_id,
             tenant_id=resolved_tenant_id,
             enabled=enabled if enabled is not None else existing.enabled,
             is_default=is_default if is_default is not None else existing.is_default,
-            config=dict(config) if config is not None else existing.config,
+            config=resolved_config,
             tags=list(tags) if tags is not None else existing.tags,
             updated_at=datetime.now(UTC),
         )
@@ -209,6 +297,8 @@ class InstanceService:
     ) -> RegisteredInstance:
         slug = slug.strip()
         base_url = base_url.strip().rstrip("/")
+        normalized_config = dict(config or {})
+        _require_secure_transport(base_url, normalized_config)
         existing = await self._find_seed_match(kind, slug, visibility, owner_id, tenant_id)
         if existing is not None:
             seeded = replace(
@@ -217,7 +307,7 @@ class InstanceService:
                 base_url=base_url,
                 enabled=enabled,
                 is_default=is_default,
-                config=dict(config or {}),
+                config=normalized_config,
                 tags=list(tags) if tags is not None else existing.tags,
                 updated_at=datetime.now(UTC),
             )
@@ -236,7 +326,7 @@ class InstanceService:
                 tenant_id=tenant_id,
                 enabled=enabled,
                 is_default=is_default,
-                config=dict(config or {}),
+                config=normalized_config,
                 created_at=now,
                 updated_at=now,
                 tags=list(tags or []),

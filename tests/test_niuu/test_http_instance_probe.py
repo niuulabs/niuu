@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 import respx
 from fastapi import FastAPI
 from httpx import Response
 
+from niuu.adapters.outbound import guild_transport
 from niuu.adapters.outbound.http_instance_probe import (
     DEFAULT_HEALTH_PATHS,
     HttpInstanceProbeAdapter,
@@ -204,3 +207,25 @@ def test_an_unrecognized_kind_falls_back_to_the_documented_default() -> None:
     resolved = adapter._resolve_health_path(_instance(kind="future-kind"))  # type: ignore[arg-type]
 
     assert resolved == "/health"
+
+
+@pytest.mark.asyncio
+async def test_probe_uses_the_shared_guild_transport_factory_and_fails_closed_on_a_pin_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe shares build_guild_httpx_client with the aggregate/WS call
+    sites, so a pinned instance's mismatched certificate is caught here too
+    — reported as unreachable, never as a request that silently skipped
+    verification."""
+
+    def _fake_fetch(*_args: Any, **_kwargs: Any) -> bytes:
+        return b"not the certificate the operator pinned"
+
+    monkeypatch.setattr(guild_transport, "fetch_leaf_certificate_der", _fake_fetch)
+    adapter = HttpInstanceProbeAdapter(timeout_seconds=5.0)
+    pinned_fingerprint = hashlib.sha256(b"the actual expected certificate").hexdigest()
+
+    result = await adapter.probe(_instance(config={"tls_fingerprint": pinned_fingerprint}))
+
+    assert result.ok is False
+    assert "does not match" in result.message

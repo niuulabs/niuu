@@ -13,6 +13,7 @@ from tests.conftest import (
     InMemorySessionRepository,
     InMemoryTimelineRepository,
     MockPodManager,
+    make_session_participant_service,
 )
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.outbound.identity import AllowAllIdentityAdapter
@@ -47,7 +48,11 @@ def chronicle_svc(
 def app(session_service: SessionService, chronicle_svc: ChronicleService) -> FastAPI:
     """Create a test FastAPI app with chronicle service."""
     app = FastAPI()
-    router = create_router(session_service, chronicle_service=chronicle_svc)
+    router = create_router(
+        session_service,
+        chronicle_service=chronicle_svc,
+        session_participant_service=make_session_participant_service(session_service),
+    )
     app.include_router(router)
     return app
 
@@ -62,7 +67,10 @@ def client(app: FastAPI) -> TestClient:
 def app_no_chronicles(session_service: SessionService) -> FastAPI:
     """Create a test FastAPI app without chronicle service."""
     app = FastAPI()
-    router = create_router(session_service)
+    router = create_router(
+        session_service,
+        session_participant_service=make_session_participant_service(session_service),
+    )
     app.include_router(router)
     return app
 
@@ -549,7 +557,13 @@ class _ScopedForge:
         app = FastAPI()
         if identity:
             app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
-        app.include_router(create_router(session_service, chronicle_service=chronicle_service))
+        app.include_router(
+            create_router(
+                session_service,
+                chronicle_service=chronicle_service,
+                session_participant_service=make_session_participant_service(session_service),
+            )
+        )
         self.client = TestClient(app)
 
     def session(self, owner_id: str, tenant_id: str = "t1"):

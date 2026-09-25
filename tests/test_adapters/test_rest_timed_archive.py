@@ -9,7 +9,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from niuu.domain.conversation_timeline import project_timeline
-from tests.conftest import InMemorySessionRepository, MockPodManager
+from tests.conftest import (
+    InMemorySessionRepository,
+    MockPodManager,
+    make_session_participant_service,
+)
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.outbound.archive_store import FileSystemArchiveStore
 from volundr.adapters.outbound.local_storage_adapter import LocalStorageAdapter
@@ -48,7 +52,13 @@ async def test_timed_archive_rest_preserves_identity_before_paging_and_elision(
     path.write_bytes(original)
     archives = SessionArchiveService(sessions, storage, FileSystemArchiveStore())
     app = FastAPI()
-    app.include_router(create_router(sessions, archive_service=archives))
+    app.include_router(
+        create_router(
+            sessions,
+            archive_service=archives,
+            session_participant_service=make_session_participant_service(sessions),
+        )
+    )
 
     class Settings:
         local_mounts = LocalMountsConfig()
