@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -44,7 +44,7 @@ from niuu.config_models import (
 )
 from niuu.domain.delivery import AcceptancePolicy
 from niuu.domain.observability import ObservabilityConfig
-from ravn.config import PersonaSourceConfig
+from ravn.config import LLMConfig, PersonaSourceConfig
 from volundr.compute.config import ComputeConfig
 from volundr.domain.models import (
     IntegrationType,
@@ -2207,6 +2207,18 @@ class Settings(BaseSettings):
     push: PushNotificationConfig = Field(default_factory=PushNotificationConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)
+    auth_mode: str = Field(
+        default="envoy",
+        description=(
+            "How this host trusts identity: 'envoy' (default — an Envoy sidecar "
+            "verifies JWTs and forwards trusted x-auth-* headers; unchanged "
+            "Kubernetes behaviour), 'none' (explicit no-auth for a host without "
+            "Envoy — mini/docker mode's default), or 'oidc' (in-process JWT "
+            "verification for a host without Envoy). Set by the mini/docker CLI "
+            "host from auth.mode (cli.config.AuthConfig); Kubernetes deployments "
+            "leave this at its default."
+        ),
+    )
     credential_store: CredentialStoreConfig = Field(default_factory=CredentialStoreConfig)
     codex_credential_broker: DynamicAdapterConfig = Field(
         default_factory=_default_codex_credential_broker,
@@ -2259,6 +2271,16 @@ class Settings(BaseSettings):
             "config files. When empty, the contributor's built-in default is used."
         ),
     )
+    ravn_flock_llm_config: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Default LLM for the Ravn nodes of flock sessions, in Ravn's `llm:` shape "
+            "(model, max_tokens, timeout, provider). It is the base layer: "
+            "workload_config.llm_config and per-persona llm overrides are merged over "
+            "it. When empty, every flock session must name its own model or its "
+            "launch fails."
+        ),
+    )
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
         default_factory=default_session_definitions,
         description="Session definitions keyed by name (e.g. skuldClaude, skuldCodex).",
@@ -2279,6 +2301,14 @@ class Settings(BaseSettings):
     )
     ravn: RavnConfig = Field(default_factory=RavnConfig)
     observatory: ObservatoryConfig = Field(default_factory=ObservatoryConfig)
+
+    @field_validator("ravn_flock_llm_config")
+    @classmethod
+    def _validate_ravn_flock_llm_config(cls, value: dict[str, Any]) -> dict[str, Any]:
+        """Reject a flock LLM default Ravn could not load, at startup, not per node."""
+        if value:
+            LLMConfig.model_validate(value)
+        return value
 
     @model_validator(mode="after")
     def _merge_built_in_session_definitions(self) -> "Settings":

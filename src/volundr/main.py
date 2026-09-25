@@ -1068,6 +1068,7 @@ def create_app(
                         resource_id = UUID(session_id)
                     except ValueError:
                         return False
+                    from identity.adapters.jwks import JwksIdentityAdapter
                     from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 
                     principal = Principal(
@@ -1076,7 +1077,21 @@ def create_app(
                         tenant_id=tenant_id or "",
                         roles=list(roles),
                     )
-                    if isinstance(identity_adapter, HeaderAuthenticationPort):
+                    if isinstance(identity_adapter, JwksIdentityAdapter):
+                        # The proxy already verified this caller's bearer JWT
+                        # once (extract_principal, before calling may_attach)
+                        # — there is no fresh token to re-verify here, only
+                        # the already-trusted (user_id, tenant_id, roles) the
+                        # proxy resolved from it. Re-derive current
+                        # role-mapping/membership for that identity instead
+                        # of demanding a signature this call site can't have.
+                        try:
+                            principal = await identity_adapter.revalidate_verified_principal(
+                                principal
+                            )
+                        except InvalidTokenError:
+                            return False
+                    elif isinstance(identity_adapter, HeaderAuthenticationPort):
                         keys = settings.identity.kwargs
                         headers = {
                             keys.get("user_id_header", "x-auth-user-id"): principal.user_id,

@@ -1900,6 +1900,37 @@ data:
     DROP INDEX IF EXISTS idx_chronicles_tenant_owner;
     ALTER TABLE chronicles DROP COLUMN IF EXISTS tenant_id;
     ALTER TABLE chronicles DROP COLUMN IF EXISTS owner_id;
+  000077_instance_health.up.sql: |
+    -- Server-side reachability tracking for registered runtime instances. Guild
+    -- probes each instance on register and on a periodic loop, and records the
+    -- result here so an offline node is reported as such instead of looking like
+    -- an idle one that simply has no sessions.
+    ALTER TABLE niuu_instances ADD COLUMN IF NOT EXISTS health TEXT NOT NULL DEFAULT 'unknown';
+    -- last_seen_at: the last time a probe SUCCEEDED — "when did it last work".
+    -- last_checked_at: the last time a probe was ATTEMPTED, success or not —
+    -- "when did we last look". A never-reachable instance has a last_checked_at
+    -- but no last_seen_at; conflating the two would let the UI invent a "just
+    -- now" last-seen time for a node that has never actually answered.
+    ALTER TABLE niuu_instances ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+    ALTER TABLE niuu_instances ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ;
+    ALTER TABLE niuu_instances ADD COLUMN IF NOT EXISTS last_error TEXT;
+
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'niuu_instances_health_check'
+        ) THEN
+            ALTER TABLE niuu_instances
+                ADD CONSTRAINT niuu_instances_health_check
+                CHECK (health IN ('unknown', 'ok', 'unreachable'));
+        END IF;
+    END $$;
+  000077_instance_health.down.sql: |
+    ALTER TABLE niuu_instances DROP CONSTRAINT IF EXISTS niuu_instances_health_check;
+    ALTER TABLE niuu_instances DROP COLUMN IF EXISTS last_error;
+    ALTER TABLE niuu_instances DROP COLUMN IF EXISTS last_checked_at;
+    ALTER TABLE niuu_instances DROP COLUMN IF EXISTS last_seen_at;
+    ALTER TABLE niuu_instances DROP COLUMN IF EXISTS health;
   000078_session_span_w3c_trace_id.up.sql: |
     -- Forge session spans key on trace_id = the session UUID, a stable per-session
     -- correlation id predating OTel adoption here. It is not a W3C trace id and

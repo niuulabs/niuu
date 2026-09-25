@@ -1267,6 +1267,18 @@ class Settings(BaseSettings):
     pat: PATConfig = Field(default_factory=PATConfig)
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    auth_mode: str = Field(
+        default="envoy",
+        description=(
+            "How this host trusts identity: 'envoy' (default — an Envoy sidecar "
+            "verifies JWTs and forwards trusted x-auth-* headers; unchanged "
+            "Kubernetes behaviour), 'none' (explicit no-auth for a host without "
+            "Envoy), or 'oidc' (in-process JWT verification for a host without "
+            "Envoy). Set by the mini/docker CLI host from host_auth.mode "
+            "(cli.config.AuthConfig) via the AUTH_MODE env var; Kubernetes "
+            "deployments leave this at its default."
+        ),
+    )
     cerbos: CerbosConfig = Field(default_factory=CerbosConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     watcher: WatcherConfig = Field(default_factory=WatcherConfig)

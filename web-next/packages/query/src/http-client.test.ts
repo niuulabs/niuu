@@ -346,6 +346,36 @@ describe('createApiClient', () => {
     expect(result).toBeUndefined();
   });
 
+  it('returns the body text when the server declares a non-JSON document', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('name: reviewer\nrole: review\n', {
+          status: 200,
+          headers: { 'content-type': 'text/yaml; charset=utf-8' },
+        }),
+      ),
+    );
+    const client = createApiClient(BASE);
+    await expect(client.get<string>('/personas/reviewer/yaml')).resolves.toBe(
+      'name: reviewer\nrole: review\n',
+    );
+  });
+
+  it('parses JSON when the server declares JSON', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('{"name":"reviewer"}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+    const client = createApiClient(BASE);
+    await expect(client.get('/personas/reviewer')).resolves.toEqual({ name: 'reviewer' });
+  });
+
   it('throws ApiClientError on non-ok response', async () => {
     vi.stubGlobal('fetch', makeFetch(404, { detail: 'not found' }, false));
     const client = createApiClient(BASE);

@@ -469,6 +469,23 @@ def _install_merged_openapi(
     root.openapi = merged_openapi
 
 
+def _build_host_identity_adapter() -> object:
+    """Compose the root app's own identity adapter (session-proxy attach).
+
+    A header-only slot (no user provisioning) — see ``HostIdentityConfig``.
+    Guarded the same way every other co-hosted service is: 'none' must be
+    the explicit allow-all adapter, 'oidc' must verify a bearer token's
+    signature, matching what ``host_auth.mode`` claims.
+    """
+    from niuu.service_runtime import _get_auth_mode, _validate_identity_adapter_class
+    from niuu.utils import import_class
+
+    settings = NiuuSettings()
+    cls = import_class(settings.host_identity.adapter)
+    _validate_identity_adapter_class(cls, _get_auth_mode(settings))
+    return cls(**settings.host_identity.kwargs)
+
+
 def build_root_app(
     *,
     registry: PluginRegistry,
@@ -621,6 +638,7 @@ def build_root_app(
         )
     root.state.legacy_route_hits = {}
     root.state.route_inventory = route_inventory
+    root.state.identity = _build_host_identity_adapter()
 
     logger.info(
         "Selected route domains: %s",

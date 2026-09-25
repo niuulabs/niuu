@@ -54,6 +54,10 @@ from niuu.adapters.inbound.rest_volundr import (
     _visible_instances,
     _with_instance,
 )
+from niuu.adapters.inbound.source_health import (
+    instance_source_failures,
+    set_source_health_header,
+)
 from niuu.domain.models import Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
 from niuu.session_proxy import (
@@ -320,6 +324,8 @@ def create_ravn_router(
         request: Request,
         principal: Principal,
         path: str,
+        *,
+        response: Response,
     ) -> list[dict[str, Any]]:
         instances = await _visible_instances(service, principal)
         params = _query_params(request)
@@ -339,6 +345,7 @@ def create_ravn_router(
             ],
             return_exceptions=True,
         )
+        set_source_health_header(response, instance_source_failures(instances, results))
 
         merged: dict[str, dict[str, Any]] = {}
         for instance, result in zip(instances, results, strict=False):
@@ -419,10 +426,11 @@ def create_ravn_router(
     @router.get("/ravens")
     async def list_ravens(
         request: Request,
+        response: Response,
         principal: Principal = Depends(extract_principal),
     ) -> list[dict[str, Any]]:
         """Aggregate discovered resident ravns across visible instances."""
-        return await _aggregate_list(request, principal, "/ravens")
+        return await _aggregate_list(request, principal, "/ravens", response=response)
 
     @router.post("/ravens", status_code=status.HTTP_201_CREATED)
     async def create_raven(
@@ -471,18 +479,20 @@ def create_ravn_router(
     @router.get("/sessions")
     async def list_ravn_sessions(
         request: Request,
+        response: Response,
         principal: Principal = Depends(extract_principal),
     ) -> list[dict[str, Any]]:
         """Aggregate live ravn sessions across visible instances."""
-        return await _aggregate_list(request, principal, "/sessions")
+        return await _aggregate_list(request, principal, "/sessions", response=response)
 
     @router.get("/deployment-profiles")
     async def list_deployment_profiles(
         request: Request,
+        response: Response,
         principal: Principal = Depends(extract_principal),
     ) -> list[dict[str, Any]]:
         """List target-compatible resident deployment profiles."""
-        return await _aggregate_list(request, principal, "/deployment-profiles")
+        return await _aggregate_list(request, principal, "/deployment-profiles", response=response)
 
     @router.get("/ravens/{ravn_id}")
     async def get_raven(

@@ -302,8 +302,24 @@ def _register_identity_routes(
     service: IdentityService,
 ) -> APIRouter:
     async def get_auth_config(request: Request) -> dict:
-        """Return public auth discovery metadata for CLI and external clients."""
+        """Return public auth discovery metadata for CLI and external clients.
+
+        Also carries a machine-readable ``mode`` so a client (the web UI, the
+        CLI) can tell a host with no authentication at all (``auth_mode:
+        none`` — mini/docker's explicit default) apart from one it just
+        cannot discover OIDC settings for.
+        """
         settings = request.app.state.settings
+        auth_mode = getattr(settings, "auth_mode", "envoy")
+
+        if auth_mode == "none":
+            return {
+                "mode": "none",
+                "issuer": "",
+                "client_id": "",
+                "scopes": "",
+                "device_authorization_supported": False,
+            }
 
         issuer = settings.auth_discovery.issuer
         if not issuer:
@@ -316,6 +332,7 @@ def _register_identity_routes(
             )
 
         return {
+            "mode": auth_mode,
             "issuer": issuer,
             "client_id": settings.auth_discovery.cli_client_id,
             "scopes": settings.auth_discovery.scopes,

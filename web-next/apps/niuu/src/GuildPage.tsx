@@ -21,6 +21,7 @@ import { resolveNiuuRegistryBase, resolveSettingsServiceBase } from './services'
 import { EditInstanceDialog, DeleteInstanceDialog, guildActionClass } from './GuildInstanceDialogs';
 import {
   canManageInstance,
+  normalizeHealth,
   parseTags,
   registryError,
   type InstanceKind,
@@ -319,6 +320,31 @@ function openPathFor(instance: InstanceRecord): string | null {
   return instance.baseUrl;
 }
 
+/**
+ * Falls back to the server-persisted health when no live client-side probe
+ * exists yet. Never invents a "just now" check time: a node that has never
+ * actually been checked (no lastCheckedAt) reports as unchecked, not as
+ * freshly probed.
+ */
+function effectiveHealth(
+  instance: InstanceRecord,
+  snapshot: HealthSnapshot | null | undefined,
+): HealthSnapshot | null {
+  if (snapshot) return snapshot;
+  const health = normalizeHealth(instance.health);
+  if (health === 'unknown') return null;
+  const checkedAt = instance.lastCheckedAt ? Date.parse(instance.lastCheckedAt) : NaN;
+  if (Number.isNaN(checkedAt)) return null;
+  return {
+    ok: health === 'ok',
+    message:
+      health === 'ok'
+        ? `${instance.name} is reachable`
+        : (instance.lastError ?? `${instance.name} is unreachable`),
+    checkedAt,
+  };
+}
+
 function healthTone(snapshot: HealthSnapshot | null | undefined) {
   if (!snapshot) {
     return {
@@ -335,8 +361,8 @@ function healthTone(snapshot: HealthSnapshot | null | undefined) {
     };
   }
   return {
-    dot: 'niuu:bg-rose-400',
-    chip: 'niuu:border-rose-500/35 niuu:bg-rose-500/10 niuu:text-rose-200',
+    dot: 'niuu:bg-critical',
+    chip: 'niuu:border-critical-bo niuu:bg-critical-bg niuu:text-critical-fg',
     label: 'degraded',
   };
 }
@@ -368,7 +394,7 @@ function detailEvents(instance: InstanceRecord, snapshot: HealthSnapshot | null 
       when: formatAge(new Date(snapshot.checkedAt).toISOString()),
       tone: snapshot.ok
         ? 'niuu:bg-emerald-500/10 niuu:text-emerald-200'
-        : 'niuu:bg-rose-500/10 niuu:text-rose-200',
+        : 'niuu:bg-critical-bg niuu:text-critical-fg',
     });
   }
   return events;
@@ -411,7 +437,7 @@ function HealthStrip({ history }: { history: HealthSnapshot[] }) {
               'niuu:h-6 niuu:rounded-[5px] niuu:border',
               !snapshot && 'niuu:border-border-subtle niuu:bg-bg-elevated/80',
               snapshot?.ok && 'niuu:border-emerald-400/25 niuu:bg-emerald-300/85',
-              snapshot && !snapshot.ok && 'niuu:border-rose-400/35 niuu:bg-rose-400/75',
+              snapshot && !snapshot.ok && 'niuu:border-critical-bo niuu:bg-critical',
             )}
             title={
               snapshot
@@ -700,8 +726,21 @@ function GuildDetailRail({
             last seen
           </dt>
           <dd className="niuu:text-text-primary">
-            {health ? formatAge(new Date(health.checkedAt).toISOString()) : 'not checked'}
+            {instance.lastSeenAt
+              ? formatAge(instance.lastSeenAt)
+              : health?.ok
+                ? formatAge(new Date(health.checkedAt).toISOString())
+                : 'not seen'}
           </dd>
+
+          {normalizeHealth(instance.health) === 'unreachable' && instance.lastError ? (
+            <>
+              <dt className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-critical-fg">
+                last error
+              </dt>
+              <dd className="niuu:break-words niuu:text-critical-fg">{instance.lastError}</dd>
+            </>
+          ) : null}
         </dl>
 
         <div className="niuu:mt-5">
@@ -962,7 +1001,9 @@ function RegisterWizard({
                   className="niuu:w-full niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-3 niuu:py-2.5 niuu:text-[14px] niuu:text-text-primary niuu:placeholder:text-text-muted niuu:focus:outline-none"
                 />
                 <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
-                  Niuu probes this on register and then keeps checking it afterwards.
+                  Niuu probes this on register and keeps re-checking it afterwards. A failed probe
+                  does not block registration — the node is recorded as unreachable until it
+                  answers.
                 </div>
               </div>
 
@@ -1201,14 +1242,15 @@ function RegisterWizard({
               </div>
 
               <p className="niuu:font-mono niuu:text-[11px] niuu:leading-5 niuu:text-text-faint">
-                Niuu will probe the endpoint, persist this entry in the registry, and notify
-                dependent modules. No traffic flows until probe succeeds.
+                Niuu will persist this entry in the registry, probe it immediately, and keep
+                re-checking it on a background schedule. It registers even if the probe fails — you
+                will see it marked unreachable rather than healthy.
               </p>
             </div>
           ) : null}
 
           {createError ? (
-            <p className="niuu:text-sm niuu:text-rose-400">
+            <p className="niuu:text-sm niuu:text-critical-fg">
               {createError instanceof Error ? createError.message : 'Failed to register instance.'}
             </p>
           ) : null}
@@ -1437,6 +1479,24 @@ export function GuildPage() {
       const snapshot: HealthSnapshot = { ...result, checkedAt: Date.now() };
       setHealthById((current) => ({ ...current, [instanceId]: snapshot }));
       setHealthHistory((current) => pushHealthHistory(current, instanceId, snapshot));
+      // The test endpoint persists this same outcome server-side, so reflect
+      // it in the cached instance list immediately instead of waiting for
+      // the next poll — otherwise the unreachable banner lags a manual test.
+      queryClient.setQueryData<InstanceRecord[]>(['guild-instances'], (current) =>
+        current?.map((entry) =>
+          entry.id === instanceId
+            ? {
+                ...entry,
+                health: result.ok ? 'ok' : 'unreachable',
+                lastSeenAt: result.ok
+                  ? new Date(snapshot.checkedAt).toISOString()
+                  : entry.lastSeenAt,
+                lastCheckedAt: new Date(snapshot.checkedAt).toISOString(),
+                lastError: result.ok ? null : result.message,
+              }
+            : entry,
+        ),
+      );
     },
     onError: (error, instanceId) => {
       const snapshot: HealthSnapshot = {
@@ -1450,6 +1510,10 @@ export function GuildPage() {
   });
 
   const instances = useMemo(() => instancesQuery.data ?? [], [instancesQuery.data]);
+  const unreachableInstances = useMemo(
+    () => instances.filter((instance) => normalizeHealth(instance.health) === 'unreachable'),
+    [instances],
+  );
   const catalogEntries = useMemo(() => catalogQuery.data ?? [], [catalogQuery.data]);
   const filterOptions = useMemo(
     () =>
@@ -1546,7 +1610,9 @@ export function GuildPage() {
     filteredInstances.find((instance) => instance.id === selectedId) ??
     filteredInstances[0] ??
     null;
-  const selectedHealth = selectedInstance ? (healthById[selectedInstance.id] ?? null) : null;
+  const selectedHealth = selectedInstance
+    ? effectiveHealth(selectedInstance, healthById[selectedInstance.id])
+    : null;
   const selectedHistory = selectedInstance ? (healthHistory[selectedInstance.id] ?? []) : [];
 
   useEffect(() => {
@@ -1615,6 +1681,21 @@ export function GuildPage() {
             </div>
           </section>
 
+          {unreachableInstances.length > 0 ? (
+            <div
+              role="alert"
+              data-testid="guild-unreachable-banner"
+              className="niuu:flex niuu:items-center niuu:gap-2 niuu:rounded-[14px] niuu:border niuu:border-critical-bo niuu:bg-critical-bg niuu:px-4 niuu:py-2.5 niuu:text-[13px] niuu:text-critical-fg"
+            >
+              <WifiOff className="niuu:h-4 niuu:w-4 niuu:flex-shrink-0" />
+              <span>
+                {unreachableInstances.length} instance
+                {unreachableInstances.length === 1 ? '' : 's'} unreachable:{' '}
+                {unreachableInstances.map((instance) => instance.name).join(', ')}
+              </span>
+            </div>
+          ) : null}
+
           {instancesQuery.isLoading ? <LoadingState label="Loading registry…" /> : null}
           {instancesQuery.error ? (
             <ErrorState
@@ -1646,7 +1727,7 @@ export function GuildPage() {
                         key={instance.id}
                         instance={instance}
                         selected={instance.id === selectedInstance?.id}
-                        health={healthById[instance.id]}
+                        health={effectiveHealth(instance, healthById[instance.id])}
                         onClick={() => {
                           setSelectedId(instance.id);
                           if (!detailOpen) setDetailOpen(true);

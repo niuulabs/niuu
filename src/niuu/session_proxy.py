@@ -556,7 +556,22 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
         include_in_schema=False,
     )
     async def skuld_http_proxy(request: Request, session_id: str, path: str) -> Response:
-        """Proxy HTTP requests to the Skuld subprocess."""
+        """Proxy HTTP requests to the Skuld subprocess (ownership-guarded).
+
+        Same attach guard and identity resolution as the WebSocket legs
+        (``_proxy_ws``): without it, any authenticated caller who can reach
+        the host could POST to a session's broker API (workflow gates, room
+        join, ...) regardless of who owns the session.
+        """
+        principal = await _proxy_principal(request)
+        user_id, tenant_id, roles = (
+            (principal.user_id, principal.tenant_id, tuple(principal.roles))
+            if principal is not None
+            else (None, None, ())
+        )
+        if not await skuld_reg.may_attach(session_id, user_id, tenant_id, roles):
+            return JSONResponse({"detail": "Not authorized for this session"}, status_code=403)
+
         port = skuld_reg.get_port(session_id)
         target = None if port is not None else await skuld_reg.resolve_target(session_id)
         if port is None and target is None:

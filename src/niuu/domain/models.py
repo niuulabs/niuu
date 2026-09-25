@@ -52,6 +52,18 @@ class InstanceVisibility(StrEnum):
     USER = "user"
 
 
+class InstanceHealthStatus(StrEnum):
+    """Server-recorded reachability of a registered runtime instance.
+
+    ``UNKNOWN`` is the honest starting state — no probe has completed yet, so
+    nothing is claimed either way. It is never used to mean "probably fine".
+    """
+
+    UNKNOWN = "unknown"
+    OK = "ok"
+    UNREACHABLE = "unreachable"
+
+
 @dataclass(frozen=True)
 class IntegrationConnection:
     """A configured integration connection (e.g., issue tracker)."""
@@ -86,6 +98,15 @@ class RegisteredInstance:
     created_at: datetime
     updated_at: datetime
     tags: list[str] = field(default_factory=list)
+    health: InstanceHealthStatus = InstanceHealthStatus.UNKNOWN
+    #: Last time a probe SUCCEEDED — "when did it last work".
+    last_seen_at: datetime | None = None
+    #: Last time a probe was ATTEMPTED, success or not — "when did we last
+    #: look". Distinct from last_seen_at so a never-reachable instance can
+    #: still report when it was last checked, without that being confused
+    #: for having been seen.
+    last_checked_at: datetime | None = None
+    last_error: str | None = None
 
 
 class SecretType(StrEnum):

@@ -254,6 +254,12 @@ export function createApiClient(basePath: string): ApiClient {
       );
     }
 
+    // Documents served as text (a persona's YAML) come back as the string they are;
+    // everything declared JSON, or undeclared, is parsed as JSON.
+    const contentType = response.headers?.get?.('content-type') ?? '';
+    if (contentType && !/json/i.test(contentType)) {
+      return (await response.text()) as T;
+    }
     return response.json() as Promise<T>;
   }
 

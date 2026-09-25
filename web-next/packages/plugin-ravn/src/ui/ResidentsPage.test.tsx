@@ -330,8 +330,9 @@ describe('ResidentsPage', () => {
     await waitFor(() =>
       expect(window.location.search).toContain('session=55555555-5555-4555-8555-555555555555'),
     );
-    expect(window.location.pathname).toBe('/ravn/sessions');
-    expect(localStorage.getItem('ravn.session')).toContain('55555555-5555-4555-8555-555555555555');
+    expect(window.location.pathname).toBe('/ravn');
+    expect(window.location.search).toContain('tab=chat');
+    expect(window.location.search).toContain(`ravn=${makeRavn().id}`);
   });
 
   it('opens a session first when the resident has none', async () => {
@@ -347,7 +348,7 @@ describe('ResidentsPage', () => {
         title: 'Talk with lexi-api',
       }),
     );
-    await waitFor(() => expect(window.location.pathname).toBe('/ravn/sessions'));
+    await waitFor(() => expect(window.location.pathname).toBe('/ravn'));
   });
 
   it('cannot talk to a resident that has neither a session nor the capability', async () => {

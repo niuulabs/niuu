@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -98,6 +99,20 @@ class MockVolundrFactory:
     async def primary_for_owner(self, owner_id: str) -> VolundrPort | None:
         del owner_id
         return self._adapters[0] if self._adapters else None
+
+
+class FailingVolundrFactory:
+    """Simulates a Guild outage — for_owner raises rather than returning []."""
+
+    async def for_owner(self, owner_id: str) -> list[VolundrPort]:
+        del owner_id
+        from ting.adapters.volundr_factory import GuildRegistryUnavailableError
+
+        raise GuildRegistryUnavailableError("guild is unreachable")
+
+    async def primary_for_owner(self, owner_id: str) -> VolundrPort | None:
+        del owner_id
+        return None
 
 
 class MockTracker(TrackerPort):
@@ -258,6 +273,19 @@ def _auth_headers(user_id: str = "dev-user") -> dict[str, str]:
 
 
 class TestSessionsAPI:
+    def test_a_guild_outage_propagates_instead_of_silently_falling_back(self) -> None:
+        """The old behavior caught any factory.for_owner failure and fell
+        back to the single local adapter — indistinguishable from "the user
+        only has one connection". It must now propagate so Ting's own
+        exception handler can map it to a clear 503 (see main.py)."""
+        from ting.adapters.volundr_factory import GuildRegistryUnavailableError
+
+        client, _tracker = _client()
+        client.app.state.volundr_factory = FailingVolundrFactory()  # type: ignore[union-attr]
+
+        with pytest.raises(GuildRegistryUnavailableError):
+            client.get("/api/v1/ting/sessions", headers=_auth_headers())
+
     def test_lists_sessions_with_context(self) -> None:
         client, _tracker = _client()
 

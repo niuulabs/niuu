@@ -376,9 +376,10 @@ async def test_upsert_seed_instance_updates_existing_match_and_creates_new_seed(
 
 
 @pytest.mark.asyncio
-async def test_seed_configured_instances_skips_incomplete_items(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_seed_configured_instances_raises_on_incomplete_items() -> None:
+    """An incomplete `niuu.instances` entry is a configuration error, not a
+    hint to skip — it must stop startup with the remedy in the message
+    rather than silently registering fewer instances than configured."""
     repo = InMemoryInstanceRepository()
     service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
     seeded_items = [
@@ -404,10 +405,33 @@ async def test_seed_configured_instances_skips_incomplete_items(
         ),
     ]
 
+    with pytest.raises(InstanceValidationError, match="niuu.instances\\[1\\] is incomplete"):
+        await seed_configured_instances(service, seeded_items)
+
+    # The first, valid entry was already persisted before the second one
+    # was found incomplete — a partial seed on a hard failure, not a
+    # silently-smaller one.
+    assert list(repo.instances) == ["seed-1"]
+
+
+@pytest.mark.asyncio
+async def test_seed_configured_instances_persists_every_complete_item() -> None:
+    repo = InMemoryInstanceRepository()
+    service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
+    seeded_items = [
+        SimpleNamespace(
+            id="seed-1",
+            kind=InstanceKind.VOLUNDR,
+            slug="seed-one",
+            name="Seed One",
+            base_url="https://seed-one.example.com",
+            visibility=InstanceVisibility.SYSTEM,
+        ),
+    ]
+
     seeded = await seed_configured_instances(service, seeded_items)
 
     assert seeded == 1
-    assert "Skipping incomplete seeded instance" in caplog.text
     assert list(repo.instances) == ["seed-1"]
 
 

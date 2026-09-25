@@ -312,6 +312,39 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_niuu_instances_tags
         ON niuu_instances USING GIN(tags);
     """,
+    # Server-side reachability tracking (health checker) — an offline instance
+    # must be recorded as such, never left indistinguishable from an idle one.
+    """
+    ALTER TABLE niuu_instances
+        ADD COLUMN IF NOT EXISTS health TEXT NOT NULL DEFAULT 'unknown';
+    """,
+    # last_seen_at: last time a probe SUCCEEDED. last_checked_at: last time a
+    # probe was ATTEMPTED, success or not. Conflating them would let the UI
+    # invent a "just now" last-seen time for a node that has never answered.
+    """
+    ALTER TABLE niuu_instances
+        ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+    """,
+    """
+    ALTER TABLE niuu_instances
+        ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ;
+    """,
+    """
+    ALTER TABLE niuu_instances
+        ADD COLUMN IF NOT EXISTS last_error TEXT;
+    """,
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'niuu_instances_health_check'
+        ) THEN
+            ALTER TABLE niuu_instances
+                ADD CONSTRAINT niuu_instances_health_check
+                CHECK (health IN ('unknown', 'ok', 'unreachable'));
+        END IF;
+    END $$;
+    """,
     """
     -- Push inbox for topology fragments.
     --
