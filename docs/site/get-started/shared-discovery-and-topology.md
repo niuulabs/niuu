@@ -20,6 +20,74 @@ An instance record is not proof that its endpoint can be reached by every caller
 Check reachability from the host that will route the request, and check the
 identity expected by the destination.
 
+## How Guild probes health
+
+Guild probes each registered instance on registration and on a periodic interval
+(`niuu.health.interval_seconds`), and records `health` (`unknown` / `ok` /
+`unreachable`), `lastSeenAt`, `lastCheckedAt`, and `lastError` on the instance —
+visible in Guild's instance detail view and over the instances API.
+
+The probe never guesses `{base_url}/health`. Two real deployment shapes break on a
+bare `/health`:
+
+- A standalone service whose ingress only routes its own `/api/v1/<service>`
+  prefix — a bare `/health` never reaches the pod, so a healthy instance reports
+  `unreachable` forever.
+- A host shared with the web-next SPA, whose nginx also answers a bare `/health`
+  itself (`containers/niuu-web/nginx.conf`) — the probe gets a 200 from the
+  frontend's static health check and reports `ok` regardless of whether the actual
+  backend is up.
+
+Instead, the probe resolves a path per instance **kind**, appended to
+`instance.base_url` — the path under that service's own API prefix, so it reaches
+the real backend through either ingress shape:
+
+| Kind | Default health path |
+| --- | --- |
+| `volundr` | `/api/v1/forge/health` |
+| `ting` | `/api/v1/ting/health` |
+| `mimir` | `/api/v1/mimir/health` |
+| `bifrost` | `/api/v1/bifrost/health` |
+| `ravn` | `/api/v1/ravn/health` |
+| `observatory` | `/api/v1/observatory/health` |
+| `generic`, or any kind not listed above | `/health` |
+
+(`niuu.adapters.outbound.http_instance_probe.DEFAULT_HEALTH_PATHS` is the source of
+truth — this table mirrors it.)
+
+### Overriding a path
+
+Two levels, evaluated in order:
+
+1. **Per-kind, cluster-wide** — `niuu.health.probe.health_paths` in Guild's config
+   (rendered from `registry.health.probe.healthPaths` in the `guild` chart's
+   values) is a map of kind → path, merged on top of the built-in defaults. Set
+   only the kinds you're changing:
+
+   ```yaml
+   registry:
+     health:
+       probe:
+         healthPaths:
+           mimir: "/mimir/health"
+   ```
+
+2. **Per instance** — `config.health_path` on one registered instance wins over
+   both the per-kind override and the built-in default. Use this when one
+   instance's `base_url` doesn't follow its kind's usual convention — for example
+   an instance registered with the API version prefix already baked into
+   `base_url` (`https://host/api/v1`), where the kind's normal
+   `/api/v1/<service>/health` default would double up the prefix. Set it in the
+   instance's `config` when registering or editing it in Guild.
+
+A path that isn't publicly reachable through the target's Envoy sidecar reports
+`unreachable` even though the service is healthy — Envoy's `jwt_authn` filter
+requires a token on every route except `envoy.jwt.bypassPrefixes`. Each service's
+own health path is already listed there in its chart's `values.yaml`; adding a new
+per-kind or per-instance override that points somewhere else needs the same
+Envoy bypass, or the probe will see 401/403 instead of the service's own health
+check.
+
 ## What crosses the wire to a remote instance
 
 Every Guild aggregate call (Forge/Ravn REST, the session event stream, the

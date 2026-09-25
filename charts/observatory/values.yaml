@@ -143,6 +143,7 @@ envoy:
     extraClaimHeaders: []
     bypassPrefixes:
       - /health
+      - /api/v1/observatory/health
     # Additional verifier for short-lived Niuu workload tokens forwarded by
     # Guild's Agent Directory aggregation.
     workload:
