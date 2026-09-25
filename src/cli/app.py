@@ -263,6 +263,75 @@ def build_app(
         CredentialStore().clear()
         typer.echo("Logged out.")
 
+    @app.command()
+    def join(
+        guild_url: str = typer.Argument(help="Base URL of the Guild to join."),
+        code: str = typer.Option(..., "--code", help="Pairing code from 'niuu guild pair'."),
+        name: str = typer.Option(
+            "", "--name", help="Display name for this node (default: this host's hostname)."
+        ),
+    ) -> None:
+        """Join this machine to a Guild using a pairing code from an operator."""
+        import asyncio
+        import os
+        from pathlib import Path
+
+        from cli.api.guild import GuildAPIError
+        from cli.api.guild import join as guild_join
+        from cli.auth.node_key import DEFAULT_NODE_KEY_FILENAME, NodeIdentity
+        from cli.commands.node_instances import offered_instances_for_host
+        from cli.config import DEFAULT_CONFIG_DIR, persist_guild_join
+
+        node_name = name.strip() or os.uname().nodename
+        identity = NodeIdentity.load_or_create(Path(DEFAULT_CONFIG_DIR) / DEFAULT_NODE_KEY_FILENAME)
+        try:
+            result = asyncio.run(
+                guild_join(
+                    guild_url,
+                    code=code,
+                    node_name=node_name,
+                    public_key=identity.public_key_b64,
+                    instances=offered_instances_for_host(settings),
+                )
+            )
+        except GuildAPIError as exc:
+            typer.echo(f"Failed to join {guild_url}: {exc}")
+            raise typer.Exit(1) from None
+
+        persist_guild_join(url=guild_url, node_id=result["nodeId"])
+        typer.echo(f"Joined {guild_url} as node {result['nodeId']} ({node_name}).")
+
+    @app.command()
+    def leave() -> None:
+        """Remove this machine from the Guild it previously joined."""
+        import asyncio
+        from pathlib import Path
+
+        from cli.api.guild import GuildAPIError
+        from cli.api.guild import leave as guild_leave
+        from cli.auth.node_key import DEFAULT_NODE_KEY_FILENAME, NodeIdentity
+        from cli.config import DEFAULT_CONFIG_DIR, clear_guild_join
+
+        if not settings.guild.url or not settings.guild.node_id:
+            typer.echo("This host has not joined a Guild.")
+            raise typer.Exit(1)
+
+        identity = NodeIdentity.load_or_create(Path(DEFAULT_CONFIG_DIR) / DEFAULT_NODE_KEY_FILENAME)
+        try:
+            asyncio.run(
+                guild_leave(settings.guild.url, node_id=settings.guild.node_id, identity=identity)
+            )
+        except GuildAPIError as exc:
+            typer.echo(f"Failed to leave {settings.guild.url}: {exc}")
+            raise typer.Exit(1) from None
+
+        clear_guild_join()
+        typer.echo(f"Left {settings.guild.url}.")
+
+    from cli.commands.guild import create_guild_commands
+
+    app.add_typer(create_guild_commands(), name="guild")
+
     platform_app = create_platform_commands(registry, settings, manager)
     app.add_typer(platform_app, name="platform")
     _register_lifecycle_aliases(app, platform_app, settings)

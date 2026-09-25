@@ -708,6 +708,42 @@ def auth_adapter_env(auth: AuthConfig) -> dict[str, str]:
     }
 
 
+class GuildConfig(BaseModel):
+    """Persisted `niuu join` state: the Guild this host joined, and its node id.
+
+    Written back to ~/.niuu/config.yaml by `niuu join` (see
+    ``cli.config.persist_guild_join``) and cleared by `niuu leave`. Both empty
+    means this host has never joined a Guild.
+    """
+
+    url: str = Field(default="", description="Base URL of the Guild this host joined.")
+    node_id: str = Field(
+        default="", description="This host's node id, assigned by Guild at join time."
+    )
+
+
+def persist_guild_join(*, url: str, node_id: str, config_file: Path | None = None) -> None:
+    """Write ``guild.url``/``guild.node_id`` into the CLI's config.yaml.
+
+    Merges into whatever config already exists rather than overwriting it —
+    `niuu join` must not discard unrelated operator configuration.
+    """
+    import yaml
+
+    target = config_file or config_paths()[0]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing: dict[str, Any] = {}
+    if target.exists():
+        existing = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+    existing["guild"] = {"url": url, "node_id": node_id}
+    target.write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
+
+
+def clear_guild_join(*, config_file: Path | None = None) -> None:
+    """Remove persisted `niuu join` state (`niuu leave`)."""
+    persist_guild_join(url="", node_id="", config_file=config_file)
+
+
 class CLISettings(BaseSettings):
     """Root configuration for the niuu CLI."""
 
@@ -744,6 +780,7 @@ class CLISettings(BaseSettings):
     # its own, differently-shaped AuthConfig (adapter/kwargs/allow_anonymous_dev).
     # A shared `auth:` key would silently collide between the two schemas.
     host_auth: AuthConfig = Field(default_factory=AuthConfig)
+    guild: GuildConfig = Field(default_factory=GuildConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     residents: ResidentsConfig = Field(default_factory=ResidentsConfig)

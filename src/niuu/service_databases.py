@@ -383,6 +383,45 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
         OR (visibility = 'user' AND owner_id IS NOT NULL)
     );
     """,
+    # `niuu join` — single-use pairing codes and the nodes they admit. See
+    # migrations/000083_guild_node_join.up.sql and
+    # docs/operator/joining-machines.md.
+    """
+    CREATE TABLE IF NOT EXISTS niuu_pairing_codes (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        code_hash TEXT NOT NULL UNIQUE,
+        created_by TEXT NOT NULL,
+        tenant_id TEXT NOT NULL DEFAULT '',
+        expires_at TIMESTAMPTZ NOT NULL,
+        consumed_at TIMESTAMPTZ,
+        consumed_by_node_id UUID,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_niuu_pairing_codes_expires
+        ON niuu_pairing_codes(expires_at);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS niuu_nodes (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name TEXT NOT NULL,
+        public_key TEXT NOT NULL,
+        tenant_id TEXT NOT NULL DEFAULT '',
+        created_by TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_seen_at TIMESTAMPTZ,
+        last_request_at BIGINT
+    );
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_niuu_nodes_public_key
+        ON niuu_nodes(public_key);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_niuu_nodes_tenant
+        ON niuu_nodes(tenant_id);
+    """,
 )
 
 OBSERVATORY_BOOTSTRAP_SQL: tuple[str, ...] = (

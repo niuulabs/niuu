@@ -109,6 +109,55 @@ class RegisteredInstance:
     last_error: str | None = None
 
 
+@dataclass(frozen=True)
+class RegisteredNode:
+    """A machine (K8s cluster, DGX Spark, laptop in mini/docker mode) joined to Guild.
+
+    Node-originated calls (heartbeat, leave) are authenticated by an Ed25519
+    signature over the request, never a bearer JWT — ``public_key`` is what
+    ``RegisteredNodeVerifier`` checks that signature against.
+    """
+
+    id: str
+    name: str
+    #: Base64-encoded raw 32-byte Ed25519 public key.
+    public_key: str
+    #: The joining admin's tenant, inherited from the pairing code — instances
+    #: this node offers are registered under the same tenant.
+    tenant_id: str
+    #: user_id of the admin who minted the pairing code this node joined with.
+    created_by: str
+    created_at: datetime
+    last_seen_at: datetime | None = None
+    #: Last accepted signed-request timestamp (unix seconds), for strictly
+    #: increasing replay protection. ``None`` before the node's first signed
+    #: call.
+    last_request_at: int | None = None
+
+
+@dataclass(frozen=True)
+class PairingCode:
+    """Server-side record of a minted single-use node pairing code.
+
+    The code itself is a scoped workload JWT (``token_use=valkyrie_build``,
+    ``scopes=["node_join"]``, see ``.claude/rules/architecture.md``) so entry
+    to the join route is gated by ``require_scope("node_join")`` like any
+    other scoped workload credential. This row exists *in addition to* that —
+    a JWT alone is reusable until it expires, so single-use is enforced here,
+    by atomically consuming the row the first (and only the first) time the
+    code is presented.
+    """
+
+    id: str
+    code_hash: str
+    created_by: str
+    tenant_id: str
+    expires_at: datetime
+    created_at: datetime
+    consumed_at: datetime | None = None
+    consumed_by_node_id: str | None = None
+
+
 class SecretType(StrEnum):
     """Type of stored credential."""
 

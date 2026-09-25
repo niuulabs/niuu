@@ -389,3 +389,51 @@ def test_create_app_seeds_embedded_forge_alongside_other_configured_instances(
     embedded_calls = [c for c in recording_service.upsert_calls if c.get("slug") == "local"]
     assert len(embedded_calls) == 1
     assert embedded_calls[0]["is_default"] is False
+
+
+def test_create_app_mounts_guild_join_routes(monkeypatch) -> None:
+    instance_repo = _DummyInstanceRepository()
+
+    monkeypatch.setattr(guild_app, "database_pool", _fake_database_pool)
+    monkeypatch.setattr(guild_app, "PostgresInstanceRepository", lambda _pool: instance_repo)
+    monkeypatch.setattr(guild_app, "PostgresPATRepository", lambda _pool: object())
+    monkeypatch.setattr(guild_app, "create_pat_validator", lambda *_args: _DummyPATValidator())
+
+    app = guild_app.create_app(settings=Settings())
+
+    with TestClient(app) as client:
+        paths = client.get("/openapi.json").json()["paths"]
+        assert "/api/v1/niuu/guild/pairing-codes" in paths
+        assert "/api/v1/niuu/guild/join" in paths
+        assert "/api/v1/niuu/guild/nodes/{node_id}/heartbeat" in paths
+        assert "/api/v1/niuu/guild/nodes/{node_id}/leave" in paths
+
+
+class TestIdentityTrustConfig:
+    """`niuu join` must hand a newly joined node Guild's own auth_mode/issuers —
+    never a second, invented human-auth path (the "Shared IdP" owner decision)."""
+
+    def test_oidc_mode_surfaces_the_configured_issuers(self) -> None:
+        from types import SimpleNamespace
+
+        settings = SimpleNamespace(
+            auth_mode="oidc",
+            identity=SimpleNamespace(
+                kwargs={"issuers": [{"issuer": "https://idp.example.com", "audiences": ["x"]}]}
+            ),
+        )
+
+        trust = guild_app._identity_trust_config(settings)
+
+        assert trust.mode == "oidc"
+        assert trust.issuers == [{"issuer": "https://idp.example.com", "audiences": ["x"]}]
+
+    def test_none_mode_reports_an_explicit_empty_trust_list(self) -> None:
+        from types import SimpleNamespace
+
+        settings = SimpleNamespace(auth_mode="none", identity=SimpleNamespace(kwargs={}))
+
+        trust = guild_app._identity_trust_config(settings)
+
+        assert trust.mode == "none"
+        assert trust.issuers == []
