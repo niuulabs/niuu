@@ -436,6 +436,33 @@ def _create_otel_providers(otel_cfg):  # pragma: no cover
     return tracer_provider, meter_provider
 
 
+def _build_otel_event_sink(otel_cfg):
+    """Build the OTel GenAI event sink from validated config, or raise.
+
+    ``event_pipeline.otel.enabled: true`` with the SDK missing is a
+    configured-but-impossible state — raise with the remedy, per
+    .claude/rules/no-fallbacks.md, rather than logging a warning and running
+    the pipeline without it.
+    """
+    from volundr.adapters.outbound.otel_event_sink import OtelEventSink
+
+    try:
+        tracer_provider, meter_provider = _create_otel_providers(otel_cfg)
+    except ImportError as exc:
+        raise RuntimeError(
+            "event_pipeline.otel.enabled is true but opentelemetry is "
+            "not installed — install the 'otel' extra "
+            "(pip install 'volundr[otel]') or set "
+            "event_pipeline.otel.enabled: false"
+        ) from exc
+    return OtelEventSink(
+        tracer_provider=tracer_provider,
+        meter_provider=meter_provider,
+        service_name=otel_cfg.service_name,
+        provider_name=otel_cfg.provider_name,
+    )
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -452,6 +479,26 @@ def create_app(
         settings = Settings()
 
     app = build_app_shell(settings)
+
+    # Configured and instrumented here, in create_app, not in lifespan:
+    # Starlette builds and caches its middleware stack on the app's first
+    # ASGI __call__ (which is also how the lifespan startup event arrives),
+    # so instrumenting from inside a lifespan handler has no effect — the
+    # stack was already frozen by the time that code would run.
+    from niuu.observability import (
+        configure_observability,
+        instrument_fastapi_app,
+        instrument_httpx_client,
+    )
+
+    telemetry = configure_observability(
+        settings.observability,
+        resource_attributes={"service.namespace": "volundr"},
+        component="volundr",
+        default_service_name="volundr",
+    )
+    instrument_fastapi_app(app, telemetry, component="volundr")
+    instrument_httpx_client(telemetry)
 
     # Keep schema mismatch diagnostics without copying credentials or prompts into logs.
     @app.exception_handler(RequestValidationError)
@@ -1396,31 +1443,13 @@ def create_app(
             # Optional: OTel sink (GenAI semantic conventions)
             otel_sink = None
             if settings.event_pipeline.otel.enabled:
-                try:
-                    from volundr.adapters.outbound.otel_event_sink import (
-                        OtelEventSink,
-                    )
-
-                    otel_cfg = settings.event_pipeline.otel
-                    tp, mp = _create_otel_providers(otel_cfg)
-                    otel_sink = OtelEventSink(
-                        tracer_provider=tp,
-                        meter_provider=mp,
-                        service_name=otel_cfg.service_name,
-                        provider_name=otel_cfg.provider_name,
-                    )
-                    event_sinks.append(otel_sink)
-                    logger.info(
-                        "OTel event sink enabled (endpoint=%s)",
-                        otel_cfg.endpoint,
-                    )
-                except ImportError:
-                    logger.warning(
-                        "OTel sink enabled but opentelemetry not installed. "
-                        "Install with: pip install volundr[otel]"
-                    )
-                except Exception:
-                    logger.exception("Failed to initialize OTel event sink")
+                otel_cfg = settings.event_pipeline.otel
+                otel_sink = _build_otel_event_sink(otel_cfg)
+                event_sinks.append(otel_sink)
+                logger.info(
+                    "OTel event sink enabled (endpoint=%s)",
+                    otel_cfg.endpoint,
+                )
 
             # Register Sleipnir event sink when integration is active
             if sleipnir_bus is not None:
@@ -1567,6 +1596,11 @@ def create_app(
             try:
                 yield
             finally:
+                # Not shutdown_observability() here: this composition root may
+                # share the process with others (mini mode). configure_observability
+                # registers an atexit shutdown hook, which is the correct place
+                # to flush/close a provider that might still be owned by, and in
+                # use by, a co-located service's own lifespan.
                 if execution_credential_service is not None:
                     await execution_credential_service.stop()
                 if compute_pool_task is not None:

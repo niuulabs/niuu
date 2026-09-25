@@ -32,6 +32,7 @@ from niuu.config_models import (
     WorkloadIdentityConfig,
     default_session_definitions,
 )
+from niuu.domain.observability import ObservabilityConfig
 
 
 # Config file search paths (in order of priority).
@@ -100,6 +101,12 @@ class LoggingConfig(BaseModel):
 
     level: str = Field(default="info")
     format: str = Field(default="text")
+
+
+class TingObservabilityConfig(ObservabilityConfig):
+    """OpenTelemetry settings with Ting's stable service identity."""
+
+    service_name: str = Field(default="ting")
 
 
 class VolundrConfig(BaseModel):
@@ -1226,6 +1233,7 @@ class Settings(BaseSettings):
     )
 
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    observability: TingObservabilityConfig = Field(default_factory=TingObservabilityConfig)
     cors: CorsConfig = Field(default_factory=CorsConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     workflow_repository: WorkflowRepositoryConfig = Field(

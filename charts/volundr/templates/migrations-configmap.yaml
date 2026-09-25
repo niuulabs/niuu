@@ -1900,6 +1900,22 @@ data:
     DROP INDEX IF EXISTS idx_chronicles_tenant_owner;
     ALTER TABLE chronicles DROP COLUMN IF EXISTS tenant_id;
     ALTER TABLE chronicles DROP COLUMN IF EXISTS owner_id;
+  000078_session_span_w3c_trace_id.up.sql: |
+    -- Forge session spans key on trace_id = the session UUID, a stable per-session
+    -- correlation id predating OTel adoption here. It is not a W3C trace id and
+    -- cannot become one without breaking every existing consumer of
+    -- GET /sessions/{id}/trace. Store the W3C trace id (32 lowercase hex chars)
+    -- alongside instead, when the span was recorded while a real OTel trace was
+    -- active, so a Forge span can be cross-referenced with the OTLP trace it
+    -- belongs to.
+    ALTER TABLE session_spans ADD COLUMN IF NOT EXISTS w3c_trace_id VARCHAR(32);
+
+    CREATE INDEX IF NOT EXISTS idx_session_spans_w3c_trace_id
+        ON session_spans(w3c_trace_id)
+        WHERE w3c_trace_id IS NOT NULL;
+  000078_session_span_w3c_trace_id.down.sql: |
+    DROP INDEX IF EXISTS idx_session_spans_w3c_trace_id;
+    ALTER TABLE session_spans DROP COLUMN IF EXISTS w3c_trace_id;
   lineage-aliases.json: |
     {
       "000050_session_definition.up.sql": [

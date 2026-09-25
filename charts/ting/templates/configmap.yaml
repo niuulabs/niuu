@@ -32,6 +32,11 @@ data:
       level: {{ .Values.config.logLevel | default "info" | quote }}
       format: {{ .Values.config.logFormat | default "json" | quote }}
 
+    {{- with .Values.config.observability }}
+    observability:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+
     notification:
       public_origin: {{ .Values.config.publicOrigin | default "" | quote }}
 

@@ -3,7 +3,17 @@
 Maps SessionEvents to the OTel GenAI semantic conventions (v1.39+):
   - Spans follow gen_ai.* attribute naming
   - Metrics: gen_ai.client.token.usage (histogram), gen_ai.client.operation.duration
-  - Provider name is always "anthropic" (Volundr runs Claude Code)
+  - Provider name is configurable (``event_pipeline.otel.provider_name``); Volundr
+    runs whatever runtime/model the session was launched with, not only Claude Code.
+
+Each span is started with the ambient OTel context (no explicit ``context=``
+override), so it parents under whatever span is active when the sink runs. In
+practice that is the FastAPI server span for the inbound `/api/v1/forge`
+events POST — real once the composition root instruments the app — which
+itself parents under the caller's ``traceparent`` when the caller propagates
+one. A request with no active span (or no instrumentation configured)
+produces a new root span, matching regular OTel behaviour; it does not
+special-case "no parent" and is not a Volundr-specific gap.
 
 Reference: https://opentelemetry.io/docs/specs/semconv/gen-ai/
 """
