@@ -122,6 +122,22 @@ describe('realm joins', () => {
     expect(ravnForRealm(undefined, 'lexi-api')).toBeNull();
   });
 
+  it('prefers the explicit realmId link over the naming convention', () => {
+    const linked = { ...ravn, id: 'ravn-2', residentName: 'not-lexi-api', realmId: 'r1' };
+    const byName = { ...ravn, id: 'ravn-3', residentName: 'lexi-api' };
+    expect(ravnForRealm([byName, linked], 'lexi-api', 'r1')).toBe(linked);
+  });
+
+  it('falls back to the naming convention only for a ravn with no realmId at all', () => {
+    const unlinked = { ...ravn, id: 'ravn-4', residentName: 'lexi-api', realmId: undefined };
+    expect(ravnForRealm([unlinked], 'lexi-api', 'r1')).toBe(unlinked);
+  });
+
+  it('never matches a ravn linked to a different realm, even by name/persona', () => {
+    const otherRealmsRavn = { ...ravn, id: 'ravn-5', residentName: 'lexi-api', realmId: 'r-other' };
+    expect(ravnForRealm([otherRealmsRavn], 'lexi-api', 'r1')).toBeNull();
+  });
+
   it('keeps only the sessions the realm persona started', () => {
     expect(sessionsForRealm(sessions, 'lexi-api').map((s) => s.id)).toEqual(['s1', 's2']);
     expect(activeSessionCount(sessionsForRealm(sessions, 'lexi-api'))).toBe(1);

@@ -1253,6 +1253,95 @@ async def test_hermes_rollback_and_delete_cleanup_machine_credential(
 
 
 @pytest.mark.asyncio
+async def test_resolve_realm_slug_is_empty_without_realm_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
+    assert await manager._resolve_realm_slug(_resident_runtime()) == ""
+
+
+@pytest.mark.asyncio
+async def test_resolve_realm_slug_requires_a_configured_repository(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
+    runtime = _resident_runtime().model_copy(update={"realm_id": uuid4()})
+    with pytest.raises(RuntimeError, match="no realm repository configured"):
+        await manager._resolve_realm_slug(runtime)
+
+
+@pytest.mark.asyncio
+async def test_resolve_realm_slug_returns_the_bound_realms_slug(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
+    realm_id = uuid4()
+
+    class _FakeRealm:
+        slug = "workshop"
+
+    class _FakeRealmRepository:
+        async def get_realm(self, realm_ref):
+            return _FakeRealm() if realm_ref == realm_id else None
+
+    manager.set_realm_repository(_FakeRealmRepository())
+    runtime = _resident_runtime().model_copy(update={"realm_id": realm_id})
+    assert await manager._resolve_realm_slug(runtime) == "workshop"
+
+
+def test_resident_mimir_config_preserves_local_role_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    values = {
+        "mimir": {
+            "instances": [
+                {"name": "hub-a", "role": "local"},
+                {"name": "hub-b", "role": "shared"},
+            ]
+        }
+    }
+    config = adapter._resident_mimir_config(values, "workshop")
+    assert config["write_routing"] == {"rules": [], "default": ["hub-a"]}
+
+
+def test_resident_mimir_config_routes_to_the_realm_mount_when_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    values = {
+        "mimir": {
+            "instances": [
+                {"name": "hub-a", "role": "shared"},
+                {"name": "realm-workshop", "role": "shared"},
+            ]
+        }
+    }
+    config = adapter._resident_mimir_config(values, "workshop")
+    assert config["write_routing"]["default"] == ["realm-workshop"]
+    assert config["write_routing"]["rules"] == [["realms/workshop/", ["realm-workshop"]]]
+
+
+def test_resident_mimir_config_raises_when_no_write_target_resolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    values = {
+        "mimir": {
+            "instances": [
+                {"name": "hub-a", "role": "shared"},
+                {"name": "hub-b", "role": "shared"},
+            ]
+        }
+    }
+    with pytest.raises(RuntimeError, match="no write target resolves"):
+        adapter._resident_mimir_config(values, "workshop")
+
+
+@pytest.mark.asyncio
 async def test_hermes_logs_default_to_hermes_process_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

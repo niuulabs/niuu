@@ -3762,7 +3762,19 @@ class EnvironmentConfig(BaseModel):
         description=(
             "The human seed for this resident: a few sentences describing what the "
             "Valkyrie stewards and what 'better' means for its environment. Injected "
-            "into every autonomous task and surfaced on the dashboard."
+            "into every autonomous task and surfaced on the dashboard. Ignored when "
+            "charter_mimir_page is set — that page is the source of truth."
+        ),
+    )
+    charter_mimir_page: str = Field(
+        default="",
+        description=(
+            "Mímir page path holding this resident's charter, e.g. "
+            "'realms/<slug>/charter.md'. When set, the resident reads its charter "
+            "from this page at startup instead of the static 'charter' string, and "
+            "fails to start if the page does not exist or Mímir is disabled — a "
+            "configured-but-missing charter is a fatal misconfiguration, not a "
+            "silent fallback to the static charter."
         ),
     )
     topology: EnvironmentTopologyConfig = Field(

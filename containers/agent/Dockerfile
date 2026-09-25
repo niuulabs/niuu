@@ -24,6 +24,10 @@ WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
 COPY src/ /app/src/
+# vendor/envoy_authz_protos/ is one of the wheel's registered package roots
+# (see pyproject.toml); the build fails without it even though this image
+# does not run identity.authz_main.
+COPY vendor/ /app/vendor/
 RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats
 
 FROM python:3.14-slim-bookworm@sha256:9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f

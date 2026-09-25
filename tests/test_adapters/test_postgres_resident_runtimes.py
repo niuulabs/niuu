@@ -41,6 +41,7 @@ def _runtime() -> ResidentRuntime:
         flock_member_id=member_id,
         flock_role="coordinator",
         flock_peer_id=f"ravn-{member_id}",
+        realm_id=uuid4(),
         desired_state=ResidentDesiredState.RUNNING,
         observed_state=ResidentObservedState.ACTIVE,
         backend_ref={"kind": "Sandbox", "name": "muninn"},
@@ -67,6 +68,7 @@ def _row(runtime: ResidentRuntime) -> dict:
         "flock_member_id": runtime.flock_member_id,
         "flock_role": runtime.flock_role,
         "flock_peer_id": runtime.flock_peer_id,
+        "realm_id": runtime.realm_id,
         "desired_state": runtime.desired_state.value,
         "observed_state": runtime.observed_state.value,
         "backend_ref": runtime.backend_ref,
@@ -95,10 +97,12 @@ async def test_create_and_update_persist_full_runtime_contract() -> None:
     assert runtime.backend.value in create_args
     assert runtime.flock_id in create_args
     assert runtime.flock_peer_id in create_args
+    assert runtime.realm_id in create_args
     update_args = pool.execute.await_args_list[1].args
     assert "UPDATE resident_runtimes" in update_args[0]
     assert runtime.observed_state.value in update_args
     assert runtime.flock_member_id in update_args
+    assert runtime.realm_id in update_args
 
 
 async def test_get_and_scoped_list_map_json_and_enums() -> None:

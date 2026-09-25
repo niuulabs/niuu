@@ -76,7 +76,9 @@ describe('NewRealmPage', () => {
       timeout: 5000,
     });
     expect(log.calls).toContain('createRealm:lexi-api');
-    expect(log.calls).toContain('deploy:lexi-api:realm-lexi-api');
+    // The deploy call carries the realm id createRealm returned (asserted
+    // exactly in useCreateRealm.test.tsx); here just confirm it deployed.
+    expect(log.calls.some((call) => call.startsWith('deploy:lexi-api:realm-lexi-api:'))).toBe(true);
   });
 
   it('shows the failing step and the Advanced link when a step fails', async () => {

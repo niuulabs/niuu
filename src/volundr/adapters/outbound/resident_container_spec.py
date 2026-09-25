@@ -174,6 +174,21 @@ def resident_flock_profile_configured(
     return bool(mesh.get("adapters")) and bool(discovery.get("adapters"))
 
 
+def realm_charter_page_for(realm_slug: str) -> str:
+    """Mímir page path holding a realm's charter (mirrors web-next's charterPagePathFor)."""
+    return f"realms/{realm_slug}/charter.md"
+
+
+def realm_mount_name_for(realm_slug: str) -> str:
+    """Mímir mount name carrying a realm's memory (mirrors web-next's mountNameFor)."""
+    return f"realm-{realm_slug}"
+
+
+def realm_routing_prefix_for(realm_slug: str) -> str:
+    """Mímir write-routing prefix for a realm (mirrors web-next's routingPrefixFor)."""
+    return f"realms/{realm_slug}/"
+
+
 def resident_profile_values(profile_id: str, deployment: dict[str, Any]) -> dict[str, Any]:
     values = deployment.get("values")
     if not isinstance(values, dict):
@@ -326,6 +341,7 @@ def materialize_resident_container(
     default_service_port: int,
     volundr_api_url: str,
     sandbox_command: tuple[str, ...],
+    realm_slug: str = "",
 ) -> ResidentContainerSpec:
     image = image_from_values(values, default=default_image)
     if not image:
@@ -337,6 +353,7 @@ def materialize_resident_container(
         default_service_port=default_service_port,
         volundr_api_url=volundr_api_url,
         sandbox_command=sandbox_command,
+        realm_slug=realm_slug,
     )
     return replace(spec, image=image)
 
@@ -349,6 +366,7 @@ def materialize_resident_runtime(
     default_service_port: int,
     volundr_api_url: str,
     sandbox_command: tuple[str, ...],
+    realm_slug: str = "",
 ) -> ResidentContainerSpec:
     """Materialize processes, files and environment without selecting an image.
 
@@ -386,7 +404,7 @@ def materialize_resident_runtime(
             sort_keys=False,
         ).encode()
         files[RESIDENT_RAVN_CONFIG] = yaml.safe_dump(
-            _resident_ravn_config(runtime, values, service_port),
+            _resident_ravn_config(runtime, values, service_port, realm_slug, volundr_api_url),
             sort_keys=False,
         ).encode()
     for process in processes:
@@ -541,10 +559,53 @@ def _resident_skuld_config(
     return config
 
 
+def _resident_mimir_write_routing(
+    realm_mimir: dict[str, Any],
+    mimir_instances: list[Any],
+    realm_slug: str,
+) -> dict[str, Any]:
+    """Resolve where a resident's Mímir writes land — never silently nowhere.
+
+    The profile's own ``write_routing`` (operator-configured, e.g. the normal
+    hub-Mímir case where no mount is named ``realm-<slug>``) is always kept.
+    When a mount named after this realm is also present, its rule is added
+    ahead of the profile's rules and it becomes the default only if the
+    profile did not already configure one. If no default and no rules
+    resolve at all, the resident would write to nowhere without error
+    (CompositeMimirAdapter.upsert_page silently no-ops on an empty target
+    list) — that is a fatal misconfiguration, not something to render quietly.
+    """
+    profile_routing = (
+        realm_mimir.get("writeRouting") if isinstance(realm_mimir.get("writeRouting"), dict) else {}
+    )
+    rules = list(profile_routing.get("rules") or [])
+    default = list(profile_routing.get("default") or [])
+
+    mount_name = realm_mount_name_for(realm_slug) if realm_slug else ""
+    has_realm_mount = bool(mount_name) and any(
+        isinstance(inst, dict) and inst.get("name") == mount_name for inst in mimir_instances
+    )
+    if has_realm_mount:
+        rules = [[realm_routing_prefix_for(realm_slug), [mount_name]], *rules]
+        if not default:
+            default = [mount_name]
+
+    if not default and not rules:
+        raise RuntimeError(
+            "Resident Mímir instances are configured but no write target resolves: "
+            f"no mount named {mount_name!r} is present and the profile's "
+            "resident.mimir.writeRouting.default is empty. Configure a default write "
+            "mount, or a write_routing rule, so resident writes have somewhere to go."
+        )
+    return {"rules": rules, "default": default}
+
+
 def _resident_ravn_config(
     runtime: ResidentRuntime,
     values: dict[str, Any],
     service_port: int,
+    realm_slug: str = "",
+    volundr_api_url: str = "",
 ) -> dict[str, Any]:
     persona = runtime.persona_name or DEFAULT_RESIDENT_PERSONA
     route_id = runtime.id.hex[:12]
@@ -569,7 +630,16 @@ def _resident_ravn_config(
         "cascade": {"enabled": True},
         "gateway": {
             "enabled": True,
-            "channels": {"http": {"enabled": True, "host": "0.0.0.0", "port": 7781}},
+            "channels": {
+                "http": {
+                    "enabled": True,
+                    "host": "0.0.0.0",
+                    "port": 7781,
+                    "resident_hud_enabled": bool(
+                        resident.get("hudEnabled") or resident.get("hud_enabled") or False
+                    ),
+                }
+            },
             "platform": {
                 "enabled": bool(platform.get("enabled", True)),
                 "base_url": str(platform.get("baseUrl") or platform.get("base_url") or ""),
@@ -606,6 +676,30 @@ def _resident_ravn_config(
         config["llm"] = llm
     if isinstance(resident.get("wakefulness"), dict):
         config["wakefulness"] = resident["wakefulness"]
+    stewardship_interval = resident.get("stewardshipIntervalSeconds") or resident.get(
+        "stewardship_interval_seconds"
+    )
+    if stewardship_interval:
+        config["resident_state"] = {"stewardship_interval_seconds": float(stewardship_interval)}
+    if realm_slug:
+        config["environment"]["charter_mimir_page"] = realm_charter_page_for(realm_slug)
+        config["resident_evolution"] = {
+            "realm_slug": realm_slug,
+            "realm_api_base_url": volundr_api_url,
+        }
+    realm_mimir = resident.get("mimir") if isinstance(resident.get("mimir"), dict) else {}
+    mimir_instances = realm_mimir.get("instances")
+    if isinstance(mimir_instances, list) and mimir_instances:
+        config["mimir"] = {
+            "enabled": True,
+            "instances": mimir_instances,
+            "write_routing": _resident_mimir_write_routing(
+                realm_mimir, mimir_instances, realm_slug
+            ),
+        }
+    signal_sources = resident.get("signalSources") or resident.get("signal_sources")
+    if isinstance(signal_sources, list) and signal_sources:
+        config["environment"]["signal_sources"] = signal_sources
     resident_flock_runtime_config(config, runtime, values)
     return config
 
