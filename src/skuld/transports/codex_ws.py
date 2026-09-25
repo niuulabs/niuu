@@ -624,6 +624,16 @@ class CodexWebSocketTransport(CLITransport):
                 cmd.extend(["-c", f"features.{feature}=false"])
 
         if self._model_gateway_url:
+            if not self._model_gateway_token.strip():
+                raise ValueError(
+                    f"Model gateway URL {self._model_gateway_url!r} is set but "
+                    "model_gateway_token is blank. Codex reads NIUU_MODEL_GATEWAY_TOKEN "
+                    "as its provider key and refuses an empty value — never a silent, "
+                    "unauthenticated session. Configure model_gateway.token (see "
+                    "skuld.config.ModelGatewayConfig), or fix the session contributor "
+                    "that should have supplied one (volundr.adapters.outbound."
+                    "contributors.model_gateway)."
+                )
             # The provider block names this env var as its key source.
             env[CODEX_GATEWAY_TOKEN_ENV] = self._model_gateway_token
             logger.info("Codex routed through the model gateway at %s", self._model_gateway_url)

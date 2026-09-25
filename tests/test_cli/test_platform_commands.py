@@ -12,12 +12,14 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+from bifrost.config import BifrostConfig
 from cli.commands.platform import (
     _build_init_config,
     _build_preflight_config,
     _build_up_callback,
     _check_auth_env_conflicts,
     _collect_service_definitions,
+    _effective_bifrost_config,
     _prompt_mode_selection,
     _resolve_enabled_services,
     _resolve_local_pod_manager_env,
@@ -25,12 +27,13 @@ from cli.commands.platform import (
     create_platform_commands,
     model_server_seed_connections,
 )
-from cli.config import CLISettings, PerServiceConfig, PodManagerConfig
+from cli.config import AuthConfig, CLISettings, PerServiceConfig, PluginConfig, PodManagerConfig
 from cli.registry import PluginRegistry
 from cli.server import MountedRouteDomain
 from cli.services.manager import ServiceManager
 from niuu.ports.plugin import ServiceDefinition
 from tests.test_cli.conftest import FakePlugin, StubService
+from volundr.adapters.outbound.contributors.model_gateway import OPEN_GATEWAY_TOKEN
 
 runner = CliRunner()
 
@@ -656,6 +659,140 @@ class TestBuildInitConfig:
         assert resident_config["profiles"][1]["default_model"] == ("niuu/nvidia/nemotron-test")
         assert "FileCredentialStore" in json.loads(env["CREDENTIAL_STORE"])["adapter"]
 
+    def test_bifrost_config_stays_open_under_host_auth_none(self) -> None:
+        """OWNER CONSTRAINT: host_auth.mode: none must not touch bifrost.auth_mode."""
+        settings = CLISettings(mode="mini")
+        assert settings.host_auth.mode == "none"
+
+        env = _resolve_local_pod_manager_env(settings)
+
+        bifrost_config = json.loads(env["BIFROST_CONFIG"])
+        assert bifrost_config["auth_mode"] == "open"
+        assert bifrost_config["oidc_kwargs"] == {}
+
+    def test_bifrost_config_forced_into_oidc_under_host_auth_oidc(self) -> None:
+        """host_auth.mode: oidc must mean Bifröst verifies too, even if the
+
+        operator left bifrost.auth_mode at its 'open' default in config.yaml —
+        oidc is a host-wide claim, not a per-service opt-in (see
+        cli.commands.platform._effective_bifrost_config).
+        """
+        settings = CLISettings(
+            mode="mini",
+            host_auth={
+                "mode": "oidc",
+                "oidc": {
+                    "issuers": [
+                        {"issuer": "https://kc.example/realms/volundr", "audiences": ["api"]}
+                    ]
+                },
+            },
+            # bifrost itself must be disabled to run oidc today (see
+            # cli.config.CLISettings._OIDC_UNCOVERED_PLUGINS['bifrost']) —
+            # this test only checks what BIFROST_CONFIG *would* compute to,
+            # independent of whether the plugin actually starts.
+            plugins={"enabled": {"guild": False, "bifrost": False}},
+        )
+
+        env = _resolve_local_pod_manager_env(settings)
+
+        bifrost_config = json.loads(env["BIFROST_CONFIG"])
+        assert bifrost_config["auth_mode"] == "oidc"
+        assert bifrost_config["oidc_kwargs"]["issuers"][0]["issuer"] == (
+            "https://kc.example/realms/volundr"
+        )
+        # Same computed kwargs as every other co-hosted oidc slot.
+        assert bifrost_config["oidc_kwargs"] == json.loads(env["IDENTITY__KWARGS"])
+
+    def test_mimir_auth_env_selects_allow_all_under_host_auth_none(self) -> None:
+        settings = CLISettings(mode="mini")
+        env = _resolve_local_pod_manager_env(settings)
+        assert env["MIMIR_AUTH__ADAPTER"] == (
+            "identity.adapters.identity.AllowAllHeaderAuthenticationAdapter"
+        )
+
+    def test_mimir_auth_env_selects_jwks_bearer_under_host_auth_oidc(self) -> None:
+        settings = CLISettings(
+            mode="mini",
+            host_auth={
+                "mode": "oidc",
+                "oidc": {
+                    "issuers": [
+                        {"issuer": "https://kc.example/realms/volundr", "audiences": ["api"]}
+                    ]
+                },
+            },
+            plugins={"enabled": {"guild": False, "bifrost": False}},
+        )
+        env = _resolve_local_pod_manager_env(settings)
+        assert env["MIMIR_AUTH__ADAPTER"] == (
+            "identity.adapters.jwks.JwksBearerAuthenticationAdapter"
+        )
+        assert json.loads(env["MIMIR_AUTH__KWARGS"])["issuers"][0]["issuer"] == (
+            "https://kc.example/realms/volundr"
+        )
+
+    _OIDC_HOST_AUTH = {
+        "mode": "oidc",
+        "oidc": {
+            "issuers": [{"issuer": "https://kc.example/realms/volundr", "audiences": ["api"]}]
+        },
+    }
+
+    def test_effective_bifrost_config_raises_on_explicit_auth_mode_override(self) -> None:
+        """An operator-set bifrost.auth_mode would be silently discarded by
+
+        the oidc override — refuse instead of discarding it quietly. Built
+        via model_construct: host_auth.mode: oidc with the bifrost plugin
+        enabled cannot pass CLISettings's own oidc-coverage validator today
+        (see _OIDC_UNCOVERED_PLUGINS['bifrost']) — this pins down
+        _effective_bifrost_config's own check in isolation, for the day that
+        block is lifted (a real per-session credential exists) and this
+        combination becomes reachable through the normal constructor too.
+        """
+        settings = CLISettings.model_construct(
+            mode="mini",
+            host_auth=AuthConfig(**self._OIDC_HOST_AUTH),
+            plugins=PluginConfig(),  # bifrost enabled by default (empty `enabled` map)
+            bifrost=BifrostConfig(auth_mode="mesh"),
+        )
+        with pytest.raises(typer.BadParameter, match="bifrost.auth_mode"):
+            _effective_bifrost_config(settings)
+
+    def test_effective_bifrost_config_does_not_raise_when_bifrost_plugin_disabled(self) -> None:
+        """A stale bifrost.auth_mode is inert while the plugin itself never
+
+        starts (nothing reads BIFROST_CONFIG then) — CLISettings._OIDC_
+        UNCOVERED_PLUGINS['bifrost'] already says the plugin can't run
+        under oidc; this must not be a second, redundant way to say it.
+        """
+        settings = CLISettings(
+            mode="mini",
+            host_auth=self._OIDC_HOST_AUTH,
+            plugins={"enabled": {"guild": False, "bifrost": False}},
+            bifrost={"auth_mode": "mesh"},
+        )
+        _effective_bifrost_config(settings)  # must not raise
+
+    def test_effective_bifrost_config_pat_revocation_survives_the_oidc_override(self) -> None:
+        """bifrost.pat_revocation is not discarded under oidc — it is applied
+
+        by OidcAuthAdapter too, when the verified bearer happens to be a
+        PAT (see bifrost.app._build_pat_revocation_validator).
+        """
+        settings = CLISettings(
+            mode="mini",
+            host_auth=self._OIDC_HOST_AUTH,
+            plugins={"enabled": {"guild": False, "bifrost": False}},
+            bifrost={"pat_revocation": {"enabled": False}},
+        )
+        effective = _effective_bifrost_config(settings)
+        assert effective.pat_revocation.enabled is False
+
+    def test_effective_bifrost_config_untouched_under_host_auth_none(self) -> None:
+        settings = CLISettings(mode="mini", bifrost={"auth_mode": "mesh"})
+        assert _effective_bifrost_config(settings) is settings.bifrost
+
 
 class TestRouteInventoryPayload:
     def test_serializes_inventory_records(self) -> None:
@@ -972,6 +1109,15 @@ class TestCheckAuthEnvConflicts:
                 {"IDENTITY__ADAPTER": "identity.adapters.jwks.JwksIdentityAdapter"}, "oidc"
             )
 
+    def test_disagreeing_bifrost_config_env_raises(self, monkeypatch) -> None:
+        monkeypatch.setenv("BIFROST_CONFIG", '{"auth_mode": "open"}')
+        with pytest.raises(typer.BadParameter, match="BIFROST_CONFIG"):
+            _check_auth_env_conflicts({"BIFROST_CONFIG": '{"auth_mode": "oidc"}'}, "oidc")
+
+    def test_matching_bifrost_config_env_passes(self, monkeypatch) -> None:
+        monkeypatch.setenv("BIFROST_CONFIG", '{"auth_mode": "oidc"}')
+        _check_auth_env_conflicts({"BIFROST_CONFIG": '{"auth_mode": "oidc"}'}, "oidc")
+
 
 @pytest.mark.parametrize("mode", ["mini", "cluster"])
 def test_only_mini_selects_no_auth(mode, monkeypatch):
@@ -1054,6 +1200,7 @@ class TestModelServerSeeds:
         assert local["config"] == {
             "provider": "local",
             "gateway_url": "http://niuu:8080/api/v1/bifrost",
+            "token": OPEN_GATEWAY_TOKEN,
             "models": ["llama3.2:latest", "qwen3:8b"],
         }
         assert seeds[0]["config"]["models"] == ["nvidia/nemotron-test"]
@@ -1116,5 +1263,6 @@ class TestModelServerSeeds:
         seeds = VolundrSettings().integrations.seed_connections
         assert [s.slug for s in seeds] == ["model-server", "model-server"]
         assert seeds[1].config["gateway_url"] == "http://niuu:8080/api/v1/bifrost"
+        assert seeds[1].config["token"] == OPEN_GATEWAY_TOKEN
         assert seeds[1].credential is not None
         assert seeds[1].credential.data == {"provider": "local"}

@@ -16,6 +16,17 @@ With a model gateway (``gateway_url``), the CLI is pointed at it instead of
 api.anthropic.com: ``ANTHROPIC_BASE_URL`` + ``ANTHROPIC_AUTH_TOKEN``, and the
 platform API key is dropped so it cannot win over the token. The subscription
 login stays untouched but unused.
+
+A blank ``gateway_token`` alongside a set ``gateway_url`` is refused (raises
+``ValueError``) rather than sent as ``ANTHROPIC_AUTH_TOKEN=""``: an empty
+override reads as "not logged in" in a container, or on a host with a stored
+subscription login, as no override at all — the CLI would then fall back to
+sending the user's real subscription OAuth token to the gateway instead of
+the intended credential. ``volundr.adapters.outbound.contributors.
+model_gateway.ModelGatewayContributor`` always supplies a non-blank token
+(``OPEN_GATEWAY_TOKEN`` under 'none'/'envoy') whenever it sets
+``gateway_url``, so this should only ever fire for a caller that bypassed
+that contributor.
 """
 
 from __future__ import annotations
@@ -33,6 +44,16 @@ _API_KEY_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 def claude_spawn_env(*, gateway_url: str = "", gateway_token: str = "") -> dict[str, str]:
     """Build the child env for a Claude CLI/SDK spawn (see module docstring)."""
     if gateway_url.strip():
+        if not gateway_token.strip():
+            raise ValueError(
+                f"Model gateway URL {gateway_url.strip()!r} is set but gateway_token is "
+                "blank. Sending ANTHROPIC_AUTH_TOKEN='' would read as 'not logged in' in "
+                "a container, or fall back to the host's real subscription OAuth token "
+                "being sent to the gateway instead — never a silent, unauthenticated "
+                "session. Configure model_gateway.token (see skuld.config."
+                "ModelGatewayConfig), or fix the session contributor that should have "
+                "supplied one (volundr.adapters.outbound.contributors.model_gateway)."
+            )
         env = {
             k: v for k, v in os.environ.items() if k != "CLAUDECODE" and k != "ANTHROPIC_API_KEY"
         }

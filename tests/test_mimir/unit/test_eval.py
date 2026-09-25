@@ -22,6 +22,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
+from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from mimir.config import MimirServiceConfig
 from mimir.eval import (
     CapturedQuery,
@@ -424,7 +425,9 @@ def _capture_app(tmp_path: Path, capture_dir: Path | None) -> TestClient:
     page.parent.mkdir(parents=True, exist_ok=True)
     page.write_text("# Widget assembly\n\nWidgets are assembled daily.\n", encoding="utf-8")
 
-    router = MimirRouter(adapter=adapter, eval_capture_dir=capture_dir)
+    router = MimirRouter(
+        adapter=adapter, eval_capture_dir=capture_dir, auth=EnvoyHeaderAuthenticationAdapter()
+    )
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
     return TestClient(app)

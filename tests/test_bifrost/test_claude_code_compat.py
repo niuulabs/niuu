@@ -884,6 +884,7 @@ class TestNoApiKeyLeaks:
             providers={"anthropic": ProviderConfig(models=[_CLAUDE_MODEL])},
             auth_mode=AuthMode.PAT,
             pat_secret=_pat_secret,
+            pat_revocation={"enabled": False},
         )
         token = jwt.encode(
             {"sub": "agent-1", "tenant_id": "default"},

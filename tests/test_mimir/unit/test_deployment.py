@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from mimir.adapters.flux import FluxKnowledgeDeploymentAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.ports.deployment import DeploymentRequest
@@ -62,7 +63,13 @@ def test_deployment_requires_admin_and_inspection_reports_real_counts(tmp_path):
     a.list_deployments = AsyncMock(return_value={"releases": []})
     a.deploy = AsyncMock(return_value={"ready": False})
     app = FastAPI()
-    app.include_router(MimirRouter(MarkdownMimirAdapter(root=tmp_path), deployment=a).router)
+    app.include_router(
+        MimirRouter(
+            MarkdownMimirAdapter(root=tmp_path),
+            deployment=a,
+            auth=EnvoyHeaderAuthenticationAdapter(),
+        ).router
+    )
     with TestClient(app) as client:
         assert client.get("/deployments").status_code == 403
         assert (
@@ -241,7 +248,13 @@ def test_deployment_auth_accepts_envoy_array_claims(tmp_path, roles, user, expec
     a = adapter()
     a.list_deployments = AsyncMock(return_value={"releases": []})
     app = FastAPI()
-    app.include_router(MimirRouter(MarkdownMimirAdapter(root=tmp_path), deployment=a).router)
+    app.include_router(
+        MimirRouter(
+            MarkdownMimirAdapter(root=tmp_path),
+            deployment=a,
+            auth=EnvoyHeaderAuthenticationAdapter(),
+        ).router
+    )
     headers = {
         "x-auth-user-id": user,
         "x-auth-tenant": "tenant-a",

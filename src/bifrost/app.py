@@ -32,6 +32,8 @@ from bifrost.ports.rules import RuleEnginePort
 from bifrost.ports.usage_store import UsageStore
 from bifrost.pricing import ModelPricing, load_pricing_from_yaml
 from bifrost.router import ModelRouter
+from niuu.domain.services.pat_validator import PATValidator
+from niuu.utils import import_class
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +124,58 @@ def _build_key_vault(config: BifrostConfig) -> KeyVaultPort:
 
         return SecretsFileKeyVault(path=config.key_vault.secrets_file)
     return EnvKeyVault(config)
+
+
+# ---------------------------------------------------------------------------
+# PAT revocation validator factory
+# ---------------------------------------------------------------------------
+
+
+def _build_pat_revocation_validator(config: BifrostConfig) -> PATValidator | None:
+    """Instantiate the configured PAT revocation check, or ``None`` when unset.
+
+    Used by both ``pat`` mode (``PATAuthAdapter`` — required there, enforced
+    by ``BifrostConfig._pat_mode_requires_revocation_decision``) and ``oidc``
+    mode (``OidcAuthAdapter`` — optional, applied only when the verified
+    bearer happens to be a PAT). ``pat_revocation.enabled: false`` or a blank
+    ``pat_revocation.adapter`` both mean "no revocation check" and return
+    ``None`` — that combination is only reachable for 'pat' mode through an
+    explicit ``enabled: false`` (the BifrostConfig validator refuses a blank
+    adapter with ``enabled`` left at its True default); 'oidc' has no such
+    requirement.
+
+    This composition root always constructs the adapter with ``repo=None``
+    (Bifröst has no database pool of its own — see
+    ``bifrost.config.PATRevocationConfig``), which only ``RemotePATValidator``
+    and similar overrides of ``is_valid`` tolerate. A configured adapter that
+    does *not* override ``is_valid`` (so it would actually dereference
+    ``self._repo``) is rejected here, at startup, rather than crashing on the
+    first PAT-checked request.
+    """
+    if not config.pat_revocation.enabled or not config.pat_revocation.adapter:
+        return None
+    cls = import_class(config.pat_revocation.adapter)
+    validator = cls(
+        repo=None,
+        cache_ttl=config.pat_revocation.cache_ttl,
+        revoked_cache_ttl=config.pat_revocation.revoked_cache_ttl,
+        **config.pat_revocation.kwargs,
+    )
+    if not isinstance(validator, PATValidator):
+        raise TypeError(
+            f"bifrost.pat_revocation.adapter={config.pat_revocation.adapter!r} must "
+            "implement PATValidator (niuu.domain.services.pat_validator.PATValidator)"
+        )
+    if type(validator).is_valid is PATValidator.is_valid:
+        raise ValueError(
+            f"bifrost.pat_revocation.adapter={config.pat_revocation.adapter!r} does "
+            "not override PATValidator.is_valid(), so it will dereference "
+            "self._repo on first use — but this composition root always passes "
+            "repo=None (Bifröst has no database pool of its own). Configure a "
+            "validator that doesn't need repo (e.g. niuu.adapters.remote_pats."
+            "RemotePATValidator), or set pat_revocation.enabled: false."
+        )
+    return validator
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +296,12 @@ def create_app(config: BifrostConfig) -> FastAPI:
     cache = _build_cache(config)
     audit = _build_audit(config)
     pricing_overrides = _pricing_overrides(config)
-    auth_adapter = build_auth_adapter(config.auth_mode, config.effective_pat_secret())
+    auth_adapter = build_auth_adapter(
+        config.auth_mode,
+        config.effective_pat_secret(),
+        oidc_kwargs=config.oidc_kwargs,
+        pat_revocation_validator=_build_pat_revocation_validator(config),
+    )
     event_emitter = _build_event_emitter(config)
 
     # ── SIGHUP handler — reload keys without restarting ──────────────────────

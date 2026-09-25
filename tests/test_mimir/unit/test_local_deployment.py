@@ -5,6 +5,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from mimir.adapters.local import LocalKnowledgeDeploymentAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.ports.deployment import DeploymentRequest
@@ -31,7 +32,11 @@ async def test_local_deploy_mount_resume_and_inspection(tmp_path, monkeypatch):
     assert (tmp_path / "research/deployment.json").stat().st_mode & 0o777 == 0o600
     app = FastAPI()
     app.include_router(
-        MimirRouter(MarkdownMimirAdapter(root=tmp_path / "base"), deployment=adapter).router
+        MimirRouter(
+            MarkdownMimirAdapter(root=tmp_path / "base"),
+            deployment=adapter,
+            auth=EnvoyHeaderAuthenticationAdapter(),
+        ).router
     )
     with TestClient(app) as client:
         assert client.get("/instances/inspect?mount=research").status_code == 200
@@ -159,7 +164,11 @@ def test_managed_gbrain_registry_descriptor_contains_reference_not_token(tmp_pat
     adapter = LocalKnowledgeDeploymentAdapter(root=str(tmp_path))
     app = FastAPI()
     app.include_router(
-        MimirRouter(MarkdownMimirAdapter(root=tmp_path / "base"), deployment=adapter).router
+        MimirRouter(
+            MarkdownMimirAdapter(root=tmp_path / "base"),
+            deployment=adapter,
+            auth=EnvoyHeaderAuthenticationAdapter(),
+        ).router
     )
     with TestClient(app) as client:
         response = client.get("/registry/mounts")
