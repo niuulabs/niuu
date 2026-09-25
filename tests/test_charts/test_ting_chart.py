@@ -367,7 +367,9 @@ class TestWorkflowMigrationInitContainer:
                 {
                     **self._RWO_RECREATE,
                     "workflowMigration": {"applyOnStart": True},
-                    "extraEnv": [{"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": "http://otel:4317"}],
+                    "extraEnv": [
+                        {"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": "http://otel:4317"}
+                    ],
                 },
             )
         )

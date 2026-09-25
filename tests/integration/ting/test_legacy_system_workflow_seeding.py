@@ -63,7 +63,9 @@ async def _create_and_regress_to_legacy_shape(repo, pool, workflow, *, scope=Wor
             based_on_revision = NULL,
             schema_version = 1,
             persona_dependencies_json = '{}'::jsonb,
-            persona_definitions_json = '{}'::jsonb
+            persona_definitions_json = '{}'::jsonb,
+            workflow_dependencies_json = '{}'::jsonb,
+            workflow_definitions_json = '{}'::jsonb
         WHERE id = $1
         """,
         saved.id,
