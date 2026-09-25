@@ -39,11 +39,29 @@ advertise suspend or metrics.
 
 ### Local mini runtime
 
-Mini mode composes the same resident control port with
-`LocalContainerResidentRuntimeController`. The adapter uses the Docker API to
-run the configured Ravn, NemoClaw, or NemoHermes image without Kubernetes. The
-Ravn deployment wizard therefore remains unchanged: select `Local Forge`, then
-one of `ravn-local`, `nemoclaw-local`, or `nemohermes-local`.
+Mini mode composes the same resident control port with one of two local
+runtimes, selected in `~/.niuu/config.yaml` (or `NIUU_RESIDENTS__RUNTIME`):
+
+```yaml
+residents:
+  runtime: process   # default; `docker` opts into the container runtime
+```
+
+- **`process` (default)** — `HostProcessResidentRuntimeController` runs each
+  Ravn resident as a Skuld broker and a `ravn daemon` process on this host. No
+  container engine is needed. It offers the `ravn-local` profile only: NemoClaw
+  and NemoHermes ship as images and need the Docker runtime.
+- **`docker`** — `LocalContainerResidentRuntimeController` uses the Docker API
+  to run the Ravn, NemoClaw, or NemoHermes image without Kubernetes, offering
+  `ravn-local`, `nemoclaw-local`, and `nemohermes-local`. Docker must be
+  running: when it is not, the Forge plugin fails to start with the remedy in
+  the error instead of silently running without residents.
+
+The Ravn deployment wizard is the same for both: select `Local Forge`, then a
+profile. `ravn-local` keeps its id across runtimes, so switching runtime
+redeploys existing Ravn residents on the next reconciliation with their durable
+state intact. Stop any containers the Docker runtime left running before
+switching to `process`, or both copies run.
 
 Configure the models the local Bifröst can actually route in `~/.niuu/config.yaml`:
 
@@ -61,14 +79,29 @@ bifrost:
 Mini passes this configuration to its hosted Bifröst and derives the resident
 profile model choices from the configured provider models. `./start-dev` binds
 the server on all host interfaces while publishing its detected LAN address;
-resident containers call the shared host through `host.docker.internal`.
+resident containers call the shared host through `host.docker.internal`, and
+resident processes call it on loopback.
 
-Each resident receives a private loopback-only host port and durable directories
-under `~/.niuu/residents/<resident-id>/`: `workspace`, `.volundr`, `.codex`, and
-`.claude`. Existing Codex and Claude credential files are copied with mode
-`0600` only when the resident's durable destination does not exist. Restart and
-suspend preserve these directories; deleting the resident removes its container,
-durable directory, and engine machine credential unless retention is configured.
+Each resident receives a private loopback-only port and durable directories
+under `~/.niuu/residents/<resident-id>/sandbox/`: `workspace`, `config` (the
+container's `.volundr`), and `home` with `.codex` and `.claude`. Existing Codex
+and Claude credential files are copied with mode `0600` only when the resident's
+durable destination does not exist. Restart and suspend preserve these
+directories; deleting the resident removes its container or processes, durable
+directory, and engine machine credential unless retention is configured.
+
+Resident processes start from the same materialized spec as the container:
+`/sandbox` paths map onto the directories above, `HOME` is the resident's
+`home`, the Skuld service and the Ravn HTTP channel bind `127.0.0.1` on ports the
+OS assigns, and the mesh uses per-resident IPC sockets. They inherit only
+process-bootstrap variables (`PATH`, locale, proxy and CA settings) from the
+platform, never its `SKULD__*`, `RAVN_*`, or `NIUU_*` configuration. Their output
+is recorded, timestamped, in `config/skuld.log` and `config/ravn.log`, which the
+resident logs view reads. They live as long as the platform: shutting it down
+stops them, suspend stops them, and resume starts them again. If the platform
+dies without stopping them, the next start stops the orphans recorded in
+`host-processes.json` before starting the resident again, so a resident never
+runs twice.
 
 The browser still reaches chat through `/s/<resident-id>/sessions/<session-id>/session`.
 The root host sends that route to Guild, Guild authorizes the owning target, and

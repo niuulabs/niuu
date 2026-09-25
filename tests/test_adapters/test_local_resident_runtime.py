@@ -153,7 +153,7 @@ def _runtime(engine: ResidentEngine = ResidentEngine.RAVN) -> ResidentRuntime:
 def docker_client(monkeypatch) -> _DockerClient:
     client = _DockerClient()
     monkeypatch.setattr(local_runtime.docker, "from_env", lambda: client)
-    monkeypatch.setattr(local_runtime, "_service_ready", lambda _port: True)
+    monkeypatch.setattr(local_runtime, "service_ready", lambda _port: True)
     return client
 
 
@@ -459,18 +459,7 @@ async def test_local_device_failure_and_missing_machine_store_are_explicit(
         )
 
 
-def test_local_runtime_helpers_cover_states_paths_and_log_filters(tmp_path) -> None:
-    root = tmp_path / "sandbox"
-    assert (
-        local_runtime._host_runtime_path(
-            root,
-            "/sandbox/workspace/project/file.txt",
-        )
-        == root / "workspace" / "project" / "file.txt"
-    )
-    with pytest.raises(RuntimeError, match="not backed"):
-        local_runtime._host_runtime_path(root, "/tmp/file")
-
+def test_local_runtime_helpers_cover_container_states() -> None:
     assert local_runtime._observed_state("running") is ResidentObservedState.ACTIVE
     assert local_runtime._observed_state("paused") is ResidentObservedState.SUSPENDED
     assert local_runtime._observed_state("created") is ResidentObservedState.DEPLOYING
@@ -478,24 +467,14 @@ def test_local_runtime_helpers_cover_states_paths_and_log_filters(tmp_path) -> N
     assert local_runtime._observed_state("unknown") is ResidentObservedState.PENDING
     assert local_runtime._published_port(SimpleNamespace(attrs={}), 9200) == 0
 
-    entries = local_runtime._parse_logs(
-        "\n".join(
-            [
-                "invalid-time [api] error details",
-                "2026-07-12T12:00:00Z [api] WARNING retrying",
-                "2026-07-12T12:00:01Z [api] fatal failure",
-                "2026-07-12T12:00:02Z [other] error ignored",
-            ]
-        ),
-        ("api",),
-        "warning",
-    )
-    assert [(entry.level, entry.message) for entry in entries] == [
-        ("error", "error details"),
-        ("warning", "WARNING retrying"),
-        ("critical", "fatal failure"),
-    ]
-    assert local_runtime._log_level("exception raised") == "error"
-    assert local_runtime._log_level("warn soon") == "warning"
-    assert local_runtime._log_level("debug details") == "debug"
-    assert local_runtime._log_level("ready") == "info"
+
+def test_unreachable_docker_engine_fails_with_a_remedy(tmp_path, monkeypatch) -> None:
+    def unreachable():
+        raise local_runtime.DockerException("Error while fetching server API version")
+
+    monkeypatch.setattr(local_runtime.docker, "from_env", unreachable)
+
+    with pytest.raises(RuntimeError, match="Start Docker") as raised:
+        LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
+
+    assert "residents.runtime: docker" in str(raised.value)
