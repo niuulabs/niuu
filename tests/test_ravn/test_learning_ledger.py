@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import ravn.valkyrie_evolution.resident_learning as resident_learning_mod
 from ravn.adapters.reflection.flock_learning import FlockLearningStore
 from ravn.adapters.skill.file_registry import FileSkillRegistry
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.learned_tools import (
+    LocalLearnedToolRunner,
     learned_tool_artifact_path,
     learned_tool_storage,
     read_learned_tool_artifact,
@@ -203,11 +203,13 @@ _PEER_TEST_CODE = "import _verify_tool\n\ndef test_run():\n    assert _verify_to
 async def test_failing_peer_reverification_is_a_durable_rejection(tmp_path, monkeypatch) -> None:
     calls: list[dict[str, Any]] = []
 
-    def fake_verify(**kwargs: Any) -> VerificationResult:
+    async def fake_verify(self, **kwargs: Any) -> VerificationResult:
         calls.append(kwargs)
         return VerificationResult(ok=False, logs="AssertionError: the teacher lied")
 
-    monkeypatch.setattr(resident_learning_mod, "verify_learned_tool_in_ephemeral_venv", fake_verify)
+    # Verification now goes through the configured runner's verify() (never a
+    # bare host-side call) — patch the runner, not a module-level function.
+    monkeypatch.setattr(LocalLearnedToolRunner, "verify", fake_verify)
     store = FlockLearningStore(tmp_path / "flock_learning.json")
     peer = _runtime(tmp_path, store=store)
 
@@ -231,11 +233,10 @@ async def test_failing_peer_reverification_is_a_durable_rejection(tmp_path, monk
 
 
 async def test_passing_peer_reverification_installs(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        resident_learning_mod,
-        "verify_learned_tool_in_ephemeral_venv",
-        lambda **_: VerificationResult(ok=True, logs="verify: ran 1 test callable(s)"),
-    )
+    async def fake_verify(self, **_: Any) -> VerificationResult:
+        return VerificationResult(ok=True, logs="verify: ran 1 test callable(s)")
+
+    monkeypatch.setattr(LocalLearnedToolRunner, "verify", fake_verify)
     store = FlockLearningStore(tmp_path / "flock_learning.json")
     peer = _runtime(tmp_path, store=store)
 
@@ -247,13 +248,24 @@ async def test_passing_peer_reverification_installs(tmp_path, monkeypatch) -> No
 
 
 async def test_artifact_without_test_code_keeps_the_canary_only_path(tmp_path, monkeypatch) -> None:
-    def explode(**_: Any) -> VerificationResult:
+    """A ``ravn_skill_tool`` artifact (markdown skill, not an agent_tool) with
+    no test_code legitimately keeps the canary-only path: old-style
+    markdown-skill proposals are weaker evidence, not a punishable offence.
+    This is NOT the ``agent_tool`` case — an agent_tool proposal with no
+    test_code is declined outright (see test_verify_peer_artifact-adjacent
+    coverage in test_resident_learning_runtime.py), because
+    require_verified_artifact would refuse to ever run it once installed.
+    """
+
+    async def explode(self, **_: Any) -> VerificationResult:
         raise AssertionError("verification must not run for artifacts without test_code")
 
-    monkeypatch.setattr(resident_learning_mod, "verify_learned_tool_in_ephemeral_venv", explode)
+    monkeypatch.setattr(LocalLearnedToolRunner, "verify", explode)
     peer = _runtime(tmp_path)
 
-    decision = await peer.evaluate_and_apply(_artifact())
+    artifact = _artifact()
+    assert artifact.artifact_type == "ravn_skill_tool"
+    decision = await peer.evaluate_and_apply(artifact)
 
     assert decision.action == "adopted"
     assert decision.canary_passed is True
