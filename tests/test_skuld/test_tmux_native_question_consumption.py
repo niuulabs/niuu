@@ -198,6 +198,51 @@ async def test_native_other_waits_for_editor_paste_and_exact_consumption(native_
     ) < events.index(receipts(events)[0])
 
 
+async def test_turn_end_race_during_menu_render_wait_does_not_lose_the_answer(native_bridge):
+    """Deterministic reproduction of a CI-only flake: ``ValueError: The native Claude question
+    ended while its menu was rendering`` (see ``_answer_tty_prompt_locked`` in
+    ``tmux_interactive.py``).
+
+    In production this fires whenever a turn-end signal (the ``Stop`` hook, or the
+    synthetic-turn idle watchdog) clears ``_pending_tty_prompts[request_id]`` while
+    ``_wait_question_screen`` is still bound-polling for the live menu to render — a real
+    concurrent path, not a test artefact: the poll is a genuine ``await`` loop, and nothing
+    serializes it against hook delivery or the watchdog task. Rather than relying on real
+    timers/xdist scheduling luck to hit that window (as CI did once), this test forces the
+    exact interleaving deterministically: a one-shot wrapper around
+    ``_capture_question_screen`` fires the clear on the very call ``_wait_question_screen``
+    uses to observe the (already-matching) menu, so the race lands on every run.
+    """
+    transport, events = native_bridge
+    transport.capture_stdout = "☐ Label\nWhich label should be written?\n❯ 1. Blue\n  2. Amber\n"
+    rid = await transport.surface()
+    transport.steps.append(("2", "❯\n"))
+    transport.consumed = {"answers": {SINGLE[0]["question"]: "Amber"}}
+
+    original_capture = transport._capture_question_screen
+    cleared = False
+
+    async def capture_then_race_clear(*, pane_id=None):
+        nonlocal cleared
+        screen_text = await original_capture(pane_id=pane_id)
+        if not cleared:
+            cleared = True
+            # Simulate a concurrent turn-end signal (Stop hook / synthetic-turn watchdog)
+            # landing while the menu render wait is still polling — exactly the CI race.
+            await transport._clear_pending_tty_prompts("terminal_idle")
+        return screen_text
+
+    transport._capture_question_screen = capture_then_race_clear
+
+    await transport.send_control("ask_user_answer", request_id=rid, answers=[{"answer": "Amber"}])
+
+    assert cleared, "the injected race never ran — the test stopped proving anything"
+    assert _send_keys(transport) == ["2"]
+    resolved = [e for e in events if e.get("type") == "ask_user_resolved"]
+    assert [(e["request_id"], e["decision"]) for e in resolved] == [(rid, "Amber")]
+    assert rid not in transport._pending_tty_prompts
+
+
 async def test_native_two_pages_review_every_answer_before_submit(native_bridge):
     transport, events = native_bridge
     transport.capture_stdout = screen("multi-00-initial")
