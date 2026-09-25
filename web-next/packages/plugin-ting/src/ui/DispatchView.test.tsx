@@ -19,7 +19,6 @@ function makeDispatcherState(overrides: Partial<DispatcherState> = {}): Dispatch
   return {
     id: '00000000-0000-0000-0000-000000000999',
     running: true,
-    threshold: 70,
     maxConcurrentRuns: 3,
     autoContinue: false,
     updatedAt: '2026-01-01T00:00:00Z',
@@ -104,7 +103,6 @@ describe('DispatchView', () => {
   it('renders rule summary card after loading', async () => {
     render(<DispatchView />, { wrapper: wrap(makeServices()) });
     await waitFor(() => expect(screen.getByText('Dispatch rules')).toBeInTheDocument());
-    expect(screen.getAllByText('70%').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('3').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('off')).toBeInTheDocument();
   });
@@ -416,11 +414,6 @@ describe('DispatchView', () => {
     });
   });
 
-  it('shows synthesized confidence for dispatcher queue items', async () => {
-    render(<DispatchView />, { wrapper: wrap(makeServices()) });
-    await waitFor(() => expect(screen.getByText('100')).toBeInTheDocument());
-  });
-
   it('shows Pause dispatcher button in header', async () => {
     render(<DispatchView />, { wrapper: wrap(makeServices()) });
     await waitFor(() =>
@@ -460,18 +453,6 @@ describe('DispatchView', () => {
     render(<DispatchView />, { wrapper: wrap(makeServices()) });
     await waitFor(() => screen.getByText('Dispatch rules'));
     expect(screen.getByRole('button', { name: /edit/i })).toBeInTheDocument();
-  });
-
-  it('opens threshold modal when Override threshold is clicked', async () => {
-    const user = userEvent.setup();
-    render(<DispatchView />, { wrapper: wrap(makeServices()) });
-    await waitFor(() => screen.getByText('Test Run'));
-
-    await user.click(screen.getByRole('checkbox', { name: /select row/i }));
-    await user.click(screen.getByRole('button', { name: /override threshold/i }));
-    await waitFor(() =>
-      expect(screen.getByText('Override dispatch threshold')).toBeInTheDocument(),
-    );
   });
 
   it('opens workflow modal when Apply workflow is clicked', async () => {

@@ -51,6 +51,7 @@ from collections.abc import AsyncIterator, Iterator
 
 import httpx
 
+from niuu.observability import get_observability
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class
 from ravn.budget import TokenEstimator
@@ -353,6 +354,9 @@ class OpenAICompatibleAdapter(LLMPort):
             headers["x-agent-id"] = self._agent_id
         if self._session_id:
             headers["x-session-id"] = self._session_id
+        # W3C traceparent/tracestate for the active span, when observability
+        # is enabled and a span is active. Empty dict (no keys) otherwise.
+        headers.update(get_observability().inject())
         return headers
 
     async def _request_headers(self) -> dict[str, str]:

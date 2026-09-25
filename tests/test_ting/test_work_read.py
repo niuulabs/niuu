@@ -68,7 +68,6 @@ def _saga(*, connection_id: str = "linear-a") -> Saga:
         repos=["niuulabs/platform"],
         feature_branch="work/platform",
         status=SagaStatus.ACTIVE,
-        confidence=0.8,
         created_at=NOW,
         base_branch="main",
         owner_id="owner-1",
@@ -387,7 +386,6 @@ async def test_project_detail_uses_exact_source_and_real_run_links() -> None:
         declared_files=[],
         estimate_hours=None,
         status=RunStatus.REVIEW,
-        confidence=0.9,
         session_id="session-task",
         reviewer_session_id="session-reviewer",
         branch="work/ENG-1",
@@ -442,7 +440,6 @@ async def test_project_detail_preserves_embedded_run_when_tracker_run_read_fails
         number=1,
         name="Delivery",
         status=PhaseStatus.ACTIVE,
-        confidence=0.8,
     )
     issue = TrackerIssue(
         id="issue-1",
@@ -463,7 +460,6 @@ async def test_project_detail_preserves_embedded_run_when_tracker_run_read_fails
         declared_files=[],
         estimate_hours=None,
         status=RunStatus.RUNNING,
-        confidence=0.8,
         session_id="persisted-session",
         branch="work/ENG-1",
         chronicle_summary=None,

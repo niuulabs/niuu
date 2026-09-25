@@ -34,7 +34,6 @@ from ting.api.dispatch import resolve_volundr_factory
 from ting.api.research import resolve_workflow_campaign_repo
 from ting.api.tracker import resolve_trackers
 from ting.api.workflows import WorkflowLaunchBody, launch_workflow_execution, resolve_workflow_repo
-from ting.config import ReviewConfig
 from ting.domain.models import (
     CampaignStageState,
     Phase,
@@ -732,7 +731,6 @@ class SagaListItem(BaseModel):
     issue_count: int = 0
     url: str = ""
     base_branch: str = "main"
-    confidence: float = 0.0
     created_at: str = ""
     phase_summary: PhaseSummaryResponse = Field(default_factory=PhaseSummaryResponse)
     workflow_id: str | None = None
@@ -760,7 +758,6 @@ class SagaDetailResponse(BaseModel):
     progress: float = 0.0
     url: str = ""
     base_branch: str = "main"
-    confidence: float = 0.0
     created_at: str = ""
     phase_summary: PhaseSummaryResponse = Field(default_factory=PhaseSummaryResponse)
     phases: list[PhaseResponse]
@@ -960,7 +957,6 @@ class CommittedSagaResponse(BaseModel):
     feature_branch: str
     base_branch: str
     status: str
-    confidence: float
     created_at: str
     phase_summary: PhaseSummaryResponse
     phases: list[CommittedPhaseResponse]
@@ -1157,7 +1153,6 @@ def create_sagas_router() -> APIRouter:
                     issue_count=project.issue_count if project else 0,
                     url=project.url if project else "",
                     base_branch=saga.base_branch,
-                    confidence=saga.confidence,
                     created_at=saga.created_at.isoformat(),
                     phase_summary=phase_summary,
                     workflow_id=str(saga.workflow_id) if saga.workflow_id else None,
@@ -1301,7 +1296,6 @@ def create_sagas_router() -> APIRouter:
             progress=_display_progress(saga, project, phase_summary),
             url=project.url if project else "",
             base_branch=saga.base_branch,
-            confidence=saga.confidence,
             created_at=saga.created_at.isoformat(),
             phase_summary=phase_summary,
             phases=phase_responses,
@@ -1810,7 +1804,6 @@ def create_sagas_router() -> APIRouter:
             issue_count=project.issue_count if project else 0,
             url=project.url if project else "",
             base_branch=updated.base_branch,
-            confidence=updated.confidence,
             created_at=updated.created_at.isoformat(),
             phase_summary=phase_summary,
             workflow_id=str(updated.workflow_id) if updated.workflow_id else None,
@@ -1891,7 +1884,6 @@ def create_sagas_router() -> APIRouter:
             issue_count=project.issue_count if project else 0,
             url=project.url if project else "",
             base_branch=updated_saga.base_branch,
-            confidence=updated_saga.confidence,
             created_at=updated_saga.created_at.isoformat(),
             phase_summary=phase_summary,
             workflow_id=str(updated_saga.workflow_id) if updated_saga.workflow_id else None,
@@ -1975,7 +1967,6 @@ def create_sagas_router() -> APIRouter:
             issue_count=project.issue_count if project else 0,
             url=project.url if project else "",
             base_branch=updated.base_branch,
-            confidence=updated.confidence,
             created_at=updated.created_at.isoformat(),
             phase_summary=phase_summary,
             workflow_id=str(updated.workflow_id) if updated.workflow_id else None,
@@ -2058,13 +2049,6 @@ def create_sagas_router() -> APIRouter:
                 detail=str(exc),
             ) from exc
 
-        review_cfg: ReviewConfig = getattr(
-            getattr(request.app.state, "settings", None),
-            "review",
-            ReviewConfig(),
-        )
-        initial_confidence = review_cfg.initial_confidence
-
         now = datetime.now(UTC)
         saga_id = uuid4()
         feature_branch = f"feat/{body.slug}"
@@ -2089,7 +2073,6 @@ def create_sagas_router() -> APIRouter:
             feature_branch=feature_branch,
             base_branch=body.base_branch,
             status=SagaStatus.ACTIVE,
-            confidence=initial_confidence,
             created_at=now,
             owner_id=principal.user_id,
             workflow_id=workflow_id,
@@ -2148,7 +2131,6 @@ def create_sagas_router() -> APIRouter:
                 number=phase_num,
                 name=phase_spec.name,
                 status=phase_status,
-                confidence=initial_confidence,
             )
 
             try:
@@ -2177,7 +2159,6 @@ def create_sagas_router() -> APIRouter:
                     declared_files=run_spec.declared_files,
                     estimate_hours=run_spec.estimate_hours,
                     status=RunStatus.PENDING,
-                    confidence=initial_confidence,
                     session_id=None,
                     branch=None,
                     chronicle_summary=None,
@@ -2322,7 +2303,6 @@ def create_sagas_router() -> APIRouter:
             feature_branch=saga.feature_branch,
             base_branch=saga.base_branch,
             status=saga.status.value,
-            confidence=saga.confidence,
             created_at=saga.created_at.isoformat(),
             phase_summary=PhaseSummaryResponse(
                 total=len(phases),

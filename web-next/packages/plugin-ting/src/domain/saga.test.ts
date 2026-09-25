@@ -6,7 +6,6 @@ import {
   sagaSchema,
   phaseSchema,
   runSchema,
-  confidenceEventSchema,
 } from './saga';
 
 // ---------------------------------------------------------------------------
@@ -22,7 +21,6 @@ const validSaga = {
   repos: ['niuulabs/volundr'],
   featureBranch: 'feat/auth-rewrite',
   status: 'active' as const,
-  confidence: 72,
   createdAt: '2026-01-01T00:00:00Z',
   phaseSummary: { total: 3, completed: 1 },
 };
@@ -37,7 +35,6 @@ const validRun = {
   declaredFiles: ['src/auth/refresh.ts'],
   estimateHours: 4,
   status: 'queued' as const,
-  confidence: 80,
   sessionId: null,
   reviewerSessionId: null,
   reviewRound: 0,
@@ -55,7 +52,6 @@ const validPhase = {
   number: 1,
   name: 'Phase 1: Foundation',
   status: 'active' as const,
-  confidence: 75,
   runs: [validRun],
 };
 
@@ -112,22 +108,12 @@ describe('sagaSchema', () => {
     expect(result.phaseSummary.total).toBe(3);
   });
 
-  it('rejects confidence outside 0–100', () => {
-    expect(() => sagaSchema.parse({ ...validSaga, confidence: 101 })).toThrow();
-    expect(() => sagaSchema.parse({ ...validSaga, confidence: -1 })).toThrow();
-  });
-
   it('rejects invalid UUID', () => {
     expect(() => sagaSchema.parse({ ...validSaga, id: 'not-a-uuid' })).toThrow();
   });
 
   it('rejects empty name', () => {
     expect(() => sagaSchema.parse({ ...validSaga, name: '' })).toThrow();
-  });
-
-  it('accepts confidence at boundary values', () => {
-    expect(sagaSchema.parse({ ...validSaga, confidence: 0 }).confidence).toBe(0);
-    expect(sagaSchema.parse({ ...validSaga, confidence: 100 }).confidence).toBe(100);
   });
 });
 
@@ -176,35 +162,5 @@ describe('phaseSchema', () => {
 
   it('rejects zero phase number', () => {
     expect(() => phaseSchema.parse({ ...validPhase, number: 0 })).toThrow();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ConfidenceEvent schema
-// ---------------------------------------------------------------------------
-
-describe('confidenceEventSchema', () => {
-  const validEvent = {
-    id: '00000000-0000-4000-8000-000000000099',
-    runId: '00000000-0000-4000-8000-000000000002',
-    eventType: 'ci_pass' as const,
-    delta: 5,
-    scoreAfter: 85,
-    createdAt: '2026-01-01T00:00:00Z',
-  };
-
-  it('parses a valid confidence event', () => {
-    const result = confidenceEventSchema.parse(validEvent);
-    expect(result.eventType).toBe('ci_pass');
-    expect(result.delta).toBe(5);
-  });
-
-  it('accepts negative delta for penalty events', () => {
-    const result = confidenceEventSchema.parse({ ...validEvent, delta: -10, scoreAfter: 70 });
-    expect(result.delta).toBe(-10);
-  });
-
-  it('rejects scoreAfter outside 0–100', () => {
-    expect(() => confidenceEventSchema.parse({ ...validEvent, scoreAfter: 101 })).toThrow();
   });
 });

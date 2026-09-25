@@ -4,7 +4,6 @@ import type { DispatchDefaults } from '../../ports';
 import { useDispatchDefaults, useUpdateDispatchDefaults } from './useSettings';
 
 function validate(values: {
-  confidenceThreshold: number;
   maxConcurrentRuns: number;
   batchSize: number;
   maxRetries: number;
@@ -12,13 +11,6 @@ function validate(values: {
 }): ValidationError[] {
   const errors: ValidationError[] = [];
 
-  if (values.confidenceThreshold < 0 || values.confidenceThreshold > 100) {
-    errors.push({
-      id: 'dispatch-threshold',
-      label: 'Confidence threshold',
-      message: 'Must be between 0 and 100',
-    });
-  }
   if (values.maxConcurrentRuns < 1) {
     errors.push({
       id: 'dispatch-concurrent',
@@ -62,7 +54,6 @@ export function DispatchDefaultsSection() {
     const form = e.currentTarget;
     const data = new FormData(form);
 
-    const confidenceThreshold = Number(data.get('confidenceThreshold'));
     const maxConcurrentRuns = Number(data.get('maxConcurrentRuns'));
     const batchSize = Number(data.get('batchSize'));
     const maxRetries = Number(data.get('maxRetries'));
@@ -73,7 +64,6 @@ export function DispatchDefaultsSection() {
     const escalateAfter = String(data.get('escalateAfter') ?? '');
 
     const validationErrors = validate({
-      confidenceThreshold,
       maxConcurrentRuns,
       batchSize,
       maxRetries,
@@ -83,7 +73,6 @@ export function DispatchDefaultsSection() {
     if (validationErrors.length > 0) return;
 
     const patch: Partial<Omit<DispatchDefaults, 'updatedAt'>> = {
-      confidenceThreshold,
       maxConcurrentRuns,
       batchSize,
       autoContinue,
@@ -137,22 +126,6 @@ export function DispatchDefaultsSection() {
         aria-label="Dispatch rules form"
       >
         {errors.length > 0 && <ValidationSummary errors={errors} />}
-
-        <Field
-          id="dispatch-threshold"
-          label="Confidence threshold (0–100)"
-          hint="Runs below this confidence score will not be dispatched"
-          required
-        >
-          <Input
-            name="confidenceThreshold"
-            type="number"
-            defaultValue={String(defaults?.confidenceThreshold ?? 70)}
-            min="0"
-            max="100"
-            data-testid="confidence-threshold"
-          />
-        </Field>
 
         <Field
           id="dispatch-concurrent"

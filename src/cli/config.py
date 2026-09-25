@@ -16,6 +16,7 @@ from pydantic_settings import (
 
 from bifrost.auth import AuthMode as BifrostAuthMode
 from bifrost.config import BifrostConfig
+from niuu.domain.observability import ObservabilityConfig
 from volundr.compute.config import ComputeConfig
 
 DEFAULT_CONFIG_DIR = Path.home() / ".niuu"
@@ -495,6 +496,20 @@ class TUIConfig(BaseModel):
     )
 
 
+class CLIObservabilityConfig(ObservabilityConfig):
+    """OpenTelemetry settings for the mini-mode host's local stack.
+
+    The single place a `niuu platform up` user points the whole local stack
+    (Volundr, Ting, Bifröst, and the shared host) at an OTLP collector
+    (Tempo, Jaeger, etc.), instead of repeating ``observability:`` in every
+    per-service config file. Each service still owns its own
+    ``configure_observability`` call at its own composition root — see
+    ``docs/site/operations/observability.md``.
+    """
+
+    service_name: str = Field(default="niuu-mini")
+
+
 class OidcIssuerConfig(BaseModel):
     """A single trusted OIDC issuer for in-process JWT verification.
 
@@ -733,6 +748,7 @@ class CLISettings(BaseSettings):
     plugins: PluginConfig = Field(default_factory=PluginConfig)
     services: ServiceConfig = Field(default_factory=ServiceConfig)
     bifrost: BifrostConfig = Field(default_factory=BifrostConfig)
+    observability: CLIObservabilityConfig = Field(default_factory=CLIObservabilityConfig)
     compute: ComputeConfig | None = None
     service_overrides: dict[str, PerServiceConfig] = Field(
         default_factory=dict,

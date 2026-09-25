@@ -33,9 +33,10 @@ class PostgresSpanRepository(SessionSpanRepository):
                    actor_id,
                    actor_label,
                    source_service,
-                   attributes
+                   attributes,
+                   w3c_trace_id
                ) VALUES (
-                   $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+                   $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
                )
                ON CONFLICT (id) DO UPDATE SET
                    session_id = EXCLUDED.session_id,
@@ -52,6 +53,7 @@ class PostgresSpanRepository(SessionSpanRepository):
                    actor_label = EXCLUDED.actor_label,
                    source_service = EXCLUDED.source_service,
                    attributes = EXCLUDED.attributes,
+                   w3c_trace_id = COALESCE(EXCLUDED.w3c_trace_id, session_spans.w3c_trace_id),
                    updated_at = NOW()
                RETURNING *""",
             span.id,
@@ -69,6 +71,7 @@ class PostgresSpanRepository(SessionSpanRepository):
             span.actor_label,
             span.source_service,
             json.dumps(span.attributes),
+            span.w3c_trace_id,
         )
         return self._row_to_span(row)
 
@@ -144,4 +147,5 @@ class PostgresSpanRepository(SessionSpanRepository):
             actor_label=row["actor_label"],
             source_service=row["source_service"],
             attributes=attributes or {},
+            w3c_trace_id=row["w3c_trace_id"],
         )

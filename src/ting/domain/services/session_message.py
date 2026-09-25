@@ -1,8 +1,7 @@
 """Service for sending messages to running Volundr sessions.
 
 Handles resolving run → session, sending via VolundrPort, persisting
-the message for audit, recording a confidence event, and emitting an
-SSE event.
+the message for audit, and emitting an SSE event.
 """
 
 from __future__ import annotations
@@ -13,12 +12,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from ting.domain.exceptions import RunNotFoundError
-from ting.domain.models import (
-    ConfidenceEvent,
-    ConfidenceEventType,
-    RunStatus,
-    SessionMessage,
-)
+from ting.domain.models import RunStatus, SessionMessage
 from ting.ports.event_bus import EventBusPort, TingEvent
 from ting.ports.tracker import TrackerPort
 from ting.ports.volundr import VolundrPort
@@ -77,8 +71,7 @@ class SessionMessageService:
         1. Resolve run → session_id
         2. Send message via VolundrPort
         3. Persist audit record
-        4. Record confidence event (zero delta)
-        5. Emit SSE event
+        4. Emit SSE event
         """
         run = await self._tracker.get_run_by_id(run_id)
         if run is None:
@@ -115,17 +108,6 @@ class SessionMessageService:
             created_at=now,
         )
         await self._tracker.save_session_message(msg)
-
-        # Record confidence event with zero delta (message doesn't change score)
-        event = ConfidenceEvent(
-            id=uuid4(),
-            run_id=run_id,
-            event_type=ConfidenceEventType.MESSAGE_SENT,
-            delta=0.0,
-            score_after=run.confidence,
-            created_at=now,
-        )
-        await self._tracker.add_confidence_event(run.tracker_id, event)
 
         # Emit SSE event
         if self._event_bus:

@@ -5,6 +5,8 @@ the OTel API objects and verify the sink maps SessionEvents to the
 correct gen_ai.* semantic convention attributes.
 """
 
+import asyncio
+
 import pytest
 
 pytest.importorskip("opentelemetry", reason="opentelemetry not installed")
@@ -311,3 +313,65 @@ class TestExtractToolName:
             data={"tool": "Read"},
         )
         assert OtelEventSink._extract_tool_name(event) == "Read"
+
+
+class TestOtelEventSinkParentsUnderTheAmbientSpan:
+    """Real SDK objects, not mocks: proves the "parentless span" gap is closed.
+
+    ``_emit_span`` never passed ``context=`` to ``start_as_current_span``, so
+    it always used the ambient OTel context — the gap was that nothing ever
+    populated that context (no FastAPI instrumentation on the events POST).
+    Once the composition root instruments the app, the inbound request's
+    server span IS that ambient context; this test stands in for it with an
+    explicit span, isolating the sink's own behavior from FastAPI/ASGI
+    plumbing (covered separately in tests/test_volundr's app tests).
+    """
+
+    def test_event_span_is_a_child_of_the_active_span(self):
+        pytest.importorskip("opentelemetry.sdk")
+        from opentelemetry import trace
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+        from volundr.adapters.outbound.otel_event_sink import OtelEventSink
+
+        exporter = InMemorySpanExporter()
+        tracer_provider = TracerProvider()
+        tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+        meter_provider = MeterProvider()
+        tracer = trace.get_tracer("test", tracer_provider=tracer_provider)
+
+        sink = OtelEventSink(tracer_provider=tracer_provider, meter_provider=meter_provider)
+        event = _make_event()
+
+        with tracer.start_as_current_span("forge.events.post") as parent_span:
+            parent_trace_id = parent_span.get_span_context().trace_id
+            asyncio.run(sink.emit(event))
+
+        spans = {span.name: span for span in exporter.get_finished_spans()}
+        assert "forge.events.post" in spans
+        child = next(name for name in spans if name != "forge.events.post")
+        assert spans[child].parent is not None
+        assert spans[child].parent.trace_id == parent_trace_id
+        assert spans[child].context.trace_id == parent_trace_id
+
+    def test_event_span_is_a_root_when_no_span_is_active(self):
+        pytest.importorskip("opentelemetry.sdk")
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+        from volundr.adapters.outbound.otel_event_sink import OtelEventSink
+
+        exporter = InMemorySpanExporter()
+        tracer_provider = TracerProvider()
+        tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+        sink = OtelEventSink(tracer_provider=tracer_provider, meter_provider=MeterProvider())
+        asyncio.run(sink.emit(_make_event()))
+
+        (span,) = exporter.get_finished_spans()
+        assert span.parent is None

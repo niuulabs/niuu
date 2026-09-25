@@ -292,7 +292,6 @@ export { WorkflowRevisionConflictError } from './ports';
 export {
   checkFeasibility,
   checkRavenResolution,
-  checkConfidence,
   checkUpstreamBlocked,
   checkClusterHealth,
   type FeasibilityGateName,
@@ -306,19 +305,15 @@ export {
   sagaStatusSchema,
   phaseStatusSchema,
   runStatusSchema,
-  confidenceEventTypeSchema,
   sagaPhaseSummarySchema,
   sagaSchema,
   runSchema,
   phaseSchema,
-  confidenceEventSchema,
   type SagaStatus,
   type PhaseStatus,
   type RunStatus,
-  type ConfidenceEventType,
   type SagaPhaseSummary,
   type Run,
-  type ConfidenceEvent,
 } from './domain/saga';
 
 export {

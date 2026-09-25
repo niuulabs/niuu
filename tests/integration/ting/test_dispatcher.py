@@ -19,7 +19,6 @@ async def test_get_dispatcher_state(ting_client: AsyncClient) -> None:
 
     body = resp.json()
     assert body["running"] is True
-    assert body["threshold"] == 0.75
     assert body["max_concurrent_runs"] == 3
     assert "id" in body
     assert "updated_at" in body
@@ -36,7 +35,6 @@ async def test_patch_dispatcher_state(ting_client: AsyncClient) -> None:
         "/api/v1/ting/dispatcher",
         json={
             "running": False,
-            "threshold": 0.50,
             "max_concurrent_runs": 5,
         },
     )
@@ -44,12 +42,10 @@ async def test_patch_dispatcher_state(ting_client: AsyncClient) -> None:
 
     body = resp.json()
     assert body["running"] is False
-    assert body["threshold"] == 0.50
     assert body["max_concurrent_runs"] == 5
 
     # Verify persistence via a fresh GET
     verify_resp = await ting_client.get("/api/v1/ting/dispatcher")
     verify_body = verify_resp.json()
     assert verify_body["running"] is False
-    assert verify_body["threshold"] == 0.50
     assert verify_body["max_concurrent_runs"] == 5

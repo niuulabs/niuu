@@ -66,12 +66,10 @@ class NotificationService:
         event_bus: EventBusPort,
         channel_factory: ChannelResolverPort,
         *,
-        confidence_threshold: float,
         public_origin: str = "http://localhost:8080",
     ) -> None:
         self._event_bus = event_bus
         self._channel_factory = channel_factory
-        self._confidence_threshold = confidence_threshold
         self._public_origin = public_origin
         self._running = False
         self._task: asyncio.Task[None] | None = None
@@ -143,8 +141,6 @@ class NotificationService:
         match event.event:
             case "run.state_changed":
                 return self._map_run_state_changed(event)
-            case "confidence.updated":
-                return self._map_confidence_updated(event)
             case "saga.pr_created":
                 return self._map_saga_pr_created(event.data)
             case "phase.unlocked":
@@ -202,28 +198,6 @@ class NotificationService:
             owner_id=owner_id,
             event_type=f"run.{status.lower()}",
             metadata=metadata,
-        )
-
-    def _map_confidence_updated(self, event: TingEvent) -> Notification | None:
-        """Map a confidence.updated event when confidence drops below threshold."""
-        data = event.data
-        confidence = data.get("score_after", 1.0)
-        if confidence >= self._confidence_threshold:
-            return None
-
-        owner_id = event.owner_id or data.get("owner_id", "")
-        if not owner_id:
-            return None
-
-        tracker_id = data.get("tracker_id", "") or data.get("run_id", "")
-
-        return Notification(
-            title="Confidence dropped",
-            body=f"Run {tracker_id} confidence dropped to {confidence:.0%}.",
-            urgency=NotificationUrgency.MEDIUM,
-            owner_id=owner_id,
-            event_type="confidence.low",
-            metadata={"tracker_id": tracker_id} if tracker_id else {},
         )
 
     @staticmethod
