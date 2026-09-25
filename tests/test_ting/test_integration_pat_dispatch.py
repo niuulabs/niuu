@@ -44,7 +44,10 @@ def _make_instance() -> RegisteredInstance:
         tenant_id=None,
         enabled=True,
         is_default=True,
-        config={"credential_name": "volundr-pat"},
+        # allow_plaintext: this fixture proves PAT dispatch end-to-end, not
+        # guild_transport's own transport-security policy — see
+        # test_volundr_http_transport_security.py for that.
+        config={"credential_name": "volundr-pat", "allow_plaintext": True},
         created_at=_NOW,
         updated_at=_NOW,
     )

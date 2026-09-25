@@ -21,6 +21,7 @@ import { resolveNiuuRegistryBase, resolveSettingsServiceBase } from './services'
 import { EditInstanceDialog, DeleteInstanceDialog, guildActionClass } from './GuildInstanceDialogs';
 import {
   canManageInstance,
+  isValidTlsFingerprint,
   normalizeHealth,
   parseTags,
   registryError,
@@ -66,6 +67,8 @@ type WizardState = {
   kind: InstanceKind;
   name: string;
   baseUrl: string;
+  allowPlaintext: boolean;
+  tlsFingerprint: string;
   authMethod: AuthMethod;
   credentialScope: CredentialScope;
   credentialName: string;
@@ -906,6 +909,7 @@ function RegisterWizard({
         return false;
       }
     })() &&
+    isValidTlsFingerprint(wizard.tlsFingerprint) &&
     (wizard.credentialScope === 'none' || wizard.credentialName.trim().length > 0);
 
   const stepThreeValid =
@@ -1005,6 +1009,53 @@ function RegisterWizard({
                   does not block registration — the node is recorded as unreachable until it
                   answers.
                 </div>
+              </div>
+
+              <div className="niuu:space-y-1.5">
+                <label className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-[13px] niuu:text-text-secondary">
+                  <input
+                    type="checkbox"
+                    className="niuu:appearance-auto niuu:accent-brand"
+                    checked={wizard.allowPlaintext}
+                    onChange={(event) =>
+                      setWizard((current) => ({
+                        ...current,
+                        allowPlaintext: event.target.checked,
+                      }))
+                    }
+                  />
+                  allow plaintext (trusted network only)
+                </label>
+                <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
+                  A remote node must use https:// unless you opt in here. Only opt in when the
+                  network path is already encrypted or otherwise trusted — for example a Tailscale
+                  tailnet, where WireGuard encrypts the link end to end.
+                </div>
+              </div>
+
+              <div className="niuu:space-y-1.5">
+                <label className="niuu:block niuu:text-[13px] niuu:font-medium niuu:text-text-secondary">
+                  TLS fingerprint (optional)
+                </label>
+                <input
+                  value={wizard.tlsFingerprint}
+                  onChange={(event) =>
+                    setWizard((current) => ({ ...current, tlsFingerprint: event.target.value }))
+                  }
+                  placeholder="sha256 leaf certificate fingerprint, e.g. AB:CD:…"
+                  className="niuu:w-full niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-3 niuu:py-2.5 niuu:font-mono niuu:text-[14px] niuu:text-text-primary niuu:placeholder:text-text-muted niuu:focus:outline-none"
+                />
+                <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
+                  Pin a self-signed certificate by its sha256 fingerprint. Every call to this node
+                  then verifies the live certificate against this exact pin and refuses to connect
+                  on any mismatch — leave blank to use the platform&rsquo;s normal certificate
+                  trust.
+                </div>
+                {!isValidTlsFingerprint(wizard.tlsFingerprint) ? (
+                  <div className="niuu:font-mono niuu:text-[11px] niuu:text-critical">
+                    Must be a sha256 hex digest (64 hex characters, optionally colon-separated).
+                  </div>
+                ) : null}
               </div>
 
               <div className="niuu:space-y-1.5">
@@ -1326,6 +1377,8 @@ export function GuildPage() {
       kind: 'volundr',
       name: '',
       baseUrl: '',
+      allowPlaintext: false,
+      tlsFingerprint: '',
       authMethod: 'service-account',
       credentialScope: 'none',
       credentialName: '',
@@ -1461,6 +1514,10 @@ export function GuildPage() {
                   name: wizard.credentialName,
                 },
           capabilities: DEFAULT_CAPABILITIES[effectiveWizard.kind],
+          ...(wizard.allowPlaintext ? { allow_plaintext: true } : {}),
+          ...(wizard.tlsFingerprint.trim()
+            ? { tls_fingerprint: wizard.tlsFingerprint.trim() }
+            : {}),
         },
       }),
     onSuccess: async (instance) => {

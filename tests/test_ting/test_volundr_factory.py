@@ -436,3 +436,38 @@ async def test_local_factory_reuses_single_adapter_for_all_entrypoints() -> None
     assert owner_adapters[0] is owner_primary
     assert principal_adapters[0] is owner_primary
     assert principal_primary is owner_primary
+
+
+@pytest.mark.asyncio
+async def test_for_principal_carries_the_instances_config_into_the_adapter() -> None:
+    """The registered instance's config (allow_plaintext, tls_fingerprint,
+    ...) must reach the constructed adapter — VolundrHTTPAdapter._client()
+    reads it back off the adapter itself to enforce guild_transport's
+    transport-security policy on every call this factory's adapters make.
+    Losing this wiring would silently exempt Ting's own Volundr calls from a
+    policy every other outbound Guild call site enforces."""
+    factory = VolundrAdapterFactory(
+        StubGuildRegistry(
+            [
+                _make_instance(
+                    instance_id="system-1",
+                    name="System Alpha",
+                    base_url="https://alpha.example.com",
+                    config={"tls_fingerprint": "a" * 64},
+                )
+            ]
+        ),
+        StubCredentialStore(),
+        allow_unauthenticated=True,
+    )
+
+    result = await factory.for_principal(
+        Principal(
+            user_id="owner-1",
+            email="owner-1@example.com",
+            tenant_id="tenant-a",
+            roles=["volundr:developer"],
+        )
+    )
+
+    assert result[0].config == {"tls_fingerprint": "a" * 64}
