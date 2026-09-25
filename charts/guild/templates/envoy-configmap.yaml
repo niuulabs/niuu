@@ -131,6 +131,17 @@ data:
                             - match:
                                 prefix: {{ . | quote }}
                             {{- end }}
+                            # Node-originated heartbeat/leave carry no bearer JWT at all — they
+                            # are authenticated by an Ed25519 signature over the request instead
+                            # (niuu.adapters.node_signature.Ed25519NodeVerifier), so Envoy must
+                            # not demand one either. An exact safe_regex match on just these two
+                            # routes, never a prefix: a prefix bypass here would also exempt
+                            # GET/DELETE /api/v1/niuu/guild/nodes(/...), which are admin routes
+                            # that must stay JWT-gated.
+                            - match:
+                                safe_regex:
+                                  google_re2: {}
+                                  regex: "^/api/v1/niuu/guild/nodes/[^/]+/(heartbeat|leave)$"
                             - match:
                                 prefix: "/"
                               requires:

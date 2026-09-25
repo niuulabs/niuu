@@ -34,11 +34,16 @@ KNOWN_WORKLOAD_SCOPES: frozenset[str] = frozenset(
         "ting:workflow:launch",
         "ting:workflow:coordinate",
         "observatory:topology:push",
+        "node_join",
     }
 )
 
 #: Scope required to publish a topology fragment to the push inbox.
 TOPOLOGY_PUSH_SCOPE = "observatory:topology:push"
+
+#: Scope carried by a minted Guild pairing code — see
+#: ``niuu.domain.services.guild_join`` and ``.claude/rules/architecture.md``.
+NODE_JOIN_SCOPE = "node_join"
 
 
 def _decode_claims(token: str) -> dict | None:
@@ -198,6 +203,7 @@ def credential_allows_route(token: str, method: str, path: str) -> bool:
         ),
         ("PUT", r"/api/v1/niuu/observatory/fragments/[^/?%]+", "observatory:topology:push"),
         ("DELETE", r"/api/v1/niuu/observatory/fragments/[^/?%]+", "observatory:topology:push"),
+        ("POST", r"/api/v1/niuu/guild/join", NODE_JOIN_SCOPE),
     ]
     granted = credential_scopes(claims)
     return any(
@@ -249,6 +255,7 @@ def require_scope(scope: str) -> Callable[..., Awaitable[None]]:
 
 __all__ = [
     "KNOWN_WORKLOAD_SCOPES",
+    "NODE_JOIN_SCOPE",
     "OPENSHELL_SESSION_TOKEN_USE",
     "OPENSHELL_RESIDENT_TOKEN_USE",
     "TOPOLOGY_PUSH_SCOPE",

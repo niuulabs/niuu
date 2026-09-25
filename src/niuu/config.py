@@ -277,12 +277,37 @@ class InstanceHealthConfig(BaseModel):
     probe: InstanceProbeConfig = Field(default_factory=InstanceProbeConfig)
 
 
+class NodeJoinConfig(BaseModel):
+    """`niuu join` — pairing and node-signed request policy."""
+
+    clock_skew_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description=(
+            "Maximum allowed difference between a node's clock and Guild's for a "
+            "signed node request (heartbeat/leave) to be accepted."
+        ),
+    )
+    pairing_code_ttl_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description=(
+            "How long a minted pairing code remains valid before it must be re-minted. "
+            "Deliberately its own, shorter knob — a pairing code is shown to an operator "
+            "once and used immediately, unlike the longer-lived workload_identity."
+            "token_ttl_seconds shared by other scoped credentials. The stored code is "
+            "never valid for longer than min(this, that JWT's own expiry)."
+        ),
+    )
+
+
 class InstanceRegistryConfig(BaseModel):
     """Shared registry config for runtime instances."""
 
     instances: list[InstanceSeedConfig] = Field(default_factory=list)
     catalog: list[InstanceCatalogEntryConfig] = Field(default_factory=_default_instance_catalog)
     health: InstanceHealthConfig = Field(default_factory=InstanceHealthConfig)
+    node_join: NodeJoinConfig = Field(default_factory=NodeJoinConfig)
 
 
 def has_enabled_instance_kind(settings: Any, kind: InstanceKind) -> bool:

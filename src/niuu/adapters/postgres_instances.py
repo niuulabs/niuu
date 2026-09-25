@@ -47,6 +47,14 @@ class PostgresInstanceRepository(InstanceRepository):
         )
         return self._row_to_instance(row) if row is not None else None
 
+    async def list_for_node(self, node_id: str) -> list[RegisteredInstance]:
+        """Instances owned by *node_id* — the real ownership column, never the slug."""
+        rows = await self._pool.fetch(
+            "SELECT * FROM niuu_instances WHERE node_id = $1::uuid ORDER BY created_at ASC",
+            node_id,
+        )
+        return [self._row_to_instance(row) for row in rows]
+
     async def save_instance(self, instance: RegisteredInstance) -> RegisteredInstance:
         # Health/last_seen_at/last_checked_at/last_error are set on INSERT
         # (a brand-new instance starts unknown) but deliberately left out of
@@ -59,12 +67,18 @@ class PostgresInstanceRepository(InstanceRepository):
             INSERT INTO niuu_instances (
                 id, kind, slug, name, base_url, visibility, owner_id, tenant_id,
                 enabled, is_default, config, created_at, updated_at, tags,
-                health, last_seen_at, last_checked_at, last_error
+                health, last_seen_at, last_checked_at, last_error, node_id
             )
             VALUES (
                 $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13,
-                $14::jsonb, $15, $16, $17, $18
+                $14::jsonb, $15, $16, $17, $18, $19::uuid
             )
+            -- node_id is deliberately excluded from the UPDATE SET, same as
+            -- the health columns above: it is set once at INSERT (by
+            -- GuildJoinRepository, never by the PATCH-driven update path)
+            -- and never changes afterwards, so it stays immutable at the
+            -- database layer even if a future caller ever passed a
+            -- different value here by mistake.
             ON CONFLICT (id) DO UPDATE SET
                 kind = EXCLUDED.kind,
                 slug = EXCLUDED.slug,
@@ -97,6 +111,7 @@ class PostgresInstanceRepository(InstanceRepository):
             instance.last_seen_at,
             instance.last_checked_at,
             instance.last_error,
+            instance.node_id,
         )
         return instance
 
@@ -160,4 +175,5 @@ class PostgresInstanceRepository(InstanceRepository):
             last_seen_at=row["last_seen_at"],
             last_checked_at=row["last_checked_at"],
             last_error=row["last_error"],
+            node_id=str(row["node_id"]) if row["node_id"] else None,
         )

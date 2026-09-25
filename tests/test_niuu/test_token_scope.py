@@ -89,6 +89,7 @@ class TestKnownWorkloadScopes:
                 "ting:workflow:coordinate",
                 "ting:workflow:launch",
                 "observatory:topology:push",
+                "node_join",
             }
         )
 

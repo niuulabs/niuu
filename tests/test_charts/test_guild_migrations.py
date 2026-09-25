@@ -16,7 +16,7 @@ MIGRATIONS = ROOT / "migrations"
 GUILD_CONFIGMAP = ROOT / "charts/guild/templates/migrations-configmap.yaml"
 
 # Tables the Guild service reads and writes in its own database.
-GUILD_TABLES = ("niuu_instances",)
+GUILD_TABLES = ("niuu_instances", "niuu_nodes", "niuu_pairing_codes")
 
 
 def _guild_migrations() -> dict[str, str]:
