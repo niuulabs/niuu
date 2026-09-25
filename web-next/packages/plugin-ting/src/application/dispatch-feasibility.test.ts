@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   checkFeasibility,
   checkRavenResolution,
-  checkConfidence,
   checkUpstreamBlocked,
   checkClusterHealth,
   type FeasibilityContext,
@@ -17,7 +16,6 @@ import type { DispatcherState } from '../domain/dispatcher';
 const DISPATCHER: DispatcherState = {
   id: '00000000-0000-0000-0000-000000000000',
   running: true,
-  threshold: 70,
   maxConcurrentRuns: 3,
   autoContinue: false,
   updatedAt: '2026-01-01T00:00:00Z',
@@ -34,7 +32,6 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     declaredFiles: [],
     estimateHours: 4,
     status: 'pending',
-    confidence: 80,
     sessionId: null,
     reviewerSessionId: null,
     reviewRound: 0,
@@ -55,7 +52,6 @@ function makePhase(overrides: Partial<Phase> = {}): Phase {
     number: 2,
     name: 'Phase 2',
     status: 'active',
-    confidence: 80,
     runs: [],
     ...overrides,
   };
@@ -103,41 +99,7 @@ describe('checkRavenResolution', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Gate 2: confidence
-// ---------------------------------------------------------------------------
-
-describe('checkConfidence', () => {
-  it('passes when confidence equals threshold', () => {
-    const ctx = makeCtx({ run: makeRun({ confidence: 70 }) });
-    const result = checkConfidence(ctx);
-    expect(result.passed).toBe(true);
-    expect(result.reason).toContain('70%');
-  });
-
-  it('passes when confidence exceeds threshold', () => {
-    const ctx = makeCtx({ run: makeRun({ confidence: 90 }) });
-    const result = checkConfidence(ctx);
-    expect(result.passed).toBe(true);
-  });
-
-  it('fails when confidence is below threshold', () => {
-    const ctx = makeCtx({ run: makeRun({ confidence: 50 }) });
-    const result = checkConfidence(ctx);
-    expect(result.passed).toBe(false);
-    expect(result.name).toBe('confidence');
-    expect(result.reason).toContain('50%');
-    expect(result.reason).toContain('70%');
-  });
-
-  it('fails at confidence zero', () => {
-    const ctx = makeCtx({ run: makeRun({ confidence: 0 }) });
-    const result = checkConfidence(ctx);
-    expect(result.passed).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Gate 3: upstream_blocked
+// Gate 2: upstream_blocked
 // ---------------------------------------------------------------------------
 
 describe('checkUpstreamBlocked', () => {
@@ -187,7 +149,7 @@ describe('checkUpstreamBlocked', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Gate 4: cluster_healthy
+// Gate 3: cluster_healthy
 // ---------------------------------------------------------------------------
 
 describe('checkClusterHealth', () => {
@@ -213,7 +175,7 @@ describe('checkFeasibility', () => {
   it('is feasible when all gates pass', () => {
     const result = checkFeasibility(makeCtx());
     expect(result.feasible).toBe(true);
-    expect(result.gates).toHaveLength(4);
+    expect(result.gates).toHaveLength(3);
     expect(result.gates.every((g) => g.passed)).toBe(true);
   });
 
@@ -221,13 +183,6 @@ describe('checkFeasibility', () => {
     const result = checkFeasibility(makeCtx({ ravenResolved: false }));
     expect(result.feasible).toBe(false);
     const gate = result.gates.find((g) => g.name === 'raven_resolution');
-    expect(gate?.passed).toBe(false);
-  });
-
-  it('is not feasible when confidence gate fails', () => {
-    const result = checkFeasibility(makeCtx({ run: makeRun({ confidence: 10 }) }));
-    expect(result.feasible).toBe(false);
-    const gate = result.gates.find((g) => g.name === 'confidence');
     expect(gate?.passed).toBe(false);
   });
 
@@ -252,20 +207,18 @@ describe('checkFeasibility', () => {
       makeCtx({
         ravenResolved: false,
         clusterHealthy: false,
-        run: makeRun({ confidence: 10 }),
       }),
     );
     expect(result.feasible).toBe(false);
     const failing = result.gates.filter((g) => !g.passed);
-    expect(failing.length).toBeGreaterThanOrEqual(3);
+    expect(failing.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('always returns exactly 4 gates', () => {
+  it('always returns exactly 3 gates', () => {
     const result = checkFeasibility(makeCtx());
-    expect(result.gates).toHaveLength(4);
+    expect(result.gates).toHaveLength(3);
     const names = result.gates.map((g) => g.name);
     expect(names).toContain('raven_resolution');
-    expect(names).toContain('confidence');
     expect(names).toContain('upstream_blocked');
     expect(names).toContain('cluster_healthy');
   });

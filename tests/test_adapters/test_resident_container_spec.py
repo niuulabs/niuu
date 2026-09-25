@@ -9,6 +9,7 @@ import yaml
 from volundr.adapters.outbound.resident_container_spec import (
     image_from_values,
     materialize_resident_container,
+    materialize_resident_runtime,
     resident_attribution_headers,
     resident_flock_environment,
     resident_flock_labels,
@@ -455,3 +456,40 @@ def test_materialize_resident_container_rejects_incomplete_profiles(
             volundr_api_url="http://volundr",
             sandbox_command=("skuld", "serve"),
         )
+
+
+def test_ravn_processes_are_identical_with_and_without_an_image() -> None:
+    runtime = _runtime(flock=False).model_copy(update={"persona_name": "night watch"})
+    values = {"runtime": {"service": {"name": "skuld", "port": 9200}}}
+    options = {
+        "default_service_name": "resident",
+        "default_service_port": 9000,
+        "volundr_api_url": "http://volundr",
+        "sandbox_command": ("skuld", "serve"),
+    }
+
+    container = materialize_resident_container(
+        runtime,
+        values | {"image": "example.test/ravn@sha256:123"},
+        default_image="",
+        **options,
+    )
+    imageless = materialize_resident_runtime(runtime, values, **options)
+
+    assert container.image == "example.test/ravn@sha256:123"
+    assert imageless.image == ""
+    assert imageless.processes == container.processes
+    assert imageless.files == container.files
+    skuld, ravn = container.processes
+    assert skuld.env == {"NIUU_CONFIG": "/sandbox/.volundr/skuld.yaml"}
+    assert (skuld.log_path, ravn.log_path) == (
+        "/sandbox/.volundr/skuld.log",
+        "/sandbox/.volundr/ravn.log",
+    )
+    assert ravn.command == (
+        "sh",
+        "-lc",
+        'export RAVN__GATEWAY__PLATFORM__PAT_TOKEN="$NIUU_VOLUNDR_ACCESS_TOKEN"; '
+        "exec /opt/niuu/bin/python -m ravn daemon --config /sandbox/.volundr/ravn.yaml "
+        "--persona 'night watch'",
+    )

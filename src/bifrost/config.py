@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from bifrost.auth import AuthMode
 from niuu.domain.model_catalog import ManagedModelProvider, ManagedModelTier
+from niuu.domain.observability import ObservabilityConfig
 from niuu.domain.reasoning import MODEL_EFFORTS, preferred_effort
 
 
@@ -736,6 +737,20 @@ class OtelAuditConfig(BaseModel):
     )
 
 
+class BifrostObservabilityConfig(ObservabilityConfig):
+    """OpenTelemetry trace/metric settings for Bifröst's own request spans.
+
+    Distinct from ``AuditConfig.otel`` (``OtelAuditConfig``), which exports
+    audit log records, not spans. This config drives the shared
+    ``niuu.observability`` facade — a server span per inbound completion
+    request, with GenAI attributes (model, provider, failover attempts,
+    cache hit, token usage) — so a trace started by a caller (Ravn, Ting)
+    continues through the gateway instead of stopping at the audit log.
+    """
+
+    service_name: str = Field(default="bifrost")
+
+
 class AuditAdapter(StrEnum):
     """Supported audit logging backends."""
 
@@ -1116,6 +1131,15 @@ class BifrostConfig(BaseModel):
             "Request audit log configuration. "
             "Appends one entry per LLM request with configurable detail level. "
             "Default adapter is 'null' (no audit logging)."
+        ),
+    )
+
+    # ── Observability (W3C traces/metrics) ─────────────────────────────────────
+    observability: BifrostObservabilityConfig = Field(
+        default_factory=BifrostObservabilityConfig,
+        description=(
+            "OTLP trace/metric export for the gateway's own request spans. "
+            "Separate from audit.otel, which exports audit log records."
         ),
     )
 

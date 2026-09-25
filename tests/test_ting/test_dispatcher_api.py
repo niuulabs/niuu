@@ -28,7 +28,6 @@ from ting.ports.event_bus import TingEvent
 # -------------------------------------------------------------------
 
 _DEFAULT_RUNNING = True
-_DEFAULT_THRESHOLD = 0.75
 _DEFAULT_MAX_CONCURRENT_RUNS = 3
 _DEFAULT_AUTO_CONTINUE = False
 
@@ -46,7 +45,6 @@ class MockDispatcherRepo(DispatcherRepository):
             id=uuid4(),
             owner_id=owner_id,
             running=_DEFAULT_RUNNING,
-            threshold=_DEFAULT_THRESHOLD,
             max_concurrent_runs=_DEFAULT_MAX_CONCURRENT_RUNS,
             auto_continue=_DEFAULT_AUTO_CONTINUE,
             updated_at=datetime.now(UTC),
@@ -56,7 +54,7 @@ class MockDispatcherRepo(DispatcherRepository):
 
     async def update(self, owner_id: str, **fields: object) -> DispatcherState:
         current = await self.get_or_create(owner_id)
-        allowed = {"running", "threshold", "max_concurrent_runs", "auto_continue"}
+        allowed = {"running", "max_concurrent_runs", "auto_continue"}
         updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
         if not updates:
             return current
@@ -64,7 +62,6 @@ class MockDispatcherRepo(DispatcherRepository):
             id=current.id,
             owner_id=current.owner_id,
             running=updates.get("running", current.running),
-            threshold=updates.get("threshold", current.threshold),
             max_concurrent_runs=updates.get("max_concurrent_runs", current.max_concurrent_runs),
             auto_continue=updates.get("auto_continue", current.auto_continue),
             updated_at=datetime.now(UTC),
@@ -115,7 +112,6 @@ class TestGetDispatcherState:
         assert resp.status_code == 200
         data = resp.json()
         assert data["running"] is True
-        assert data["threshold"] == 0.75
         assert data["max_concurrent_runs"] == 3
         assert data["auto_continue"] is False
         assert "id" in data
@@ -127,7 +123,6 @@ class TestGetDispatcherState:
             id=uuid4(),
             owner_id="user-1",
             running=False,
-            threshold=0.5,
             max_concurrent_runs=5,
             auto_continue=True,
             updated_at=datetime.now(UTC),
@@ -138,7 +133,6 @@ class TestGetDispatcherState:
         assert resp.status_code == 200
         data = resp.json()
         assert data["running"] is False
-        assert data["threshold"] == 0.5
         assert data["max_concurrent_runs"] == 5
         assert data["id"] == str(existing.id)
 
@@ -174,31 +168,7 @@ class TestPatchDispatcherState:
         assert resp.status_code == 200
         data = resp.json()
         assert data["running"] is False
-        assert data["threshold"] == 0.75  # unchanged
-
-    def test_updates_threshold(self, client: TestClient):
-        client.get("/api/v1/ting/dispatcher", headers=_auth_headers())
-
-        resp = client.patch(
-            "/api/v1/ting/dispatcher",
-            json={"threshold": 0.9},
-            headers=_auth_headers(),
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["threshold"] == 0.9
-        assert data["running"] is True  # unchanged
-
-    def test_updates_threshold_boundary(self, client: TestClient):
-        client.get("/api/v1/ting/dispatcher", headers=_auth_headers())
-
-        resp = client.patch(
-            "/api/v1/ting/dispatcher",
-            json={"threshold": 1.0},
-            headers=_auth_headers(),
-        )
-        assert resp.status_code == 200
-        assert resp.json()["threshold"] == 1.0
+        assert data["max_concurrent_runs"] == 3  # unchanged
 
     def test_updates_max_concurrent_runs(self, client: TestClient):
         client.get("/api/v1/ting/dispatcher", headers=_auth_headers())
@@ -223,22 +193,6 @@ class TestPatchDispatcherState:
         data = resp.json()
         assert data["auto_continue"] is True
         assert data["running"] is True  # unchanged
-
-    def test_validates_threshold_range_too_high(self, client: TestClient):
-        resp = client.patch(
-            "/api/v1/ting/dispatcher",
-            json={"threshold": 1.5},
-            headers=_auth_headers(),
-        )
-        assert resp.status_code == 422
-
-    def test_validates_threshold_range_too_low(self, client: TestClient):
-        resp = client.patch(
-            "/api/v1/ting/dispatcher",
-            json={"threshold": -0.1},
-            headers=_auth_headers(),
-        )
-        assert resp.status_code == 422
 
     def test_validates_max_concurrent_runs_too_low(self, client: TestClient):
         resp = client.patch(
@@ -267,7 +221,6 @@ class TestPatchDispatcherState:
         assert resp.status_code == 200
         data = resp.json()
         assert data["running"] is True
-        assert data["threshold"] == 0.75
         assert data["max_concurrent_runs"] == 3
         assert data["auto_continue"] is False
 
@@ -276,7 +229,6 @@ class TestPatchDispatcherState:
             "/api/v1/ting/dispatcher",
             json={
                 "running": False,
-                "threshold": 0.6,
                 "max_concurrent_runs": 7,
                 "auto_continue": True,
             },
@@ -285,7 +237,6 @@ class TestPatchDispatcherState:
         assert resp.status_code == 200
         data = resp.json()
         assert data["running"] is False
-        assert data["threshold"] == 0.6
         assert data["max_concurrent_runs"] == 7
         assert data["auto_continue"] is True
 
@@ -305,7 +256,6 @@ class _FakeRow(dict):
 def _make_row(
     owner_id: str = "owner-1",
     running: bool = True,
-    threshold: float = 0.8,
     max_concurrent_runs: int = 5,
     auto_continue: bool = False,
     updated_at: datetime | None = None,
@@ -314,7 +264,6 @@ def _make_row(
         id=uuid4(),
         owner_id=owner_id,
         running=running,
-        threshold=threshold,
         max_concurrent_runs=max_concurrent_runs,
         auto_continue=auto_continue,
         updated_at=updated_at or datetime.now(UTC),
@@ -330,7 +279,6 @@ class TestPostgresDispatcherRepository:
         assert state.id == row["id"]
         assert state.owner_id == "owner-1"
         assert state.running is True
-        assert state.threshold == 0.8
         assert state.max_concurrent_runs == 5
         assert state.auto_continue is False
 
@@ -348,7 +296,7 @@ class TestPostgresDispatcherRepository:
 
         from ting.adapters.postgres_dispatcher import PostgresDispatcherRepository
 
-        row = _make_row(owner_id="user-x", running=True, threshold=0.75, max_concurrent_runs=3)
+        row = _make_row(owner_id="user-x", running=True, max_concurrent_runs=3)
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(return_value=row)
 
@@ -358,7 +306,6 @@ class TestPostgresDispatcherRepository:
         pool.fetchrow.assert_called_once()
         assert state.owner_id == "user-x"
         assert state.running is True
-        assert state.threshold == 0.75
         assert state.max_concurrent_runs == 3
 
     @pytest.mark.asyncio
@@ -367,18 +314,17 @@ class TestPostgresDispatcherRepository:
 
         from ting.adapters.postgres_dispatcher import PostgresDispatcherRepository
 
-        row = _make_row(owner_id="user-x", running=False, threshold=0.9, max_concurrent_runs=5)
+        row = _make_row(owner_id="user-x", running=False, max_concurrent_runs=5)
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(return_value=row)
 
         repo = PostgresDispatcherRepository(pool)
-        state = await repo.update("user-x", running=False, threshold=0.9)
+        state = await repo.update("user-x", running=False)
 
         pool.fetchrow.assert_called_once()
         sql_arg = pool.fetchrow.call_args[0][0]
         assert "UPDATE dispatcher_state SET" in sql_arg
         assert state.running is False
-        assert state.threshold == 0.9
 
     @pytest.mark.asyncio
     async def test_update_empty_fields_delegates_to_get_or_create(self):

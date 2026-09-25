@@ -534,7 +534,7 @@ function SagasPageContent() {
                 </h2>
                 <p className="niuu:m-0 niuu:mt-2 niuu:text-[14px] niuu:leading-6 niuu:text-text-secondary">
                   Every saga is a decomposed tracker issue driven by a workflow. Select one to
-                  inspect phases, runs, and confidence movement.
+                  inspect phases and runs.
                 </p>
               </div>
             </div>
@@ -603,7 +603,7 @@ function SagasPageContent() {
           <div className="niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-6">
             <EmptyState
               title="Select a saga"
-              description="Choose a saga to inspect phases, runs, and confidence movement."
+              description="Choose a saga to inspect phases and runs."
             />
           </div>
         )}

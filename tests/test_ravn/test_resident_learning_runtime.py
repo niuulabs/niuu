@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from ravn.adapters.reflection.flock_learning import (
@@ -17,10 +19,14 @@ from ravn.cli.commands import (
     _resolve_transport_kwargs,
 )
 from ravn.config import Settings
+from ravn.domain.capability_proposal import compute_artifact_digest
 from ravn.odin.review import ReviewItem, ReviewKind, review_decided_event
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.learned_tools import (
+    LearnedToolError,
+    LearnedToolResolver,
     learned_tool_storage,
+    read_learned_tool_artifact,
     write_learned_tool_artifact,
 )
 from ravn.valkyrie_evolution.models import (
@@ -554,6 +560,269 @@ async def test_yolo_peer_rejects_unusable_kubectl_only_learning(tmp_path) -> Non
         for finding in item.get("findings", [])
     )
     assert not any(event.event_type == "valkyrie.evolution.activated" for event in events)
+
+
+def _agent_tool_peer_artifact(
+    *,
+    tool_code: str,
+    test_code: str,
+    manifest_name: str = "inspect_oomkilled_pod",
+) -> ResidentLearningArtifact:
+    return ResidentLearningArtifact(
+        learning_id=f"learn-{manifest_name}",
+        title=manifest_name,
+        summary="Inspect an OOMKilled pod signal.",
+        content="",
+        artifact_type="agent_tool",
+        scope="flock",
+        confidence=0.74,
+        source_environment_id="cluster-a",
+        source_valkyrie_id="valkyrie:k8s-a",
+        promotion_id=f"learn-{manifest_name}",
+        flock_id="k8s-valkyries",
+        domain="k8s",
+        redaction_status="none",
+        tool_code=tool_code,
+        tool_entry_point="run",
+        learned_tool_manifest={
+            "name": manifest_name,
+            "description": "Inspect an OOMKilled pod signal.",
+            "input_schema": {"type": "object"},
+            "required_permission": "k8s:read",
+        },
+        test_code=test_code,
+        canary_sample={"payload": {"reason": "OOMKilled"}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_peer_verification_on_a_runner_without_verify_raises_not_silently_falls_back(
+    tmp_path,
+) -> None:
+    """A runner that cannot verify inside its own execution boundary (no
+    verify() implementation) must never make _verify_peer_artifact silently
+    fall back to host-side verification — that fallback IS the
+    vulnerability: a peer's requirements pip-installed and its test_code run
+    with this resident's own network/filesystem access."""
+
+    class _NoVerifyRunner:
+        supports_verify = False
+
+        async def run(self, *args, **kwargs):
+            raise AssertionError("run() must not be reached by verification")
+
+    bus = InProcessBus()
+    peer_skills = _manager(tmp_path, "cluster-no-verify")
+    peer = ResidentLearningRuntime(
+        identity=ResidentLearningIdentity(
+            environment_id="cluster-no-verify",
+            valkyrie_id="valkyrie:k8s-no-verify",
+            domain="k8s",
+            flock_ids=["k8s-valkyries"],
+            autonomy_mode="yolo",
+        ),
+        skills=peer_skills,
+        publisher=bus,
+        subscriber=bus,
+        tools_dir=tmp_path / "no-verify" / "tools",
+        learned_tool_runner=_NoVerifyRunner(),  # type: ignore[arg-type]
+    )
+    artifact = _agent_tool_peer_artifact(
+        tool_code="def run(input):\n    return {'ok': True}\n",
+        test_code=(
+            "import _verify_tool\n\n"
+            "def test_ok():\n"
+            "    assert _verify_tool.run({}) == {'ok': True}\n"
+        ),
+        manifest_name="unverifiable_probe",
+    )
+
+    with pytest.raises(LearnedToolError, match="cannot verify a peer proposal"):
+        await peer.evaluate_and_apply(artifact)
+
+
+@pytest.mark.asyncio
+async def test_canary_without_a_configured_runner_raises_clearly(tmp_path) -> None:
+    """A resident with neither tools_dir nor an injected learned_tool_runner
+    cannot canary a tool-bearing artifact. This must be a clear, actionable
+    error — not an AttributeError from calling .run() on None."""
+    bus = InProcessBus()
+    peer_skills = _manager(tmp_path, "cluster-no-runner")
+    peer = ResidentLearningRuntime(
+        identity=ResidentLearningIdentity(
+            environment_id="cluster-no-runner",
+            valkyrie_id="valkyrie:k8s-no-runner",
+            domain="k8s",
+            flock_ids=["k8s-valkyries"],
+            autonomy_mode="yolo",
+        ),
+        skills=peer_skills,
+        publisher=bus,
+        subscriber=bus,
+        # No tools_dir and no learned_tool_runner: this resident has no
+        # configured way to run a tool at all.
+    )
+    artifact = _agent_tool_peer_artifact(
+        tool_code="def run(input):\n    return {'ok': True}\n",
+        test_code=(
+            "import _verify_tool\n\n"
+            "def test_ok():\n"
+            "    assert _verify_tool.run({}) == {'ok': True}\n"
+        ),
+        manifest_name="no_runner_probe",
+    )
+
+    with pytest.raises(LearnedToolError, match="no learned-tool runner is configured"):
+        await peer.evaluate_and_apply(artifact)
+
+
+@pytest.mark.asyncio
+async def test_peer_re_verification_failure_is_declined_not_installed(tmp_path) -> None:
+    """A peer proposal whose own test module fails when re-run from scratch
+    is rejected — the teacher's own claim that it works is never trusted."""
+    bus = InProcessBus()
+    peer_skills = _manager(tmp_path, "cluster-verify")
+    peer = ResidentLearningRuntime(
+        identity=ResidentLearningIdentity(
+            environment_id="cluster-verify",
+            valkyrie_id="valkyrie:k8s-verify",
+            domain="k8s",
+            flock_ids=["k8s-valkyries"],
+            autonomy_mode="yolo",
+        ),
+        skills=peer_skills,
+        publisher=bus,
+        subscriber=bus,
+        tools_dir=tmp_path / "verify" / "tools",
+    )
+
+    artifact = _agent_tool_peer_artifact(
+        tool_code="def run(input):\n    return {'ok': True}\n",
+        test_code=(
+            "import _verify_tool\n\n"
+            "def test_fails():\n"
+            "    assert _verify_tool.run({}) == {'ok': False}\n"
+        ),
+        manifest_name="always_fails_probe",
+    )
+
+    decision = await peer.evaluate_and_apply(artifact)
+
+    assert decision.action == "rejected"
+    assert "re-verification failed" in decision.rationale
+    assert not (tmp_path / "verify" / "tools" / "always_fails_probe.py").exists()
+
+
+@pytest.mark.asyncio
+async def test_peer_re_verification_success_stamps_provenance_and_can_run(tmp_path) -> None:
+    """A peer that independently re-verifies a proposal records its OWN
+    verification in the installed artifact — otherwise require_verified_
+    artifact would refuse to ever run what was just adopted."""
+    bus = InProcessBus()
+    peer_skills = _manager(tmp_path, "cluster-verify-ok")
+    tools_dir = tmp_path / "verify_ok" / "tools"
+    peer = ResidentLearningRuntime(
+        identity=ResidentLearningIdentity(
+            environment_id="cluster-verify-ok",
+            valkyrie_id="valkyrie:k8s-verify-ok",
+            domain="k8s",
+            flock_ids=["k8s-valkyries"],
+            autonomy_mode="yolo",
+        ),
+        skills=peer_skills,
+        publisher=bus,
+        subscriber=bus,
+        tools_dir=tools_dir,
+    )
+
+    artifact = _agent_tool_peer_artifact(
+        tool_code="def run(input):\n    return {'ok': True}\n",
+        test_code=(
+            "import _verify_tool\n\n"
+            "def test_ok():\n"
+            "    assert _verify_tool.run({}) == {'ok': True}\n"
+        ),
+        manifest_name="verified_probe",
+    )
+
+    decision = await peer.evaluate_and_apply(artifact)
+
+    assert decision.action == "adopted"
+    _code_dir, artifacts_dir = learned_tool_storage(tools_dir.parent)
+    installed = read_learned_tool_artifact(artifacts_dir / "verified_probe.json")
+    verification = installed.provenance["verification"]
+    assert verification["ok"] is True
+    assert verification["verified_by"] == "valkyrie:k8s-verify-ok"
+    # Ties this verification outcome to the exact bytes verified — always
+    # recomputed by the peer, never a sender-claimed value.
+    assert verification["artifact_digest"] == compute_artifact_digest(
+        tool_code=artifact.tool_code,
+        test_code=artifact.test_code,
+        requirements=list(artifact.requirements),
+        manifest=artifact.learned_tool_manifest,
+    )
+
+    resolver = LearnedToolResolver(state_dir=tools_dir.parent)
+    tool = resolver.load("verified_probe")
+    result = await tool.execute({})
+    assert not result.is_error
+
+
+@pytest.mark.asyncio
+async def test_malformed_capability_proposal_is_declined_not_crashed_on(tmp_path) -> None:
+    """A flock.learning.proposed event that fails CapabilityProposal's strict
+    parsing (here: artifact_type='agent_tool' with no tool_code) is declined
+    with the parse failure as the reason — never a partial install, and
+    never an unhandled exception out of the event subscriber."""
+    bus = InProcessBus()
+    peer_skills = _manager(tmp_path, "cluster-malformed")
+    peer = ResidentLearningRuntime(
+        identity=ResidentLearningIdentity(
+            environment_id="cluster-malformed",
+            valkyrie_id="valkyrie:k8s-malformed",
+            domain="k8s",
+            flock_ids=["k8s-valkyries"],
+            autonomy_mode="yolo",
+        ),
+        skills=peer_skills,
+        publisher=bus,
+        subscriber=bus,
+        tools_dir=tmp_path / "malformed" / "tools",
+    )
+    await peer.start()
+
+    malformed_event = SleipnirEvent(
+        event_type=registry.FLOCK_LEARNING_PROPOSED,
+        source="valkyrie:k8s-a",
+        payload={
+            "learning_id": "learn-broken-tool",
+            "title": "broken_tool",
+            "artifact_type": "agent_tool",
+            "flock_id": "k8s-valkyries",
+            "domain": "k8s",
+            "source_environment_id": "cluster-a",
+            "source_valkyrie_id": "valkyrie:k8s-a",
+            # agent_tool with no tool_code: CapabilityProposal must decline
+            # this, never build a ResidentLearningArtifact from it.
+            "tool_code": "",
+            "learned_tool_manifest": {"name": "broken_tool"},
+        },
+        summary="flock.learning.proposed: broken_tool",
+        urgency=0.2,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+    )
+
+    await bus.publish(malformed_event)
+    await bus.flush()
+
+    assert peer.decisions()
+    decision = peer.decisions()[-1]
+    assert decision.action == "rejected"
+    assert "carries no tool_code" in decision.rationale
+    assert not (tmp_path / "malformed" / "tools" / "broken_tool.py").exists()
+
+    await peer.stop()
 
 
 @pytest.mark.asyncio

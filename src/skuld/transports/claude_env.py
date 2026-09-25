@@ -27,6 +27,16 @@ model_gateway.ModelGatewayContributor`` always supplies a non-blank token
 (``OPEN_GATEWAY_TOKEN`` under 'none'/'envoy') whenever it sets
 ``gateway_url``, so this should only ever fire for a caller that bypassed
 that contributor.
+
+Trace propagation: Claude Code reads ``TRACEPARENT``/``TRACESTATE`` from its
+own environment at startup in Agent SDK and non-interactive (``-p``) sessions,
+and parents its ``claude_code.interaction`` span under them — documented at
+https://code.claude.com/docs/en/agent-sdk/observability. Interactive sessions
+ignore inbound ``TRACEPARENT`` (to avoid inheriting ambient CI/container
+values), so the env var is harmless-but-inert there. This spawn env always
+carries the caller's active W3C trace context (empty when observability is
+disabled or no span is active), so whichever mode a transport uses gets it
+for free.
 """
 
 from __future__ import annotations
@@ -35,6 +45,8 @@ import logging
 import os
 import sys
 from pathlib import Path
+
+from niuu.observability import get_observability
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +72,14 @@ def claude_spawn_env(*, gateway_url: str = "", gateway_token: str = "") -> dict[
         env["ANTHROPIC_BASE_URL"] = gateway_url.strip().rstrip("/")
         env["ANTHROPIC_AUTH_TOKEN"] = gateway_token
         logger.info("Claude CLI routed through the model gateway at %s", env["ANTHROPIC_BASE_URL"])
+        env.update(get_observability().inject())
         return env
 
     mode = os.environ.get("SKULD__CLAUDE_AUTH", "subscription").strip().lower()
     if mode == "api_key":
-        return {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        env.update(get_observability().inject())
+        return env
 
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE" and k not in _API_KEY_VARS}
     # On macOS the CLI stores its OAuth login in the Keychain, so the
@@ -79,4 +94,5 @@ def claude_spawn_env(*, gateway_url: str = "", gateway_token: str = "") -> dict[
             "missing on this host — run `claude login`, or set "
             "SKULD__CLAUDE_AUTH=api_key to use the platform API key"
         )
+    env.update(get_observability().inject())
     return env

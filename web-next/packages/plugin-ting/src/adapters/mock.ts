@@ -56,7 +56,6 @@ let _runSeq = 0;
 function mkRun(overrides: Partial<Run> & Pick<Run, 'id' | 'phaseId' | 'name' | 'status'>): Run {
   _runSeq++;
   // Varied defaults matching web2 prototype data
-  const confidencePool = [92, 85, 78, 55, 72, 68, 44, 80, 61, 90];
   const estimatePool = [1, 0.25, 0.5, 2, 3, 1.5, 4, 0.5, 1, 2];
   const waitPool = [2, 0, 14, 48, 0, 6, 0, 22, 0, 3];
   const idx = (_runSeq - 1) % 10;
@@ -70,7 +69,6 @@ function mkRun(overrides: Partial<Run> & Pick<Run, 'id' | 'phaseId' | 'name' | '
     acceptanceCriteria: [],
     declaredFiles: [],
     estimateHours: estimatePool[idx]!,
-    confidence: confidencePool[idx]!,
     sessionId: null,
     reviewerSessionId: null,
     reviewRound: 0,
@@ -99,7 +97,6 @@ const SEED_SAGAS: Saga[] = [
     featureBranch: 'feat/flokk-subs',
     baseBranch: 'main',
     status: 'active',
-    confidence: 82,
     createdAt: '2026-01-20T05:00:00Z',
     phaseSummary: { total: 4, completed: 1 },
     workflow: 'ship',
@@ -115,7 +112,6 @@ const SEED_SAGAS: Saga[] = [
     featureBranch: 'feat/canvas-realms',
     baseBranch: 'main',
     status: 'active',
-    confidence: 71,
     createdAt: '2026-01-19T05:00:00Z',
     phaseSummary: { total: 3, completed: 1 },
     workflow: 'ship',
@@ -131,7 +127,6 @@ const SEED_SAGAS: Saga[] = [
     featureBranch: 'feat/chronicle-indexing',
     baseBranch: 'main',
     status: 'active',
-    confidence: 68,
     createdAt: '2026-01-18T05:00:00Z',
     phaseSummary: { total: 3, completed: 2 },
     workflow: 'ship',
@@ -147,7 +142,6 @@ const SEED_SAGAS: Saga[] = [
     featureBranch: 'feat/rate-limit',
     baseBranch: 'main',
     status: 'active',
-    confidence: 31,
     createdAt: '2026-01-17T05:00:00Z',
     phaseSummary: { total: 2, completed: 2 },
     workflow: 'ship',
@@ -164,7 +158,6 @@ const SEED_SAGAS: Saga[] = [
     featureBranch: 'feat/auth-rewrite',
     baseBranch: 'main',
     status: 'complete',
-    confidence: 82,
     createdAt: '2026-01-10T09:00:00Z',
     phaseSummary: { total: 3, completed: 1 },
     workflow: 'ship',
@@ -180,7 +173,6 @@ const SEED_SAGAS: Saga[] = [
     featureBranch: 'feat/plugin-ravn',
     baseBranch: 'main',
     status: 'complete',
-    confidence: 95,
     createdAt: '2026-01-05T08:00:00Z',
     phaseSummary: { total: 2, completed: 2 },
     workflow: 'scaffold',
@@ -196,7 +188,6 @@ const SEED_SAGAS: Saga[] = [
     featureBranch: 'feat/topology-canvas',
     baseBranch: 'main',
     status: 'failed',
-    confidence: 30,
     createdAt: '2026-01-15T10:00:00Z',
     phaseSummary: { total: 4, completed: 0 },
     workflow: 'ship',
@@ -215,7 +206,6 @@ const SEED_RUNS: Run[] = [
     declaredFiles: ['src/auth/oidc.ts', 'src/auth/refresh.ts'],
     estimateHours: 8,
     status: 'merged',
-    confidence: 90,
     sessionId: 'sess-001',
     reviewerSessionId: null,
     reviewRound: 1,
@@ -235,7 +225,6 @@ const SEED_RUNS: Run[] = [
     declaredFiles: ['src/niuu/pat.ts'],
     estimateHours: 4,
     status: 'merged',
-    confidence: 65,
     sessionId: 'sess-002',
     reviewerSessionId: null,
     reviewRound: 0,
@@ -256,7 +245,6 @@ const SEED_RUNS: Run[] = [
     declaredFiles: ['src/auth/jwt.ts'],
     estimateHours: 3,
     status: 'pending',
-    confidence: 80,
     sessionId: null,
     reviewerSessionId: null,
     reviewRound: 0,
@@ -276,7 +264,6 @@ const SEED_RUNS: Run[] = [
     declaredFiles: ['tests/auth/integration.test.ts'],
     estimateHours: 5,
     status: 'pending',
-    confidence: 45,
     sessionId: null,
     reviewerSessionId: null,
     reviewRound: 0,
@@ -296,7 +283,6 @@ const SEED_RUNS: Run[] = [
     declaredFiles: ['src/auth/refresh.ts'],
     estimateHours: 4,
     status: 'queued',
-    confidence: 75,
     sessionId: null,
     reviewerSessionId: null,
     reviewRound: 0,
@@ -316,7 +302,6 @@ const SEED_PHASES: Phase[] = [
     number: 1,
     name: 'Phase 1: Foundation',
     status: 'complete',
-    confidence: 90,
     runs: [SEED_RUNS[0]!],
   },
   {
@@ -326,7 +311,6 @@ const SEED_PHASES: Phase[] = [
     number: 2,
     name: 'Phase 2: PAT Support',
     status: 'complete',
-    confidence: 65,
     runs: [SEED_RUNS[1]!],
   },
   {
@@ -336,7 +320,6 @@ const SEED_PHASES: Phase[] = [
     number: 3,
     name: 'Phase 3: Security',
     status: 'pending',
-    confidence: 50,
     runs: [SEED_RUNS[2]!, SEED_RUNS[3]!, SEED_RUNS[4]!],
   },
 ];
@@ -351,7 +334,6 @@ const SEED_FLOKK_PHASES: Phase[] = [
     number: 1,
     name: 'Phase 1: Setup',
     status: 'complete',
-    confidence: 90,
     runs: [
       mkRun({
         id: '00000000-0000-0000-0000-000000000020',
@@ -374,7 +356,6 @@ const SEED_FLOKK_PHASES: Phase[] = [
     number: 2,
     name: 'Phase 2: Validation',
     status: 'active',
-    confidence: 72,
     runs: [
       mkRun({
         id: '00000000-0000-0000-0000-000000000022',
@@ -383,7 +364,6 @@ const SEED_FLOKK_PHASES: Phase[] = [
         name: 'Integration tests for graph validator',
         status: 'running',
         estimateHours: 1,
-        confidence: 92,
       }),
     ],
   },
@@ -394,7 +374,6 @@ const SEED_FLOKK_PHASES: Phase[] = [
     number: 3,
     name: 'Phase 3: Webhooks',
     status: 'pending',
-    confidence: 50,
     runs: [
       mkRun({
         id: '00000000-0000-0000-0000-000000000023',
@@ -403,7 +382,6 @@ const SEED_FLOKK_PHASES: Phase[] = [
         name: 'Release cut',
         status: 'pending',
         estimateHours: 0.25,
-        confidence: 55,
       }),
     ],
   },
@@ -414,7 +392,6 @@ const SEED_FLOKK_PHASES: Phase[] = [
     number: 4,
     name: 'Phase 4: Metrics',
     status: 'pending',
-    confidence: 40,
     runs: [
       mkRun({
         id: '00000000-0000-0000-0000-000000000024',
@@ -423,7 +400,6 @@ const SEED_FLOKK_PHASES: Phase[] = [
         name: 'Subscription metrics',
         status: 'pending',
         estimateHours: 2,
-        confidence: 68,
       }),
     ],
   },
@@ -437,7 +413,6 @@ const SEED_OBSERVATORY_PHASES: Phase[] = [
     number: 1,
     name: 'Phase 1: Canvas',
     status: 'complete',
-    confidence: 88,
     runs: [
       mkRun({
         id: '00000000-0000-0000-0000-000000000030',
@@ -466,7 +441,6 @@ const SEED_OBSERVATORY_PHASES: Phase[] = [
     number: 2,
     name: 'Phase 2: Overlays',
     status: 'active',
-    confidence: 60,
     runs: [
       mkRun({
         id: '00000000-0000-0000-0000-000000000033',
@@ -475,7 +449,6 @@ const SEED_OBSERVATORY_PHASES: Phase[] = [
         name: 'Realm colour ramp tokens',
         status: 'running',
         estimateHours: 1,
-        confidence: 85,
       }),
       mkRun({
         id: '00000000-0000-0000-0000-000000000034',
@@ -484,7 +457,6 @@ const SEED_OBSERVATORY_PHASES: Phase[] = [
         name: 'Review arbitration',
         status: 'escalated',
         estimateHours: 0.5,
-        confidence: 44,
       }),
     ],
   },
@@ -495,7 +467,6 @@ const SEED_OBSERVATORY_PHASES: Phase[] = [
     number: 3,
     name: 'Phase 3: Interaction',
     status: 'pending',
-    confidence: 40,
     runs: [
       mkRun({
         id: '00000000-0000-0000-0000-000000000035',
@@ -504,7 +475,6 @@ const SEED_OBSERVATORY_PHASES: Phase[] = [
         name: 'Click-to-select',
         status: 'pending',
         estimateHours: 1.5,
-        confidence: 72,
       }),
     ],
   },
@@ -518,7 +488,6 @@ const SEED_MIMIR_PHASES: Phase[] = [
     number: 1,
     name: 'Phase 1: Schema',
     status: 'complete',
-    confidence: 95,
     runs: [
       mkRun({
         id: '00000000-0000-0000-0000-000000000040',
@@ -541,7 +510,6 @@ const SEED_MIMIR_PHASES: Phase[] = [
     number: 2,
     name: 'Phase 2: Ingestion',
     status: 'complete',
-    confidence: 85,
     runs: [
       mkRun({
         id: '00000000-0000-0000-0000-000000000042',
@@ -564,7 +532,6 @@ const SEED_MIMIR_PHASES: Phase[] = [
     number: 3,
     name: 'Phase 3: Query',
     status: 'active',
-    confidence: 55,
     runs: [
       mkRun({
         id: '00000000-0000-0000-0000-000000000044',
@@ -573,7 +540,6 @@ const SEED_MIMIR_PHASES: Phase[] = [
         name: 'Arbitrated review',
         status: 'review',
         estimateHours: 1,
-        confidence: 55,
         retryCount: 1,
       }),
       mkRun({
@@ -583,7 +549,6 @@ const SEED_MIMIR_PHASES: Phase[] = [
         name: 'Result ranking',
         status: 'escalated',
         estimateHours: 2,
-        confidence: 38,
       }),
     ],
   },
@@ -597,7 +562,6 @@ const SEED_BIFROST_PHASES: Phase[] = [
     number: 1,
     name: 'Phase 1: Limiter',
     status: 'complete',
-    confidence: 90,
     runs: [
       mkRun({
         id: '00000000-0000-0000-0000-000000000050',
@@ -614,7 +578,6 @@ const SEED_BIFROST_PHASES: Phase[] = [
     number: 2,
     name: 'Phase 2: Per-model',
     status: 'complete',
-    confidence: 25,
     runs: [
       mkRun({
         id: '00000000-0000-0000-0000-000000000051',
@@ -635,7 +598,6 @@ const SEED_BIFROST_PHASES: Phase[] = [
 const SEED_DISPATCHER_STATE: DispatcherState = {
   id: '00000000-0000-0000-0000-000000000999',
   running: true,
-  threshold: 70,
   maxConcurrentRuns: 5,
   autoContinue: false,
   updatedAt: '2026-01-13T11:00:00Z',
@@ -651,7 +613,6 @@ const SEED_SESSIONS: SessionInfo[] = [
       '[11:30] All acceptance tests pass',
     ],
     branch: 'feat/auth-rewrite',
-    confidence: 90,
     runName: 'Implement OIDC flow',
     sagaName: 'Auth Rewrite',
     clusterName: 'Mac mini',
@@ -661,7 +622,6 @@ const SEED_SESSIONS: SessionInfo[] = [
     status: 'running',
     chronicleLines: ['[09:00] Starting PAT generation', '[09:30] JWT signing implemented'],
     branch: 'feat/auth-rewrite',
-    confidence: 65,
     runName: 'Add PAT generation',
     sagaName: 'Auth Rewrite',
     clusterName: 'MacBook Pro',
@@ -955,7 +915,6 @@ const SEED_FLOCK_CONFIG: FlockConfig = {
 };
 
 const SEED_DISPATCH_DEFAULTS: DispatchDefaults = {
-  confidenceThreshold: 70,
   maxConcurrentRuns: 3,
   autoContinue: false,
   batchSize: 10,
@@ -1000,9 +959,9 @@ const SEED_AUDIT_ENTRIES: AuditEntry[] = [
   {
     id: '00000000-0000-0000-0000-000000000a03',
     kind: 'run.dispatched',
-    summary: 'Run "Implement OIDC flow" dispatched (confidence: 90)',
+    summary: 'Run "Implement OIDC flow" dispatched',
     actor: 'dispatcher',
-    payload: { runId: '00000000-0000-0000-0000-000000000010', confidence: 90 },
+    payload: { runId: '00000000-0000-0000-0000-000000000010' },
     createdAt: '2026-01-10T09:05:00Z',
   },
   {
@@ -1012,22 +971,6 @@ const SEED_AUDIT_ENTRIES: AuditEntry[] = [
     actor: 'dispatcher',
     payload: { runId: '00000000-0000-0000-0000-000000000010' },
     createdAt: '2026-01-12T14:00:00Z',
-  },
-  {
-    id: '00000000-0000-0000-0000-000000000a05',
-    kind: 'settings.dispatch_defaults.updated',
-    summary: 'Confidence threshold changed from 65 to 70',
-    actor: 'user-1',
-    payload: { before: { confidenceThreshold: 65 }, after: { confidenceThreshold: 70 } },
-    createdAt: '2026-01-13T10:00:00Z',
-  },
-  {
-    id: '00000000-0000-0000-0000-000000000a06',
-    kind: 'dispatcher.threshold_changed',
-    summary: 'Dispatch threshold set to 70',
-    actor: 'user-1',
-    payload: { threshold: 70 },
-    createdAt: '2026-01-13T10:01:00Z',
   },
 ];
 
@@ -1099,7 +1042,6 @@ export function createMockTingService(): ITingService {
         featureBranch: `feat/${spec.slice(0, 20).toLowerCase().replace(/\s+/g, '-')}`,
         baseBranch: 'main',
         status: 'active',
-        confidence: 50,
         createdAt: new Date().toISOString(),
         phaseSummary: { total: 0, completed: 0 },
       };
@@ -1118,7 +1060,6 @@ export function createMockTingService(): ITingService {
         featureBranch: `feat/${request.slug}`,
         baseBranch: 'main',
         status: 'active',
-        confidence: 60,
         createdAt: new Date().toISOString(),
         phaseSummary: { total: request.phases.length, completed: 0 },
       };
@@ -1215,12 +1156,6 @@ export function createMockTingService(): ITingService {
             question:
               'Are there any acceptance criteria or constraints you want enforced across all runs?',
             hint: 'e.g. all endpoints must have OpenAPI docs, no breaking API changes',
-          },
-          {
-            id: 'q4',
-            question:
-              'What is the desired confidence threshold before the dispatcher auto-continues?',
-            hint: 'e.g. 80 — runs below this will pause for operator approval',
           },
         ],
       };
@@ -1385,10 +1320,6 @@ export function createMockDispatcherService(): IDispatcherService {
       log.push(`[mock] running = ${running}`);
     },
 
-    async setThreshold(threshold: number) {
-      state = { ...state, threshold, updatedAt: new Date().toISOString() };
-    },
-
     async setAutoContinue(autoContinue: boolean) {
       state = { ...state, autoContinue, updatedAt: new Date().toISOString() };
     },
@@ -1480,7 +1411,6 @@ export function createMockTrackerService(): ITrackerBrowserService {
         featureBranch: `feat/${name.toLowerCase().replace(/\s+/g, '-')}`,
         baseBranch: repoRefs[0]?.branch ?? _baseBranch ?? 'main',
         status: 'active',
-        confidence: 50,
         createdAt: new Date().toISOString(),
         phaseSummary: { total: 0, completed: 0 },
         instanceId: target?.mode === 'instance' ? target.instanceId : (instanceId ?? undefined),

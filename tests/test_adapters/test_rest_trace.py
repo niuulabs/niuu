@@ -127,6 +127,69 @@ def test_resident_runtime_can_emit_and_read_existing_session_trace() -> None:
     assert residents.principals[-1].user_id == "user-a"
 
 
+def test_start_span_w3c_trace_id_is_none_when_observability_disabled() -> None:
+    runtime_id = uuid4()
+    client, repository, _, _ = _client(runtime_id)
+
+    response = client.post(
+        "/api/v1/forge/spans/start",
+        headers=_headers(),
+        json={
+            "id": str(uuid4()),
+            "session_id": str(runtime_id),
+            "trace_id": str(runtime_id),
+            "kind": "turn.peer",
+            "name": "Hermes reaction",
+            "source_service": "skuld",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["w3c_trace_id"] is None
+    assert repository.spans[0].w3c_trace_id is None
+
+
+def test_start_span_carries_w3c_trace_id_from_the_active_span(monkeypatch) -> None:
+    """The W3C trace id is read server-side from the ambient span, not the body.
+
+    Once the caller's traceparent reaches this request (via the caller's own
+    instrumented httpx client and this app's FastAPI instrumentation), the
+    active span here already reflects it — nothing the poster sends.
+    """
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.trace import TracerProvider
+
+    from niuu import observability as obs_module
+    from niuu.observability import Observability
+
+    telemetry = Observability(tracer_provider=TracerProvider(), meter_provider=MeterProvider())
+    monkeypatch.setattr(obs_module, "_active", telemetry)
+
+    runtime_id = uuid4()
+    client, repository, _, _ = _client(runtime_id)
+
+    with telemetry.span("forge.spans.start"):
+        response = client.post(
+            "/api/v1/forge/spans/start",
+            headers=_headers(),
+            json={
+                "id": str(uuid4()),
+                "session_id": str(runtime_id),
+                "trace_id": str(runtime_id),
+                "kind": "turn.peer",
+                "name": "Hermes reaction",
+                "source_service": "skuld",
+            },
+        )
+
+    assert response.status_code == 201
+    w3c_trace_id = response.json()["w3c_trace_id"]
+    assert w3c_trace_id is not None
+    assert len(w3c_trace_id) == 32
+    assert repository.spans[0].w3c_trace_id == w3c_trace_id
+
+
 def test_unknown_trace_subject_is_rejected() -> None:
     runtime_id = uuid4()
     client, repository, _, _ = _client(runtime_id)

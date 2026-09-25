@@ -472,7 +472,6 @@ class DispatchConfig:
     dispatch_prompt_template: str = ""
     max_cached_issues: int = 10_000
     templates_dir: Path = BUNDLED_TEMPLATES_DIR
-    initial_confidence: float = 0.5
     flock_enabled: bool = False
     flock_default_personas: list[dict] = field(
         default_factory=lambda: [
@@ -952,7 +951,6 @@ class DispatchService:
             feature_branch=template.feature_branch,
             base_branch=template.base_branch,
             status=SagaStatus.ACTIVE,
-            confidence=self._config.initial_confidence,
             created_at=now,
             owner_id=owner_id,
         )
@@ -969,7 +967,6 @@ class DispatchService:
                 number=phase_num,
                 name=tpl_phase.name,
                 status=phase_status,
-                confidence=self._config.initial_confidence,
             )
             await self._saga_repo.save_phase(phase)
 
@@ -986,7 +983,6 @@ class DispatchService:
                     declared_files=tpl_run.declared_files,
                     estimate_hours=tpl_run.estimate_hours,
                     status=RunStatus.PENDING,
-                    confidence=self._config.initial_confidence,
                     session_id=None,
                     branch=None,
                     chronicle_summary=None,
@@ -1100,7 +1096,6 @@ class DispatchService:
                     declared_files=run.declared_files,
                     estimate_hours=run.estimate_hours,
                     status=RunStatus.QUEUED,
-                    confidence=run.confidence,
                     session_id=None,
                     branch=run.branch,
                     chronicle_summary=run.chronicle_summary,
@@ -1166,7 +1161,6 @@ class DispatchService:
                     declared_files=run.declared_files,
                     estimate_hours=run.estimate_hours,
                     status=RunStatus.RUNNING,
-                    confidence=run.confidence,
                     session_id=session.id,
                     branch=run.branch,
                     chronicle_summary=run.chronicle_summary,

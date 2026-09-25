@@ -20,6 +20,7 @@ from cli.commands.platform import (
     _check_auth_env_conflicts,
     _collect_service_definitions,
     _effective_bifrost_config,
+    _host_resident_platform_url,
     _prompt_mode_selection,
     _resolve_enabled_services,
     _resolve_local_pod_manager_env,
@@ -464,6 +465,30 @@ class TestCreatePlatformCommands:
         assert "status" in names
         assert "init" in names
 
+    def test_platform_ravn_runs_the_ravn_cli_for_compiled_residents(self, monkeypatch) -> None:
+        import ravn.cli.commands
+
+        calls: list[tuple[list[str], str]] = []
+        monkeypatch.setattr(
+            ravn.cli.commands,
+            "app",
+            lambda *, args, prog_name: calls.append((args, prog_name)),
+        )
+        platform, *_ = self._make_platform()
+
+        result = runner.invoke(
+            platform,
+            ["ravn", "daemon", "--config", "/r/ravn.yaml", "--persona", "steward", "--help"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert calls == [
+            (
+                ["daemon", "--config", "/r/ravn.yaml", "--persona", "steward", "--help"],
+                "ravn",
+            )
+        ]
+
     def test_platform_down_command(self) -> None:
         platform, *_ = self._make_platform()
         result = runner.invoke(platform, ["down"])
@@ -623,9 +648,45 @@ class TestBuildInitConfig:
         assert ":latest" not in skuld_image
         assert ":" in skuld_image  # has a version tag
 
+    def test_mini_runtime_runs_ravn_residents_as_host_processes_by_default(self) -> None:
+        from volundr.config import ResidentRuntimesConfig
+
+        settings = CLISettings(mode="mini", server={"host": "0.0.0.0", "port": 8181})
+
+        env = _resolve_local_pod_manager_env(settings)
+        resident_config = ResidentRuntimesConfig.model_validate_json(env["RESIDENT_RUNTIMES"])
+
+        assert settings.residents.runtime == "process"
+        (controller,) = resident_config.controllers
+        assert controller.adapter.endswith("HostProcessResidentRuntimeController")
+        assert controller.kwargs == {
+            "residents_dir": "~/.niuu/residents",
+            "volundr_api_url": "http://127.0.0.1:8181",
+        }
+        assert resident_config.session_controllers == []
+        (profile,) = resident_config.profiles
+        values = profile.deployment["values"]
+        assert (profile.id, profile.backend.value, profile.engine.value) == (
+            "ravn-local",
+            "local",
+            "ravn",
+        )
+        assert "image" not in values
+        assert "runtime" not in values
+        assert values["resident"]["platform"]["baseUrl"] == "http://127.0.0.1:8181"
+        assert values["resident"]["llm"]["provider"]["kwargs"]["base_url"] == (
+            "http://127.0.0.1:8181/api/v1/bifrost"
+        )
+
+    def test_host_resident_platform_url_keeps_a_specific_bind_address(self) -> None:
+        settings = CLISettings(mode="mini", server={"host": "192.0.2.10", "port": 9000})
+
+        assert _host_resident_platform_url(settings) == "http://192.0.2.10:9000"
+
     def test_mini_runtime_exposes_local_resident_profiles(self) -> None:
         settings = CLISettings(
             mode="mini",
+            residents={"runtime": "docker"},
             bifrost={
                 "providers": {
                     "local-vllm": {
@@ -642,6 +703,11 @@ class TestBuildInitConfig:
         assert resident_config["controllers"][0]["adapter"].endswith(
             "LocalContainerResidentRuntimeController"
         )
+        assert resident_config["controllers"][0]["kwargs"] == {
+            "residents_dir": "~/.niuu/residents",
+            "volundr_api_url": "http://host.docker.internal:8080",
+        }
+        assert resident_config["profiles"][0]["deployment"]["values"]["image"]
         assert {profile["id"] for profile in resident_config["profiles"]} == {
             "ravn-local",
             "nemoclaw-local",

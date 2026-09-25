@@ -10,9 +10,11 @@ from ravn.domain.persona_document import PersonaDependency
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_document import (
+    WorkflowPlacement,
     document_from_workflow,
     dump_workflow_document,
     load_workflow_document,
+    load_workflow_placement,
     workflow_document_revision,
 )
 
@@ -109,3 +111,78 @@ def test_workflow_document_requires_pin_for_legacy_persona_ids() -> None:
     )
     with pytest.raises(WorkflowDocumentError, match="undeclared persona alias.*coder"):
         load_workflow_document(dump_workflow_document(legacy))
+
+
+def _workflow_with_placement(placement: dict, *, schema_version: int = 2) -> object:
+    workflow = _workflow()
+    return replace(
+        workflow,
+        schema_version=schema_version,
+        graph={**workflow.graph, "placement": placement},
+    )
+
+
+class TestWorkflowGraphPlacement:
+    def test_absent_placement_parses_to_none(self) -> None:
+        document = load_workflow_document(dump_workflow_document(_workflow()))
+        assert load_workflow_placement(document.graph) is None
+
+    def test_tags_selector_defaults_to_match_all(self) -> None:
+        workflow = _workflow_with_placement({"tags": ["gpu", "us-west"]})
+        document = load_workflow_document(dump_workflow_document(workflow))
+        assert load_workflow_placement(document.graph) == WorkflowPlacement(
+            tags=("gpu", "us-west"), match="all"
+        )
+
+    def test_tags_selector_honors_explicit_match_any(self) -> None:
+        workflow = _workflow_with_placement({"tags": ["gpu"], "match": "any"})
+        document = load_workflow_document(dump_workflow_document(workflow))
+        assert load_workflow_placement(document.graph) == WorkflowPlacement(
+            tags=("gpu",), match="any"
+        )
+
+    def test_instance_selector_round_trips(self) -> None:
+        workflow = _workflow_with_placement({"instance": "spark-01"})
+        document = load_workflow_document(dump_workflow_document(workflow))
+        assert load_workflow_placement(document.graph) == WorkflowPlacement(instance="spark-01")
+
+    def test_placement_changes_the_pinned_document_digest(self) -> None:
+        unplaced = _workflow()
+        placed = _workflow_with_placement({"instance": "spark-01"})
+        assert workflow_document_revision(unplaced) != workflow_document_revision(placed)
+
+    @pytest.mark.parametrize(
+        ("placement", "reason"),
+        [
+            ({}, "mapping with 'tags' or 'instance'"),
+            ({"match": "all"}, "exactly one of 'tags' or 'instance'"),
+            (
+                {"tags": ["gpu"], "instance": "spark-01"},
+                "exactly one of 'tags' or 'instance'",
+            ),
+            ({"instance": "spark-01", "match": "all"}, "not combine 'instance' with 'match'"),
+            ({"instance": "spark-01", "region": "eu"}, "unknown field"),
+            ({"tags": []}, "non-empty list"),
+            ({"tags": "gpu"}, "non-empty list"),
+            ({"tags": ["gpu", "gpu"]}, "not repeat tag names"),
+            ({"tags": ["gpu"], "match": "sometimes"}, "must be 'all' or 'any'"),
+            ({"instance": "  "}, "non-empty string"),
+        ],
+    )
+    def test_rejects_invalid_placement(self, placement: dict, reason: str) -> None:
+        workflow = _workflow_with_placement(placement)
+        with pytest.raises(WorkflowDocumentError, match=reason):
+            load_workflow_document(dump_workflow_document(workflow))
+
+    def test_rejects_stage_level_placement(self) -> None:
+        workflow = _workflow()
+        node = dict(workflow.graph["nodes"][0])
+        node["placement"] = {"instance": "spark-01"}
+        staged = replace(workflow, graph={**workflow.graph, "nodes": [node]})
+        with pytest.raises(WorkflowDocumentError, match="stage-level placement"):
+            load_workflow_document(dump_workflow_document(staged))
+
+    def test_rejects_placement_on_a_schema_version_1_document(self) -> None:
+        workflow = _workflow_with_placement({"instance": "spark-01"}, schema_version=1)
+        with pytest.raises(WorkflowDocumentError, match="requires workflow schema_version 2"):
+            load_workflow_document(dump_workflow_document(workflow))

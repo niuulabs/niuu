@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -149,6 +150,21 @@ class TestAgentCard:
         card = parse_agent_card(client.get(CARD_PATH).json())
 
         assert card.capabilities.push_notifications is True
+
+    def test_skill_description_notes_placement_when_the_workflow_declares_one(self) -> None:
+        base = _workflow()
+        workflow = replace(
+            base,
+            schema_version=2,
+            graph={**base.graph, "placement": {"tags": ["dgx-spark"]}},
+        )
+        client = _client(InMemoryWorkflowRepository([workflow]))
+
+        response = client.get(CARD_PATH)
+
+        card = parse_agent_card(response.json())
+        assert "graph.placement" in card.skills[0].description
+        assert "422" in card.skills[0].description
 
     def test_workflow_without_declared_tags_gets_protocol_tag(self) -> None:
         workflow = _workflow()

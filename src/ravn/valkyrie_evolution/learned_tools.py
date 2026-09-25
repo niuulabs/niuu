@@ -35,6 +35,15 @@ from ravn.valkyrie_evolution.tool_runtime import (
     run_tool,
     write_tool,
 )
+from ravn.valkyrie_evolution.tool_verification import (
+    DEFAULT_VERIFY_TIMEOUT_SECONDS,
+    TEST_RUNNER_SCRIPT,
+    VerificationResult,
+    first_undeclared_import,
+    parse_missing_module,
+    static_defects,
+    verify_learned_tool_in_ephemeral_venv,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +85,18 @@ class LearnedToolError(ValueError):
     """Raised when a learned tool artifact cannot be installed or loaded."""
 
 
+class LearnedToolInfrastructureError(RuntimeError):
+    """The execution backend could not run the tool at all.
+
+    Raised by :meth:`LearnedTool.execute` when the runner reports
+    ``ToolRunResult(infrastructure=True)`` — docker unavailable, dependency
+    provisioning failed, the backend refused the call. Distinct from a tool
+    genuinely failing: callers (learned_tool_run's rollback bookkeeping) must
+    never count this as an implementation failure, or a backend outage
+    archives a healthy tool.
+    """
+
+
 def reach_allows_network(declared_reach: Sequence[ToolReachGrant]) -> bool:
     """True when a manifest's declared reach grants outbound network access."""
     return any(
@@ -114,6 +135,15 @@ class LocalLearnedToolRunner:
 
     #: A local subprocess cannot express network isolation.
     enforces_reach = False
+    #: The local backend runs in this resident's own process tree, so the
+    #: host-call channel back to it is meaningful here (unlike a container
+    #: or Job that has no route back to this process).
+    supports_host_call = True
+    #: Verification on the local backend is the operator's explicit choice
+    #: to run resident code (execution and verification alike) on the host —
+    #: unlike 'container'/'k8s_job', it never claims isolation it does not
+    #: have, so there is no boundary for verify() to preserve here.
+    supports_verify = True
 
     def __init__(
         self,
@@ -147,6 +177,7 @@ class LocalLearnedToolRunner:
                         "requirement(s) but the local runner has no venvs_dir; "
                         "refusing to run it without its dependencies"
                     ),
+                    infrastructure=True,
                 )
             try:
                 python_executable = await asyncio.to_thread(
@@ -160,6 +191,7 @@ class LocalLearnedToolRunner:
                 return ToolRunResult(
                     ok=False,
                     error=f"per-tool venv provisioning failed for {tool_path.stem}: {exc}",
+                    infrastructure=True,
                 )
         return await run_tool(
             tool_path,
@@ -168,6 +200,29 @@ class LocalLearnedToolRunner:
             timeout_seconds=timeout_seconds,
             python_executable=python_executable,
             host_call=host_call,
+        )
+
+    async def verify(
+        self,
+        *,
+        tool_name: str,
+        tool_code: str,
+        test_code: str,
+        requirements: Sequence[str] = (),
+        entry_point: str = "run",
+        timeout_seconds: float = DEFAULT_VERIFY_TIMEOUT_SECONDS,
+    ) -> VerificationResult:
+        """Verify in an ephemeral venv on the host — this backend's own
+        execution already runs here, so verification introduces no new
+        boundary crossing."""
+        return await asyncio.to_thread(
+            verify_learned_tool_in_ephemeral_venv,
+            tool_name=tool_name,
+            tool_code=tool_code,
+            test_code=test_code,
+            requirements=list(requirements),
+            entry_point=entry_point,
+            timeout_seconds=int(timeout_seconds),
         )
 
     def _warn_unenforced_reach(
@@ -216,7 +271,14 @@ ContainerCommandRunner = Callable[
 
 _CONTAINER_TOOL_PATH = "/opt/ravn/tool/tool.py"
 _CONTAINER_VENV_PATH = "/opt/ravn/venv"
+_CONTAINER_VERIFY_PATH = "/opt/ravn/verify"
 _CONTAINER_WORKDIR = "/work"
+#: Exit codes `docker run` itself uses when it — not the containerized
+#: process — is what failed (daemon unreachable, entrypoint not runnable or
+#: not found). See https://docs.docker.com/engine/reference/run/#exit-status.
+#: Only trusted together with a "docker: ..." prefixed stderr message, since
+#: a tool could coincidentally exit with one of these codes on its own.
+_DOCKER_CLI_FAILURE_CODES = frozenset({125, 126, 127})
 _FILESYSTEM_REACH_KINDS = frozenset({"file", "filesystem", "path", "workspace"})
 _CREDENTIAL_REACH_KINDS = frozenset({"credential", "credentials", "secret", "secrets"})
 _READ_ONLY_ACCESS = frozenset({"none", "read"})
@@ -248,6 +310,15 @@ class ContainedLearnedToolRunner:
     """
 
     enforces_reach = True
+    #: No route from a fresh, disposable container back to this process —
+    #: offering the host-call channel here would only make the backend
+    #: refuse every dispatch that carries one (NIU rollback false-positive).
+    supports_host_call = False
+    #: Peer re-verification runs in this SAME container boundary via
+    #: verify() — never on the host, where a peer's requirements would
+    #: otherwise be pip-installed with the resident's own network and
+    #: filesystem access.
+    supports_verify = True
 
     def __init__(
         self,
@@ -290,10 +361,15 @@ class ContainedLearnedToolRunner:
                     "call the resident's own tools and there is no channel back from here. "
                     "Run it on the local backend, or rebuild it self-contained."
                 ),
+                infrastructure=True,
             )
         path = tool_path.resolve()
         if not path.is_file():
-            return ToolRunResult(ok=False, error=f"tool implementation missing: {path}")
+            return ToolRunResult(
+                ok=False,
+                error=f"tool implementation missing: {path}",
+                infrastructure=True,
+            )
         try:
             reach_args, credential_names = self._reach_args(declared_reach)
             venv_dir = await self._ensure_container_venv(path.stem, requirements)
@@ -302,6 +378,7 @@ class ContainedLearnedToolRunner:
                 ok=False,
                 error=str(exc),
                 enforcement=REACH_ENFORCEMENT_UNAVAILABLE,
+                infrastructure=True,
             )
 
         name = f"ravn-tool-{uuid.uuid4().hex[:16]}"
@@ -345,6 +422,117 @@ class ContainedLearnedToolRunner:
             name,
         )
         return self._tool_result(completed, path=path, timeout_seconds=timeout_seconds)
+
+    async def verify(
+        self,
+        *,
+        tool_name: str,
+        tool_code: str,
+        test_code: str,
+        requirements: Sequence[str] = (),
+        entry_point: str = "run",
+        timeout_seconds: float = DEFAULT_VERIFY_TIMEOUT_SECONDS,
+    ) -> VerificationResult:
+        """Independently re-verify a tool in the SAME boundary it runs in.
+
+        Verification used to always run on the host — a peer's own venv
+        creation and ``pip install`` of an adopted tool's requirements
+        happened in the resident's own process with the resident's own
+        network and filesystem access, regardless of the configured
+        execution backend. Here, both the dependency install (via
+        ``_ensure_container_venv``, the same provisioning ``run()`` uses) and
+        the test run happen inside a fresh container built from the SAME
+        pinned image and resource policy as execution — never on the host.
+        """
+        # entry_point is accepted for parity with the local verifier's
+        # signature; unused here since the test module drives the run.
+        del entry_point
+        defects = static_defects(tool_code, requirements)
+        if defects:
+            return VerificationResult(
+                ok=False,
+                logs="static verification failed:\n" + "\n".join(f"  - {d}" for d in defects),
+                missing_module=first_undeclared_import(tool_code, requirements),
+            )
+        if not test_code.strip():
+            return VerificationResult(
+                ok=True,
+                logs="no test_code supplied; structural validation only",
+            )
+
+        safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", tool_name.strip()) or "learned_tool"
+        try:
+            venv_dir = await self._ensure_container_venv(f"verify-{safe_name}", requirements)
+        except LearnedToolError as exc:
+            raise LearnedToolInfrastructureError(
+                f"verification dependency provisioning failed: {exc}"
+            ) from exc
+
+        run_dir = self._workspace_root / ".ravn" / "verify_runs" / uuid.uuid4().hex
+        run_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            module_name = re.sub(r"[^a-zA-Z0-9_]+", "_", tool_name.strip()) or "learned_tool"
+            (run_dir / f"{module_name}.py").write_text(tool_code, encoding="utf-8")
+            (run_dir / "_verify_test.py").write_text(test_code, encoding="utf-8")
+            (run_dir / "_verify_runner.py").write_text(TEST_RUNNER_SCRIPT, encoding="utf-8")
+
+            name = f"ravn-verify-{uuid.uuid4().hex[:16]}"
+            argv = self._base_docker_argv(name=name)
+            argv.extend(["--network=none"])
+            argv.extend(
+                [
+                    "--mount",
+                    self._bind_mount(run_dir, Path(_CONTAINER_VERIFY_PATH), read_only=True),
+                ]
+            )
+            python = "python"
+            if venv_dir is not None:
+                argv.extend(
+                    [
+                        "--mount",
+                        self._bind_mount(venv_dir, Path(_CONTAINER_VENV_PATH), read_only=True),
+                    ]
+                )
+                python = f"{_CONTAINER_VENV_PATH}/bin/python"
+            argv.extend(
+                [
+                    self._policy.image,
+                    python,
+                    f"{_CONTAINER_VERIFY_PATH}/_verify_runner.py",
+                    f"{_CONTAINER_VERIFY_PATH}/{module_name}.py",
+                    f"{_CONTAINER_VERIFY_PATH}/_verify_test.py",
+                ]
+            )
+            completed = await self._command_runner(argv, b"", timeout_seconds, name)
+        finally:
+            shutil.rmtree(run_dir, ignore_errors=True)
+
+        return self._verification_result(completed, timeout_seconds=timeout_seconds)
+
+    @staticmethod
+    def _verification_result(
+        completed: _ContainerProcessResult,
+        *,
+        timeout_seconds: float,
+    ) -> VerificationResult:
+        if completed.timed_out:
+            return VerificationResult(
+                ok=False, logs=f"verification timed out after {timeout_seconds}s"
+            )
+        if completed.error:
+            raise LearnedToolInfrastructureError(
+                f"containerized verification unavailable: {completed.error}"
+            )
+        stdout = completed.stdout.decode("utf-8", errors="replace")
+        stderr = completed.stderr.decode("utf-8", errors="replace")
+        logs = f"{stdout}\n{stderr}".strip()
+        if completed.returncode == 0:
+            return VerificationResult(ok=True, logs=logs or "verification passed")
+        return VerificationResult(
+            ok=False,
+            logs=logs or f"verification test exited with status {completed.returncode}",
+            missing_module=parse_missing_module(logs),
+        )
 
     def _reach_args(
         self,
@@ -609,18 +797,38 @@ class ContainedLearnedToolRunner:
                 enforcement=REACH_ENFORCEMENT_ENFORCED,
             )
         if completed.error:
+            # The container process itself never started (docker missing,
+            # daemon down, ...) — this run never reached the tool's own code.
             return ToolRunResult(
                 ok=False,
                 error=f"contained learned-tool execution unavailable: {completed.error}",
                 enforcement=REACH_ENFORCEMENT_UNAVAILABLE,
+                infrastructure=True,
             )
         stderr = completed.stderr.decode("utf-8", errors="replace")[: self._output_limit_bytes]
         if completed.returncode != 0:
+            # `docker run` itself failing (daemon unreachable, image missing,
+            # invalid flags, ...) exits the docker CLI process normally —
+            # it never raises OSError, so it does not hit the `completed.
+            # error` branch above — but with a top-level "docker: ..."
+            # message and a reserved low exit code (125-127; see
+            # https://docs.docker.com/engine/reference/run/#exit-status).
+            # The tool's own code never ran. Any other nonzero status is the
+            # containerized process's own exit code — a real implementation
+            # failure.
+            docker_cli_failed = completed.returncode in _DOCKER_CLI_FAILURE_CODES and (
+                stderr.lstrip().startswith("docker:")
+            )
             return ToolRunResult(
                 ok=False,
                 error=f"contained tool exited with status {completed.returncode}: {path.name}",
                 stderr=stderr,
-                enforcement=REACH_ENFORCEMENT_ENFORCED,
+                enforcement=(
+                    REACH_ENFORCEMENT_UNAVAILABLE
+                    if docker_cli_failed
+                    else REACH_ENFORCEMENT_ENFORCED
+                ),
+                infrastructure=docker_cli_failed,
             )
         if len(completed.stdout) > self._output_limit_bytes:
             return ToolRunResult(
@@ -784,6 +992,13 @@ class ForgeSandboxLearnedToolRunner:
     separate OCI execution service rather than mounting the runtime socket.
     """
 
+    #: No route from the sandboxed shell back to this process.
+    supports_host_call = False
+    #: No verify() implementation for this legacy, Docker-daemon-dependent
+    #: backend — _verify_peer_artifact raises rather than silently falling
+    #: back to host-side verification.
+    supports_verify = False
+
     def __init__(
         self,
         *,
@@ -832,6 +1047,7 @@ class ForgeSandboxLearnedToolRunner:
                     "call the resident's own tools and there is no channel back from here. "
                     "Run it on the local backend, or rebuild it self-contained."
                 ),
+                infrastructure=True,
             )
         if not tool_path.resolve().is_relative_to(self._workspace_root):
             return ToolRunResult(
@@ -839,6 +1055,7 @@ class ForgeSandboxLearnedToolRunner:
                 error=(
                     f"forge sandbox runner requires learned tool path inside workspace: {tool_path}"
                 ),
+                infrastructure=True,
             )
         python_executable = "python"
         if requirements:
@@ -856,6 +1073,7 @@ class ForgeSandboxLearnedToolRunner:
                         f"forge sandbox venv provisioning failed for {tool_path.stem}: "
                         f"{provision_error}"
                     ),
+                    infrastructure=True,
                 )
             python_executable = provisioned
 
@@ -884,10 +1102,14 @@ class ForgeSandboxLearnedToolRunner:
         try:
             output, exit_code = await shell.run(command)
         except Exception as exc:  # noqa: BLE001
+            # The shell/container itself failed to run the command at all
+            # (docker unavailable, shell provisioning broken) — this run
+            # never reached the tool's own code.
             return ToolRunResult(
                 ok=False,
                 error=f"forge sandbox execution failed: {exc}",
                 enforcement=enforcement,
+                infrastructure=True,
             )
 
         if exit_code != 0:
@@ -1116,6 +1338,14 @@ class LearnedTool(ToolPort):
         return self._tool_path
 
     async def execute(self, input: dict) -> ToolResult:  # noqa: A002
+        # Offer the host-call channel only to a runner that can actually use
+        # it. A container/Job runner has no route back to this process; if it
+        # is handed a host_call anyway, some backends refuse the call
+        # entirely rather than just leaving `ravn.sdk` unavailable, which
+        # made every dispatch fail (and, before infrastructure was
+        # distinguished from an implementation failure, archived healthy
+        # tools after a handful of calls).
+        supports_host_call = getattr(self._runner, "supports_host_call", False)
         result = await self._runner.run(
             self._tool_path,
             input,
@@ -1123,12 +1353,14 @@ class LearnedTool(ToolPort):
             timeout_seconds=self._timeout_seconds,
             requirements=self._requirements,
             declared_reach=self._manifest.declared_reach,
-            host_call=self._host_call,
+            host_call=self._host_call if supports_host_call else None,
         )
         if not result.ok:
             detail = result.error
             if result.stderr:
                 detail = f"{detail}\n{result.stderr}"
+            if result.infrastructure:
+                raise LearnedToolInfrastructureError(detail)
             return ToolResult(tool_call_id="", content=detail, is_error=True)
         return ToolResult(
             tool_call_id="",

@@ -123,6 +123,34 @@ def create_app(
     loaded_settings = apply_service_database_settings(settings or _load_settings(), "niuu-shared")
     app.state.settings = loaded_settings
 
+    # Configured and instrumented here, not in lifespan: Starlette builds and
+    # caches its middleware stack on the app's first ASGI __call__ (which is
+    # also how the lifespan startup event arrives), so instrumenting from
+    # inside a lifespan handler has no effect. This host reuses
+    # volundr.config.Settings wholesale, so observability.service_name would
+    # default to "volundr" unless told otherwise — default_service_name gives
+    # it its own identity unless the operator explicitly set
+    # observability.service_name in its own config. In mini mode this app and
+    # volundr/ting/bifrost's own apps all run as sub-apps of one root app in
+    # one process (see niuu/app.py::build_root_app) — configure_observability
+    # joins whichever pipeline was configured first (typically the root app's
+    # own CLISettings.observability) rather than overwriting it; see its
+    # docstring for the join/opt-out/conflict rules.
+    from niuu.observability import (
+        configure_observability,
+        instrument_fastapi_app,
+        instrument_httpx_client,
+    )
+
+    telemetry = configure_observability(
+        loaded_settings.observability,
+        resource_attributes={"service.namespace": "niuu-shared"},
+        component="niuu-shared",
+        default_service_name="niuu-shared",
+    )
+    instrument_fastapi_app(app, telemetry, component="niuu-shared")
+    instrument_httpx_client(telemetry)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         cfg = git_config or loaded_settings.git
@@ -365,6 +393,9 @@ def create_app(
                     await enrollment_reconcile_task
                 release_credential_store(loaded_settings)
                 await git_registry.close()
+                # Not shutdown_observability() here: this host runs alongside
+                # volundr/ting/bifrost in mini mode. configure_observability
+                # registers an atexit shutdown hook for process-exit cleanup.
 
     app.router.lifespan_context = lifespan
 

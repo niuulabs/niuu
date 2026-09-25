@@ -16,7 +16,7 @@ def _make_client() -> TestClient:
     app.include_router(create_flock_config_router())
     settings = Settings(
         auth=AuthConfig(allow_anonymous_dev=True),
-        notification=NotificationConfig(enabled=True, confidence_threshold=0.4),
+        notification=NotificationConfig(enabled=True),
         watcher=WatcherConfig(batch_size=12),
     )
     settings.dispatch.flock = FlockConfig()
@@ -68,7 +68,6 @@ class TestSettingsAPI:
         response = client.patch(
             "/api/v1/ting/settings/dispatch",
             json={
-                "confidence_threshold": 75,
                 "auto_continue": True,
                 "retry_policy": {
                     "max_retries": 5,
@@ -79,11 +78,9 @@ class TestSettingsAPI:
 
         assert response.status_code == 200
         body = response.json()
-        assert body["confidence_threshold"] == 75
         assert body["auto_continue"] is True
         assert body["retry_policy"]["max_retries"] == 5
         assert body["retry_policy"]["retry_delay_seconds"] == 60
-        assert client.app.state.settings.notification.confidence_threshold == 75
         assert client.app.state.settings.watcher.batch_size == 12
 
     def test_patch_notification_settings_is_persisted_in_process(self) -> None:

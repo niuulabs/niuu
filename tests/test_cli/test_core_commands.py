@@ -316,6 +316,7 @@ class TestStartup:
             host_profile="api",
             enabled_mounts=mounts,
             dev_identity=dev_identity,
+            cli_settings=settings,
         )
 
 
