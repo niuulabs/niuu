@@ -476,6 +476,15 @@ class InMemoryWorkflowRepository(WorkflowRepository):
     async def delete_workflow(self, workflow_id) -> bool:
         return self._workflows.pop(workflow_id, None) is not None
 
+    async def has_recorded_version_history(self, workflow_id) -> bool:
+        return True
+
+    async def adopt_legacy_bundled(self, seed):
+        return await self.save_workflow(seed)
+
+    async def reclassify_orphaned_bundled_as_authored(self, workflow_id):
+        return await self.get_workflow(workflow_id)
+
 
 class _DispatchRecorder:
     def __init__(self, *, should_fail: bool = False) -> None:

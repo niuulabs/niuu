@@ -184,14 +184,21 @@ def _default_models() -> list[ManagedModelConfig]:
             supports_thinking=True,
         ),
         ManagedModelConfig(
-            id="claude-opus-4-8",
-            name="Claude Opus 4.8",
+            # Claude Opus 5.5 (released 2026-09-22) is the catalogue's Opus row, replacing
+            # Opus 4.8. The older Opus ids stay served by Anthropic, so a client that keeps
+            # sending one is not broken — it just no longer appears here.
+            id="claude-opus-5-5",
+            name="Claude Opus 5.5",
             vendor="anthropic",
             provider=ManagedModelProvider.CLOUD,
             tier=ManagedModelTier.FRONTIER,
             color="#8B5CF6",
-            description="Anthropic frontier reasoning model, 1M-token context.",
-            cost_per_million_tokens=15.0,
+            description=(
+                "Anthropic's newest Opus — close to Fable 5.1 on most work at a lower "
+                "price; 1M-token context. Needs Claude Code 2.1.280 or newer."
+            ),
+            # Claude Opus 5.5 is $4 in / $20 out per 1M tokens (blended shown).
+            cost_per_million_tokens=12.0,
             session_definition="skuldClaude",
             supports_tools=True,
             supports_thinking=True,
@@ -212,8 +219,9 @@ def _default_models() -> list[ManagedModelConfig]:
             supports_tools=True,
             supports_thinking=True,
         ),
-        # Astra + Sol are the only two Codex choices, Astra the default (Damien,
-        # 2026-09-05). Terra was removed with the same decision.
+        # Astra is the default Codex model (Damien, 2026-09-05). GPT-6 Sol and Luna
+        # (released 2026-09-22, Codex CLI 0.157.0+) join it; GPT-5.6 Sol and Terra stay
+        # listed because running sessions and saved launch specs still name them.
         ManagedModelConfig(
             id="gpt-6-astra",
             name="GPT-6 Astra",
@@ -228,6 +236,40 @@ def _default_models() -> list[ManagedModelConfig]:
             ),
             # GPT-6 Astra is $10 in / $50 out per 1M tokens; use the output rate.
             cost_per_million_tokens=50.0,
+            session_definition="skuldCodex",
+            supports_tools=True,
+            supports_thinking=True,
+        ),
+        ManagedModelConfig(
+            id="gpt-6-sol",
+            name="GPT-6 Sol",
+            vendor="openai",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.FRONTIER,
+            color="#047857",
+            description=(
+                "OpenAI GPT-6 Sol — complex coding and agentic workflows at a fraction "
+                "of Astra's price; 1M-token context; defaults to Ultra reasoning"
+            ),
+            # GPT-6 Sol is $2 in / $10 out per 1M tokens; use the output rate.
+            cost_per_million_tokens=10.0,
+            session_definition="skuldCodex",
+            supports_tools=True,
+            supports_thinking=True,
+        ),
+        ManagedModelConfig(
+            id="gpt-6-luna",
+            name="GPT-6 Luna",
+            vendor="openai",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.BALANCED,
+            color="#34D399",
+            description=(
+                "OpenAI GPT-6 Luna — fast, low-cost model for focused, high-volume "
+                "tasks; 1M-token context."
+            ),
+            # GPT-6 Luna is $0.10 in / $0.50 out per 1M tokens; use the output rate.
+            cost_per_million_tokens=0.5,
             session_definition="skuldCodex",
             supports_tools=True,
             supports_thinking=True,

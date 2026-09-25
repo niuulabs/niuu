@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 import time
 from urllib.parse import parse_qs
 
@@ -25,6 +26,12 @@ from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 _UNAUTHENTICATED_READ_PATHS = frozenset(
     {"/health", "/api/v1/tokens/workload/jwks", *DEFAULT_HEALTH_PATHS.values()}
 )
+#: Node-originated Guild endpoints carry no bearer JWT at all — they are
+#: authenticated by an Ed25519 signature over the request instead (see
+#: ``niuu.ports.node_verifier.RegisteredNodeVerifier``), verified inside the
+#: route itself. Exempted here the same way the workload JWKS endpoint is:
+#: a different, but equally real, authentication mechanism for this path.
+_NODE_SIGNED_PATH = re.compile(r"/api/v1/niuu/guild/nodes/[^/]+/(heartbeat|leave)")
 
 
 class PATRevocationMiddleware:
@@ -88,8 +95,11 @@ class PATRevocationMiddleware:
             return
         if scope["type"] == "http":
             if self._authenticate_http and not (
-                scope.get("method") in ("GET", "HEAD")
-                and scope["path"] in _UNAUTHENTICATED_READ_PATHS
+                (
+                    scope.get("method") in ("GET", "HEAD")
+                    and scope["path"] in _UNAUTHENTICATED_READ_PATHS
+                )
+                or (scope.get("method") == "POST" and _NODE_SIGNED_PATH.fullmatch(scope["path"]))
             ):
                 if not isinstance(identity, HeaderAuthenticationPort):
                     await JSONResponse(

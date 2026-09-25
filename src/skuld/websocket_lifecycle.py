@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from dataclasses import asdict
 from typing import Any
 
@@ -16,6 +17,7 @@ from identity.ports import AuthorizationEvaluationError
 from niuu.domain.history_control import history_gap
 from niuu.domain.text_projection import projection_revision
 from niuu.domain.transcript_reducer import PER_CONNECT_MARKER
+from niuu.room_access import ROOM_ROLE_RANK
 from skuld.channels import WebSocketChannel, _is_expected_ws_disconnect
 from skuld.control_errors import control_error_frame
 from skuld.conversation_read import conversation_rows, wait_history_quiet
@@ -25,6 +27,7 @@ from skuld.conversation_snapshot import (
     prepare_history_page,
     prepare_recent_snapshot,
 )
+from skuld.room_role_port import RoomRoleResolutionError
 from skuld.websocket_auth import (
     _decode_jwt_claims,
     _extract_token_from_websocket,
@@ -118,7 +121,7 @@ class WebSocketLifecycleMixin:
 
     _VALID_ROOM_ROLES = frozenset({"owner", "approver", "viewer"})
 
-    def _resolve_room_role(self, websocket: WebSocket) -> str:
+    async def _resolve_room_role(self, websocket: WebSocket) -> str | None:
         """Resolve this connection's room role for per-message authorization.
 
         A valid ``room_role_header`` always wins outright — it is the
@@ -144,6 +147,13 @@ class WebSocketLifecycleMixin:
           grants, so trust it — a missing header means viewer, except a
           loopback caller carrying no x-forwarded-for (same-pod tooling a
           reverse proxy could never present as).
+        - "remote" (Kubernetes/OpenShell/VM pods deliberately opted in): asks
+          Forge for this caller's grant via ``self._room_role_resolver``
+          (``skuld.room_role_remote.RemoteAuthorizationAdapter``). Returns
+          ``None`` — a real "no grant" answer, never a default role — when
+          the caller has no verified identity headers or no active grant.
+          Raises ``RoomRoleResolutionError`` when Forge cannot be reached;
+          ``handle_websocket`` treats that as a deny, never a fallback role.
         """
         cfg = self._settings.ws_auth
         header_role = websocket.headers.get(cfg.room_role_header, "").strip().lower()
@@ -151,9 +161,124 @@ class WebSocketLifecycleMixin:
             return header_role
         if cfg.room_role_source == "deployment":
             return "owner"
+        if cfg.room_role_source == "remote":
+            principal = _resolve_ws_principal(
+                websocket,
+                user_id_header=cfg.user_id_header,
+                tenant_header=cfg.tenant_header,
+                roles_header=cfg.roles_header,
+            )
+            if principal is None:
+                # Same-pod tooling exception "proxy" mode already carries —
+                # only an in-pod caller can present as loopback with no XFF.
+                if _is_loopback_ws_client(websocket) and not websocket.headers.get(
+                    "x-forwarded-for"
+                ):
+                    return "owner"
+                return None
+            if self._room_role_resolver is None:
+                raise RoomRoleResolutionError(
+                    "ws_auth.room_role_source is 'remote' but no room_role_remote adapter "
+                    "was constructed — this should be unreachable (WsAuthConfig validates "
+                    "this at load time); check skuld broker startup logs."
+                )
+            return await self._room_role_resolver.resolve_role(
+                session_id=self.session_id,
+                user_id=principal.user_id,
+                tenant_id=principal.tenant_id,
+                roles=list(principal.roles),
+            )
         if _is_loopback_ws_client(websocket) and not websocket.headers.get("x-forwarded-for"):
             return "owner"
         return "viewer"
+
+    async def _revalidate_remote_room_role(self, websocket: WebSocket, original_role: str) -> bool:
+        """Re-check a 'remote'-mode connection's room role; False closes it.
+
+        A grant revoked (or demoted) after connect must not leave the live
+        socket usable at its original privilege until the browser happens to
+        reconnect. Raises ``RoomRoleResolutionError`` on a resolution
+        failure — the caller (``_room_role_revalidation_loop``) decides how
+        much of that failure to tolerate before closing, rather than this
+        method silently absorbing it (see the loop's own docstring for why
+        that grace must be bounded, not unlimited).
+        """
+        current_role = await self._resolve_room_role(websocket)
+        if current_role is None:
+            return False
+        return ROOM_ROLE_RANK[current_role] >= ROOM_ROLE_RANK[original_role]
+
+    async def _room_role_revalidation_loop(self, websocket: WebSocket, original_role: str) -> None:
+        """Periodically re-check a 'remote'-mode room role; close on revoke/demotion.
+
+        Mirrors ``niuu.session_proxy._revalidate_loop``'s asymmetric failure
+        handling — a *transient* ``RoomRoleResolutionError`` (a momentary
+        Forge blip) does not immediately close an otherwise-healthy
+        connection — but that grace is BOUNDED, not unlimited: an authority
+        that never recovers must not keep a socket open forever on stale
+        authorization. After ``room_role_revalidate_max_consecutive_failures``
+        in a row, or ``room_role_revalidate_max_staleness_seconds`` since the
+        first one (whichever comes first), the socket closes (1011) just
+        like any other unexpected loop failure. A single successful
+        revalidation (allowed OR explicitly denied — anything that isn't
+        this typed error) resets both counters.
+
+        Any OTHER exception reaching this function is an unexpected failure
+        of the loop itself (not a routine revalidation outcome) and must not
+        be swallowed: a silently-dead loop leaves an already-open socket at
+        its original privilege forever — the exact gap this loop exists to
+        close. Fail closed and loud instead.
+        """
+        cfg = self._settings.ws_auth
+        consecutive_failures = 0
+        first_failure_at: float | None = None
+        try:
+            while True:
+                await asyncio.sleep(cfg.room_role_revalidate_interval_seconds)
+                try:
+                    allowed = await self._revalidate_remote_room_role(websocket, original_role)
+                except RoomRoleResolutionError:
+                    consecutive_failures += 1
+                    now = time.monotonic()
+                    if first_failure_at is None:
+                        first_failure_at = now
+                    stale_for = now - first_failure_at
+                    if (
+                        consecutive_failures >= cfg.room_role_revalidate_max_consecutive_failures
+                        or stale_for >= cfg.room_role_revalidate_max_staleness_seconds
+                    ):
+                        logger.error(
+                            "Room role revalidation failed %d times over %.1fs; closing "
+                            "the socket rather than trusting a stale authorization "
+                            "indefinitely",
+                            consecutive_failures,
+                            stale_for,
+                        )
+                        await websocket.close(
+                            code=1011, reason="Room role authorization unavailable"
+                        )
+                        return
+                    logger.warning(
+                        "Room role revalidation failed transiently (%d/%d); keeping the "
+                        "connection open",
+                        consecutive_failures,
+                        cfg.room_role_revalidate_max_consecutive_failures,
+                        exc_info=True,
+                    )
+                    continue
+                consecutive_failures = 0
+                first_failure_at = None
+                if not allowed:
+                    await websocket.close(code=1008, reason="Access revoked or downgraded")
+                    return
+        except Exception:
+            logger.error(
+                "Room role revalidation loop failed unexpectedly; closing the socket "
+                "rather than leaving it un-revalidated for the rest of its life",
+                exc_info=True,
+            )
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1011, reason="Revalidation failed")
 
     def _update_jwt_from_websocket(self, websocket: WebSocket) -> None:
         """Extract and store JWT from an incoming WebSocket connection.
@@ -204,7 +329,17 @@ class WebSocketLifecycleMixin:
 
         # Pre-accept: the room-role header is only trustworthy from the raw
         # request headers.
-        room_role = self._resolve_room_role(websocket)
+        try:
+            room_role = await self._resolve_room_role(websocket)
+        except RoomRoleResolutionError:
+            logger.exception("Room role resolution failed")
+            await websocket.close(code=1011, reason="Room role authorization unavailable")
+            return
+        if room_role is None:
+            await websocket.close(
+                code=1008, reason="No active session_participants grant for this session"
+            )
+            return
         # Extract JWT before accepting — headers are available pre-accept.
         # Only an OWNER connection may update the broker's single stored
         # _user_jwt/_user_claims: they are read later for actions taken "as
@@ -233,6 +368,19 @@ class WebSocketLifecycleMixin:
             self._channels.add(channel)
         conn_count = self._channels.count
         logger.info("WebSocket connected, total channels: %d", conn_count)
+
+        # A revoked or demoted session_participants grant must not leave
+        # this already-open socket usable at its original privilege until
+        # the browser happens to reconnect (see docs/operator/session
+        # -participants.md's "within a few seconds" claim) — only "remote"
+        # mode needs this: "deployment" and "proxy" never change mid
+        # -connection (the pod's own auth boundary, or the session proxy's
+        # OWN revalidation loop upstream of this pod, already cover those).
+        revalidate_task: asyncio.Task | None = None
+        if self._settings.ws_auth.room_role_source == "remote":
+            revalidate_task = asyncio.create_task(
+                self._room_role_revalidation_loop(websocket, room_role)
+            )
 
         try:
             if not self._transport:
@@ -500,6 +648,8 @@ class WebSocketLifecycleMixin:
             except Exception:
                 logger.debug("Failed to send error response to WebSocket", exc_info=True)
         finally:
+            if revalidate_task is not None:
+                revalidate_task.cancel()
             self._channels.remove(channel)
             remaining = self._channels.count
             logger.info("Connection closed, remaining channels: %d", remaining)

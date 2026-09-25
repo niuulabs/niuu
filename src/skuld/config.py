@@ -315,11 +315,11 @@ class SkuldSessionConfig(BaseModel):
             "declare a tenant."
         ),
     )
-    model: str = Field(default="claude-opus-5")
+    model: str = Field(default="claude-opus-5-5")
     reasoning_effort: str = Field(
         default="",
         description=(
-            "Reasoning effort to launch the CLI at (e.g. 'ultra' for GPT-5.6 Sol). "
+            "Reasoning effort to launch the CLI at (e.g. 'ultra' for GPT-6 Sol). "
             "Empty lets the transport pick a model-appropriate default."
         ),
     )
@@ -412,7 +412,7 @@ class WsAuthConfig(BaseModel):
             "those endpoints cannot be reached through a reverse proxy."
         ),
     )
-    room_role_source: Literal["proxy", "deployment"] = Field(
+    room_role_source: Literal["proxy", "deployment", "remote"] = Field(
         default="deployment",
         description=(
             "How to resolve the room role when room_role_header is absent. "
@@ -430,9 +430,84 @@ class WsAuthConfig(BaseModel):
             "header itself from session_participants grants, so trust it — "
             "a missing header means viewer, except a loopback caller "
             "carrying no x-forwarded-for (same-pod tooling a reverse proxy "
-            "could never present as)."
+            "could never present as). 'remote' (Kubernetes pods deliberately "
+            "opted into session_participants support — "
+            "see PodManagerConfig.room_role_source in volundr/config.py): "
+            "room_role_remote's dynamic adapter asks Forge for the caller's "
+            "grant on every request, so a missing header genuinely means "
+            "'ask Forge', not an implicit default — see "
+            "skuld.room_role_port.RoomRoleResolverPort. Requires "
+            "room_role_remote to be set; unreachable Forge or a resolution "
+            "error is a hard deny, never owner or viewer."
         ),
     )
+    room_role_remote: DynamicAdapterConfig | None = Field(
+        default=None,
+        description=(
+            "Dynamic adapter (skuld.room_role_port.RoomRoleResolverPort) used "
+            "when room_role_source is 'remote'. Required in that case — "
+            "config that asks for remote resolution and supplies no adapter "
+            "to do it is a configuration error, not an implicit fallback to "
+            "'deployment'."
+        ),
+    )
+    room_role_revalidate_interval_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "How often an open 'remote'-mode browser WebSocket re-checks its "
+            "room role against Forge and closes on revoke/demotion (mirrors "
+            "niuu.session_proxy._revalidate_loop). Only used when "
+            "room_role_source is 'remote'."
+        ),
+    )
+    room_role_revalidate_max_consecutive_failures: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "A transient RoomRoleResolutionError during revalidation (a "
+            "momentary Forge blip) keeps the connection open rather than "
+            "closing it — but that grace is bounded: after this many "
+            "consecutive failures, or room_role_revalidate_max_staleness_"
+            "seconds since the first one (whichever comes first), the "
+            "socket closes (1011) rather than staying open indefinitely on "
+            "an authority that never recovers."
+        ),
+    )
+    room_role_revalidate_max_staleness_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "See room_role_revalidate_max_consecutive_failures — the time"
+            "-based half of the same bound."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _remote_room_role_requires_adapter(self) -> "WsAuthConfig":
+        if self.room_role_source != "remote":
+            return self
+        if self.room_role_remote is None:
+            raise ValueError(
+                "ws_auth.room_role_source is 'remote' but ws_auth.room_role_remote is not "
+                "set — configure its adapter (e.g. "
+                "skuld.room_role_remote.RemoteAuthorizationAdapter) and kwargs, or set "
+                "room_role_source back to 'deployment'."
+            )
+        if self.enforce_ownership:
+            raise ValueError(
+                "ws_auth.room_role_source is 'remote' but ws_auth.enforce_ownership is "
+                "true — this pod's own ext_authz sidecar (identity.adapters.envoy_authz) "
+                "gates every connection to Cedar's 'start' action (owner/admin only) "
+                "before a remote room-role lookup ever runs, so a participant could "
+                "never attach regardless of their grant. Disable enforce_ownership for "
+                "this backend, or set room_role_source back to 'deployment' and keep "
+                "session_participants invites refused (see "
+                "rest_session_participants.REMOTE_CAPABLE_RUNTIME_BACKENDS)."
+            )
+        return self
 
 
 class ActivityHeartbeatConfig(BaseModel):

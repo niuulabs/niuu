@@ -100,7 +100,7 @@ async function fixture(page: Page, failLaunch = false) {
       });
     if (path.endsWith('/models'))
       return route.fulfill({
-        json: ['claude-fable-5-1', 'gpt-6-astra', 'gpt-5.6-sol'].map((id) => ({
+        json: ['claude-fable-5-1', 'gpt-6-astra', 'gpt-6-sol'].map((id) => ({
           id,
           name: id,
           enabled: true,
@@ -166,7 +166,7 @@ test('Claude and Codex quick launch submits the native contract with optional re
   await expect(page.getByLabel('Model', { exact: true })).toHaveValue('claude-fable-5-1');
   await expect(page.getByLabel('Effort', { exact: true })).toHaveValue('xhigh');
   await expect(
-    page.getByLabel('Model', { exact: true }).locator('option[value="claude-opus-5"]'),
+    page.getByLabel('Model', { exact: true }).locator('option[value="claude-opus-5-5"]'),
   ).toHaveAttribute('disabled', '');
   await page.screenshot({ path: '/tmp/forge-quick-launch-desktop.png', fullPage: true });
   await page.getByRole('button', { name: /^Codex/ }).click();

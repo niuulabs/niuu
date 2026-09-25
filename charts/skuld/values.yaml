@@ -730,12 +730,29 @@ wsAuth:
   admin_roles: ["volundr:admin"]
   allow_loopback: false
   # How a missing x-niuu-room-role header resolves. "deployment" (the
-  # correct value for every chart-deployed backend — this pod's own auth
-  # boundary already gates every caller who reaches it): a missing header
-  # means owner, unconditionally. "proxy" is rendered directly by the
-  # process-backend's local launcher (volundr.adapters.outbound
-  # .local_process), never by this chart — do not set it here.
+  # DEFAULT — unchanged, byte-identical behavior for every existing
+  # cluster): this pod's own auth boundary already gates every caller who
+  # reaches it, so a missing header means owner, unconditionally, and
+  # session_participants invites are refused with 409 for this backend.
+  # "proxy" is rendered directly by the process-backend's local launcher
+  # (volundr.adapters.outbound.local_process), never by this chart — do not
+  # set it here. "remote" asks Forge for the caller's grant on every
+  # request and lifts the 409 — Forge's own pod_manager.room_role_source
+  # setting renders this automatically per session (see
+  # RoomRoleSourceContributor); only set it here directly for a standalone
+  # chart install Forge does not manage. REQUIRES enforce_ownership: false
+  # (the Helm template fails the render otherwise — see skuld-configmap.yaml
+  # — because the ext_authz sidecar's owner/admin-only "start" gate would
+  # block every participant before a remote room-role lookup ever ran).
   room_role_source: deployment
+  # room_role_remote (the dynamic skuld.room_role_port.RoomRoleResolverPort
+  # adapter used when room_role_source is "remote") is deliberately absent
+  # here — existing clusters must render byte-identical wsAuth until they
+  # opt in. skuld-configmap.yaml renders it ONLY when room_role_source is
+  # "remote", defaulting adapter/token_file/volundr_api_url (from
+  # volundr.apiUrl below) so a standalone install needs no further values;
+  # override wsAuth.room_role_remote.adapter/kwargs/secret_kwargs_env here
+  # (or via RoomRoleSourceContributor's per-session values) to change them.
 
 # Limit pod ingress to the authenticated gateway, including direct pod-IP traffic.
 # Add explicit peer selectors/ports for direct Flokk mesh deployments.

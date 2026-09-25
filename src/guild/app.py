@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from starlette.types import ASGIApp
 
+from niuu.adapters.inbound.rest_guild_join import create_guild_join_router
 from niuu.adapters.inbound.rest_instances import create_instances_router
 from niuu.adapters.inbound.rest_pats import create_workload_identity_jwks_router
 from niuu.adapters.inbound.rest_ravn import (
@@ -15,22 +16,27 @@ from niuu.adapters.inbound.rest_ravn import (
     create_ravn_session_proxy_router,
 )
 from niuu.adapters.inbound.rest_volundr import create_volundr_router
+from niuu.adapters.node_signature import Ed25519NodeVerifier
 from niuu.adapters.outbound import guild_transport
 from niuu.adapters.outbound.http_agent_directory import HttpAgentDirectoryClient
 from niuu.adapters.outbound.http_observatory_topology import (
     HttpObservatoryTopologyClient,
 )
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
+from niuu.adapters.postgres_guild_join import PostgresGuildJoinRepository
 from niuu.adapters.postgres_instances import PostgresInstanceRepository
+from niuu.adapters.postgres_nodes import PostgresNodeRepository
 from niuu.adapters.postgres_observatory_fragments import (
     PostgresObservatoryFragmentRepository,
 )
+from niuu.adapters.postgres_pairing_codes import PostgresPairingCodeRepository
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.config import InstanceProbeConfig, InstanceSeedConfig
 from niuu.cors import apply_cors_middleware
 from niuu.domain import transport_security
 from niuu.domain.models import InstanceKind, InstanceVisibility
 from niuu.domain.services.agent_directory import AgentDirectoryAggregationService
+from niuu.domain.services.guild_join import GuildJoinService, IdentityTrustConfig
 from niuu.domain.services.instance_health import InstanceHealthChecker
 from niuu.domain.services.instances import InstanceService
 from niuu.domain.services.observatory_fragments import ObservatoryFragmentInboxService
@@ -50,6 +56,18 @@ from niuu.service_runtime import (
 from niuu.utils import import_class
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.config import Settings
+
+
+def _identity_trust_config(settings: Settings) -> IdentityTrustConfig:
+    """What a newly joined node should trust — Guild's own auth_mode/issuers.
+
+    Joining never invents a second human-auth path: under ``oidc`` the node
+    adopts the exact issuer list Guild itself verifies against; under
+    ``none`` that is reported as an explicit, honest empty trust list rather
+    than silently defaulting to something that looks configured.
+    """
+    issuers = list(getattr(settings.identity, "kwargs", {}).get("issuers", []) or [])
+    return IdentityTrustConfig(mode=settings.auth_mode, issuers=issuers)
 
 
 def _load_settings() -> Settings:
@@ -165,9 +183,26 @@ def create_app(
 
             app.state.instance_service = instance_service
             app.state.pat_validator = pat_validator
-            app.state.workload_identity_service = create_workload_identity_service(
+            workload_identity_service = create_workload_identity_service(
                 loaded_settings.workload_identity
             )
+            app.state.workload_identity_service = workload_identity_service
+
+            node_repository = PostgresNodeRepository(pool)
+            guild_join_service = GuildJoinService(
+                pairing_codes=PostgresPairingCodeRepository(pool),
+                guild_join_repository=PostgresGuildJoinRepository(pool),
+                nodes=node_repository,
+                instance_repository=instance_repository,
+                workload_identity=workload_identity_service,
+                identity_trust=_identity_trust_config(loaded_settings),
+                pairing_code_ttl_seconds=loaded_settings.niuu.node_join.pairing_code_ttl_seconds,
+            )
+            node_verifier = Ed25519NodeVerifier(
+                node_repository,
+                clock_skew_seconds=loaded_settings.niuu.node_join.clock_skew_seconds,
+            )
+            app.state.guild_join_service = guild_join_service
 
             if loaded_settings.niuu.instances:
                 await seed_configured_instances(
@@ -252,6 +287,9 @@ def create_app(
                     )
                 )
                 app.include_router(create_workload_identity_jwks_router())
+                app.include_router(
+                    create_guild_join_router(guild_join_service, node_verifier=node_verifier)
+                )
 
                 yield
             finally:

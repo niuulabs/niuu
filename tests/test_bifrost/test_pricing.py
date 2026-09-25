@@ -21,6 +21,20 @@ class TestBuiltinPricing:
         assert "gpt-4o" in BUILTIN_PRICING
         assert "gpt-4o-mini" in BUILTIN_PRICING
 
+    def test_latest_claude_and_gpt_6_models_priced(self):
+        assert BUILTIN_PRICING["claude-opus-5-5"] == ModelPricing(
+            input_per_million=4.00,
+            output_per_million=20.00,
+            cache_creation_per_million=5.00,
+            cache_read_per_million=0.20,
+        )
+        assert BUILTIN_PRICING["claude-fable-5-1"].output_per_million == 50.00
+        assert BUILTIN_PRICING["gpt-6-sol"] == ModelPricing(
+            input_per_million=2.00, output_per_million=10.00, cache_read_per_million=0.20
+        )
+        assert BUILTIN_PRICING["gpt-6-luna"].output_per_million == 0.50
+        assert BUILTIN_PRICING["gpt-6-astra"].input_per_million == 10.00
+
     def test_ollama_free(self):
         pricing = BUILTIN_PRICING["llama3.1:8b"]
         assert pricing.input_per_million == 0.0

@@ -70,7 +70,7 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 "files and MCP tools. The usual choice for Claude."
             ),
             labels=["session", "claude"],
-            default_model="claude-opus-5",
+            default_model="claude-opus-5-5",
             compatible_providers=["anthropic", "local"],
             defaults={
                 "broker": {
@@ -90,7 +90,7 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 "when you want the CLI itself rather than the chat workspace."
             ),
             labels=["session", "claude", "interactive"],
-            default_model="claude-opus-5",
+            default_model="claude-opus-5-5",
             compatible_providers=["anthropic", "local"],
             defaults={
                 "broker": {

@@ -86,9 +86,11 @@ class TestKnownWorkloadScopes:
         assert KNOWN_WORKLOAD_SCOPES == frozenset(
             {
                 "forge:session:create",
+                "forge:session:room-role",
                 "ting:workflow:coordinate",
                 "ting:workflow:launch",
                 "observatory:topology:push",
+                "node_join",
             }
         )
 

@@ -1247,6 +1247,114 @@ def test_websocket_auth_configuration_reaches_broker(enabled):
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_room_role_source_defaults_to_deployment_with_no_remote_adapter():
+    """Existing clusters must render byte-identical wsAuth until they opt in."""
+    from skuld.config import SkuldSettings
+
+    command = ["helm", "template", "test", str(CHART_DIR)]
+    docs = list(yaml.safe_load_all(subprocess.check_output(command)))
+    config = next(
+        yaml.safe_load(d["data"]["config.yaml"])
+        for d in docs
+        if d and d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
+    )
+    assert config["ws_auth"]["room_role_source"] == "deployment"
+    # No placeholder block: room_role_remote must be entirely absent, not
+    # merely inert, until an operator opts in.
+    assert "room_role_remote" not in config["ws_auth"]
+    settings = SkuldSettings(**config)
+    assert settings.ws_auth.room_role_source == "deployment"
+    assert settings.ws_auth.room_role_remote is None
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_room_role_source_remote_with_enforce_ownership_fails_the_render():
+    """The two together would 403 every participant at the ext_authz sidecar
+    before a remote room-role lookup ever ran — reject the config outright."""
+    command = [
+        "helm",
+        "template",
+        "test",
+        str(CHART_DIR),
+        "--set",
+        "wsAuth.room_role_source=remote",
+        "--set",
+        "wsAuth.enforce_ownership=true",
+        "--set",
+        "session.ownerId=alice",
+        "--set",
+        "session.tenantId=acme",
+        "--set",
+        "gateway.enabled=true",
+        "--set",
+        "gateway.jwt.enabled=true",
+        "--set",
+        "gateway.jwt.issuer=https://issuer.test",
+        "--set",
+        "gateway.jwt.audiences[0]=skuld",
+        "--set",
+        "gateway.jwt.jwksUri=https://issuer.test/jwks",
+    ]
+    result = subprocess.run(command, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "enforce_ownership: false" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_room_role_source_remote_renders_the_dynamic_adapter():
+    from skuld.config import SkuldSettings
+
+    command = [
+        "helm",
+        "template",
+        "test",
+        str(CHART_DIR),
+        "--set",
+        "wsAuth.room_role_source=remote",
+        "--set",
+        "wsAuth.room_role_remote.kwargs.volundr_api_url=http://volundr.volundr.svc:8080",
+    ]
+    docs = list(yaml.safe_load_all(subprocess.check_output(command)))
+    config = next(
+        yaml.safe_load(d["data"]["config.yaml"])
+        for d in docs
+        if d and d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
+    )
+    assert config["ws_auth"]["room_role_source"] == "remote"
+    remote = config["ws_auth"]["room_role_remote"]
+    assert remote["adapter"] == "skuld.room_role_remote.RemoteAuthorizationAdapter"
+    assert remote["kwargs"]["volundr_api_url"] == "http://volundr.volundr.svc:8080"
+    settings = SkuldSettings(**config)
+    assert settings.ws_auth.room_role_source == "remote"
+    assert settings.ws_auth.room_role_remote is not None
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_room_role_remote_defaults_volundr_api_url_and_token_file():
+    """A remote pod must be able to start without repeating volundr.apiUrl or
+    the workload-identity token path a second time under room_role_remote."""
+    command = [
+        "helm",
+        "template",
+        "test",
+        str(CHART_DIR),
+        "--set",
+        "wsAuth.room_role_source=remote",
+        "--set",
+        "volundr.apiUrl=http://volundr.volundr.svc:8080",
+    ]
+    docs = list(yaml.safe_load_all(subprocess.check_output(command)))
+    config = next(
+        yaml.safe_load(d["data"]["config.yaml"])
+        for d in docs
+        if d and d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
+    )
+    kwargs = config["ws_auth"]["room_role_remote"]["kwargs"]
+    assert kwargs["volundr_api_url"] == "http://volundr.volundr.svc:8080"
+    assert kwargs["token_file"] == "/var/run/secrets/niuu-workload/token"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
 def test_forge_controls_render_into_valid_skuld_configuration():
     from skuld.config import SkuldSettings
 

@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.domain.services.pat_validator import PATValidator
+from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 
 SIGNING_KEY = "test-signing-key-for-middleware-at-least-32"
 
@@ -355,3 +356,72 @@ class TestUnauthenticatedHealthPaths:
 
         assert response.status_code == 503
         assert response.json() == {"detail": "Identity is not configured"}
+
+
+class _AlwaysRejectingHeaderAuth(HeaderAuthenticationPort):
+    """Proves a path is exempted: if this ever runs, it fails the request."""
+
+    async def validate_headers(self, headers: dict[str, str]):
+        raise InvalidTokenError("no bearer token presented")
+
+
+def _create_authenticate_http_app() -> FastAPI:
+    app = FastAPI()
+    app.state.identity = _AlwaysRejectingHeaderAuth()
+    app.add_middleware(PATRevocationMiddleware, authenticate_http=True)
+
+    @app.post("/api/v1/niuu/guild/nodes/{node_id}/heartbeat")
+    async def heartbeat(node_id: str):
+        return {"ok": True}
+
+    @app.post("/api/v1/niuu/guild/nodes/{node_id}/leave")
+    async def leave(node_id: str):
+        return {"ok": True}
+
+    @app.get("/api/v1/niuu/instances")
+    async def instances():
+        return []
+
+    return app
+
+
+class TestNodeSignedPathExemption:
+    """Heartbeat/leave carry no bearer JWT — they must bypass identity.validate_headers
+    (they authenticate via Ed25519 signature inside the route instead), while an
+    ordinary API path must still be gated by it."""
+
+    def test_heartbeat_bypasses_bearer_identity_validation(self):
+        app = _create_authenticate_http_app()
+        client = TestClient(app)
+
+        resp = client.post("/api/v1/niuu/guild/nodes/node-1/heartbeat")
+
+        assert resp.status_code == 200
+
+    def test_leave_bypasses_bearer_identity_validation(self):
+        app = _create_authenticate_http_app()
+        client = TestClient(app)
+
+        resp = client.post("/api/v1/niuu/guild/nodes/node-1/leave")
+
+        assert resp.status_code == 200
+
+    def test_join_is_not_exempted_and_still_requires_identity_validation(self):
+        app = _create_authenticate_http_app()
+
+        @app.post("/api/v1/niuu/guild/join")
+        async def join():
+            return {"ok": True}
+
+        client = TestClient(app)
+        resp = client.post("/api/v1/niuu/guild/join")
+
+        assert resp.status_code == 401
+
+    def test_an_ordinary_get_path_still_requires_identity_validation(self):
+        app = _create_authenticate_http_app()
+        client = TestClient(app)
+
+        resp = client.get("/api/v1/niuu/instances")
+
+        assert resp.status_code == 401
