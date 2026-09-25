@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
@@ -24,6 +26,7 @@ from ting.domain.models import (
 from ting.domain.services.activity_subscriber import (
     CompletionEvaluation,
     SessionActivitySubscriber,
+    _ClusterBackoffState,
     _coerce_bool,
     _coerce_float,
     _coerce_str,
@@ -211,6 +214,17 @@ class StubDispatcherRepo(DispatcherRepository):
         return []
 
 
+class ActiveOwnersDispatcherRepo(StubDispatcherRepo):
+    """StubDispatcherRepo whose list_active_owner_ids is configurable."""
+
+    def __init__(self, owner_ids: list[str], running: bool = True) -> None:
+        super().__init__(running=running)
+        self._owner_ids = owner_ids
+
+    async def list_active_owner_ids(self) -> list[str]:
+        return list(self._owner_ids)
+
+
 class StubWorkflowCampaignRepo(WorkflowCampaignRepository):
     def __init__(self, campaigns: list[WorkflowCampaign] | None = None) -> None:
         self.campaigns = {campaign.id: campaign for campaign in campaigns or []}
@@ -263,6 +277,60 @@ class StubVolundrFactory:
 
     async def for_owner(self, owner_id: str) -> list[StubVolundr]:
         return [self._adapter]
+
+
+class NamedVolundr(StubVolundr):
+    """StubVolundr with a configurable cluster identity and failure schedule.
+
+    ``fail_times`` controls how many of the first ``subscribe_activity()``
+    calls raise ``error_factory()`` before the stream starts succeeding
+    (streams that succeed yield ``self.activity_events`` and then end).
+    """
+
+    def __init__(
+        self,
+        name: str = "cluster",
+        target_id: str = "",
+        base_url: str = "",
+        fail_times: int = 0,
+        error_factory: object = None,
+    ) -> None:
+        super().__init__()
+        self._cluster_name = name
+        self._cluster_target_id = target_id or name
+        self._cluster_base_url = base_url
+        self._fail_times = fail_times
+        self._error_factory = error_factory or (lambda: RuntimeError("boom"))
+        self.attempts = 0
+
+    @property
+    def name(self) -> str:
+        return self._cluster_name
+
+    @property
+    def target_id(self) -> str:
+        return self._cluster_target_id
+
+    @property
+    def base_url(self) -> str:
+        return self._cluster_base_url
+
+    async def subscribe_activity(self) -> AsyncGenerator[ActivityEvent, None]:
+        self.attempts += 1
+        if self.attempts <= self._fail_times:
+            raise self._error_factory()
+        for event in self.activity_events:
+            yield event
+
+
+class MultiVolundrFactory:
+    """Stub factory that returns a fixed list of adapters for any owner."""
+
+    def __init__(self, adapters: list[VolundrPort]) -> None:
+        self._adapters = adapters
+
+    async def for_owner(self, owner_id: str) -> list[VolundrPort]:
+        return list(self._adapters)
 
 
 class MockTrackerFactory:
@@ -429,7 +497,7 @@ class TestSubscriberLifecycle:
         projector.list_active_owner_ids.return_value = [OWNER_ID]
         sub._workflow_campaign_projector = projector
         stale = asyncio.create_task(asyncio.sleep(60))
-        sub._owner_tasks["stale-owner"] = [stale]
+        sub._owner_tasks["stale-owner"] = {"stale-cluster": stale}
         sub._owner_adapters["stale-owner"] = [volundr]
 
         await sub._sync_owner_subscriptions()
@@ -444,7 +512,7 @@ class TestSubscriberLifecycle:
     async def test_no_active_work_clears_existing_subscriptions(self) -> None:
         sub, volundr, _, _ = _make_subscriber(config=_default_config(reconnect_delay=0))
         stale = asyncio.create_task(asyncio.sleep(60))
-        sub._owner_tasks[OWNER_ID] = [stale]
+        sub._owner_tasks[OWNER_ID] = {"cluster-a": stale}
         sub._owner_adapters[OWNER_ID] = [volundr]
 
         await sub._sync_owner_subscriptions()
@@ -1363,6 +1431,192 @@ class TestFailureDetection:
 
 
 # ---------------------------------------------------------------------------
+# Tests -- Per-cluster failure isolation and backoff
+# ---------------------------------------------------------------------------
+
+
+class TestPerClusterIsolationAndBackoff:
+    def _build_subscriber(
+        self,
+        adapters: list[VolundrPort],
+        *,
+        owner_ids: list[str] | None = None,
+        config: WatcherConfig | None = None,
+    ) -> SessionActivitySubscriber:
+        tracker = MockTracker(runs_by_session={})
+        resolved_owner_ids = [OWNER_ID] if owner_ids is None else owner_ids
+        return SessionActivitySubscriber(
+            volundr_factory=MultiVolundrFactory(adapters),
+            tracker_factory=MockTrackerFactory(trackers=[tracker]),
+            dispatcher_repo=ActiveOwnersDispatcherRepo(resolved_owner_ids),
+            event_bus=InMemoryEventBus(),
+            config=config
+            or _default_config(
+                reconnect_delay=0,
+                reconnect_initial_delay=0,
+                reconnect_max_delay=0,
+                reconnect_jitter=0,
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_one_failing_cluster_does_not_cancel_the_others(self) -> None:
+        healthy = NamedVolundr(name="ymir", target_id="ymir-1")
+        flaky = NamedVolundr(
+            name="laptop",
+            target_id="laptop-1",
+            base_url="http://192.168.1.38:8080",
+            fail_times=10_000,
+            error_factory=lambda: ConnectionRefusedError("refused"),
+        )
+        sub = self._build_subscriber([healthy, flaky])
+        sub._running = True
+
+        await sub._sync_owner_subscriptions()
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+        clusters = sub._owner_tasks[OWNER_ID]
+        assert set(clusters) == {"ymir-1", "laptop-1"}
+        assert not clusters["ymir-1"].cancelled()
+        assert not clusters["ymir-1"].done()
+        assert not clusters["laptop-1"].cancelled()
+        assert not clusters["laptop-1"].done()
+        # The flaky cluster accumulated failures; the healthy one has none.
+        assert sub._cluster_backoff[(OWNER_ID, "laptop-1")].consecutive_failures >= 2
+        assert (OWNER_ID, "ymir-1") not in sub._cluster_backoff
+
+        sub._running = False
+        for task in clusters.values():
+            task.cancel()
+        for task in clusters.values():
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    def test_backoff_grows_and_caps(self) -> None:
+        config = _default_config(
+            reconnect_initial_delay=1.0,
+            reconnect_backoff_multiplier=2.0,
+            reconnect_max_delay=10.0,
+            reconnect_jitter=0.0,
+        )
+        sub = self._build_subscriber([], config=config)
+
+        delays = [sub._compute_backoff_delay(attempt) for attempt in range(1, 7)]
+
+        assert delays == [1.0, 2.0, 4.0, 8.0, 10.0, 10.0]
+
+    def test_backoff_jitter_stays_within_bounds(self) -> None:
+        config = _default_config(
+            reconnect_initial_delay=10.0,
+            reconnect_backoff_multiplier=1.0,
+            reconnect_max_delay=10.0,
+            reconnect_jitter=0.5,
+        )
+        sub = self._build_subscriber([], config=config)
+
+        for _ in range(20):
+            delay = sub._compute_backoff_delay(1)
+            assert 5.0 <= delay <= 10.0
+
+    def test_backoff_resets_after_success(self) -> None:
+        sub = self._build_subscriber([])
+
+        sub._on_cluster_failure(OWNER_ID, "cluster-a", "cluster-a (http://x)", RuntimeError("x"))
+        sub._on_cluster_failure(OWNER_ID, "cluster-a", "cluster-a (http://x)", RuntimeError("x"))
+        assert sub._cluster_backoff[(OWNER_ID, "cluster-a")].consecutive_failures == 2
+
+        sub._on_cluster_connected(OWNER_ID, "cluster-a", "cluster-a (http://x)")
+        assert (OWNER_ID, "cluster-a") not in sub._cluster_backoff
+
+        # A fresh failure after recovery starts back at attempt 1, not 3.
+        delay = sub._on_cluster_failure(
+            OWNER_ID, "cluster-a", "cluster-a (http://x)", RuntimeError("x")
+        )
+        assert sub._cluster_backoff[(OWNER_ID, "cluster-a")].consecutive_failures == 1
+        assert delay == pytest.approx(sub._compute_backoff_delay(1), abs=0.05)
+
+    def test_first_failure_logs_error_with_traceback_and_cluster_identity(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sub = self._build_subscriber([])
+        label = "laptop (http://192.168.1.38:8080)"
+
+        with caplog.at_level(logging.ERROR, logger="ting.domain.services.activity_subscriber"):
+            try:
+                raise ConnectionRefusedError("refused")
+            except ConnectionRefusedError as exc:
+                sub._on_cluster_failure(OWNER_ID, "laptop-1", label, exc)
+
+        records = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(records) == 1
+        assert records[0].exc_info is not None
+        assert "laptop (http://192.168.1.38:8080)" in records[0].getMessage()
+
+    def test_continued_failures_log_one_warning_line_without_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sub = self._build_subscriber([])
+        label = "laptop (http://192.168.1.38:8080)"
+
+        with caplog.at_level(logging.WARNING, logger="ting.domain.services.activity_subscriber"):
+            sub._on_cluster_failure(OWNER_ID, "laptop-1", label, RuntimeError("first"))
+            caplog.clear()
+            sub._on_cluster_failure(OWNER_ID, "laptop-1", label, ValueError("second failure"))
+
+        records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(records) == 1
+        record = records[0]
+        assert record.exc_info is None
+        message = record.getMessage()
+        assert "laptop (http://192.168.1.38:8080)" in message
+        assert "ValueError" in message
+        assert "second failure" in message
+        assert "attempt 2" in message
+
+    def test_recovery_logs_info(self, caplog: pytest.LogCaptureFixture) -> None:
+        sub = self._build_subscriber([])
+        label = "laptop (http://192.168.1.38:8080)"
+        sub._on_cluster_failure(OWNER_ID, "laptop-1", label, RuntimeError("x"))
+
+        with caplog.at_level(logging.INFO, logger="ting.domain.services.activity_subscriber"):
+            sub._on_cluster_connected(OWNER_ID, "laptop-1", label)
+
+        records = [r for r in caplog.records if r.levelno == logging.INFO]
+        assert len(records) == 1
+        assert "recovered" in records[0].getMessage()
+        assert "laptop (http://192.168.1.38:8080)" in records[0].getMessage()
+
+    def test_recovery_is_a_noop_without_a_prior_failure(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sub = self._build_subscriber([])
+
+        with caplog.at_level(logging.INFO, logger="ting.domain.services.activity_subscriber"):
+            sub._on_cluster_connected(OWNER_ID, "laptop-1", "laptop (http://x)")
+
+        assert [r for r in caplog.records if "recovered" in r.getMessage()] == []
+
+    @pytest.mark.asyncio
+    async def test_owner_removal_cancels_every_cluster_for_that_owner(self) -> None:
+        sub = self._build_subscriber([], owner_ids=[])
+        task_a = asyncio.create_task(asyncio.sleep(60))
+        task_b = asyncio.create_task(asyncio.sleep(60))
+        sub._owner_tasks[OWNER_ID] = {"cluster-a": task_a, "cluster-b": task_b}
+        sub._owner_adapters[OWNER_ID] = []
+        sub._cluster_backoff[(OWNER_ID, "cluster-a")] = _ClusterBackoffState(consecutive_failures=3)
+
+        await sub._sync_owner_subscriptions()
+        await asyncio.sleep(0)
+
+        assert OWNER_ID not in sub._owner_tasks
+        assert OWNER_ID not in sub._owner_adapters
+        assert (OWNER_ID, "cluster-a") not in sub._cluster_backoff
+        assert task_a.cancelled()
+        assert task_b.cancelled()
+
+
+# ---------------------------------------------------------------------------
 # Tests -- WatcherConfig new fields
 # ---------------------------------------------------------------------------
 
@@ -1375,6 +1629,10 @@ class TestWatcherConfigNewFields:
         assert cfg.require_pr is False
         assert cfg.require_ci is False
         assert cfg.reconnect_delay == 5.0
+        assert cfg.reconnect_initial_delay == 2.0
+        assert cfg.reconnect_max_delay == 120.0
+        assert cfg.reconnect_backoff_multiplier == 2.0
+        assert cfg.reconnect_jitter == 0.2
 
     def test_custom(self) -> None:
         cfg = WatcherConfig(
@@ -1383,12 +1641,20 @@ class TestWatcherConfigNewFields:
             require_pr=True,
             require_ci=True,
             reconnect_delay=3.0,
+            reconnect_initial_delay=1.5,
+            reconnect_max_delay=60.0,
+            reconnect_backoff_multiplier=3.0,
+            reconnect_jitter=0.1,
         )
         assert cfg.idle_threshold == 60.0
         assert cfg.completion_check_delay == 10.0
         assert cfg.require_pr is True
         assert cfg.require_ci is True
         assert cfg.reconnect_delay == 3.0
+        assert cfg.reconnect_initial_delay == 1.5
+        assert cfg.reconnect_max_delay == 60.0
+        assert cfg.reconnect_backoff_multiplier == 3.0
+        assert cfg.reconnect_jitter == 0.1
 
 
 class TestFlockOutcomeCoercion:

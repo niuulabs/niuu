@@ -150,6 +150,11 @@ class VolundrPort(ABC):
         """Tags of the registered instance (for label-based targeting)."""
         return []
 
+    @property
+    def base_url(self) -> str:
+        """Base URL of the target Forge cluster (for diagnostics/logging)."""
+        return ""
+
     @abstractmethod
     async def spawn_session(
         self,

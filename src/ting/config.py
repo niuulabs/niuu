@@ -715,7 +715,32 @@ class WatcherConfig(BaseModel):
     )
     reconnect_delay: float = Field(
         default=5.0,
-        description="Seconds to wait before reconnecting after SSE subscription failure.",
+        description="Seconds to wait before reconnecting after a clean SSE stream close.",
+    )
+    reconnect_initial_delay: float = Field(
+        default=2.0,
+        description=(
+            "Initial per-cluster backoff delay in seconds after an SSE subscription "
+            "failure, before the multiplier is applied."
+        ),
+    )
+    reconnect_max_delay: float = Field(
+        default=120.0,
+        description="Ceiling in seconds for a failing cluster's per-cluster backoff delay.",
+    )
+    reconnect_backoff_multiplier: float = Field(
+        default=2.0,
+        description=(
+            "Multiplier applied to a failing cluster's backoff delay after each "
+            "consecutive failure."
+        ),
+    )
+    reconnect_jitter: float = Field(
+        default=0.2,
+        description=(
+            "Fraction (0-1) randomly subtracted from each computed per-cluster backoff "
+            "delay to avoid synchronized reconnect storms."
+        ),
     )
 
 

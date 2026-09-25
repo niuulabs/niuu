@@ -122,6 +122,10 @@ class VolundrHTTPAdapter(VolundrPort):
     def tags(self) -> list[str]:
         return self._tags
 
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
     async def _client(
         self, *, timeout: float | None = None, no_read_timeout: bool = False
     ) -> httpx.AsyncClient:
