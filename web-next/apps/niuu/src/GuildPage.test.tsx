@@ -44,6 +44,10 @@ const node: InstanceRecord = {
   },
   createdAt: '2026-09-18T10:00:00Z',
   updatedAt: '2026-09-18T10:00:00Z',
+  health: 'ok',
+  lastSeenAt: '2026-09-18T10:00:00Z',
+  lastCheckedAt: '2026-09-18T10:00:00Z',
+  lastError: null,
 };
 let records: InstanceRecord[];
 let failure = false;
@@ -240,6 +244,56 @@ describe('Guild node management', () => {
     fireEvent.click(screen.getByRole('button', { name: 'test endpoint' }));
     await waitFor(() => expect(probes).toBe(2));
   });
+  it('shows a banner naming every server-recorded unreachable instance', async () => {
+    probeFailure = true;
+    records = [
+      { ...structuredClone(node), health: 'unreachable', lastError: 'connection refused' },
+    ];
+    renderGuild();
+    const banner = await screen.findByTestId('guild-unreachable-banner');
+    expect(banner).toHaveTextContent('1 instance unreachable: build-kit');
+    expect(screen.getByText('last error')).toBeInTheDocument();
+    expect(screen.getByText('connection refused')).toBeInTheDocument();
+  });
+  it('treats an unrecognized health value as unknown instead of rendering it as unreachable', async () => {
+    records = [{ ...structuredClone(node), health: 'weird-future-value' as never }];
+    renderGuild();
+    await screen.findByRole('button', { name: 'Edit settings' });
+    expect(screen.queryByTestId('guild-unreachable-banner')).not.toBeInTheDocument();
+  });
+
+  it('never invents a last-seen time for a node that has no lastCheckedAt', async () => {
+    records = [
+      {
+        ...structuredClone(node),
+        health: 'unreachable',
+        lastSeenAt: null,
+        lastCheckedAt: null,
+        lastError: 'connection refused',
+      },
+    ];
+    probeFailure = true;
+    renderGuild();
+    await screen.findByTestId('guild-unreachable-banner');
+    expect(screen.getByText('not seen')).toBeInTheDocument();
+  });
+
+  it('patches the cached instance list when a manual health test succeeds', async () => {
+    records = [
+      { ...structuredClone(node), health: 'unreachable', lastError: 'connection refused' },
+    ];
+    probeFailure = true;
+    renderGuild();
+    await screen.findByTestId('guild-unreachable-banner');
+
+    probeFailure = false;
+    fireEvent.click(screen.getByRole('button', { name: 'test endpoint' }));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('guild-unreachable-banner')).not.toBeInTheDocument(),
+    );
+  });
+
   it('matches owner, tenant and administrator management permissions', () => {
     const member = { ...identity, roles: [] };
     expect(canManageInstance(node, member)).toBe(true);

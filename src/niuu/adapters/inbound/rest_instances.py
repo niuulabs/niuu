@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -25,6 +27,7 @@ from niuu.domain.agent_directory import (
     AgentDirectoryPage,
 )
 from niuu.domain.models import (
+    InstanceHealthStatus,
     InstanceKind,
     InstanceVisibility,
     Principal,
@@ -36,6 +39,7 @@ from niuu.domain.observatory import (
     TopologySourceHealth,
 )
 from niuu.domain.services.agent_directory import AgentDirectoryAggregationService
+from niuu.domain.services.instance_health import InstanceHealthChecker
 from niuu.domain.services.instances import (
     InstanceAccessError,
     InstanceService,
@@ -46,6 +50,8 @@ from niuu.domain.services.observatory_topology import (
     ObservatoryTopologyAggregationService,
 )
 from niuu.domain.services.token_scope import TOPOLOGY_PUSH_SCOPE, require_scope
+
+logger = logging.getLogger(__name__)
 
 
 class InstanceResponse(BaseModel):
@@ -63,6 +69,10 @@ class InstanceResponse(BaseModel):
     tags: list[str] = Field(default_factory=list)
     created_at: datetime = Field(serialization_alias="createdAt")
     updated_at: datetime = Field(serialization_alias="updatedAt")
+    health: str = Field(default=InstanceHealthStatus.UNKNOWN.value)
+    last_seen_at: datetime | None = Field(default=None, serialization_alias="lastSeenAt")
+    last_checked_at: datetime | None = Field(default=None, serialization_alias="lastCheckedAt")
+    last_error: str | None = Field(default=None, serialization_alias="lastError")
 
 
 class InstanceCreateRequest(BaseModel):
@@ -162,58 +172,15 @@ def _to_response(instance: RegisteredInstance) -> InstanceResponse:
         tags=instance.tags,
         created_at=instance.created_at,
         updated_at=instance.updated_at,
+        health=instance.health.value,
+        last_seen_at=instance.last_seen_at,
+        last_checked_at=instance.last_checked_at,
+        last_error=instance.last_error,
     )
 
 
 def _uses_embedded_transport(instance: RegisteredInstance) -> bool:
     return str(instance.config.get("transport", "")).strip().lower() == "embedded"
-
-
-async def _probe_instance(
-    instance: RegisteredInstance,
-    *,
-    embedded_app: ASGIApp | None = None,
-) -> InstanceTestResponse:
-    if _uses_embedded_transport(instance):
-        if embedded_app is None:
-            return InstanceTestResponse(
-                ok=False,
-                status_code=502,
-                message="Embedded Forge target is not available in this process",
-            )
-        transport = httpx.ASGITransport(app=embedded_app)
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://embedded.local",
-        ) as client:
-            response = await client.get("/health")
-        return InstanceTestResponse(
-            ok=response.status_code < 400,
-            status_code=response.status_code,
-            message=(
-                f"{instance.name} is reachable"
-                if response.status_code < 400
-                else f"Health probe failed for {instance.name}"
-            ),
-        )
-
-    url = f"{instance.base_url}/health"
-    try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            response = await client.get(url)
-        if response.status_code >= 400:
-            return InstanceTestResponse(
-                ok=False,
-                status_code=response.status_code,
-                message=f"Health probe failed for {instance.name}",
-            )
-        return InstanceTestResponse(
-            ok=True,
-            status_code=response.status_code,
-            message=f"{instance.name} is reachable",
-        )
-    except Exception as exc:
-        return InstanceTestResponse(ok=False, message=str(exc))
 
 
 def _slug(value: str) -> str:
@@ -349,6 +316,7 @@ async def _load_remote_sessions(
 def create_instances_router(
     service: InstanceService,
     *,
+    health_checker: InstanceHealthChecker,
     embedded_forge_app: ASGIApp | None = None,
     agent_directory: AgentDirectoryAggregationService | None = None,
     fragment_inbox: ObservatoryFragmentInboxService | None = None,
@@ -409,6 +377,31 @@ def create_instances_router(
             )
         except (InstanceAccessError, InstanceValidationError) as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        # Registering an instance that happens to be offline (e.g. a Spark not
+        # yet powered on) is a legitimate operator action, so a failed probe
+        # does not reject the registration — but the instance is recorded as
+        # unreachable immediately, never left looking merely idle.
+        #
+        # The registration itself already succeeded and is durably saved by
+        # this point; a crash in the immediate follow-up health check (e.g.
+        # a database hiccup writing the health row — check_instance already
+        # turns a crashing *probe* into a plain UNREACHABLE result) must not
+        # turn a successful create into a 500. The periodic loop will pick
+        # the instance up and record its health on the next sweep.
+        try:
+            checked = await health_checker.check_instance(instance)
+        except Exception:
+            logger.exception(
+                "Health check crashed immediately after registering instance %s", instance.id
+            )
+            return _to_response(instance)
+        instance = replace(
+            instance,
+            health=checked.health,
+            last_seen_at=checked.last_seen_at,
+            last_checked_at=checked.checked_at,
+            last_error=checked.last_error,
+        )
         return _to_response(instance)
 
     @router.patch("/instances/{instance_id}", response_model=InstanceResponse)
@@ -417,6 +410,7 @@ def create_instances_router(
         instance_id: str = Path(description="Registered instance UUID"),
         principal: Principal = Depends(extract_principal),
     ) -> InstanceResponse:
+        before = await service.get_visible(principal, instance_id)
         try:
             instance = await service.update_instance(
                 principal,
@@ -436,6 +430,26 @@ def create_instances_router(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         except (InstanceAccessError, InstanceValidationError) as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        if before is not None and (
+            before.base_url != instance.base_url
+            or _uses_embedded_transport(before) != _uses_embedded_transport(instance)
+        ):
+            # The endpoint this instance actually resolves to changed —
+            # health.record for the old endpoint says nothing about the new
+            # one, so re-probe immediately instead of waiting for the next
+            # periodic sweep (up to niuu.health.interval_seconds stale).
+            try:
+                checked = await health_checker.check_instance(instance)
+            except Exception:
+                logger.exception("Health check crashed after re-pointing instance %s", instance.id)
+                return _to_response(instance)
+            instance = replace(
+                instance,
+                health=checked.health,
+                last_seen_at=checked.last_seen_at,
+                last_checked_at=checked.checked_at,
+                last_error=checked.last_error,
+            )
         return _to_response(instance)
 
     @router.delete("/instances/{instance_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -456,7 +470,12 @@ def create_instances_router(
         instance = await service.get_visible(principal, instance_id)
         if instance is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=instance_id)
-        return await _probe_instance(instance, embedded_app=embedded_forge_app)
+        checked = await health_checker.check_instance(instance)
+        return InstanceTestResponse(
+            ok=checked.probe.ok,
+            status_code=checked.probe.status_code,
+            message=checked.probe.message,
+        )
 
     @router.get("/instances/{instance_id}/sessions", response_model=list[InstanceSessionResponse])
     async def list_instance_sessions(

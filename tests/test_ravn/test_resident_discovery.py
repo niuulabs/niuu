@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import httpx
+import pytest
 import respx
 from fastapi.testclient import TestClient
 
@@ -382,14 +383,18 @@ class TestCompositeResidentDiscoveryAdapter:
             ("resident-muninn", "Observed")
         ]
 
-    async def test_tolerates_failing_adapter(self) -> None:
+    async def test_a_failing_adapter_raises_instead_of_silently_dropping_its_residents(
+        self,
+    ) -> None:
+        """A configured discovery adapter that cannot answer is a fault, not
+        an empty contribution — the old behavior made its residents vanish
+        from the fleet with no signal (see .claude/rules/no-fallbacks.md)."""
         composite = CompositeResidentDiscoveryAdapter(
             [_FailingResidentDiscovery(), _StaticResidentDiscovery([_resident()])]
         )
 
-        residents = await composite.list_residents()
-
-        assert [item.id for item in residents] == ["resident-muninn"]
+        with pytest.raises(RuntimeError, match="_FailingResidentDiscovery"):
+            await composite.list_residents()
 
 
 class TestResidentDiscoveryConfig:

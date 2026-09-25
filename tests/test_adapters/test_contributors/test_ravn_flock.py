@@ -34,6 +34,21 @@ from volundr.ports.workflow_execution_credentials import ExecutionCredentialProj
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Test value standing in for a deployment's ravn_flock_llm_config.
+_FORGE_DEFAULT_LLM = {
+    "model": "test/forge-default-model",
+    "provider": {
+        "adapter": "ravn.adapters.llm.openai.OpenAICompatibleAdapter",
+        "kwargs": {"base_url": "http://forge-default.test"},
+    },
+}
+
+
+def _flock_contributor(**kwargs) -> RavnFlockContributor:  # noqa: ANN003
+    """Return a contributor wired with a Forge LLM default, as deployments run it."""
+    kwargs.setdefault("default_llm_config", _FORGE_DEFAULT_LLM)
+    return RavnFlockContributor(**kwargs)
+
 
 def _extract_mounted_config(pod_spec, persona: str) -> str:
     """Extract the YAML written by the init container for *persona*.
@@ -161,7 +176,7 @@ class TestPortAllocation:
 
 class TestRavnFlockContributorName:
     def test_name(self):
-        c = RavnFlockContributor()
+        c = _flock_contributor()
         assert c.name == "ravn_flock"
 
 
@@ -207,7 +222,7 @@ class TestWorkflowExecutionCredentialProjection:
                 },
             },
         )
-        contributor = RavnFlockContributor(execution_credential_service=CredentialService())
+        contributor = _flock_contributor(execution_credential_service=CredentialService())
 
         result = await contributor.contribute(session, context)
         config = yaml.safe_load(_extract_mounted_config(result.pod_spec, "developer-coordinator"))
@@ -240,7 +255,7 @@ class TestWorkflowExecutionCredentialProjection:
             },
         )
         with pytest.raises(RuntimeError, match="workflow_execution_credentials.enabled"):
-            await RavnFlockContributor().contribute(session, context)
+            await _flock_contributor().contribute(session, context)
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +267,7 @@ class TestWorkloadTypeRouting:
     async def test_session_workload_type_returns_empty(self, session, session_template):
         provider = MagicMock()
         provider.get.return_value = session_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="default")
         result = await c.contribute(session, ctx)
         assert result.values == {}
@@ -261,13 +276,13 @@ class TestWorkloadTypeRouting:
     async def test_ravn_flock_workload_type_contributes(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
         assert result.values != {} or result.pod_spec is not None
 
     async def test_no_provider_returns_empty(self, session):
-        c = RavnFlockContributor()
+        c = _flock_contributor()
         result = await c.contribute(session, SessionContext())
         assert result.values == {}
         assert result.pod_spec is None
@@ -280,7 +295,7 @@ class TestWorkloadTypeRouting:
         )
         provider = MagicMock()
         provider.get.return_value = template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="no-personas")
         result = await c.contribute(session, ctx)
         assert result.values == {}
@@ -296,7 +311,7 @@ class TestContributorOutput:
     async def test_openshell_backend_emits_regular_workloads(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        contributor = RavnFlockContributor(
+        contributor = _flock_contributor(
             launch_spec_provider=provider, ravn_image="ghcr.io/niuulabs/openshell:dev-test"
         )
         result = await contributor.contribute(
@@ -344,7 +359,7 @@ class TestContributorOutput:
 
         provider = MagicMock()
         provider.get.return_value = flock_template
-        result = await RavnFlockContributor(launch_spec_provider=provider).contribute(
+        result = await _flock_contributor(launch_spec_provider=provider).contribute(
             session, SessionContext(launch_spec="ravn-flock", runtime_backend="openshell")
         )
         workload = result.values["openshell"]["workloads"][0]
@@ -378,7 +393,7 @@ class TestContributorOutput:
     async def test_two_ravn_containers_produced(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -388,7 +403,7 @@ class TestContributorOutput:
     async def test_ravn_container_names(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -399,7 +414,7 @@ class TestContributorOutput:
     async def test_ravn_containers_use_skuld_cli_runtime_image(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
 
         result = await c.contribute(session, ctx)
@@ -419,7 +434,7 @@ class TestContributorOutput:
     async def test_ravn_containers_run_as_workspace_owner(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
 
         result = await c.contribute(session, ctx)
@@ -435,7 +450,7 @@ class TestContributorOutput:
     async def test_ravn_image_can_be_overridden(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(
+        c = _flock_contributor(
             launch_spec_provider=provider,
             ravn_image="ghcr.io/niuulabs/niuu:1.2.3",
         )
@@ -452,7 +467,7 @@ class TestContributorOutput:
     async def test_skuld_mesh_enabled_in_env(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -470,7 +485,7 @@ class TestContributorOutput:
     async def test_skuld_static_mesh_peers_in_env(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -533,7 +548,7 @@ class TestContributorOutput:
         )
         provider = MagicMock()
         provider.get.return_value = template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         result = await c.contribute(session, SessionContext(launch_spec="workflow-flock"))
 
         env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
@@ -578,7 +593,7 @@ class TestContributorOutput:
         )
         provider = MagicMock()
         provider.get.return_value = template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
 
         result = await c.contribute(session, SessionContext(launch_spec="workflow-flock"))
 
@@ -599,7 +614,7 @@ class TestContributorOutput:
         )
         provider = MagicMock()
         provider.get.return_value = template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         result = await c.contribute(session, SessionContext(launch_spec="plain-flock"))
 
         env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
@@ -611,7 +626,7 @@ class TestContributorOutput:
     async def test_mimir_volume_not_added_without_explicit_local(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -623,7 +638,7 @@ class TestContributorOutput:
     ):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -634,7 +649,7 @@ class TestContributorOutput:
     async def test_ravn_container_has_workspace_mount(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -645,7 +660,7 @@ class TestContributorOutput:
     async def test_ravn_containers_share_writable_workspace_mount(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -662,7 +677,7 @@ class TestContributorOutput:
     async def test_sleipnir_publish_urls_in_skuld_env(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -673,7 +688,7 @@ class TestContributorOutput:
     async def test_sleipnir_publish_urls_in_ravn_env(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -684,7 +699,7 @@ class TestContributorOutput:
     async def test_mimir_hosted_url_in_values(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -706,7 +721,7 @@ class TestContributorOutput:
                 },
             },
         )
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         result = await c.contribute(session, SessionContext(launch_spec="registry-values"))
 
         assert result.values["mimir"]["registryRefs"] == [
@@ -720,7 +735,7 @@ class TestContributorOutput:
     async def test_mesh_values_present(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -730,7 +745,7 @@ class TestContributorOutput:
     async def test_flock_values_preserve_llm_and_persona_overrides(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -767,7 +782,7 @@ class TestMountedConfig:
         """RAVN_CONFIG_INLINE must not appear in any container env."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -779,7 +794,7 @@ class TestMountedConfig:
         """Each sidecar has RAVN_CONFIG=/etc/ravn/config.yaml."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -791,7 +806,7 @@ class TestMountedConfig:
         """Ravn daemon sidecars resolve ~/.ravn under the writable workspace."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -815,7 +830,7 @@ class TestMountedConfig:
         """Ravn sidecars must run tools and Codex transports from the writable workspace."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         result = await c.contribute(session, SessionContext(launch_spec="ravn-flock"))
 
         reviewer_cfg = yaml.safe_load(_extract_mounted_config(result.pod_spec, "reviewer"))
@@ -823,7 +838,7 @@ class TestMountedConfig:
         assert reviewer_cfg["permission"]["workspace_root"] == "/workspace"
 
     async def test_ravn_config_deep_merges_workload_settings(self, session):
-        contributor = RavnFlockContributor()
+        contributor = _flock_contributor()
         context = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -868,7 +883,7 @@ class TestMountedConfig:
         assert result.values["flock"]["ravn_config"] == context.workload_config["ravn_config"]
 
     async def test_observability_config_reaches_ravn_and_skuld_with_stable_names(self, session):
-        contributor = RavnFlockContributor()
+        contributor = _flock_contributor()
         context = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -904,7 +919,7 @@ class TestMountedConfig:
         """Each Ravn API server must bind its own port inside the shared pod netns."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -921,7 +936,7 @@ class TestMountedConfig:
         """Each persona gets its own config emptyDir volume."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -933,7 +948,7 @@ class TestMountedConfig:
         """Each persona gets an init container that writes its config."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -945,7 +960,7 @@ class TestMountedConfig:
         """Init container mounts the matching config volume."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -959,7 +974,7 @@ class TestMountedConfig:
         """Config writer init containers satisfy Skuld's non-root pod policy."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -975,7 +990,7 @@ class TestMountedConfig:
         """Sidecar mounts the config volume read-only at /etc/ravn."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -995,7 +1010,7 @@ class TestConfigGeneration:
     async def test_mounted_config_has_persona(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -1011,7 +1026,7 @@ class TestConfigGeneration:
     async def test_mounted_config_has_mesh_section(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -1023,7 +1038,7 @@ class TestConfigGeneration:
     async def test_mounted_config_has_static_mesh_peers(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -1047,7 +1062,7 @@ class TestConfigGeneration:
     async def test_mounted_config_has_mimir_instances(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -1060,7 +1075,7 @@ class TestConfigGeneration:
     async def test_mounted_config_has_write_routing(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -1072,7 +1087,7 @@ class TestConfigGeneration:
     async def test_mounted_config_hosted_url_in_instances(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -1086,7 +1101,7 @@ class TestConfigGeneration:
         """When no Mimir resources are configured, no runtime instances are injected."""
         provider = MagicMock()
         provider.get.return_value = flock_profile
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -1136,7 +1151,7 @@ class TestConfigGeneration:
         )
         provider = MagicMock()
         provider.get.return_value = template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         result = await c.contribute(session, SessionContext(launch_spec="registry-flock"))
 
         cfg = _extract_mounted_config(result.pod_spec, "coordinator")
@@ -1167,7 +1182,7 @@ class TestConfigGeneration:
     async def test_mounted_config_sleipnir_webhook(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -1186,7 +1201,7 @@ class TestNngPortAllocation:
     async def test_ravn_containers_have_nng_ports(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -1198,7 +1213,7 @@ class TestNngPortAllocation:
     async def test_skuld_and_ravn_ports_do_not_collide(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -1229,7 +1244,7 @@ class TestContributorPipelineMerge:
         template_provider.get.return_value = flock_template
 
         core = CoreSessionContributor(base_domain="example.com")
-        flock = RavnFlockContributor(launch_spec_provider=template_provider)
+        flock = _flock_contributor(launch_spec_provider=template_provider)
 
         ctx = SessionContext(launch_spec="ravn-flock")
         contributions = [
@@ -1262,7 +1277,7 @@ class TestContributorPipelineMerge:
         template_provider.get.return_value = flock_template
 
         core = CoreSessionContributor(base_domain="example.com")
-        flock = RavnFlockContributor(launch_spec_provider=template_provider)
+        flock = _flock_contributor(launch_spec_provider=template_provider)
 
         ctx = SessionContext(launch_spec="ravn-flock")
         contributions = [
@@ -1280,7 +1295,7 @@ class TestContributorPipelineMerge:
         template_provider.get.return_value = session_template
 
         core = CoreSessionContributor(base_domain="example.com")
-        flock = RavnFlockContributor(launch_spec_provider=template_provider)
+        flock = _flock_contributor(launch_spec_provider=template_provider)
 
         ctx = SessionContext(launch_spec="default")
         contributions = [
@@ -1301,7 +1316,7 @@ class TestProfileProviderPath:
     async def test_profile_provider_resolves_flock(self, session, flock_profile):
         profile_provider = MagicMock()
         profile_provider.get.return_value = flock_profile
-        c = RavnFlockContributor(launch_spec_provider=profile_provider)
+        c = _flock_contributor(launch_spec_provider=profile_provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
@@ -1312,7 +1327,7 @@ class TestProfileProviderPath:
         profile_provider = MagicMock()
         profile_provider.get.return_value = None
         profile_provider.get_default.return_value = flock_profile
-        c = RavnFlockContributor(launch_spec_provider=profile_provider)
+        c = _flock_contributor(launch_spec_provider=profile_provider)
         ctx = SessionContext(launch_spec="nonexistent")
         result = await c.contribute(session, ctx)
 
@@ -1327,7 +1342,7 @@ class TestProfileProviderPath:
         profile_provider = MagicMock()
         profile_provider.get.return_value = MagicMock(workload_type="ravn_flock")
 
-        c = RavnFlockContributor(launch_spec_provider=template_provider)
+        c = _flock_contributor(launch_spec_provider=template_provider)
         ctx = SessionContext(launch_spec="default")
         result = await c.contribute(session, ctx)
 
@@ -1343,7 +1358,7 @@ class TestProfileProviderPath:
 
 class TestExtraKwargs:
     def test_extra_kwargs_ignored(self):
-        c = RavnFlockContributor(
+        c = _flock_contributor(
             launch_spec_provider=None,
             storage=None,
             gateway=None,
@@ -1389,7 +1404,7 @@ class TestLLMConfigPassthrough:
     async def test_llm_block_in_ravn_config_when_provided(self, session, flock_template_with_llm):
         provider = MagicMock()
         provider.get.return_value = flock_template_with_llm
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock-llm")
         result = await c.contribute(session, ctx)
 
@@ -1399,21 +1414,34 @@ class TestLLMConfigPassthrough:
             assert "Qwen/Qwen3-Coder-30B-A3B-Instruct" in cfg
             assert "vllm.valaskjalf.asgard.niuu.world" in cfg
 
-    async def test_no_llm_block_when_not_provided(self, session, flock_template):
-        """flock_template has no llm_config — no llm: block emitted."""
+    async def test_forge_default_used_when_launch_names_no_llm(self, session, flock_template):
+        """flock_template has no llm_config — every node gets the Forge default."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(launch_spec_provider=provider)
+        c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         for persona in ("coordinator", "reviewer"):
-            cfg = _extract_mounted_config(result.pod_spec, persona)
-            assert "llm:" not in cfg
+            cfg = yaml.safe_load(_extract_mounted_config(result.pod_spec, persona))
+            assert cfg["llm"] == _FORGE_DEFAULT_LLM
+
+    async def test_no_llm_anywhere_fails_the_launch(self, session, flock_template):
+        """Without a Forge default or launch LLM, nodes must not start on Ravn's default."""
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
+
+        with pytest.raises(ValueError, match="coordinator, reviewer") as exc_info:
+            await c.contribute(session, ctx)
+
+        assert "ravn_flock_llm_config" in str(exc_info.value)
+        assert "workload_config.llm_config.model" in str(exc_info.value)
 
     async def test_llm_config_from_workload_context(self, session):
         """When workload_type comes directly via SessionContext (SpawnRequest path)."""
-        c = RavnFlockContributor()
+        c = _flock_contributor()
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -1428,25 +1456,24 @@ class TestLLMConfigPassthrough:
         assert "llm:" in cfg
         assert "Qwen/Qwen3-Coder-30B-A3B-Instruct" in cfg
 
-    async def test_empty_llm_config_dict_not_emitted(self, session):
-        """An empty llm_config dict should not produce an llm: block."""
+    async def test_empty_llm_config_dict_names_no_model(self):
+        """An empty llm_config names nothing, so it cannot satisfy the model check."""
         c = RavnFlockContributor()
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={
-                "personas": ["coordinator"],
+                "personas": ["coordinator", "reviewer"],
                 "llm_config": {},
             },
         )
-        result = await c.contribute(session, ctx)
 
-        cfg = _extract_mounted_config(result.pod_spec, "coordinator")
-        assert "llm:" not in cfg
+        with pytest.raises(ValueError, match="no LLM model configured"):
+            await c.contribute(Session(name="empty-llm", source=GitSource()), ctx)
 
     async def test_all_nodes_receive_same_llm_config(self, session):
         """All ravn nodes in a flock receive the same llm_config."""
         llm = {"model": "anthropic/claude-sonnet-4-6", "max_tokens": 4096}
-        c = RavnFlockContributor()
+        c = _flock_contributor()
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -1459,6 +1486,203 @@ class TestLLMConfigPassthrough:
         for persona in ("coordinator", "reviewer"):
             cfg = _extract_mounted_config(result.pod_spec, persona)
             assert "claude-sonnet-4-6" in cfg
+
+
+# ---------------------------------------------------------------------------
+# Flock LLM resolution: Forge default → session model → launch → persona
+# ---------------------------------------------------------------------------
+
+
+def _node_llm(result, persona: str) -> dict:
+    return yaml.safe_load(_extract_mounted_config(result.pod_spec, persona))["llm"]
+
+
+class TestFlockLLMResolution:
+    async def test_direct_forge_launch_uses_the_forge_default(self):
+        """The reported launch: personas only, no llm_config, no session model."""
+        ctx = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={"personas": ["research-analyst"]},
+        )
+
+        result = await _flock_contributor().contribute(
+            Session(name="direct-forge", source=GitSource()), ctx
+        )
+
+        assert _node_llm(result, "research-analyst") == _FORGE_DEFAULT_LLM
+        assert result.values["flock"]["llm_config"] == _FORGE_DEFAULT_LLM
+
+    async def test_direct_forge_launch_without_default_fails_with_remedy(self):
+        ctx = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={"personas": ["research-analyst"]},
+        )
+
+        with pytest.raises(ValueError, match="research-analyst") as exc_info:
+            await RavnFlockContributor().contribute(
+                Session(name="direct-forge", source=GitSource()), ctx
+            )
+
+        assert "ravn_flock_llm_config" in str(exc_info.value)
+
+    async def test_session_model_does_not_reach_the_ravn(self):
+        """The session model belongs to the Skuld broker's own CLI agent.
+
+        Ting fills it with its dispatch default (a Claude model); handing that
+        to a Ravn on the Forge's provider reproduces the model-not-found error.
+        """
+        ctx = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={"personas": ["research-analyst"]},
+        )
+
+        result = await _flock_contributor().contribute(
+            Session(name="solo", model="claude-sonnet-4-6", source=GitSource()), ctx
+        )
+
+        assert _node_llm(result, "research-analyst") == _FORGE_DEFAULT_LLM
+
+    async def test_session_model_does_not_satisfy_the_model_check(self):
+        ctx = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={"personas": ["research-analyst"]},
+        )
+
+        with pytest.raises(ValueError, match="no LLM model configured"):
+            await RavnFlockContributor().contribute(
+                Session(name="solo", model="claude-sonnet-4-6", source=GitSource()), ctx
+            )
+
+    async def test_launch_llm_config_overrides_the_forge_default_model(self):
+        ctx = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": ["research-analyst"],
+                "llm_config": {"model": "nvidia/nemotron-3-super"},
+            },
+        )
+
+        result = await _flock_contributor().contribute(
+            Session(name="solo", model="claude-sonnet-4-6", source=GitSource()), ctx
+        )
+
+        llm = _node_llm(result, "research-analyst")
+        assert llm["model"] == "nvidia/nemotron-3-super"
+        assert llm["provider"] == _FORGE_DEFAULT_LLM["provider"]
+
+    async def test_launch_provider_replaces_the_default_provider_whole(self):
+        launch_provider = {
+            "adapter": "ravn.adapters.llm.anthropic.AnthropicAdapter",
+            "kwargs": {},
+        }
+        ctx = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": ["coordinator", "reviewer"],
+                "llm_config": {"model": "claude-opus-4-6", "provider": launch_provider},
+            },
+        )
+
+        result = await _flock_contributor().contribute(
+            Session(name="pair", source=GitSource()), ctx
+        )
+
+        assert _node_llm(result, "reviewer") == {
+            "model": "claude-opus-4-6",
+            "provider": launch_provider,
+        }
+
+    async def test_partial_launch_llm_config_inherits_the_default_model(self):
+        ctx = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": ["coordinator", "reviewer"],
+                "llm_config": {"max_tokens": 4096},
+            },
+        )
+
+        result = await _flock_contributor().contribute(
+            Session(name="pair", source=GitSource()), ctx
+        )
+
+        assert _node_llm(result, "coordinator") == {**_FORGE_DEFAULT_LLM, "max_tokens": 4096}
+
+    async def test_persona_models_satisfy_the_check_without_a_default(self):
+        ctx = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": [
+                    {"name": "coordinator", "llm": {"model": "Qwen/Qwen3.8-27B"}},
+                    {"name": "reviewer", "llm": {"model": "nvidia/nemotron-3-super"}},
+                ],
+            },
+        )
+
+        result = await RavnFlockContributor().contribute(
+            Session(name="pair", source=GitSource()), ctx
+        )
+
+        assert _node_llm(result, "coordinator") == {"model": "Qwen/Qwen3.8-27B"}
+        assert _node_llm(result, "reviewer") == {"model": "nvidia/nemotron-3-super"}
+
+    async def test_only_personas_without_a_model_are_reported(self):
+        ctx = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": [
+                    {"name": "coordinator", "llm": {"model": "Qwen/Qwen3.8-27B"}},
+                    {"name": "reviewer", "llm": {"primary_alias": "powerful"}},
+                ],
+            },
+        )
+
+        with pytest.raises(ValueError, match=r"persona\(s\) reviewer\.") as exc_info:
+            await RavnFlockContributor().contribute(Session(name="pair", source=GitSource()), ctx)
+
+        assert "coordinator" not in str(exc_info.value)
+
+    async def test_ravn_config_llm_model_satisfies_the_check(self):
+        ravn_config_llm = {"model": "Qwen/Qwen3.8-27B", "max_tokens": 2048}
+        ctx = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": ["coordinator", "reviewer"],
+                "ravn_config": {"llm": ravn_config_llm},
+            },
+        )
+
+        result = await RavnFlockContributor().contribute(
+            Session(name="pair", source=GitSource()), ctx
+        )
+
+        assert _node_llm(result, "reviewer") == ravn_config_llm
+
+    async def test_non_mapping_llm_config_is_rejected(self):
+        ctx = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": ["coordinator"],
+                "llm_config": "Qwen/Qwen3.8-27B",
+            },
+        )
+
+        with pytest.raises(ValueError, match="llm_config must be a mapping"):
+            await _flock_contributor().contribute(Session(name="solo", source=GitSource()), ctx)
+
+    async def test_forge_default_is_not_mutated_by_launches(self):
+        default = {"model": "test/forge-default-model", "max_tokens": 1024}
+        contributor = RavnFlockContributor(default_llm_config=default)
+        ctx = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": ["coordinator", "reviewer"],
+                "llm_config": {"model": "claude-opus-4-6", "max_tokens": 8192},
+            },
+        )
+
+        await contributor.contribute(Session(name="pair", source=GitSource()), ctx)
+
+        assert default == {"model": "test/forge-default-model", "max_tokens": 1024}
 
 
 # ---------------------------------------------------------------------------
@@ -1538,7 +1762,7 @@ class TestNormalizePersonas:
 class TestPersonaDictFormat:
     async def test_legacy_str_format_still_works(self, session):
         """Regression: legacy list[str] personas keep working."""
-        c = RavnFlockContributor()
+        c = _flock_contributor()
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -1554,7 +1778,7 @@ class TestPersonaDictFormat:
 
     async def test_new_dict_format_accepted(self, session):
         """New list[dict] personas accepted and produce correct containers."""
-        c = RavnFlockContributor()
+        c = _flock_contributor()
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -1573,7 +1797,7 @@ class TestPersonaDictFormat:
 
     async def test_mixed_format_accepted(self, session):
         """Mixed str+dict personas in the same list are accepted."""
-        c = RavnFlockContributor()
+        c = _flock_contributor()
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -1595,7 +1819,7 @@ class TestPersonaDictFormat:
 
     async def test_dict_format_peer_ids_correct(self, session):
         """Peer IDs use the name from the dict, not the dict itself."""
-        c = RavnFlockContributor()
+        c = _flock_contributor()
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -1687,7 +1911,7 @@ _FLOCK_WORKLOAD_CONFIG = {
 
 def _make_flock_contributor(**kwargs) -> RavnFlockContributor:  # noqa: ANN001
     """Return a contributor backed by an in-context flock workload_config."""
-    return RavnFlockContributor(**kwargs)
+    return _flock_contributor(**kwargs)
 
 
 async def _contribute_with_mode(session, mode: str, **extra_kwargs) -> tuple:
@@ -1846,7 +2070,7 @@ class TestPersonaSourceHttp:
 class TestPerPersonaLLMOverrides:
     async def test_two_sidecars_with_different_llm_aliases_produce_distinct_yaml(self, session):
         """reviewer(powerful, thinking=true) + security-auditor(balanced) → distinct YAML."""
-        c = RavnFlockContributor()
+        c = _flock_contributor()
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -1883,7 +2107,7 @@ class TestPerPersonaLLMOverrides:
 
     async def test_per_persona_llm_overrides_global_llm(self, session):
         """Per-persona LLM alias overrides the global llm_config alias."""
-        c = RavnFlockContributor()
+        c = _flock_contributor()
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -1913,7 +2137,7 @@ class TestPerPersonaLLMOverrides:
 
     async def test_system_prompt_extra_embedded_in_sidecar_yaml(self, session):
         """system_prompt_extra is written to persona_overrides block in sidecar YAML."""
-        c = RavnFlockContributor()
+        c = _flock_contributor()
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -1937,7 +2161,7 @@ class TestPerPersonaLLMOverrides:
 
     async def test_iteration_budget_embedded_in_initiative_block(self, session):
         """iteration_budget is written to both initiative and persona_overrides blocks."""
-        c = RavnFlockContributor()
+        c = _flock_contributor()
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -1960,7 +2184,7 @@ class TestPerPersonaLLMOverrides:
 
     async def test_consumes_event_types_embedded_in_persona_overrides(self, session):
         """consumes_event_types is written to persona_overrides for sidecar startup."""
-        c = RavnFlockContributor()
+        c = _flock_contributor()
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -1978,7 +2202,7 @@ class TestPerPersonaLLMOverrides:
 
     async def test_per_persona_max_concurrent_tasks(self, session):
         """max_concurrent_tasks from persona override replaces global value in initiative."""
-        c = RavnFlockContributor()
+        c = _flock_contributor()
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -2004,7 +2228,7 @@ class TestPerPersonaLLMOverrides:
 
     async def test_daily_budget_is_written_to_ravn_configs(self, session):
         """daily_budget_usd from workload_config becomes ravn budget.daily_cap_usd."""
-        c = RavnFlockContributor()
+        c = _flock_contributor()
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -2028,7 +2252,7 @@ class TestPerPersonaLLMOverrides:
 
     async def test_no_persona_overrides_block_when_no_extra(self, session):
         """No persona_overrides block emitted when system_prompt_extra is absent."""
-        c = RavnFlockContributor()
+        c = _flock_contributor()
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={"personas": ["coordinator", "reviewer"]},
@@ -2041,7 +2265,7 @@ class TestPerPersonaLLMOverrides:
 
     async def test_merge_precedence_persona_over_global(self, session):
         """Merge precedence: persona-override > global."""
-        c = RavnFlockContributor()
+        c = _flock_contributor()
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -2060,7 +2284,7 @@ class TestPerPersonaLLMOverrides:
     async def test_allowed_tools_in_persona_override_stripped(self, session, caplog):
         """allowed_tools in persona dict is stripped with a WARN (security boundary)."""
         with caplog.at_level(logging.WARNING):
-            c = RavnFlockContributor()
+            c = _flock_contributor()
             ctx = SessionContext(
                 workload_type="ravn_flock",
                 workload_config={

@@ -16,6 +16,7 @@ from cli.commands.platform import (
     _build_init_config,
     _build_preflight_config,
     _build_up_callback,
+    _check_auth_env_conflicts,
     _collect_service_definitions,
     _host_resident_platform_url,
     _prompt_mode_selection,
@@ -1019,6 +1020,23 @@ class TestPlatformInventoryCommand:
         assert result.exit_code == 0
         assert out_path.exists()
         assert '"name": "niuu-api"' in out_path.read_text()
+
+
+class TestCheckAuthEnvConflicts:
+    def test_no_existing_env_passes(self, monkeypatch) -> None:
+        monkeypatch.delenv("IDENTITY__ADAPTER", raising=False)
+        _check_auth_env_conflicts({"IDENTITY__ADAPTER": "a.B"}, "none")
+
+    def test_matching_existing_env_passes(self, monkeypatch) -> None:
+        monkeypatch.setenv("IDENTITY__ADAPTER", "a.B")
+        _check_auth_env_conflicts({"IDENTITY__ADAPTER": "a.B"}, "none")
+
+    def test_disagreeing_existing_env_raises(self, monkeypatch) -> None:
+        monkeypatch.setenv("IDENTITY__ADAPTER", "operator.CustomAdapter")
+        with pytest.raises(typer.BadParameter, match="IDENTITY__ADAPTER"):
+            _check_auth_env_conflicts(
+                {"IDENTITY__ADAPTER": "identity.adapters.jwks.JwksIdentityAdapter"}, "oidc"
+            )
 
 
 @pytest.mark.parametrize("mode", ["mini", "cluster"])

@@ -1217,3 +1217,46 @@ def test_jira_catalog_supports_api_tokens_and_oauth_authorization_code():
     assert jira.oauth.token_request_format == "json"
     assert jira.oauth.client_secret_required is True
     assert "offline_access" in jira.oauth.scopes
+
+
+def test_ravn_flock_llm_config_loads_from_the_shared_config_file(monkeypatch, tmp_path):
+    """Mini mode: Volundr reads its own key from the file Ting also reads."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+dispatch:
+  flock:
+    llm_config:
+      model: ting/dispatch-model
+ravn_flock_llm_config:
+  model: Qwen/Qwen3.8-27B
+  max_tokens: 8192
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: https://vllm.example.test
+"""
+    )
+    _clear_settings_env(monkeypatch)
+    monkeypatch.setenv("NIUU_CONFIG", str(config_file))
+
+    settings = Settings()
+
+    assert settings.ravn_flock_llm_config["model"] == "Qwen/Qwen3.8-27B"
+    assert settings.ravn_flock_llm_config["provider"]["kwargs"] == {
+        "base_url": "https://vllm.example.test"
+    }
+
+
+def test_ravn_flock_llm_config_defaults_to_no_forge_default(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _clear_settings_env(monkeypatch)
+
+    assert Settings().ravn_flock_llm_config == {}
+
+
+def test_ravn_flock_llm_config_rejects_a_block_ravn_cannot_load():
+    import pytest
+
+    with pytest.raises(ValueError, match="max_tokens"):
+        Settings(ravn_flock_llm_config={"model": "Qwen/Qwen3.8-27B", "max_tokens": "lots"})

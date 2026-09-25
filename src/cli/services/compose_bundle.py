@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from cli.config import auth_adapter_env
 from cli.services.docker_host import DockerPreflightConfig, docker_socket_gid
 from cli.services.model_catalog import model_serve_args, model_trusts_remote_code
 from niuu.service_databases import database_name_for_service, local_service_database_names
@@ -198,6 +199,10 @@ def stack_settings_dict(settings: CLISettings) -> dict[str, Any]:
         "server": settings.server.model_dump(mode="json"),
         "docker": docker_section,
         "pod_manager": settings.pod_manager.model_dump(mode="json"),
+        # The platform container re-runs mini-mode composition internally
+        # (see module docstring); without this it would silently fall back
+        # to auth.mode's default instead of the operator's actual choice.
+        "host_auth": settings.host_auth.model_dump(mode="json"),
     }
     if settings.compute is not None:
         result["compute"] = settings.compute.model_dump(mode="json", exclude_none=True)
@@ -423,6 +428,7 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         "RAVN_GATEWAY__PLATFORM__BASE_URL": f"http://127.0.0.1:{settings.server.port}",
         "PYTHONUNBUFFERED": "1",
     }
+    env.update(auth_adapter_env(settings.host_auth))
     if model_gateway_providers(settings):
         env["NIUU_BIFROST"] = json.dumps({"providers": bifrost_providers(settings)})
     _, definition_files, manifest_files, python_paths = external_integration_mounts(settings)

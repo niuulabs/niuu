@@ -121,3 +121,8 @@ data:
         - {{ . | toJson }}
         {{- end }}
       {{- end }}
+      health:
+        interval_seconds: {{ .Values.registry.health.intervalSeconds | default 30.0 }}
+        probe:
+          adapter: {{ .Values.registry.health.probe.adapter | default "niuu.adapters.outbound.http_instance_probe.HttpInstanceProbeAdapter" | quote }}
+          timeout_seconds: {{ .Values.registry.health.probe.timeoutSeconds | default 5.0 }}

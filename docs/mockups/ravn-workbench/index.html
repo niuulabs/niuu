@@ -1,0 +1,1085 @@
+<title>Ravn Workbench</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+:root {
+  color-scheme: dark;
+  --bg-0: #080c16;
+  --bg-1: #0a0e1a;
+  --bg-2: #0f1525;
+  --bg-3: #141b2d;
+  --bg-4: #1a2236;
+  --sel: #13203a;
+  --sent: #213050;
+  --tx-1: #eceff6;
+  --tx-2: #b8c2d5;
+  --tx-3: #8d98ae;
+  --tx-4: #66728a;
+  --bd-1: #1a2335;
+  --bd-2: #22304a;
+  --bd-3: #334361;
+  --brand: #6ba1f8;
+  --brand-fill: #2563eb;
+  --brand-soft: color-mix(in srgb, #6ba1f8 14%, transparent);
+  --ok: #34d399;
+  --warn: #f5b454;
+  --warn-soft: color-mix(in srgb, #f5b454 13%, transparent);
+  --crit: #ef4444;
+  --crit-fg: #fca5a5;
+  --crit-soft: color-mix(in srgb, #ef4444 11%, transparent);
+  --crit-bo: color-mix(in srgb, #ef4444 32%, transparent);
+  --eng-ravn: #6ba1f8;
+  --eng-openclaw: #2dd4bf;
+  --eng-hermes: #a79cf5;
+  --sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg-1);
+  color: var(--tx-1);
+  font: 13px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--brand); outline-offset: 1px;
+}
+input, select, textarea { font: inherit; color: var(--tx-1); }
+.mono { font-family: var(--mono); }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- app shell ---------- */
+.app { display: grid; grid-template-columns: 44px 1fr; height: 100%; min-height: 560px; }
+.rail { background: var(--bg-2); border-right: 1px solid var(--bd-1); display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 6px; }
+.rail b { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 7px; font: 600 12px var(--mono); color: var(--tx-3); }
+.rail b.logo { color: var(--brand); margin-bottom: 8px; }
+.rail b.on { background: var(--brand-soft); color: var(--brand); box-shadow: inset 2px 0 0 var(--brand); }
+.rail .grow { flex: 1; }
+.main { display: grid; grid-template-rows: 44px 1fr; min-width: 0; min-height: 0; }
+.topbar { display: flex; align-items: center; gap: 18px; padding: 0 14px; border-bottom: 1px solid var(--bd-1); background: var(--bg-1); min-width: 0; }
+.topbar .plugin { display: flex; align-items: baseline; gap: 8px; font-weight: 650; font-size: 15px; white-space: nowrap; }
+.topbar .plugin i { font: 700 13px var(--mono); color: var(--brand); font-style: normal; }
+.tabs { display: flex; gap: 4px; }
+.tabs button { padding: 6px 10px; border-radius: 6px; color: var(--tx-3); font-weight: 550; display: flex; gap: 6px; align-items: center; }
+.tabs button:hover { color: var(--tx-1); background: var(--bg-3); }
+.tabs button[aria-selected="true"] { color: var(--tx-1); background: var(--bg-3); }
+.tabs .count { font: 500 11px var(--mono); color: var(--tx-4); }
+.topbar .spacer { flex: 1; }
+.seg { display: inline-flex; border: 1px solid var(--bd-2); border-radius: 7px; padding: 2px; background: var(--bg-2); }
+.seg button { padding: 3px 9px; border-radius: 5px; font-size: 12px; color: var(--tx-3); white-space: nowrap; }
+.seg button[aria-pressed="true"] { background: var(--bg-4); color: var(--tx-1); }
+.ghost { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--bd-2); border-radius: 7px; color: var(--tx-2); font-size: 12px; white-space: nowrap; }
+.ghost:hover { border-color: var(--bd-3); color: var(--tx-1); }
+.mock-tag { font: 600 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--warn); border: 1px dashed color-mix(in srgb, var(--warn) 45%, transparent); padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
+
+/* ---------- split workspace ---------- */
+.split { display: grid; grid-template-columns: minmax(300px, 340px) 1fr; min-height: 0; height: 100%; }
+.list { background: var(--bg-2); border-right: 1px solid var(--bd-1); display: flex; flex-direction: column; min-height: 0; }
+.list-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 12px 6px; }
+.list-head h2 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+.list-head .sub { color: var(--tx-3); font-size: 12px; }
+.primary { display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 7px; background: var(--brand-fill); color: #fff; font-weight: 600; font-size: 12.5px; white-space: nowrap; }
+.primary:hover { filter: brightness(1.08); }
+.primary:disabled { opacity: .45; cursor: not-allowed; }
+.pills { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px 4px; }
+.pills button { display: flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1px solid var(--bd-2); border-radius: 6px; font-size: 12px; font-weight: 600; color: var(--tx-3); }
+.pills button .n { font-variant-numeric: tabular-nums; color: var(--tx-4); font-weight: 500; }
+.pills button[aria-pressed="true"] { background: var(--brand-fill); border-color: var(--brand-fill); color: #fff; }
+.pills button[aria-pressed="true"] .n { color: rgba(255,255,255,.8); }
+.pills button.attn:not([aria-pressed="true"]) { color: var(--crit-fg); border-color: var(--crit-bo); }
+.list-tools { display: flex; gap: 8px; align-items: center; padding: 8px 12px 10px; border-bottom: 1px solid var(--bd-1); }
+.search { flex: 1; display: flex; align-items: center; gap: 7px; border: 1px solid var(--bd-2); background: var(--bg-3); border-radius: 8px; padding: 5px 9px; min-width: 0; }
+.search input { background: none; border: 0; outline: none; width: 100%; font-size: 12px; }
+.search svg { flex: none; color: var(--tx-4); }
+.group-sel { font-size: 11.5px; color: var(--tx-3); display: flex; gap: 4px; align-items: center; white-space: nowrap; }
+.group-sel select { background: var(--bg-3); border: 1px solid var(--bd-2); border-radius: 6px; padding: 3px 4px; font-size: 11.5px; }
+.list-scroll { flex: 1; overflow-y: auto; padding-bottom: 8px; }
+.ghead { display: flex; justify-content: space-between; padding: 12px 14px 5px; font: 600 10.5px var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--tx-4); }
+.row { display: grid; grid-template-columns: 32px 1fr auto; gap: 10px; width: 100%; text-align: left; padding: 10px 12px 10px 14px; border-left: 2px solid transparent; }
+.row:hover { background: var(--bg-3); }
+.row[aria-current="true"] { background: var(--sel); border-left-color: var(--brand); }
+.row .name { font-weight: 620; font-size: 13.5px; color: var(--tx-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .meta { color: var(--tx-3); font-size: 11.5px; display: flex; gap: 6px; align-items: center; white-space: nowrap; overflow: hidden; }
+.row .meta .dotsep { color: var(--tx-4); }
+.row .why { margin-top: 3px; font-size: 11.5px; color: var(--crit-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .why.warn { color: var(--warn); }
+.row .right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.row .age { font-size: 11px; color: var(--tx-4); white-space: nowrap; }
+.list-foot { border-top: 1px solid var(--bd-1); padding: 10px 14px; font-size: 11.5px; color: var(--tx-3); display: grid; gap: 4px; }
+.list-foot .k { color: var(--tx-4); }
+
+.av { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; font: 650 13px var(--mono); background: var(--bg-4); color: var(--tx-1); border: 1px solid var(--bd-3); position: relative; }
+.av.lg { width: 44px; height: 44px; border-radius: 11px; font-size: 17px; }
+.av.sm { width: 22px; height: 22px; border-radius: 6px; font-size: 10.5px; }
+.av[data-eng="ravn"] { border-color: color-mix(in srgb, var(--eng-ravn) 55%, var(--bd-2)); color: var(--eng-ravn); }
+.av[data-eng="openclaw"] { border-color: color-mix(in srgb, var(--eng-openclaw) 55%, var(--bd-2)); color: var(--eng-openclaw); }
+.av[data-eng="hermes"] { border-color: color-mix(in srgb, var(--eng-hermes) 55%, var(--bd-2)); color: var(--eng-hermes); }
+.av .pip { position: absolute; right: -3px; bottom: -3px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--bg-2); }
+
+.state { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 5px; background: var(--bg-4); color: var(--tx-2); white-space: nowrap; }
+.state::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.state[data-s="running"] { color: var(--ok); background: color-mix(in srgb, var(--ok) 11%, transparent); }
+.state[data-s="starting"] { color: var(--warn); background: var(--warn-soft); }
+.state[data-s="starting"]::before { animation: pulse 1.2s ease-in-out infinite; }
+.state[data-s="failed"] { color: var(--crit-fg); background: var(--crit-soft); }
+.state[data-s="suspended"] { color: var(--tx-3); }
+.pip[data-s="running"] { background: var(--ok); }
+.pip[data-s="starting"] { background: var(--warn); }
+.pip[data-s="failed"] { background: var(--crit); }
+.pip[data-s="suspended"] { background: var(--tx-4); }
+@keyframes pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .state[data-s="starting"]::before { animation: none; } }
+
+.eng { font: 500 11px var(--mono); }
+.eng[data-e="ravn"] { color: var(--eng-ravn); }
+.eng[data-e="openclaw"] { color: var(--eng-openclaw); }
+.eng[data-e="hermes"] { color: var(--eng-hermes); }
+
+/* ---------- detail ---------- */
+.detail { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg-1); }
+.dhead { display: flex; gap: 14px; align-items: flex-start; padding: 16px 20px 12px; border-bottom: 1px solid var(--bd-1); flex-wrap: wrap; }
+.dhead .who { flex: 1; min-width: 240px; }
+.dhead h1 { margin: 0; font-size: 20px; font-weight: 680; letter-spacing: -.015em; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border: 1px solid var(--bd-2); border-radius: 6px; font-size: 11.5px; color: var(--tx-2); background: var(--bg-2); white-space: nowrap; }
+.chip .k { color: var(--tx-4); }
+.chip.link { cursor: pointer; }
+.chip.link:hover { border-color: var(--brand); color: var(--brand); }
+.actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.ib { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--bd-2); border-radius: 7px; color: var(--tx-2); }
+.ib:hover { border-color: var(--bd-3); color: var(--tx-1); background: var(--bg-3); }
+.ib.danger:hover { color: var(--crit-fg); border-color: var(--crit-bo); }
+.ib:disabled { opacity: .35; cursor: not-allowed; }
+
+.banner { margin: 14px 20px 0; border: 1px solid var(--crit-bo); background: var(--crit-soft); border-radius: var(--r-lg); padding: 12px 14px; display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: start; }
+.banner.warn { border-color: color-mix(in srgb, var(--warn) 35%, transparent); background: var(--warn-soft); }
+.banner.quiet { border-color: var(--bd-2); background: var(--bg-2); }
+.banner .ico { color: var(--crit-fg); margin-top: 1px; }
+.banner.warn .ico { color: var(--warn); }
+.banner.quiet .ico { color: var(--tx-3); }
+.banner strong { display: block; font-size: 13.5px; font-weight: 650; }
+.banner p { margin: 3px 0 0; color: var(--tx-2); font-size: 12.5px; }
+.banner code { display: block; margin-top: 8px; font: 11.5px/1.5 var(--mono); color: var(--crit-fg); background: color-mix(in srgb, #000 25%, transparent); padding: 6px 9px; border-radius: 6px; overflow-x: auto; white-space: pre; }
+.banner .acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.steps { display: flex; gap: 6px; margin-top: 8px; align-items: center; font-size: 11.5px; color: var(--tx-3); flex-wrap: wrap; }
+.steps span { display: inline-flex; gap: 5px; align-items: center; }
+.steps span.done { color: var(--ok); }
+.steps span.now { color: var(--warn); font-weight: 600; }
+.steps i { width: 14px; height: 1px; background: var(--bd-3); display: inline-block; }
+
+.dtabs { display: flex; gap: 2px; padding: 10px 20px 0; border-bottom: 1px solid var(--bd-1); }
+.dtabs button { padding: 7px 12px 9px; color: var(--tx-3); font-weight: 560; border-bottom: 2px solid transparent; margin-bottom: -1px; display: flex; gap: 6px; align-items: center; }
+.dtabs button:hover { color: var(--tx-1); }
+.dtabs button[aria-selected="true"] { color: var(--tx-1); border-bottom-color: var(--brand); }
+.dtabs .n { font: 500 10.5px var(--mono); color: var(--tx-4); background: var(--bg-3); padding: 0 5px; border-radius: 4px; }
+.dbody { flex: 1; min-height: 0; overflow-y: auto; }
+
+/* chat */
+.chatwrap { display: grid; grid-template-columns: 220px 1fr; height: 100%; min-height: 0; }
+.chatwrap.solo { grid-template-columns: 1fr; }
+.convs { border-right: 1px solid var(--bd-1); background: var(--bg-2); display: flex; flex-direction: column; min-height: 0; }
+.convs .head { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; font-size: 11px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--tx-4); }
+.conv { text-align: left; padding: 8px 12px; border-left: 2px solid transparent; display: grid; gap: 2px; width: 100%; }
+.conv:hover { background: var(--bg-3); }
+.conv[aria-current="true"] { background: var(--sel); border-left-color: var(--brand); }
+.conv .t { font-size: 12.5px; font-weight: 580; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conv .m { font-size: 11px; color: var(--tx-4); }
+.chat { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.transcript { flex: 1; overflow-y: auto; padding: 18px 20px 8px; display: flex; flex-direction: column; gap: 14px; }
+.msg { display: grid; grid-template-columns: 26px 1fr; gap: 10px; max-width: 760px; }
+.msg .body { font-size: 13.5px; line-height: 1.6; color: var(--tx-1); }
+.msg .body p { margin: 0 0 6px; }
+.msg .who { font-size: 11.5px; color: var(--tx-3); margin-bottom: 2px; }
+.msg.user { grid-template-columns: 1fr; justify-items: end; max-width: none; }
+.msg.user .body { background: var(--sent); padding: 8px 12px; border-radius: 12px 12px 3px 12px; max-width: 560px; }
+.tool { display: flex; gap: 8px; align-items: center; font: 11.5px var(--mono); color: var(--tx-3); padding: 5px 9px; border: 1px solid var(--bd-1); background: var(--bg-2); border-radius: 7px; width: fit-content; max-width: 100%; margin: 4px 0; }
+.tool b { color: var(--brand); font-weight: 500; }
+.approval { border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); background: var(--warn-soft); border-radius: 10px; padding: 10px 12px; margin-top: 6px; max-width: 560px; }
+.approval .h { font-size: 12px; font-weight: 650; color: var(--warn); }
+.approval code { display: block; font: 12px var(--mono); margin: 6px 0 8px; color: var(--tx-1); }
+.composer { border-top: 1px solid var(--bd-1); padding: 10px 16px 14px; }
+.composer .box { border: 1px solid var(--bd-2); background: var(--bg-2); border-radius: 12px; padding: 9px 12px; display: flex; gap: 10px; align-items: flex-end; }
+.composer textarea { flex: 1; background: none; border: 0; outline: none; resize: none; min-height: 22px; font-size: 13.5px; }
+.composer .hint { font-size: 11px; color: var(--tx-4); margin-top: 6px; display: flex; gap: 12px; }
+.send { width: 30px; height: 30px; border-radius: 8px; background: var(--brand-fill); color: #fff; display: grid; place-items: center; }
+
+.empty { display: grid; place-items: center; height: 100%; padding: 40px 20px; text-align: center; }
+.empty .inner { max-width: 420px; display: grid; gap: 10px; justify-items: center; }
+.empty h3 { margin: 0; font-size: 15px; font-weight: 650; }
+.empty p { margin: 0; color: var(--tx-3); font-size: 13px; }
+.empty .acts { display: flex; gap: 8px; margin-top: 4px; }
+
+/* logs */
+.logbar { display: flex; gap: 8px; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--bd-1); flex-wrap: wrap; position: sticky; top: 0; background: var(--bg-1); }
+.logs { font: 12px/1.65 var(--mono); padding: 8px 0 20px; }
+.logline { display: grid; grid-template-columns: 78px 48px 150px 1fr; gap: 12px; padding: 1px 20px; }
+.logline:hover { background: var(--bg-2); }
+.logline .ts { color: var(--tx-4); }
+.logline .lv { font-weight: 600; }
+.logline .lv[data-l="INFO"] { color: var(--brand); }
+.logline .lv[data-l="WARN"] { color: var(--warn); }
+.logline .lv[data-l="ERROR"] { color: var(--crit-fg); }
+.logline .lv[data-l="DEBUG"] { color: var(--tx-4); }
+.logline .tg { color: var(--tx-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logline .fields { color: var(--tx-4); }
+
+/* setup */
+.sheet { padding: 18px 20px 40px; display: grid; gap: 22px; max-width: 980px; }
+.sec h3 { margin: 0 0 10px; font-size: 11px; font-weight: 650; letter-spacing: .12em; text-transform: uppercase; color: var(--tx-4); display: flex; justify-content: space-between; align-items: center; }
+.sec h3 button { text-transform: none; letter-spacing: 0; font-weight: 550; color: var(--brand); font-size: 12px; }
+.kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 1px; background: var(--bd-1); border: 1px solid var(--bd-1); border-radius: var(--r-lg); overflow: hidden; }
+.kv > div { background: var(--bg-2); padding: 10px 12px; min-width: 0; }
+.kv .k { font-size: 11px; color: var(--tx-4); }
+.kv .v { font-size: 13px; color: var(--tx-1); margin-top: 2px; overflow-wrap: anywhere; }
+.kv .v.mono { font-size: 12px; }
+.caps { display: flex; flex-wrap: wrap; gap: 6px; }
+.cap { display: inline-flex; gap: 6px; align-items: center; padding: 4px 9px; border-radius: 7px; font-size: 12px; border: 1px solid var(--bd-2); background: var(--bg-2); color: var(--tx-1); }
+.cap svg { color: var(--ok); }
+.cap.off { color: var(--tx-4); background: none; border-style: dashed; }
+.cap.off svg { color: var(--tx-4); }
+.persona-card { display: flex; gap: 12px; align-items: center; padding: 12px; border: 1px solid var(--bd-2); border-radius: var(--r-lg); background: var(--bg-2); }
+.persona-card .t { font-weight: 620; }
+.persona-card .s { color: var(--tx-3); font-size: 12.5px; }
+.persona-card .go { margin-left: auto; }
+table.cond { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.tablewrap { border: 1px solid var(--bd-1); border-radius: var(--r-lg); overflow-x: auto; }
+table.cond th { text-align: left; font-size: 11px; font-weight: 600; color: var(--tx-4); padding: 8px 12px; background: var(--bg-2); border-bottom: 1px solid var(--bd-1); }
+table.cond td { padding: 8px 12px; border-bottom: 1px solid var(--bd-1); vertical-align: top; }
+table.cond tr:last-child td { border-bottom: 0; }
+table.cond td.msgc { font: 11.5px var(--mono); color: var(--tx-2); }
+
+/* usage */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.stat { border: 1px solid var(--bd-1); border-radius: var(--r-lg); padding: 12px 14px; background: var(--bg-2); }
+.stat .k { font-size: 11px; color: var(--tx-4); }
+.stat .v { font-size: 22px; font-weight: 650; letter-spacing: -.02em; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.stat .s { font-size: 11.5px; color: var(--tx-3); }
+.bars { display: grid; gap: 8px; }
+.bar { display: grid; grid-template-columns: 200px 1fr 70px; gap: 12px; align-items: center; font-size: 12.5px; }
+.bar .track { height: 8px; border-radius: 4px; background: var(--bg-3); overflow: hidden; }
+.bar .fill { height: 100%; background: var(--brand); border-radius: 4px; }
+.bar .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--tx-2); }
+.bar .val { text-align: right; color: var(--tx-3); font-variant-numeric: tabular-nums; }
+
+/* personas */
+.prow { display: grid; grid-template-columns: 28px 1fr auto; gap: 10px; width: 100%; text-align: left; padding: 8px 12px 8px 14px; border-left: 2px solid transparent; align-items: center; }
+.prow:hover { background: var(--bg-3); }
+.prow[aria-current="true"] { background: var(--sel); border-left-color: var(--brand); }
+.prow .name { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prow .sub { font-size: 11.5px; color: var(--tx-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prow .used { font-size: 11px; color: var(--ok); white-space: nowrap; }
+.fam { width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 12px 14px 5px; font: 600 10.5px var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--tx-4); }
+.fam:hover { color: var(--tx-2); }
+.fam .c { font: 500 11px var(--mono); letter-spacing: 0; }
+.flow { display: grid; grid-template-columns: 1fr auto auto auto 1fr; gap: 10px; align-items: center; padding: 14px; border: 1px solid var(--bd-1); border-radius: var(--r-lg); background: var(--bg-2); }
+.flow .col { display: grid; gap: 6px; justify-items: start; }
+.flow .col.out { justify-items: end; }
+.flow .ev { font: 11.5px var(--mono); padding: 3px 8px; border-radius: 6px; border: 1px solid var(--bd-2); background: var(--bg-3); color: var(--tx-2); }
+.flow .ev.prod { border-color: color-mix(in srgb, var(--ok) 40%, transparent); color: var(--ok); }
+.flow .arrow { color: var(--tx-4); }
+.flow .me { display: grid; justify-items: center; gap: 4px; font-size: 11.5px; color: var(--tx-3); }
+.flow .lbl { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--tx-4); }
+.schema { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.schema span { font: 11px var(--mono); color: var(--tx-3); }
+.schema span b { color: var(--tx-2); font-weight: 500; }
+.tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.tools span { font: 12px var(--mono); padding: 3px 8px; border-radius: 6px; background: var(--bg-3); border: 1px solid var(--bd-2); }
+.tools span.no { text-decoration: line-through; color: var(--crit-fg); border-color: var(--crit-bo); background: var(--crit-soft); }
+.prompt { font: 12px/1.6 var(--mono); background: var(--bg-0); border: 1px solid var(--bd-1); border-radius: var(--r-lg); padding: 12px 14px; white-space: pre-wrap; max-height: 220px; overflow: hidden; position: relative; color: var(--tx-2); }
+.prompt.open { max-height: none; }
+.prompt:not(.open)::after { content: ''; position: absolute; inset: auto 0 0 0; height: 60px; background: linear-gradient(transparent, var(--bg-0)); }
+.yaml { font: 12px/1.65 var(--mono); background: var(--bg-0); border: 1px solid var(--bd-1); border-radius: var(--r-lg); padding: 14px 16px; white-space: pre; overflow-x: auto; color: var(--tx-2); }
+.yaml .k { color: var(--brand); }
+.yaml .c { color: var(--tx-4); }
+.editbar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; padding: 10px 20px; background: color-mix(in srgb, var(--brand-fill) 18%, var(--bg-1)); border-bottom: 1px solid color-mix(in srgb, var(--brand) 40%, transparent); font-size: 12.5px; flex-wrap: wrap; }
+.editbar .grow { flex: 1; min-width: 200px; }
+.field { display: grid; gap: 5px; }
+.field label { font-size: 12px; color: var(--tx-3); font-weight: 550; }
+.field .help { font-size: 11.5px; color: var(--tx-4); }
+.input, .select, .textarea { background: var(--bg-3); border: 1px solid var(--bd-2); border-radius: 8px; padding: 7px 10px; font-size: 13px; width: 100%; }
+.textarea { font: 12px/1.6 var(--mono); min-height: 180px; resize: vertical; }
+.row2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+
+/* dialog */
+.scrim { position: fixed; inset: 0; background: rgba(3, 6, 14, .66); display: grid; place-items: center; padding: 16px; z-index: 20; }
+.dialog { width: min(720px, 100%); max-height: calc(100% - 32px); overflow-y: auto; background: var(--bg-2); border: 1px solid var(--bd-2); border-radius: 14px; box-shadow: 0 30px 80px rgba(0, 3, 12, .5); }
+.dialog header { display: flex; justify-content: space-between; align-items: flex-start; padding: 16px 20px 6px; }
+.dialog header h2 { margin: 0; font-size: 17px; }
+.dialog header p { margin: 3px 0 0; color: var(--tx-3); font-size: 12.5px; }
+.dialog .body { padding: 10px 20px 4px; display: grid; gap: 18px; }
+.dialog .step { font-size: 11px; font-weight: 650; letter-spacing: .12em; text-transform: uppercase; color: var(--tx-4); margin-bottom: 8px; }
+.profiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.profile { text-align: left; border: 1px solid var(--bd-2); border-radius: 10px; padding: 10px 12px; display: grid; gap: 4px; background: var(--bg-3); }
+.profile:hover { border-color: var(--bd-3); }
+.profile[aria-pressed="true"] { border-color: var(--brand); background: color-mix(in srgb, var(--brand-fill) 14%, var(--bg-3)); box-shadow: 0 0 0 1px var(--brand) inset; }
+.profile .t { font-weight: 620; font-size: 13px; }
+.profile .d { font-size: 11.5px; color: var(--tx-3); }
+.profile .cp { font-size: 11px; color: var(--tx-4); }
+.dialog footer { display: flex; gap: 10px; align-items: center; padding: 14px 20px 16px; border-top: 1px solid var(--bd-1); margin-top: 14px; flex-wrap: wrap; }
+.dialog footer .sum { flex: 1; min-width: 220px; font-size: 12px; color: var(--tx-3); }
+.dialog footer .sum b { color: var(--tx-1); font-weight: 600; }
+.pp { display: grid; gap: 4px; max-height: 190px; overflow-y: auto; border: 1px solid var(--bd-2); border-radius: 9px; padding: 4px; background: var(--bg-3); }
+.pp button { display: grid; grid-template-columns: 22px 1fr; gap: 8px; align-items: center; text-align: left; padding: 5px 7px; border-radius: 6px; }
+.pp button:hover { background: var(--bg-4); }
+.pp button[aria-pressed="true"] { background: var(--sel); box-shadow: inset 0 0 0 1px var(--brand); }
+.pp .n { font-size: 12.5px; font-weight: 580; }
+.pp .s { font-size: 11px; color: var(--tx-4); }
+
+/* notes */
+.notes { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100%); background: var(--bg-2); border-left: 1px solid var(--bd-2); box-shadow: -30px 0 60px rgba(0, 3, 12, .45); z-index: 30; overflow-y: auto; padding: 18px 20px 30px; }
+.notes h2 { margin: 0 0 4px; font-size: 17px; }
+.notes > p { color: var(--tx-3); margin: 0 0 16px; font-size: 12.5px; }
+.note { border-top: 1px solid var(--bd-1); padding: 12px 0; }
+.note h4 { margin: 0 0 4px; font-size: 13.5px; }
+.note p { margin: 0; color: var(--tx-2); font-size: 12.5px; line-height: 1.55; }
+.note .was { color: var(--tx-4); font-size: 11.5px; margin-top: 5px; }
+
+.toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--bg-4); border: 1px solid var(--bd-3); padding: 8px 14px; border-radius: 9px; font-size: 12.5px; z-index: 40; box-shadow: 0 10px 30px rgba(0, 3, 12, .4); }
+
+.back { display: none; }
+@media (max-width: 860px) {
+  .app { grid-template-columns: 1fr; }
+  .rail { display: none; }
+  .topbar { gap: 10px; overflow-x: auto; }
+  .topbar .mock-tag { display: none; }
+  .split { grid-template-columns: 1fr; }
+  .split[data-open="true"] .list { display: none; }
+  .split:not([data-open="true"]) .detail { display: none; }
+  .back { display: inline-flex; }
+  .chatwrap { grid-template-columns: 1fr; }
+  .convs { display: none; }
+  .logline { grid-template-columns: 64px 44px 1fr; }
+  .logline .tg { display: none; }
+  .bar { grid-template-columns: 110px 1fr 56px; }
+  .flow { grid-template-columns: 1fr; justify-items: start; }
+  .flow .col.out { justify-items: start; }
+  .flow .arrow { transform: rotate(90deg); }
+  .banner { grid-template-columns: auto 1fr; }
+  .banner .acts { grid-column: 1 / -1; justify-content: flex-start; }
+}
+</style>
+
+<div class="app">
+  <nav class="rail" aria-label="Plugins">
+    <b class="logo">Nᛘ</b><b>V</b><b>T</b><b>M</b><b class="on">R</b><b>V</b><b>O</b><b>B</b>
+    <span class="grow"></span><b>⚙</b>
+  </nav>
+  <div class="main">
+    <header class="topbar">
+      <div class="plugin"><i>R</i>Ravn</div>
+      <div class="tabs" role="tablist" id="topTabs"></div>
+      <span class="spacer"></span>
+      <span class="mock-tag">Mockup</span>
+      <div class="seg" role="group" aria-label="Data">
+        <button data-act="data" data-v="example" id="dataExample">Example fleet</button>
+        <button data-act="data" data-v="live" id="dataLive">This machine</button>
+      </div>
+      <button class="ghost" data-act="notes">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        What changed
+      </button>
+    </header>
+    <div id="page" style="min-height:0"></div>
+  </div>
+</div>
+<div id="overlay"></div>
+
+<script>
+(() => {
+  // ------------------------------------------------------------------ icons
+  const I = {
+    search: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
+    plus: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>',
+    restart: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>',
+    pause: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>',
+    play: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 4v16l13-8z"/></svg>',
+    trash: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>',
+    alert: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>',
+    info: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
+    check: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="m5 12 5 5L20 7"/></svg>',
+    dash: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 12h12"/></svg>',
+    send: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
+    arrow: '<svg width="22" height="14" viewBox="0 0 30 14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 7h26M21 1l6 6-6 6"/></svg>',
+    chat: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 0 1-11.8 7L4 20l1.1-4.4A8 8 0 1 1 21 12Z"/></svg>',
+    x: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+    back: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6"/></svg>',
+    fork: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="12" cy="19" r="2"/><path d="M6 7v2a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V7M12 12v5"/></svg>',
+    edit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+  };
+
+  // ------------------------------------------------------------------ data
+  const CAP_LABEL = {
+    chat: 'Chat', 'session.list': 'Conversations', 'session.create': 'New conversations',
+    'session.delete': 'Close conversations', steer: 'Steer mid-turn', interrupt: 'Interrupt',
+    approvals: 'Approvals', 'runtime.restart': 'Restart', 'runtime.suspend': 'Suspend / resume',
+    logs: 'Logs', metrics: 'Metrics', usage: 'Usage', flock: 'Flock mesh',
+  };
+  const ALL_CAPS = Object.keys(CAP_LABEL);
+  const RECONCILE_MSG = "('Connection aborted.', FileNotFoundError(2, 'No such file or directory'))";
+
+  const LIVE = [
+    { id: '7193e4d1', name: 'Local GPT 5.6 Ravn proof', persona: 'product-steward', engine: 'ravn', backend: 'local', profile: 'ravn-local', target: 'Local Forge', model: 'gpt-5.6-sol', observed: 'failed', desired: 'running', created: '74d', seen: '2m', caps: ['chat','runtime.restart','runtime.suspend','logs','metrics','usage'], msgs: 2, tokens: 34904, cost: 0.0658, cond: { type: 'BackendReady', status: 'unknown', reason: 'ReconcileFailed', message: RECONCILE_MSG, since: '2m ago' }, backendRef: 'DockerContainer · volundr-resident-7193e4d11cb54fba837d69', logsError: 'Failed to read resident Local GPT 5.6 Ravn proof logs: ' + RECONCILE_MSG },
+    { id: '5c1e0a77', name: 'Local NemoClaw full proof', persona: '', engine: 'openclaw', backend: 'local', profile: 'nemoclaw-local', target: 'Local Forge', model: 'niuu/nvidia/nemotron-3-super', observed: 'failed', desired: 'running', created: '71d', seen: '2m', caps: ['chat','runtime.restart','runtime.suspend','logs','metrics','usage','session.list','session.create','session.delete','steer','interrupt'], msgs: 0, tokens: 0, cost: 0, cond: { type: 'BackendReady', status: 'unknown', reason: 'ReconcileFailed', message: RECONCILE_MSG, since: '2m ago' }, backendRef: 'DockerContainer · volundr-resident-5c1e0a77', logsError: 'Failed to read resident Local NemoClaw full proof logs: ' + RECONCILE_MSG },
+    { id: '9f02bb41', name: 'Local NemoClaw UI proof', persona: '', engine: 'openclaw', backend: 'local', profile: 'nemoclaw-local', target: 'Local Forge', model: 'niuu/gpt-5.6-sol', observed: 'failed', desired: 'running', created: '70d', seen: '2m', caps: ['chat','runtime.restart','runtime.suspend','logs','metrics','usage','session.list','session.create','session.delete','steer','interrupt'], msgs: 0, tokens: 0, cost: 0, cond: { type: 'BackendReady', status: 'unknown', reason: 'ReconcileFailed', message: RECONCILE_MSG, since: '2m ago' }, backendRef: 'DockerContainer · volundr-resident-9f02bb41', logsError: 'Failed to read resident Local NemoClaw UI proof logs: ' + RECONCILE_MSG },
+    { id: 'e44d1f09', name: 'Local NemoHermes full proof', persona: '', engine: 'hermes', backend: 'local', profile: 'nemohermes-local', target: 'Local Forge', model: 'niuu/nvidia/nemotron-3-super', observed: 'failed', desired: 'running', created: '71d', seen: '2m', caps: ['chat','runtime.restart','runtime.suspend','logs','metrics','usage','session.list','session.create','session.delete','steer','interrupt'], msgs: 0, tokens: 0, cost: 0, cond: { type: 'BackendReady', status: 'unknown', reason: 'ReconcileFailed', message: RECONCILE_MSG, since: '2m ago' }, backendRef: 'DockerContainer · volundr-resident-e44d1f09', logsError: 'Failed to read resident Local NemoHermes full proof logs: ' + RECONCILE_MSG },
+  ];
+
+  const EXAMPLE = [
+    { id: 'a1', name: 'Muninn', persona: 'k8s-valkyrie', engine: 'ravn', backend: 'helmrelease', profile: 'ravn-k8s', target: 'valhalla', model: 'claude-sonnet-4-6', observed: 'active', desired: 'running', created: '41d', seen: 'now', caps: ['chat','steer','interrupt','approvals','runtime.restart','runtime.suspend','logs','metrics','usage'], msgs: 412, tokens: 1842210, cost: 9.12, chat: 'muninn', endpoints: [['chat','ws','wss://valhalla.niuu.world/s/a1/session'],['metrics','http','http://muninn.ravn.svc:9200/metrics']], mcp: ['kubernetes','mimir','github'], subs: ['signal.kubernetes.event','environment.state.changed'] },
+    { id: 'a2', name: 'Eitri', persona: 'ivaldi', engine: 'openclaw', backend: 'local', profile: 'nemoclaw-local', target: 'Local Forge', model: 'niuu/nvidia/nemotron-3-super', observed: 'active', desired: 'running', created: '12d', seen: '4m', caps: ['chat','session.list','session.create','session.delete','steer','interrupt','runtime.restart','runtime.suspend','logs','metrics','usage'], msgs: 96, tokens: 388120, cost: 0, convs: [['Kernel build flake on laevateinn','running','18 msgs · 4m'],['Nightly image audit','idle','41 msgs · 9h'],['Spark thermal check','idle','37 msgs · 2d']], chat: 'eitri' },
+    { id: 'a3', name: 'Regin', persona: 'domain-drive', engine: 'ravn', backend: 'helmrelease', profile: 'ravn-k8s', target: 'valhalla', model: 'gpt-5.6-sol', observed: 'active', desired: 'running', created: '19d', seen: '1m', caps: ['chat','steer','interrupt','approvals','runtime.restart','runtime.suspend','logs','metrics','usage','flock'], msgs: 1280, tokens: 6120400, cost: 21.40, flock: 'nats-keepers', flockRole: 'coordinator', chat: 'regin' },
+    { id: 'a4', name: 'Ivaldi', persona: 'ivaldi', engine: 'openclaw', backend: 'local', profile: 'nemoclaw-local', target: 'Local Forge', model: 'niuu/nvidia/nemotron-3-super', observed: 'deploying', desired: 'running', created: '1m', seen: '—', caps: ['chat','session.list','session.create','session.delete','steer','interrupt','runtime.restart','runtime.suspend','logs','metrics','usage'], msgs: 0, tokens: 0, cost: 0 },
+    { id: 'a5', name: 'Fulla', persona: 'product-steward', engine: 'hermes', backend: 'local', profile: 'nemohermes-local', target: 'Local Forge', model: 'niuu/nvidia/nemotron-3-super', observed: 'suspended', desired: 'suspended', created: '8d', seen: '3d', caps: ['chat','session.list','session.create','session.delete','runtime.restart','runtime.suspend','logs','usage'], msgs: 54, tokens: 201344, cost: 0 },
+    LIVE[0],
+  ];
+
+  const PERSONAS = [
+    ['capability-publisher','build','Capability publisher','default',16,['file','mimir_write','mimir_read'],'capability.publish.completed',['review.passed','security.passed']],
+    ['closer','build','Closer','default',20,['file','git','terminal','ravn','tracker_issue'],'delivery.close.completed',['review.passed']],
+    ['coder','build','Writes and edits source code.','default',40,['mimir_query','file','git','terminal','web','ravn','tracker_issue','cascade'],'code.completed',['review.changes_requested','security.changes_requested','code.requested']],
+    ['council-chair','build','Council chair','default',18,['file','mimir_query','web','ravn','tracker_issue','cascade'],'council.chair.turn.completed',['research.requested','council.a.opinion.submitted','council.b.opinion.submitted']],
+    ['council-member-a','build','Council member a','default',16,['file','mimir_query','web','ravn','git','terminal','tracker_issue'],'council.member.turn.completed',['council.briefed','council.review.requested']],
+    ['council-member-b','build','Council member b','default',16,['file','mimir_query','web','ravn','git','terminal','tracker_issue'],'council.member.turn.completed',['council.briefed','council.review.requested']],
+    ['council-member-c','build','Council member c','default',16,['file','mimir_query','web','ravn','git','terminal','tracker_issue'],'council.member.turn.completed',['council.briefed','council.review.requested']],
+    ['developer-adversarial-reviewer','build','Developer adversarial reviewer','safe',26,['file','git','terminal','ravn','mimir_query'],'developer.review.completed',['developer.candidate.verified']],
+    ['developer-analyst','build','Developer analyst','safe',32,['file','git','terminal','web','ravn','mimir_query','tracker_issue'],'developer.plan.revised',['delivery.requested','plan.review.completed']],
+    ['developer-architecture-reviewer','build','Developer architecture reviewer','safe',20,['file','git','terminal','ravn','mimir_query'],'plan.review.completed',['developer.plan.revised']],
+    ['developer-code-reviewer','build','Developer code reviewer','safe',24,['file','git','terminal','ravn','mimir_query'],'developer.review.completed',['developer.candidate.verified']],
+    ['developer-coder','build','Developer coder','default',40,['file','git','terminal','ravn','mimir_query'],'developer.candidate.produced',['developer.workstream.requested','developer.workstream.repair_requested']],
+    ['developer-coordinator','build','Developer coordinator','safe',36,['file','git','terminal','web','ravn','mimir_query','tracker_issue','cascade','mimir_write','mimir_read','workflow'],'developer.coordination.decision',['developer.plan.approved','developer.candidate.produced','developer.review.completed']],
+    ['developer-correctness-reviewer','build','Developer correctness reviewer','safe',20,['file','git','terminal','ravn','mimir_query'],'plan.review.completed',['developer.plan.revised']],
+    ['developer-integration-verifier','build','Developer integration verifier','safe',28,['terminal'],'developer.integration.reviewed',['developer.integration.verified']],
+    ['developer-security-plan-reviewer','build','Developer security plan reviewer','safe',22,['file','git','terminal','web','ravn','mimir_query','tracker_issue'],'plan.review.completed',['developer.plan.revised']],
+    ['developer-security-reviewer','build','Developer security reviewer','safe',26,['file','git','terminal','web','ravn','mimir_query','tracker_issue'],'developer.review.completed',['developer.candidate.verified']],
+    ['domain-drive','build','Domain drive','default',120,['file','git','terminal','web','ravn','mimir_query','mimir_write','mimir_read','tracker_issue','cascade','workflow','kubernetes','github','capability_list','learned_tool_run'],'domain_drive.oriented',[]],
+    ['ivaldi','build','Ivaldi','default',80,['file','terminal','web','ravn','mimir_query','mimir_write','mimir_read','tracker_issue','workflow','kubernetes','capability_list','learned_tool_run','signal_ack','nats','spark'],'valkyrie.judgment.proposed',['signal.received','environment.state.changed','valkyrie.state.updated']],
+    ['k8s-valkyrie','build','K8s valkyrie','default',80,['file','terminal','web','ravn','mimir_query','mimir_write','mimir_read','tracker_issue','workflow','kubernetes','capability_list','learned_tool_run','signal_ack','helm','flux','github'],'valkyrie.judgment.proposed',['signal.kubernetes.event','environment.state.changed','valkyrie.state.updated']],
+    ['mimir-memory-curator','knowledge','Transforms ingested memory sources into Mimir wiki knowledge.','default',20,['mimir_query','mimir_write','mimir_read','file'],'mimir.curated',['mimir.source.ingested']],
+    ['mimir-warden','knowledge','Long-lived Mimir warden for curation, refresh, and dream-cycle maintenance.','default',60,['mimir_query','mimir_write','mimir_read','file','web','ravn','terminal','git','cascade'],'mimir.warden.completed',['mimir.source.ingested','mimir.page.stale','mimir.dream.requested']],
+    ['postmortem-analyst','build','Postmortem analyst','default',18,['file','mimir_query','mimir_write','web','ravn'],'mimir.source.ingested',['review.completed','security.completed']],
+    ['product-steward','build','Product steward','safe',0,['file','git','web','ravn','mimir_query','mimir_write','mimir_read','tracker_issue','workflow','cascade','research'],'',['research.completed','research.failed','spec.completed']],
+    ['publisher','build','Publisher','default',16,['git'],'delivery.publish.completed',['delivery.merged']],
+    ['research-analyst','build','Research analyst','default',28,['file','web','ravn','mimir_query','mimir_read'],'research.analysis.completed',['research.threads.joined']],
+    ['research-coordinator','build','Research coordinator','safe',20,['file','web','ravn','mimir_query','cascade','workflow'],'research.coordination.decision',['research.framed','research.threads.blocked']],
+    ['research-curator','build','Research curator','default',18,['file','mimir_query','mimir_write','mimir_read'],'research.curated.completed',['research.synthesized']],
+    ['research-explorer','build','Research explorer','default',20,['file','web','ravn','mimir_query','mimir_read','terminal','git'],'research.thread.exploration.completed',['research.thread.requested']],
+    ['research-explorer-breadth','build','Research explorer breadth','default',20,['file','web','ravn','mimir_query','mimir_read','terminal','git'],'research.breadth.completed',['research.framed']],
+    ['research-explorer-contrarian','build','Research explorer contrarian','default',18,['file','web','ravn','mimir_query','mimir_read','terminal','git'],'research.contrarian.completed',['research.framed']],
+    ['research-explorer-depth','build','Research explorer depth','default',22,['file','web','ravn','mimir_query','mimir_read','terminal','git'],'research.depth.completed',['research.framed']],
+    ['research-framer','build','Research framer','default',24,['file','web','ravn','mimir_query','mimir_read'],'research.frame.completed',['research.requested']],
+    ['research-publisher','build','Research publisher','default',18,['file','mimir_write','mimir_read','git','tracker_issue'],'research.publish.completed',['research.curated']],
+    ['research-skeptic','build','Research skeptic','default',22,['file','web','ravn','mimir_query'],'research.critique.completed',['research.analyzed']],
+    ['research-synthesist','build','Research synthesist','default',24,['file','web','ravn','mimir_query'],'research.synthesis.completed',['research.challenged']],
+    ['resident-codex','build','Resident codex','loose',80,['file','git','terminal','web','ravn','mimir_query','mimir_write','mimir_read','tracker_issue','cascade'],'',[]],
+    ['reviewer','review','Reviews code changes and provides feedback.','default',25,['file','git','terminal','web','ravn','tracker_issue'],'review.completed',['code.changed','review.requested']],
+    ['saga-brief-framer','build','Saga brief framer','safe',8,['tracker_issue'],'plan.brief.frame.completed',['plan.requested','plan.brief.changes_requested']],
+    ['saga-plan-publisher','build','Saga plan publisher','default',8,['tracker_issue','mimir_write','git'],'plan.publish.completed',['plan.approved']],
+    ['saga-plan-reviewer','build','Saga plan reviewer','safe',8,['tracker_issue'],'plan.breakdown.review.completed',['plan.breakdown.drafted']],
+    ['saga-planner','build','Saga planner','safe',20,['tracker_issue','file','mimir_query','web','ravn'],'plan.breakdown.author.completed',['plan.brief.approved','plan.breakdown.changes_requested']],
+    ['security-auditor','review','Periodic deep security audits.','safe',25,['file','git','terminal','web'],'security.completed',['code.changed']],
+    ['specification-breakdown-critic','build','Specification breakdown critic','default',16,['file','mimir_query','web','ravn'],'spec.breakdown.review.completed',['spec.breakdown.drafted']],
+    ['specification-breakdown-planner','build','Specification breakdown planner','default',22,['file','mimir_query','web','ravn'],'spec.breakdown.author.completed',['spec.sdd.approved','spec.breakdown.changes_requested']],
+    ['specification-framer','build','Specification framer','default',18,['file','mimir_query','web'],'spec.frame.completed',['spec.requested']],
+    ['specification-prd-author','build','Specification prd author','default',24,['file','mimir_query','web','ravn'],'spec.prd.author.completed',['spec.framed','spec.prd.changes_requested']],
+    ['specification-prd-critic','build','Specification prd critic','default',18,['file','mimir_query','web','ravn'],'spec.prd.review.completed',['spec.prd.drafted']],
+    ['specification-publisher','build','Specification publisher','default',16,['file','mimir_write','mimir_read','git','tracker_issue'],'spec.publish.completed',['spec.breakdown.approved']],
+    ['specification-sdd-author','build','Specification sdd author','default',24,['file','mimir_query','web','ravn'],'spec.sdd.author.completed',['spec.srd.approved','spec.sdd.changes_requested']],
+    ['specification-sdd-critic','build','Specification sdd critic','default',18,['file','mimir_query','web','ravn'],'spec.sdd.review.completed',['spec.sdd.drafted']],
+    ['specification-srd-author','build','Specification srd author','default',22,['file','mimir_query','web','ravn'],'spec.srd.author.completed',['spec.prd.approved','spec.srd.changes_requested']],
+    ['specification-srd-critic','build','Specification srd critic','default',18,['file','mimir_query','web','ravn'],'spec.srd.review.completed',['spec.srd.drafted']],
+  ].map(([name, role, summary, perm, iters, tools, produces, consumes]) => ({ name, role, summary, perm, iters, tools, produces, consumes }));
+
+  const REVIEWER_PROMPT = `## Identity
+
+You are a code reviewer. Your job is to identify issues in code changes and
+produce a structured review verdict. You focus on correctness, maintainability,
+and adherence to project conventions. In tracker-driven delivery workflows,
+you also leave a durable review artifact and use the generic tracker tooling
+rather than provider-specific integrations.
+
+## Core Principles
+
+1. **Review the actual change** — Focus on the diff, not the entire file. The
+   surrounding code is context, not the subject.
+2. **Prioritise by impact** — Lead with correctness and security. Style comes
+   last, and only when it hides a defect.
+3. **Be specific** — Every finding names the file, the line, what is wrong and
+   what would fix it.
+
+## Output
+
+Emit review.completed with a verdict of approve, request_changes or comment,
+and a findings count. Critical findings block the fan-in.`;
+
+  const PROFILES = [
+    { id: 'ravn-local', name: 'Ravn', engine: 'ravn', backend: 'local', target: 'Local Forge', desc: 'Ravn runtime in the local container engine', caps: ['Chat','Approvals','Logs','Usage'], models: ['gpt-5.6-sol','claude-sonnet-4-6','niuu/nvidia/nemotron-3-super'], personaRequired: true },
+    { id: 'nemoclaw-local', name: 'NemoClaw', engine: 'openclaw', backend: 'local', target: 'Local Forge', desc: 'NVIDIA OpenClaw in the local container engine', caps: ['Chat','Conversations','Steer','Logs'], models: ['niuu/nvidia/nemotron-3-super'], personaRequired: false },
+    { id: 'nemohermes-local', name: 'NemoHermes', engine: 'hermes', backend: 'local', target: 'Local Forge', desc: 'NVIDIA NemoHermes in the local container engine', caps: ['Chat','Conversations','Steer','Logs'], models: ['niuu/nvidia/nemotron-3-super'], personaRequired: false },
+    { id: 'ravn-k8s', name: 'Ravn', engine: 'ravn', backend: 'helmrelease', target: 'valhalla', desc: 'Ravn resident as a HelmRelease on the cluster', caps: ['Chat','Approvals','Flock','Logs'], models: ['claude-sonnet-4-6','gpt-5.6-sol'], personaRequired: true },
+  ];
+
+  const LOGS = [
+    ['09:41:02','INFO','ravn.agent','turn started','session=a1 trigger=chat'],
+    ['09:41:02','INFO','ravn.tools','kubectl_get pods -A','rows=214 ms=380'],
+    ['09:41:04','INFO','ravn.tools','mimir_query','q="valhalla incidents 2026-09-23" hits=3'],
+    ['09:41:06','WARN','valkyrie.signal','pod restarted','ns=nats pod=nats-2 reason=OOMKilled count=3'],
+    ['09:41:07','INFO','valkyrie.judgment','case opened','case=c-2291 subject=nats-2'],
+    ['09:41:11','INFO','ravn.agent','turn completed','tokens=4812 cost=0.041'],
+    ['09:43:30','INFO','ravn.agent','turn started','session=a1 trigger=chat'],
+    ['09:43:33','INFO','ravn.approvals','approval requested','tool=terminal cmd="git push origin bump/nats-memory"'],
+    ['09:44:00','DEBUG','skuld.ws','heartbeat','peers=1'],
+    ['09:45:12','INFO','valkyrie.signal','signal acknowledged','source=flux kind=GitRepository'],
+    ['09:47:51','ERROR','ravn.tools','github_pr_create failed','status=422 reason="branch not found"'],
+    ['09:47:52','INFO','ravn.agent','retrying with pushed branch','attempt=2'],
+  ];
+
+  // ------------------------------------------------------------------ state
+  const S = {
+    top: 'ravens', data: 'example', sel: 'a1', filter: 'all', group: 'state', q: '',
+    dtab: 'chat', conv: 0, persona: 'reviewer', pq: '', psrc: 'all', pview: 'sheet', editing: false,
+    closedFam: {}, deploy: null, notes: false, open: false, logLevel: 'all', promptOpen: false, toast: '',
+  };
+  try { const saved = JSON.parse(localStorage.getItem('ravn-mock') || '{}'); Object.assign(S, pick(saved, ['top','data','dtab'])); } catch (e) {}
+  function pick(o, ks) { const r = {}; ks.forEach(k => { if (o && o[k] !== undefined) r[k] = o[k]; }); return r; }
+  function persist() { try { localStorage.setItem('ravn-mock', JSON.stringify(pick(S, ['top','data','dtab']))); } catch (e) {} }
+
+  const fleet = () => (S.data === 'live' ? LIVE : EXAMPLE);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const stateOf = (r) => r.observed === 'active' ? 'running' : ['pending','deploying'].includes(r.observed) ? 'starting' : r.observed === 'suspended' ? 'suspended' : r.observed === 'failed' ? 'failed' : 'starting';
+  const STATE_LABEL = { running: 'Running', starting: 'Starting', suspended: 'Suspended', failed: 'Failed' };
+  const needsAttention = (r) => stateOf(r) === 'failed';
+  const fmtTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
+  const fmtUsd = (n) => '$' + (n < 10 ? n.toFixed(2) : n.toFixed(0));
+  const personaOf = (name) => PERSONAS.find((p) => p.name === name);
+  const humanize = (name) => name.replace(/-/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
+  const usedBy = (pname) => [...EXAMPLE, ...LIVE.slice(1)].filter((r) => r.persona === pname);
+  const letter = (r) => (r.name || '?').charAt(0).toUpperCase();
+  const whyLine = (r) => {
+    const st = stateOf(r);
+    if (st === 'failed') return 'Backend not ready · reconcile failed';
+    if (st === 'starting') return 'Deploying on ' + r.target + '…';
+    return '';
+  };
+
+  // ------------------------------------------------------------------ top
+  function renderTop() {
+    const t = document.getElementById('topTabs');
+    t.innerHTML = [['ravens','Ravens',fleet().length],['personas','Personas',PERSONAS.length]].map(([id,l,n]) =>
+      `<button role="tab" aria-selected="${S.top === id}" data-act="top" data-v="${id}">${l}<span class="count">${n}</span></button>`).join('');
+    document.getElementById('dataExample').setAttribute('aria-pressed', S.data === 'example');
+    document.getElementById('dataLive').setAttribute('aria-pressed', S.data === 'live');
+  }
+
+  // ------------------------------------------------------------------ ravens list
+  function filtered() {
+    const q = S.q.trim().toLowerCase();
+    return fleet().filter((r) => {
+      const st = stateOf(r);
+      if (S.filter === 'attention' && !needsAttention(r)) return false;
+      if (S.filter === 'running' && st !== 'running') return false;
+      if (S.filter === 'suspended' && st !== 'suspended') return false;
+      if (!q) return true;
+      return [r.name, r.persona, r.engine, r.model, r.target].join(' ').toLowerCase().includes(q);
+    });
+  }
+  function groups(list) {
+    const key = { state: (r) => STATE_LABEL[stateOf(r)], target: (r) => r.target, engine: (r) => r.engine, flock: (r) => r.flock ? 'Flock · ' + r.flock : 'Standalone' }[S.group];
+    const order = ['Failed','Starting','Running','Suspended'];
+    const m = new Map();
+    list.forEach((r) => { const k = key(r); if (!m.has(k)) m.set(k, []); m.get(k).push(r); });
+    return [...m.entries()].sort((a, b) => S.group === 'state' ? order.indexOf(a[0]) - order.indexOf(b[0]) : a[0].localeCompare(b[0]));
+  }
+  function ravnRow(r) {
+    const st = stateOf(r);
+    const why = whyLine(r);
+    return `<button class="row" data-act="sel" data-v="${r.id}" aria-current="${S.sel === r.id}">
+      <span class="av" data-eng="${r.engine}">${letter(r)}<span class="pip" data-s="${st}"></span></span>
+      <span style="min-width:0">
+        <span class="name" style="display:block">${esc(r.name)}</span>
+        <span class="meta"><span class="eng" data-e="${r.engine}">${r.engine}</span><span class="dotsep">·</span><span style="overflow:hidden;text-overflow:ellipsis">${esc(r.model)}</span></span>
+        ${why ? `<span class="why ${st === 'starting' ? 'warn' : ''}" style="display:block">${esc(why)}</span>` : ''}
+      </span>
+      <span class="right"><span class="state" data-s="${st}">${STATE_LABEL[st]}</span><span class="age">${r.seen === 'now' ? 'active now' : r.seen === '—' ? 'new' : r.seen + ' ago'}</span></span>
+    </button>`;
+  }
+  function renderRavens() {
+    const all = fleet();
+    if (!all.find((r) => r.id === S.sel)) S.sel = all[0]?.id;
+    const counts = {
+      attention: all.filter(needsAttention).length,
+      running: all.filter((r) => stateOf(r) === 'running').length,
+      suspended: all.filter((r) => stateOf(r) === 'suspended').length,
+      all: all.length,
+    };
+    const pill = (id, label, cls = '') => `<button class="${cls}" data-act="filter" data-v="${id}" aria-pressed="${S.filter === id}">${label}<span class="n">${counts[id]}</span></button>`;
+    const list = filtered();
+    const sel = all.find((r) => r.id === S.sel);
+    const totals = all.reduce((a, r) => ({ t: a.t + r.tokens, c: a.c + r.cost }), { t: 0, c: 0 });
+    return `<div class="split" data-open="${S.open}">
+      <aside class="list" aria-label="Ravens">
+        <div class="list-head">
+          <div><h2>Ravens</h2><div class="sub">${counts.running} running · ${counts.attention} need attention</div></div>
+          <button class="primary" data-act="deploy">${I.plus} Deploy</button>
+        </div>
+        <div class="pills" aria-label="Filter by state">
+          ${pill('all','All')}${counts.attention ? pill('attention','Needs attention','attn') : ''}${pill('running','Running')}${pill('suspended','Suspended')}
+        </div>
+        <div class="list-tools">
+          <label class="search">${I.search}<input id="ravnSearch" placeholder="Filter by name, persona, model…" value="${esc(S.q)}" data-input="q"></label>
+          <label class="group-sel" for="groupSel">Group<select id="groupSel" data-change="group">
+            ${[['state','State'],['target','Target'],['engine','Engine'],['flock','Flock']].map(([v,l]) => `<option value="${v}" ${S.group === v ? 'selected' : ''}>${l}</option>`).join('')}
+          </select></label>
+        </div>
+        <div class="list-scroll">
+          ${list.length ? groups(list).map(([g, rs]) => `<div class="ghead"><span>${esc(g)}</span><span class="num">${rs.length}</span></div>${rs.map(ravnRow).join('')}`).join('') : `<p style="padding:16px;color:var(--tx-3)">No ravens match these filters.</p>`}
+        </div>
+        <div class="list-foot">
+          <div><span class="k">Today</span> · <span class="num">${fmtTok(totals.t)}</span> tokens · <span class="num">${fmtUsd(totals.c)}</span></div>
+          <div><span class="k">Not enabled on this host:</span> triggers, budget caps</div>
+        </div>
+      </aside>
+      <section class="detail">${sel ? renderDetail(sel) : ''}</section>
+    </div>`;
+  }
+
+  // ------------------------------------------------------------------ ravn detail
+  function renderDetail(r) {
+    const st = stateOf(r);
+    const running = st === 'running';
+    const p = personaOf(r.persona);
+    const canRestart = r.caps.includes('runtime.restart') && ['running','failed'].includes(st);
+    const canSuspend = r.caps.includes('runtime.suspend') && st === 'running';
+    const canResume = r.caps.includes('runtime.suspend') && st === 'suspended';
+    const tabs = [['chat','Chat', r.convs ? r.convs.length : null],['activity','Activity',null],['setup','Setup',null],['usage','Usage',null]];
+    return `
+      <header class="dhead">
+        <button class="ghost back" data-act="back">${I.back} Ravens</button>
+        <span class="av lg" data-eng="${r.engine}">${letter(r)}</span>
+        <div class="who">
+          <h1>${esc(r.name)} <span class="state" data-s="${st}">${STATE_LABEL[st]}</span></h1>
+          <div class="chips">
+            ${r.persona ? `<span class="chip link" data-act="gopersona" data-v="${r.persona}"><span class="k">persona</span>${esc(r.persona)}</span>` : `<span class="chip"><span class="k">persona</span>engine default</span>`}
+            <span class="chip"><span class="eng" data-e="${r.engine}">${r.engine}</span><span class="k">on</span>${r.backend}</span>
+            <span class="chip"><span class="k">model</span><span class="mono" style="font-size:11px">${esc(r.model)}</span></span>
+            <span class="chip"><span class="k">target</span>${esc(r.target)}</span>
+            ${r.flock ? `<span class="chip"><span class="k">flock</span>${esc(r.flock)} · ${esc(r.flockRole)}</span>` : ''}
+            <span class="chip"><span class="k">deployed</span>${r.created} ago</span>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary" data-act="dtab" data-v="chat" ${running ? '' : 'disabled title="Only a running ravn can talk"'}>${I.chat} Talk</button>
+          ${canResume ? `<button class="ib" title="Resume" aria-label="Resume" data-act="toast" data-v="Resuming ${esc(r.name)}…">${I.play}</button>` : ''}
+          ${canSuspend ? `<button class="ib" title="Suspend" aria-label="Suspend" data-act="toast" data-v="Suspending ${esc(r.name)}…">${I.pause}</button>` : ''}
+          <button class="ib" title="Restart" aria-label="Restart" ${canRestart ? '' : 'disabled'} data-act="toast" data-v="Restarting ${esc(r.name)}…">${I.restart}</button>
+          <button class="ib danger" title="Delete" aria-label="Delete" data-act="toast" data-v="Delete asks for confirmation and names what the backend removes">${I.trash}</button>
+        </div>
+      </header>
+      ${renderBanner(r)}
+      <nav class="dtabs" role="tablist">
+        ${tabs.map(([id,l,n]) => `<button role="tab" aria-selected="${S.dtab === id}" data-act="dtab" data-v="${id}">${l}${n ? `<span class="n">${n}</span>` : ''}</button>`).join('')}
+      </nav>
+      <div class="dbody">${renderDTab(r, p)}</div>`;
+  }
+  function renderBanner(r) {
+    const st = stateOf(r);
+    if (st === 'failed') {
+      return `<div class="banner" role="alert">
+        <span class="ico">${I.alert}</span>
+        <div><strong>Not running — the backend isn't ready</strong>
+          <p>${esc(r.target)} couldn't reconcile this ${r.backend} ${r.engine} runtime (${esc(r.cond.reason)}, ${esc(r.cond.since)}). It wants to be running, so it will keep retrying.</p>
+          <code>${esc(r.cond.type)}: ${esc(r.cond.message)}</code></div>
+        <div class="acts"><button class="ghost" data-act="dtab" data-v="activity">View logs</button><button class="primary" data-act="toast" data-v="Restarting ${esc(r.name)}…">${I.restart} Restart</button></div>
+      </div>`;
+    }
+    if (st === 'starting') {
+      return `<div class="banner warn" role="status">
+        <span class="ico">${I.info}</span>
+        <div><strong>Starting on ${esc(r.target)}</strong>
+          <div class="steps"><span class="done">${I.check} Accepted</span><i></i><span class="now">Deploying container</span><i></i><span>Runtime ready</span><i></i><span>Chat available</span></div></div>
+        <div class="acts"><button class="ghost" data-act="dtab" data-v="activity">Watch logs</button></div>
+      </div>`;
+    }
+    if (st === 'suspended') {
+      return `<div class="banner quiet" role="status">
+        <span class="ico">${I.pause}</span>
+        <div><strong>Suspended</strong><p>Nothing runs and nothing is billed. Conversations are kept and come back on resume.</p></div>
+        <div class="acts"><button class="primary" data-act="toast" data-v="Resuming ${esc(r.name)}…">${I.play} Resume</button></div>
+      </div>`;
+    }
+    return '';
+  }
+  function renderDTab(r, p) {
+    if (S.dtab === 'activity') return renderActivity(r);
+    if (S.dtab === 'setup') return renderSetup(r, p);
+    if (S.dtab === 'usage') return renderUsage(r);
+    return renderChat(r);
+  }
+
+  function renderChat(r) {
+    const st = stateOf(r);
+    if (st !== 'running') {
+      const map = {
+        failed: [`${esc(r.name)} isn't running`, 'There is nobody on the other end until the runtime is healthy again. The banner above says why; restart once the cause is fixed.', `<button class="ghost" data-act="dtab" data-v="activity">View logs</button><button class="primary" data-act="toast" data-v="Restarting ${esc(r.name)}…">${I.restart} Restart</button>`],
+        starting: [`${esc(r.name)} is starting`, 'Chat opens here on its own as soon as the runtime reports ready.', ''],
+        suspended: [`${esc(r.name)} is suspended`, 'Resume it to pick up where the conversation left off.', `<button class="primary" data-act="toast" data-v="Resuming ${esc(r.name)}…">${I.play} Resume</button>`],
+      }[st];
+      return `<div class="empty"><div class="inner"><span class="av lg" data-eng="${r.engine}">${letter(r)}</span><h3>${map[0]}</h3><p>${map[1]}</p><div class="acts">${map[2]}</div>${r.msgs ? `<p style="font-size:12px;color:var(--tx-4)">${r.msgs} earlier messages are kept.</p>` : ''}</div></div>`;
+    }
+    const convs = r.convs;
+    const transcript = r.chat === 'eitri' ? eitriTranscript() : r.chat === 'regin' ? reginTranscript() : muninnTranscript();
+    return `<div class="chatwrap ${convs ? '' : 'solo'}">
+      ${convs ? `<div class="convs"><div class="head"><span>Conversations</span><button class="ghost" style="padding:2px 7px" data-act="toast" data-v="New conversation: title + model, then it opens here">${I.plus} New</button></div>
+        ${convs.map(([t, s, m], i) => `<button class="conv" data-act="conv" data-v="${i}" aria-current="${S.conv === i}"><span class="t">${esc(t)}</span><span class="m">${s === 'running' ? '<span style="color:var(--ok)">● live</span> · ' : ''}${esc(m)}</span></button>`).join('')}
+      </div>` : ''}
+      <div class="chat">
+        <div class="transcript" role="log" aria-label="Conversation">${transcript}</div>
+        <div class="composer"><div class="box"><textarea rows="1" id="composer" placeholder="Message ${esc(r.name)} — / for commands, @ to mention a peer"></textarea><button class="send" aria-label="Send">${I.send}</button></div>
+          <div class="hint"><span>⏎ send · ⇧⏎ newline</span><span>Esc interrupts a turn</span></div></div>
+      </div>
+    </div>`;
+  }
+  const bot = (r, body) => `<div class="msg"><span class="av sm" data-eng="${r.engine}">${letter(r)}</span><div><div class="who">${esc(r.name)}</div><div class="body">${body}</div></div></div>`;
+  const me = (body) => `<div class="msg user"><div class="body">${body}</div></div>`;
+  function muninnTranscript() {
+    const r = EXAMPLE[0];
+    return me('What changed in valhalla overnight?') +
+      bot(r, `<div class="tool">⚙ <b>kubectl_get</b> pods -A · 214 rows</div><div class="tool">⚙ <b>mimir_query</b> "valhalla incidents 2026-09-23" · 3 pages</div>
+        <p>Two things worth knowing. The fleet GitRepo converged at 03:12 and vanaheim followed last, as usual. <b>nats-2 restarted three times (OOMKilled)</b> — I opened case c-2291 and I'm watching it.</p><p>Nothing needs you right now.</p>`) +
+      me('Raise the memory limit?') +
+      bot(r, `<p>It's a chart value in <span class="mono">jve/infrastructure</span>, so I prepared a bump branch. Pushing it needs your OK:</p>
+        <div class="approval"><div class="h">Muninn wants to run a command</div><code>git push origin bump/nats-memory</code><div style="display:flex;gap:8px"><button class="primary" data-act="toast" data-v="Allowed once">Allow once</button><button class="ghost" data-act="toast" data-v="Denied">Deny</button></div></div>`);
+  }
+  function eitriTranscript() {
+    const r = EXAMPLE[1];
+    return me('The kernel build on laevateinn flaked again. Can you see why?') +
+      bot(r, `<div class="tool">⚙ <b>terminal</b> journalctl -u build-kernel --since -2h · 1.2k lines</div><div class="tool">⚙ <b>spark</b> thermals · 71°C peak</div>
+      <p>It's the same linker OOM as Tuesday: <span class="mono">ld</span> is killed at 62 GB when the parallel LTO jobs overlap. Thermals are fine.</p><p>Dropping <span class="mono">-j</span> from 32 to 24 for the link step fixed it on the retry — the build is green now.</p>`) +
+      me('Make that stick.') +
+      bot(r, `<p>Done — pinned <span class="mono">LTO_JOBS=24</span> in the workshop build profile and noted it in Mímir under <i>laevateinn / kernel builds</i>.</p>`);
+  }
+  function reginTranscript() {
+    const r = EXAMPLE[2];
+    return me('Status of the nats keepers?') +
+      bot(r, `<div class="tool">⚙ <b>nats</b> server list · 3 nodes</div><p>All three nodes healthy, JetStream in sync, 0 pending acks older than 5 min. I'm coordinating 2 peers in the <b>nats-keepers</b> flock; both reported in the last minute.</p>`);
+  }
+
+  function renderActivity(r) {
+    if (r.logsError) {
+      return `<div class="logbar"><strong style="font-size:12.5px">Runtime logs</strong></div>
+        <div class="empty" style="height:auto"><div class="inner"><h3>Logs can't be read right now</h3><p>The runtime's log buffer lives inside the container, and the container engine isn't reachable.</p><code class="mono" style="font-size:11.5px;color:var(--crit-fg);text-align:left;white-space:pre-wrap">${esc(r.logsError)}</code><div class="acts"><button class="ghost" data-act="toast" data-v="Retrying…">Retry</button></div></div></div>`;
+    }
+    if (stateOf(r) === 'starting') {
+      return `<div class="logs">${[['09:52:10','INFO','volundr.resident','deploy accepted','profile=nemoclaw-local'],['09:52:11','INFO','docker','pulling image','ghcr.io/niuulabs/nemoclaw:0.9.4'],['09:52:40','INFO','docker','container created','name=volundr-resident-ivaldi']].map(logLine).join('')}</div>`;
+    }
+    const lv = S.logLevel;
+    const rows = LOGS.filter((l) => lv === 'all' || (lv === 'warn' ? ['WARN','ERROR'].includes(l[1]) : lv === 'error' ? l[1] === 'ERROR' : true));
+    return `<div class="logbar">
+      <div class="seg">${[['all','All'],['warn','Warnings'],['error','Errors']].map(([v,l]) => `<button data-act="loglevel" data-v="${v}" aria-pressed="${lv === v}">${l}</button>`).join('')}</div>
+      <label class="search" style="max-width:280px">${I.search}<input placeholder="Search logs"></label>
+      <span style="flex:1"></span><span class="state" data-s="running">Following</span>
+    </div><div class="logs">${rows.map(logLine).join('')}</div>`;
+  }
+  const logLine = ([ts, lv, tg, msg, f]) => `<div class="logline"><span class="ts">${ts}</span><span class="lv" data-l="${lv}">${lv}</span><span class="tg">${esc(tg)}</span><span>${esc(msg)} <span class="fields">${esc(f)}</span></span></div>`;
+
+  function renderSetup(r, p) {
+    const has = new Set(r.caps);
+    const capHtml = ALL_CAPS.filter((c) => !['metrics','usage'].includes(c)).map((c) =>
+      `<span class="cap ${has.has(c) ? '' : 'off'}" title="${has.has(c) ? 'Supported by this runtime' : 'Not offered by the ' + r.profile + ' profile'}">${has.has(c) ? I.check : I.dash}${CAP_LABEL[c]}</span>`).join('');
+    const cond = r.cond || { type: 'BackendReady', status: 'true', reason: 'Ready', message: 'Runtime reported ready', since: r.created + ' ago' };
+    return `<div class="sheet">
+      <div class="sec"><h3>Persona ${p ? `<button data-act="gopersona" data-v="${p.name}">Open persona →</button>` : ''}</h3>
+        ${p ? `<div class="persona-card"><span class="av" data-eng="${r.engine}">${p.name.charAt(0).toUpperCase()}</span><div><div class="t">${esc(p.name)}</div><div class="s">${esc(p.summary)} · ${p.tools.length} tools · ${p.iters ? p.iters + ' iterations' : 'no iteration cap'}</div></div></div>`
+            : `<div class="persona-card"><div><div class="t">Engine default</div><div class="s">${r.engine} runs with its own built-in character. Personas apply to ravn-engine runtimes.</div></div></div>`}
+      </div>
+      <div class="sec"><h3>Runtime</h3><div class="kv">
+        <div><div class="k">Engine</div><div class="v"><span class="eng" data-e="${r.engine}">${r.engine}</span></div></div>
+        <div><div class="k">Backend</div><div class="v">${r.backend}</div></div>
+        <div><div class="k">Profile</div><div class="v mono">${r.profile}</div></div>
+        <div><div class="k">Target</div><div class="v">${esc(r.target)}</div></div>
+        <div><div class="k">Model</div><div class="v mono">${esc(r.model)}</div></div>
+        <div><div class="k">Wants / is</div><div class="v">${r.desired} / ${r.observed}</div></div>
+      </div></div>
+      <div class="sec"><h3>What it can do</h3><div class="caps">${capHtml}</div></div>
+      <div class="sec"><h3>Health</h3><div class="tablewrap"><table class="cond"><thead><tr><th>Check</th><th>Status</th><th>Reason</th><th>Detail</th><th>Since</th></tr></thead>
+        <tbody><tr><td>${cond.type}</td><td>${cond.status === 'true' ? '<span class="state" data-s="running">ok</span>' : '<span class="state" data-s="failed">' + cond.status + '</span>'}</td><td>${cond.reason}</td><td class="msgc">${esc(cond.message)}</td><td>${cond.since}</td></tr></tbody></table></div></div>
+      ${r.endpoints || r.mcp ? `<div class="sec"><h3>Connections</h3><div class="kv">
+        ${(r.endpoints || []).map(([k, pr, u]) => `<div><div class="k">${k} · ${pr}</div><div class="v mono">${esc(u)}</div></div>`).join('')}
+        ${r.mcp ? `<div><div class="k">MCP servers</div><div class="v">${r.mcp.join(', ')}</div></div>` : ''}
+        ${r.subs ? `<div><div class="k">Listens for</div><div class="v mono">${r.subs.join('\n')}</div></div>` : ''}
+      </div></div>` : ''}
+      <div class="sec"><h3>Identifiers</h3><div class="kv">
+        <div><div class="k">Ravn id</div><div class="v mono">${r.id}…</div></div>
+        <div><div class="k">Backend object</div><div class="v mono">${esc(r.backendRef || 'HelmRelease · ravn/' + r.name.toLowerCase())}</div></div>
+      </div></div>
+    </div>`;
+  }
+
+  function renderUsage(r) {
+    const convBars = r.convs ? r.convs.map(([t, , m]) => [t, parseInt(m, 10)]) : null;
+    const max = convBars ? Math.max(...convBars.map((b) => b[1])) : 1;
+    return `<div class="sheet">
+      <div class="stats">
+        <div class="stat"><div class="k">Messages</div><div class="v">${r.msgs.toLocaleString()}</div><div class="s">since deploy</div></div>
+        <div class="stat"><div class="k">Tokens</div><div class="v">${fmtTok(r.tokens)}</div><div class="s">in + out</div></div>
+        <div class="stat"><div class="k">Cost</div><div class="v">${r.cost ? fmtUsd(r.cost) : '$0'}</div><div class="s">${r.cost ? 'at list price' : 'local model — no metered cost'}</div></div>
+      </div>
+      ${convBars ? `<div class="sec"><h3>Messages by conversation</h3><div class="bars">${convBars.map(([t, v]) => `<div class="bar"><span class="lbl">${esc(t)}</span><span class="track"><span class="fill" style="display:block;width:${(v / max) * 100}%"></span></span><span class="val">${v}</span></div>`).join('')}</div></div>` : ''}
+      <div class="banner quiet" style="margin:0"><span class="ico">${I.info}</span><div><strong>Budget caps aren't enabled on this host</strong><p>This platform profile runs without the Ravn budget store, so there is no cap to show. Usage above is still measured.</p></div><div></div></div>
+    </div>`;
+  }
+
+  // ------------------------------------------------------------------ personas
+  function families() {
+    const q = S.pq.trim().toLowerCase();
+    const list = PERSONAS.filter((p) => !q || (p.name + ' ' + p.summary + ' ' + p.produces + ' ' + p.consumes.join(' ')).toLowerCase().includes(q));
+    const prefixCount = {};
+    PERSONAS.forEach((p) => { const k = p.name.split('-')[0]; prefixCount[k] = (prefixCount[k] || 0) + 1; });
+    const m = new Map();
+    list.forEach((p) => {
+      const k = p.name.split('-')[0];
+      const fam = prefixCount[k] > 1 ? humanize(k) : 'General';
+      if (!m.has(fam)) m.set(fam, []);
+      m.get(fam).push(p);
+    });
+    return [...m.entries()].sort((a, b) => a[0] === 'General' ? -1 : b[0] === 'General' ? 1 : a[0].localeCompare(b[0]));
+  }
+  function personaSub(p) {
+    const plain = humanize(p.name).toLowerCase() === p.summary.toLowerCase();
+    if (!plain) return esc(p.summary);
+    return p.produces ? 'emits <span class="mono">' + esc(p.produces) + '</span>' : esc(p.tools.length + ' tools');
+  }
+  function renderPersonas() {
+    const p = personaOf(S.persona) || PERSONAS[0];
+    const fams = families();
+    return `<div class="split" data-open="${S.open}">
+      <aside class="list" aria-label="Personas">
+        <div class="list-head"><div><h2>Personas</h2><div class="sub">the character a ravn runs with</div></div>
+          <button class="primary" data-act="toast" data-v="New persona opens the editor with an empty sheet">${I.plus} New</button></div>
+        <div class="pills">
+          <button aria-pressed="${S.psrc === 'all'}" data-act="psrc" data-v="all">All<span class="n">${PERSONAS.length}</span></button>
+          <button aria-pressed="${S.psrc === 'inuse'}" data-act="psrc" data-v="inuse">In use<span class="n">${PERSONAS.filter((x) => usedBy(x.name).length).length}</span></button>
+          <button aria-pressed="${S.psrc === 'custom'}" data-act="psrc" data-v="custom">Custom<span class="n">0</span></button>
+        </div>
+        <div class="list-tools"><label class="search">${I.search}<input id="personaSearch" placeholder="Search name, event, tool…" value="${esc(S.pq)}" data-input="pq"></label></div>
+        <div class="list-scroll">
+          ${fams.map(([f, ps]) => {
+            const shown = S.psrc === 'inuse' ? ps.filter((x) => usedBy(x.name).length) : S.psrc === 'custom' ? [] : ps;
+            if (!shown.length) return '';
+            const closed = S.closedFam[f];
+            return `<button class="fam" data-act="fam" data-v="${f}" aria-expanded="${!closed}"><span>${closed ? '▸' : '▾'} ${f}</span><span class="c">${shown.length}</span></button>` +
+              (closed ? '' : shown.map((x) => {
+                const n = usedBy(x.name).length;
+                return `<button class="prow" data-act="psel" data-v="${x.name}" aria-current="${x.name === p.name}"><span class="av sm">${x.name.charAt(0).toUpperCase()}</span><span style="min-width:0"><span class="name" style="display:block">${esc(x.name)}</span><span class="sub" style="display:block">${personaSub(x)}</span></span>${n ? `<span class="used">● ${n}</span>` : '<span></span>'}</button>`;
+              }).join(''));
+          }).join('') || (S.psrc === 'custom' ? '<p style="padding:16px;color:var(--tx-3)">No custom personas yet. Fork a built-in to make one.</p>' : '<p style="padding:16px;color:var(--tx-3)">No personas match.</p>')}
+        </div>
+      </aside>
+      <section class="detail">${renderPersona(p)}</section>
+    </div>`;
+  }
+  function renderPersona(p) {
+    const users = usedBy(p.name);
+    const isReviewer = p.name === 'reviewer';
+    const forbidden = isReviewer ? ['cascade'] : [];
+    const schema = isReviewer ? [['verdict','enum'],['findings_count','number'],['critical_count','number'],['summary','string'],['comments','string']] : [];
+    const header = `<header class="dhead">
+        <button class="ghost back" data-act="back">${I.back} Personas</button>
+        <span class="av lg">${p.name.charAt(0).toUpperCase()}</span>
+        <div class="who"><h1>${esc(p.name)}</h1>
+          <div class="chips"><span class="chip"><span class="k">role</span>${p.role}</span><span class="chip">Built-in</span>
+          <span class="chip"><span class="k">permissions</span>${p.perm}</span>
+          <span class="chip">${users.length ? `<span style="color:var(--ok)">●</span> used by ${users.length}` : 'not used by any ravn'}</span></div></div>
+        <div class="actions">
+          <div class="seg"><button aria-pressed="${S.pview === 'sheet'}" data-act="pview" data-v="sheet">Sheet</button><button aria-pressed="${S.pview === 'yaml'}" data-act="pview" data-v="yaml">YAML</button></div>
+          <button class="ghost" data-act="deploy" data-v="${p.name}">Deploy as ravn</button>
+          <button class="ghost" data-act="toast" data-v="Fork asks for a new name, then opens the copy">${I.fork} Fork</button>
+          <button class="primary" data-act="edit">${I.edit} Edit</button>
+        </div></header>`;
+    if (S.pview === 'yaml') return header + `<div class="dbody"><div class="sheet"><pre class="yaml">${yamlFor(p, forbidden)}</pre></div></div>`;
+    if (S.editing) return header + renderPersonaEdit(p);
+    return header + `<div class="dbody"><div class="sheet">
+      <div class="sec"><h3>What it does</h3><p style="margin:0;font-size:14px;color:var(--tx-2);max-width:68ch">${esc(p.summary)}</p></div>
+      <div class="sec"><h3>How it fits the flow</h3>
+        <div class="flow">
+          <div class="col"><span class="lbl">Wakes on</span>${p.consumes.length ? p.consumes.map((e) => `<span class="ev">${esc(e)}</span>`).join('') : '<span style="color:var(--tx-4);font-size:12px">direct requests only</span>'}</div>
+          <span class="arrow">${I.arrow}</span>
+          <span class="me"><span class="av">${p.name.charAt(0).toUpperCase()}</span>${p.iters ? p.iters + ' iterations max' : 'no cap'}</span>
+          <span class="arrow">${I.arrow}</span>
+          <div class="col out"><span class="lbl">Emits</span>${p.produces ? `<span class="ev prod">${esc(p.produces)}</span>` : '<span style="color:var(--tx-4);font-size:12px">nothing</span>'}${isReviewer ? '<span style="font-size:11.5px;color:var(--tx-3)">fan-in: all must pass → review.verdict</span>' : ''}</div>
+        </div>
+        ${schema.length ? `<div class="schema">${schema.map(([k, t]) => `<span><b>${k}</b>: ${t}</span>`).join('')}</div>` : ''}
+      </div>
+      <div class="sec"><h3>Tools</h3><div class="tools">${p.tools.map((t) => `<span>${t}</span>`).join('')}${forbidden.map((t) => `<span class="no" title="Forbidden">${t}</span>`).join('')}</div></div>
+      <div class="sec"><h3>Behaviour</h3><div class="kv">
+        <div><div class="k">Permission mode</div><div class="v">${p.perm}</div></div>
+        <div><div class="k">Iteration budget</div><div class="v">${p.iters || 'uncapped'}</div></div>
+        <div><div class="k">Extended thinking</div><div class="v">${isReviewer ? 'on' : 'off'}</div></div>
+        <div><div class="k">Max tokens · temperature</div><div class="v">model default · model default</div></div>
+        <div><div class="k">Mímir writes go to</div><div class="v">${p.tools.includes('mimir_write') ? 'shared' : '—'}</div></div>
+      </div></div>
+      <div class="sec"><h3>System prompt <button data-act="prompt">${S.promptOpen ? 'Collapse' : 'Expand'}</button></h3><div class="prompt ${S.promptOpen ? 'open' : ''}">${esc(isReviewer ? REVIEWER_PROMPT : '## Identity\n\nYou are ' + p.name + '. ' + p.summary + '\n\n…')}</div></div>
+      <div class="sec"><h3>Ravens using it</h3>${users.length ? `<div class="kv">${users.map((u) => `<div><div class="k">${esc(u.target)}</div><div class="v" style="display:flex;gap:8px;align-items:center"><span class="state" data-s="${stateOf(u)}">${STATE_LABEL[stateOf(u)]}</span>${esc(u.name)}</div></div>`).join('')}</div>` : `<p style="margin:0;color:var(--tx-3)">None yet. <button class="ghost" style="margin-left:6px" data-act="deploy" data-v="${p.name}">Deploy one</button></p>`}</div>
+    </div></div>`;
+  }
+  function renderPersonaEdit(p) {
+    return `<div class="dbody"><div class="editbar"><span class="grow"><b>Editing ${esc(p.name)}</b> — saving a built-in writes an override; the original stays one click away.</span><button class="ghost" data-act="edit">Discard</button><button class="primary" data-act="save">Save override</button></div>
+      <div class="sheet">
+        <div class="field"><label for="ps">What it does</label><input class="input" id="ps" value="${esc(p.summary)}"><span class="help">One sentence. Shown in lists and in the deploy picker.</span></div>
+        <div class="sec"><h3>How it fits the flow</h3><div class="row2">
+          <div class="field"><label for="pc">Wakes on</label><input class="input mono" id="pc" value="${esc(p.consumes.join(', '))}"></div>
+          <div class="field"><label for="pp">Emits</label><input class="input mono" id="pp" value="${esc(p.produces)}"></div>
+        </div></div>
+        <div class="sec"><h3>Behaviour</h3><div class="row2">
+          <div class="field"><label for="pm">Permission mode</label><select class="select" id="pm">${['default','safe','loose'].map((m) => `<option ${m === p.perm ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
+          <div class="field"><label for="pi">Iteration budget</label><input class="input" id="pi" type="number" value="${p.iters}"></div>
+          <div class="field"><label for="pt">Extended thinking</label><select class="select" id="pt"><option>on</option><option>off</option></select></div>
+        </div></div>
+        <div class="field"><label for="ptools">Tools</label><input class="input mono" id="ptools" value="${esc(p.tools.join(', '))}"><span class="help">Pick from the tool registry; forbidden tools are listed separately.</span></div>
+        <div class="field"><label for="pprompt">System prompt</label><textarea class="textarea" id="pprompt">${esc(p.name === 'reviewer' ? REVIEWER_PROMPT : '')}</textarea></div>
+      </div></div>`;
+  }
+  function yamlFor(p, forbidden) {
+    const k = (s) => `<span class="k">${s}</span>`;
+    return `<span class="c"># built-in · ${p.name}.yaml</span>
+${k('name')}: ${p.name}
+${k('role')}: ${p.role}
+${k('summary')}: ${esc(p.summary)}
+${k('permission_mode')}: ${p.perm}
+${k('iteration_budget')}: ${p.iters}
+${k('allowed_tools')}:
+${p.tools.map((t) => '  - ' + t).join('\n')}
+${k('forbidden_tools')}: [${forbidden.join(', ')}]
+${k('produces')}:
+  ${k('event_type')}: ${p.produces}
+${k('consumes')}:
+  ${k('events')}:
+${p.consumes.map((e) => '    - name: ' + e).join('\n') || '    []'}`;
+  }
+
+  // ------------------------------------------------------------------ deploy
+  function renderDeploy() {
+    const d = S.deploy;
+    const prof = PROFILES.find((x) => x.id === d.profile);
+    const byTarget = {};
+    PROFILES.forEach((x) => { (byTarget[x.target] = byTarget[x.target] || []).push(x); });
+    const pq = (d.pq || '').toLowerCase();
+    const plist = PERSONAS.filter((x) => !pq || x.name.includes(pq)).slice(0, 40);
+    const canDeploy = d.name.trim() && (!prof.personaRequired || d.persona);
+    return `<div class="scrim" data-act="closeDeploy" data-self="1"><div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dtitle">
+      <header><div><h2 id="dtitle">Deploy a ravn</h2><p>Pick where it runs, then who it is.</p></div><button class="ib" aria-label="Close" data-act="closeDeploy">${I.x}</button></header>
+      <div class="body">
+        <div><div class="step">Runtime</div>
+          ${Object.entries(byTarget).map(([t, ps]) => `<div style="font-size:12px;color:var(--tx-3);margin:6px 0">${esc(t)}</div><div class="profiles">${ps.map((x) => `<button class="profile" data-act="dprofile" data-v="${x.id}" aria-pressed="${d.profile === x.id}"><span class="t">${x.name} <span class="eng" data-e="${x.engine}">${x.engine}</span></span><span class="d">${esc(x.desc)}</span><span class="cp">${x.caps.join(' · ')}</span></button>`).join('')}</div>`).join('')}
+        </div>
+        <div><div class="step">Identity</div>
+          <div class="row2">
+            <div class="field"><label for="dname">Name</label><input class="input" id="dname" placeholder="e.g. Muninn" value="${esc(d.name)}" data-input="dname"></div>
+            <div class="field"><label for="dmodel">Model</label><select class="select" id="dmodel">${prof.models.map((m) => `<option>${m}</option>`).join('')}</select></div>
+          </div>
+          <div class="field" style="margin-top:12px"><label for="dpq">Persona ${prof.personaRequired ? '' : '<span style="color:var(--tx-4);font-weight:400">— optional for ' + prof.engine + '</span>'}</label>
+            <label class="search">${I.search}<input id="dpq" placeholder="Search 53 personas" value="${esc(d.pq || '')}" data-input="dpq"></label>
+            <div class="pp" role="listbox" aria-label="Personas">
+              ${prof.personaRequired ? '' : `<button data-act="dpersona" data-v="" aria-pressed="${!d.persona}"><span class="av sm">·</span><span><span class="n">Engine default</span><br><span class="s">${prof.engine} brings its own character</span></span></button>`}
+              ${plist.map((x) => `<button data-act="dpersona" data-v="${x.name}" aria-pressed="${d.persona === x.name}"><span class="av sm">${x.name.charAt(0).toUpperCase()}</span><span><span class="n">${esc(x.name)}</span><br><span class="s">${personaSub(x)}</span></span></button>`).join('')}
+            </div></div>
+        </div>
+      </div>
+      <footer><span class="sum">${canDeploy ? `Deploys <b>${esc(d.name)}</b> as ${prof.name} (<span class="eng" data-e="${prof.engine}">${prof.engine}</span>) on <b>${esc(prof.target)}</b>${d.persona ? ' with persona <b>' + esc(d.persona) + '</b>' : ''}.` : prof.personaRequired && !d.persona ? 'Name it and pick a persona to deploy.' : 'Name it to deploy.'}</span>
+        <button class="ghost" data-act="closeDeploy">Cancel</button><button class="primary" ${canDeploy ? '' : 'disabled'} data-act="doDeploy">Deploy</button></footer>
+    </div></div>`;
+  }
+
+  // ------------------------------------------------------------------ notes
+  const NOTES = [
+    ['Five tabs became two', 'Overview, Ravens, Sessions and Budget were four pages about the same ravens. Now there is one list of ravens and everything about a ravn lives on its page: chat, activity, setup, usage. Personas is the only other tab.', 'Was: Overview · Ravens · Personas · Sessions · Budget'],
+    ['Why before what', 'A failed ravn says why in the list row and in a banner at the top of its page, with the raw condition and the fix (Restart, View logs) right there.', 'Was: a red dot, and "unknown BackendReady ReconcileFailed" at the bottom of a sub-tab'],
+    ['Talk where you look', 'Chat is the first tab of a running ravn and uses the same live chat as Forge — approvals, steering, interrupt. Runtimes that hold several conversations get a conversation list beside it.', 'Was: a separate Sessions page, reached by a "Open session" jump'],
+    ['Same shape as Forge', 'List on the left with state pills and counts, grouping, search; a detail pane with a one-line header of chips and icon actions. Nothing new to learn after Forge Sessions.', ''],
+    ['Honest empty states', 'Triggers and budget caps are not enabled on this host, so the page says so instead of showing $0.00, 0 triggers and an invented spend chart.', 'Was: a placeholder sparkline and "0 active triggers" from a 503'],
+    ['Personas by family, read as a sheet', '49 of 53 personas share the role "build", so grouping by role says nothing. They are grouped by family (developer, research, specification…) and read as a sheet: what it does, what wakes it, what it emits, tools, prompt. Edit in place; YAML one click away.', 'Was: a 53-row list and a raw snake_case form'],
+    ['Deploy in one sheet', 'Pick a runtime card (engine, backend, target, what it can do), then name, model and persona — with the persona optional where the engine brings its own.', ''],
+  ];
+  function renderNotes() {
+    return `<div class="scrim" data-act="notes" data-self="1" style="place-items:stretch end;padding:0"><aside class="notes" role="dialog" aria-label="What changed">
+      <div style="display:flex;justify-content:space-between;align-items:start"><h2>What changed</h2><button class="ib" data-act="notes" aria-label="Close">${I.x}</button></div>
+      <p>The redesign in seven decisions. Everything is backed by the Ravn APIs that exist today — no new endpoints.</p>
+      ${NOTES.map(([h, p, w]) => `<div class="note"><h4>${h}</h4><p>${p}</p>${w ? `<div class="was">${w}</div>` : ''}</div>`).join('')}
+    </aside></div>`;
+  }
+
+  // ------------------------------------------------------------------ render
+  function render() {
+    renderTop();
+    const page = document.getElementById('page');
+    const focusId = document.activeElement && document.activeElement.id;
+    const caret = document.activeElement && document.activeElement.selectionStart;
+    page.innerHTML = S.top === 'personas' ? renderPersonas() : renderRavens();
+    page.style.height = '100%';
+    const ov = document.getElementById('overlay');
+    ov.innerHTML = (S.deploy ? renderDeploy() : '') + (S.notes ? renderNotes() : '') + (S.toast ? `<div class="toast" role="status">${esc(S.toast)}</div>` : '');
+    if (focusId) {
+      const el = document.getElementById(focusId);
+      if (el && el.setSelectionRange && typeof caret === 'number') { el.focus(); try { el.setSelectionRange(caret, caret); } catch (e) {} }
+    }
+    persist();
+  }
+  let toastTimer;
+  function toast(msg) { S.toast = msg; render(); clearTimeout(toastTimer); toastTimer = setTimeout(() => { S.toast = ''; render(); }, 2400); }
+
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-act]');
+    if (!el) return;
+    if (el.dataset.self && e.target !== el) return;
+    const v = el.dataset.v;
+    switch (el.dataset.act) {
+      case 'top': S.top = v; S.open = false; S.editing = false; break;
+      case 'data': S.data = v; S.sel = fleet()[0].id; S.filter = 'all'; break;
+      case 'sel': S.sel = v; S.open = true; S.conv = 0; break;
+      case 'filter': S.filter = v; break;
+      case 'dtab': S.dtab = v; break;
+      case 'conv': S.conv = +v; break;
+      case 'back': S.open = false; break;
+      case 'loglevel': S.logLevel = v; break;
+      case 'gopersona': S.top = 'personas'; S.persona = v; S.pview = 'sheet'; S.editing = false; S.open = true; break;
+      case 'psel': S.persona = v; S.editing = false; S.open = true; S.promptOpen = false; break;
+      case 'psrc': S.psrc = v; break;
+      case 'fam': S.closedFam[v] = !S.closedFam[v]; break;
+      case 'pview': S.pview = v; S.editing = false; break;
+      case 'edit': S.editing = !S.editing; S.pview = 'sheet'; break;
+      case 'save': S.editing = false; return toast('Saved override for ' + S.persona);
+      case 'prompt': S.promptOpen = !S.promptOpen; break;
+      case 'deploy': S.deploy = { profile: v ? 'ravn-local' : 'nemoclaw-local', name: '', persona: v || '', pq: '' }; break;
+      case 'closeDeploy': S.deploy = null; break;
+      case 'dprofile': S.deploy.profile = v; break;
+      case 'dpersona': S.deploy.persona = v; break;
+      case 'doDeploy': { const n = S.deploy.name; S.deploy = null; return toast('Deploying ' + n + '… it appears under Starting'); }
+      case 'notes': S.notes = !S.notes; break;
+      case 'toast': return toast(v);
+    }
+    render();
+  });
+  document.addEventListener('input', (e) => {
+    const k = e.target.dataset.input;
+    if (!k) return;
+    if (k === 'q') S.q = e.target.value;
+    if (k === 'pq') S.pq = e.target.value;
+    if (k === 'dname') S.deploy.name = e.target.value;
+    if (k === 'dpq') S.deploy.pq = e.target.value;
+    render();
+  });
+  document.addEventListener('change', (e) => {
+    if (e.target.dataset.change === 'group') { S.group = e.target.value; render(); }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && (S.deploy || S.notes)) { S.deploy = null; S.notes = false; render(); }
+  });
+  render();
+})();
+</script>
