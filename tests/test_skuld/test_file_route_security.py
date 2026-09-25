@@ -15,7 +15,7 @@ def secured_workspace(tmp_path, monkeypatch: pytest.MonkeyPatch):
     workspace.mkdir()
     outside.mkdir()
     monkeypatch.setattr(broker, "workspace_dir", str(workspace))
-    client = TestClient(app, raise_server_exceptions=False)
+    client = TestClient(app, raise_server_exceptions=False, headers={"x-niuu-room-role": "owner"})
     yield client, workspace, outside
     client.close()
 

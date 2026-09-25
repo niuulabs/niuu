@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -347,6 +348,10 @@ class SessionService:
     async def get_session(self, session_id: UUID) -> Session | None:
         """Get a session by ID."""
         return await self._repository.get(session_id)
+
+    async def get_many_sessions(self, session_ids: list[UUID]) -> dict[UUID, Session]:
+        """Batch-fetch sessions by ID. Returns only the ones that exist."""
+        return await self._repository.get_many(session_ids)
 
     async def with_read_states(
         self, sessions: list[Session], principal: Principal | None
@@ -765,12 +770,31 @@ class SessionService:
         *,
         owner_id: str | None,
         tenant_id: str | None,
+        room_viewers: Iterable[str] = (),
+        room_approvers: Iterable[str] = (),
     ) -> Resource:
-        """Describe a session, or history attributed to one, to the authorization policy."""
+        """Describe a session, or history attributed to one, to the authorization policy.
+
+        ``room_viewers``/``room_approvers`` are the Cedar Set attributes
+        computed from ACTIVE, unexpired ``session_participants`` grants (see
+        ``SessionParticipantService.active_grants``). They are empty by
+        default: every existing call site (read/update/delete/list,
+        chronicle attribution) never populates them, and the room-scoped
+        actions (``read_room``/``attach``/``resolve_gate``) are the only
+        Cedar actions whose policies reference them, so leaving them empty
+        never changes what those existing call sites can already do. There is
+        no separate room_speakers set: every active participant may speak,
+        so "viewer" already covers it — see RoomGrants' docstring.
+        """
         return Resource(
             kind="session",
             id=resource_id,
-            attr={"owner_id": owner_id or None, "tenant_id": tenant_id or None},
+            attr={
+                "owner_id": owner_id or None,
+                "tenant_id": tenant_id or None,
+                "room_viewers": list(room_viewers),
+                "room_approvers": list(room_approvers),
+            },
         )
 
     async def authorizes(

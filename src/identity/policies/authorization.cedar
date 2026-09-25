@@ -20,7 +20,9 @@ permit(principal, action in [
     Niuu::Action::"read", Niuu::Action::"list", Niuu::Action::"update",
     Niuu::Action::"delete", Niuu::Action::"start", Niuu::Action::"stop",
     Niuu::Action::"report_usage", Niuu::Action::"report_activity", Niuu::Action::"report_timeline",
-    Niuu::Action::"report_chronicle", Niuu::Action::"emit_event"
+    Niuu::Action::"report_chronicle", Niuu::Action::"emit_event",
+    Niuu::Action::"read_room", Niuu::Action::"attach",
+    Niuu::Action::"resolve_gate", Niuu::Action::"admit"
 ], resource is Niuu::session)
 when {
     resource.owner_id == principal.user_id &&
@@ -31,6 +33,31 @@ when {
 permit(principal, action in [Niuu::Action::"read", Niuu::Action::"list"],
        resource is Niuu::session)
 when { principal.roles.contains("volundr:viewer") };
+
+// Durable session-participant grants (session_participants table). A grant only
+// reaches these two sets while ACTIVE and unexpired (see
+// SessionParticipantService.active_grants / compute_room_grants); Cedar never
+// re-derives expiry itself. All roles read the room (which includes speaking
+// in it — the owner decided against a separate speaker tier, so there is no
+// dedicated Cedar action for it; per-message-type authorization inside the
+// room, e.g. who may send which control, is enforced by Skuld's broker, not
+// Cedar); only "approver" additionally resolves workflow gates. Participation
+// alone is not enough — the participant must also hold an ordinary volundr:*
+// role, same as every other resource-permission rule in this file.
+@id("session-participant-viewer")
+permit(principal, action in [Niuu::Action::"read_room", Niuu::Action::"attach"],
+       resource is Niuu::session)
+when {
+    resource has room_viewers && resource.room_viewers.contains(principal.user_id) &&
+    principal.roles.containsAny(["volundr:developer", "volundr:viewer", "volundr:admin"])
+};
+
+@id("session-participant-approver")
+permit(principal, action == Niuu::Action::"resolve_gate", resource is Niuu::session)
+when {
+    resource has room_approvers && resource.room_approvers.contains(principal.user_id) &&
+    principal.roles.containsAny(["volundr:developer", "volundr:viewer", "volundr:admin"])
+};
 
 @id("session-create")
 permit(principal, action == Niuu::Action::"create", resource is Niuu::session)

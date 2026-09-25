@@ -391,6 +391,15 @@ class WsAuthConfig(BaseModel):
     user_id_header: str = "x-auth-user-id"
     tenant_header: str = "x-auth-tenant"
     roles_header: str = "x-auth-roles"
+    room_role_header: str = Field(
+        default="x-niuu-room-role",
+        description=(
+            "Header the session proxy (niuu.session_proxy) stamps with the "
+            "caller's verified room role (owner/approver/viewer), used to gate "
+            "per-message-type WebSocket authorization. Must match the proxy's "
+            "own header name."
+        ),
+    )
     role_mapping: dict[str, str] = Field(default_factory=dict)
     admin_roles: list[str] = Field(
         default_factory=lambda: ["volundr:admin"],

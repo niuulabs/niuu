@@ -3494,7 +3494,12 @@ class TestDispatchBrowserMessage:
 
     @pytest.mark.asyncio
     async def test_dispatch_publish_event_injects_through_mesh(self, test_broker):
+        from skuld.channels import WebSocketChannel
+
         sender_ws = AsyncMock()
+        # publish_event is owner-only; register this connection as owner so
+        # the room-role gate doesn't preempt the behavior under test here.
+        test_broker._channels.add(WebSocketChannel(sender_ws, room_role="owner"))
         test_broker.handle_publish_mesh_event = AsyncMock(return_value="event-1")
 
         await test_broker._dispatch_browser_message(
@@ -3732,8 +3737,13 @@ class TestDispatchBrowserMessage:
     @pytest.mark.asyncio
     async def test_dispatch_guard_blocks_unsupported_control(self, test_broker):
         """Unsupported control messages are rejected with an error to sender_ws."""
+        from skuld.channels import WebSocketChannel
+
         test_broker._transport.capabilities = TransportCapabilities()  # all False
         sender_ws = AsyncMock()
+        # interrupt is owner-only; register this connection as owner so the
+        # room-role gate doesn't preempt the capability guard under test here.
+        test_broker._channels.add(WebSocketChannel(sender_ws, room_role="owner"))
 
         await test_broker._dispatch_browser_message({"type": "interrupt"}, sender_ws=sender_ws)
 
@@ -4046,7 +4056,12 @@ class TestFastAPIEndpoints:
     def client(self):
         from fastapi.testclient import TestClient
 
-        client = TestClient(app)
+        # These tests exercise routes/behavior unrelated to room-role
+        # gating (logs, CORS, service management); simulate a trusted
+        # proxy-stamped owner connection so _enforce_room_role doesn't
+        # block them (see tests/test_skuld/test_broker_api_gate_room_role.py
+        # and test_room_role_message_gating.py for the gate's own coverage).
+        client = TestClient(app, headers={"x-niuu-room-role": "owner"})
         yield client
         client.close()
 
@@ -4265,7 +4280,12 @@ class TestCORSMiddleware:
     def client(self):
         from fastapi.testclient import TestClient
 
-        client = TestClient(app)
+        # These tests exercise routes/behavior unrelated to room-role
+        # gating (logs, CORS, service management); simulate a trusted
+        # proxy-stamped owner connection so _enforce_room_role doesn't
+        # block them (see tests/test_skuld/test_broker_api_gate_room_role.py
+        # and test_room_role_message_gating.py for the gate's own coverage).
+        client = TestClient(app, headers={"x-niuu-room-role": "owner"})
         yield client
         client.close()
 
@@ -5240,6 +5260,7 @@ class TestHandleWebSocket:
     async def test_handle_websocket_no_transport(self, test_broker):
         """Returns error JSON when transport is not initialized."""
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.query_params = {}
         test_broker._transport = None
 
@@ -5252,6 +5273,51 @@ class TestHandleWebSocket:
         assert "not initialized" in sent["content"]
 
     @pytest.mark.asyncio
+    async def test_handle_websocket_viewer_connection_does_not_overwrite_user_jwt(
+        self, test_broker
+    ):
+        """A viewer/approver connecting after the owner must not swap the
+        broker's single stored _user_jwt/_user_claims — those are read later
+        for actions taken "as the user" (e.g. the chronicle watcher's auth
+        headers), and must keep reflecting the actual owner."""
+        mock_transport = AsyncMock()
+        mock_transport.is_alive = True
+        mock_transport.capabilities = TransportCapabilities()
+        test_broker._transport = mock_transport
+        test_broker._user_jwt = "owners-original-token"
+
+        mock_ws = AsyncMock()
+        # No x-niuu-room-role header and enforce_ownership defaults False ->
+        # _resolve_room_role resolves "viewer" for this connection.
+        mock_ws.headers = {"authorization": "Bearer a-viewers-token"}
+        mock_ws.query_params = {}
+        mock_ws.receive_json = AsyncMock(side_effect=[WebSocketDisconnect()])
+
+        await test_broker.handle_websocket(mock_ws)
+
+        assert test_broker._user_jwt == "owners-original-token"
+
+    @pytest.mark.asyncio
+    async def test_handle_websocket_owner_connection_updates_user_jwt(self, test_broker):
+        mock_transport = AsyncMock()
+        mock_transport.is_alive = True
+        mock_transport.capabilities = TransportCapabilities()
+        test_broker._transport = mock_transport
+        test_broker._user_jwt = "stale-token"
+
+        mock_ws = AsyncMock()
+        mock_ws.headers = {
+            "authorization": "Bearer the-owners-fresh-token",
+            "x-niuu-room-role": "owner",
+        }
+        mock_ws.query_params = {}
+        mock_ws.receive_json = AsyncMock(side_effect=[WebSocketDisconnect()])
+
+        await test_broker.handle_websocket(mock_ws)
+
+        assert test_broker._user_jwt == "the-owners-fresh-token"
+
+    @pytest.mark.asyncio
     async def test_handle_websocket_normal_flow(self, test_broker):
         """Browser connects, receives welcome, sends message, then disconnects."""
         mock_transport = AsyncMock()
@@ -5260,6 +5326,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.query_params = {}
         # First receive_json returns a message, second raises disconnect
         mock_ws.receive_json = AsyncMock(side_effect=[{"content": "hello"}, WebSocketDisconnect()])
@@ -5283,6 +5350,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
@@ -5320,6 +5388,7 @@ class TestHandleWebSocket:
         test_broker._event_log_seq = 42
 
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
@@ -5349,6 +5418,7 @@ class TestHandleWebSocket:
         test_broker._pending_permission_requests["perm-replay"] = pending
 
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
@@ -5368,6 +5438,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.query_params = {}
         # Bad frame (non-JSON) -> valid message -> disconnect. The valid message after
         # the bad one MUST still be dispatched.
@@ -5404,6 +5475,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(
             side_effect=RuntimeError('WebSocket is not connected. Need to call "accept" first.')
@@ -5426,6 +5498,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.query_params = {}
         mock_ws.send_json = AsyncMock(
             side_effect=RuntimeError('Cannot call "send" once a close message has been sent.')
@@ -5445,6 +5518,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
@@ -5479,6 +5553,7 @@ class TestHandleWebSocket:
         broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
@@ -5507,6 +5582,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=[{"content": "hello"}, WebSocketDisconnect()])
 
@@ -5535,6 +5611,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=RuntimeError("boom"))
 
@@ -5550,6 +5627,7 @@ class TestHandleWebSocket:
         mock_transport.capabilities = TransportCapabilities(session_resume=True)
         test_broker._transport = mock_transport
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
 
         await test_broker.handle_cli_websocket(mock_ws, "ws-session")
 
@@ -5563,6 +5641,7 @@ class TestHandleWebSocket:
         mock_transport.capabilities = TransportCapabilities()
         test_broker._transport = mock_transport
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
 
         await test_broker.handle_cli_websocket(mock_ws, "ws-session")
 
@@ -5576,6 +5655,7 @@ class TestHandleWebSocket:
         mock_transport.capabilities = TransportCapabilities(cli_websocket=True)
         test_broker._transport = mock_transport
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
 
         await test_broker.handle_cli_websocket(mock_ws, "wrong-session")
 
@@ -5589,6 +5669,7 @@ class TestHandleWebSocket:
         mock_transport.capabilities = TransportCapabilities(cli_websocket=True)
         test_broker._transport = mock_transport
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
 
         await test_broker.handle_cli_websocket(mock_ws, "ws-session")
 
@@ -5603,7 +5684,12 @@ class TestServiceAPIEndpoints:
     def client(self):
         from fastapi.testclient import TestClient
 
-        client = TestClient(app)
+        # These tests exercise routes/behavior unrelated to room-role
+        # gating (logs, CORS, service management); simulate a trusted
+        # proxy-stamped owner connection so _enforce_room_role doesn't
+        # block them (see tests/test_skuld/test_broker_api_gate_room_role.py
+        # and test_room_role_message_gating.py for the gate's own coverage).
+        client = TestClient(app, headers={"x-niuu-room-role": "owner"})
         yield client
         client.close()
 
@@ -6661,6 +6747,7 @@ class TestBrokerRoomAdapter:
         b = Broker(settings=no_room_settings)
         b._transport = AsyncMock()
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
 
         await b._dispatch_browser_message(
             {"type": "directed_message", "targetPeerId": "p1", "content": "Hi!"},
@@ -7155,6 +7242,7 @@ class TestBrokerRoomAdapter:
         b._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
@@ -7174,6 +7262,7 @@ class TestBrokerRoomAdapter:
         b._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
@@ -7191,6 +7280,7 @@ class TestBrokerRoomAdapter:
     async def test_handle_ravn_websocket_rejects_when_room_disabled(self, no_room_settings):
         b = Broker(settings=no_room_settings)
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
 
         await b.handle_ravn_websocket(mock_ws, "agent-1")
 
@@ -7207,6 +7297,7 @@ class TestBrokerRoomAdapter:
         b._room_bridge = mock_bridge
 
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.receive_text = AsyncMock(side_effect=WebSocketDisconnect())
 
         await b.handle_ravn_websocket(mock_ws, "agent-1")
@@ -7243,6 +7334,7 @@ class TestBrokerRoomAdapter:
             + "\n"
         )
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.receive_text = AsyncMock(side_effect=[frame, WebSocketDisconnect()])
 
         await b.handle_ravn_websocket(mock_ws, "agent-1")
@@ -7271,6 +7363,7 @@ class TestBrokerRoomAdapter:
         }
         frame = _json.dumps({"events": [{"kind": "usage", "usage": usage}]}) + "\n"
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.receive_text = AsyncMock(side_effect=[frame, WebSocketDisconnect()])
 
         await b.handle_ravn_websocket(mock_ws, "agent-1")
@@ -7289,6 +7382,7 @@ class TestBrokerRoomAdapter:
         b._room_bridge = mock_bridge
 
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.receive_text = AsyncMock(side_effect=["not valid json\n", WebSocketDisconnect()])
 
         await b.handle_ravn_websocket(mock_ws, "agent-1")
@@ -7306,6 +7400,7 @@ class TestBrokerRoomAdapter:
         b._room_bridge = mock_bridge
 
         mock_ws = AsyncMock()
+        mock_ws.headers = {}
         mock_ws.receive_text = AsyncMock(side_effect=RuntimeError("unexpected"))
 
         await b.handle_ravn_websocket(mock_ws, "agent-1")

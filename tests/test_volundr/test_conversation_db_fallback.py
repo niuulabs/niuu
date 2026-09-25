@@ -35,7 +35,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from tests.conftest import InMemorySessionRepository, MockPodManager
+from tests.conftest import (
+    InMemorySessionRepository,
+    MockPodManager,
+    make_session_participant_service,
+)
 from tests.test_domain.test_session_archive_service import InMemorySessionEventLog
 from volundr.adapters.inbound import rest as rest_mod
 from volundr.adapters.inbound.rest import create_router
@@ -140,7 +144,13 @@ def _build_client(
     )
 
     app = FastAPI()
-    app.include_router(create_router(session_service, archive_service=archive_service))
+    app.include_router(
+        create_router(
+            session_service,
+            archive_service=archive_service,
+            session_participant_service=make_session_participant_service(session_service),
+        )
+    )
 
     class _SettingsStub:
         local_mounts = LocalMountsConfig()
@@ -1022,7 +1032,12 @@ def _build_activity_client(
         validate_repos=False,
     )
     app = FastAPI()
-    app.include_router(create_router(session_service))
+    app.include_router(
+        create_router(
+            session_service,
+            session_participant_service=make_session_participant_service(session_service),
+        )
+    )
 
     class _SettingsStub:
         local_mounts = LocalMountsConfig()

@@ -22,6 +22,7 @@ from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from niuu.app import SkuldPortRegistry, register_session_proxy_routes
 from niuu.ports.session_proxy import SessionProxyTarget
 from niuu.session_proxy import SessionProxyGuardMissingError, bridge_websocket
+from volundr.adapters.outbound.identity import AllowAllIdentityAdapter
 
 
 async def _allow_attach(session_id, user_id, tenant_id, roles) -> bool:
@@ -458,3 +459,286 @@ async def test_bridge_delivers_once_and_closes_both_pumps(end, transport_error, 
         for pending in [task, *readers]:
             pending.cancel()
         await asyncio.gather(task, *readers, return_exceptions=True)
+
+
+class TestRoomRoleHeader:
+    """x-niuu-room-role is stamped from a verified resolver, never from the client."""
+
+    def test_ws_stamps_the_resolved_role_and_strips_a_client_supplied_copy(self, tmp_path) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+
+        async def role_resolver(session_id, user_id, tenant_id, roles) -> str:
+            return "approver"
+
+        reg.set_room_role_resolver(role_resolver)
+        captured: dict = {}
+
+        with patch("websockets.asyncio.client.connect", side_effect=_capture_ws_dial(captured)):
+            with pytest.raises(WebSocketDisconnect):
+                with TestClient(app).websocket_connect(
+                    "/s/sess/session", headers={"x-niuu-room-role": "owner"}
+                ) as ws:
+                    ws.receive_text()
+
+        assert captured["headers"]["x-niuu-room-role"] == "approver"
+
+    def test_ws_omits_the_header_when_no_role_can_be_resolved(self, tmp_path) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        captured: dict = {}
+
+        with patch("websockets.asyncio.client.connect", side_effect=_capture_ws_dial(captured)):
+            with pytest.raises(WebSocketDisconnect):
+                with TestClient(app).websocket_connect(
+                    "/s/sess/session", headers={"x-niuu-room-role": "owner"}
+                ) as ws:
+                    ws.receive_text()
+
+        assert "x-niuu-room-role" not in captured["headers"]
+
+    def test_ws_dev_identity_without_a_resolver_stamps_owner(self, tmp_path) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path, dev_identity=True)
+        reg.register("sess", 9123)
+        captured: dict = {}
+
+        with patch("websockets.asyncio.client.connect", side_effect=_capture_ws_dial(captured)):
+            with pytest.raises(WebSocketDisconnect):
+                with TestClient(app).websocket_connect(
+                    "/s/sess/session?devUserId=dev-user&devTenantId=dev-tenant"
+                ) as ws:
+                    ws.receive_text()
+
+        assert captured["headers"]["x-niuu-room-role"] == "owner"
+
+    def test_http_stamps_the_resolved_role_and_strips_a_client_supplied_copy(
+        self, tmp_path
+    ) -> None:
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+
+        async def role_resolver(session_id, user_id, tenant_id, roles) -> str:
+            return "viewer"
+
+        reg.set_room_role_resolver(role_resolver)
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get(
+                "/s/sess/api/conversation/history",
+                headers={"x-niuu-room-role": "owner"},
+            )
+
+        assert resp.status_code == 200
+        headers = mock_client.request.await_args.kwargs["headers"]
+        assert headers["x-niuu-room-role"] == "viewer"
+
+    def test_http_omits_the_header_when_no_role_can_be_resolved(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get(
+                "/s/sess/api/conversation/history",
+                headers={"x-niuu-room-role": "owner"},
+            )
+
+        assert resp.status_code == 200
+        headers = mock_client.request.await_args.kwargs["headers"]
+        assert "x-niuu-room-role" not in headers
+
+
+class _CloseableSocketDouble(_SocketDouble):
+    """_SocketDouble plus a close() the revalidation loop can call."""
+
+    def __init__(self):
+        super().__init__()
+        self.close_calls: list[dict] = []
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        self.close_calls.append({"code": code, "reason": reason})
+        # Unblocks the pumps exactly like a real disconnect would.
+        await self.incoming.put(None)
+
+
+class TestRevalidationClosesLiveSockets:
+    """A revoked or demoted grant must close an ALREADY-OPEN proxied socket,
+    not just refuse new connection attempts."""
+
+    async def test_bridge_websocket_closes_when_revalidation_fails(self, monkeypatch) -> None:
+        from niuu.session_proxy import bridge_websocket
+
+        browser, broker = _CloseableSocketDouble(), _CloseableSocketDouble()
+
+        @asynccontextmanager
+        async def connect(url, **kwargs):
+            yield broker
+
+        monkeypatch.setattr("websockets.asyncio.client.connect", connect)
+        calls = {"n": 0}
+
+        async def revalidate() -> bool:
+            calls["n"] += 1
+            return calls["n"] < 2  # allowed once, then revoked
+
+        await bridge_websocket(
+            browser,
+            "ws://synthetic.invalid/session",
+            headers={},
+            revalidate=revalidate,
+            revalidate_interval=0.01,
+        )
+
+        assert browser.close_calls == [{"code": 1008, "reason": "Access revoked or downgraded"}]
+        assert calls["n"] >= 2
+
+    async def test_bridge_websocket_stays_open_while_revalidation_passes(self, monkeypatch) -> None:
+        from niuu.session_proxy import bridge_websocket
+
+        browser, broker = _CloseableSocketDouble(), _CloseableSocketDouble()
+
+        @asynccontextmanager
+        async def connect(url, **kwargs):
+            yield broker
+
+        monkeypatch.setattr("websockets.asyncio.client.connect", connect)
+        calls = {"n": 0}
+
+        async def revalidate() -> bool:
+            calls["n"] += 1
+            return True
+
+        async def _disconnect_after_a_few_checks():
+            while calls["n"] < 3:
+                await asyncio.sleep(0.01)
+            await browser.incoming.put(None)
+
+        task = asyncio.create_task(_disconnect_after_a_few_checks())
+        try:
+            await bridge_websocket(
+                browser,
+                "ws://synthetic.invalid/session",
+                headers={},
+                revalidate=revalidate,
+                revalidate_interval=0.01,
+            )
+        finally:
+            task.cancel()
+
+        assert browser.close_calls == []  # never force-closed by revalidation
+        assert calls["n"] >= 3
+
+    def test_proxy_ws_wires_revalidate_and_the_configured_interval(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """_proxy_ws must pass a revalidate callable and the configured
+        interval through to bridge_websocket — not just perform the
+        one-time attach/role check at connect."""
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+
+        captured = {}
+
+        async def fake_bridge_websocket(websocket, connect_url, **kwargs):
+            captured.update(kwargs)
+            raise WebSocketDisconnect()
+
+        monkeypatch.setattr("niuu.session_proxy.bridge_websocket", fake_bridge_websocket)
+
+        with pytest.raises(WebSocketDisconnect):
+            with TestClient(app).websocket_connect("/s/sess/session") as ws:
+                ws.receive_text()
+
+        assert callable(captured["revalidate"])
+        assert captured["revalidate_interval"] > 0
+
+
+class TestImmediateCloseHook:
+    """SkuldPortRegistry.close_connections is the in-process hook that lets a
+    revoke close an ALREADY-OPEN socket without waiting for the next
+    interval revalidation tick."""
+
+    async def test_close_connections_closes_every_tracked_socket_for_the_pair(self, tmp_path):
+        from niuu.session_proxy import SkuldPortRegistry
+
+        reg = SkuldPortRegistry(state_file=tmp_path / "forge-state.json")
+        ws_a, ws_b, other = AsyncMock(), AsyncMock(), AsyncMock()
+        reg.track_connection("sess", "alice", ws_a)
+        reg.track_connection("sess", "alice", ws_b)
+        reg.track_connection("sess", "bob", other)
+
+        closed = await reg.close_connections("sess", "alice", reason="revoked")
+
+        assert closed == 2
+        ws_a.close.assert_awaited_once_with(code=1008, reason="revoked")
+        ws_b.close.assert_awaited_once_with(code=1008, reason="revoked")
+        other.close.assert_not_called()
+
+    async def test_close_connections_is_a_noop_for_an_untracked_pair(self, tmp_path):
+        from niuu.session_proxy import SkuldPortRegistry
+
+        reg = SkuldPortRegistry(state_file=tmp_path / "forge-state.json")
+        assert await reg.close_connections("sess", "nobody") == 0
+
+    async def test_close_connections_skips_a_socket_that_fails_to_close(self, tmp_path):
+        from niuu.session_proxy import SkuldPortRegistry
+
+        reg = SkuldPortRegistry(state_file=tmp_path / "forge-state.json")
+        broken = AsyncMock()
+        broken.close.side_effect = RuntimeError("already gone")
+        reg.track_connection("sess", "alice", broken)
+
+        closed = await reg.close_connections("sess", "alice")
+
+        assert closed == 0  # did not raise
+
+    async def test_untrack_removes_only_that_socket(self, tmp_path):
+        from niuu.session_proxy import SkuldPortRegistry
+
+        reg = SkuldPortRegistry(state_file=tmp_path / "forge-state.json")
+        ws_a, ws_b = AsyncMock(), AsyncMock()
+        reg.track_connection("sess", "alice", ws_a)
+        reg.track_connection("sess", "alice", ws_b)
+        reg.untrack_connection("sess", "alice", ws_a)
+
+        closed = await reg.close_connections("sess", "alice")
+
+        assert closed == 1
+        ws_a.close.assert_not_called()
+        ws_b.close.assert_awaited_once()
+
+    def test_proxy_ws_tracks_and_untracks_the_socket_around_the_bridge(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path, dev_identity=True)
+        app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
+        reg.register("sess", 9123)
+        seen_during_bridge = {}
+
+        async def fake_bridge_websocket(websocket, connect_url, **kwargs):
+            # Deep-copy: _live_connections' sets are mutated in place by the
+            # finally block right after this raises, in the SAME task.
+            seen_during_bridge["tracked"] = {k: set(v) for k, v in reg._live_connections.items()}
+            raise WebSocketDisconnect()
+
+        monkeypatch.setattr("niuu.session_proxy.bridge_websocket", fake_bridge_websocket)
+
+        with pytest.raises(WebSocketDisconnect):
+            with TestClient(app).websocket_connect(
+                "/s/sess/session?devUserId=alice&devTenantId=t1"
+            ) as ws:
+                ws.receive_text()
+
+        assert len(seen_during_bridge["tracked"].get(("sess", "alice"), ())) == 1
+        assert reg._live_connections == {}  # untracked once the connection ended

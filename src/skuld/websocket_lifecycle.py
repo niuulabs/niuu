@@ -116,6 +116,35 @@ class WebSocketLifecycleMixin:
             logger.exception("WebSocket authorization failed")
             return False
 
+    _VALID_ROOM_ROLES = frozenset({"owner", "approver", "viewer"})
+
+    def _resolve_room_role(self, websocket: WebSocket) -> str:
+        """Resolve this connection's room role for per-message authorization.
+
+        Least privilege by default. A missing/invalid room-role header is
+        only ever treated as "owner" when ``_authorize_websocket`` already
+        ran with ``ws_auth.enforce_ownership`` and this connection reached
+        this point — that check grants only the "start" action, which no
+        session_participants grant is ever authorized for (see
+        session-participant-* Cedar policies), so a connection that got this
+        far under enforced ownership genuinely IS the owner/admin. This
+        covers the enforced-Kubernetes path, where the browser reaches this
+        pod directly through Envoy and never passes through
+        niuu.session_proxy's header stamping at all.
+
+        Everywhere else (header present) uses the session-proxy-verified
+        value, which already encodes the dev-identity default (session_proxy
+        stamps "owner" under dev identity with no resolver configured) — this
+        method does not need a separate dev-identity branch.
+        """
+        cfg = self._settings.ws_auth
+        header_role = websocket.headers.get(cfg.room_role_header, "").strip().lower()
+        if header_role in self._VALID_ROOM_ROLES:
+            return header_role
+        if cfg.enforce_ownership:
+            return "owner"
+        return "viewer"
+
     def _update_jwt_from_websocket(self, websocket: WebSocket) -> None:
         """Extract and store JWT from an incoming WebSocket connection.
 
@@ -163,8 +192,17 @@ class WebSocketLifecycleMixin:
             await websocket.close(code=1008, reason="Not authorized for this session")
             return
 
-        # Extract JWT before accepting — headers are available pre-accept
-        self._update_jwt_from_websocket(websocket)
+        # Pre-accept: the room-role header is only trustworthy from the raw
+        # request headers.
+        room_role = self._resolve_room_role(websocket)
+        # Extract JWT before accepting — headers are available pre-accept.
+        # Only an OWNER connection may update the broker's single stored
+        # _user_jwt/_user_claims: they are read later for actions taken "as
+        # the user" (e.g. the chronicle watcher's auth headers). A viewer or
+        # approver connecting after the owner must not silently swap the
+        # broker's notion of who it is acting as.
+        if room_role == "owner":
+            self._update_jwt_from_websocket(websocket)
 
         await websocket.accept()
         # Internal-visibility default comes from the ONE configured source (SRD
@@ -179,6 +217,7 @@ class WebSocketLifecycleMixin:
             max_frame_bytes=self._settings.live_frame_max_bytes,
             history_protocol=2 if protocol2 else 0,
             history_bootstrap_max_frames=self._settings.history_bootstrap_max_frames,
+            room_role=room_role,
         )
         if not protocol2:
             self._channels.add(channel)

@@ -9,6 +9,7 @@ import pytest
 import respx
 from fastapi import FastAPI
 
+from tests.conftest import make_session_participant_service
 from tests.test_niuu.test_rest_volundr import _headers
 from tests.test_projects.test_mesh import client
 from volundr.adapters.inbound.rest import create_router
@@ -117,7 +118,13 @@ async def test_api_reports_missing_archived_stale_and_unknown_fields(rig):
     service, _, project, repo, _ = rig
     session = await repo.create(Session(name="free-session"))
     app = FastAPI()
-    app.include_router(create_router(service.sessions, project_service=service))
+    app.include_router(
+        create_router(
+            service.sessions,
+            project_service=service,
+            session_participant_service=make_session_participant_service(service.sessions),
+        )
+    )
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as api:
         path = f"/api/v1/forge/sessions/{session.id}/project"
         state = (await api.get(path)).json()

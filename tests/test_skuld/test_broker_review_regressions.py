@@ -282,7 +282,10 @@ async def test_bad_answer_is_correlated_and_does_not_interrupt_valid_next_contro
     transport.on_event(broker._handle_cli_event)
     broker._transport = transport
     ws = AsyncMock()
-    ws.headers = {}
+    # ask_user_answer is approver-level (same can_use_tool wait as
+    # permission_response); this test exercises the answer-correlation
+    # behavior, not room-role gating, so simulate an approver connection.
+    ws.headers = {"x-niuu-room-role": "approver"}
     ws.query_params = {}
     ws.receive_json.side_effect = [
         {
@@ -595,7 +598,9 @@ async def test_wrong_shape_control_does_not_poison_next_websocket_message(tmp_pa
     broker = _broker(tmp_path)
     broker._transport.capabilities = TransportCapabilities(interrupt=True)
     ws = AsyncMock()
-    ws.headers = {}
+    # interrupt is owner-only; this test exercises malformed-frame resilience,
+    # not room-role gating, so simulate an owner connection.
+    ws.headers = {"x-niuu-room-role": "owner"}
     ws.query_params = {}
     ws.receive_json.side_effect = [bad, {"type": "interrupt"}, WebSocketDisconnect()]
     await broker.handle_websocket(ws)

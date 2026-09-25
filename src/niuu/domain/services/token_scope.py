@@ -34,11 +34,23 @@ KNOWN_WORKLOAD_SCOPES: frozenset[str] = frozenset(
         "ting:workflow:launch",
         "ting:workflow:coordinate",
         "observatory:topology:push",
+        "skuld:gate:resolve",
     }
 )
 
 #: Scope required to publish a topology fragment to the push inbox.
 TOPOLOGY_PUSH_SCOPE = "observatory:topology:push"
+
+#: Scope required for Volundr's own backend to resolve a workflow gate on a
+#: session pod reached through the Skuld Gateway. The Gateway strips the
+#: proxy-verified x-niuu-room-role header on this hop (it has no JWT claim
+#: to re-derive it from — see charts/skuld/templates/httproute.yaml), so the
+#: header alone cannot authenticate an owner/approver decision once it
+#: crosses the Gateway. This scope lets Volundr mint a short-lived,
+#: single-purpose credential instead, verified by Envoy's already-deployed
+#: "workload" JWT provider (charts/skuld/templates/securitypolicy.yaml) on
+#: the same route.
+SKULD_GATE_RESOLVE_SCOPE = "skuld:gate:resolve"
 
 
 def _decode_claims(token: str) -> dict | None:
@@ -98,6 +110,25 @@ def token_has_scope(token: str, scope: str) -> bool:
     if not isinstance(granted, list):
         return False
     return scope in granted
+
+
+def request_carries_scope(request: Request, scope: str) -> bool:
+    """Strictly check that *request*'s bearer token was scoped-granted *scope*.
+
+    Unlike :func:`token_has_scope` (used by :func:`require_scope` to NARROW
+    an already-authorized route, and therefore permissive toward unscoped
+    credentials so ordinary human sessions and PATs pass through unchanged),
+    this is a hard gate: it returns True only when the bearer token IS a
+    scoped workload credential (``token_requires_scope_check``) that carries
+    *scope*. A missing, malformed, or unscoped token returns False. Use this
+    where the scope IS the authorization decision, substituting for a signal
+    that cannot otherwise reach this hop (e.g. a custom header stripped by
+    an intermediate Gateway) rather than narrowing one that already has.
+    """
+    claims = _decode_claims(_bearer_from_request(request))
+    if claims is None or not token_requires_scope_check(claims):
+        return False
+    return scope in credential_scopes(claims)
 
 
 def scoped_credential_claims(token: str) -> dict | None:
@@ -232,9 +263,11 @@ __all__ = [
     "KNOWN_WORKLOAD_SCOPES",
     "OPENSHELL_SESSION_TOKEN_USE",
     "OPENSHELL_RESIDENT_TOKEN_USE",
+    "SKULD_GATE_RESOLVE_SCOPE",
     "TOPOLOGY_PUSH_SCOPE",
     "VALKYRIE_BUILD_TOKEN_USE",
     "bound_workload_scopes",
+    "request_carries_scope",
     "require_scope",
     "token_has_scope",
     "token_requires_scope_check",

@@ -659,7 +659,7 @@ def test_agents_endpoint_include_finished_query_flag(monkeypatch) -> None:
     fresh._running_agents = {"a1": dict(running)}  # noqa: SLF001
     fresh._finished_agents.append(dict(finished))  # noqa: SLF001
 
-    client = TestClient(broker_mod.app)
+    client = TestClient(broker_mod.app, headers={"x-niuu-room-role": "owner"})
     assert client.get("/api/agents").json() == {"agents": [running]}
     assert client.get("/api/agents?include_finished=1").json() == {"agents": [running, finished]}
     assert client.get("/api/agents?include_finished=true").json() == {"agents": [running, finished]}
