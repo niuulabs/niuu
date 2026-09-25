@@ -53,6 +53,20 @@ is dropped to make room.
 Core NATS subscriptions (``core_subscriptions`` or ``stream_name: core``)
 have no server-side log and no acks, so they are at-most-once.
 
+Consumer and stream recovery
+-----------------------------
+If a JetStream store is reset (streams recreated empty), a subscriber's
+existing consumers vanish with it and nats-py does not notice: the push
+subscription just goes quiet.  Each JetStream subscription is polled every
+``consumer_health_check_interval_s`` via ``PushSubscription.consumer_info()``.
+A ``404`` (consumer or stream not found) is logged at ERROR and triggers
+recovery: the consumer is recreated with the same durable name and config
+once its stream exists, retried with ``consumer_recovery_backoff_s`` while
+the stream is absent.  Recovery is logged at INFO.  Any other health-check
+failure (timeout, connectivity) is logged at WARNING and left alone — only a
+confirmed 404 is treated as loss, so a transient error never triggers a
+spurious consumer recreation.
+
 Consumer groups
 ---------------
 Pass ``consumer_group`` to :class:`NatsSubscriber` (or :class:`NatsTransport`)
@@ -107,6 +121,7 @@ from urllib.request import getproxies
 try:
     import nats
     import nats.js.api as js_api
+    import nats.js.errors as js_errors
     from nats.aio.client import DEFAULT_BUFFER_SIZE
     from nats.aio.client import Client as NatsClient
     from nats.aio.transport import TcpTransport
@@ -116,6 +131,7 @@ except ImportError:  # pragma: no cover
     DEFAULT_BUFFER_SIZE = 0
     NatsClient = object  # type: ignore[assignment,misc]
     TcpTransport = object  # type: ignore[assignment,misc]
+    js_errors = None  # type: ignore[assignment]
     _NATS_AVAILABLE = False
 
 from sleipnir.adapters._subscriber_support import (
@@ -162,6 +178,17 @@ DEFAULT_ACK_PROGRESS_INTERVAL_S = 10.0
 #: Redelivery delay (seconds) after the 1st, 2nd, … failed delivery; the last
 #: entry repeats for any later attempt.
 DEFAULT_NAK_BACKOFF_S: tuple[float, ...] = (1.0, 5.0, 30.0, 60.0)
+
+#: Seconds between checks that each subscription's JetStream consumer (and
+#: its stream) still exists.  nats-py's push-subscription heartbeats do not
+#: surface a missed-heartbeat signal to the application for non-ordered
+#: consumers, so this polls ``PushSubscription.consumer_info()`` instead —
+#: the same JetStream API call nats-py itself uses to bind to a durable.
+DEFAULT_CONSUMER_HEALTH_CHECK_INTERVAL_S = 15.0
+
+#: Recovery retry delay (seconds) after the 1st, 2nd, … failed attempt to
+#: recreate a consumer whose stream is still absent; the last entry repeats.
+DEFAULT_CONSUMER_RECOVERY_BACKOFF_S: tuple[float, ...] = (1.0, 5.0, 15.0, 30.0)
 
 #: NATS connection timeout in seconds.
 DEFAULT_CONNECT_TIMEOUT_S = 10.0
@@ -893,6 +920,23 @@ class _CoreDelivery(Delivery):
         )
 
 
+class _ConsumerWatch:
+    """Tracks one JetStream push subscription so a lost consumer can be recreated.
+
+    ``nats_sub`` is replaced in place when :meth:`NatsSubscriber._recover_consumer`
+    recreates the underlying push subscription, so the watch always names the
+    subscription currently in service for *subject*.
+    """
+
+    __slots__ = ("subject", "stream_name", "patterns", "nats_sub")
+
+    def __init__(self, subject: str, stream_name: str, patterns: list[str], nats_sub: Any) -> None:
+        self.subject = subject
+        self.stream_name = stream_name
+        self.patterns = patterns
+        self.nats_sub = nats_sub
+
+
 class _NatsSubscription(_BaseSubscription):
     """One logical subscription: its NATS subscriptions, queue and unsettled messages.
 
@@ -901,6 +945,11 @@ class _NatsSubscription(_BaseSubscription):
     *progress_interval_s*, so waiting in the queue or a slow handler never
     exhausts ``ack_wait``.  Unsubscribing hands whatever is still unsettled
     back to JetStream with an immediate nak.
+
+    :attr:`consumer_watches` holds one :class:`_ConsumerWatch` per JetStream
+    push subscription (core NATS subscriptions are not watched — they have no
+    consumer to lose), polled every *health_check_interval_s* to detect and
+    recover a deleted consumer or stream.
     """
 
     def __init__(
@@ -911,12 +960,15 @@ class _NatsSubscription(_BaseSubscription):
         remove_fn: Callable[[], None],
         owner: NatsSubscriber,
         progress_interval_s: float,
+        health_check_interval_s: float,
     ) -> None:
         super().__init__(patterns, queue, task, remove_fn)
         self.owner = owner
         self.nats_subs: list[Any] = []
+        self.consumer_watches: list[_ConsumerWatch] = []
         self.unsettled: set[_JetStreamDelivery] = set()
         self._progress_task = asyncio.create_task(self._report_progress(progress_interval_s))
+        self._watchdog_task = asyncio.create_task(self._watch_consumers(health_check_interval_s))
 
     async def put(self, delivery: Delivery) -> None:
         """Queue *delivery* for the handler, waiting while the queue is full."""
@@ -927,6 +979,12 @@ class _NatsSubscription(_BaseSubscription):
             await asyncio.sleep(interval_s)
             for delivery in list(self.unsettled):
                 await self.owner._settle(delivery.msg, "in_progress")
+
+    async def _watch_consumers(self, interval_s: float) -> None:
+        while True:
+            await asyncio.sleep(interval_s)
+            for watch in list(self.consumer_watches):
+                await self.owner._check_consumer_watch(self, watch)
 
     async def unsubscribe(self) -> None:
         if not self.active:
@@ -942,9 +1000,13 @@ class _NatsSubscription(_BaseSubscription):
                     exc_info=True,
                 )
         self.nats_subs.clear()
+        self.consumer_watches.clear()
         self._progress_task.cancel()
         with suppress(asyncio.CancelledError):
             await self._progress_task
+        self._watchdog_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await self._watchdog_task
         for delivery in list(self.unsettled):
             await delivery.release()
 
@@ -1013,6 +1075,8 @@ class NatsSubscriber(SleipnirSubscriber):
         ack_progress_interval_s: float = DEFAULT_ACK_PROGRESS_INTERVAL_S,
         max_ack_pending: int | None = None,
         nak_backoff_s: list[float] | None = None,
+        consumer_health_check_interval_s: float = DEFAULT_CONSUMER_HEALTH_CHECK_INTERVAL_S,
+        consumer_recovery_backoff_s: list[float] | None = None,
     ) -> None:
         """Create the subscriber (connect with :meth:`start`).
 
@@ -1028,6 +1092,11 @@ class NatsSubscriber(SleipnirSubscriber):
             consumer; defaults to *ring_buffer_depth*.
         :param nak_backoff_s: Redelivery delay after the 1st, 2nd, … failed
             delivery; the last entry repeats.
+        :param consumer_health_check_interval_s: Seconds between checks that
+            each JetStream consumer (and its stream) still exists.
+        :param consumer_recovery_backoff_s: Retry delay after the 1st, 2nd, …
+            failed attempt to recreate a lost consumer while its stream is
+            still absent; the last entry repeats.
         """
         _require_nats()
         if ring_buffer_depth < 1:
@@ -1049,6 +1118,21 @@ class NatsSubscriber(SleipnirSubscriber):
             raise ValueError(
                 f"nak_backoff_s must be a non-empty list of delays >= 0, got {nak_backoff_s}"
             )
+        if consumer_health_check_interval_s <= 0:
+            raise ValueError(
+                "consumer_health_check_interval_s must be > 0, got "
+                f"{consumer_health_check_interval_s}"
+            )
+        recovery_backoff = list(
+            DEFAULT_CONSUMER_RECOVERY_BACKOFF_S
+            if consumer_recovery_backoff_s is None
+            else consumer_recovery_backoff_s
+        )
+        if not recovery_backoff or any(delay < 0 for delay in recovery_backoff):
+            raise ValueError(
+                "consumer_recovery_backoff_s must be a non-empty list of delays >= 0, got "
+                f"{consumer_recovery_backoff_s}"
+            )
         self._servers = servers or DEFAULT_SERVERS
         self._stream_name = stream_name
         self._subject_prefix = subject_prefix
@@ -1065,6 +1149,8 @@ class NatsSubscriber(SleipnirSubscriber):
         self._ack_progress_interval_s = ack_progress_interval_s
         self._max_ack_pending = resolved_max_ack_pending
         self._nak_backoff_s = backoff
+        self._consumer_health_check_interval_s = consumer_health_check_interval_s
+        self._consumer_recovery_backoff_s = recovery_backoff
         self._dlq_subject = _nats_subject_for_event(registry.SYSTEM_DLQ_MESSAGE, subject_prefix)
         self._connect_timeout_s = connect_timeout_s
         self._max_reconnect_attempts = max_reconnect_attempts
@@ -1123,6 +1209,9 @@ class NatsSubscriber(SleipnirSubscriber):
             "decode_failures": 0,
             "dlq_published": 0,
             "dlq_publish_failures": 0,
+            "consumer_lost": 0,
+            "consumer_recovered": 0,
+            "consumer_recovery_failures": 0,
         }
 
     def stats(self) -> dict[str, int]:
@@ -1196,6 +1285,7 @@ class NatsSubscriber(SleipnirSubscriber):
             lambda: self._remove_subscription(sub),
             owner=self,
             progress_interval_s=self._ack_progress_interval_s,
+            health_check_interval_s=self._consumer_health_check_interval_s,
         )
         self._subscriptions.append(sub)
         try:
@@ -1243,6 +1333,9 @@ class NatsSubscriber(SleipnirSubscriber):
                 stream_name=stream_name,
             )
             sub.nats_subs.append(nats_sub)
+            sub.consumer_watches.append(
+                _ConsumerWatch(subject, stream_name, list(event_types), nats_sub)
+            )
 
         core_subjects = list(self._core_subscriptions)
         if core_only:
@@ -1458,6 +1551,86 @@ class NatsSubscriber(SleipnirSubscriber):
         self._stats["dlq_published"] += 1
         return True
 
+    async def _check_consumer_watch(self, sub: _NatsSubscription, watch: _ConsumerWatch) -> None:
+        """Poll JetStream for *watch*'s consumer; recover it if gone.
+
+        Only a confirmed 404 (consumer or stream not found) is treated as
+        loss.  Any other failure (timeout, connectivity) is logged and left
+        alone — recreating on a transient error risks a duplicate consumer
+        racing the one that is still there.
+        """
+        if not sub.active or not self._running:
+            return
+        try:
+            await watch.nats_sub.consumer_info()
+        except js_errors.NotFoundError:
+            await self._recover_consumer(sub, watch)
+        except Exception:
+            logger.warning(
+                "NatsSubscriber: consumer health check failed for subject=%s stream=%s; "
+                "not recreating (treating as transient)",
+                watch.subject,
+                watch.stream_name,
+                exc_info=True,
+            )
+
+    async def _recover_consumer(self, sub: _NatsSubscription, watch: _ConsumerWatch) -> None:
+        """Recreate *watch*'s lost consumer, retrying with backoff while its stream is absent."""
+        self._stats["consumer_lost"] += 1
+        logger.error(
+            "NatsSubscriber: JetStream consumer for subject=%s stream=%s is missing "
+            "(deleted, or its stream was reset) — this subscriber stopped receiving "
+            "messages on it; recovering",
+            watch.subject,
+            watch.stream_name,
+        )
+        attempt = 0
+        while sub.active and self._running:
+            attempt += 1
+            try:
+                new_nats_sub = await self._create_nats_subscription(
+                    watch.subject,
+                    watch.patterns,
+                    sub,
+                    self._build_consumer_config(),
+                    stream_name=watch.stream_name,
+                )
+            except Exception as exc:
+                self._stats["consumer_recovery_failures"] += 1
+                delay = self._consumer_recovery_delay(attempt)
+                logger.error(
+                    "NatsSubscriber: consumer recovery for subject=%s stream=%s failed on "
+                    "attempt %d (%s); retrying in %.1fs",
+                    watch.subject,
+                    watch.stream_name,
+                    attempt,
+                    exc,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            old_nats_sub = watch.nats_sub
+            with suppress(ValueError):
+                sub.nats_subs.remove(old_nats_sub)
+            sub.nats_subs.append(new_nats_sub)
+            watch.nats_sub = new_nats_sub
+            self._stats["consumer_recovered"] += 1
+            logger.info(
+                "NatsSubscriber: JetStream consumer for subject=%s stream=%s recovered after "
+                "%d attempt(s); delivery resumed",
+                watch.subject,
+                watch.stream_name,
+                attempt,
+            )
+            with suppress(Exception):
+                await old_nats_sub.unsubscribe()
+            return
+
+    def _consumer_recovery_delay(self, attempt: int) -> float:
+        """Recovery retry delay after failed attempt number *attempt* (1-based)."""
+        backoff = self._consumer_recovery_backoff_s
+        return backoff[min(attempt, len(backoff)) - 1]
+
     def _build_consumer_config(self) -> Any:
         """Build the :class:`~nats.js.api.ConsumerConfig` for this subscriber.
 
@@ -1551,6 +1724,8 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
         ack_progress_interval_s: float = DEFAULT_ACK_PROGRESS_INTERVAL_S,
         max_ack_pending: int | None = None,
         nak_backoff_s: list[float] | None = None,
+        consumer_health_check_interval_s: float = DEFAULT_CONSUMER_HEALTH_CHECK_INTERVAL_S,
+        consumer_recovery_backoff_s: list[float] | None = None,
     ) -> None:
         _require_nats()
         self._publisher = NatsPublisher(
@@ -1616,6 +1791,8 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             ack_progress_interval_s=ack_progress_interval_s,
             max_ack_pending=max_ack_pending,
             nak_backoff_s=nak_backoff_s,
+            consumer_health_check_interval_s=consumer_health_check_interval_s,
+            consumer_recovery_backoff_s=consumer_recovery_backoff_s,
         )
 
     async def start(self) -> None:
