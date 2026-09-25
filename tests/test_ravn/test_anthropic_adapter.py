@@ -142,7 +142,14 @@ class TestAnthropicAdapterBuildRequest:
     def test_thinking_budget_becomes_adaptive_on_current_models(self) -> None:
         """budget_tokens is a 400 from Opus 4.7 onward."""
         adapter = AnthropicAdapter(api_key="k")
-        for model in ("claude-opus-5", "claude-opus-4-8", "claude-sonnet-5", "claude-fable-5"):
+        for model in (
+            "claude-opus-5-5",
+            "claude-fable-5-1",
+            "claude-opus-5",
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-fable-5",
+        ):
             body = adapter._build_request(
                 [],
                 tools=[],

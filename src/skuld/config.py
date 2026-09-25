@@ -315,11 +315,11 @@ class SkuldSessionConfig(BaseModel):
             "declare a tenant."
         ),
     )
-    model: str = Field(default="claude-opus-5")
+    model: str = Field(default="claude-opus-5-5")
     reasoning_effort: str = Field(
         default="",
         description=(
-            "Reasoning effort to launch the CLI at (e.g. 'ultra' for GPT-5.6 Sol). "
+            "Reasoning effort to launch the CLI at (e.g. 'ultra' for GPT-6 Sol). "
             "Empty lets the transport pick a model-appropriate default."
         ),
     )

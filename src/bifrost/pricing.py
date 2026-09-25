@@ -26,11 +26,24 @@ class ModelPricing:
 
 
 # ---------------------------------------------------------------------------
-# Built-in pricing snapshot — USD/million tokens as of 2026-04.
+# Built-in pricing snapshot — USD/million tokens as of 2026-04, with the
+# Claude Fable 5.1 / Opus 5.5 and GPT-6 rows added 2026-09.
 # These can be overridden or extended through BifrostConfig.pricing.
 # ---------------------------------------------------------------------------
 BUILTIN_PRICING: dict[str, ModelPricing] = {
     # Anthropic ──────────────────────────────────────────────────────────────
+    "claude-fable-5-1": ModelPricing(
+        input_per_million=10.00,
+        output_per_million=50.00,
+        cache_creation_per_million=12.50,
+        cache_read_per_million=0.25,
+    ),
+    "claude-opus-5-5": ModelPricing(
+        input_per_million=4.00,
+        output_per_million=20.00,
+        cache_creation_per_million=5.00,
+        cache_read_per_million=0.20,
+    ),
     "claude-opus-4-6": ModelPricing(
         input_per_million=15.00,
         output_per_million=75.00,
@@ -50,6 +63,16 @@ BUILTIN_PRICING: dict[str, ModelPricing] = {
         cache_read_per_million=0.08,
     ),
     # OpenAI ─────────────────────────────────────────────────────────────────
+    # OpenAI bills no cache writes; cached input reads are 90% off.
+    "gpt-6-astra": ModelPricing(
+        input_per_million=10.00, output_per_million=50.00, cache_read_per_million=1.00
+    ),
+    "gpt-6-sol": ModelPricing(
+        input_per_million=2.00, output_per_million=10.00, cache_read_per_million=0.20
+    ),
+    "gpt-6-luna": ModelPricing(
+        input_per_million=0.10, output_per_million=0.50, cache_read_per_million=0.01
+    ),
     "gpt-4o": ModelPricing(input_per_million=2.50, output_per_million=10.00),
     "gpt-4o-mini": ModelPricing(input_per_million=0.15, output_per_million=0.60),
     # Local / free (Ollama) ──────────────────────────────────────────────────

@@ -181,6 +181,7 @@ class TestDefaultSessionDefinitions:
     def test_claude_defaults(self):
         claude = default_session_definitions()["skuldClaude"]
         assert claude.display_name == "Claude Code"
+        assert claude.default_model == "claude-opus-5-5"
         assert claude.defaults["broker"]["cliType"] == "claude"
         assert claude.defaults["broker"]["transport"] == "sdk"
         assert claude.defaults["broker"]["transportAdapter"] == "skuld.transports.sdk.SDKTransport"
@@ -188,7 +189,7 @@ class TestDefaultSessionDefinitions:
     def test_claude_interactive_defaults(self):
         interactive = default_session_definitions()["skuldClaudeInteractive"]
         assert interactive.display_name == "Claude Code Interactive"
-        assert interactive.default_model == "claude-opus-5"
+        assert interactive.default_model == "claude-opus-5-5"
         assert interactive.defaults["broker"]["cliType"] == "claude"
         assert interactive.defaults["broker"]["transport"] == "tmux-interactive"
         assert (

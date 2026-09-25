@@ -121,19 +121,19 @@ describe('QuickLaunch', () => {
       expect.objectContaining({ to: '/volundr/sessions/$sessionId' }),
     );
   });
-  it('uses Astra for Codex and allows Sol plus independent effort', async () => {
+  it('uses Astra for Codex and allows GPT-6 Sol plus independent effort', async () => {
     const { startSession } = setup();
     await ready();
     fireEvent.click(screen.getByRole('button', { name: /Codex.*OpenAI/ }));
     expect(screen.getByLabelText('Model')).toHaveValue('gpt-6-astra');
-    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'gpt-5.6-sol' } });
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'gpt-6-sol' } });
     fireEvent.change(screen.getByLabelText('Effort'), { target: { value: 'ultra' } });
     fireEvent.click(screen.getByRole('button', { name: 'Launch Codex' }));
     await waitFor(() =>
       expect(startSession).toHaveBeenCalledWith(
         expect.objectContaining({
           definition: 'skuldCodex',
-          model: 'gpt-5.6-sol',
+          model: 'gpt-6-sol',
           workloadConfig: { reasoningEffort: 'ultra' },
         }),
       ),
@@ -159,7 +159,7 @@ describe('QuickLaunch', () => {
     await screen.findByText(/This standard is unavailable/);
     expect(screen.getByRole('button', { name: 'Launch Claude' })).toBeDisabled();
     expect(screen.getByLabelText('Model')).toHaveValue('claude-fable-5-1');
-    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'claude-opus-5' } });
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'claude-opus-5-5' } });
     await ready();
   });
   it('honours an explicitly empty effort list without sending a made-up effort', async () => {
