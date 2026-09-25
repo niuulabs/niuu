@@ -570,7 +570,7 @@ class TestRootServerBuildApp:
 
     def test_skuld_http_proxy_session_not_found(self) -> None:
         registry = PluginRegistry()
-        server = RootServer(registry=registry)
+        server = RootServer(registry=registry, dev_identity=True)
         with patch.dict(os.environ, {"NIUU_NO_WEB": "true"}):
             app = server._build_app()
         client = TestClient(app)
@@ -653,7 +653,7 @@ class TestRootServerBuildApp:
 
     def test_skuld_http_proxy_forwards_request(self) -> None:
         registry = PluginRegistry()
-        server = RootServer(registry=registry)
+        server = RootServer(registry=registry, dev_identity=True)
         server.skuld_registry.register("sess-1", 9100)
         with patch.dict(os.environ, {"NIUU_NO_WEB": "true"}):
             app = server._build_app()
@@ -676,7 +676,7 @@ class TestRootServerBuildApp:
 
     def test_skuld_http_proxy_routes_external_session_through_gateway(self) -> None:
         registry = PluginRegistry()
-        server = RootServer(registry=registry)
+        server = RootServer(registry=registry, dev_identity=True)
         target = SessionProxyTarget(
             service_url="http://forge-123--skuld.openshell.localhost:8080",
             connect_host="openshell.openshell.svc.cluster.local",
@@ -715,7 +715,7 @@ class TestRootServerBuildApp:
         import httpx
 
         registry = PluginRegistry()
-        server = RootServer(registry=registry)
+        server = RootServer(registry=registry, dev_identity=True)
         server.skuld_registry.register("sess-1", 9100)
         with patch.dict(os.environ, {"NIUU_NO_WEB": "true"}):
             app = server._build_app()

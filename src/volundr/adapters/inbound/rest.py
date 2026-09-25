@@ -4018,6 +4018,14 @@ def create_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
+        principal = await _optional_principal(request)
+        try:
+            await forge.ensure_access(session, principal, "read")
+        except SessionAccessDeniedError:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to read gates for this session",
+            )
         if not session.chat_endpoint:
             return {"gates": []}
 
@@ -4095,7 +4103,17 @@ def create_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session {session_id} has no active endpoint",
             )
-        if session.owner_id and session.owner_id != principal.user_id:
+        # An empty owner_id must never grant access: delegate to the same
+        # Cedar-backed authorization path every other mutating session route
+        # uses (SessionService._check_access) instead of a hand-rolled
+        # owner_id comparison. "update" is the declared action other
+        # session-mutation routes (e.g. rename/update_session) authorize
+        # with; Cedar has no dedicated "resolve"/"attach" action for
+        # sessions, and "update" is covered by the session-owner and
+        # session-admin policy rules.
+        try:
+            await forge.ensure_access(session, principal, "update")
+        except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to resolve gates for this session",
