@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from cli.api.guild import GuildAPIError
@@ -40,16 +41,35 @@ async def test_sends_one_heartbeat_and_stops_when_bounded() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_failed_heartbeat_is_retried_next_tick_not_raised() -> None:
+async def test_a_network_error_is_retried_next_tick_not_raised() -> None:
     fake_identity = AsyncMock()
     with (
         patch("cli.auth.node_key.NodeIdentity.load", return_value=fake_identity),
         patch(
             "cli.services.guild_heartbeat.heartbeat",
-            AsyncMock(side_effect=GuildAPIError("temporary network blip")),
+            AsyncMock(side_effect=httpx.ConnectError("connection refused")),
         ) as heartbeat_mock,
     ):
-        # Must not raise despite every call failing.
+        # Must not raise despite every call failing on a network error.
         await run_heartbeat_loop(_joined_settings(), iterations=3)
 
     assert heartbeat_mock.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_a_guild_rejection_exits_the_loop_loudly_instead_of_retrying() -> None:
+    """A 401/403/404 likely means this node was revoked — retrying forever
+    against a Guild that will keep saying no is the wrong behavior."""
+    fake_identity = AsyncMock()
+    with (
+        patch("cli.auth.node_key.NodeIdentity.load", return_value=fake_identity),
+        patch(
+            "cli.services.guild_heartbeat.heartbeat",
+            AsyncMock(side_effect=GuildAPIError("Guild returned 401: revoked", status_code=401)),
+        ) as heartbeat_mock,
+    ):
+        with pytest.raises(GuildAPIError):
+            await run_heartbeat_loop(_joined_settings(), iterations=3)
+
+    # Exited on the first rejection -- never retried.
+    assert heartbeat_mock.await_count == 1

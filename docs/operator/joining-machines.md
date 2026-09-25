@@ -35,9 +35,16 @@ This page covers the first slice of that flow. Explicitly **not** built yet:
    - calls `POST /api/v1/niuu/guild/join`, authenticated with the pairing code itself as
      the bearer token, reporting this host's own `host_auth.mode`;
    - persists the returned node id and Guild URL into `~/.niuu/config.yaml` under `guild:`,
-     and **applies** the returned identity trust config to `host_auth:` in the same file —
-     this host now verifies the same OIDC issuer(s) Guild does (or none, under
-     `host_auth.mode: none`), not just a recorded-but-unused value.
+     and merges the returned identity trust into `host_auth:` in the same file
+     (`cli.config._merge_identity_trust`) — this host adopts Guild's trusted OIDC
+     issuer(s), but the merge **never lowers this host's own auth mode** (an
+     already-`oidc` host joining a `none` Guild is refused, with the remedy printed, not
+     silently downgraded), **never writes a mode value it cannot parse back** (a K8s
+     Guild's `host_auth.mode: envoy` is adopted as local in-process `oidc` verification
+     of the same issuers — there is no Envoy on a bare host to do it for you — never
+     written as the literal string `envoy`), and always validates the result through
+     `AuthConfig` before writing, so a malformed response from Guild leaves this host's
+     `host_auth` untouched rather than corrupting it for every later CLI invocation.
 
 3. **Guild validates, then atomically registers.** Transport policy and the offered
    config's key allowlist (see below) are checked before anything is written; consuming
@@ -89,8 +96,9 @@ code at mint time by the admin instead:
   accepted when the pairing code was minted with `--allow-plaintext`, in which case Guild
   itself injects `config.allow_plaintext: true` into the instance it writes.
 - **Untrusted node identity.** A node reports its own `host_auth.mode` at join time. If
-  Guild runs `host_auth.mode: oidc` and the node reports `none`, the join is refused —
-  Guild would otherwise forward real user bearer tokens to an instance that trusts every
+  Guild runs anything other than `host_auth.mode: none` (`oidc` or `envoy` alike) and the
+  node reports `none`, the join is refused — Guild would otherwise forward real user
+  bearer tokens to an instance that trusts every
   caller — unless the pairing code was minted with `--allow-untrusted-node-auth`.
 
 ## Node identity and signed requests

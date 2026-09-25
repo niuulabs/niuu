@@ -129,10 +129,15 @@ class TestJoin:
         assert join_mock.await_args.kwargs["node_auth_mode"] == "none"  # default host_auth.mode
         saved = yaml.safe_load(config_file.read_text())
         assert saved["guild"] == {"url": "https://guild.example.com", "node_id": "node-123"}
-        assert saved["host_auth"] == {
-            "mode": "oidc",
-            "oidc": {"issuers": [{"issuer": "https://idp.example.com", "audiences": ["x"]}]},
-        }
+        assert saved["host_auth"]["mode"] == "oidc"
+        assert saved["host_auth"]["oidc"]["issuers"] == [
+            {"issuer": "https://idp.example.com", "audiences": ["x"], "jwks_uri": ""}
+        ]
+        # Round-trips through AuthConfig cleanly -- persist_guild_join always
+        # validates before writing.
+        from cli.config import AuthConfig
+
+        AuthConfig(**saved["host_auth"])
 
     def test_reports_guild_api_errors(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setenv("NIUU_CONFIG", str(tmp_path / "config.yaml"))
@@ -225,3 +230,30 @@ class TestHeartbeatCommand:
         result = runner.invoke(app, ["guild", "heartbeat", "--once"])
         assert result.exit_code == 1
         assert "niuu join" in result.output
+
+    def test_a_401_rejection_exits_loudly_with_the_revocation_remedy(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            yaml.safe_dump({"guild": {"url": "https://guild.example.com", "node_id": "node-123"}})
+        )
+        monkeypatch.setenv("NIUU_CONFIG", str(config_file))
+        settings = CLISettings()
+        settings.server.external_host = "spark-1.lan"
+        app = _build_test_app(settings)
+        fake_identity = AsyncMock()
+        with (
+            patch("cli.auth.node_key.NodeIdentity.load", return_value=fake_identity),
+            patch(
+                "cli.services.guild_heartbeat.heartbeat",
+                AsyncMock(
+                    side_effect=GuildAPIError("Guild returned 401: revoked", status_code=401)
+                ),
+            ),
+        ):
+            result = runner.invoke(app, ["guild", "heartbeat", "--once"])
+
+        assert result.exit_code == 1
+        assert "revoked" in result.output.lower()
+        assert "niuu leave" in result.output

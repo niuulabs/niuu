@@ -128,3 +128,17 @@ async def test_heartbeat_signature_verifies_against_the_real_server_side_verifie
 
     assert result["ok"] is True
     assert repo.recorded  # try_advance_watermark was called: signature verified
+
+
+@pytest.mark.asyncio
+async def test_guild_api_error_carries_the_status_code() -> None:
+    with respx.mock(base_url="https://guild.example.com") as mock:
+        mock.post("/api/v1/niuu/guild/pairing-codes").mock(
+            return_value=httpx.Response(401, json={"detail": "revoked"})
+        )
+        try:
+            await mint_pairing_code("https://guild.example.com", access_token="x")
+        except GuildAPIError as exc:
+            assert exc.status_code == 401
+        else:
+            pytest.fail("expected GuildAPIError")

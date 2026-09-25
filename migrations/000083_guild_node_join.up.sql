@@ -82,3 +82,10 @@ ALTER TABLE niuu_instances ADD COLUMN IF NOT EXISTS node_id UUID
 
 CREATE INDEX IF NOT EXISTS idx_niuu_instances_node_id
     ON niuu_instances(node_id);
+
+-- One row per (node, kind): concurrent heartbeats deciding "no existing row
+-- for this kind, insert a new one" at the same time would otherwise both
+-- succeed and leave two rows for the same node+kind. The second concurrent
+-- INSERT now fails fast on this constraint instead of silently duplicating.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_niuu_instances_node_kind
+    ON niuu_instances(node_id, kind) WHERE node_id IS NOT NULL;

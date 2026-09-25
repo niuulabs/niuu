@@ -1,3 +1,4 @@
+DROP INDEX IF EXISTS idx_niuu_instances_node_kind;
 DROP INDEX IF EXISTS idx_niuu_instances_node_id;
 ALTER TABLE niuu_instances DROP COLUMN IF EXISTS node_id;
 

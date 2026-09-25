@@ -6,7 +6,7 @@ import json
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -733,24 +733,100 @@ class GuildConfig(BaseModel):
     )
 
 
+def _merge_identity_trust(
+    current: AuthConfig, identity_trust: dict[str, Any]
+) -> tuple[AuthConfig, str | None]:
+    """Decide the ``host_auth`` to persist after `niuu join`.
+
+    Returns ``(resulting_config, warning)``. When a warning is returned,
+    ``resulting_config`` is ``current`` unchanged: the join itself still
+    succeeded, but adopting Guild's identity trust was refused and the
+    operator sees why. Never lowers or replaces this host's own auth mode,
+    and never writes an ``AuthConfig`` this same reader could not parse back
+    (that includes Guild's raw ``mode`` string — see below).
+    """
+    reported_mode = str(identity_trust.get("mode") or "none")
+    reported_issuers_raw = identity_trust.get("issuers", []) or []
+
+    # Guild's own "how do *I* verify humans" mode. 'envoy' means an Envoy
+    # sidecar verifies OIDC in front of Guild — CLISettings.AuthConfig has no
+    # 'envoy' mode (there is no Envoy on a bare mini/docker host), so the
+    # local equivalent is in-process ('oidc') verification of the same
+    # issuers, never the literal string 'envoy' written as a mode value
+    # (AuthConfig.mode is Literal["none", "oidc"] and would fail to parse on
+    # every later CLI invocation).
+    if reported_mode in ("envoy", "oidc"):
+        target_mode = "oidc"
+    elif reported_mode == "none":
+        target_mode = "none"
+    else:
+        return current, (
+            f"Guild reported an unrecognized identity mode {reported_mode!r}; "
+            "leaving this host's host_auth unchanged."
+        )
+
+    if current.mode == "oidc" and target_mode == "none":
+        return current, (
+            "This host already runs host_auth.mode: oidc, but the Guild it joined "
+            "reports no identity verification (mode: none). Refusing to downgrade "
+            "this host's own auth mode — edit host_auth.mode in ~/.niuu/config.yaml "
+            "yourself if that is really intended."
+        )
+
+    if target_mode == "none":
+        # current.mode is already 'none' here (the downgrade case returned
+        # above), so there is nothing to change.
+        return current, None
+
+    try:
+        reported_issuers = [OidcIssuerConfig(**item) for item in reported_issuers_raw]
+    except (TypeError, ValidationError) as exc:
+        return current, (
+            f"Guild reported malformed OIDC issuers ({exc}); leaving this host's "
+            "host_auth unchanged."
+        )
+
+    # Merge, never replace: keep every issuer this host already trusts and
+    # add/update the ones Guild reports, keyed by issuer URL.
+    merged_by_issuer = {issuer.issuer: issuer for issuer in current.oidc.issuers}
+    for issuer in reported_issuers:
+        merged_by_issuer[issuer.issuer] = issuer
+
+    try:
+        candidate = AuthConfig(
+            mode="oidc",
+            oidc=current.oidc.model_copy(update={"issuers": list(merged_by_issuer.values())}),
+        )
+    except ValidationError as exc:
+        return current, (
+            f"Adopting the Guild's identity trust would produce an invalid host_auth "
+            f"config ({exc}); leaving this host's host_auth unchanged. Configure "
+            "host_auth.oidc.issuers manually to enable in-process OIDC verification."
+        )
+    return candidate, None
+
+
 def persist_guild_join(
     *,
     url: str,
     node_id: str,
+    current_host_auth: AuthConfig | None = None,
     identity_trust: dict[str, Any] | None = None,
     config_file: Path | None = None,
-) -> None:
+) -> str | None:
     """Write ``guild.url``/``guild.node_id`` into the CLI's config.yaml.
 
     Merges into whatever config already exists rather than overwriting it —
     `niuu join` must not discard unrelated operator configuration.
 
     ``identity_trust`` (the join response's ``identity`` field — Guild's own
-    ``{mode, issuers}``) is actually applied to ``host_auth``, not just
-    recorded: joining adopts the shared IdP Guild itself trusts, so this
-    host verifies the same tokens Guild does rather than leaving that
-    decision unactioned. ``mode: "none"`` clears any previously configured
-    OIDC issuers rather than leaving stale ones that no longer apply.
+    ``{mode, issuers}``) is merged into ``host_auth`` via
+    ``_merge_identity_trust`` — joining adopts the shared IdP Guild itself
+    trusts, but never at the cost of silently downgrading this host's own
+    auth mode or writing a ``host_auth`` this same code could not read back.
+    Returns a warning string when the identity trust could not be applied
+    (the join/guild fields are still persisted); ``None`` on a clean apply
+    or when no ``identity_trust`` was given.
     """
     import yaml
 
@@ -760,13 +836,15 @@ def persist_guild_join(
     if target.exists():
         existing = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
     existing["guild"] = {"url": url, "node_id": node_id}
+
+    warning = None
     if identity_trust is not None:
-        mode = identity_trust.get("mode", "none")
-        host_auth: dict[str, Any] = {"mode": mode}
-        if mode == "oidc":
-            host_auth["oidc"] = {"issuers": identity_trust.get("issuers", [])}
-        existing["host_auth"] = host_auth
+        current = current_host_auth if current_host_auth is not None else AuthConfig()
+        resolved, warning = _merge_identity_trust(current, identity_trust)
+        existing["host_auth"] = resolved.model_dump(mode="json")
+
     target.write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
+    return warning
 
 
 def clear_guild_join(*, config_file: Path | None = None) -> None:

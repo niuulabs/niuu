@@ -437,6 +437,10 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_niuu_instances_node_id
         ON niuu_instances(node_id);
     """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_niuu_instances_node_kind
+        ON niuu_instances(node_id, kind) WHERE node_id IS NOT NULL;
+    """,
 )
 
 OBSERVATORY_BOOTSTRAP_SQL: tuple[str, ...] = (

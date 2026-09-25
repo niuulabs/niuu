@@ -503,6 +503,79 @@ async def test_none_mode_guild_does_not_care_about_node_auth_mode() -> None:
     assert result.node.name == "spark-1"
 
 
+@pytest.mark.asyncio
+async def test_untrusted_node_auth_refused_against_an_envoy_guild_too() -> None:
+    """The consent check must fire for ANY verifying mode, not just 'oidc'
+    literally -- an 'envoy' Guild forwards real user bearer tokens exactly
+    the same way an 'oidc' one does."""
+    service, backend, _wi = _service(identity_trust_mode="envoy")
+    minted = await service.mint_pairing_code(_admin())
+    with pytest.raises(UntrustedNodeError):
+        await service.join(
+            raw_code=minted.code,
+            node_name="spark-1",
+            public_key=_public_key(),
+            node_auth_mode="none",
+            instances=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_offered_config_tls_fingerprint_must_be_well_formed() -> None:
+    service, backend, _wi = _service()
+    with pytest.raises(GuildJoinError, match="tls_fingerprint"):
+        await _mint_and_join(
+            service,
+            backend,
+            instances=[
+                OfferedInstance(
+                    kind=InstanceKind.VOLUNDR,
+                    base_url="https://x.example.com",
+                    config={"tls_fingerprint": "not-a-valid-fingerprint"},
+                )
+            ],
+        )
+
+
+@pytest.mark.asyncio
+async def test_offered_config_tls_fingerprint_requires_https() -> None:
+    service, backend, _wi = _service()
+    minted = await service.mint_pairing_code(_admin(), allow_plaintext=True)
+    valid_fingerprint = "ab" * 32
+    with pytest.raises(GuildJoinError, match="tls_fingerprint requires https"):
+        await service.join(
+            raw_code=minted.code,
+            node_name="spark-1",
+            public_key=_public_key(),
+            node_auth_mode="oidc",
+            instances=[
+                OfferedInstance(
+                    kind=InstanceKind.VOLUNDR,
+                    base_url="http://x.example.com",
+                    config={"tls_fingerprint": valid_fingerprint},
+                )
+            ],
+        )
+
+
+@pytest.mark.asyncio
+async def test_offered_config_accepts_a_well_formed_tls_fingerprint() -> None:
+    service, backend, _wi = _service()
+    valid_fingerprint = "ab" * 32
+    result = await _mint_and_join(
+        service,
+        backend,
+        instances=[
+            OfferedInstance(
+                kind=InstanceKind.VOLUNDR,
+                base_url="https://x.example.com",
+                config={"tls_fingerprint": valid_fingerprint},
+            )
+        ],
+    )
+    assert result.instances[0].config["tls_fingerprint"] == valid_fingerprint
+
+
 # --- Blocker 3: join atomicity ----------------------------------------------
 
 

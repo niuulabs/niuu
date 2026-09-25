@@ -12,6 +12,7 @@ import binascii
 import hashlib
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from niuu.domain.models import (
@@ -22,6 +23,7 @@ from niuu.domain.models import (
     RegisteredNode,
 )
 from niuu.domain.services.token_scope import NODE_JOIN_SCOPE, VALKYRIE_BUILD_TOKEN_USE
+from niuu.domain.tls_fingerprint import normalize_tls_fingerprint
 from niuu.domain.transport_security import configured_dial_urls, insecure_transport_reason
 from niuu.ports.guild_join_repository import GuildJoinRepository, InstanceWrite, NodeConflictError
 from niuu.ports.instances import InstanceRepository
@@ -149,9 +151,10 @@ def _resolve_instance_config(offered: OfferedInstance, *, pairing_allow_plaintex
 
     ``allow_plaintext`` is never taken from ``offered.config`` (see
     ``_validate_offered_config``) — it is set here, by Guild, only when the
-    admin who minted the pairing code consented to it. Raises
-    :class:`niuu.domain.services.guild_join.GuildJoinError`-family... actually
-    raises the transport policy's own remedy message via ``GuildJoinError``.
+    admin who minted the pairing code consented to it. Mirrors
+    ``niuu.domain.services.instances._require_secure_transport`` exactly
+    (same tls_fingerprint format/https-only checks) so a node-offered
+    instance is held to the identical policy as an admin-registered one.
     """
     _validate_offered_config(offered.config)
     config = dict(offered.config)
@@ -159,10 +162,21 @@ def _resolve_instance_config(offered: OfferedInstance, *, pairing_allow_plaintex
         config["ravn_base_url"] = offered.ravn_base_url
     if pairing_allow_plaintext:
         config["allow_plaintext"] = True
+    fingerprint = config.get("tls_fingerprint")
+    if fingerprint is not None:
+        try:
+            normalize_tls_fingerprint(str(fingerprint))
+        except ValueError as exc:
+            raise GuildJoinError(str(exc)) from exc
     for url in configured_dial_urls(offered.base_url, config):
         reason = insecure_transport_reason(url, allow_plaintext=pairing_allow_plaintext)
         if reason:
             raise GuildJoinError(reason)
+        if fingerprint is not None and urlsplit(url).scheme != "https":
+            raise GuildJoinError(
+                f"{url}: config.tls_fingerprint requires https:// on every URL this "
+                "instance may be dialled on"
+            )
     return config
 
 
@@ -272,15 +286,16 @@ class GuildJoinService:
         if not peeked.tenant_id:
             raise GuildJoinError("Pairing code has no tenant; registration cannot proceed")
         if (
-            self._identity_trust.mode == "oidc"
+            self._identity_trust.mode != "none"
             and node_auth_mode == "none"
             and not peeked.allow_untrusted_node_auth
         ):
             raise UntrustedNodeError(
-                "This Guild requires OIDC identity verification, but the joining node reports "
-                "host_auth.mode: none — Guild would forward real user bearer tokens to an "
-                "instance that trusts every caller. Mint the pairing code with "
-                "allow_untrusted_node_auth to override."
+                "This Guild verifies caller identity (host_auth.mode: "
+                f"{self._identity_trust.mode}), but the joining node reports host_auth.mode: "
+                "none — Guild would forward real user bearer tokens to an instance that "
+                "trusts every caller. Mint the pairing code with allow_untrusted_node_auth "
+                "to override."
             )
 
         writes = [

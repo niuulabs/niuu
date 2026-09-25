@@ -82,13 +82,23 @@ def create_guild_commands(settings: CLISettings) -> typer.Typer:
         """
         import asyncio
 
+        from cli.api.guild import GuildAPIError
         from cli.auth.node_key import NodeKeyMissingError
+        from cli.commands.node_instances import UnreachableHostError
         from cli.services.guild_heartbeat import NotJoinedError, run_heartbeat_loop
 
         try:
             asyncio.run(run_heartbeat_loop(settings, iterations=1 if once else None))
-        except (NotJoinedError, NodeKeyMissingError) as exc:
+        except (NotJoinedError, NodeKeyMissingError, UnreachableHostError) as exc:
             typer.echo(str(exc))
+            raise typer.Exit(1) from None
+        except GuildAPIError as exc:
+            typer.echo(f"Guild rejected the heartbeat: {exc}")
+            if exc.status_code in (401, 403, 404):
+                typer.echo(
+                    "This node may have been revoked. Run `niuu leave` to clear the local "
+                    "state, or ask an admin to check `GET /api/v1/niuu/guild/nodes`."
+                )
             raise typer.Exit(1) from None
         except KeyboardInterrupt:
             raise typer.Exit(0) from None

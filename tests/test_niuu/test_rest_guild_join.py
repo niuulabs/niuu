@@ -277,6 +277,18 @@ def test_revoke_node_maps_access_error_to_403() -> None:
     assert response.status_code == 403
 
 
+def test_revoke_node_with_a_malformed_id_returns_404_not_500() -> None:
+    """A non-UUID path param must never reach the repository's `::uuid`
+    cast (a DB-level error surfacing as a bare 500)."""
+    service, verifier = StubGuildJoinService(), StubNodeVerifier()
+    client = _client(service, verifier)
+
+    response = client.delete("/api/v1/niuu/guild/nodes/not-a-uuid", headers=_auth_headers())
+
+    assert response.status_code == 404
+    assert service.revoke_calls == []
+
+
 def test_join_is_denied_without_the_node_join_scope() -> None:
     service, verifier = StubGuildJoinService(), StubNodeVerifier()
     client = _client(service, verifier)

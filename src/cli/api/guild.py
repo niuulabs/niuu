@@ -24,7 +24,19 @@ REQUEST_TIMEOUT_SECONDS = 30.0
 
 
 class GuildAPIError(Exception):
-    """Raised when Guild rejects a join/pairing/heartbeat/leave request."""
+    """Raised when Guild rejects a join/pairing/heartbeat/leave request.
+
+    This is an application-level rejection (Guild received the request and
+    said no) — distinct from a network-level failure (``httpx.RequestError``:
+    connection refused, timeout, DNS failure, ...), which callers like
+    ``cli.services.guild_heartbeat.run_heartbeat_loop`` treat very
+    differently: a network error is worth retrying, a rejection like 401/403
+    (the node may have been revoked) is not.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -51,7 +63,9 @@ def _raise_for_status(response: httpx.Response) -> None:
         detail = response.json().get("detail", detail)
     except ValueError:
         pass
-    raise GuildAPIError(f"Guild returned {response.status_code}: {detail}")
+    raise GuildAPIError(
+        f"Guild returned {response.status_code}: {detail}", status_code=response.status_code
+    )
 
 
 async def mint_pairing_code(

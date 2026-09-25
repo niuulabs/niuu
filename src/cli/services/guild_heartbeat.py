@@ -13,9 +13,11 @@ import asyncio
 import logging
 from pathlib import Path
 
-from cli.api.guild import GuildAPIError, heartbeat
-from cli.auth.node_key import DEFAULT_NODE_KEY_FILENAME, NodeIdentity, NodeKeyMissingError
-from cli.commands.node_instances import UnreachableHostError, offered_instances_for_host
+import httpx
+
+from cli.api.guild import heartbeat
+from cli.auth.node_key import DEFAULT_NODE_KEY_FILENAME, NodeIdentity
+from cli.commands.node_instances import offered_instances_for_host
 from cli.config import DEFAULT_CONFIG_DIR, CLISettings
 
 logger = logging.getLogger(__name__)
@@ -29,10 +31,18 @@ async def run_heartbeat_loop(settings: CLISettings, *, iterations: int | None = 
     """Send a signed heartbeat every ``guild.heartbeat_interval_seconds``.
 
     ``iterations`` bounds the loop (used by tests and ``--once``); the
-    default ``None`` runs until cancelled. A single failed heartbeat is
-    logged and retried on the next tick — the same "report, don't crash the
-    monitor" pattern ``InstanceHealthChecker`` uses for its periodic sweep —
-    rather than exiting the whole process over one transient network blip.
+    default ``None`` runs until cancelled.
+
+    Only a network-level failure (``httpx.RequestError`` — connection
+    refused, timeout, DNS failure, ...) is worth retrying on the next tick;
+    it says nothing about whether this node is still welcome. A rejection
+    Guild actually answered with (``GuildAPIError`` — 401/403/404 most
+    notably, meaning this node was likely revoked) exits the loop loudly
+    instead of silently retrying against a Guild that will keep saying no.
+    Likewise a missing node key or an unreachable host
+    (``NodeKeyMissingError``/``UnreachableHostError``, both raised once,
+    before the loop starts) is a fixed local misconfiguration no retry
+    would ever resolve — it is not caught here at all.
     """
     if not settings.guild.url or not settings.guild.node_id:
         raise NotJoinedError("This host has not joined a Guild. Run `niuu join` first.")
@@ -40,8 +50,8 @@ async def run_heartbeat_loop(settings: CLISettings, *, iterations: int | None = 
     identity = NodeIdentity.load(Path(DEFAULT_CONFIG_DIR) / DEFAULT_NODE_KEY_FILENAME)
     count = 0
     while True:
+        offered = offered_instances_for_host(settings)
         try:
-            offered = offered_instances_for_host(settings)
             await heartbeat(
                 settings.guild.url,
                 node_id=settings.guild.node_id,
@@ -49,8 +59,8 @@ async def run_heartbeat_loop(settings: CLISettings, *, iterations: int | None = 
                 instances=offered,
             )
             logger.info("Guild heartbeat sent for node %s", settings.guild.node_id)
-        except (GuildAPIError, UnreachableHostError, NodeKeyMissingError):
-            logger.exception("Guild heartbeat failed; will retry next interval")
+        except httpx.RequestError:
+            logger.exception("Guild heartbeat network error; will retry next interval")
 
         count += 1
         if iterations is not None and count >= iterations:

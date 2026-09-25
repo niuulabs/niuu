@@ -174,6 +174,20 @@ def _parse_node_id(node_id: str) -> str:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_AUTH_FAILED) from exc
 
 
+def _parse_node_id_or_404(node_id: str) -> str:
+    """Validate an admin-route node id before any DB lookup.
+
+    Unlike ``_parse_node_id`` (the signed-endpoint uniform-401 case), an
+    authenticated admin route has no probing concern — a malformed id is
+    simply "not found", the same response an unknown-but-valid id gets, and
+    never a DB-level cast error surfacing as a bare 500.
+    """
+    try:
+        return str(UUID(node_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=node_id) from exc
+
+
 async def _verify_node_request(
     request: Request,
     verifier: RegisteredNodeVerifier,
@@ -257,8 +271,9 @@ def create_guild_join_router(
 
         Admin/owner only, so a stolen node key can be cut off immediately.
         """
+        validated_node_id = _parse_node_id_or_404(node_id)
         try:
-            revoked = await service.revoke_node(principal, node_id)
+            revoked = await service.revoke_node(principal, validated_node_id)
         except GuildJoinAccessError as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
         if not revoked:

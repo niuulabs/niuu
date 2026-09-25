@@ -305,12 +305,17 @@ def build_app(
             raise typer.Exit(1) from None
 
         # Adopt Guild's own identity trust — this host now verifies the same
-        # OIDC issuer(s) Guild does (or, under host_auth.mode: none, none at
-        # all) rather than leaving the returned config unapplied.
-        persist_guild_join(
-            url=guild_url, node_id=result["nodeId"], identity_trust=result["identity"]
+        # OIDC issuer(s) Guild does — but never at the cost of downgrading
+        # this host's own auth mode; see persist_guild_join's docstring.
+        warning = persist_guild_join(
+            url=guild_url,
+            node_id=result["nodeId"],
+            current_host_auth=settings.host_auth,
+            identity_trust=result["identity"],
         )
         typer.echo(f"Joined {guild_url} as node {result['nodeId']} ({node_name}).")
+        if warning:
+            typer.echo(f"Warning: {warning}")
         typer.echo(
             "Run `niuu guild heartbeat` (e.g. under a supervisor) to keep this node's "
             "presence and offered instances current."
