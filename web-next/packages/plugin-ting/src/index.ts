@@ -292,7 +292,6 @@ export { WorkflowRevisionConflictError } from './ports';
 export {
   checkFeasibility,
   checkRavenResolution,
-  checkConfidence,
   checkUpstreamBlocked,
   checkClusterHealth,
   type FeasibilityGateName,

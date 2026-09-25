@@ -97,7 +97,6 @@ class Saga:
     repos: list[str]
     feature_branch: str
     status: SagaStatus
-    confidence: float
     created_at: datetime
     base_branch: str
     tracker_connection_id: str = ""
@@ -120,7 +119,6 @@ class Phase:
     number: int
     name: str
     status: PhaseStatus
-    confidence: float
 
 
 @dataclass(frozen=True)
@@ -134,7 +132,6 @@ class Run:
     declared_files: list[str]
     estimate_hours: float | None
     status: RunStatus
-    confidence: float
     session_id: str | None
     branch: str | None
     chronicle_summary: str | None
@@ -202,7 +199,6 @@ class DispatcherState:
     id: UUID
     owner_id: str
     running: bool
-    threshold: float
     max_concurrent_runs: int
     auto_continue: bool
     updated_at: datetime

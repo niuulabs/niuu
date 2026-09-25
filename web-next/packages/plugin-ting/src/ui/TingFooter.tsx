@@ -6,7 +6,6 @@
 
 import { FooterChip, FooterChipSep } from '@niuulabs/shell';
 import { useDispatcherState } from './useDispatcherState';
-import { formatThreshold } from './thresholdDisplay';
 
 export function TingFooter() {
   const { data: state } = useDispatcherState();
@@ -22,12 +21,6 @@ export function TingFooter() {
         name="dispatcher"
         state={state?.running ? 'ok' : 'warn'}
         value={state?.running ? 'active' : 'paused'}
-      />
-      <FooterChipSep />
-      <FooterChip
-        name="threshold"
-        state="ok"
-        value={state ? formatThreshold(state.threshold) : '—'}
       />
     </div>
   );

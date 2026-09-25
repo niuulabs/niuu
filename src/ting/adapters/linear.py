@@ -90,7 +90,6 @@ def _build_unassigned_phase(
         number=number,
         name="Unassigned",
         status=status,
-        confidence=0.0,
     )
 
 
@@ -523,8 +522,6 @@ class LinearTrackerAdapter(TrackerPort):
         if run.declared_files:
             files = "\n".join(f"- `{f}`" for f in run.declared_files)
             description += f"\n\n## Declared Files\n{files}"
-        if run.confidence:
-            description += f"\n\n**Confidence:** {run.confidence:.0%}"
 
         # Linear estimate is an integer (story points); clamp positive work to at least 1.
         estimate = None
@@ -763,7 +760,6 @@ class LinearTrackerAdapter(TrackerPort):
         *,
         status: RunStatus | None = None,
         session_id: str | None = None,
-        confidence: float | None = None,
         pr_url: str | None = None,
         pr_id: str | None = None,
         retry_count: int | None = None,
@@ -781,33 +777,31 @@ class LinearTrackerAdapter(TrackerPort):
         await self._pool.execute(
             """
             INSERT INTO run_progress
-                (tracker_id, status, session_id, confidence, pr_url, pr_id,
+                (tracker_id, status, session_id, pr_url, pr_id,
                  retry_count, reason, owner_id, tenant_id, phase_tracker_id, saga_tracker_id,
                  chronicle_summary, reviewer_session_id, review_round, tracker_connection_id)
-            VALUES ($1, COALESCE($2, 'PENDING'), $3, $4, $5, $6,
-                    COALESCE($7, 0), $8, $9, $10, $11, $12, $13, $14,
-                    COALESCE($15, 0), $16)
+            VALUES ($1, COALESCE($2, 'PENDING'), $3, $4, $5,
+                    COALESCE($6, 0), $7, $8, $9, $10, $11, $12, $13,
+                    COALESCE($14, 0), $15)
             ON CONFLICT (tracker_connection_id, tracker_id) DO UPDATE SET
                 status              = COALESCE($2, run_progress.status),
                 session_id          = COALESCE($3, run_progress.session_id),
-                confidence          = COALESCE($4, run_progress.confidence),
-                pr_url              = COALESCE($5, run_progress.pr_url),
-                pr_id               = COALESCE($6, run_progress.pr_id),
-                retry_count         = COALESCE($7, run_progress.retry_count),
-                reason              = COALESCE($8, run_progress.reason),
-                owner_id            = COALESCE($9, run_progress.owner_id),
-                tenant_id           = COALESCE($10, run_progress.tenant_id),
-                phase_tracker_id    = COALESCE($11, run_progress.phase_tracker_id),
-                saga_tracker_id     = COALESCE($12, run_progress.saga_tracker_id),
-                chronicle_summary   = COALESCE($13, run_progress.chronicle_summary),
-                reviewer_session_id = COALESCE($14, run_progress.reviewer_session_id),
-                review_round        = COALESCE($15, run_progress.review_round),
+                pr_url              = COALESCE($4, run_progress.pr_url),
+                pr_id               = COALESCE($5, run_progress.pr_id),
+                retry_count         = COALESCE($6, run_progress.retry_count),
+                reason              = COALESCE($7, run_progress.reason),
+                owner_id            = COALESCE($8, run_progress.owner_id),
+                tenant_id           = COALESCE($9, run_progress.tenant_id),
+                phase_tracker_id    = COALESCE($10, run_progress.phase_tracker_id),
+                saga_tracker_id     = COALESCE($11, run_progress.saga_tracker_id),
+                chronicle_summary   = COALESCE($12, run_progress.chronicle_summary),
+                reviewer_session_id = COALESCE($13, run_progress.reviewer_session_id),
+                review_round        = COALESCE($14, run_progress.review_round),
                 updated_at          = NOW()
             """,
             tracker_id,
             status.value if status is not None else None,
             session_id,
-            confidence,
             pr_url,
             pr_id,
             retry_count,
@@ -1008,7 +1002,6 @@ class LinearTrackerAdapter(TrackerPort):
                 number=m.sort_order,
                 name=m.name,
                 status=PhaseStatus.PENDING,
-                confidence=0.0,
             )
             for m in milestones
         ]
@@ -1266,7 +1259,6 @@ class LinearTrackerAdapter(TrackerPort):
             repos=[],
             feature_branch="feat/test",
             status=SagaStatus.ACTIVE,
-            confidence=0.0,
             created_at=now,
             base_branch="",
         )
@@ -1280,7 +1272,6 @@ class LinearTrackerAdapter(TrackerPort):
             number=int(node.get("sortOrder", 0)),
             name=node.get("name", ""),
             status=PhaseStatus.PENDING,
-            confidence=0.0,
         )
 
     @staticmethod
@@ -1292,7 +1283,6 @@ class LinearTrackerAdapter(TrackerPort):
             number=row["number"],
             name=row["name"],
             status=PhaseStatus(row["status"]),
-            confidence=row["confidence"],
         )
 
     @staticmethod
@@ -1316,7 +1306,6 @@ class LinearTrackerAdapter(TrackerPort):
             feature_branch=row.get("feature_branch") or f"feat/{slug}",
             base_branch=row["base_branch"],
             status=SagaStatus(row.get("status", "ACTIVE") or "ACTIVE"),
-            confidence=row["confidence"] or 0.0,
             created_at=row["created_at"] or datetime.now(UTC),
             owner_id=row.get("owner_id") or "",
             workflow_id=row.get("workflow_id"),
@@ -1344,9 +1333,6 @@ class LinearTrackerAdapter(TrackerPort):
             declared_files=[],
             estimate_hours=None,
             status=run_status,
-            confidence=float(progress["confidence"])
-            if progress and progress.get("confidence")
-            else 0.0,
             session_id=progress.get("session_id") if progress else None,
             branch=None,
             chronicle_summary=None,

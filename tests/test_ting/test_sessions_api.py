@@ -113,7 +113,6 @@ class MockTracker(TrackerPort):
             declared_files=[],
             estimate_hours=None,
             status=RunStatus.REVIEW,
-            confidence=0.82,
             session_id="sess-1",
             branch="feat/auth-refresh",
             chronicle_summary=None,
@@ -132,7 +131,6 @@ class MockTracker(TrackerPort):
             repos=["org/repo"],
             feature_branch="feat/auth-rewrite",
             status=SagaStatus.ACTIVE,
-            confidence=0.0,
             created_at=now,
             base_branch="main",
             owner_id="dev-user",
@@ -166,7 +164,6 @@ class MockTracker(TrackerPort):
             number=1,
             name="Phase 1",
             status=PhaseStatus.ACTIVE,
-            confidence=0.0,
         )
 
     async def get_run(self, tracker_id: str) -> Run:
@@ -264,7 +261,6 @@ class TestSessionsAPI:
                 "status": "awaiting_approval",
                 "chronicle_lines": ["line 1", "line 2"],
                 "branch": "feat/auth-refresh",
-                "confidence": 82.0,
                 "run_name": "Implement auth refresh",
                 "saga_name": "Auth Rewrite",
                 "cluster_name": "Mac mini",

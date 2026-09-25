@@ -702,7 +702,6 @@ class ReviewEngine:
                         number=persisted.number,
                         name=persisted.name,
                         status=PhaseStatus.COMPLETE,
-                        confidence=persisted.confidence,
                     )
                 )
             elif (
@@ -718,7 +717,6 @@ class ReviewEngine:
                         number=persisted.number,
                         name=persisted.name,
                         status=PhaseStatus.ACTIVE,
-                        confidence=persisted.confidence,
                     )
                 )
 
@@ -769,7 +767,6 @@ class ReviewEngine:
         data: dict[str, object] = {
             "run_id": str(run.id),
             "status": run.status.value,
-            "confidence": run.confidence,
             "action": action,
             "tracker_id": run.tracker_id,
         }

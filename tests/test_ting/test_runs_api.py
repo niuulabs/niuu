@@ -99,7 +99,6 @@ class StatefulMockTracker(MockTracker):
             declared_files=run.declared_files,
             estimate_hours=run.estimate_hours,
             status=status,  # type: ignore[arg-type]
-            confidence=run.confidence,
             session_id=run.session_id,
             branch=run.branch,
             chronicle_summary=run.chronicle_summary,
@@ -264,7 +263,6 @@ class MockGit(GitPort):
 def _make_run(
     run_id: UUID | None = None,
     status: RunStatus = RunStatus.REVIEW,
-    confidence: float = 0.5,
     session_id: str | None = "session-1",
     branch: str | None = "run/test-branch",
 ) -> Run:
@@ -279,7 +277,6 @@ def _make_run(
         declared_files=["src/main.py"],
         estimate_hours=2.0,
         status=status,
-        confidence=confidence,
         session_id=session_id,
         branch=branch,
         chronicle_summary="All tests pass, code looks clean",
@@ -301,7 +298,6 @@ def _make_saga() -> Saga:
         repos=["org/repo"],
         feature_branch="feat/alpha",
         status=SagaStatus.ACTIVE,
-        confidence=0.0,
         created_at=datetime.now(UTC),
         base_branch="dev",
     )
@@ -315,7 +311,6 @@ def _make_phase() -> Phase:
         number=1,
         name="Phase 1",
         status=PhaseStatus.ACTIVE,
-        confidence=0.0,
     )
 
 
@@ -614,7 +609,6 @@ class TestRetryRun:
             declared_files=run.declared_files,
             estimate_hours=run.estimate_hours,
             status=RunStatus.REVIEW,
-            confidence=run.confidence,
             session_id=run.session_id,
             branch=run.branch,
             chronicle_summary=run.chronicle_summary,

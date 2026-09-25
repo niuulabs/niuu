@@ -41,10 +41,6 @@ export function PlanApproved({ saga, onNewPlan }: PlanApprovedProps) {
           <dt className="niuu:text-text-muted">Phases</dt>
           <dd className="niuu:text-text-secondary">{saga.phaseSummary.total}</dd>
         </div>
-        <div className="niuu:flex niuu:justify-between niuu:text-sm">
-          <dt className="niuu:text-text-muted">Confidence</dt>
-          <dd className="niuu:text-text-secondary">{saga.confidence}%</dd>
-        </div>
       </dl>
 
       <div className="niuu:flex niuu:gap-3">

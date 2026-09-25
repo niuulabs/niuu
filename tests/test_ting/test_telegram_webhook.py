@@ -81,7 +81,6 @@ class StubSagaRepo(SagaRepository):
             repos=["org/repo"],
             feature_branch=f"feat/{slug}",
             status=SagaStatus.ACTIVE,
-            confidence=0.0,
             created_at=_datetime.now(_UTC),
             base_branch="dev",
             owner_id=owner_id,
@@ -197,7 +196,6 @@ class StubTracker(TrackerPort):
         *,
         status: RunStatus | None = None,
         session_id: str | None = None,
-        confidence: float | None = None,
         pr_url: str | None = None,
         pr_id: str | None = None,
         retry_count: int | None = None,
@@ -221,7 +219,6 @@ class StubTracker(TrackerPort):
             declared_files=run.declared_files,
             estimate_hours=run.estimate_hours,
             status=status if status is not None else run.status,
-            confidence=confidence if confidence is not None else run.confidence,
             session_id=session_id if session_id is not None else run.session_id,
             branch=run.branch,
             chronicle_summary=run.chronicle_summary,
@@ -292,7 +289,6 @@ class StubDispatcherRepo(DispatcherRepository):
             id=uuid4(),
             owner_id="user-1",
             running=running,
-            threshold=0.7,
             max_concurrent_runs=3,
             auto_continue=False,
             updated_at=datetime.now(UTC),
@@ -307,7 +303,6 @@ class StubDispatcherRepo(DispatcherRepository):
             id=self._state.id,
             owner_id=owner_id,
             running=running,
-            threshold=self._state.threshold,
             max_concurrent_runs=self._state.max_concurrent_runs,
             auto_continue=self._state.auto_continue,
             updated_at=datetime.now(UTC),
@@ -438,7 +433,6 @@ def _make_run(
         declared_files=["src/main.py"],
         estimate_hours=2.0,
         status=status,
-        confidence=0.55,
         session_id="session-1",
         branch="run/test",
         chronicle_summary="summary",
@@ -460,7 +454,6 @@ def _make_saga(owner_id: str = OWNER_ID) -> Saga:
         repos=["org/repo"],
         feature_branch="feat/alpha",
         status=SagaStatus.ACTIVE,
-        confidence=0.0,
         created_at=datetime.now(UTC),
         base_branch="dev",
         owner_id=owner_id,
@@ -756,7 +749,7 @@ class TestStatusCommand:
 
 
 # ---------------------------------------------------------------------------
-# /approve command — now verifies confidence events are recorded
+# /approve command
 # ---------------------------------------------------------------------------
 
 
@@ -815,7 +808,7 @@ class TestApproveCommand:
 
 
 # ---------------------------------------------------------------------------
-# /reject command — now verifies confidence events are recorded
+# /reject command
 # ---------------------------------------------------------------------------
 
 
@@ -872,7 +865,7 @@ class TestRejectCommand:
 
 
 # ---------------------------------------------------------------------------
-# /retry command — now verifies confidence events and retry_count
+# /retry command — verifies retry_count
 # ---------------------------------------------------------------------------
 
 
@@ -947,7 +940,6 @@ class TestPauseResumeCommands:
             id=uuid4(),
             owner_id=OWNER_ID,
             running=False,
-            threshold=0.7,
             max_concurrent_runs=3,
             auto_continue=False,
             updated_at=datetime.now(UTC),
@@ -966,7 +958,6 @@ class TestPauseResumeCommands:
             id=uuid4(),
             owner_id=OWNER_ID,
             running=False,
-            threshold=0.7,
             max_concurrent_runs=3,
             auto_continue=False,
             updated_at=datetime.now(UTC),

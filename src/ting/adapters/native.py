@@ -60,12 +60,12 @@ class NativeTrackerAdapter(TrackerPort):
             """
             INSERT INTO sagas
                 (id, tracker_id, tracker_type, slug, name,
-                 repos, feature_branch, base_branch, status, confidence, created_at,
+                 repos, feature_branch, base_branch, status, created_at,
                  owner_id, workflow_id, workflow_version, workflow_snapshot, instance_id,
                  repo_branches, target_tags, target_match, tracker_connection_id)
             VALUES
-                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16::uuid,
-                 $17::jsonb, $18, $19, $20)
+                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15::uuid,
+                 $16::jsonb, $17, $18, $19)
             ON CONFLICT (id) DO UPDATE SET
                 tracker_id = EXCLUDED.tracker_id,
                 tracker_type = EXCLUDED.tracker_type,
@@ -75,7 +75,6 @@ class NativeTrackerAdapter(TrackerPort):
                 feature_branch = EXCLUDED.feature_branch,
                 base_branch = EXCLUDED.base_branch,
                 status = EXCLUDED.status,
-                confidence = EXCLUDED.confidence,
                 owner_id = EXCLUDED.owner_id,
                 workflow_id = EXCLUDED.workflow_id,
                 workflow_version = EXCLUDED.workflow_version,
@@ -95,7 +94,6 @@ class NativeTrackerAdapter(TrackerPort):
             saga.feature_branch,
             saga.base_branch,
             saga.status.value,
-            saga.confidence,
             saga.created_at,
             saga.owner_id,
             saga.workflow_id,
@@ -113,8 +111,8 @@ class NativeTrackerAdapter(TrackerPort):
         tracker_id = str(phase.id)
         await self._pool.execute(
             """
-            INSERT INTO phases (id, saga_id, tracker_id, number, name, status, confidence)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO phases (id, saga_id, tracker_id, number, name, status)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (id) DO NOTHING
             """,
             phase.id,
@@ -123,7 +121,6 @@ class NativeTrackerAdapter(TrackerPort):
             phase.number,
             phase.name,
             phase.status.value,
-            phase.confidence,
         )
         return tracker_id
 
@@ -134,9 +131,9 @@ class NativeTrackerAdapter(TrackerPort):
             INSERT INTO runs
                 (id, phase_id, tracker_id, name, description,
                  acceptance_criteria, declared_files, estimate_hours,
-                 status, confidence, session_id, branch,
+                 status, session_id, branch,
                  chronicle_summary, retry_count, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             ON CONFLICT (id) DO NOTHING
             """,
             run.id,
@@ -148,7 +145,6 @@ class NativeTrackerAdapter(TrackerPort):
             run.declared_files,
             run.estimate_hours,
             run.status.value,
-            run.confidence,
             run.session_id,
             run.branch,
             run.chronicle_summary,
@@ -305,7 +301,6 @@ class NativeTrackerAdapter(TrackerPort):
         *,
         status: RunStatus | None = None,
         session_id: str | None = None,
-        confidence: float | None = None,
         pr_url: str | None = None,
         pr_id: str | None = None,
         retry_count: int | None = None,
@@ -323,14 +318,13 @@ class NativeTrackerAdapter(TrackerPort):
             UPDATE runs SET
                 status              = COALESCE($2, status),
                 session_id          = COALESCE($3, session_id),
-                confidence          = COALESCE($4, confidence),
-                pr_url              = COALESCE($5, pr_url),
-                pr_id               = COALESCE($6, pr_id),
-                retry_count         = COALESCE($7, retry_count),
-                reason              = COALESCE($8, reason),
-                chronicle_summary   = COALESCE($9, chronicle_summary),
-                reviewer_session_id = COALESCE($10, reviewer_session_id),
-                review_round        = COALESCE($11, review_round),
+                pr_url              = COALESCE($4, pr_url),
+                pr_id               = COALESCE($5, pr_id),
+                retry_count         = COALESCE($6, retry_count),
+                reason              = COALESCE($7, reason),
+                chronicle_summary   = COALESCE($8, chronicle_summary),
+                reviewer_session_id = COALESCE($9, reviewer_session_id),
+                review_round        = COALESCE($10, review_round),
                 updated_at          = NOW()
             WHERE tracker_id = $1
               AND EXISTS (
@@ -343,7 +337,6 @@ class NativeTrackerAdapter(TrackerPort):
             tracker_id,
             status.value if status is not None else None,
             session_id,
-            confidence,
             pr_url,
             pr_id,
             retry_count,
@@ -587,7 +580,6 @@ class NativeTrackerAdapter(TrackerPort):
             repo_branches={str(k): str(v) for k, v in repo_branches.items()},
             feature_branch=row.get("feature_branch") or f"feat/{slug}",
             status=SagaStatus(row.get("status", "ACTIVE") or "ACTIVE"),
-            confidence=row["confidence"] or 0.0,
             created_at=row["created_at"] or datetime.now(UTC),
             base_branch=row["base_branch"],
             owner_id=row.get("owner_id") or "",
@@ -610,7 +602,6 @@ class NativeTrackerAdapter(TrackerPort):
             number=row["number"],
             name=row["name"],
             status=PhaseStatus(row.get("status", "GATED") or "GATED"),
-            confidence=row["confidence"] or 0.0,
         )
 
     @staticmethod
@@ -625,7 +616,6 @@ class NativeTrackerAdapter(TrackerPort):
             declared_files=list(row.get("declared_files") or []),
             estimate_hours=row.get("estimate_hours"),
             status=RunStatus(row["status"]),
-            confidence=row["confidence"] or 0.0,
             session_id=row.get("session_id"),
             branch=row.get("branch"),
             chronicle_summary=row.get("chronicle_summary"),

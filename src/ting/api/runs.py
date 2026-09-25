@@ -124,7 +124,6 @@ class RunResponse(BaseModel):
     id: str
     name: str
     status: str
-    confidence: float
     retry_count: int
     branch: str | None = None
     chronicle_summary: str | None = None
@@ -227,7 +226,6 @@ def _run_response(run, reason: str | None = None) -> RunResponse:
         id=str(run.id),
         name=run.name,
         status=run.status.value,
-        confidence=run.confidence,
         retry_count=run.retry_count,
         branch=run.branch,
         chronicle_summary=run.chronicle_summary,
@@ -290,7 +288,6 @@ class ActiveRunResponse(BaseModel):
     session_id: str | None = None
     reviewer_session_id: str | None = None
     review_round: int = 0
-    confidence: float = 0.0
     pr_url: str | None = None
     last_updated: str = ""
 
@@ -332,7 +329,6 @@ def create_runs_router() -> APIRouter:
                             session_id=run.session_id,
                             reviewer_session_id=run.reviewer_session_id,
                             review_round=run.review_round,
-                            confidence=run.confidence,
                             pr_url=run.pr_url,
                             last_updated=run.updated_at.isoformat() if run.updated_at else "",
                         )

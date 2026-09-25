@@ -89,7 +89,6 @@ class ConcreteTracker(TrackerPort):
             repos=[],
             feature_branch="feat/test",
             status=SagaStatus.ACTIVE,
-            confidence=0.0,
             created_at=now,
             base_branch="dev",
         )
@@ -102,7 +101,6 @@ class ConcreteTracker(TrackerPort):
             number=1,
             name="Phase 1",
             status=PhaseStatus.PENDING,
-            confidence=0.0,
         )
 
     async def get_run(self, tracker_id: str) -> Run:
@@ -117,7 +115,6 @@ class ConcreteTracker(TrackerPort):
             declared_files=[],
             estimate_hours=None,
             status=RunStatus.PENDING,
-            confidence=0.0,
             session_id=None,
             branch=None,
             chronicle_summary=None,
@@ -212,7 +209,6 @@ class TestConcreteTracker:
             repos=["r"],
             feature_branch="feat/test",
             status=SagaStatus.ACTIVE,
-            confidence=0.0,
             created_at=now,
             base_branch="dev",
         )

@@ -153,10 +153,6 @@ class GuildRegistryConfig(BaseModel):
 class ReviewConfig(BaseModel):
     """Run review projection settings."""
 
-    initial_confidence: float = Field(
-        default=0.5,
-        description="Starting confidence score for newly committed sagas, phases, and runs.",
-    )
     max_retries: int = Field(
         default=3,
         description="Maximum auto-retries before escalation to human review.",
@@ -860,10 +856,6 @@ class NotificationConfig(BaseModel):
     public_origin: str = Field(
         default="http://localhost:8080",
         description="Browser-facing Niuu origin used to build notification links.",
-    )
-    confidence_threshold: float = Field(
-        default=0.3,
-        description="Notify when run confidence drops below this value.",
     )
 
 

@@ -154,7 +154,7 @@ class TrackerPort(ABC):
     ) -> list[TrackerIssue]:
         raise NotImplementedError
 
-    # -- Run progress: operational state (status, session, confidence, PR) --
+    # -- Run progress: operational state (status, session, PR) --
 
     @abstractmethod
     async def update_run_progress(
@@ -163,7 +163,6 @@ class TrackerPort(ABC):
         *,
         status: RunStatus | None = None,
         session_id: str | None = None,
-        confidence: float | None = None,
         pr_url: str | None = None,
         pr_id: str | None = None,
         retry_count: int | None = None,

@@ -54,7 +54,6 @@ def _make_saga(
         repos=["org/repo"],
         feature_branch=f"feat/{slug}",
         status=SagaStatus.ACTIVE,
-        confidence=0.8,
         created_at=NOW,
         base_branch="dev",
     )
@@ -71,7 +70,6 @@ def _make_phase(
         number=1,
         name="Phase 1",
         status=PhaseStatus.PENDING,
-        confidence=0.5,
     )
 
 
@@ -90,7 +88,6 @@ def _make_run(
         declared_files=["src/main.py"],
         estimate_hours=2.0,
         status=status,
-        confidence=0.6,
         session_id="sess-1",
         branch="feat/test",
         chronicle_summary="Summary",
@@ -113,7 +110,6 @@ def _saga_record(saga: Saga, tracker_id: str) -> dict:
         "repos": saga.repos,
         "feature_branch": saga.feature_branch,
         "status": saga.status.value,
-        "confidence": saga.confidence,
         "created_at": saga.created_at,
         "base_branch": saga.base_branch,
     }
@@ -127,7 +123,6 @@ def _phase_record(phase: Phase, tracker_id: str) -> dict:
         "number": phase.number,
         "name": phase.name,
         "status": phase.status.value,
-        "confidence": phase.confidence,
     }
 
 
@@ -142,7 +137,6 @@ def _run_record(run: Run, tracker_id: str) -> dict:
         "declared_files": run.declared_files,
         "estimate_hours": run.estimate_hours,
         "status": run.status.value,
-        "confidence": run.confidence,
         "session_id": run.session_id,
         "branch": run.branch,
         "chronicle_summary": run.chronicle_summary,
@@ -178,10 +172,10 @@ class TestCreateSaga:
         args = pool.execute.call_args[0]
         assert "INSERT INTO sagas" in args[0]
         assert args[8] == saga.base_branch
-        assert args[12] == saga.owner_id
-        assert args[13] == saga.workflow_id
-        assert args[14] == saga.workflow_version
-        assert args[15] is None
+        assert args[11] == saga.owner_id
+        assert args[12] == saga.workflow_id
+        assert args[13] == saga.workflow_version
+        assert args[14] is None
 
     async def test_serializes_workflow_snapshot(self):
         pool = _make_pool()
@@ -195,7 +189,6 @@ class TestCreateSaga:
             repos=["org/repo"],
             feature_branch="feat/workflow-saga",
             status=SagaStatus.ACTIVE,
-            confidence=0.8,
             created_at=NOW,
             base_branch="main",
             owner_id="dev-user",
@@ -205,7 +198,7 @@ class TestCreateSaga:
         await adapter.create_saga(saga)
 
         args = pool.execute.call_args[0]
-        assert args[15] == json.dumps({"name": "Review Flow"})
+        assert args[14] == json.dumps({"name": "Review Flow"})
         assert args[1] == saga.id
         assert args[2] == str(saga.id)  # tracker_id = local UUID
         assert args[3] == "native"
@@ -294,8 +287,8 @@ class TestCreateRun:
         assert args[4] == run.name
         assert args[7] == run.declared_files
         assert args[8] == run.estimate_hours
-        assert args[11] == run.session_id
-        assert args[12] == run.branch
+        assert args[10] == run.session_id
+        assert args[11] == run.branch
 
 
 # ---------------------------------------------------------------------------
@@ -726,16 +719,6 @@ class TestStateMappings:
 
 
 class TestRowConversion:
-    async def test_saga_with_null_confidence(self):
-        pool = _make_pool()
-        adapter = _make_adapter(pool)
-        record = _saga_record(_make_saga(), "tid-1")
-        record["confidence"] = None
-        pool.fetchrow.return_value = record
-
-        result = await adapter.get_saga("tid-1")
-        assert result.confidence == 0.0
-
     async def test_saga_with_null_status(self):
         pool = _make_pool()
         adapter = _make_adapter(pool)

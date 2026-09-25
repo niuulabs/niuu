@@ -79,7 +79,6 @@ interface RawSaga {
   base_branch?: string;
   status: string;
   url?: string;
-  confidence?: number;
   created_at: string;
   workflow_id?: string | null;
   workflow?: string | null;
@@ -110,7 +109,6 @@ interface RawRun {
   declared_files: string[];
   estimate_hours: number | null;
   status: string;
-  confidence: number;
   session_id: string | null;
   reviewer_session_id: string | null;
   review_round: number;
@@ -128,14 +126,12 @@ interface RawPhase {
   number: number;
   name: string;
   status: string;
-  confidence: number;
   runs: RawRun[];
 }
 
 interface RawDispatcherState {
   id: string;
   running: boolean;
-  threshold: number;
   max_concurrent_runs: number;
   auto_continue: boolean;
   updated_at: string;
@@ -159,7 +155,6 @@ interface RawSessionInfo {
   status: string;
   chronicle_lines: string[];
   branch: string | null;
-  confidence: number;
   run_name: string;
   saga_name: string;
   cluster_name: string;
@@ -494,7 +489,6 @@ function toRun(raw: RawRun): Run {
     declaredFiles: raw.declared_files,
     estimateHours: raw.estimate_hours,
     status: raw.status as Run['status'],
-    confidence: raw.confidence,
     sessionId: raw.session_id,
     reviewerSessionId: raw.reviewer_session_id,
     reviewRound: raw.review_round,
@@ -514,7 +508,6 @@ function toPhase(raw: RawPhase): Phase {
     number: raw.number,
     name: raw.name,
     status: raw.status as Phase['status'],
-    confidence: raw.confidence,
     runs: raw.runs.map(toRun),
   };
 }
@@ -548,7 +541,6 @@ function toSaga(raw: RawSaga): Saga {
     featureBranch: raw.feature_branch,
     baseBranch: raw.base_branch ?? 'main',
     status: raw.status as Saga['status'],
-    confidence: raw.confidence ?? 0,
     createdAt: raw.created_at,
     workflowId: raw.workflow_id ?? undefined,
     workflow: raw.workflow ?? undefined,
@@ -568,7 +560,6 @@ function toDispatcherState(raw: RawDispatcherState): DispatcherState {
   return {
     id: raw.id,
     running: raw.running,
-    threshold: raw.threshold,
     maxConcurrentRuns: raw.max_concurrent_runs,
     autoContinue: raw.auto_continue,
     updatedAt: raw.updated_at,
@@ -581,7 +572,6 @@ function toSessionInfo(raw: RawSessionInfo): SessionInfo {
     status: raw.status as SessionInfo['status'],
     chronicleLines: raw.chronicle_lines,
     branch: raw.branch,
-    confidence: raw.confidence,
     runName: raw.run_name,
     sagaName: raw.saga_name,
     clusterName: raw.cluster_name,
@@ -1255,10 +1245,6 @@ export function buildDispatcherHttpAdapter(client: ApiClient): IDispatcherServic
       await client.patch<void>('/dispatcher', { running });
     },
 
-    async setThreshold(threshold: number) {
-      await client.patch<void>('/dispatcher', { threshold });
-    },
-
     async setAutoContinue(autoContinue: boolean) {
       await client.patch<void>('/dispatcher', { auto_continue: autoContinue });
     },
@@ -1668,7 +1654,6 @@ interface RawFlockConfig {
 }
 
 interface RawDispatchDefaults {
-  confidence_threshold: number;
   max_concurrent_runs: number;
   auto_continue: boolean;
   batch_size: number;
@@ -1716,7 +1701,6 @@ function toFlockConfig(raw: RawFlockConfig): FlockConfig {
 
 function toDispatchDefaults(raw: RawDispatchDefaults): DispatchDefaults {
   return {
-    confidenceThreshold: raw.confidence_threshold,
     maxConcurrentRuns: raw.max_concurrent_runs,
     autoContinue: raw.auto_continue,
     batchSize: raw.batch_size,
@@ -1787,8 +1771,6 @@ export function buildTingSettingsHttpAdapter(client: ApiClient): ITingSettingsSe
 
     async updateDispatchDefaults(patch) {
       const body: Record<string, unknown> = {};
-      if (patch.confidenceThreshold !== undefined)
-        body['confidence_threshold'] = patch.confidenceThreshold;
       if (patch.maxConcurrentRuns !== undefined)
         body['max_concurrent_runs'] = patch.maxConcurrentRuns;
       if (patch.autoContinue !== undefined) body['auto_continue'] = patch.autoContinue;

@@ -11,9 +11,8 @@ from cli.tui.app import NiuuTUI
 from cli.tui.widgets.metric_card import MetricCard
 from cli.tui.widgets.tabs import NiuuTabs
 from niuu.ports.plugin import TUIPageSpec
-from ting.tui._helpers import format_confidence
 from ting.tui.pages.dispatch import ActivityEntry, DispatchPage, QueueItem
-from ting.tui.pages.review import _CONFIDENCE_HIGH, _CONFIDENCE_MED, ReviewPage, ReviewRow
+from ting.tui.pages.review import ReviewPage, ReviewRow
 from ting.tui.pages.runs import RunRow, RunsPage
 from ting.tui.pages.sagas import SagaRow, SagasPage
 
@@ -27,7 +26,6 @@ def _saga(name: str = "test-saga", status: str = "ACTIVE", **kwargs: object) -> 
         "status": status,
         "run_count": kwargs.get("run_count", 3),
         "progress": kwargs.get("progress", "2/3"),
-        "confidence": kwargs.get("confidence", 0.85),
     }
 
 
@@ -36,7 +34,6 @@ def _run(name: str = "test-run", status: str = "RUNNING", **kwargs: object) -> d
         "id": str(uuid4()),
         "name": name,
         "status": status,
-        "confidence": kwargs.get("confidence", 0.75),
         "session_id": kwargs.get("session_id", "sess-001"),
         "retry_count": kwargs.get("retry_count", 0),
         "reviewer_session_id": kwargs.get("reviewer_session_id"),
@@ -52,11 +49,11 @@ SAMPLE_SAGAS = [
 ]
 
 SAMPLE_RUNS = [
-    _run("implement-login", "RUNNING", confidence=0.9),
-    _run("add-tests", "REVIEW", confidence=0.7),
-    _run("fix-ci", "PENDING", confidence=0.5),
-    _run("update-docs", "FAILED", confidence=0.3),
-    _run("refactor-api", "ESCALATED", confidence=0.4),
+    _run("implement-login", "RUNNING"),
+    _run("add-tests", "REVIEW"),
+    _run("fix-ci", "PENDING"),
+    _run("update-docs", "FAILED"),
+    _run("refactor-api", "ESCALATED"),
 ]
 
 
@@ -77,30 +74,6 @@ def _mock_client(
     client.post.return_value = resp
     client.delete.return_value = resp
     return client
-
-
-# ── Helpers tests ─────────────────────────────────────────────
-
-
-class TestHelpers:
-    def test_format_confidence_float(self) -> None:
-        assert format_confidence(0.85) == "85%"
-
-    def test_format_confidence_zero(self) -> None:
-        assert format_confidence(0.0) == "0%"
-
-    def test_format_confidence_one(self) -> None:
-        assert format_confidence(1.0) == "100%"
-
-    def test_format_confidence_non_float(self) -> None:
-        assert format_confidence("N/A") == "N/A"
-
-    def test_format_confidence_int(self) -> None:
-        assert format_confidence(85) == "85"
-
-    def test_confidence_thresholds_are_sensible(self) -> None:
-        assert _CONFIDENCE_HIGH > _CONFIDENCE_MED
-        assert _CONFIDENCE_MED > 0
 
 
 # ── SagaRow tests ─────────────────────────────────────────────
@@ -422,7 +395,6 @@ class TestDispatchPage:
     def test_default_config(self) -> None:
         page = DispatchPage()
         assert page.dispatch_config["max_concurrent"] == 3
-        assert page.dispatch_config["threshold"] == 0.7
 
     def test_toggle_selection(self) -> None:
         page = DispatchPage()
@@ -521,9 +493,8 @@ class TestDispatchPage:
 
     def test_load_data_config(self) -> None:
         page = DispatchPage()
-        page.load_data(config={"max_concurrent": 5, "threshold": 0.8})
+        page.load_data(config={"max_concurrent": 5})
         assert page.dispatch_config["max_concurrent"] == 5
-        assert page.dispatch_config["threshold"] == 0.8
 
     def test_empty_queue(self) -> None:
         page = DispatchPage()
@@ -534,7 +505,6 @@ class TestDispatchPage:
         page = DispatchPage()
         rendered = page._render_config()
         assert "max concurrent" in rendered
-        assert "threshold" in rendered
 
 
 # ── ReviewRow tests ───────────────────────────────────────────
@@ -545,16 +515,6 @@ class TestReviewRow:
         run = _run("review-run", "REVIEW")
         row = ReviewRow(run)
         assert row.run["name"] == "review-run"
-
-    def test_high_confidence(self) -> None:
-        run = _run("hi", "REVIEW", confidence=0.9)
-        row = ReviewRow(run)
-        assert row.run["confidence"] == 0.9
-
-    def test_low_confidence(self) -> None:
-        run = _run("lo", "REVIEW", confidence=0.3)
-        row = ReviewRow(run)
-        assert row.run["confidence"] == 0.3
 
 
 # ── ReviewPage unit tests ─────────────────────────────────────
@@ -829,7 +789,7 @@ class TestTUIIntegration:
     async def test_saga_row_renders_in_app(self) -> None:
         app = NiuuTUI()
         async with app.run_test() as pilot:
-            row = SagaRow(_saga("my-saga", "ACTIVE", confidence=0.9))
+            row = SagaRow(_saga("my-saga", "ACTIVE"))
             app.mount(row)
             await pilot.pause()
             content = row.query_one("#saga-row-content")
@@ -847,7 +807,7 @@ class TestTUIIntegration:
     async def test_review_row_renders_in_app(self) -> None:
         app = NiuuTUI()
         async with app.run_test() as pilot:
-            row = ReviewRow(_run("rv-run", "REVIEW", confidence=0.85, auto_approved=True))
+            row = ReviewRow(_run("rv-run", "REVIEW", auto_approved=True))
             app.mount(row)
             await pilot.pause()
             content = row.query_one("#review-row-content")

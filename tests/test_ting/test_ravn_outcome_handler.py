@@ -2,7 +2,7 @@
 
 Covers:
   - _extract_outcome: task/session payload → RavnOutcome mapping
-  - ReviewEngine.handle_ravn_outcome: confidence signals + decision logic
+  - ReviewEngine.handle_ravn_outcome: decision logic
   - RavnOutcomeHandler._process_event: run resolution, missing run, happy path
   - Integration: InProcessBus round-trip (publish → state transition)
   - Coexistence: run already terminal when outcome arrives → skipped
@@ -79,7 +79,6 @@ def _make_saga(*, tracker_id: str = "saga-tracker-001") -> Saga:
         repos=["niuulabs/volundr"],
         feature_branch="feature/test-saga",
         status=SagaStatus.ACTIVE,
-        confidence=0.8,
         created_at=NOW,
         base_branch="main",
         owner_id=_OWNER,
@@ -182,11 +181,6 @@ class TestExtractOutcome:
 
 
 # ---------------------------------------------------------------------------
-# Unit: ReviewEngine.handle_ravn_outcome — confidence signals
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # Unit: ReviewEngine.handle_ravn_outcome — decision logic
 # ---------------------------------------------------------------------------
 
@@ -195,7 +189,7 @@ class TestHandleRavnOutcomeDecisions:
     @pytest.mark.asyncio
     async def test_non_authoritative_approve_escalates(self):
         """An approve without workflow authority is an opinion, not a verdict."""
-        run = make_run(status=RunStatus.REVIEW, confidence=0.9)
+        run = make_run(status=RunStatus.REVIEW)
         tracker = StubTracker(run)
         engine = _make_engine(tracker)
 
@@ -215,7 +209,7 @@ class TestHandleRavnOutcomeDecisions:
 
     @pytest.mark.asyncio
     async def test_authoritative_workflow_approval_auto_approves(self):
-        run = make_run(status=RunStatus.REVIEW, confidence=0.0)
+        run = make_run(status=RunStatus.REVIEW)
         tracker = StubTracker(run)
         engine = _make_engine(tracker)
 
@@ -250,7 +244,7 @@ class TestHandleRavnOutcomeDecisions:
 
     @pytest.mark.asyncio
     async def test_authoritative_workflow_approval_accepts_complete_check_verdict(self):
-        run = make_run(status=RunStatus.REVIEW, confidence=0.0)
+        run = make_run(status=RunStatus.REVIEW)
         tracker = StubTracker(run)
         engine = _make_engine(tracker)
 
@@ -280,7 +274,7 @@ class TestHandleRavnOutcomeDecisions:
 
     @pytest.mark.asyncio
     async def test_verdict_retry_transitions_to_pending(self):
-        run = make_run(status=RunStatus.REVIEW, confidence=0.5, retry_count=0)
+        run = make_run(status=RunStatus.REVIEW, retry_count=0)
         tracker = StubTracker(run)
         engine = _make_engine(tracker)
 
@@ -301,7 +295,7 @@ class TestHandleRavnOutcomeDecisions:
 
     @pytest.mark.asyncio
     async def test_verdict_retry_exhausted_transitions_to_failed(self):
-        run = make_run(status=RunStatus.REVIEW, confidence=0.5, retry_count=3)
+        run = make_run(status=RunStatus.REVIEW, retry_count=3)
         tracker = StubTracker(run)
         # max_retries default is 3, so retry_count=3 means retries exhausted
         engine = _make_engine(tracker)
@@ -322,7 +316,7 @@ class TestHandleRavnOutcomeDecisions:
 
     @pytest.mark.asyncio
     async def test_verdict_escalate_direct_escalation(self):
-        run = make_run(status=RunStatus.REVIEW, confidence=0.9)
+        run = make_run(status=RunStatus.REVIEW)
         tracker = StubTracker(run)
         engine = _make_engine(tracker)
 
@@ -342,7 +336,7 @@ class TestHandleRavnOutcomeDecisions:
 
     @pytest.mark.asyncio
     async def test_unknown_verdict_escalates(self):
-        run = make_run(status=RunStatus.REVIEW, confidence=0.5)
+        run = make_run(status=RunStatus.REVIEW)
         tracker = StubTracker(run)
         engine = _make_engine(tracker)
 
@@ -360,7 +354,7 @@ class TestHandleRavnOutcomeDecisions:
 
     @pytest.mark.asyncio
     async def test_running_run_transitions_to_review_first(self):
-        run = make_run(status=RunStatus.RUNNING, confidence=0.6)
+        run = make_run(status=RunStatus.RUNNING)
         tracker = StubTracker(run)
         engine = _make_engine(tracker)
 
@@ -382,7 +376,7 @@ class TestHandleRavnOutcomeDecisions:
 
     @pytest.mark.asyncio
     async def test_terminal_run_skipped(self):
-        run = make_run(status=RunStatus.MERGED, confidence=1.0)
+        run = make_run(status=RunStatus.MERGED)
         tracker = StubTracker(run)
         engine = _make_engine(tracker)
 
@@ -446,7 +440,7 @@ class TestRavnOutcomeHandlerCorrelation:
 
     @pytest.mark.asyncio
     async def test_valid_correlation_processes_run(self):
-        run = make_run(status=RunStatus.REVIEW, confidence=0.6)
+        run = make_run(status=RunStatus.REVIEW)
         tracker = StubTracker(run)
         handler, _ = self._make_handler(tracker)
 
@@ -465,7 +459,7 @@ class TestRavnOutcomeHandlerCorrelation:
 
     @pytest.mark.asyncio
     async def test_session_ended_resolves_run_by_explicit_run_id(self):
-        run = make_run(status=RunStatus.RUNNING, confidence=0.6)
+        run = make_run(status=RunStatus.RUNNING)
         tracker = StubTracker(run)
         handler, _ = self._make_handler(tracker)
 
@@ -491,7 +485,7 @@ class TestRavnOutcomeHandlerCorrelation:
 
     @pytest.mark.asyncio
     async def test_session_ended_can_fall_back_to_payload_session_id(self):
-        run = make_run(status=RunStatus.REVIEW, confidence=0.6)
+        run = make_run(status=RunStatus.REVIEW)
         tracker = StubTracker(run)
         handler, _ = self._make_handler(tracker)
 
@@ -516,7 +510,7 @@ class TestRavnOutcomeHandlerCorrelation:
 
     @pytest.mark.asyncio
     async def test_tracker_issue_lookup_falls_back_to_session_lookup(self):
-        run = make_run(status=RunStatus.REVIEW, confidence=0.6)
+        run = make_run(status=RunStatus.REVIEW)
         tracker = StubTracker(run)
         tracker.get_run = AsyncMock(side_effect=[RuntimeError("missing tracker run"), run])
         handler, _ = self._make_handler(tracker)
@@ -538,7 +532,7 @@ class TestRavnOutcomeHandlerCorrelation:
 
     @pytest.mark.asyncio
     async def test_invalid_uuid_run_id_falls_back_to_tracker_lookup(self):
-        run = make_run(status=RunStatus.REVIEW, confidence=0.6)
+        run = make_run(status=RunStatus.REVIEW)
         tracker = StubTracker(run)
         tracker.get_run = AsyncMock(side_effect=[run, run])
         handler, _ = self._make_handler(tracker)
@@ -589,7 +583,7 @@ class TestRavnOutcomeHandlerIntegration:
     @pytest.mark.asyncio
     async def test_publish_ravn_task_completed_transitions_run(self):
         """Publish event on InProcessBus → run transitions to MERGED."""
-        run = make_run(status=RunStatus.REVIEW, confidence=0.6)
+        run = make_run(status=RunStatus.REVIEW)
         tracker = StubTracker(run)
         bus = InProcessBus()
         factory = StubTrackerFactory(tracker)
@@ -637,7 +631,7 @@ class TestRavnOutcomeHandlerIntegration:
 
     @pytest.mark.asyncio
     async def test_retry_verdict_transitions_to_pending(self):
-        run = make_run(status=RunStatus.REVIEW, confidence=0.5, retry_count=0)
+        run = make_run(status=RunStatus.REVIEW, retry_count=0)
         tracker = StubTracker(run)
         bus = InProcessBus()
         factory = StubTrackerFactory(tracker)
@@ -678,7 +672,7 @@ class TestRavnOutcomeHandlerIntegration:
 
     @pytest.mark.asyncio
     async def test_session_ended_triggers_auto_continue_for_approved_flock_work(self):
-        run = make_run(status=RunStatus.RUNNING, confidence=0.9)
+        run = make_run(status=RunStatus.RUNNING)
         tracker = StubTracker(run)
         tracker.saga = _make_saga(tracker_id="saga-continue-001")
         bus = InProcessBus()
@@ -811,7 +805,7 @@ class TestRavnOutcomeHandlerIntegration:
 
     @pytest.mark.asyncio
     async def test_process_event_swallows_review_engine_failures(self):
-        run = make_run(status=RunStatus.REVIEW, confidence=0.6)
+        run = make_run(status=RunStatus.REVIEW)
         tracker = StubTracker(run)
         factory = StubTrackerFactory(tracker)
         engine = ReviewEngine(
@@ -842,7 +836,7 @@ class TestCoexistence:
     @pytest.mark.asyncio
     async def test_explicit_outcome_takes_precedence_over_terminal_state(self):
         """When ActivitySubscriber has already merged the run, ravn outcome is skipped."""
-        run = make_run(status=RunStatus.MERGED, confidence=1.0)
+        run = make_run(status=RunStatus.MERGED)
         tracker = StubTracker(run)
         factory = StubTrackerFactory(tracker)
         engine = ReviewEngine(
@@ -868,7 +862,7 @@ class TestCoexistence:
     @pytest.mark.asyncio
     async def test_escalated_run_skipped(self):
         """If ActivitySubscriber already escalated, ravn outcome is skipped."""
-        run = make_run(status=RunStatus.ESCALATED, confidence=0.4)
+        run = make_run(status=RunStatus.ESCALATED)
         tracker = StubTracker(run)
         factory = StubTrackerFactory(tracker)
         engine = ReviewEngine(

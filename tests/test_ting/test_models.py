@@ -151,14 +151,12 @@ class TestSaga:
             repos=["niuulabs/volundr"],
             feature_branch="feat/my-saga",
             status=SagaStatus.ACTIVE,
-            confidence=0.9,
             created_at=NOW,
             base_branch="dev",
         )
         assert saga.tracker_id == "LIN-100"
         assert saga.name == "My Saga"
         assert saga.status == SagaStatus.ACTIVE
-        assert saga.confidence == 0.9
         assert saga.repos == ["niuulabs/volundr"]
         assert saga.feature_branch == "feat/my-saga"
 
@@ -172,7 +170,6 @@ class TestSaga:
             repos=["r"],
             feature_branch="feat/test",
             status=SagaStatus.ACTIVE,
-            confidence=0.5,
             created_at=NOW,
             base_branch="dev",
         )
@@ -189,7 +186,6 @@ class TestPhase:
             number=1,
             name="Phase 1",
             status=PhaseStatus.PENDING,
-            confidence=0.8,
         )
         assert phase.number == 1
         assert phase.status == PhaseStatus.PENDING
@@ -207,7 +203,6 @@ class TestRun:
             declared_files=["src/foo.py"],
             estimate_hours=2.0,
             status=RunStatus.PENDING,
-            confidence=0.75,
             session_id=None,
             branch=None,
             chronicle_summary=None,
@@ -230,13 +225,11 @@ class TestDispatcherState:
             id=uuid4(),
             owner_id="user-1",
             running=True,
-            threshold=0.7,
             max_concurrent_runs=3,
             auto_continue=False,
             updated_at=NOW,
         )
         assert state.running is True
-        assert state.threshold == 0.7
         assert state.owner_id == "user-1"
         assert state.max_concurrent_runs == 3
         assert state.auto_continue is False

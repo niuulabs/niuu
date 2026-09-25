@@ -212,7 +212,6 @@ async def test_run_scope_and_progress(adapter):
     adapter._pool.fetchrow.return_value = {
         "status": "REVIEW",
         "session_id": "session",
-        "confidence": 0.9,
     }
     assert (await adapter.get_run("PLATFORM-1")).status == RunStatus.REVIEW
     assert adapter._pool.fetchrow.call_args.args[-1] == "connection-a"

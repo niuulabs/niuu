@@ -58,8 +58,6 @@ export const sagaSchema = z.object({
   featureBranch: z.string(),
   /** Current lifecycle status. */
   status: sagaStatusSchema,
-  /** Aggregate confidence score (0–100). */
-  confidence: z.number().min(0).max(100),
   /** ISO-8601 UTC creation timestamp. */
   createdAt: z.string().datetime(),
   /** Phase progress summary. */
@@ -95,7 +93,6 @@ export const runSchema = z.object({
   declaredFiles: z.array(z.string()),
   estimateHours: z.number().nullable(),
   status: runStatusSchema,
-  confidence: z.number().min(0).max(100),
   sessionId: z.string().nullable(),
   reviewerSessionId: z.string().nullable(),
   reviewRound: z.number().int().nonnegative(),
@@ -114,7 +111,6 @@ export const phaseSchema = z.object({
   number: z.number().int().positive(),
   name: z.string().min(1),
   status: phaseStatusSchema,
-  confidence: z.number().min(0).max(100),
   runs: z.array(runSchema),
 });
 export type Phase = z.infer<typeof phaseSchema>;

@@ -79,7 +79,6 @@ class MockTracker(TrackerPort):
             repos=[],
             feature_branch="feat/test",
             status=SagaStatus.ACTIVE,
-            confidence=0.0,
             created_at=now,
             base_branch="dev",
         )
@@ -92,7 +91,6 @@ class MockTracker(TrackerPort):
             number=1,
             name="P1",
             status=PhaseStatus.PENDING,
-            confidence=0.0,
         )
 
     async def get_run(self, tracker_id: str) -> Run:
@@ -107,7 +105,6 @@ class MockTracker(TrackerPort):
             declared_files=[],
             estimate_hours=None,
             status=RunStatus.PENDING,
-            confidence=0.0,
             session_id=None,
             branch=None,
             chronicle_summary=None,
@@ -169,7 +166,6 @@ class MockTracker(TrackerPort):
             declared_files=[],
             estimate_hours=None,
             status=RunStatus.PENDING,
-            confidence=0.0,
             session_id=None,
             branch=None,
             chronicle_summary=None,
@@ -383,7 +379,6 @@ class MockSagaRepo(SagaRepository):
                     repos=saga.repos,
                     feature_branch=saga.feature_branch,
                     status=saga.status,
-                    confidence=saga.confidence,
                     created_at=saga.created_at,
                     base_branch=saga.base_branch,
                     repo_branches=saga.repo_branches,
@@ -425,7 +420,6 @@ class MockSagaRepo(SagaRepository):
                     repos=saga.repos,
                     feature_branch=saga.feature_branch,
                     status=saga.status,
-                    confidence=saga.confidence,
                     created_at=saga.created_at,
                     base_branch=saga.base_branch,
                     repo_branches=saga.repo_branches,
@@ -749,7 +743,6 @@ class TestImportProject:
                 repos=["org/repo"],
                 feature_branch="feat/alpha",
                 status=SagaStatus.ACTIVE,
-                confidence=0.0,
                 created_at=datetime.now(UTC),
                 base_branch="dev",
                 owner_id="dev-user",
@@ -780,7 +773,6 @@ class TestImportProject:
                 repos=["org/old-repo"],
                 feature_branch="feat/alpha",
                 status=SagaStatus.ACTIVE,
-                confidence=0.42,
                 created_at=original_created_at,
                 base_branch="main",
                 owner_id="dev-user",
@@ -803,7 +795,6 @@ class TestImportProject:
         assert saved.created_at == original_created_at
         assert saved.repos == ["org/new-repo"]
         assert saved.base_branch == "dev"
-        assert saved.confidence == 0.42
 
     def test_import_persists_repo_refs_and_tag_target(self, client: TestClient):
         response = client.post(

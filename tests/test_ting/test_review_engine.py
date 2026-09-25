@@ -129,7 +129,6 @@ class StubTracker(TrackerPort):
         *,
         status: RunStatus | None = None,
         session_id: str | None = None,
-        confidence: float | None = None,
         pr_url: str | None = None,
         pr_id: str | None = None,
         retry_count: int | None = None,
@@ -153,7 +152,6 @@ class StubTracker(TrackerPort):
             declared_files=run.declared_files,
             estimate_hours=run.estimate_hours,
             status=status if status is not None else run.status,
-            confidence=confidence if confidence is not None else run.confidence,
             session_id=session_id if session_id is not None else run.session_id,
             branch=run.branch,
             chronicle_summary=run.chronicle_summary,
@@ -200,7 +198,6 @@ class StubTracker(TrackerPort):
                     number=p.number,
                     name=p.name,
                     status=status,
-                    confidence=p.confidence,
                 )
                 self.phases[i] = updated
                 return updated
@@ -307,7 +304,6 @@ def _make_run(
     run_id: UUID | None = None,
     tracker_id: str = TRACKER_ID,
     status: RunStatus = RunStatus.REVIEW,
-    confidence: float = 0.5,
     pr_id: str | None = "https://api.github.com/repos/org/repo/pulls/42",
     branch: str | None = "run/test-branch",
     declared_files: list[str] | None = None,
@@ -324,7 +320,6 @@ def _make_run(
         declared_files=declared_files or ["src/main.py", "tests/test_main.py"],
         estimate_hours=2.0,
         status=status,
-        confidence=confidence,
         session_id="session-1",
         branch=branch,
         chronicle_summary="All tests pass",
@@ -347,7 +342,6 @@ def _make_saga() -> Saga:
         repos=["org/repo"],
         feature_branch="feat/alpha",
         status=SagaStatus.ACTIVE,
-        confidence=0.5,
         created_at=NOW,
         base_branch="dev",
         owner_id=OWNER_ID,
@@ -366,7 +360,6 @@ def _make_phase(
         number=number,
         name=f"Phase {number}",
         status=status,
-        confidence=0.5,
     )
 
 
@@ -808,7 +801,6 @@ async def test_sync_phase_projection_marks_imported_saga_complete_without_persis
         feature_branch="feat/imported-proof",
         base_branch="dev",
         status=SagaStatus.ACTIVE,
-        confidence=0.0,
         created_at=NOW,
         owner_id="dev-user",
     )
@@ -878,7 +870,6 @@ class TestReviewConfig:
     def test_defaults(self) -> None:
         cfg = ReviewConfig()
         assert cfg.max_retries == 3
-        assert cfg.initial_confidence == 0.5
 
     def test_custom_config(self) -> None:
         cfg = ReviewConfig(max_retries=5)

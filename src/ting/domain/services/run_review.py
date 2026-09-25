@@ -74,7 +74,6 @@ class RunReviewService:
                 data={
                     "run_id": str(run.id),
                     "status": run.status.value,
-                    "confidence": run.confidence,
                     "action": action,
                     "tracker_id": run.tracker_id,
                     "url": run.url,

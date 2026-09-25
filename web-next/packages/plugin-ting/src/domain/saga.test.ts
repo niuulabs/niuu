@@ -21,7 +21,6 @@ const validSaga = {
   repos: ['niuulabs/volundr'],
   featureBranch: 'feat/auth-rewrite',
   status: 'active' as const,
-  confidence: 72,
   createdAt: '2026-01-01T00:00:00Z',
   phaseSummary: { total: 3, completed: 1 },
 };
@@ -36,7 +35,6 @@ const validRun = {
   declaredFiles: ['src/auth/refresh.ts'],
   estimateHours: 4,
   status: 'queued' as const,
-  confidence: 80,
   sessionId: null,
   reviewerSessionId: null,
   reviewRound: 0,
@@ -54,7 +52,6 @@ const validPhase = {
   number: 1,
   name: 'Phase 1: Foundation',
   status: 'active' as const,
-  confidence: 75,
   runs: [validRun],
 };
 
@@ -111,22 +108,12 @@ describe('sagaSchema', () => {
     expect(result.phaseSummary.total).toBe(3);
   });
 
-  it('rejects confidence outside 0–100', () => {
-    expect(() => sagaSchema.parse({ ...validSaga, confidence: 101 })).toThrow();
-    expect(() => sagaSchema.parse({ ...validSaga, confidence: -1 })).toThrow();
-  });
-
   it('rejects invalid UUID', () => {
     expect(() => sagaSchema.parse({ ...validSaga, id: 'not-a-uuid' })).toThrow();
   });
 
   it('rejects empty name', () => {
     expect(() => sagaSchema.parse({ ...validSaga, name: '' })).toThrow();
-  });
-
-  it('accepts confidence at boundary values', () => {
-    expect(sagaSchema.parse({ ...validSaga, confidence: 0 }).confidence).toBe(0);
-    expect(sagaSchema.parse({ ...validSaga, confidence: 100 }).confidence).toBe(100);
   });
 });
 
