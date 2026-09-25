@@ -41,6 +41,7 @@ from niuu.domain.mimir import (
     ThreadState,
 )
 from niuu.ports.mimir import MimirPort
+from ravn.domain.exceptions import ConfigurationError
 from ravn.domain.mimir import MimirAuth
 from ravn.memory_telemetry import (
     RESULT_ERROR,
@@ -52,6 +53,7 @@ from ravn.memory_telemetry import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 30.0  # seconds
+_DEFAULT_WORKLOAD_TOKEN_REFRESH_MARGIN_SECONDS = 30.0
 
 
 class HttpMimirAdapter(MimirPort):
@@ -61,6 +63,10 @@ class HttpMimirAdapter(MimirPort):
         base_url: Base URL of the Mímir service, e.g. ``http://localhost:7477``.
         auth:     Optional auth config (bearer token or SPIFFE mTLS).
         timeout:  HTTP request timeout in seconds.
+        workload_token_refresh_margin_seconds: Seconds of safety margin before a
+            cached workload token's reported expiry at which a fresh exchange is
+            triggered. Overrides ``auth.token_refresh_margin_seconds`` when set
+            explicitly; defaults to the same value.
     """
 
     def __init__(
@@ -70,6 +76,7 @@ class HttpMimirAdapter(MimirPort):
         timeout: float = _DEFAULT_TIMEOUT,
         environment_id: str = "",
         mount: str | None = None,
+        workload_token_refresh_margin_seconds: float | None = None,
     ) -> None:
         self._mount = mount
         self._base_url = base_url.rstrip("/")
@@ -79,6 +86,14 @@ class HttpMimirAdapter(MimirPort):
         self._client: httpx.AsyncClient | None = None
         self._workload_token: str | None = None
         self._workload_token_expires_at: float = 0.0
+        if workload_token_refresh_margin_seconds is not None:
+            self._workload_token_refresh_margin_seconds = workload_token_refresh_margin_seconds
+        elif auth is not None:
+            self._workload_token_refresh_margin_seconds = auth.token_refresh_margin_seconds
+        else:
+            self._workload_token_refresh_margin_seconds = (
+                _DEFAULT_WORKLOAD_TOKEN_REFRESH_MARGIN_SECONDS
+            )
 
     # ------------------------------------------------------------------
     # Client lifecycle
@@ -105,28 +120,41 @@ class HttpMimirAdapter(MimirPort):
 
     async def _resolve_workload_token(self) -> str:
         now = time.time()
-        if self._workload_token and self._workload_token_expires_at - 30 > now:
+        margin = self._workload_token_refresh_margin_seconds
+        if self._workload_token and self._workload_token_expires_at - margin > now:
             return self._workload_token
 
+        # No auth configured at all is an operator decision to go without
+        # credentials — the only legitimate case for sending none.
         if self._auth is None:
             return ""
         token_file = self._auth.token_file or "/var/run/secrets/niuu-workload/token"
         token_path = Path(token_file)
         if not token_path.exists():
-            return ""
+            raise ConfigurationError(
+                f"Mímir workload auth is configured for {self._base_url} but the "
+                f"projected identity token file {token_file!r} does not exist — "
+                "mount the workload identity token at this path, or set "
+                "mimir.instances[].auth.token_file to the correct path."
+            )
         proof = token_path.read_text(encoding="utf-8").strip()
         if not proof:
-            return ""
+            raise ConfigurationError(
+                f"Mímir workload auth is configured for {self._base_url} but the "
+                f"projected identity token file {token_file!r} is empty — the "
+                "workload identity sidecar has not projected a token yet, or "
+                "token projection is misconfigured."
+            )
 
         exchange_url = self._auth.exchange_url
         if not exchange_url:
-            logger.warning(
-                "mimir: workload auth configured for %s but no exchange_url and "
-                "no NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL — requests will be sent "
-                "unauthenticated and rejected",
-                self._base_url,
+            raise ConfigurationError(
+                f"Mímir workload auth is configured for {self._base_url} but no "
+                "exchange_url is set — set mimir.instances[].auth.exchange_url, "
+                "or configure gateway.platform.workload_exchange_url / "
+                "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL so the projected identity "
+                "can be exchanged for a Mímir token."
             )
-            return ""
         audiences = list(self._auth.audiences or ("mimir",))
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(

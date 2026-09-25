@@ -6,12 +6,18 @@ import { triggerKindSchema, triggerSchema } from './trigger';
 // ---------------------------------------------------------------------------
 
 describe('triggerKindSchema', () => {
-  it.each(['cron', 'event', 'webhook', 'manual'])('accepts kind "%s"', (k) => {
+  it.each(['cron', 'event'])('accepts kind "%s"', (k) => {
     expect(triggerKindSchema.parse(k)).toBe(k);
   });
 
   it('rejects an unknown kind', () => {
     expect(() => triggerKindSchema.parse('timer')).toThrow();
+  });
+
+  it.each(['webhook', 'manual'])('rejects unsupported kind "%s"', (k) => {
+    // Only cron/event are backed by a resident execution engine — the
+    // backend rejects these with 422, so the UI does not offer them either.
+    expect(() => triggerKindSchema.parse(k)).toThrow();
   });
 });
 
@@ -24,6 +30,7 @@ const validTrigger = {
   kind: 'cron',
   personaName: 'eir',
   spec: '0 * * * *',
+  repo: '',
   enabled: true,
   createdAt: '2026-04-01T00:00:00Z',
 } as const;
@@ -57,12 +64,23 @@ describe('triggerSchema', () => {
   });
 
   it('accepts all valid kinds', () => {
-    for (const kind of ['cron', 'event', 'webhook', 'manual'] as const) {
+    for (const kind of ['cron', 'event'] as const) {
       expect(triggerSchema.parse({ ...validTrigger, kind }).kind).toBe(kind);
     }
   });
 
   it('rejects malformed createdAt', () => {
     expect(() => triggerSchema.parse({ ...validTrigger, createdAt: 'bad-date' })).toThrow();
+  });
+
+  it('defaults repo to empty string when omitted', () => {
+    const { repo: _omit, ...withoutRepo } = validTrigger;
+    const result = triggerSchema.parse(withoutRepo);
+    expect(result.repo).toBe('');
+  });
+
+  it('round-trips a non-empty repo for an event trigger', () => {
+    const result = triggerSchema.parse({ ...validTrigger, kind: 'event', repo: 'org/repo' });
+    expect(result.repo).toBe('org/repo');
   });
 });

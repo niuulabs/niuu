@@ -170,6 +170,12 @@ registry:
     probe:
       adapter: "niuu.adapters.outbound.http_instance_probe.HttpInstanceProbeAdapter"
       timeoutSeconds: 5.0
+      # Per-kind health path overrides (InstanceKind value -> path), merged
+      # over HttpInstanceProbeAdapter's built-in defaults. Only set the
+      # kinds you need to change, e.g.:
+      #   healthPaths:
+      #     mimir: "/mimir/health"
+      healthPaths: {}
 
 livenessProbe:
   enabled: true

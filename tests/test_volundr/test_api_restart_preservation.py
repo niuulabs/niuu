@@ -21,7 +21,49 @@ from websockets.sync.client import connect
 
 from volundr.domain.models import LocalMountSource, Session, SessionStatus
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux process identity proof")
+_linux_only = pytest.mark.skipif(sys.platform != "linux", reason="Linux process identity proof")
+
+
+def _terminate_if_alive(process):
+    """Send SIGTERM to a still-live subprocess, tolerating an exit/signal race.
+
+    ``process.poll() is None`` only proves liveness at that instant. The real
+    process (uvicorn, here) can exit on its own — graceful shutdown, CI
+    resource pressure — in the gap before the signal lands. ``Popen.terminate``
+    re-checks liveness internally but still calls ``os.kill()`` on a pid that
+    can vanish in that same window, raising ``ProcessLookupError`` for a
+    process that is already exactly what we wanted: gone. This is the CI
+    failure this helper fixes (ProcessLookupError from this exact teardown
+    call), not a broadened catch — it guards only the terminate/wait pair.
+    """
+    if process is None or process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=15)
+    except ProcessLookupError:
+        pass
+
+
+def test_terminate_if_alive_tolerates_process_exiting_between_check_and_signal():
+    """Deterministic reproduction of the teardown race that raised
+    ``ProcessLookupError: [Errno 3] No such process`` in the Forge Stability
+    gate: the liveness check (``poll() is None``) passes, then the process
+    exits before the signal reaches it. Faked instead of raced against a real
+    process so the interleaving is exact and platform-independent.
+    """
+
+    class ExitsBetweenCheckAndSignal:
+        def poll(self):
+            return None  # still alive at the liveness check
+
+        def terminate(self):
+            raise ProcessLookupError(3, "No such process")  # ...gone by the signal
+
+        def wait(self, timeout=None):
+            raise AssertionError("wait() must not run after terminate() raised")
+
+    _terminate_if_alive(ExitsBetweenCheckAndSignal())  # must not raise
 
 
 def _port():
@@ -60,6 +102,7 @@ def _receive_until(ws, needle):
     raise AssertionError(f"No {needle} in {frames}")
 
 
+@_linux_only
 @pytest.mark.parametrize(
     "status",
     [SessionStatus.RUNNING, SessionStatus.STOPPED, SessionStatus.ARCHIVED, SessionStatus.FAILED],
@@ -205,9 +248,7 @@ def test_full_api_restart_preserves_processes_turn_and_proxy_reconnect(tmp_path,
                 )
             )
         finally:
-            if api is not None and api.poll() is None:
-                api.terminate()
-                api.wait(timeout=15)
+            _terminate_if_alive(api)
             # Clean up only test-owned identities, even on assertion failure.
             owned = {}
             for kind in ("gateway", "native"):

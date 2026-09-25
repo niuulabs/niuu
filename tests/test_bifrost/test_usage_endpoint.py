@@ -12,6 +12,8 @@ from bifrost.app import create_app
 from bifrost.config import BifrostConfig, ProviderConfig
 from bifrost.ports.usage_store import UsageRecord
 
+_PAT_SECRET = "test-secret-key-that-is-at-least-32-bytes-long!"
+
 
 def _make_config() -> BifrostConfig:
     return BifrostConfig(providers={"anthropic": ProviderConfig(models=["claude-sonnet-4-6"])})
@@ -283,3 +285,86 @@ class TestUsageEndpoint:
         # Must be parseable as ISO-8601.
         dt = datetime.fromisoformat(bucket)
         assert dt.tzinfo is not None
+
+
+class TestUsageEndpointAuth:
+    """GET /v1/usage must require the configured credential and, outside
+
+    'open' mode, must never let a caller read another tenant's usage by
+    passing a tenant_id query parameter — that parameter is a convenience
+    filter within the caller's own tenant only in 'open' mode, where there
+    is no verified identity to scope by.
+    """
+
+    def _make_pat_config(self) -> BifrostConfig:
+        return BifrostConfig(
+            providers={"anthropic": ProviderConfig(models=["claude-sonnet-4-6"])},
+            auth_mode="pat",
+            pat_secret=_PAT_SECRET,
+            pat_revocation={"enabled": False},
+        )
+
+    def test_open_mode_requires_no_credential(self):
+        with TestClient(create_app(_make_config())) as client:
+            resp = client.get("/api/v1/bifrost/v1/usage")
+            assert resp.status_code == 200
+
+    def test_pat_mode_rejects_missing_token(self):
+        with TestClient(create_app(self._make_pat_config())) as client:
+            resp = client.get("/api/v1/bifrost/v1/usage")
+            assert resp.status_code == 401
+
+    def test_pat_mode_scopes_to_the_callers_own_tenant_ignoring_the_query_param(self):
+        import jwt
+
+        config = self._make_pat_config()
+        app = create_app(config)
+
+        with TestClient(app) as client:
+            token_a = jwt.encode(
+                {"sub": "agent-a", "tenant_id": "tenant-a"}, _PAT_SECRET, algorithm="HS256"
+            )
+            token_b = jwt.encode(
+                {"sub": "agent-b", "tenant_id": "tenant-b"}, _PAT_SECRET, algorithm="HS256"
+            )
+
+            from bifrost.translation.models import AnthropicResponse, TextBlock, UsageInfo
+
+            response = AnthropicResponse(
+                id="msg",
+                content=[TextBlock(text="hi")],
+                model="claude-sonnet-4-6",
+                stop_reason="end_turn",
+                usage=UsageInfo(input_tokens=100, output_tokens=50),
+            )
+            with patch("bifrost.router.ModelRouter.complete", new_callable=AsyncMock) as m:
+                m.return_value = response
+                client.post(
+                    "/api/v1/bifrost/v1/messages",
+                    headers={"authorization": f"Bearer {token_a}"},
+                    json={
+                        "model": "claude-sonnet-4-6",
+                        "max_tokens": 10,
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+                client.post(
+                    "/api/v1/bifrost/v1/messages",
+                    headers={"authorization": f"Bearer {token_b}"},
+                    json={
+                        "model": "claude-sonnet-4-6",
+                        "max_tokens": 10,
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+
+            # tenant-a asks for tenant-b's usage by query param — must not work.
+            resp = client.get(
+                "/api/v1/bifrost/v1/usage",
+                headers={"authorization": f"Bearer {token_a}"},
+                params={"tenant_id": "tenant-b"},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["summary"]["total_requests"] == 1
+            assert all(r["tenant_id"] == "tenant-a" for r in data["records"])

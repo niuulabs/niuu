@@ -406,6 +406,96 @@ async def _sync_persona_to_instance(
     _ensure_remote_success(synced)
 
 
+async def _sync_realm_to_instance(
+    instance: RegisteredInstance,
+    request: Request,
+    realm_id: object,
+    *,
+    embedded_app: ASGIApp | None,
+) -> None:
+    """Sync a realm from this host's local database onto a remote target.
+
+    Deploying a resident bound to a realm (realm_id in the create body)
+    forwards that id verbatim to the target instance, whose ResidentRuntime
+    FK requires a matching realms row on ITS OWN database. Realms otherwise
+    only exist wherever they were created (e.g. ymir), so without this a
+    resident deployed on a different instance (e.g. noatun, valhalla) fails
+    at create with "Realm not found" and is left half-made. This makes the
+    same realm identity (id + slug) exist on the target first — the same
+    "materialize the source of truth on the remote before launch" pattern
+    _sync_persona_to_instance uses for personas.
+
+    Raises on any failure: a realm_id was explicitly requested, so a resident
+    created without it actually being synced would silently drop the link
+    the caller asked for (see .claude/rules/no-fallbacks.md) — worse than
+    refusing the create.
+
+    This syncs the realm ROW, not its Mímir charter page (realms/<slug>/
+    charter.md, written by the create-realm wizard to whichever Mímir mount
+    it targeted). The deployed resident resolves that page for itself at
+    startup (environment.charter_mimir_page) and fails loudly if it cannot
+    read it — see resident_runtime_wiring.py's _resolve_environment_charter.
+    For that to succeed on a resident deployed on a DIFFERENT instance than
+    the one the realm was created on, the target instance's resident
+    deployment profile (resident.mimir.instances in its deployment.values)
+    must itself be configured with a Mímir mount that can read the SAME
+    underlying pages — either a Mímir shared/reachable across instances, or
+    an operator-configured mount pointing at the realm-owning instance's
+    Mímir. This function cannot discover or provision that network path; if
+    it is not configured, the resident's own charter check raises with a
+    precise "page does not exist" error naming the missing page, which is
+    the intended fail-loud outcome documented here rather than solved here.
+    """
+    raw_id = str(realm_id or "").strip()
+    if not raw_id:
+        return
+    if _uses_embedded_transport(instance):
+        return  # The target IS this host; the realm already lives here.
+
+    try:
+        parsed_id = UUID(raw_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Invalid realm id: {raw_id!r}",
+        ) from exc
+
+    realm_service = getattr(getattr(embedded_app, "state", None), "realm_service", None)
+    if realm_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                f"Cannot deploy a resident bound to realm {parsed_id}: this host has no "
+                "local realm service to read it from before syncing it to the target "
+                "instance."
+            ),
+        )
+    realm = await realm_service.get_realm(parsed_id)
+    if realm is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Realm not found: {parsed_id}",
+        )
+
+    synced = await _request_remote(
+        instance,
+        request,
+        method="PUT",
+        path=f"/realms/by-id/{parsed_id}",
+        remote_prefix="/api/v1",
+        json_body={
+            "slug": realm.slug,
+            "name": realm.name,
+            "sleipnir_domain": realm.sleipnir_domain,
+            "owner_id": realm.owner_id,
+            "instance_id": realm.instance_id,
+            "autonomy_profile": realm.autonomy_profile,
+        },
+        embedded_app=embedded_app,
+    )
+    _ensure_remote_success(synced)
+
+
 async def _local_session_instance(
     service: InstanceService,
     principal: Principal,

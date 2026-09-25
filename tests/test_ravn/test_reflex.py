@@ -378,6 +378,18 @@ class TestReflexInjector:
         errors = [r for r in caplog.records if r.levelno == logging.ERROR]
         assert any("entity feed unreachable" in r.getMessage() for r in errors)
 
+    async def test_configuration_error_propagates_instead_of_failing_open(self):
+        """A workload-auth misconfiguration is a fixable defect, not an outage —
+        it must not be reported as "entity feed unreachable" and swallowed."""
+        from ravn.domain.exceptions import ConfigurationError
+
+        async def fetch():
+            raise ConfigurationError("mimir workload auth misconfigured for http://mimir.test")
+
+        injector = ReflexInjector(fetch_entities=fetch, max_pointers=5, cache_ttl_seconds=300.0)
+        with pytest.raises(ConfigurationError, match="misconfigured"):
+            await injector.pointer_block("Check Volundr Auth", "s1")
+
     async def test_apply_prefixes_block(self):
         injector = self._injector()
         result = await injector.apply("Check Volundr Auth", "s1")

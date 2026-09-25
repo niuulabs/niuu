@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from niuu.domain.mimir import LintIssue, MimirLintReport
 
@@ -613,7 +614,7 @@ def test_router_lint_returns_issues_list(tmp_path: Path) -> None:
     adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
     _write_page(adapter, "technical/orphan.md", "# Orphan\nNot indexed.")
 
-    router = MimirRouter(adapter=adapter)
+    router = MimirRouter(adapter=adapter, auth=EnvoyHeaderAuthenticationAdapter())
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
     client = TestClient(app)
@@ -643,7 +644,7 @@ def test_router_lint_fix_endpoint(tmp_path: Path) -> None:
     adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
     _write_page(adapter, "technical/bare.md", "# Bare\nNo frontmatter.")
 
-    router = MimirRouter(adapter=adapter)
+    router = MimirRouter(adapter=adapter, auth=EnvoyHeaderAuthenticationAdapter())
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
     client = TestClient(app)

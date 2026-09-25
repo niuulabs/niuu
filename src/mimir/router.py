@@ -2,11 +2,12 @@
 
 Mountable on any FastAPI application::
 
+    from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
     from mimir.router import MimirRouter
     from mimir.adapters.markdown import MarkdownMimirAdapter
 
     adapter = MarkdownMimirAdapter(root="~/.ravn/mimir")
-    router = MimirRouter(adapter)
+    router = MimirRouter(adapter, auth=EnvoyHeaderAuthenticationAdapter())
 
     app.include_router(router.router, prefix="/mimir")
 
@@ -35,7 +36,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
 from posixpath import normpath
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 
 import httpx
@@ -44,7 +45,6 @@ from fastapi import (
     Depends,
     File,
     Form,
-    Header,
     HTTPException,
     Query,
     Request,
@@ -66,6 +66,8 @@ from niuu.domain.mimir import (
     compute_content_hash,
     compute_source_id,
 )
+from niuu.domain.models import Principal
+from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 from niuu.ports.mimir import MimirPort
 from ravn.adapters.tools._url_security import check_ssrf
 from ravn.domain.exceptions import MimirUnavailableError
@@ -498,31 +500,29 @@ class SourceResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Auth dependency (bearer token or SPIFFE — pass-through for now)
+# Auth dependencies
 # ---------------------------------------------------------------------------
+#
+# _require_deploy_auth and _require_write_auth both live on MimirRouter as
+# bound methods (see MimirRouter._require_deploy_auth / _require_write_auth)
+# so they can read identity from the configured HeaderAuthenticationPort
+# (Envoy headers, in-process JWKS verification, or explicit allow-all)
+# instead of trusting caller-supplied x-auth-* headers directly — see
+# .claude/rules/no-fallbacks.md and the auth_mode contract in
+# mimir.config.MimirServiceConfig.
 
-
-def _require_deploy_auth(
-    user: Annotated[str | None, Header(alias="x-auth-user-id")] = None,
-    roles: Annotated[str, Header(alias="x-auth-roles")] = "",
-    tenant: Annotated[str, Header(alias="x-auth-tenant")] = "",
-) -> None:
-    """Identity is supplied by the authenticated Niuu/Envoy gateway."""
-    from niuu.adapters.identity_headers import parse_roles_header
-
-    # Accept the configured gateway claim and its platform-normalized form.
-    if (
-        not user
-        or not tenant
-        or not {"admin", "volundr:admin"}.intersection(parse_roles_header(roles))
-    ):
-        raise HTTPException(
-            403, "Instance deployment requires an authenticated tenant administrator"
-        )
-
-
-def _require_write_auth(authorization: Annotated[str | None, Header()] = None) -> None:
-    """Minimal write-auth guard.  Override in production with mTLS or JWT validation."""
+#: Roles that may write pages, sources, and registry mounts — everything
+#: _require_write_auth gates, enforced under auth_mode: oidc only for now
+#: (see that method's docstring for why envoy/none are unaffected). Follows
+#: the platform's existing role names (cli.config._DEFAULT_OIDC_ROLE_MAPPING,
+#: which MIMIR_AUTH__KWARGS already applies to a Keycloak token's raw roles
+#: under oidc): 'volundr:developer' is the platform's normal write role,
+#: 'admin'/'volundr:admin' (the raw claim and its platform-normalized form,
+#: matching _require_deploy_auth) can always do everything a developer can.
+#: 'volundr:viewer' is deliberately excluded — this was previously a no-op,
+#: so a verified-but-role-less principal could write; that gap is what this
+#: set closes.
+WRITE_ROLES = frozenset({"admin", "volundr:admin", "volundr:developer"})
 
 
 _LOG_HEADER_RE = re.compile(r"^## \[(?P<date>[^\]]+)\] (?P<prefix>[^|]+)\| (?P<subject>.+)$")
@@ -1057,6 +1057,22 @@ class MimirRouter:
         adapter: The MimirPort implementation to delegate to.
         name:    Instance name (used in announce events).
         role:    Instance role: ``shared``, ``local``, or ``domain``.
+        auth:    Identity source for ``_require_deploy_auth`` and per-request
+            tenant scoping — required, no default. Callers must pass the
+            adapter matching their host's ``auth_mode`` explicitly (see
+            ``mimir.config.MimirServiceConfig.identity_adapter``): the
+            in-process JWKS adapter for ``oidc``, the explicit allow-all
+            adapter for ``none``, or ``EnvoyHeaderAuthenticationAdapter``
+            for ``envoy``. There is no implicit default — an
+            Envoy-trusting adapter must never be silently assumed on a
+            host that hasn't declared it has Envoy in front of it.
+        auth_mode: The host's declared auth mode (``envoy``/``oidc``/``none``).
+            Only ``none`` changes behaviour here: tenant scoping is skipped
+            entirely (every caller is the unrestricted host operator,
+            tenant ``""``, matching this instance's pre-auth_mode
+            behaviour) rather than using the allow-all adapter's fixed
+            default tenant, which would wrongly subject local-dev callers
+            to tenant-scoped restrictions. See ``mimir.app.create_app``.
     """
 
     def __init__(
@@ -1069,8 +1085,13 @@ class MimirRouter:
         deployment: KnowledgeDeploymentPort | None = None,
         public_url: str = "",
         tenant_id: str = "",
+        *,
+        auth: HeaderAuthenticationPort,
+        auth_mode: str = "envoy",
     ) -> None:
         self._owner_tenant = tenant_id
+        self._auth = auth
+        self._auth_mode = auth_mode
         self._public_url = public_url
         self._tenant: ContextVar[str] = ContextVar("mimir_tenant", default="")
         self._deployed_mounts: ContextVar[list] = ContextVar("mimir_deployed_mounts", default=[])
@@ -1084,18 +1105,102 @@ class MimirRouter:
         self.router = APIRouter(dependencies=[Depends(self._request_scope)])
         self._register_routes()
 
-    async def _request_scope(self, request: Request):
-        tenant = (
-            request.headers.get("x-auth-tenant", "")
-            if request.headers.get("x-auth-user-id")
-            else ""
-        )
+    async def _verified_principal(self, request: Request) -> Principal | None:
+        """Return the caller's principal via the configured identity adapter.
+
+        Returns ``None`` for an unauthenticated caller (no/invalid
+        credential) rather than raising — callers on this router are
+        allowed to be anonymous for reads; write and tenant-scoping checks
+        decide separately whether that is acceptable. Never reads
+        ``x-auth-*`` headers directly: identity comes only from
+        ``self._auth`` (Envoy-trusted headers, in-process JWKS verification,
+        or explicit allow-all, per ``auth_mode``).
+        """
+        try:
+            return await self._auth.validate_headers(dict(request.headers))
+        except InvalidTokenError:
+            return None
+
+    async def _require_deploy_auth(self, request: Request) -> None:
+        """Require an authenticated tenant administrator (deploy/mount routes)."""
+        principal = await self._verified_principal(request)
         if (
-            request.headers.get("x-auth-user-id")
-            and not tenant
-            and request.method in {"POST", "PUT", "PATCH", "DELETE"}
+            principal is None
+            or not principal.tenant_id
+            or not {"admin", "volundr:admin"}.intersection(principal.roles)
         ):
-            raise HTTPException(403, "An authenticated tenant is required for knowledge changes")
+            raise HTTPException(
+                403, "Instance deployment requires an authenticated tenant administrator"
+            )
+
+    async def _require_write_auth(self, request: Request) -> None:
+        """Require an authenticated tenant principal holding a write role —
+
+        ``auth_mode: oidc`` only, for now.
+
+        Was a literal no-op before this round; the role gate is scoped to
+        oidc deliberately rather than applied everywhere, to avoid breaking
+        live envoy-mode writers on the first deploy: ymir's knowledge
+        warden and valhalla's resident Muninn write to their Mímir
+        instances directly (bypassing Envoy, no credential at all today),
+        and Keycloak-authenticated web-UI users reach Mímir with Envoy's
+        *raw* ``resource_access`` roles (``developer``, not
+        ``volundr:developer`` — Mímir's own ``EnvoyHeaderAuthenticationAdapter``
+        is never given Völundr's ``identity.roleMapping``, unlike Völundr's
+        own identity adapter — charts/volundr/values.yaml's
+        ``identity.roleMapping``). Enforcing ``WRITE_ROLES`` under
+        ``envoy`` today would 403 all three. ``auth_mode: none`` keeps its
+        existing behaviour too (only ``_request_scope``'s own
+        authenticated-tenant-for-writes check applies, unchanged).
+
+        Under ``oidc`` this raw-vs-mapped-role gap does not apply: the CLI's
+        ``MIMIR_AUTH__KWARGS`` already carries the same ``role_mapping`` as
+        Völundr's chart default (``admin``/``developer``/``viewer`` →
+        ``volundr:*`` — see ``cli.config._DEFAULT_OIDC_ROLE_MAPPING``), so a
+        raw Keycloak ``developer`` role already arrives here as
+        ``volundr:developer`` and satisfies ``WRITE_ROLES`` without any
+        extra raw-role entry.
+
+        Follow-up (not in this round): extending real role enforcement to
+        ``envoy`` needs an infra change first — ymir's warden and valhalla's
+        Muninn need to go through Envoy with a workload credential
+        (``auth: {type: workload, audiences: [mimir]}``, matching how other
+        service-to-service Envoy calls authenticate) instead of dialling
+        Mímir directly, and Mímir's own Envoy identity adapter needs the
+        same ``role_mapping`` wiring Völundr's already has.
+        """
+        if self._auth_mode != "oidc":
+            return
+        principal = await self._verified_principal(request)
+        if (
+            principal is None
+            or not principal.tenant_id
+            or not WRITE_ROLES.intersection(principal.roles)
+        ):
+            raise HTTPException(403, "Knowledge writes require an authenticated write role")
+
+    async def _request_scope(self, request: Request):
+        # auth_mode: none means every caller is the unrestricted host
+        # operator — tenant "" — same as this instance's behaviour before
+        # any identity adapter existed. The allow-all adapter's own fixed
+        # principal (tenant "default") is for _require_deploy_auth's admin
+        # check, not for tenant scoping: using it here would wrongly subject
+        # local-dev/no-auth callers to tenant-scoped restrictions designed
+        # for multi-tenant deployments (host-path mount rejection, entry
+        # lookups keyed by tenant) that "none" never had.
+        if self._auth_mode == "none":
+            tenant = ""
+        else:
+            principal = await self._verified_principal(request)
+            tenant = principal.tenant_id if principal is not None else ""
+            if (
+                principal is not None
+                and not tenant
+                and request.method in {"POST", "PUT", "PATCH", "DELETE"}
+            ):
+                raise HTTPException(
+                    403, "An authenticated tenant is required for knowledge changes"
+                )
         if self._owner_tenant and tenant != self._owner_tenant:
             raise HTTPException(403, "Knowledge instance belongs to a different tenant")
         tenant_token = self._tenant.set(tenant)
@@ -1345,7 +1450,7 @@ class MimirRouter:
         @router.post("/registry/mounts", response_model=RegistryMountResponse)
         async def create_registry_mount(
             request: RegistryMountRequest,
-            _auth: None = Depends(_require_write_auth),
+            _auth: None = Depends(self._require_write_auth),
         ) -> RegistryMountResponse:
             if self._registry_store is None:
                 raise HTTPException(
@@ -1367,7 +1472,7 @@ class MimirRouter:
         async def update_registry_mount(
             entry_id: str,
             request: RegistryMountRequest,
-            _auth: None = Depends(_require_write_auth),
+            _auth: None = Depends(self._require_write_auth),
         ) -> RegistryMountResponse:
             if self._registry_store is None:
                 raise HTTPException(
@@ -1392,7 +1497,7 @@ class MimirRouter:
         @router.delete("/registry/mounts/{entry_id}", status_code=204)
         async def delete_registry_mount(
             entry_id: str,
-            _auth: None = Depends(_require_write_auth),
+            _auth: None = Depends(self._require_write_auth),
         ) -> None:
             if self._registry_store is None:
                 raise HTTPException(
@@ -1632,7 +1737,7 @@ class MimirRouter:
         @router.post(
             "/page/revise",
             response_model=PageResponse,
-            dependencies=[Depends(_require_write_auth)],
+            dependencies=[Depends(self._require_write_auth)],
         )
         async def revise_belief_endpoint(request: ReviseBeliefRequest) -> PageResponse:
             """Belief revision with journey (NIU-1062): rewrite a compiled-truth
@@ -1781,7 +1886,7 @@ class MimirRouter:
                 "recent": recent,
             }
 
-        @router.post("/doctor/fix", dependencies=[Depends(_require_write_auth)])
+        @router.post("/doctor/fix", dependencies=[Depends(self._require_write_auth)])
         async def doctor_fix(mount: str | None = Query(default=None)) -> dict[str, Any]:
             """Run the safe auto-remediations, then return a fresh report."""
             from mimir.doctor import run_doctor, run_fixes
@@ -1920,14 +2025,14 @@ class MimirRouter:
             ]
 
         @router.get("/deployments")
-        async def deployments(_auth: None = Depends(_require_deploy_auth)) -> dict:
+        async def deployments(_auth: None = Depends(self._require_deploy_auth)) -> dict:
             if self._deployment is None:
                 raise HTTPException(501, "No knowledge deployment target is configured")
             return await self._deployment.list_deployments(tenant_id=self._tenant.get())
 
         @router.get("/deployments/{name}")
         async def inspect_deployment(
-            name: str, target: str = "", _auth: None = Depends(_require_deploy_auth)
+            name: str, target: str = "", _auth: None = Depends(self._require_deploy_auth)
         ) -> dict:
             if self._deployment is None:
                 raise HTTPException(501, "No knowledge deployment target is configured")
@@ -1942,7 +2047,10 @@ class MimirRouter:
 
         @router.post("/deployments/{name}/{action}")
         async def control_deployment(
-            name: str, action: str, target: str = "", _auth: None = Depends(_require_deploy_auth)
+            name: str,
+            action: str,
+            target: str = "",
+            _auth: None = Depends(self._require_deploy_auth),
         ) -> dict:
             if self._deployment is None:
                 raise HTTPException(501, "No knowledge deployment target is configured")
@@ -1958,7 +2066,7 @@ class MimirRouter:
         @router.post("/deployments", status_code=202)
         async def deploy_instance(
             request: DeploymentRequest,
-            _auth: None = Depends(_require_deploy_auth),
+            _auth: None = Depends(self._require_deploy_auth),
         ) -> dict:
             if self._deployment is None:
                 raise HTTPException(501, "No knowledge deployment target is configured")
@@ -2149,7 +2257,7 @@ class MimirRouter:
         @router.put("/page", status_code=204)
         async def upsert_page(
             request: UpsertPageRequest,
-            _auth: None = Depends(_require_write_auth),
+            _auth: None = Depends(self._require_write_auth),
         ) -> None:
             port, _ = self._resolve_port(request.mount)
             await port.upsert_page(request.path, request.content)
@@ -2158,7 +2266,7 @@ class MimirRouter:
         async def delete_page(
             path: str = Query(),
             mount: str | None = Query(default=None),
-            _auth: None = Depends(_require_write_auth),
+            _auth: None = Depends(self._require_write_auth),
         ) -> None:
             port, _ = self._resolve_port(mount)
             if not await port.delete_page(path):
@@ -2167,7 +2275,7 @@ class MimirRouter:
         @router.post("/ingest", response_model=IngestResponse)
         async def ingest_source(
             request: IngestRequest,
-            _auth: None = Depends(_require_write_auth),
+            _auth: None = Depends(self._require_write_auth),
         ) -> IngestResponse:
             port, _ = self._resolve_port(request.mount)
             if request.source_type in OPERATIONAL_SOURCE_TYPES:
@@ -2202,7 +2310,7 @@ class MimirRouter:
         @router.post("/sources/ingest/url", response_model=SourceResponse)
         async def ingest_url(
             request: UrlIngestRequest,
-            _auth: None = Depends(_require_write_auth),
+            _auth: None = Depends(self._require_write_auth),
         ) -> SourceResponse:
             port, resolved_mount = self._resolve_port(request.mount)
             safe_url = _validated_ingest_url(request.url)
@@ -2242,7 +2350,7 @@ class MimirRouter:
         async def ingest_file(
             file: UploadFile = File(...),
             mount: str | None = Form(default=None),
-            _auth: None = Depends(_require_write_auth),
+            _auth: None = Depends(self._require_write_auth),
         ) -> SourceResponse:
             port, resolved_mount = self._resolve_port(mount)
             raw_bytes = await file.read()

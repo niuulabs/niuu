@@ -9,6 +9,8 @@ escape hatch that restores the old behavior.
 
 from unittest.mock import patch
 
+import pytest
+
 from skuld.transports.claude_env import claude_spawn_env
 
 
@@ -91,3 +93,19 @@ class TestModelGateway:
         with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
             env = claude_spawn_env(gateway_url="  ", gateway_token="x")
         assert "ANTHROPIC_BASE_URL" not in env
+
+    def test_blank_token_with_a_gateway_url_raises(self):
+        """An empty ANTHROPIC_AUTH_TOKEN reads as 'not logged in' in a
+
+        container, or falls back to the host's real subscription OAuth
+        token being sent to the gateway on a host with a stored login —
+        never a silent, unauthenticated session.
+        """
+        with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
+            with pytest.raises(ValueError, match="gateway_token is blank"):
+                claude_spawn_env(gateway_url="http://niuu:8080/api/v1/bifrost", gateway_token="")
+
+    def test_whitespace_only_token_with_a_gateway_url_raises(self):
+        with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
+            with pytest.raises(ValueError, match="gateway_token is blank"):
+                claude_spawn_env(gateway_url="http://niuu:8080/api/v1/bifrost", gateway_token="   ")

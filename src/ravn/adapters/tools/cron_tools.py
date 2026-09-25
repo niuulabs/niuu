@@ -28,7 +28,13 @@ import re
 from uuid import uuid4
 
 from niuu.observability import get_observability
-from ravn.adapters.triggers.cron import CronJobRecord, CronJobStore, parse_schedule
+from ravn.adapters.triggers.cron import (
+    CronExpressionError,
+    CronJobRecord,
+    CronJobStore,
+    parse_schedule,
+    validate_cron_fields,
+)
 from ravn.domain.models import ToolResult
 from ravn.ports.tool import ToolPort
 from ravn.resident_text import texts_overlap, texts_similar
@@ -203,16 +209,28 @@ class CronCreateTool(ToolPort):
 
         # Validate schedule by parsing it
         canonical = parse_schedule(schedule)
-        if not (
-            canonical.startswith("every:")
-            or canonical.startswith("once:")
-            or len(canonical.split()) == 5
-        ):
+        is_interval_or_once = canonical.startswith("every:") or canonical.startswith("once:")
+        if not (is_interval_or_once or len(canonical.split()) == 5):
             return ToolResult(
                 tool_call_id="",
                 content=f"Could not parse schedule {schedule!r}. {_SCHEDULE_HELP}",
                 is_error=True,
             )
+        if not is_interval_or_once:
+            # A 5-field shape alone does not mean CronTrigger can actually
+            # evaluate every field — e.g. day-of-week names like "MON-FRI"
+            # are not supported and raise inside _field_matches on every
+            # tick once persisted, crash-looping the resident on restart
+            # (see ravn.api.trigger_validation, which applies this same
+            # check to POST /api/v1/ravn/triggers).
+            try:
+                validate_cron_fields(canonical, spec=schedule)
+            except CronExpressionError as exc:
+                return ToolResult(
+                    tool_call_id="",
+                    content=f"{exc} {_SCHEDULE_HELP}",
+                    is_error=True,
+                )
 
         persona = input.get("persona") or None
         priority = int(input.get("priority", 10))

@@ -873,6 +873,7 @@ def _build_mimir_auth(settings: Settings, auth_config: Any) -> Any:
         exchange_url=exchange_url,
         audiences=tuple(auth_config.audiences),
         trust_domain=auth_config.trust_domain,
+        token_refresh_margin_seconds=auth_config.token_refresh_margin_seconds,
     )
 
 
