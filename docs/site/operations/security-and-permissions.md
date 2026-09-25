@@ -29,6 +29,116 @@ operation. Test each independently and scope grants to the intended caller and
 operation. See [identity](../reference/identity.md) and
 [credentials](../reference/credentials-and-secrets.md).
 
+## Authentication mode on hosts without Envoy
+
+Kubernetes deployments sit behind an Envoy sidecar that verifies each request's
+JWT and forwards trusted `x-auth-*` headers; the identity and authorization
+adapters trust those headers unconditionally because Envoy already checked the
+signature. Mini mode and single-host `niuu up` (docker mode) have no Envoy in
+front of them. `host_auth.mode` in `~/.niuu/config.yaml` is an explicit,
+config-first choice between two modes — there is no third, implicit option:
+
+```yaml
+host_auth:
+  mode: none # or: oidc
+```
+
+It is named `host_auth`, not `auth`: Ting's own `Settings` reads a top-level
+`auth:` key from this same file for its own, differently-shaped config
+(`auth.adapter` / `auth.kwargs` / `auth.allow_anonymous_dev`) — a shared
+`auth:` key would collide between the two.
+
+### `none` — explicit no-auth (the default)
+
+Every caller is treated as the local admin, exactly as mini and docker mode
+have always behaved. This keeps existing installs working unchanged. It is an
+explicit operator decision, never a silent fallback: the platform logs
+
+```
+authentication disabled (auth.mode: none): every caller is treated as admin
+```
+
+once at startup for every co-hosted service, and `GET /api/v1/identity/auth/config`
+reports `"mode": "none"`. Use `none` only for local development or a network
+you already trust — anyone who can reach the host's port can act as admin.
+
+### `oidc` — in-process JWT verification, for the paths that check it
+
+Configure at least one trusted issuer and the covered paths (see the table
+below) verify bearer JWTs in-process against the issuer's published JWKS —
+the same signature check Envoy's `jwt_authn` filter performs in Kubernetes —
+instead of trusting `x-auth-*` headers from the caller:
+
+```yaml
+host_auth:
+  mode: oidc
+  oidc:
+    issuers:
+      - issuer: "https://keycloak.example.com/realms/volundr"
+        audiences: ["volundr-api"]
+        # jwks_uri is optional; omitted, it is resolved once via OIDC
+        # discovery (<issuer>/.well-known/openid-configuration). Both issuer
+        # and jwks_uri must be HTTPS, except localhost for local dev.
+    clock_leeway_seconds: 60 # allowed skew for exp/nbf
+    jwks_cache_ttl_seconds: 300 # routine JWKS re-fetch interval
+    min_refresh_interval_seconds: 5 # throttle for forced refreshes (unknown kid)
+```
+
+Any OIDC-compliant provider works (Keycloak, Entra ID, Okta, ...) — the
+adapter is IDP-agnostic, matching the platform's [architecture
+rule](https://github.com/niuulabs/niuu/blob/dev/.claude/rules/architecture.md)
+that authentication never couples to a specific vendor. Claim names default to
+the same claims Envoy's `jwt_authn` filter maps in Kubernetes (`sub`, `email`,
+`tenant_id`, `resource_access.volundr.roles`), so a token a Kubernetes
+deployment would accept carries the same identity here. Only asymmetric keys
+(RS256/ES256/...) are ever trusted; a symmetric (`oct`) or encryption-only
+(`use: enc`) key published in a JWKS response is never used to verify a
+signature.
+
+An unrecognised `kid` forces at most one JWKS refresh per
+`min_refresh_interval_seconds` window (not one per request — otherwise many
+tokens with distinct or missing kids could force a fetch each). An invalid,
+expired, or unverifiable token is always rejected with 401 — there is no
+fallback to anonymous access.
+
+Personal access tokens issued by an IDP-backed `TokenIssuer` (e.g.
+`KeycloakTokenIssuer`, via OAuth token exchange) validate through the same
+path automatically, since they share the configured issuer. PATs issued by
+the local development `MemoryTokenIssuer` (HS256, signed with a
+process-local secret) cannot be verified against any JWKS endpoint; the
+platform refuses to start with `host_auth.mode: oidc` combined with that
+issuer, with a remedy in the error.
+
+`host_auth.mode: oidc` also refuses to start while the Mímir or Guild
+plugins are enabled (`plugins.enabled.mimir` / `.guild`, both on by
+default) or while `bifrost.auth_mode` is still `open` — see the coverage
+table below for why. Disable the uncovered plugin, or accept `pat`/`mesh`
+Bifröst auth as a partial mitigation, to run `oidc` today.
+
+### What `oidc` actually covers
+
+`oidc` is a claim that a given inbound path verified the caller's bearer JWT
+signature. This table is the actual, current answer for which paths that
+claim is true for — `none` always means the historical "every caller is
+admin," so only the `oidc` column varies:
+
+| Inbound identity path | `oidc` behaviour |
+|---|---|
+| Völundr / Identity REST API (`extract_principal`, `IDENTITY__ADAPTER`) | Verified — `JwksIdentityAdapter` |
+| Cedar authorization (`AUTHORIZATION__ADAPTER`) | Enforced — `CedarAuthorizationAdapter` (bundled policies) |
+| Ravn's own inbound API (`RAVN_API_AUTH__ADAPTER`) | Verified — `JwksBearerAuthenticationAdapter` |
+| Ting's own inbound API (`AUTH__ADAPTER`) | Verified — `JwksBearerAuthenticationAdapter` |
+| Niuu root app / session-proxy attach (`HOST_IDENTITY__ADAPTER`) | Verified — `JwksBearerAuthenticationAdapter`; the proxy strips client `x-auth-*` and forwards only the identity it resolved |
+| Session-proxy WS/HTTP attach ownership (`/s/{id}/session`, `/s/{id}/api/{path}`) | Re-checked against the already-verified principal (`JwksIdentityAdapter.revalidate_verified_principal`) — no second bearer token is available at that point, so this re-derives current role-mapping/membership rather than re-verifying a signature |
+| PATs from an IDP-backed `TokenIssuer` (Keycloak token exchange) | Verified — same issuer/JWKS as regular tokens |
+| PATs from the local `MemoryTokenIssuer` (HS256) | **Refused at startup** — cannot be verified without a shared secret |
+| Guild's knowledge-deployments admin check (`_require_admin`) | Verified — goes through `extract_principal` |
+| Mímir's own auth (`_require_deploy_auth`, `enforce_instance_tenant`) | **Not covered** — still reads `x-auth-*` directly; `oidc` refuses to start while the `mimir` plugin is enabled |
+| Guild's forwarding of caller identity to a remote Mímir deployment (`forward_identity_headers`) | **Not covered** — forwards the caller's raw headers; `oidc` refuses to start while the `guild` plugin is enabled |
+| Bifröst gateway (`bifrost.auth_mode`) | **Not covered when `open`** — no JWKS support yet; `oidc` refuses to start unless `pat` or `mesh` is set (partial mitigation, not full JWKS verification) |
+| Observatory / Ravn residents forwarding caller headers upstream | **Not yet audited** — treat as unverified until confirmed otherwise |
+| Skuld's own broker HTTP API (`skuld.service_manager`), reached directly on the loopback broker port rather than through the niuu proxy | Not authenticated by this scheme at all — the broker binds loopback-only and relies on the host's own process/network boundary (nothing else can reach `127.0.0.1:<broker port>` without already being on the host); the session-proxy's ownership guard is what protects the browser-facing path (`/s/{id}/...`), not the broker port itself |
+
 ## OAuth credentials and renewal
 
 ### OpenBao-managed integrations

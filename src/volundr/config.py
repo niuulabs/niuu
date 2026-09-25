@@ -2176,6 +2176,18 @@ class Settings(BaseSettings):
     push: PushNotificationConfig = Field(default_factory=PushNotificationConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)
+    auth_mode: str = Field(
+        default="envoy",
+        description=(
+            "How this host trusts identity: 'envoy' (default — an Envoy sidecar "
+            "verifies JWTs and forwards trusted x-auth-* headers; unchanged "
+            "Kubernetes behaviour), 'none' (explicit no-auth for a host without "
+            "Envoy — mini/docker mode's default), or 'oidc' (in-process JWT "
+            "verification for a host without Envoy). Set by the mini/docker CLI "
+            "host from auth.mode (cli.config.AuthConfig); Kubernetes deployments "
+            "leave this at its default."
+        ),
+    )
     credential_store: CredentialStoreConfig = Field(default_factory=CredentialStoreConfig)
     codex_credential_broker: DynamicAdapterConfig = Field(
         default_factory=_default_codex_credential_broker,

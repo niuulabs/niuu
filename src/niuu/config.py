@@ -413,6 +413,24 @@ class NiuuHostConfig(BaseSettings):
         return value
 
 
+class HostIdentityConfig(BaseModel):
+    """Identity adapter for the root niuu app's own inbound requests.
+
+    Used by the session proxy (``niuu.session_proxy``) to resolve a verified
+    caller identity for WS/HTTP attach — a header-only slot (no user
+    provisioning), the same shape as Ravn's own ``RAVN_API_AUTH``. Set from
+    ``host_auth.mode`` (``cli.config.AuthConfig``) via the ``HOST_IDENTITY__*``
+    env vars — a distinct name from ``IDENTITY__*`` deliberately, so this
+    slot can never collide with Völundr/Identity's own ``IDENTITY__ADAPTER``
+    env var when both processes share the same environment.
+    """
+
+    adapter: str = Field(
+        default="identity.adapters.identity.AllowAllHeaderAuthenticationAdapter",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+
+
 class NiuuSettings(BaseSettings):
     """Minimal settings for the niuu shared services.
 
@@ -431,6 +449,15 @@ class NiuuSettings(BaseSettings):
     cors: CorsConfig = Field(default_factory=CorsConfig)
     host: Annotated[NiuuHostConfig, NoDecode] = Field(
         default_factory=NiuuHostConfig,
+    )
+    host_identity: HostIdentityConfig = Field(default_factory=HostIdentityConfig)
+    auth_mode: str = Field(
+        default="envoy",
+        description=(
+            "Mirrors volundr.config.Settings.auth_mode / ting.config.Settings."
+            "auth_mode — see either for the full description. Set from "
+            "host_auth.mode via the AUTH_MODE env var."
+        ),
     )
 
     @field_validator("host", mode="before")
