@@ -321,3 +321,37 @@ async def test_idle_sse_closes_on_revocation():
     await asyncio.wait_for(task, timeout=1)
     assert cancelled.is_set()
     assert sent[-1] == {"type": "http.response.body", "body": b"", "more_body": False}
+
+
+class TestUnauthenticatedHealthPaths:
+    """Guild probes each service's own health route without a credential."""
+
+    @staticmethod
+    def _client() -> TestClient:
+        app = FastAPI()
+        app.add_middleware(PATRevocationMiddleware, authenticate_http=True)
+
+        @app.get("/api/v1/observatory/health")
+        async def observatory_health():
+            return {"status": "healthy"}
+
+        @app.get("/api/v1/observatory/topology")
+        async def observatory_topology():
+            return {"nodes": []}
+
+        return TestClient(app)
+
+    def test_every_default_health_path_skips_identity(self):
+        from niuu.domain.health_paths import DEFAULT_HEALTH_PATHS
+
+        client = self._client()
+        response = client.get("/api/v1/observatory/health")
+
+        assert response.status_code == 200
+        assert "/api/v1/observatory/health" in DEFAULT_HEALTH_PATHS.values()
+
+    def test_other_routes_still_require_identity(self):
+        response = self._client().get("/api/v1/observatory/topology")
+
+        assert response.status_code == 503
+        assert response.json() == {"detail": "Identity is not configured"}
