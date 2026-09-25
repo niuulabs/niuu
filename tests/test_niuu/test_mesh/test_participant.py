@@ -90,12 +90,79 @@ class TestMeshParticipantLifecycle:
         assert p.is_running is False
 
     @pytest.mark.asyncio
-    async def test_mesh_start_failure_sets_running(self, mock_mesh):
+    async def test_mesh_start_failure_raises_and_stops_discovery(self, mock_mesh, mock_discovery):
+        mock_mesh.start = AsyncMock(side_effect=RuntimeError("mesh error"))
+        p = MeshParticipant(mesh=mock_mesh, discovery=mock_discovery, peer_id="p")
+
+        with pytest.raises(RuntimeError, match="mesh error"):
+            await p.start()
+
+        # Discovery must not keep announcing a participant whose mesh is down.
+        mock_discovery.stop.assert_awaited_once()
+        assert p.is_running is False
+
+    @pytest.mark.asyncio
+    async def test_mesh_start_failure_without_discovery_raises(self, mock_mesh):
         mock_mesh.start = AsyncMock(side_effect=RuntimeError("mesh error"))
         p = MeshParticipant(mesh=mock_mesh, peer_id="p")
+
+        with pytest.raises(RuntimeError, match="mesh error"):
+            await p.start()
+
+        assert p.is_running is False
+
+    @pytest.mark.asyncio
+    async def test_discovery_rollback_failure_chains_the_mesh_failure(
+        self, mock_mesh, mock_discovery
+    ):
+        mock_mesh.start = AsyncMock(side_effect=RuntimeError("mesh error"))
+        mock_discovery.stop = AsyncMock(side_effect=OSError("discovery stop error"))
+        p = MeshParticipant(mesh=mock_mesh, discovery=mock_discovery, peer_id="p")
+
+        with pytest.raises(OSError, match="discovery stop error") as excinfo:
+            await p.start()
+
+        assert isinstance(excinfo.value.__context__, RuntimeError)
+        assert p.is_running is False
+
+    @pytest.mark.asyncio
+    async def test_discovery_start_failure_raises_before_mesh_starts(
+        self, mock_mesh, mock_discovery
+    ):
+        mock_discovery.start = AsyncMock(side_effect=RuntimeError("discovery error"))
+        p = MeshParticipant(mesh=mock_mesh, discovery=mock_discovery, peer_id="p")
+
+        with pytest.raises(RuntimeError, match="discovery error"):
+            await p.start()
+
+        mock_mesh.start.assert_not_awaited()
+        assert p.is_running is False
+
+    @pytest.mark.asyncio
+    async def test_stop_failures_raise_after_stopping_both(self, mock_mesh, mock_discovery):
+        mesh_error = RuntimeError("mesh stop error")
+        discovery_error = OSError("discovery stop error")
+        mock_mesh.stop = AsyncMock(side_effect=mesh_error)
+        mock_discovery.stop = AsyncMock(side_effect=discovery_error)
+        p = MeshParticipant(mesh=mock_mesh, discovery=mock_discovery, peer_id="p")
         await p.start()
-        # Even with mesh failure, participant transitions to running
-        assert p.is_running is True
+
+        with pytest.raises(ExceptionGroup, match=r"participant\(p\): stop failed") as excinfo:
+            await p.stop()
+
+        assert excinfo.value.exceptions == (mesh_error, discovery_error)
+        assert p.is_running is False
+
+    @pytest.mark.asyncio
+    async def test_mesh_stop_failure_still_stops_discovery(self, mock_mesh, mock_discovery):
+        mock_mesh.stop = AsyncMock(side_effect=RuntimeError("mesh stop error"))
+        p = MeshParticipant(mesh=mock_mesh, discovery=mock_discovery, peer_id="p")
+        await p.start()
+
+        with pytest.raises(ExceptionGroup):
+            await p.stop()
+
+        mock_discovery.stop.assert_awaited_once()
 
     def test_peer_id_property(self):
         p = MeshParticipant(mesh=None, peer_id="my-peer")
@@ -160,7 +227,7 @@ class TestMeshParticipantIntegration:
     async def test_publish_subscribe_round_trip(self):
         from niuu.mesh import build_in_process_mesh
 
-        mesh = build_in_process_mesh("int-peer", rpc_timeout_s=5.0)
+        mesh = build_in_process_mesh("int-peer", rpc_timeout_s=5.0, rpc_reply_cache_size=4)
         p = MeshParticipant(mesh=mesh, peer_id="int-peer")
 
         from datetime import UTC, datetime

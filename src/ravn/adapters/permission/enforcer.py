@@ -15,6 +15,10 @@ Modes
 - full_access     — unrestricted (explicit opt-in required)
 - prompt          — interactive confirmation for every non-trivially safe action
 
+Modes are parsed into :class:`~ravn.domain.permission_mode.PermissionMode` on
+entry.  A mode no branch handles raises — it is never read as a permissive
+default.
+
 Rule evaluation order
 ---------------------
 1. Explicit ``deny`` list  → Deny immediately
@@ -57,6 +61,7 @@ from ravn.adapters.tools.file_security import (
     resolve_safe,
 )
 from ravn.config import PermissionConfig
+from ravn.domain.permission_mode import PermissionMode, parse_permission_mode
 from ravn.ports.permission import (
     Allow,
     CommandIntent,
@@ -83,6 +88,12 @@ _SYSTEM_PATH_PREFIXES: tuple[str, ...] = _SYSTEM_PREFIXES + (
     "/lib64",
     "/root",
 )
+
+
+def _unhandled_mode(mode: PermissionMode) -> ValueError:
+    """Error for a parsed mode that a policy branch does not cover."""
+    return ValueError(f"permission mode {mode!r} has no enforcement policy; refusing to guess")
+
 
 # Tool names that correspond to bash/shell execution.
 _BASH_TOOL_NAMES: frozenset[str] = frozenset({"bash", "shell", "run_command", "execute"})
@@ -170,8 +181,11 @@ class BashValidator:
     def validate(self, command: str, mode: str) -> PermissionDecision:
         """Full pipeline validation for *command* in the given *mode*.
 
-        Returns Allow, Deny, or NeedsApproval.
+        Returns Allow, Deny, or NeedsApproval.  Raises :class:`ValueError`
+        when *mode* is not a known permission mode.
         """
+        mode = parse_permission_mode(mode)
+
         # Stage 1: always-blocked destructive patterns
         for pattern, label in _ALWAYS_BLOCKED:
             if pattern.search(command):
@@ -182,9 +196,9 @@ class BashValidator:
 
         # Stage 3: sed in-place editing
         if _SED_INPLACE_PATTERN.search(command):
-            if mode in ("read_only",):
+            if mode == PermissionMode.READ_ONLY:
                 return Deny("sed -i (in-place edit) not permitted in read_only mode")
-            if mode == "workspace_write":
+            if mode == PermissionMode.WORKSPACE_WRITE:
                 return NeedsApproval("Allow in-place sed edit? This modifies files directly.")
 
         # Stage 4: path traversal
@@ -282,25 +296,25 @@ class BashValidator:
         return None
 
     def _apply_mode_policy(
-        self, intent: CommandIntent, mode: str, command: str
+        self, intent: CommandIntent, mode: PermissionMode, command: str
     ) -> PermissionDecision:
         """Translate intent + mode into a PermissionDecision."""
         if intent == CommandIntent.DESTRUCTIVE:
             return Deny(f"destructive command not permitted (intent={intent})")
 
-        if mode in ("full_access", "allow_all"):
+        if mode in (PermissionMode.FULL_ACCESS, PermissionMode.ALLOW_ALL):
             if intent == CommandIntent.SYSTEM_ADMIN:
                 return NeedsApproval(
                     f"This command requires system administration: {command!r}. Allow?"
                 )
             return Allow()
 
-        if mode == "read_only":
+        if mode == PermissionMode.READ_ONLY:
             if intent != CommandIntent.READ_ONLY:
                 return Deny(f"mode=read_only does not permit {intent} commands")
             return Allow()
 
-        if mode == "workspace_write":
+        if mode == PermissionMode.WORKSPACE_WRITE:
             if intent == CommandIntent.READ_ONLY:
                 return Allow()
             if intent == CommandIntent.WRITE:
@@ -315,13 +329,13 @@ class BashValidator:
                 return Deny("system administration commands not permitted in workspace_write mode")
             return Deny(f"command intent {intent!r} not permitted in workspace_write mode")
 
-        if mode == "prompt":
+        if mode == PermissionMode.PROMPT:
             return NeedsApproval(f"Allow command: {command!r}?")
 
-        if mode == "deny_all":
+        if mode == PermissionMode.DENY_ALL:
             return Deny("mode=deny_all blocks all commands")
 
-        return Deny(f"unknown mode {mode!r}")
+        raise _unhandled_mode(mode)
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +367,10 @@ class PermissionEnforcer(PermissionEnforcerPort, PermissionPort):
         approval_memory: ApprovalMemory | None = None,
     ) -> None:
         self._config = config
-        self._mode = config.mode
+        # Parsed again because a PermissionConfig can be built without
+        # validation (model_construct, attribute assignment); an unknown mode
+        # must fail here, not fall through to a permissive default later.
+        self._mode = parse_permission_mode(config.mode)
         self._workspace_root: Path = workspace_root or (
             Path(config.workspace_root).resolve() if config.workspace_root else Path.cwd()
         )
@@ -486,7 +503,7 @@ class PermissionEnforcer(PermissionEnforcerPort, PermissionPort):
             # retain their own NeedsApproval gates (e.g. network commands).
             if (
                 isinstance(decision, NeedsApproval)
-                and self._mode == "prompt"
+                and self._mode == PermissionMode.PROMPT
                 and self._approval_memory is not None
                 and self._approval_memory.is_approved(command)
             ):
@@ -502,7 +519,7 @@ class PermissionEnforcer(PermissionEnforcerPort, PermissionPort):
             return self._file_write_for_mode(path)
 
         # File read tools — allowed unless mode explicitly blocks everything.
-        if tool_name in _FILE_READ_TOOL_NAMES and self._mode not in ("deny_all",):
+        if tool_name in _FILE_READ_TOOL_NAMES and self._mode != PermissionMode.DENY_ALL:
             return Allow()
 
         # Mode-specific defaults for all other tools.
@@ -510,51 +527,53 @@ class PermissionEnforcer(PermissionEnforcerPort, PermissionPort):
 
     def _mode_allow_or_deny(self, tool_name: str) -> PermissionDecision:
         """Return the mode-level default decision for a non-bash, non-file tool."""
-        if self._mode in ("full_access", "allow_all"):
+        if self._mode in (PermissionMode.FULL_ACCESS, PermissionMode.ALLOW_ALL):
             return Allow()
 
-        if self._mode == "deny_all":
+        if self._mode == PermissionMode.DENY_ALL:
             return Deny("mode=deny_all blocks all tool calls")
 
-        if self._mode == "prompt":
+        if self._mode == PermissionMode.PROMPT:
             return NeedsApproval(f"Allow tool {tool_name!r}?")
 
-        if self._mode == "read_only":
+        if self._mode == PermissionMode.READ_ONLY:
             return Deny(f"mode=read_only does not permit tool {tool_name!r}")
 
-        if self._mode == "workspace_write":
+        if self._mode == PermissionMode.WORKSPACE_WRITE:
             return Allow()
 
-        return Deny(f"no rule matched for {tool_name!r} in mode {self._mode!r}")
+        raise _unhandled_mode(self._mode)
 
     def _file_write_for_mode(self, path: str) -> PermissionDecision:
         """Validate file write based on mode."""
-        if self._mode == "read_only":
+        if self._mode == PermissionMode.READ_ONLY:
             return Deny("mode=read_only does not permit file writes")
-        if self._mode == "deny_all":
+        if self._mode == PermissionMode.DENY_ALL:
             return Deny("mode=deny_all blocks all tool calls")
-        if self._mode == "prompt":
+        if self._mode == PermissionMode.PROMPT:
             return NeedsApproval(f"Allow file write to {path!r}?")
-        if self._mode == "workspace_write":
+        if self._mode == PermissionMode.WORKSPACE_WRITE:
             return self.check_file_write(path, self._workspace_root)
-        # full_access / allow_all
-        return Allow()
+        if self._mode in (PermissionMode.FULL_ACCESS, PermissionMode.ALLOW_ALL):
+            return Allow()
+        raise _unhandled_mode(self._mode)
 
     def _mode_default_for_permission(self, permission: str) -> PermissionDecision:
-        """Fallback mode default for string-based permission checks."""
-        if self._mode in ("full_access", "allow_all"):
+        """Mode default for string-based permission checks."""
+        if self._mode in (PermissionMode.FULL_ACCESS, PermissionMode.ALLOW_ALL):
             return Allow()
-        if self._mode == "deny_all":
+        if self._mode == PermissionMode.DENY_ALL:
             return Deny("mode=deny_all")
-        if self._mode == "prompt":
+        if self._mode == PermissionMode.PROMPT:
             return NeedsApproval(f"Allow {permission!r}?")
-        if self._mode == "read_only":
+        if self._mode == PermissionMode.READ_ONLY:
             # Read permissions are allowed; write/exec are not
             if any(w in permission for w in ("write", "delete", "execute", "bash", "shell")):
                 return Deny(f"mode=read_only denies {permission!r}")
             return Allow()
-        # workspace_write — allow by default
-        return Allow()
+        if self._mode == PermissionMode.WORKSPACE_WRITE:
+            return Allow()
+        raise _unhandled_mode(self._mode)
 
     @staticmethod
     def _matches_any(name: str, patterns: list[str]) -> bool:

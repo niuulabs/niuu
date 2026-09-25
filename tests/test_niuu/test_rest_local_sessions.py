@@ -151,10 +151,17 @@ def test_matching_explicit_local_id_is_allowed_and_detail_cannot_escape_to_guild
 
 
 @respx.mock
-def test_local_stream_uses_embedded_broadcaster_not_remote_default(monkeypatch):
+def test_local_stream_uses_embedded_scoped_stream_not_remote_default(
+    monkeypatch, repository, pod_manager
+):
     import json
+    from datetime import UTC, datetime
 
     from niuu.adapters.inbound import rest_volundr
+    from tests.conftest import InMemoryStatsRepository
+    from volundr.adapters.outbound.authorization import SimpleRoleAuthorizationAdapter
+    from volundr.domain.models import EventType, RealtimeEvent
+    from volundr.domain.services import SessionEventStream, SessionService, StatsService
 
     async def finite_merge(sources, **_kwargs):
         assert list(sources) == ["local"]
@@ -164,18 +171,59 @@ def test_local_stream_uses_embedded_broadcaster_not_remote_default(monkeypatch):
 
     monkeypatch.setattr(rest_volundr, "merge_events", finite_merge)
 
+    def updated(session_id: str, owner_id: str) -> RealtimeEvent:
+        return RealtimeEvent(
+            type=EventType.SESSION_UPDATED,
+            data={"id": session_id, "owner_id": owner_id, "tenant_id": "tenant-a"},
+            timestamp=datetime.now(UTC),
+        )
+
     class Broadcaster:
         async def subscribe(self):
-            yield SimpleNamespace(type=SimpleNamespace(value="session_updated"), data={"id": "own"})
+            yield updated("foreign", "user-b")
+            yield updated("own", "user-a")
+            yield RealtimeEvent(
+                type=EventType.STATS_UPDATED,
+                data={"active_sessions": 1000},
+                timestamp=datetime.now(UTC),
+            )
 
+    sessions = SessionService(
+        repository=repository,
+        pod_manager=pod_manager,
+        authorization=SimpleRoleAuthorizationAdapter(),
+    )
     embedded = FastAPI()
-    embedded.state.broadcaster = Broadcaster()
+    stats = InMemoryStatsRepository(active_sessions=2)
+    embedded.state.session_event_stream = SessionEventStream(
+        Broadcaster(), sessions, StatsService(stats, sessions)
+    )
     client = _client([remote(is_default=True), local()], embedded_forge_app=embedded)
     response = client.get("/api/v1/forge/sessions/stream?scope=local", headers=_headers())
     assert response.status_code == 200
     assert response.headers["X-Forge-Session-Scope"] == "local"
     assert '"id": "own"' in response.text
+    # The embedded path is not a way around the Forge's own scoping.
+    assert '"id": "foreign"' not in response.text
+    assert "event: stats_updated" in response.text
+    assert '"active_sessions": 2' in response.text
+    assert stats.scopes == [("tenant-a", "user-a")]
     assert not respx.calls
+
+
+def test_local_stream_refuses_a_subscriber_the_forge_cannot_scope():
+    def refuse(_principal):
+        raise PermissionError("An authenticated principal is required to list sessions")
+
+    async def never(_principal):  # pragma: no cover - authorize refuses first
+        yield
+
+    embedded = FastAPI()
+    embedded.state.session_event_stream = SimpleNamespace(authorize=refuse, subscribe=never)
+    response = _client([local()], embedded_forge_app=embedded).get(
+        "/api/v1/forge/sessions/stream?scope=local", headers=_headers()
+    )
+    assert response.status_code == 401
 
 
 def test_local_stream_without_broadcaster_fails():

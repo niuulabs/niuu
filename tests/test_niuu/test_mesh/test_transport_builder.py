@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from niuu.mesh.transport_builder import TRANSPORT_ALIASES, build_nng_transport, build_transport
+import pytest
+
+from niuu.mesh.transport_builder import (
+    TRANSPORT_ALIASES,
+    TransportBuildError,
+    build_nng_transport,
+    build_transport,
+)
 
 
 class TestTransportAliases:
@@ -12,30 +19,36 @@ class TestTransportAliases:
         assert "nng" in TRANSPORT_ALIASES
         assert "NngTransport" in TRANSPORT_ALIASES["nng"]
 
-    def test_rabbitmq_aliases_present(self):
-        assert "sleipnir" in TRANSPORT_ALIASES
-        assert "rabbitmq" in TRANSPORT_ALIASES
-        assert TRANSPORT_ALIASES["sleipnir"] == TRANSPORT_ALIASES["rabbitmq"]
-
     def test_nats_alias_present(self):
         assert "nats" in TRANSPORT_ALIASES
-
-    def test_redis_alias_present(self):
-        assert "redis" in TRANSPORT_ALIASES
 
     def test_in_process_alias_present(self):
         assert "in_process" in TRANSPORT_ALIASES
         assert "InProcessBus" in TRANSPORT_ALIASES["in_process"]
 
+    @pytest.mark.parametrize("alias", ["sleipnir", "rabbitmq", "redis"])
+    def test_at_most_once_broker_aliases_are_not_mesh_transports(self, alias):
+        # The RabbitMQ and Redis Streams subscribers ack before dispatch, so
+        # the mesh must not be able to select them.
+        assert alias not in TRANSPORT_ALIASES
+
 
 class TestBuildTransport:
-    def test_unknown_adapter_returns_none_on_import_error(self):
-        result = build_transport("nonexistent.module.Class")
-        assert result is None
+    def test_unimportable_class_path_raises_with_remedy(self):
+        with pytest.raises(TransportBuildError, match="could not be imported") as exc_info:
+            build_transport("nonexistent.module.Class")
+        assert "Install the package" in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, ImportError)
 
-    def test_missing_adapter_field_returns_none(self):
-        result = build_transport("")
-        assert result is None
+    def test_missing_class_in_module_raises(self):
+        with pytest.raises(TransportBuildError, match="could not be imported"):
+            build_transport("sleipnir.adapters.in_process.NoSuchTransport")
+
+    @pytest.mark.parametrize("adapter", ["", "rabbitmq", "redis"])
+    def test_unknown_alias_raises_with_valid_choices(self, adapter):
+        with pytest.raises(TransportBuildError, match="unknown mesh transport") as exc_info:
+            build_transport(adapter)
+        assert "in_process, nats, nng" in str(exc_info.value)
 
     def test_in_process_bus_built_successfully(self):
         result = build_transport("in_process")
@@ -55,13 +68,17 @@ class TestBuildTransport:
             mock_cls.assert_called_once_with(address="tcp://0.0.0.0:6000", service_id="test")
             assert result == "transport_instance"
 
-    def test_instantiation_failure_returns_none(self):
+    def test_instantiation_failure_raises_with_cause(self):
         with patch("niuu.mesh.transport_builder.import_class") as mock_import:
-            mock_cls = MagicMock(side_effect=RuntimeError("bad args"))
+            mock_cls = MagicMock(side_effect=TypeError("unexpected keyword argument 'amqp_url'"))
             mock_import.return_value = mock_cls
 
-            result = build_transport("nng", address="bad")
-            assert result is None
+            with pytest.raises(TransportBuildError, match="could not be constructed") as exc_info:
+                build_transport("nng", address="bad")
+
+        assert "amqp_url" in str(exc_info.value)
+        assert "mesh.nng" in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, TypeError)
 
 
 class TestBuildNngTransport:

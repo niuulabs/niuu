@@ -32,6 +32,7 @@ from ravn.domain.models import (
     ToolResult,
     TurnResult,
 )
+from ravn.domain.permission_mode import PermissionMode, parse_permission_mode
 from ravn.ports.channel import ChannelPort
 from ravn.ports.checkpoint import CheckpointPort
 from ravn.ports.executor import ExecutionAgentPort, ExecutorPort
@@ -754,8 +755,10 @@ class CliTransportExecutor(ExecutorPort):
         workspace_dir = str(kwargs.get("workspace_dir", ""))
         session: Session = kwargs["session"]
         task_id = str(kwargs.get("task_id") or session.id)
-        permission_mode = str(kwargs.get("permission_mode", "workspace_write"))
-        read_only = permission_mode.replace("-", "_") == "read_only"
+        # Required, and parsed with the same parser the permission builder
+        # uses: a missing or unrecognised mode must not become a writable run.
+        permission_mode = parse_permission_mode(kwargs["permission_mode"])
+        read_only = permission_mode == PermissionMode.READ_ONLY
         tools = list(kwargs.get("tools", []))
         transport_kwargs = {
             "workspace_dir": workspace_dir,
@@ -765,7 +768,7 @@ class CliTransportExecutor(ExecutorPort):
             "initial_prompt": "",
         }
         if not _delegates_permission_config_to_cli(self._binding.cls):
-            transport_kwargs["skip_permissions"] = permission_mode != "prompt"
+            transport_kwargs["skip_permissions"] = permission_mode != PermissionMode.PROMPT
         if "mcp_servers" in kwargs and not read_only:
             transport_kwargs["mcp_servers"] = _with_ravn_tool_mcp_server(
                 list(kwargs["mcp_servers"]),

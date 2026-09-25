@@ -530,6 +530,7 @@ def build_root_app(
                     base_url=plugin_api_base_url,
                     embedded_forge_app=embedded_forge_app,
                     skuld_registry=skuld_reg,
+                    dev_identity=skuld_reg.dev_identity,
                 )
                 if shared_key and sub_app is not None:
                     shared_api_apps[shared_key] = sub_app

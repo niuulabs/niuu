@@ -682,3 +682,30 @@ async def test_validation_logging_omits_credentials_and_private_input():
     warning.assert_called_once()
     assert "string_type" in str(warning.call_args)
     assert "private-test-key" not in str(warning.call_args)
+
+
+async def test_periodic_broadcast_sends_a_figure_less_stats_tick_then_a_heartbeat(monkeypatch):
+    """Figures are per subscriber, so the periodic task never computes global stats."""
+    import asyncio
+
+    from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
+    from volundr.domain.models import EventType
+    from volundr.main import _broadcast_periodic_updates
+
+    monkeypatch.setattr("volundr.main.BROADCAST_INTERVAL", 0)
+    broadcaster = InMemoryEventBroadcaster()
+    events = broadcaster.subscribe()
+    first = asyncio.ensure_future(anext(events))
+    await asyncio.sleep(0)  # the subscriber is registered before the first tick
+
+    task = asyncio.create_task(_broadcast_periodic_updates(broadcaster))
+    tick = await asyncio.wait_for(first, timeout=1.0)
+    heartbeat = await asyncio.wait_for(anext(events), timeout=1.0)
+    task.cancel()
+    # The loop handles its own cancellation and returns, so shutdown is clean.
+    assert await asyncio.wait_for(task, timeout=1.0) is None
+    assert not task.cancelled()
+    await events.aclose()
+
+    assert (tick.type, tick.data) == (EventType.STATS_UPDATED, {})
+    assert heartbeat.type is EventType.HEARTBEAT

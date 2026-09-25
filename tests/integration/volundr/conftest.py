@@ -28,6 +28,7 @@ from volundr.adapters.inbound.rest_ravn_personas import create_ravn_personas_rou
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
 from volundr.adapters.outbound.identity import EnvoyHeaderIdentityAdapter
 from volundr.adapters.outbound.postgres import PostgresSessionRepository
+from volundr.adapters.outbound.postgres_chronicles import PostgresChronicleRepository
 from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
 from volundr.adapters.outbound.postgres_stats import PostgresStatsRepository
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
@@ -37,6 +38,7 @@ from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.domain.models import Session, SessionSpec, SessionStatus
 from volundr.domain.ports import PodManager, PodStartResult
 from volundr.domain.services import (
+    ChronicleService,
     PromptService,
     SessionService,
     StatsService,
@@ -162,17 +164,19 @@ async def volundr_app(
         provisioning_timeout=2.0,
         provisioning_initial_delay=0.0,
     )
-    stats_service = StatsService(stats_repo)
+    stats_service = StatsService(stats_repo, session_service)
     token_service = TokenService(token_tracker, session_repo, pricing, broadcaster=broadcaster)
     prompt_service = PromptService(prompt_repo)
 
     # Routers
+    chronicle_service = ChronicleService(PostgresChronicleRepository(txn_pool), session_service)
     session_router = create_session_router(
         session_service,
         stats_service,
         token_service,
         pricing,
         broadcaster=broadcaster,
+        chronicle_service=chronicle_service,
     )
     app.include_router(session_router)
 

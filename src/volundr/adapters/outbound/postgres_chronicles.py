@@ -27,9 +27,9 @@ class PostgresChronicleRepository(ChronicleRepository):
                 (id, session_id, status, project, repo, branch, model,
                  config_snapshot, summary, key_changes, unfinished_work,
                  token_usage, cost, duration_seconds, tags,
-                 parent_chronicle_id, created_at, updated_at)
+                 parent_chronicle_id, created_at, updated_at, owner_id, tenant_id)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                    $13, $14, $15, $16, $17, $18)
+                    $13, $14, $15, $16, $17, $18, $19, $20)
             """,
             chronicle.id,
             chronicle.session_id,
@@ -49,6 +49,8 @@ class PostgresChronicleRepository(ChronicleRepository):
             chronicle.parent_chronicle_id,
             chronicle.created_at,
             chronicle.updated_at,
+            chronicle.owner_id,
+            chronicle.tenant_id,
         )
         return chronicle
 
@@ -74,6 +76,9 @@ class PostgresChronicleRepository(ChronicleRepository):
 
     async def list(
         self,
+        *,
+        tenant_id: str | None,
+        owner_id: str | None,
         project: str | None = None,
         repo: str | None = None,
         model: str | None = None,
@@ -81,10 +86,22 @@ class PostgresChronicleRepository(ChronicleRepository):
         limit: int = 50,
         offset: int = 0,
     ) -> list[Chronicle]:
-        """Retrieve chronicles with optional filters."""
+        """Retrieve chronicles within the given bounds, with optional filters."""
         conditions: list[str] = []
         params: list = []
         param_idx = 1
+
+        # A bound compares with ``=`` and excludes the empty string, so it never
+        # matches a NULL or blank attribution: those rows are unbounded-only.
+        if tenant_id is not None:
+            conditions.append(f"tenant_id = ${param_idx} AND tenant_id <> ''")
+            params.append(tenant_id)
+            param_idx += 1
+
+        if owner_id is not None:
+            conditions.append(f"owner_id = ${param_idx} AND owner_id <> ''")
+            params.append(owner_id)
+            param_idx += 1
 
         if project is not None:
             conditions.append(f"project = ${param_idx}")
@@ -222,6 +239,8 @@ class PostgresChronicleRepository(ChronicleRepository):
             duration_seconds=row["duration_seconds"],
             tags=tags,
             parent_chronicle_id=row["parent_chronicle_id"],
+            owner_id=row["owner_id"],
+            tenant_id=row["tenant_id"],
             created_at=created_at,
             updated_at=updated_at,
         )

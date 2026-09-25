@@ -390,6 +390,9 @@ class ChronicleRepository(ABC):
     @abstractmethod
     async def list(
         self,
+        *,
+        tenant_id: str | None,
+        owner_id: str | None,
         project: str | None = None,
         repo: str | None = None,
         model: str | None = None,
@@ -397,7 +400,14 @@ class ChronicleRepository(ABC):
         limit: int = 50,
         offset: int = 0,
     ) -> list[Chronicle]:
-        """Retrieve chronicles with optional filters."""
+        """Retrieve chronicles with optional filters, newest first.
+
+        Args:
+            tenant_id: Return only chronicles attributed to this tenant. ``None``
+                is unbounded; a bound never matches an untenanted chronicle.
+            owner_id: Return only chronicles attributed to this owner. ``None``
+                is unbounded; a bound never matches an unowned chronicle.
+        """
 
     @abstractmethod
     async def update(self, chronicle: Chronicle) -> Chronicle:
@@ -532,8 +542,14 @@ class StatsRepository(ABC):
     """Port for retrieving aggregate statistics."""
 
     @abstractmethod
-    async def get_stats(self) -> Stats:
+    async def get_stats(self, *, tenant_id: str | None, owner_id: str | None) -> Stats:
         """Retrieve aggregate statistics for the dashboard.
+
+        Args:
+            tenant_id: Count only sessions and history of this tenant. ``None``
+                is unbounded; a bound never matches untenanted rows.
+            owner_id: Count only sessions and history of this owner. ``None``
+                is unbounded; a bound never matches unowned rows.
 
         Returns:
             Stats containing session counts, token usage, and cost for today.

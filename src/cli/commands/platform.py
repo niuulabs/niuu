@@ -182,6 +182,9 @@ async def _startup(
         port=port,
         host_profile=host_profile,
         enabled_mounts=enabled_mounts,
+        # Mini mode is the local, IDP-less host: browser-asserted dev identity
+        # is its identity contract. Every other mode must not trust it.
+        dev_identity=settings.mode == "mini",
     )
     manager._root_server = root_server  # type: ignore[attr-defined]
 

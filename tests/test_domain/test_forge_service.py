@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 
-from volundr.domain.models import ModelProvider, SessionActivityState
+from volundr.domain.models import ModelProvider, Principal, SessionActivityState
 from volundr.domain.services import RepoService, SessionService, StatsService, TokenService
 from volundr.domain.services.forge import ForgeService
 
@@ -270,10 +270,11 @@ async def test_get_stats_uses_stats_service() -> None:
     stats_service.get_stats.return_value = SimpleNamespace(active_sessions=1)
     forge = ForgeService(session_service, stats_service=stats_service)
 
-    stats = await forge.get_stats()
+    principal = Principal(user_id="alice", email="", tenant_id="t1", roles=[])
+    stats = await forge.get_stats(principal)
 
     assert stats.active_sessions == 1
-    stats_service.get_stats.assert_awaited_once_with()
+    stats_service.get_stats.assert_awaited_once_with(principal)
 
 
 @pytest.mark.asyncio

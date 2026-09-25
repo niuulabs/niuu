@@ -1,11 +1,51 @@
 """PostgreSQL adapter for statistics repository."""
 
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import asyncpg
 
 from volundr.domain.models import Stats
 from volundr.domain.ports import StatsRepository
+
+# Every query binds $1 to the tenant bound and $2 to the owner bound; NULL is
+# unbounded. A bound compares with ``=``, so it never matches a NULL column:
+# untenanted or unowned rows count only for an unbounded caller.
+_SESSION_IN_SCOPE = (
+    "($1::text IS NULL OR s.tenant_id = $1) AND ($2::text IS NULL OR s.owner_id = $2)"
+)
+_CHRONICLE_IN_SCOPE = (
+    "($1::text IS NULL OR c.tenant_id = $1) AND ($2::text IS NULL OR c.owner_id = $2)"
+)
+
+# Chronicles are durable after session deletion and carry their session's
+# owner and tenant, so include them for history-oriented totals and sparklines.
+_SESSION_STARTS = f"""
+    session_starts AS (
+        SELECT
+            session_key,
+            MIN(created_at) AS started_at
+        FROM (
+            SELECT s.id::text AS session_key, s.created_at
+            FROM sessions s
+            WHERE {_SESSION_IN_SCOPE}
+
+            UNION ALL
+
+            SELECT COALESCE(c.session_id::text, c.id::text) AS session_key, c.created_at
+            FROM chronicles c
+            WHERE {_CHRONICLE_IN_SCOPE}
+        ) raw_starts
+        GROUP BY session_key
+    )
+"""
+
+# Every query also binds $3 to the dashboard's day, a UTC calendar date, and
+# derives its boundaries as UTC instants: a bare date or timestamp compared with
+# a timestamptz is read in the session TimeZone, which is not UTC in mini mode
+# or on a non-UTC server. The sparkline covers the 30 days ending on $3.
+_TODAY_START = "($3::date::timestamp AT TIME ZONE 'UTC')"
+_SPARKLINE_START = "(($3::date - 29)::timestamp AT TIME ZONE 'UTC')"
 
 
 class PostgresStatsRepository(StatsRepository):
@@ -14,77 +54,83 @@ class PostgresStatsRepository(StatsRepository):
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
-    async def get_stats(self) -> Stats:
-        """Retrieve aggregate statistics for the dashboard."""
+    async def get_stats(self, *, tenant_id: str | None, owner_id: str | None) -> Stats:
+        """Retrieve aggregate statistics for the dashboard within the given bounds."""
+        # Rows are stamped with the app's UTC clock; binding the day once keeps
+        # every figure on the same day even when the request straddles midnight.
+        today = datetime.now(UTC).date()
         async with self._pool.acquire() as conn:
-            # Get session counts. Chronicles are durable after session deletion,
-            # so include them for history-oriented totals and sparklines.
             session_counts = await conn.fetchrow(
-                """
-                WITH session_starts AS (
-                    SELECT
-                        session_key,
-                        MIN(created_at) AS started_at
-                    FROM (
-                        SELECT id::text AS session_key, created_at
-                        FROM sessions
-
-                        UNION ALL
-
-                        SELECT COALESCE(session_id::text, id::text) AS session_key, created_at
-                        FROM chronicles
-                    ) raw_starts
-                    GROUP BY session_key
-                )
+                f"""
+                WITH {_SESSION_STARTS}
                 SELECT
-                    (SELECT COUNT(*) FROM sessions WHERE status = 'running') AS active_sessions,
+                    (
+                        SELECT COUNT(*)
+                        FROM sessions s
+                        WHERE s.status = 'running' AND {_SESSION_IN_SCOPE}
+                    ) AS active_sessions,
                     COUNT(*) AS total_sessions,
                     COUNT(*) FILTER (
-                        WHERE started_at >= CURRENT_DATE AT TIME ZONE 'UTC'
+                        WHERE started_at >= {_TODAY_START}
                     ) AS sessions_today
                 FROM session_starts
-                """
+                """,
+                tenant_id,
+                owner_id,
+                today,
             )
 
-            # Get token usage for today (UTC)
+            # Get token usage for today (UTC). Token rows are deleted with their
+            # session, so the session always attributes them.
             token_stats = await conn.fetchrow(
-                """
+                f"""
                 SELECT
-                    COALESCE(SUM(tokens), 0) AS tokens_today,
-                    COALESCE(SUM(tokens) FILTER (WHERE provider = 'local'), 0) AS local_tokens,
-                    COALESCE(SUM(tokens) FILTER (WHERE provider = 'cloud'), 0) AS cloud_tokens,
-                    COALESCE(SUM(cost), 0) AS cost_today
-                FROM token_usage
-                WHERE recorded_at >= CURRENT_DATE AT TIME ZONE 'UTC'
-                """
+                    COALESCE(SUM(t.tokens), 0) AS tokens_today,
+                    COALESCE(SUM(t.tokens) FILTER (WHERE t.provider = 'local'), 0)
+                        AS local_tokens,
+                    COALESCE(SUM(t.tokens) FILTER (WHERE t.provider = 'cloud'), 0)
+                        AS cloud_tokens,
+                    COALESCE(SUM(t.cost), 0) AS cost_today
+                FROM token_usage t
+                JOIN sessions s ON s.id = t.session_id
+                WHERE t.recorded_at >= {_TODAY_START}
+                    AND {_SESSION_IN_SCOPE}
+                """,
+                tenant_id,
+                owner_id,
+                today,
             )
 
             # Some live sessions only persist final usage on their chronicle. Treat
             # that as a fallback for sessions without token_usage rows today.
             chronicle_stats = await conn.fetchrow(
-                """
+                f"""
                 WITH today_token_sessions AS (
                     SELECT DISTINCT session_id
                     FROM token_usage
-                    WHERE recorded_at >= CURRENT_DATE AT TIME ZONE 'UTC'
+                    WHERE recorded_at >= {_TODAY_START}
                 ),
                 latest_chronicles AS (
-                    SELECT DISTINCT ON (session_id)
-                        session_id,
-                        token_usage,
-                        cost
-                    FROM chronicles
+                    SELECT DISTINCT ON (c.session_id)
+                        c.session_id,
+                        c.token_usage,
+                        c.cost
+                    FROM chronicles c
                     WHERE
-                        session_id IS NOT NULL
-                        AND updated_at >= CURRENT_DATE AT TIME ZONE 'UTC'
-                    ORDER BY session_id, updated_at DESC
+                        c.session_id IS NOT NULL
+                        AND c.updated_at >= {_TODAY_START}
+                        AND {_CHRONICLE_IN_SCOPE}
+                    ORDER BY c.session_id, c.updated_at DESC
                 )
                 SELECT
                     COALESCE(SUM(token_usage), 0) AS tokens_today,
                     COALESCE(SUM(cost), 0) AS cost_today
                 FROM latest_chronicles
                 WHERE session_id NOT IN (SELECT session_id FROM today_token_sessions)
-                """
+                """,
+                tenant_id,
+                owner_id,
+                today,
             )
 
             token_usage_tokens = int(token_stats["tokens_today"])
@@ -92,42 +138,28 @@ class PostgresStatsRepository(StatsRepository):
             token_usage_cost = Decimal(str(token_stats["cost_today"]))
             chronicle_cost = Decimal(str(chronicle_stats["cost_today"]))
             sessions_by_day = await conn.fetch(
-                """
+                f"""
                 WITH days AS (
-                    SELECT generate_series(
-                        CURRENT_DATE - INTERVAL '29 days',
-                        CURRENT_DATE,
-                        INTERVAL '1 day'
-                    )::date AS day
+                    SELECT $3::date - days_ago AS day
+                    FROM generate_series(0, 29) AS days_ago
                 ),
-                session_starts AS (
-                    SELECT
-                        session_key,
-                        MIN(created_at) AS started_at
-                    FROM (
-                        SELECT id::text AS session_key, created_at
-                        FROM sessions
-
-                        UNION ALL
-
-                        SELECT COALESCE(session_id::text, id::text) AS session_key, created_at
-                        FROM chronicles
-                    ) raw_starts
-                    GROUP BY session_key
-                ),
+                {_SESSION_STARTS},
                 session_counts AS (
                     SELECT
                         (started_at AT TIME ZONE 'UTC')::date AS day,
                         COUNT(*)::float AS count
                     FROM session_starts
-                    WHERE started_at >= (CURRENT_DATE - INTERVAL '29 days') AT TIME ZONE 'UTC'
+                    WHERE started_at >= {_SPARKLINE_START}
                     GROUP BY 1
                 )
                 SELECT COALESCE(session_counts.count, 0) AS count
                 FROM days
                 LEFT JOIN session_counts USING (day)
                 ORDER BY days.day
-                """
+                """,
+                tenant_id,
+                owner_id,
+                today,
             )
 
             return Stats(

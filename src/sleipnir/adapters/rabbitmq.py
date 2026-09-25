@@ -1,8 +1,13 @@
 """RabbitMQ transport adapter for Sleipnir.
 
-Primary durable broker for production deployments.  Already present in the
-ODIN infrastructure stack as Yggdrasil's backbone, so teams already running
-ODIN need zero additional broker infrastructure.
+Delivery guarantee
+------------------
+**At-most-once.**  :meth:`RabbitMQSubscriber._on_message` acks each message
+when it arrives, before the handler runs, and the per-subscription queue drops
+its oldest event on overflow.  A handler failure, a crash, or a slow consumer
+loses events.  This adapter does not meet the at-least-once contract of
+:class:`~sleipnir.ports.events.SleipnirSubscriber`.  No chart or deployment
+uses it; use :mod:`sleipnir.adapters.nats_transport` when delivery matters.
 
 Architecture
 ------------
