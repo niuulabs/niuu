@@ -3418,6 +3418,7 @@ dependencies = [
     { name = "idna" },
     { name = "mcp" },
     { name = "msgpack" },
+    { name = "packaging" },
     { name = "pillow" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -3524,10 +3525,10 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "a2a-sdk", specifier = ">=1.1.2,<2" },
-    { name = "anyio", specifier = ">=4.14.2,<4.15" },
     { name = "aio-pika", marker = "extra == 'rabbitmq'", specifier = ">=10.0.1" },
     { name = "aiohttp", marker = "extra == 'dev'", specifier = ">=3.14.3" },
     { name = "aiohttp", marker = "extra == 'test'", specifier = ">=3.14.3" },
+    { name = "anyio", specifier = ">=4.14.2,<4.15" },
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "cedarpy", specifier = "==4.8.7" },
     { name = "claude-agent-sdk", specifier = "==0.2.152" },
@@ -3556,6 +3557,7 @@ requires-dist = [
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.44.0" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.44.0" },
     { name = "ordered-set", marker = "extra == 'cli'", specifier = ">=4.1" },
+    { name = "packaging", specifier = ">=24.0" },
     { name = "patchelf", marker = "sys_platform == 'linux' and extra == 'cli'", specifier = ">=0.19.1.0" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.62.0" },
