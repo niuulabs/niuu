@@ -384,6 +384,51 @@ async def test_central_identity_wires_edge_application_and_pat_revocation(chart_
     assert config["pat"]["service_adapter"] == "niuu.adapters.remote_pats.RemotePATService"
 
 
+def _render_gateway(chart_name, **overrides):
+    values = {"identityAuthority.url": "https://identity.test", **overrides}
+    if chart_name == "skuld":
+        values.update(
+            {"session.ownerId": "alice", "session.tenantId": "acme", "session.id": "session-test"}
+        )
+    return render_cedar(CHART.parent / chart_name, **values)
+
+
+def _ext_authz_timeout(docs):
+    http = envoy_config(docs)["static_resources"]["listeners"][0]["filter_chains"][0]["filters"][0][
+        "typed_config"
+    ]
+    authz = next(f for f in http["http_filters"] if f["name"] == "envoy.filters.http.ext_authz")
+    return authz["typed_config"]["grpc_service"]["timeout"]
+
+
+@pytest.mark.parametrize("chart_name", ["volundr", "ting", "skuld"])
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({}, "1s"),
+        ({"identityAuthority.enabled": "true"}, "6s"),
+        (
+            {
+                "identityAuthority.enabled": "true",
+                "identityAuthority.timeout": "2.5",
+                "envoy.authorization.timeout": "500ms",
+            },
+            "3s",
+        ),
+    ],
+)
+def test_ext_authz_deadline_covers_the_identity_lookup(chart_name, overrides, expected):
+    docs = _render_gateway(chart_name, **overrides)
+    assert _ext_authz_timeout(docs) == expected
+
+
+@pytest.mark.parametrize("chart_name", ["volundr", "ting", "skuld"])
+def test_ext_authz_timeout_rejects_unparseable_duration(chart_name):
+    _render_gateway(chart_name)
+    with pytest.raises(subprocess.CalledProcessError):
+        _render_gateway(chart_name, **{"envoy.authorization.timeout": "1m"})
+
+
 @pytest.mark.parametrize("chart_name", ["volundr", "ting", "skuld", "guild", "observatory"])
 def test_no_auth_overrides_central_identity_profile(chart_name):
     chart = CHART.parent / chart_name

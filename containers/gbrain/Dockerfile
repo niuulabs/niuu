@@ -1,6 +1,9 @@
 FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895
 ARG GBRAIN_REF=d13aa742fd68b71bfd6c98be3dda5813791f1d6c
 USER root
+# CI passes the UTC date, so the registry layer cache cannot keep this upgrade
+# (and the security fixes it pulls) for more than a day.
+ARG OS_PACKAGES_REFRESH=
 # The pinned base carries fixed-upstream CVEs in glibc, pcre2, sqlite and gzip
 # (the scan gate fails on the glibc one); take Debian's security updates.
 RUN apt-get update && apt-get upgrade -y --no-install-recommends \

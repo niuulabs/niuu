@@ -666,6 +666,8 @@ envoy:
     identity: null
     enabled: false
     port: 9002
+    # -- Envoy's budget for the authorization decision. When identityAuthority is
+    # enabled, identityAuthority.timeout is added so the identity lookup fits.
     timeout: "1s"
     shutdownGraceSeconds: 5
     # -- Mount deployment-managed custom policy/schema volumes, when configured
