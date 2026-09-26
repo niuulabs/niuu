@@ -3,7 +3,6 @@ import { Link, useNavigate, useParams } from '@tanstack/react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { usePluginCtx, useService } from '@niuulabs/plugin-sdk';
 import { useUiMode } from '@niuulabs/shell';
-import { PagesView } from '@niuulabs/plugin-mimir';
 import {
   MessageRow,
   ResidentLogsView,
@@ -736,22 +735,17 @@ export function RealmPage() {
                   ? `${data.mount.pages} pages · ${data.mount.status}`
                   : 'not discovered yet'}
               </span>
-              <button
-                type="button"
-                className={BUTTON}
-                disabled={!data.mount}
-                onClick={() => {
-                  ctx.setTweak('activeMount', data.mountName);
-                  void navigate({ to: '/mimir/pages' as never });
-                }}
-              >
-                Open realm memory
-              </button>
             </div>
-            {data.mount ? (
-              <div className="niuu:min-h-0 niuu:flex-1 niuu:overflow-hidden niuu:rounded-xl niuu:border niuu:border-border-subtle">
-                <PagesView />
-              </div>
+            {data.mount && data.mountName ? (
+              <EmptyState
+                title="Realm memory"
+                description="Explore this realm's pages, links and proof in the Memory scene."
+                action={
+                  <Link to="/mimir" search={{ mount: data.mountName }} className={BUTTON}>
+                    Explore this realm&apos;s memory
+                  </Link>
+                }
+              />
             ) : (
               <EmptyState
                 title="Realm memory is still starting"

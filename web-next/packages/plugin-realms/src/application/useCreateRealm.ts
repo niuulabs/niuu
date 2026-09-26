@@ -45,7 +45,7 @@ export const RECIPE_STEPS: RecipeStep[] = [
   { id: 'trust', label: 'grant trust', advancedPath: '/valkyrie' },
   { id: 'jobs', label: 'schedule standing jobs', advancedPath: '/ravn' },
   { id: 'board', label: 'import the tracker board', advancedPath: '/ting/sagas' },
-  { id: 'charter', label: 'write the charter to memory', advancedPath: '/mimir/pages' },
+  { id: 'charter', label: 'write the charter to memory', advancedPath: '/mimir' },
   { id: 'resident', label: 'start the resident', advancedPath: '/ravn/ravens' },
 ];
 

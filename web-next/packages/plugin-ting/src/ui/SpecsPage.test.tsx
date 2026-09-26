@@ -606,8 +606,7 @@ describe('Specs pages', () => {
     await waitFor(() => expect(screen.getByText(/10-prd.md/i)).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /Open in Mimir/i }));
-    expect(mockSetTweak).toHaveBeenCalledWith('mimir.selectedPagePath', manifestArtifact.path);
-    expect(mockNavigate).toHaveBeenCalledWith({ to: '/mimir/pages' });
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/mimir' });
 
     fireEvent.click(screen.getByRole('button', { name: /Delete/i }));
     await waitFor(() => expect(deleteCampaign).toHaveBeenCalledWith('sdcp-operator'));

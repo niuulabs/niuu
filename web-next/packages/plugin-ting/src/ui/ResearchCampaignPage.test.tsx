@@ -825,10 +825,7 @@ describe('ResearchCampaignPage', () => {
     );
 
     fireEvent.click(screen.getAllByRole('button', { name: /open in Mímir/i })[0]!);
-    expect(mockSetTweak).toHaveBeenCalledWith(
-      'mimir.selectedPagePath',
-      'research/campaigns/local-model-serving/final.md',
-    );
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/mimir' });
 
     openSpy.mockRestore();
   });
@@ -1245,10 +1242,7 @@ describe('ResearchCampaignPage', () => {
     expect(screen.queryByRole('button', { name: /open external/i })).toBeNull();
 
     fireEvent.click(screen.getAllByRole('button', { name: /open in Mímir/i })[1]!);
-    expect(mockSetTweak).toHaveBeenCalledWith(
-      'mimir.selectedPagePath',
-      'research/campaigns/durable-memory-proof/final.md',
-    );
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/mimir' });
   });
 
   it('toggles evidence and skeptic sections and opens a source from the evidence table', async () => {
