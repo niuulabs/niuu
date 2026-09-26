@@ -433,6 +433,12 @@ spec:
             - name: {{ .name }}
               value: {{ .value | quote }}
             {{- end }}
+            {{- if .Values.claude.disableAutoUpdate }}
+            # The CLI in the image is pinned: a self-update at start-up restarts it
+            # inside the session (and fails without write access to the npm prefix).
+            - name: DISABLE_AUTOUPDATER
+              value: "1"
+            {{- end }}
             {{- include "skuld.gitCredentialEnv" . | nindent 12 }}
             {{- if .Values.session.systemPrompt }}
             - name: SKULD__SESSION__SYSTEM_PROMPT
