@@ -1,7 +1,7 @@
 /**
- * Ingest mutation — mirrors `ui/SourcesView.tsx`'s ingest flow (URL/file)
- * so the Memory Explore view's "Add a source" panel can reuse the same
- * IPageStore calls without duplicating SourcesView's own form state.
+ * Ingest mutation (URL/file) backing the Memory scene's "Add a source" form
+ * (`ui/memory/ExplorePanel.tsx`'s `AddSourceForm`) — a thin wrapper over
+ * `IPageStore.ingestUrl`/`ingestFile`, so the form owns only its own state.
  */
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';

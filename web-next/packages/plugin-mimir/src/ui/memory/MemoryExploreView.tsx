@@ -8,10 +8,9 @@
  * (`domain/graphIndex.ts#encodeNodeId`), never page paths — every lookup
  * from a node id back to a page goes through `nodeIndex(graph)`.
  *
- * Ask is answered inline, in the scene: `useMemoryAsk` runs the same search
- * and verbatim quoting `AskMemoryPage` uses (via `domain/quoteFacts.ts`, not
- * duplicated here), and maps answering pages to graph node ids for the
- * scene's `answers` prop.
+ * Ask is answered inline, in the scene: `useMemoryAsk` runs the search and
+ * verbatim quoting (`domain/quoteFacts.ts`, shared with `AskAnswerCard`) and
+ * maps answering pages to graph node ids for the scene's `answers` prop.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';

@@ -9,8 +9,7 @@
 
 import { useState } from 'react';
 import { Link, useNavigate, useSearch } from '@tanstack/react-router';
-import { usePluginCtx } from '@niuulabs/plugin-sdk';
-import { ArrowLeft, MessageSquare, Pencil } from 'lucide-react';
+import { ArrowLeft, MessageSquare } from 'lucide-react';
 import { Chip, ErrorState, LoadingState, relTime } from '@niuulabs/ui';
 import { getZoneByKind, type Page } from '../../domain/page';
 import { evidenceForFact } from '../../domain/evidence';
@@ -68,7 +67,6 @@ function errorMessage(error: unknown, fallback: string): string {
 
 export function MemoryPagePage() {
   const navigate = useNavigate();
-  const ctx = usePluginCtx();
   const search = useSearch({ strict: false }) as ReadSearch;
   const path = search.path ?? null;
   const mount = search.mount;
@@ -132,12 +130,6 @@ export function MemoryPagePage() {
     void navigate({ to: '/mimir/read', search: { path: nextPath, mount } });
   }
 
-  function edit() {
-    if (mount) ctx.setTweak('activeMount', mount);
-    ctx.setTweak('mimir.selectedPagePath', current.path);
-    void navigate({ to: '/mimir/pages' });
-  }
-
   return (
     <div
       className="niuu:flex niuu:flex-col niuu:gap-5 niuu:px-10 niuu:py-6"
@@ -180,7 +172,7 @@ export function MemoryPagePage() {
         </div>
         <div className="niuu:flex niuu:shrink-0 niuu:items-center niuu:gap-2">
           <Link
-            to="/mimir/ask"
+            to="/mimir"
             search={{ q: current.title, mount }}
             className={BUTTON}
             data-testid="memory-ask-about"
@@ -188,10 +180,6 @@ export function MemoryPagePage() {
             <MessageSquare size={13} aria-hidden="true" />
             Ask about this
           </Link>
-          <button type="button" className={BUTTON} onClick={edit} data-testid="memory-edit-page">
-            <Pencil size={13} aria-hidden="true" />
-            Edit
-          </button>
         </div>
       </header>
 
@@ -269,7 +257,11 @@ export function MemoryPagePage() {
           <section className={SECTION} data-testid="memory-related">
             <div className="niuu:flex niuu:items-baseline niuu:gap-3">
               <h2 className={SECTION_TITLE}>Around this page</h2>
-              <Link to="/mimir/graph" className="niuu:ml-auto niuu:text-[11px] niuu:text-brand-300">
+              <Link
+                to="/mimir"
+                search={{ focus: encodeNodeId(mount ?? current.mounts[0] ?? '', current.path) }}
+                className="niuu:ml-auto niuu:text-[11px] niuu:text-brand-300"
+              >
                 open the graph ›
               </Link>
             </div>

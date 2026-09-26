@@ -158,21 +158,8 @@ export type { EvalMetrics, EvalReport, QueryLogEntry, QueryStats } from './domai
 export { zeroResultQueries } from './domain/analytics';
 export type { DoctorStatus, DoctorCheck, DoctorReport } from './domain/doctor';
 export { fixableChecks } from './domain/doctor';
-export type {
-  FileTreeDir,
-  FileTreeLeaf,
-  FileTreeItem,
-  WikilinkTarget,
-  ZoneEditState,
-  ZoneEditAction,
-} from './domain';
-export {
-  buildFileTree,
-  mergeFileTrees,
-  resolveWikilink,
-  detectBrokenWikilinks,
-  zoneEditReducer,
-} from './domain';
+export type { WikilinkTarget } from './domain';
+export { resolveWikilink, detectBrokenWikilinks } from './domain';
 
 // UI components (plugin-local; promote to @niuulabs/ui when a second plugin needs them)
 export { RegistryMountEditor, type RegistryMountEditorProps } from './ui/RegistryPage';
@@ -180,12 +167,7 @@ export type { KnowledgeDeployment, DeploymentStatus } from './domain/instances';
 export { WikilinkPill } from './ui/components/WikilinkPill';
 export { PageTypeGlyph } from './ui/components/PageTypeGlyph';
 export { MountChip } from './ui/components/MountChip';
-export { MemoryHomePage } from './ui/memory/MemoryHomePage';
 export { MemoryExploreView } from './ui/memory/MemoryExploreView';
-export { AskMemoryPage } from './ui/memory/AskMemoryPage';
 export { MemoryPagePage } from './ui/memory/MemoryPagePage';
 export { ProofPill } from './ui/memory/ProofPill';
 export type { FactEvidence, EvidenceTrend, RelatedPage, ReviseRequest } from './domain/evidence';
-export { OverviewView } from './ui/OverviewView';
-export { PagesView } from './ui/PagesView';
-export { SourcesView } from './ui/SourcesView';

@@ -105,7 +105,7 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
           <button
             type="button"
             className="mm-subnav-collapsed-item"
-            onClick={() => navigate({ to: '/mimir/pages' })}
+            onClick={() => navigate({ to: '/mimir' })}
             aria-label={`Flagged pages ${flaggedCount}`}
             title={`Flagged ${flaggedCount}`}
           >
@@ -114,7 +114,7 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
           <button
             type="button"
             className="mm-subnav-collapsed-item"
-            onClick={() => navigate({ to: '/mimir/pages' })}
+            onClick={() => navigate({ to: '/mimir' })}
             aria-label={`Low confidence pages ${lowConfidenceCount}`}
             title={`Low confidence ${lowConfidenceCount}`}
           >
@@ -219,7 +219,7 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
         <button
           type="button"
           className="mm-subnav-btn"
-          onClick={() => navigate({ to: '/mimir/pages' })}
+          onClick={() => navigate({ to: '/mimir' })}
           aria-label={`${flaggedCount} flagged pages`}
         >
           <span className="mm-subnav-btn__glyph mm-subnav-btn__glyph--warn" aria-hidden>
@@ -231,7 +231,7 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
         <button
           type="button"
           className="mm-subnav-btn"
-          onClick={() => navigate({ to: '/mimir/pages' })}
+          onClick={() => navigate({ to: '/mimir' })}
           aria-label={`${lowConfidenceCount} low confidence pages`}
         >
           <span className="mm-subnav-btn__glyph mm-subnav-btn__glyph--dim" aria-hidden>

@@ -152,9 +152,11 @@ describe('MemoryPagePage', () => {
       expect(within(around).getByRole('group', { name: /pages around/ })).toBeInTheDocument(),
     );
     expect(within(around).getByRole('button', { name: 'open overview' })).toBeInTheDocument();
-    expect(within(around).getByRole('link', { name: /open the graph/ })).toHaveAttribute(
-      'href',
-      '/mimir/graph',
+    const graphLink = within(around).getByRole('link', { name: /open the graph/ });
+    expect(graphLink).toHaveAttribute('href', '/mimir');
+    expect(graphLink).toHaveAttribute(
+      'data-search',
+      JSON.stringify({ focus: encodeNodeId('shared', ARCH) }),
     );
   });
 
@@ -204,17 +206,30 @@ describe('MemoryPagePage', () => {
     expect(evidence).toHaveTextContent('Niuu Platform Architecture — internal wiki');
   });
 
-  it('asks about this page with its title', async () => {
+  it('asks about this page with its title, answered inline in the Memory scene now', async () => {
     renderWithMimir(<MemoryPagePage />);
-    expect(await screen.findByTestId('memory-ask-about')).toHaveAttribute('href', '/mimir/ask');
+    const askLink = await screen.findByTestId('memory-ask-about');
+    expect(askLink).toHaveAttribute('href', '/mimir');
+    expect(askLink).toHaveAttribute(
+      'data-search',
+      JSON.stringify({ q: 'Architecture Overview', mount: 'shared' }),
+    );
   });
 
-  it('hands editing to the pages view with the page selected', async () => {
-    renderWithMimir(<MemoryPagePage />, undefined, { setTweak });
-    fireEvent.click(await screen.findByTestId('memory-edit-page'));
-    expect(setTweak).toHaveBeenCalledWith('activeMount', 'shared');
-    expect(setTweak).toHaveBeenCalledWith('mimir.selectedPagePath', ARCH);
-    expect(mockNavigate).toHaveBeenCalledWith({ to: '/mimir/pages' });
+  it('has no dangling Edit button — the Memory scene has no separate page editor', async () => {
+    renderWithMimir(<MemoryPagePage />);
+    await screen.findByRole('heading', { name: 'Architecture Overview' });
+    expect(screen.queryByTestId('memory-edit-page')).not.toBeInTheDocument();
+  });
+
+  it('"open the graph" focuses this page in the Memory scene, by graph node id', async () => {
+    renderWithMimir(<MemoryPagePage />);
+    const link = await screen.findByText('open the graph ›');
+    expect(link).toHaveAttribute('href', '/mimir');
+    expect(link).toHaveAttribute(
+      'data-search',
+      JSON.stringify({ focus: encodeNodeId('shared', ARCH) }),
+    );
   });
 
   it('renders nothing for the zones a page does not have', async () => {
@@ -234,14 +249,6 @@ describe('MemoryPagePage', () => {
     mockSearch.current = { path: '/concepts/drive-loop' };
     renderWithMimir(<MemoryPagePage />);
     expect(await screen.findByText('concepts / drive-loop')).toBeInTheDocument();
-  });
-
-  it('hands editing over without a mount when the link carries none', async () => {
-    mockSearch.current = { path: '/concepts/drive-loop' };
-    renderWithMimir(<MemoryPagePage />, undefined, { setTweak });
-    fireEvent.click(await screen.findByTestId('memory-edit-page'));
-    expect(setTweak).not.toHaveBeenCalledWith('activeMount', expect.anything());
-    expect(setTweak).toHaveBeenCalledWith('mimir.selectedPagePath', '/concepts/drive-loop');
   });
 
   it('leaves out the source list when the page was compiled from none', async () => {

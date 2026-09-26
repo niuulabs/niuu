@@ -45,9 +45,6 @@ export { resolveRoute } from './routing';
 
 export type { RavnState, RavnBinding } from './ravn-binding';
 
-export type { FileTreeDir, FileTreeLeaf, FileTreeItem } from './tree';
-export { buildFileTree, mergeFileTrees, countLeaves, collectLeaves } from './tree';
-
 export type { WikilinkTarget, WikilinkPart } from './wikilink';
 export {
   splitWikilinks,
@@ -56,6 +53,3 @@ export {
   resolveAll,
   detectBrokenWikilinks,
 } from './wikilink';
-
-export type { ZoneEditState, ZoneEditAction } from './zone-edit';
-export { zoneEditReducer } from './zone-edit';
