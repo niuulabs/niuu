@@ -2178,16 +2178,16 @@ async def test_recreated_durable_uses_a_deterministic_deliver_subject(mock_nats)
     await sub.stop()
 
 
-async def test_deliver_subject_mismatch_migrates_the_durable_on_the_server(mock_nats, caplog):
-    """Another replica recreating the durable elsewhere must be migrated, not silently rebound.
+async def test_deliver_subject_mismatch_triggers_a_rebind(mock_nats, caplog):
+    """Another replica recreating the durable elsewhere must be detected and rebound.
 
     This is the two-replica scenario: replica B's watch still points at its
     old push subscription, but the server now reports a different deliver
-    subject (as if replica A had recreated the durable).  Binding to an
-    existing durable ignores the config passed in (nats-py keeps whatever
-    deliver_subject it already has), so simply resubscribing would rebind to
-    the exact same stale inbox forever.  The fix must call the JetStream
-    manager to update the durable's config on the server first.
+    subject (as if replica A had recreated the durable).  The fix must not
+    write to the server — nats-server 2.14 refuses to change a push
+    durable's deliver_subject while anything is subscribed to its current
+    one (every replica is, at startup) — so the only thing to do is
+    resubscribe and let nats-py bind to whatever the server has now.
     """
     mock_module, client, js, nats_sub = mock_nats
     sub = NatsSubscriber(consumer_group="workers")
@@ -2196,100 +2196,83 @@ async def test_deliver_subject_mismatch_migrates_the_durable_on_the_server(mock_
     watch = handle.consumer_watches[0]
     assert watch.durable is not None
 
+    # What THIS subscription is actually bound to (its own, now-stale, inbox).
+    nats_sub.subject = "_INBOX.sleipnir.my-old-inbox"
     foreign_info = SimpleNamespace(
         config=SimpleNamespace(
-            deliver_subject="_INBOX.some-other-replica", deliver_group=watch.durable
+            deliver_subject="_INBOX.sleipnir.someone-elses-inbox", deliver_group=watch.durable
         )
     )
     nats_sub.consumer_info = AsyncMock(return_value=foreign_info)
-    current_server_config = SimpleNamespace(
-        deliver_subject="_INBOX.some-other-replica", deliver_group=watch.durable
-    )
-    js._jsm.consumer_info = AsyncMock(return_value=SimpleNamespace(config=current_server_config))
-    js._jsm.add_consumer = AsyncMock()
-    migrated_sub = AsyncMock()
-    migrated_sub.unsubscribe = AsyncMock()
-    js.subscribe = AsyncMock(return_value=migrated_sub)
+    rebound_sub = AsyncMock()
+    rebound_sub.unsubscribe = AsyncMock()
+    js.subscribe = AsyncMock(return_value=rebound_sub)
 
     with caplog.at_level(logging.ERROR, logger="sleipnir.adapters.nats_transport"):
         await sub._check_consumer_watch(handle, watch)
 
-    # The server-side config was actually updated to the deterministic
-    # inbox — not just a local resubscribe that leaves the server unchanged.
-    js._jsm.add_consumer.assert_awaited_once()
-    updated_config = js._jsm.add_consumer.call_args.kwargs["config"]
-    assert updated_config.deliver_subject == sub._deliver_subject_for_durable(watch.durable)
-    assert updated_config.deliver_group == watch.durable
-    assert watch.nats_sub is migrated_sub
-    assert sub.stats()["consumer_recovered"] == 1
+    # A plain resubscribe — no JetStream manager write of any kind.
+    js.subscribe.assert_awaited_once()
+    assert watch.nats_sub is rebound_sub
+    assert sub.stats()["consumer_rebound"] == 1
+    assert sub.stats()["consumer_lost"] == 0
     assert any("recreated elsewhere" in record.message for record in caplog.records)
     await sub.stop()
 
 
-async def test_migrated_durable_does_not_migrate_again(mock_nats):
-    """Once migrated, the next health check must see a match and stop, not loop forever.
-
-    Before the fix, binding to the existing durable never changed its
-    deliver_subject server-side, so every poll found the same mismatch and
-    "recovered" again: an ERROR log and churn roughly every health-check
-    interval, forever.
-    """
+async def test_rebind_does_not_recur_once_this_subscription_matches_the_server(mock_nats):
+    """Once rebound, the next health check must see a match and stop, not churn forever."""
     mock_module, client, js, nats_sub = mock_nats
     sub = NatsSubscriber(consumer_group="workers")
     await sub.start()
     handle = await sub.subscribe(["test.*"], AsyncMock())
     watch = handle.consumer_watches[0]
 
-    js._jsm.consumer_info = AsyncMock(
-        return_value=SimpleNamespace(
-            config=SimpleNamespace(deliver_subject="_INBOX.stale", deliver_group=watch.durable)
-        )
-    )
-    js._jsm.add_consumer = AsyncMock()
-    migrated_sub = AsyncMock()
-    migrated_sub.unsubscribe = AsyncMock()
-    # First poll: the original nats_sub reports the stale inbox and triggers
-    # migration.  Every poll after that goes through the *migrated*
-    # subscription, which must report the corrected inbox.
+    nats_sub.subject = "_INBOX.sleipnir.stale"
     nats_sub.consumer_info = AsyncMock(
         return_value=SimpleNamespace(
-            config=SimpleNamespace(deliver_subject="_INBOX.stale", deliver_group=watch.durable)
-        )
-    )
-    migrated_sub.consumer_info = AsyncMock(
-        return_value=SimpleNamespace(
             config=SimpleNamespace(
-                deliver_subject=sub._deliver_subject_for_durable(watch.durable),
-                deliver_group=watch.durable,
+                deliver_subject="_INBOX.sleipnir.current", deliver_group=watch.durable
             )
         )
     )
-    js.subscribe = AsyncMock(return_value=migrated_sub)
+    rebound_sub = AsyncMock()
+    rebound_sub.unsubscribe = AsyncMock()
+    rebound_sub.subject = "_INBOX.sleipnir.current"
+    rebound_sub.consumer_info = AsyncMock(
+        return_value=SimpleNamespace(
+            config=SimpleNamespace(
+                deliver_subject="_INBOX.sleipnir.current", deliver_group=watch.durable
+            )
+        )
+    )
+    js.subscribe = AsyncMock(return_value=rebound_sub)
 
     await sub._check_consumer_watch(handle, watch)
-    assert sub.stats()["consumer_recovered"] == 1
-    assert watch.nats_sub is migrated_sub
+    assert sub.stats()["consumer_rebound"] == 1
+    assert watch.nats_sub is rebound_sub
 
-    js._jsm.add_consumer.reset_mock()
+    js.subscribe.reset_mock()
     await sub._check_consumer_watch(handle, watch)
     await sub._check_consumer_watch(handle, watch)
 
-    js._jsm.add_consumer.assert_not_called()
-    assert sub.stats()["consumer_recovered"] == 1
+    js.subscribe.assert_not_called()
+    assert sub.stats()["consumer_rebound"] == 1
     await sub.stop()
 
 
 async def test_matching_deliver_subject_is_left_alone(mock_nats):
-    """A healthy, correctly-bound durable must not be recreated on every poll."""
+    """A healthy, correctly-bound durable must not be resubscribed on every poll."""
     mock_module, client, js, nats_sub = mock_nats
     sub = NatsSubscriber(consumer_group="workers")
     await sub.start()
     handle = await sub.subscribe(["test.*"], AsyncMock())
     watch = handle.consumer_watches[0]
 
+    nats_sub.subject = "_INBOX.sleipnir.whatever-this-replica-is-bound-to"
     healthy_info = SimpleNamespace(
         config=SimpleNamespace(
-            deliver_subject=sub._deliver_subject_for_durable(watch.durable),
+            deliver_subject=nats_sub.subject,
             deliver_group=watch.durable,
         )
     )
@@ -2299,7 +2282,7 @@ async def test_matching_deliver_subject_is_left_alone(mock_nats):
     await sub._check_consumer_watch(handle, watch)
 
     js.subscribe.assert_not_called()
-    assert sub.stats()["consumer_recovered"] == 0
+    assert sub.stats()["consumer_rebound"] == 0
     await sub.stop()
 
 
@@ -2323,6 +2306,122 @@ async def test_ephemeral_subscription_skips_the_deliver_subject_check(mock_nats)
 
     js.subscribe.assert_not_called()
     assert sub.stats()["consumer_recovered"] == 0
+    await sub.stop()
+
+
+async def test_rebind_failure_does_not_loop_and_is_retried_next_health_check(mock_nats, caplog):
+    """A rebind failure returns promptly — no retry loop — and is logged for the next poll."""
+    mock_module, client, js, nats_sub = mock_nats
+    sub = NatsSubscriber(consumer_group="workers")
+    await sub.start()
+    handle = await sub.subscribe(["test.*"], AsyncMock())
+    watch = handle.consumer_watches[0]
+
+    nats_sub.subject = "_INBOX.sleipnir.stale"
+    nats_sub.consumer_info = AsyncMock(
+        return_value=SimpleNamespace(
+            config=SimpleNamespace(
+                deliver_subject="_INBOX.sleipnir.current", deliver_group=watch.durable
+            )
+        )
+    )
+    js.subscribe = AsyncMock(side_effect=RuntimeError("network blip"))
+
+    with caplog.at_level(logging.ERROR, logger="sleipnir.adapters.nats_transport"):
+        await sub._check_consumer_watch(handle, watch)
+
+    assert sub.stats()["consumer_rebind_failures"] == 1
+    assert sub.stats()["consumer_rebound"] == 0
+    assert watch.nats_sub is nats_sub, "a failed rebind must not swap in a broken subscription"
+    assert any("will retry on the next health check" in record.message for record in caplog.records)
+    await sub.stop()
+
+
+async def test_recovery_treats_consumer_already_exists_as_a_concurrent_create(mock_nats):
+    """A racing replica's create winning must bind immediately, not wait out a backoff.
+
+    Two replicas concurrently recreating the same missing durable ask for
+    different replay start times (each tracks its own health-check history),
+    so the loser's create is rejected by the server (400 err_code=10013,
+    "consumer name already in use") even though the durable now exists
+    exactly as intended.
+    """
+    mock_module, client, js, nats_sub = mock_nats
+    sub = NatsSubscriber(consumer_recovery_backoff_s=[5.0])
+    await sub.start()
+    handle = await sub.subscribe(["test.*"], AsyncMock())
+    watch = handle.consumer_watches[0]
+
+    nats_sub.consumer_info = AsyncMock(side_effect=js_errors.NotFoundError())
+    already_exists = js_errors.APIError(
+        code=400, err_code=10013, description="consumer name already in use"
+    )
+    recovered_sub = AsyncMock()
+    recovered_sub.unsubscribe = AsyncMock()
+    js.subscribe = AsyncMock(side_effect=[already_exists, recovered_sub])
+
+    started = asyncio.get_event_loop().time()
+    await sub._check_consumer_watch(handle, watch)
+    elapsed = asyncio.get_event_loop().time() - started
+
+    assert elapsed < 1.0, "an 'already exists' failure must retry immediately, not back off"
+    assert watch.nats_sub is recovered_sub
+    assert sub.stats()["consumer_recovery_failures"] == 0
+    assert sub.stats()["consumer_recovered"] == 1
+    await sub.stop()
+
+
+async def test_slow_recovery_on_one_watch_does_not_block_another_watchs_health_check(mock_nats):
+    """Isolation: a watch stuck retrying recovery must not delay another watch's check.
+
+    Both watches belong to the same subscription (this subject plus an
+    extra_subscriptions stream).  Watch A's consumer is missing and its
+    recovery create call hangs; watch B must still be checked on the next
+    tick, not stuck behind A's retry loop.
+    """
+    mock_module, client, js, nats_sub = mock_nats
+    initial_a = AsyncMock()
+    initial_a.unsubscribe = AsyncMock()
+    initial_b = AsyncMock()
+    initial_b.unsubscribe = AsyncMock()
+    js.subscribe = AsyncMock(side_effect=[initial_a, initial_b])
+
+    sub = NatsSubscriber(
+        subject_prefix="obs.valhalla",
+        stream_name="obs-valhalla-events",
+        consumer_health_check_interval_s=0.02,
+        consumer_health_check_jitter_s=0.0,
+        extra_subscriptions=[{"subject": "flock.k8s.>", "stream_name": "flock-k8s-events"}],
+    )
+    await sub.start()
+    handle = await sub.subscribe(["flock.learning.proposed"], AsyncMock())
+    assert len(handle.consumer_watches) == 2
+    watch_a, watch_b = handle.consumer_watches
+    assert watch_a.nats_sub is initial_a
+    assert watch_b.nats_sub is initial_b
+
+    create_started = asyncio.Event()
+
+    async def _hang_forever(*args, **kwargs):
+        create_started.set()
+        await asyncio.Event().wait()  # never resolves
+
+    initial_a.consumer_info = AsyncMock(side_effect=js_errors.NotFoundError())
+    js.subscribe = AsyncMock(side_effect=_hang_forever)
+    initial_b.consumer_info = AsyncMock(
+        return_value=SimpleNamespace(
+            config=SimpleNamespace(deliver_subject=None, deliver_group=None)
+        )
+    )
+
+    await asyncio.wait_for(create_started.wait(), timeout=1.0)
+    calls_before = initial_b.consumer_info.await_count
+    await asyncio.sleep(0.15)
+    calls_after = initial_b.consumer_info.await_count
+
+    assert calls_after > calls_before, (
+        "watch B's health check must not be blocked by watch A's stuck recovery"
+    )
     await sub.stop()
 
 

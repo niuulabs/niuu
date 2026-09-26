@@ -1,18 +1,25 @@
 """Integration tests for JetStream consumer/stream recovery against a real broker.
 
 fix/sleipnir-nats-consumer-recovery: the unit tests in ``test_nats_transport.py``
-mock nats-py and cannot see server-enforced behavior.  Two production bugs
-only showed up against a real nats-server (confirmed on 2.14, the version
+mock nats-py and cannot see server-enforced behavior.  Two production bugs only
+showed up against a real nats-server (confirmed on 2.14/2.14.2, the version
 production runs):
 
-1. The deliver subject the fix originally used
+1. The deliver subject the fix first used
    (``{prefix}.system.deliver.<durable>``) sat inside the stream's own
    ``{prefix}.>`` subjects, so the server rejected every new durable with
-   ``400 err_code=10081`` ("consumer deliver subject forms a cycle").
-2. nats-py's bind-to-an-existing-durable path ignores the config passed in
-   and keeps whatever deliver_subject the durable already has, so a mismatch
-   detected by the health check cannot be fixed by simply resubscribing — the
-   next poll finds the exact same mismatch again, forever.
+   ``400 err_code=10081`` ("consumer deliver subject forms a cycle").  Fixed
+   by using ``_INBOX.sleipnir.<durable>``, which no stream ever captures.
+2. A later fix tried to *migrate* a mismatched durable by updating its
+   deliver_subject on the server before rebinding.  The server refuses that
+   too: it will not change a push durable's deliver subject while anything is
+   still subscribed to its current inbox (``400 err_code=10013 "consumer name
+   already in use"``) — and every pod already is, at startup, so every pod
+   retried every durable forever.  The fix does not write to the server at
+   all: a health check compares the durable's live deliver_subject/
+   deliver_group against what *this* subscription is actually bound to (not
+   a deterministic target), and on a mismatch just resubscribes — nats-py
+   binds to whatever the server currently has.
 
 Requires a running NATS server with JetStream enabled (``nats-server --jetstream``).
 Set ``TEST_NATS_URL`` to override the default ``nats://localhost:4222``.  Like the
@@ -85,6 +92,43 @@ async def _wait_for(condition, *, timeout: float = _RECOVERY_TIMEOUT_S) -> None:
         await asyncio.sleep(0.05)
 
 
+async def _add_legacy_durable(
+    *, stream_name: str, subject_prefix: str, consumer_group: str, pattern: str
+) -> tuple[str, str]:
+    """Create a stream plus a durable with a random (pre-deterministic-inbox) deliver subject.
+
+    Simulates a durable created before this fix shipped, or by nats-py's own
+    auto-assigned inbox.  Returns ``(durable, old_inbox)``.
+    """
+    subject = _nats_subjects_for_patterns([pattern], subject_prefix)[0]
+    durable = _durable_name_for_subject(consumer_group, subject)
+
+    nc = await nats.connect(servers=[NATS_URL])
+    js = nc.jetstream()
+    await js.add_stream(
+        config=js_api.StreamConfig(
+            name=stream_name,
+            subjects=[f"{subject_prefix}.>"],
+            retention=js_api.RetentionPolicy.LIMITS,
+            storage=js_api.StorageType.FILE,
+        )
+    )
+    old_inbox = nc.new_inbox()
+    await js.add_consumer(
+        stream_name,
+        config=js_api.ConsumerConfig(
+            durable_name=durable,
+            deliver_subject=old_inbox,
+            deliver_group=durable,
+            ack_policy=js_api.AckPolicy.EXPLICIT,
+            deliver_policy=js_api.DeliverPolicy.NEW,
+            filter_subject=subject,
+        ),
+    )
+    await nc.close()
+    return durable, old_inbox
+
+
 # ---------------------------------------------------------------------------
 # 1. A durable push consumer must create without a cycle error.
 # ---------------------------------------------------------------------------
@@ -125,7 +169,9 @@ async def test_queue_group_survives_durable_recreation():
     Before the deterministic deliver subject, only the replica that happened
     to recreate the durable got its new (random) inbox; the other stayed
     bound to the deleted durable's old inbox and never received anything
-    again.
+    again.  Both replicas' watchdogs race to recreate the same missing
+    durable here, exercising the "consumer name already in use" tolerance:
+    the loser must bind to what the winner created, not treat it as failure.
     """
     stream_name = f"sleipnir_test_{uuid.uuid4().hex[:8]}"
     publisher = _transport(stream_name)
@@ -179,71 +225,80 @@ async def test_queue_group_survives_durable_recreation():
 
 
 # ---------------------------------------------------------------------------
-# 3. An old-style durable (random inbox) migrates once, then stays stable.
+# 3. A new pod joining an old random-inbox durable must not churn.
 # ---------------------------------------------------------------------------
 
 
-async def test_old_style_durable_migrates_once_then_stays_stable():
-    """A durable bound to a random inbox is migrated once, not rebound every poll.
+async def test_new_pod_binds_to_an_existing_random_inbox_durable_without_churn():
+    """A legacy durable's non-deterministic inbox is not, by itself, a mismatch.
 
-    Simulates a durable created before this fix shipped (or by nats-py's own
-    auto-assigned inbox): the server allows updating its deliver_subject in
-    place, so migration must actually change the server, not just rebind
-    locally — otherwise every health check finds the same mismatch forever.
+    Comparing against what *this* subscription is actually bound to (rather
+    than the deterministic target every fresh durable now gets) means a
+    pre-existing random-inbox durable is left alone: both an already-running
+    pod and a newly-joining one simply bind to whatever the durable already
+    has, share the load as an ordinary queue group, and the server is never
+    written to.
     """
     stream_name = f"sleipnir_test_{uuid.uuid4().hex[:8]}"
     subject_prefix = stream_name
     consumer_group = "workers"
-    pattern = "migrate.*"
-    subject = _nats_subjects_for_patterns([pattern], subject_prefix)[0]
-    durable = _durable_name_for_subject(consumer_group, subject)
+    pattern = "legacy.*"
+    durable, old_inbox = await _add_legacy_durable(
+        stream_name=stream_name,
+        subject_prefix=subject_prefix,
+        consumer_group=consumer_group,
+        pattern=pattern,
+    )
+
+    existing_pod = _transport(stream_name, consumer_group=consumer_group, ensure_stream=False)
+    new_pod = _transport(stream_name, consumer_group=consumer_group, ensure_stream=False)
+    received_existing: list[SleipnirEvent] = []
+    received_new: list[SleipnirEvent] = []
+
+    async def handler_existing(event: SleipnirEvent) -> None:
+        received_existing.append(event)
+
+    async def handler_new(event: SleipnirEvent) -> None:
+        received_new.append(event)
+
+    async with existing_pod, new_pod:
+        await existing_pod.subscribe([pattern], handler_existing)
+        # The "existing" pod binds first; give it a moment before the "new"
+        # pod joins the same queue group, as a rolling deploy would.
+        await asyncio.sleep(0.1)
+        await new_pod.subscribe([pattern], handler_new)
+
+        # Several health-check intervals: neither pod's watch should ever
+        # see a mismatch, since each is bound to exactly what the server
+        # reports for the (unchanged) legacy durable.
+        await asyncio.sleep(_HEALTH_CHECK_INTERVAL_S * 5)
+
+        assert existing_pod._subscriber.stats()["consumer_rebound"] == 0  # noqa: SLF001
+        assert new_pod._subscriber.stats()["consumer_rebound"] == 0  # noqa: SLF001
+        assert existing_pod._subscriber.stats()["consumer_recovered"] == 0  # noqa: SLF001
+        assert new_pod._subscriber.stats()["consumer_recovered"] == 0  # noqa: SLF001
+
+        publisher = _transport(stream_name)
+        async with publisher:
+            events = [
+                make_event(event_id=f"legacy-{idx}", event_type="legacy.signal") for idx in range(4)
+            ]
+            for event in events:
+                await publisher.publish(event)
+
+            await _wait_for(
+                lambda: len(received_existing) + len(received_new) >= len(events), timeout=5.0
+            )
+
+    delivered_ids = [event.event_id for event in [*received_existing, *received_new]]
+    assert set(delivered_ids) == {event.event_id for event in events}
+    assert len(delivered_ids) == len(set(delivered_ids)), "no duplicate delivery"
 
     nc = await nats.connect(servers=[NATS_URL])
     js = nc.jetstream()
-    await js.add_stream(
-        config=js_api.StreamConfig(
-            name=stream_name,
-            subjects=[f"{subject_prefix}.>"],
-            retention=js_api.RetentionPolicy.LIMITS,
-            storage=js_api.StorageType.FILE,
-        )
-    )
-    old_inbox = nc.new_inbox()  # what nats-py (or a pre-fix deploy) would have assigned
-    await js.add_consumer(
-        stream_name,
-        config=js_api.ConsumerConfig(
-            durable_name=durable,
-            deliver_subject=old_inbox,
-            deliver_group=durable,
-            ack_policy=js_api.AckPolicy.EXPLICIT,
-            deliver_policy=js_api.DeliverPolicy.NEW,
-            filter_subject=subject,
-        ),
-    )
+    info = await js.consumer_info(stream_name, durable)
     await nc.close()
-
-    transport = _transport(stream_name, consumer_group=consumer_group, ensure_stream=False)
-    received: list[SleipnirEvent] = []
-
-    async def handler(event: SleipnirEvent) -> None:
-        received.append(event)
-
-    async with transport:
-        await transport.subscribe([pattern], handler)
-
-        await _wait_for(lambda: transport._subscriber.stats()["consumer_recovered"] >= 1)  # noqa: SLF001
-        migrated = transport._subscriber.stats()["consumer_recovered"]  # noqa: SLF001
-        assert migrated == 1
-
-        # Several more health-check intervals: must not migrate again now
-        # that the durable matches the deterministic inbox.
-        await asyncio.sleep(_HEALTH_CHECK_INTERVAL_S * 5)
-        assert transport._subscriber.stats()["consumer_recovered"] == migrated  # noqa: SLF001
-
-        await transport.publish(make_event(event_type="migrate.signal"))
-        await collect_events(1, received)
-
-    assert len(received) == 1
+    assert info.config.deliver_subject == old_inbox, "the durable's inbox must never be rewritten"
 
 
 # ---------------------------------------------------------------------------

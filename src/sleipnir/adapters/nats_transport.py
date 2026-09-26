@@ -69,20 +69,25 @@ WARNING (escalating to ERROR after ``consumer_check_failure_threshold``
 consecutive failures) and left alone — only a confirmed 404 is treated as
 loss, so a transient error never triggers a spurious consumer recreation.
 
-A durable's push delivery subject is deterministic —
-``_INBOX.sleipnir.<durable>``, never a subject any stream's ``{prefix}.>``
-filter would capture, which the server otherwise rejects as a "consumer
-deliver subject forms a cycle" — so every replica of a queue-group
-subscription that recreates a lost durable lands on the same inbox.  A
-health check additionally compares the durable's live ``deliver_subject``
-against this: a mismatch means another replica (or an operator) already
-recreated it while this process was still bound to the old inbox.  Binding
-again would silently keep the stale inbox forever (nats-py ignores the
-config passed to an existing durable), so this is fixed by *migrating* the
-durable — updating its ``deliver_subject``/``deliver_group`` on the server,
-then binding — not by recreating it.  During a rolling restart an old pod
-goes deaf the instant a new pod migrates their shared durable; its unacked
-messages simply redeliver after ``ack_wait`` once a live replica is bound.
+A durable created (or recreated) by this code always gets a deterministic
+push delivery subject — ``_INBOX.sleipnir.<durable>``, never a subject any
+stream's ``{prefix}.>`` filter would capture, which the server otherwise
+rejects as a "consumer deliver subject forms a cycle" — so every replica
+that *creates* the durable lands on the same inbox.  An older durable
+(created before this existed, or left with whatever random inbox nats-py
+assigned) keeps that inbox until it is next recreated; this code never
+rewrites a durable's config in place, because the server refuses to change a
+push durable's deliver_subject while any client is still subscribed to its
+current one (``400 err_code=10013 "consumer name already in use"``,
+confirmed against server 2.14) — every replica already is, at startup, so a
+write would simply fail.  Instead, a health check compares the durable's
+live ``deliver_subject``/``deliver_group`` against what *this* subscription
+is actually bound to, and on a mismatch resubscribes: nats-py binds to
+whatever the server has right now, which fixes the deaf-replica case (one
+replica recreated the durable and moved everyone else's inbox from under
+them) with no server write.  Each watch is health-checked independently, in
+its own task, so a slow recovery or rebind on one watch never delays the
+others in the same subscription.
 
 Consumer groups
 ---------------
@@ -624,6 +629,24 @@ async def _safe_unsubscribe(nats_sub: Any, *, context: str) -> None:
         )
 
 
+#: JetStream API error code for "consumer name already in use" — the server's
+#: reply when a create races another create (or a rebind) for the same
+#: durable name that got there first.
+_JS_ERR_CONSUMER_NAME_IN_USE = 10013
+
+
+def _is_consumer_already_exists_error(exc: Exception) -> bool:
+    """True if *exc* is JetStream's "consumer name already in use" (err_code 10013).
+
+    Two replicas racing to recreate the same missing durable can both attempt
+    to create it — each with its own recovery config, since every replica
+    tracks its own health-check history — so the loser's create is rejected
+    even though the durable now exists exactly as intended.  The fix is to
+    bind to it immediately, not treat this as a failure needing backoff.
+    """
+    return getattr(exc, "err_code", None) == _JS_ERR_CONSUMER_NAME_IN_USE
+
+
 # ---------------------------------------------------------------------------
 # Deduplication cache
 # ---------------------------------------------------------------------------
@@ -971,14 +994,14 @@ class _CoreDelivery(Delivery):
 
 
 class _ConsumerWatch:
-    """Tracks one JetStream push subscription so it can be recovered or migrated.
+    """Tracks one JetStream push subscription so it can be recovered or rebound.
 
     ``nats_sub`` is replaced in place when :meth:`NatsSubscriber._recover_consumer`
-    or :meth:`NatsSubscriber._migrate_consumer` swaps in a new underlying push
+    or :meth:`NatsSubscriber._rebind_consumer` swaps in a new underlying push
     subscription, so the watch always names the subscription currently in
     service for *subject*.  ``durable`` is ``None`` for an ephemeral (no
     ``consumer_group``) subscription — it has no deliver-subject-sharing
-    replicas to migrate against, only a consumer that can be lost.
+    replicas to rebind against, only a consumer that can be lost.
     ``last_healthy_at`` bounds how far back a recreated consumer must replay
     from; see ``_build_recovery_consumer_config``.
     """
@@ -1024,7 +1047,9 @@ class _NatsSubscription(_BaseSubscription):
     consumer to lose), polled every *health_check_interval_s* (plus jitter) to
     detect and recover a deleted or rebound consumer.  The watchdog task is
     started lazily, on the first watch registered — a core-only subscription,
-    or one torn down before it ever gets one, never pays for it.
+    or one torn down before it ever gets one, never pays for it.  Each watch
+    is checked in its own task (:attr:`_watch_check_tasks`), so a slow
+    recovery retry loop on one watch never delays the next poll of another.
     """
 
     def __init__(
@@ -1046,6 +1071,7 @@ class _NatsSubscription(_BaseSubscription):
         self._health_check_interval_s = health_check_interval_s
         self._health_check_jitter_s = health_check_jitter_s
         self._watchdog_task: asyncio.Task[None] | None = None
+        self._watch_check_tasks: dict[int, asyncio.Task[None]] = {}
         self._progress_task = asyncio.create_task(self._report_progress(progress_interval_s))
 
     async def put(self, delivery: Delivery) -> None:
@@ -1076,21 +1102,40 @@ class _NatsSubscription(_BaseSubscription):
         while True:
             await asyncio.sleep(interval_s + random.uniform(0, jitter_s))
             for watch in list(self.consumer_watches):
-                await self.owner._check_consumer_watch(self, watch)
+                key = id(watch)
+                existing = self._watch_check_tasks.get(key)
+                if existing is not None and not existing.done():
+                    # A check (or a recovery retry loop inside it) for this
+                    # watch is still running from a previous tick — starting
+                    # a second one could race the first's swap of
+                    # watch.nats_sub.  Other watches are scheduled below
+                    # regardless: isolation is per watch, not per tick.
+                    continue
+                self._watch_check_tasks[key] = asyncio.create_task(
+                    self.owner._check_consumer_watch(self, watch)
+                )
 
     async def unsubscribe(self) -> None:
         if not self.active:
             return
         await super().unsubscribe()
-        # The watchdog is stopped, and fully awaited, before anything below
-        # touches nats_subs/consumer_watches: otherwise a recovery already in
-        # flight can resume after this method has cleared those collections
-        # and append a live, never-acking subscription that nothing then
-        # cleans up (it keeps eating queue-group messages and max_deliver).
+        # The watchdog scheduling loop, and every per-watch check/recovery
+        # task it spawned, are cancelled and fully awaited before anything
+        # below touches nats_subs/consumer_watches: otherwise a recovery
+        # already in flight can resume after this method has cleared those
+        # collections and append a live, never-acking subscription that
+        # nothing then cleans up (it keeps eating queue-group messages and
+        # max_deliver).
         if self._watchdog_task is not None:
             self._watchdog_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._watchdog_task
+        for check_task in self._watch_check_tasks.values():
+            check_task.cancel()
+        for check_task in list(self._watch_check_tasks.values()):
+            with suppress(asyncio.CancelledError):
+                await check_task
+        self._watch_check_tasks.clear()
         for nats_sub in list(self.nats_subs):
             await _safe_unsubscribe(nats_sub, context="subscription teardown")
         self.nats_subs.clear()
@@ -1333,6 +1378,8 @@ class NatsSubscriber(SleipnirSubscriber):
             "consumer_recovered": 0,
             "consumer_recovery_failures": 0,
             "consumer_check_failures": 0,
+            "consumer_rebound": 0,
+            "consumer_rebind_failures": 0,
         }
 
     def stats(self) -> dict[str, int]:
@@ -1549,8 +1596,9 @@ class NatsSubscriber(SleipnirSubscriber):
         *config* when nats-py actually creates a new consumer here; binding
         to an existing one uses the server's current config regardless (see
         the module docstring's "Consumer and stream recovery" section) — an
-        existing durable bound to the wrong inbox must be migrated with
-        :meth:`_migrate_consumer`, not fixed by calling this again.
+        existing durable bound to a stale inbox is fixed by calling this
+        again (:meth:`_rebind_consumer`), which simply picks up whatever
+        inbox the server has now.
         """
 
         async def _on_message(msg: Any) -> None:
@@ -1727,13 +1775,18 @@ class NatsSubscriber(SleipnirSubscriber):
 
         A confirmed 404 (consumer or stream not found) means the consumer
         must be recreated.  A 200 whose ``deliver_subject``/``deliver_group``
-        no longer match the deterministic inbox this durable is supposed to
-        use means another replica (or an operator) recreated the durable
-        while this subscription was still bound to its old inbox — the
-        durable "exists" but this replica would otherwise never receive
-        anything again.  Any other failure (timeout, connectivity) is logged
-        and left alone — recreating on a transient error risks a duplicate
-        consumer racing the one that is still there.
+        no longer match what *this* subscription is actually bound to means
+        another replica (or an operator) recreated the durable while this
+        process was still listening on its old inbox — the durable "exists"
+        but this replica would otherwise never receive anything again.  The
+        fix is to resubscribe: nats-py binds to whatever the server currently
+        has, with no server-side write (the server refuses to change a push
+        durable's deliver subject while anything is still subscribed to its
+        current inbox — every replica is, at startup — so writing a new one
+        here is not an option; see ``_rebind_consumer``).  Any other failure
+        (timeout, connectivity) is logged and left alone — recreating on a
+        transient error risks a duplicate consumer racing the one that is
+        still there.
         """
         if not sub.active or not self._running:
             return
@@ -1766,20 +1819,84 @@ class NatsSubscriber(SleipnirSubscriber):
         watch.last_healthy_at = datetime.now(UTC)
         if watch.durable is None:
             return
-        expected_deliver_subject = self._deliver_subject_for_durable(watch.durable)
+        bound_deliver_subject = watch.nats_sub.subject
         if (
-            info.config.deliver_subject == expected_deliver_subject
+            info.config.deliver_subject == bound_deliver_subject
             and info.config.deliver_group == watch.durable
         ):
             return
-        await self._migrate_consumer(
+        await self._rebind_consumer(
             sub,
             watch,
             reason=(
                 f"it now delivers to {info.config.deliver_subject!r} via group "
-                f"{info.config.deliver_group!r}, not {expected_deliver_subject!r} via "
-                f"{watch.durable!r} this subscription is bound to (recreated elsewhere)"
+                f"{info.config.deliver_group!r}, not the {bound_deliver_subject!r} this "
+                f"subscription is bound to (recreated elsewhere)"
             ),
+        )
+
+    async def _rebind_consumer(
+        self, sub: _NatsSubscription, watch: _ConsumerWatch, *, reason: str
+    ) -> None:
+        """Resubscribe to *watch*'s durable so nats-py binds to the server's current inbox.
+
+        No server write: the server refuses to change a push durable's
+        deliver_subject while any client is subscribed to its current one
+        (``400 err_code=10013 "consumer name already in use"``, confirmed
+        against server 2.14) — and at startup every replica already is.
+        Binding to an existing durable makes nats-py fetch and use whatever
+        config the server has right now (see ``_create_nats_subscription``'s
+        docstring), which is exactly what a replica stuck on a stale inbox
+        needs; the durable's config itself is left untouched.  A single
+        attempt: a failure here is retried on the next health-check poll,
+        not in a loop that would block this subscription's other watches.
+        """
+        logger.error(
+            "NatsSubscriber: JetStream durable for subject=%s stream=%s is bound to the "
+            "wrong inbox: %s — resubscribing",
+            watch.subject,
+            watch.stream_name,
+            reason,
+        )
+        try:
+            new_nats_sub = await self._create_nats_subscription(
+                watch.subject,
+                watch.patterns,
+                sub,
+                self._build_consumer_config(),
+                stream_name=watch.stream_name,
+            )
+        except Exception:
+            self._stats["consumer_rebind_failures"] += 1
+            logger.error(
+                "NatsSubscriber: rebind failed for subject=%s stream=%s; will retry on the "
+                "next health check",
+                watch.subject,
+                watch.stream_name,
+                exc_info=True,
+            )
+            return
+        if not (sub.active and self._running):
+            await _safe_unsubscribe(
+                new_nats_sub,
+                context=f"rebound but abandoned subscription (subject={watch.subject})",
+            )
+            return
+        old_nats_sub = watch.nats_sub
+        with suppress(ValueError):
+            sub.nats_subs.remove(old_nats_sub)
+        sub.nats_subs.append(new_nats_sub)
+        watch.nats_sub = new_nats_sub
+        watch.last_healthy_at = datetime.now(UTC)
+        self._stats["consumer_rebound"] += 1
+        logger.info(
+            "NatsSubscriber: JetStream durable for subject=%s stream=%s rebound to its "
+            "current server-side inbox; delivery resumed",
+            watch.subject,
+            watch.stream_name,
+        )
+        await _safe_unsubscribe(
+            old_nats_sub, context=f"replaced push subscription (subject={watch.subject})"
         )
 
     async def _recover_consumer(
@@ -1831,6 +1948,22 @@ class NatsSubscriber(SleipnirSubscriber):
                     stream_name=watch.stream_name,
                 )
             except Exception as exc:
+                if _is_consumer_already_exists_error(exc):
+                    # Another replica racing to recreate the same missing
+                    # durable created it first — with its own recovery
+                    # config (a different replay start time is expected,
+                    # since each replica tracks its own health-check
+                    # history), so the server rejects a second create.  The
+                    # durable exists exactly as intended; retry immediately
+                    # to bind to it instead of waiting out a backoff delay.
+                    logger.info(
+                        "NatsSubscriber: durable for subject=%s stream=%s was created "
+                        "concurrently by another replica on attempt %d; binding to it",
+                        watch.subject,
+                        watch.stream_name,
+                        attempt,
+                    )
+                    continue
                 self._stats["consumer_recovery_failures"] += 1
                 delay = self._consumer_recovery_delay(attempt)
                 logger.error(
@@ -1891,116 +2024,6 @@ class NatsSubscriber(SleipnirSubscriber):
         )
         return max(watch.last_healthy_at, earliest_allowed)
 
-    async def _migrate_consumer(
-        self, sub: _NatsSubscription, watch: _ConsumerWatch, *, reason: str
-    ) -> None:
-        """Update *watch*'s durable to its deterministic deliver subject, then bind to it.
-
-        Binding to an existing durable (``_create_nats_subscription``'s
-        normal path) ignores the config passed in and keeps whatever
-        deliver_subject the durable already has — so a mismatch can never be
-        fixed by simply resubscribing, or the next health check would find
-        the exact same mismatch again, forever (an ERROR log and
-        ``consumer_health_check_interval_s`` churn per durable per pod).
-        NATS (confirmed against server 2.14) allows updating an existing
-        durable's ``deliver_subject``/``deliver_group`` in place by resending
-        its current config with only those two fields changed; do that
-        explicitly, once, then bind to the corrected consumer.
-
-        During a rolling restart this means an *old* pod goes deaf the
-        moment a *new* pod migrates their shared durable: the old pod's next
-        health check sees the mismatch (from the other side now) and would
-        migrate back to what it had, except every replica computes the same
-        deterministic target, so the "migration" becomes a no-op update once
-        both sides agree — there is no ping-pong.  Whatever the losing pod
-        had unacked in flight during the handoff redelivers after
-        ``ack_wait`` once a live replica is bound: a brief pause, not a loss.
-        """
-        if watch.durable is None:
-            raise AssertionError(
-                f"_migrate_consumer called for an ephemeral (durable=None) watch on "
-                f"subject={watch.subject!r}; only queue-group durables need "
-                "deliver-subject migration"
-            )
-        self._stats["consumer_lost"] += 1
-        logger.error(
-            "NatsSubscriber: JetStream durable for subject=%s stream=%s needs migration: "
-            "%s — updating its deliver subject on the server",
-            watch.subject,
-            watch.stream_name,
-            reason,
-        )
-        attempt = 0
-        while sub.active and self._running:
-            attempt += 1
-            try:
-                info = await self._js._jsm.consumer_info(watch.stream_name, watch.durable)  # noqa: SLF001
-            except js_errors.NotFoundError:
-                await self._recover_consumer(
-                    sub, watch, reason="its consumer was deleted during migration"
-                )
-                return
-            except Exception as exc:
-                self._stats["consumer_recovery_failures"] += 1
-                delay = self._consumer_recovery_delay(attempt)
-                logger.error(
-                    "NatsSubscriber: durable migration for subject=%s stream=%s could not "
-                    "read its current config on attempt %d (%s); retrying in %.1fs",
-                    watch.subject,
-                    watch.stream_name,
-                    attempt,
-                    exc,
-                    delay,
-                )
-                await asyncio.sleep(delay)
-                continue
-            config = info.config
-            config.deliver_subject = self._deliver_subject_for_durable(watch.durable)
-            config.deliver_group = watch.durable
-            try:
-                await self._js._jsm.add_consumer(watch.stream_name, config=config)  # noqa: SLF001
-                new_nats_sub = await self._create_nats_subscription(
-                    watch.subject, watch.patterns, sub, config, stream_name=watch.stream_name
-                )
-            except Exception as exc:
-                self._stats["consumer_recovery_failures"] += 1
-                delay = self._consumer_recovery_delay(attempt)
-                logger.error(
-                    "NatsSubscriber: durable migration for subject=%s stream=%s failed on "
-                    "attempt %d (%s); retrying in %.1fs",
-                    watch.subject,
-                    watch.stream_name,
-                    attempt,
-                    exc,
-                    delay,
-                )
-                await asyncio.sleep(delay)
-                continue
-            if not (sub.active and self._running):
-                await _safe_unsubscribe(
-                    new_nats_sub,
-                    context=f"migrated but abandoned subscription (subject={watch.subject})",
-                )
-                return
-            old_nats_sub = watch.nats_sub
-            with suppress(ValueError):
-                sub.nats_subs.remove(old_nats_sub)
-            sub.nats_subs.append(new_nats_sub)
-            watch.nats_sub = new_nats_sub
-            watch.last_healthy_at = datetime.now(UTC)
-            self._stats["consumer_recovered"] += 1
-            logger.info(
-                "NatsSubscriber: JetStream durable for subject=%s stream=%s migrated to its "
-                "deterministic deliver subject after %d attempt(s)",
-                watch.subject,
-                watch.stream_name,
-                attempt,
-            )
-            await _safe_unsubscribe(
-                old_nats_sub, context=f"replaced push subscription (subject={watch.subject})"
-            )
-            return
-
     def _consumer_recovery_delay(self, attempt: int) -> float:
         """Recovery retry delay after failed attempt number *attempt* (1-based)."""
         backoff = self._consumer_recovery_backoff_s
@@ -2049,10 +2072,9 @@ class NatsSubscriber(SleipnirSubscriber):
         whole stream.
 
         Only used to *create* a brand new consumer (``_recover_consumer``);
-        migrating an existing durable's deliver subject
-        (``_migrate_consumer``) resends its current server-side config
-        unchanged apart from the two fields being fixed, deliver policy
-        included.
+        rebinding to an existing durable whose inbox no longer matches
+        (``_rebind_consumer``) never sends this — nats-py fetches and uses
+        the server's current config as-is when the durable already exists.
         """
         return js_api.ConsumerConfig(
             deliver_policy=js_api.DeliverPolicy.BY_START_TIME,
