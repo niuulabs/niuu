@@ -39,6 +39,9 @@ from niuu.adapters.inbound.remote_urls import (
 from niuu.adapters.inbound.remote_urls import (
     forward_local_identity_headers as _forward_local_headers,
 )
+from niuu.adapters.inbound.remote_urls import (
+    forward_websocket_identity_headers as _forward_websocket_headers,
+)
 from niuu.adapters.inbound.source_health import (
     instance_source_failures,
     set_source_health_header,
@@ -540,10 +543,17 @@ async def _find_runtime_owner(
     embedded_app: ASGIApp | None,
     rebase_chat_endpoint: bool = True,
     local_scope: bool = False,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[RegisteredInstance, dict[str, Any]]:
     async def probe(instance: RegisteredInstance) -> tuple[RegisteredInstance, httpx.Response]:
         response = await _request_remote(
-            instance, request, method="GET", path=path, embedded_app=embedded_app, timeout=5.0
+            instance,
+            request,
+            method="GET",
+            path=path,
+            extra_headers=extra_headers,
+            embedded_app=embedded_app,
+            timeout=5.0,
         )
         return instance, response
 
@@ -595,6 +605,7 @@ async def _find_session_owner(
     session_id: str,
     *,
     embedded_app: ASGIApp | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[RegisteredInstance, dict[str, Any]]:
     return await _find_runtime_owner(
         service,
@@ -604,6 +615,7 @@ async def _find_session_owner(
         f"Session not found: {session_id}",
         embedded_app=embedded_app,
         local_scope=_local_session_scope(request),
+        extra_headers=extra_headers,
     )
 
 
@@ -1920,9 +1932,18 @@ def create_volundr_router(
     @router.websocket("/sessions/{session_id}/replay")
     async def replay_session(websocket: WebSocket, session_id: str) -> None:
         principal = await extract_principal(websocket)
+        # Browsers cannot set Authorization on a WebSocket, so the bearer may
+        # have arrived as ?token=/?access_token=. Carry it as a header on the
+        # owner probes and the bridged socket, or every owner answers 401.
+        headers = _forward_websocket_headers(websocket)
         try:
             instance, _ = await _find_session_owner(
-                service, principal, websocket, session_id, embedded_app=embedded_forge_app
+                service,
+                principal,
+                websocket,
+                session_id,
+                embedded_app=embedded_forge_app,
+                extra_headers=headers,
             )
         except HTTPException:
             await websocket.close(code=1008)
@@ -1931,7 +1952,7 @@ def create_volundr_router(
             websocket,
             instance,
             session_id,
-            headers=_forward_headers(websocket),
+            headers=headers,
             embedded_app=embedded_forge_app,
         )
 

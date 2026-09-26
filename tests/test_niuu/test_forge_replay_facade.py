@@ -5,17 +5,53 @@ import hashlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 import respx
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Request, WebSocket
+from fastapi.testclient import TestClient
 from httpx import Response
 from starlette.datastructures import QueryParams
 from starlette.websockets import WebSocketDisconnect
 
+from niuu.adapters.inbound.rest_volundr import create_volundr_router
 from niuu.adapters.inbound.ws_forge_replay import _relay, forward_replay
 from niuu.adapters.outbound import guild_transport
+from niuu.domain.models import Principal
+from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 from tests.test_niuu.test_guild_transport import _LEAF_CERT_DER, _LEAF_FINGERPRINT
-from tests.test_niuu.test_rest_volundr import _client, _headers, _instance
+from tests.test_niuu.test_rest_volundr import StubInstanceService, _client, _headers, _instance
+
+QUERY_JWT = "query-jwt"
+
+
+class _BearerOnlyIdentity(HeaderAuthenticationPort):
+    """Production-shaped header auth: only a valid Authorization bearer passes."""
+
+    async def validate_headers(self, headers: dict[str, str]) -> Principal:
+        if headers.get("authorization") != f"Bearer {QUERY_JWT}":
+            raise InvalidTokenError("missing or invalid bearer")
+        return Principal(user_id="user-a", email="", tenant_id="tenant-a", roles=[])
+
+
+def _bearer_only_client(instances, *, embedded_forge_app=None) -> TestClient:
+    app = FastAPI()
+    app.state.identity = _BearerOnlyIdentity()
+    app.include_router(
+        create_volundr_router(StubInstanceService(instances), embedded_forge_app=embedded_forge_app)
+    )
+    return TestClient(app)
+
+
+def _owner_probe(owns: bool):
+    """A remote Volundr that, like Envoy, answers 401 to a probe with no bearer."""
+
+    def respond(request: httpx.Request) -> Response:
+        if request.headers.get("authorization") != f"Bearer {QUERY_JWT}":
+            return Response(401)
+        return Response(200, json={"id": "s1"}) if owns else Response(404)
+
+    return respond
 
 
 def test_embedded_replay_preserves_frames_controls_identity_and_cursor():
@@ -118,6 +154,92 @@ def test_remote_replay_uses_owner_url_and_forwards_auth_and_parameters(monkeypat
     assert "x-auth-user-id" not in seen["additional_headers"]
     assert "x-auth-tenant" not in seen["additional_headers"]
     assert seen["closed"]
+
+
+@pytest.mark.parametrize("param", ["token", "access_token"])
+@respx.mock
+def test_query_token_replay_resolves_its_remote_owner_and_bridges_with_a_header(monkeypatch, param):
+    """Browsers cannot set Authorization on a WebSocket, so an external client
+    sends ``?token=``. That bearer must reach every owner probe and the bridged
+    socket as a header — and never be repeated in the outbound URL."""
+    other = respx.get("https://other/api/v1/forge/sessions/s1").mock(
+        side_effect=_owner_probe(owns=False)
+    )
+    owner = respx.get("https://owner/api/v1/forge/sessions/s1").mock(
+        side_effect=_owner_probe(owns=True)
+    )
+    seen = {}
+
+    class Remote:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        def __aiter__(self):
+            return self.frames()
+
+        async def frames(self):
+            yield '{"type":"result"}'
+
+        async def send(self, message):
+            return None
+
+    def connect(url, **kwargs):
+        seen.update(url=url, **kwargs)
+        return Remote()
+
+    monkeypatch.setattr("niuu.adapters.inbound.ws_forge_replay.connect", connect)
+    instances = [
+        _instance("other", base_url="https://other"),
+        _instance("remote", base_url="https://owner"),
+    ]
+    with _bearer_only_client(instances) as client:
+        with client.websocket_connect(
+            f"/api/v1/forge/sessions/s1/replay?after=7&{param}={QUERY_JWT}"
+        ) as ws:
+            assert ws.receive_json() == {"type": "result"}
+
+    assert owner.called and other.called
+    for route in (owner, other):
+        assert route.calls.last.request.headers["authorization"] == f"Bearer {QUERY_JWT}"
+        assert QUERY_JWT not in str(route.calls.last.request.url)
+    assert seen["url"] == "wss://owner/api/v1/forge/sessions/s1/replay?after=7"
+    assert seen["additional_headers"] == {"authorization": f"Bearer {QUERY_JWT}"}
+
+
+def test_query_token_replay_resolves_its_embedded_owner():
+    embedded = FastAPI()
+    observed = {}
+
+    @embedded.get("/api/v1/forge/sessions/{sid}")
+    async def session(sid: str, request: Request):
+        observed["probe"] = request.headers.get("authorization")
+        return {"id": sid}
+
+    @embedded.websocket("/api/v1/forge/sessions/{sid}/replay")
+    async def replay(ws: WebSocket, sid: str):
+        # Same process: the scope passes through, so the backing adapter still
+        # authenticates the original query credential itself.
+        observed["replay_token"] = ws.query_params.get("token")
+        await ws.accept()
+        await ws.send_json({"type": "result"})
+        await ws.close()
+
+    instance = _instance("local", base_url="embedded://local", config={"transport": "embedded"})
+    with _bearer_only_client([instance], embedded_forge_app=embedded) as client:
+        with client.websocket_connect(f"/api/v1/forge/sessions/s1/replay?token={QUERY_JWT}") as ws:
+            assert ws.receive_json() == {"type": "result"}
+    assert observed == {"probe": f"Bearer {QUERY_JWT}", "replay_token": QUERY_JWT}
+
+
+def test_replay_without_any_credential_is_still_refused():
+    instance = _instance("remote", base_url="https://owner")
+    with _bearer_only_client([instance]) as client:
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect("/api/v1/forge/sessions/s1/replay"):
+                pytest.fail("an unauthenticated replay was accepted")
 
 
 @respx.mock

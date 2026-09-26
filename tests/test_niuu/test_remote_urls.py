@@ -11,12 +11,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from starlette.datastructures import Headers
+from starlette.datastructures import Headers, QueryParams
 
 from niuu.adapters.inbound.remote_urls import (
     build_remote_url,
     forward_identity_headers,
     forward_local_identity_headers,
+    forward_websocket_identity_headers,
+    query_without_credentials,
 )
 
 
@@ -58,6 +60,33 @@ class TestForwardIdentityHeaders:
     def test_case_insensitive_like_any_http_header(self) -> None:
         result = forward_identity_headers(_conn({"Authorization": "Bearer mixed-case"}))
         assert result == {"authorization": "Bearer mixed-case"}
+
+
+def _ws(headers: dict[str, str], query: str = "") -> SimpleNamespace:
+    return SimpleNamespace(headers=Headers(headers), query_params=QueryParams(query))
+
+
+class TestForwardWebsocketIdentityHeaders:
+    """A browser WebSocket's query bearer becomes the forwarded header."""
+
+    @pytest.mark.parametrize("param", ["token", "access_token"])
+    def test_promotes_a_query_bearer_to_authorization(self, param: str) -> None:
+        result = forward_websocket_identity_headers(_ws({}, f"{param}=jwt&after=3"))
+        assert result == {"authorization": "Bearer jwt"}
+
+    def test_an_explicit_authorization_header_wins(self) -> None:
+        result = forward_websocket_identity_headers(_ws(_SPOOFED_HEADERS, "token=other"))
+        assert result == {"authorization": "Bearer real-token"}
+
+    def test_forwards_nothing_without_a_credential(self) -> None:
+        result = forward_websocket_identity_headers(_ws({"x-auth-user-id": "x"}, "token="))
+        assert result == {}
+
+
+class TestQueryWithoutCredentials:
+    def test_drops_only_bearer_params_and_keeps_order_and_repeats(self) -> None:
+        ws = _ws({}, "after=3&token=a&speed=4&access_token=b&tag=x&tag=y")
+        assert query_without_credentials(ws) == "after=3&speed=4&tag=x&tag=y"
 
 
 class TestForwardLocalIdentityHeaders:
