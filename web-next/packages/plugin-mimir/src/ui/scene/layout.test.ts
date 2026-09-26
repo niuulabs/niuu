@@ -7,6 +7,7 @@ import {
   layoutPoints,
 } from './layout';
 import type { MimirGraph } from '../../domain/api-types';
+import { LAYOUT } from './scene3dConfig';
 
 function plainNode(id: string) {
   return {
@@ -198,21 +199,24 @@ describe('radiusForDegree', () => {
 });
 
 describe('performance', () => {
-  // Solo, this runs in ~0.8-1.2s on a dev machine. The bound here is set
-  // much higher than that on purpose: run inside the full suite (dozens of
-  // files, shared CPU across parallel workers), the same computation has
-  // been observed up to ~1.9s from scheduling contention alone, not from
-  // the algorithm getting slower. A "generous" bound has to absorb that
-  // noise or it becomes a flaky test rather than a real perf regression
-  // guard.
-  it('lays out 5,000 nodes / 15,000 edges in well under a generous bound', () => {
-    const graph = syntheticGraph(5000, 15000, 8);
-    const start = performance.now();
-    const layout = computeLayoutUncached(graph);
-    const elapsedMs = performance.now() - start;
-    expect(layout.nodes.size).toBe(5000);
+  // Measured in work, not wall-clock time: on a shared CI runner under
+  // coverage instrumentation a time bound fails for reasons that have nothing
+  // to do with the algorithm. The pair count is deterministic (seeded graph)
+  // and is exactly what would explode if repulsion regressed to all-pairs.
+  it('compares each page with nearby pages only, never every other page', () => {
+    const pages = 5000;
+    const layout = computeLayoutUncached(syntheticGraph(pages, pages * 3, 8));
+    expect(layout.nodes.size).toBe(pages);
 
-    console.log(`[layout perf] 5000 nodes / 15000 edges: ${elapsedMs.toFixed(0)}ms`);
-    expect(elapsedMs).toBeLessThan(4000);
+    const perPagePerIteration = layout.repulsionPairs / (pages * LAYOUT.ITERATIONS);
+    // All-pairs would be pages - 1 (4,999) per page per iteration; the spatial
+    // hash keeps it to a few dozen (about 31 for this graph).
+    expect(perPagePerIteration).toBeGreaterThan(0);
+    expect(perPagePerIteration).toBeLessThan(100);
+  });
+
+  it('carries the repulsion work through to the flattened 2D layout', () => {
+    const layout = computeLayoutUncached(syntheticGraph(200, 400, 4));
+    expect(flattenTo2D(layout).repulsionPairs).toBe(layout.repulsionPairs);
   });
 });

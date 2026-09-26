@@ -31,6 +31,12 @@ export interface NodeLayout {
 export interface SceneLayout {
   nodes: Map<string, NodeLayout>;
   mountCentres: Map<string, Vec3>;
+  /**
+   * Node pairs the repulsion pass compared, over all iterations: the
+   * simulation's cost. It grows about linearly with the page count because
+   * each node only meets its spatial-hash neighbours, never every other node.
+   */
+  repulsionPairs: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +198,7 @@ export function computeLayoutUncached(graph: MimirGraph): SceneLayout {
   // Allocated once and cleared each iteration — 120 fresh Float64Arrays for
   // a 5,000-node graph was measurable GC pressure on its own.
   const forces = new Float64Array(nodeCount * 3);
+  let repulsionPairs = 0;
 
   for (let iteration = 0; iteration < LAYOUT.ITERATIONS; iteration += 1) {
     forces.fill(0);
@@ -205,6 +212,7 @@ export function computeLayoutUncached(graph: MimirGraph): SceneLayout {
       const zi = positions[i * 3 + 2]!;
       forEachNearby(grid, xi, yi, zi, cellSize, (j) => {
         if (j === i) return;
+        repulsionPairs += 1;
         const dx = xi - positions[j * 3]!;
         const dy = yi - positions[j * 3 + 1]!;
         const dz = zi - positions[j * 3 + 2]!;
@@ -266,7 +274,7 @@ export function computeLayoutUncached(graph: MimirGraph): SceneLayout {
     });
   });
 
-  return { nodes, mountCentres };
+  return { nodes, mountCentres, repulsionPairs };
 }
 
 const layoutCache = new WeakMap<MimirGraph, SceneLayout>();
@@ -290,7 +298,7 @@ export function flattenTo2D(layout: SceneLayout): SceneLayout {
   for (const [mount, centre] of layout.mountCentres) {
     mountCentres.set(mount, { x: centre.x, y: 0, z: centre.z });
   }
-  return { nodes, mountCentres };
+  return { nodes, mountCentres, repulsionPairs: layout.repulsionPairs };
 }
 
 /** All node positions as a flat array — a convenience for camera-fit callers. */
