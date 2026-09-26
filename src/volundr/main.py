@@ -495,6 +495,7 @@ def create_app(
     # stack was already frozen by the time that code would run.
     from niuu.observability import (
         configure_observability,
+        install_uvicorn_log_redaction,
         instrument_fastapi_app,
         instrument_httpx_client,
     )
@@ -506,6 +507,7 @@ def create_app(
         default_service_name="volundr",
     )
     instrument_fastapi_app(app, telemetry, component="volundr")
+    install_uvicorn_log_redaction()
     instrument_httpx_client(telemetry)
 
     # Keep schema mismatch diagnostics without copying credentials or prompts into logs.

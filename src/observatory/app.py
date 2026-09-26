@@ -454,6 +454,7 @@ def create_app(
     # operator explicitly set observability.service_name in its own config.
     from niuu.observability import (
         configure_observability,
+        install_uvicorn_log_redaction,
         instrument_fastapi_app,
         instrument_httpx_client,
     )
@@ -465,6 +466,7 @@ def create_app(
         default_service_name="observatory",
     )
     instrument_fastapi_app(app, telemetry, component="observatory")
+    install_uvicorn_log_redaction()
     instrument_httpx_client(telemetry)
 
     app.state.identity = create_identity_adapter(loaded_settings, user_repository=None)

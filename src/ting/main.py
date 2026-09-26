@@ -579,6 +579,7 @@ def create_app(
     # inside a lifespan handler has no effect.
     from niuu.observability import (
         configure_observability,
+        install_uvicorn_log_redaction,
         instrument_fastapi_app,
         instrument_httpx_client,
     )
@@ -590,6 +591,7 @@ def create_app(
         default_service_name="ting",
     )
     instrument_fastapi_app(app, telemetry, component="ting")
+    install_uvicorn_log_redaction()
     instrument_httpx_client(telemetry)
 
     app.state.authorization = create_authorization_adapter(settings)

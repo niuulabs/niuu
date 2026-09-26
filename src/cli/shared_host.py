@@ -138,6 +138,7 @@ def create_app(
     # docstring for the join/opt-out/conflict rules.
     from niuu.observability import (
         configure_observability,
+        install_uvicorn_log_redaction,
         instrument_fastapi_app,
         instrument_httpx_client,
     )
@@ -149,6 +150,7 @@ def create_app(
         default_service_name="niuu-shared",
     )
     instrument_fastapi_app(app, telemetry, component="niuu-shared")
+    install_uvicorn_log_redaction()
     instrument_httpx_client(telemetry)
 
     @asynccontextmanager

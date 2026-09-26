@@ -743,6 +743,68 @@ def _redact_url(url: str) -> str:
     return urlunsplit((parts.scheme, netloc, path, query, parts.fragment))
 
 
+# uvicorn's own log records carry the raw request target, query included:
+# ``'%s - "WebSocket %s" 403'`` on ``uvicorn.error`` and
+# ``'%s - "%s %s HTTP/%s" %d'`` on ``uvicorn.access``. Browser WebSocket
+# clients cannot set an Authorization header, so they send their bearer as
+# ``?token=``/``?access_token=`` — which those records would print verbatim.
+_UVICORN_LOGGER_NAMES = ("uvicorn", "uvicorn.error", "uvicorn.access")
+_QUERY_IN_TEXT_RE = re.compile(r"\?([^\s\"'#]*)")
+
+
+def _redact_log_text(value: str) -> str:
+    """Redact sensitive query values, credential path segments, and bearers in free text."""
+
+    def _query(match: re.Match[str]) -> str:
+        query = match.group(1)
+        pairs = parse_qsl(query, keep_blank_values=True)
+        if not any(_is_sensitive_query_key(key) for key, _ in pairs):
+            return match.group(0)
+        return f"?{_redact_query(query)}"
+
+    return _redact_string(_redact_path(_QUERY_IN_TEXT_RE.sub(_query, value)))
+
+
+class UvicornLogRedactionFilter(logging.Filter):
+    """Redact credentials from uvicorn's request-line log records.
+
+    Only string message parts are rewritten; non-string arguments keep their
+    type, because uvicorn's formats use ``%d`` for the status code and its
+    ``AccessFormatter`` unpacks ``record.args`` positionally.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = _redact_log_text(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                _redact_log_text(arg) if isinstance(arg, str) else arg for arg in record.args
+            )
+        elif isinstance(record.args, dict):
+            record.args = {
+                key: _redact_log_text(arg) if isinstance(arg, str) else arg
+                for key, arg in record.args.items()
+            }
+        return True
+
+
+def install_uvicorn_log_redaction() -> None:
+    """Attach :class:`UvicornLogRedactionFilter` to uvicorn's loggers, once.
+
+    Call from every composition root that is served by uvicorn. A logger's
+    filters apply to records created on that logger before any handler (or
+    propagation) sees them, and ``logging.config.dictConfig`` — which uvicorn
+    runs when it builds its ``Config``, before or after the app is imported
+    depending on the entrypoint — replaces handlers but never removes logger
+    filters, so installing at app construction covers ``uvicorn.run``,
+    ``uvicorn.Server`` and the ``python -m uvicorn module:app`` CLI alike.
+    """
+    for name in _UVICORN_LOGGER_NAMES:
+        uvicorn_logger = logging.getLogger(name)
+        if not any(isinstance(f, UvicornLogRedactionFilter) for f in uvicorn_logger.filters):
+            uvicorn_logger.addFilter(UvicornLogRedactionFilter())
+
+
 def _asgi_host(scope: dict) -> str:
     for key, value in scope.get("headers") or []:
         if key == b"host":

@@ -347,6 +347,7 @@ def create_app(config: BifrostConfig) -> FastAPI:
     # inside a lifespan handler has no effect.
     from niuu.observability import (
         configure_observability,
+        install_uvicorn_log_redaction,
         instrument_fastapi_app,
         instrument_httpx_client,
     )
@@ -358,6 +359,7 @@ def create_app(config: BifrostConfig) -> FastAPI:
         default_service_name="bifrost",
     )
     instrument_fastapi_app(app, telemetry, component="bifrost")
+    install_uvicorn_log_redaction()
     instrument_httpx_client(telemetry)
 
     @app.middleware("http")

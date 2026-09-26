@@ -20,6 +20,7 @@ from niuu.app import (
     build_root_app,
 )
 from niuu.config import NiuuSettings
+from niuu.observability import install_uvicorn_log_redaction
 from niuu.ports.embedded_database import ConnectionInfo
 from niuu.ports.plugin import Service
 from niuu.service_databases import (
@@ -175,6 +176,7 @@ class RootServer(Service):
         os.environ["VOLUNDR__URL"] = f"http://{_local_service_host(self._host)}:{self._port}"
 
         app = self._build_app()
+        install_uvicorn_log_redaction()
         config = uvicorn.Config(
             app,
             host=self._host,
