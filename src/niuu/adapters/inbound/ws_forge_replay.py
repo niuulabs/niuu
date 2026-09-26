@@ -11,7 +11,7 @@ from starlette.types import ASGIApp
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
-from niuu.adapters.inbound.remote_urls import build_remote_url
+from niuu.adapters.inbound.remote_urls import build_remote_url, query_without_credentials
 from niuu.adapters.outbound.guild_transport import (
     GuildTransportError,
     default_connect_timeout_ceiling_seconds,
@@ -61,7 +61,8 @@ async def forward_replay(
                 "wss" if parsed.scheme == "https" else "ws",
                 parsed.netloc,
                 parsed.path,
-                str(websocket.query_params),
+                # The bearer rides in ``headers``; never repeat it in the URL.
+                query_without_credentials(websocket),
                 "",
             )
         )

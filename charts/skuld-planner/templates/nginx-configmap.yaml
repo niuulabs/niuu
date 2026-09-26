@@ -15,7 +15,10 @@ data:
     }
 
     http {
-        access_log /dev/stdout;
+        # $uri, never $request: browser WebSocket clients carry their bearer
+        # as ?token=/?access_token=, and the query string must not be logged.
+        log_format safe '$remote_addr "$request_method $uri $server_protocol" $status $body_bytes_sent';
+        access_log /dev/stdout safe;
 
         # Temp paths writable by non-root
         client_body_temp_path /tmp/client_temp;

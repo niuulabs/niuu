@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from fastapi import Request, WebSocket
+
+# Query parameters a browser WebSocket client may use to carry its bearer,
+# because browsers cannot set an Authorization header on a WebSocket.
+QUERY_CREDENTIAL_PARAMS = frozenset({"token", "access_token"})
 
 
 def build_remote_url(base_url: str, prefix: str, path: str) -> str:
@@ -80,3 +84,38 @@ def forward_identity_headers(request: Request | WebSocket) -> dict[str, str]:
     if value:
         headers["authorization"] = value
     return headers
+
+
+def forward_websocket_identity_headers(websocket: WebSocket) -> dict[str, str]:
+    """Forward a WebSocket caller's bearer to a remote Guild instance.
+
+    Same policy as ``forward_identity_headers``, plus: when the browser could
+    only present its bearer as a ``token``/``access_token`` query parameter
+    (the credential ``extract_principal`` already authenticated), it is
+    promoted to an ``Authorization`` header so the outbound legs carry it the
+    same way an HTTP call does. An explicit Authorization header wins.
+    """
+    headers = forward_identity_headers(websocket)
+    if "authorization" not in headers:
+        token = (
+            websocket.query_params.get("token") or websocket.query_params.get("access_token") or ""
+        ).strip()
+        if token:
+            headers["authorization"] = f"Bearer {token}"
+    return headers
+
+
+def query_without_credentials(websocket: WebSocket) -> str:
+    """Re-encode a WebSocket's query string without bearer-carrying params.
+
+    Use with ``forward_websocket_identity_headers``: the credential travels in
+    the Authorization header, so it must not also ride in an outbound URL where
+    proxies and access logs would record it.
+    """
+    return urlencode(
+        [
+            (key, value)
+            for key, value in websocket.query_params.multi_items()
+            if key not in QUERY_CREDENTIAL_PARAMS
+        ]
+    )
