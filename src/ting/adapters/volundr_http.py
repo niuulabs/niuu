@@ -32,6 +32,7 @@ from ravn.domain.persona_document import PortablePersonaDefinition, parse_portab
 from ting.domain.models import PRStatus
 from ting.ports.volundr import (
     ActivityEvent,
+    ActivityStreamConnected,
     PublicSessionLogEntry,
     PublicSessionLogPage,
     SpawnRequest,
@@ -121,6 +122,10 @@ class VolundrHTTPAdapter(VolundrPort):
     @property
     def tags(self) -> list[str]:
         return self._tags
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
 
     async def _client(
         self, *, timeout: float | None = None, no_read_timeout: bool = False
@@ -863,13 +868,22 @@ class VolundrHTTPAdapter(VolundrPort):
     # connection is dead and we should break so the caller can reconnect.
     _SSE_READ_TIMEOUT: float = 90.0
 
-    async def subscribe_activity(self) -> AsyncGenerator[ActivityEvent, None]:
+    async def subscribe_activity(
+        self,
+    ) -> AsyncGenerator[ActivityEvent | ActivityStreamConnected, None]:
         """Subscribe to the Volundr SSE stream and yield activity + session lifecycle events."""
         url = f"{self._base_url}{FORGE_SESSIONS_PATH}/stream"
         client = await self._client(no_read_timeout=True)
         async with client:
             async with client.stream("GET", url, headers=self._headers()) as resp:
                 resp.raise_for_status()
+                # The request succeeded and the server accepted the stream —
+                # the connection is genuinely open now, not just "we started
+                # trying to connect". Yield this before anything else so a
+                # caller can start its own "how long has this really been
+                # connected" clock at the right moment; a connect that hangs
+                # to timeout or is refused raises above and never reaches here.
+                yield ActivityStreamConnected()
                 event_type = ""
                 line_iter = resp.aiter_lines().__aiter__()
                 while True:

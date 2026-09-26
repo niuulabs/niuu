@@ -13,7 +13,7 @@ import respx
 from ravn.adapters.personas.loader import PersonaConfig
 from ravn.domain.persona_document import portable_persona_from_config
 from ting.adapters.volundr_http import VolundrHTTPAdapter
-from ting.ports.volundr import SpawnRequest
+from ting.ports.volundr import ActivityStreamConnected, SpawnRequest
 
 BASE_URL = "http://volundr.test:8000"
 SESSIONS_URL = f"{BASE_URL}/api/v1/forge/sessions"
@@ -1222,8 +1222,10 @@ class TestSubscribeActivity:
             lambda *args, **kwargs: _FakeAsyncClient(response, expected_headers={}),
         )
 
-        events = [event async for event in adapter.subscribe_activity()]
+        items = [item async for item in adapter.subscribe_activity()]
 
+        assert isinstance(items[0], ActivityStreamConnected)
+        events = items[1:]
         assert len(events) == 2
         assert events[0].session_id == "ses-1"
         assert events[0].state == "running"
@@ -1254,6 +1256,52 @@ class TestSubscribeActivity:
             ),
         )
 
-        events = [event async for event in adapter.subscribe_activity()]
+        items = [item async for item in adapter.subscribe_activity()]
 
+        assert isinstance(items[0], ActivityStreamConnected)
+        events = items[1:]
         assert events[0].session_id == "ses-1"
+
+    @pytest.mark.asyncio
+    async def test_yields_connected_marker_before_an_empty_stream_ends(
+        self, adapter: VolundrHTTPAdapter, monkeypatch
+    ):
+        """Even a stream with zero activity events yields the marker —
+
+        it signals "the connection opened", not "an event arrived".
+        """
+        response = _FakeStreamResponse([])
+        monkeypatch.setattr(
+            httpx,
+            "AsyncClient",
+            lambda *args, **kwargs: _FakeAsyncClient(response, expected_headers={}),
+        )
+
+        items = [item async for item in adapter.subscribe_activity()]
+
+        assert len(items) == 1
+        assert isinstance(items[0], ActivityStreamConnected)
+
+    @pytest.mark.asyncio
+    async def test_connect_failure_never_yields_the_connected_marker(
+        self, adapter: VolundrHTTPAdapter, monkeypatch
+    ):
+        """A connect that fails (here, a non-2xx response) must raise
+
+        before yielding anything — a caller must never see
+        ``ActivityStreamConnected`` for a connection that didn't actually
+        open.
+        """
+        response = _FakeStreamResponse([], status_code=503)
+        monkeypatch.setattr(
+            httpx,
+            "AsyncClient",
+            lambda *args, **kwargs: _FakeAsyncClient(response, expected_headers={}),
+        )
+
+        items = []
+        with pytest.raises(httpx.HTTPStatusError):
+            async for item in adapter.subscribe_activity():
+                items.append(item)
+
+        assert items == []
