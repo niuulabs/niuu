@@ -87,6 +87,16 @@ class MeshNatsConfig(BaseSettings):
         default_factory=lambda: [1.0, 5.0, 30.0, 60.0],
         description="Redelivery delay after each failed handler attempt; last entry repeats.",
     )
+    consumer_health_check_interval_s: float = Field(
+        default=15.0,
+        description="Seconds between checks that each JetStream consumer (and its stream) "
+        "still exists.",
+    )
+    consumer_recovery_backoff_s: list[float] = Field(
+        default_factory=lambda: [1.0, 5.0, 15.0, 30.0],
+        description="Retry delay after each failed attempt to recreate a lost consumer "
+        "while its stream is still absent; last entry repeats.",
+    )
     connect_timeout_s: float = Field(default=10.0)
     max_reconnect_attempts: int = Field(default=60)
     ensure_stream: bool = Field(default=True)

@@ -4267,6 +4267,25 @@ class ValkyrieTelemetryConfig(_LegacyAliasSettings):
             "RAVN_VALKYRIE_TELEMETRY_NATS_CONNECT_TIMEOUT_SECONDS",
         ),
     )
+    consumer_health_check_interval_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        description="Seconds between checks that each JetStream consumer (and its stream) "
+        "still exists.",
+        validation_alias=AliasChoices(
+            "consumer_health_check_interval_seconds",
+            "RAVN_VALKYRIE_TELEMETRY_CONSUMER_HEALTH_CHECK_INTERVAL_SECONDS",
+        ),
+    )
+    consumer_recovery_backoff_seconds: list[float] = Field(
+        default_factory=lambda: [1.0, 5.0, 15.0, 30.0],
+        description="Retry delay after each failed attempt to recreate a lost consumer "
+        "while its stream is still absent; last entry repeats.",
+        validation_alias=AliasChoices(
+            "consumer_recovery_backoff_seconds",
+            "RAVN_VALKYRIE_TELEMETRY_CONSUMER_RECOVERY_BACKOFF_SECONDS",
+        ),
+    )
     nats_jetstream_domain: str = Field(
         default="",
         validation_alias=AliasChoices(

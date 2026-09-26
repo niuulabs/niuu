@@ -1836,6 +1836,8 @@ def test_valkyrie_dashboard_telemetry_nats_subscription_supports_multiple_stream
     monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_START_TIMEOUT_SECONDS", "3")
     monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_CONNECT_TIMEOUT_SECONDS", "1.5")
     monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_MAX_RECONNECT_ATTEMPTS", "0")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_CONSUMER_HEALTH_CHECK_INTERVAL_SECONDS", "7.0")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_CONSUMER_RECOVERY_BACKOFF_SECONDS", "[2.0, 4.0]")
     monkeypatch.setenv(
         "RAVN_VALKYRIE_TELEMETRY_NATS_STREAMS",
         (
@@ -1857,6 +1859,8 @@ def test_valkyrie_dashboard_telemetry_nats_subscription_supports_multiple_stream
     assert created[0].kwargs["replay_from_time"] is not None
     assert created[0].kwargs["connect_timeout_s"] == 1.5
     assert created[0].kwargs["max_reconnect_attempts"] == 0
+    assert created[0].kwargs["consumer_health_check_interval_s"] == 7.0
+    assert created[0].kwargs["consumer_recovery_backoff_s"] == [2.0, 4.0]
     assert created[1].kwargs["stream_name"] == "obs-valhalla-events"
     assert created[1].kwargs["subject_prefix"] == "obs.valhalla"
     assert created[1].kwargs["consumer_group"] == "dashboard-obs-valhalla-events"

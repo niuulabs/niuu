@@ -32,6 +32,8 @@ def _default_nats_kwargs(servers: list[str] | None = None) -> dict[str, Any]:
         "ack_progress_interval_s": 10.0,
         "max_ack_pending": None,
         "nak_backoff_s": [1.0, 5.0, 30.0, 60.0],
+        "consumer_health_check_interval_s": 15.0,
+        "consumer_recovery_backoff_s": [1.0, 5.0, 15.0, 30.0],
         "connect_timeout_s": 10.0,
         "max_reconnect_attempts": 60,
         "ensure_stream": True,
@@ -123,6 +125,22 @@ class TestResolveTransportKwargs:
             "consumer_group": "k8s-watchers",
             "replay_from_sequence": 42,
             "ring_buffer_depth": 2048,
+        }
+
+    def test_nats_kwargs_supports_consumer_recovery_settings(self):
+        """fix/sleipnir-nats-consumer-recovery: reachable from mesh config, not just adapter
+        kwargs."""
+        settings = _make_settings(
+            **{
+                "mesh.nats.consumer_health_check_interval_s": 5.0,
+                "mesh.nats.consumer_recovery_backoff_s": [2.0, 4.0],
+            }
+        )
+        kwargs = _resolve_transport_kwargs(settings, "nats")
+        assert kwargs == {
+            **_default_nats_kwargs(),
+            "consumer_health_check_interval_s": 5.0,
+            "consumer_recovery_backoff_s": [2.0, 4.0],
         }
 
     def test_nats_kwargs_supports_gitops_managed_tls_and_auth(self):
