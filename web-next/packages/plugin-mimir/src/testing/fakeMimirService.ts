@@ -20,6 +20,7 @@ import type { LintReport } from '../domain/lint';
 import type { FactEvidence, RelatedPage } from '../domain/evidence';
 import { toPageMeta } from '../domain/page';
 import { tallySeverity } from '../domain/lint';
+import { encodeNodeId } from '../domain/graphIndex';
 
 export const FAKE_MOUNTS: Mount[] = [
   {
@@ -167,32 +168,53 @@ const FIRST_SEEN: Record<string, string> = {
   '/shared/volundr': '2026-03-10T11:30:00Z',
 };
 
+/**
+ * The node id the fixture graph gives a (mount, path) pair — built the same
+ * way the backend does (`domain/graphIndex.ts`'s `encodeNodeId`), so tests
+ * that assert on "the id passed to `onFocus`" exercise the real, opaque,
+ * mount-qualified id rather than a bare path.
+ */
+export function fakeNodeId(mount: string, path: string): string {
+  return encodeNodeId(mount, path);
+}
+
 export const FAKE_GRAPH: MimirGraph = {
-  nodes: FAKE_PAGES.map((p) => ({
-    id: p.path,
-    title: p.title,
-    category: p.category,
-    path: p.path,
-    kind: p.type,
-    summary: p.summary,
-    mount: p.mounts[0],
-    updatedAt: p.updatedAt,
-    firstSeen: FIRST_SEEN[p.path]!,
-    confidence: p.confidence,
-  })),
+  nodes: FAKE_PAGES.map((p) => {
+    const mount = p.mounts[0]!;
+    return {
+      id: fakeNodeId(mount, p.path),
+      title: p.title,
+      category: p.category,
+      path: p.path,
+      kind: p.type,
+      summary: p.summary,
+      mount,
+      updatedAt: p.updatedAt,
+      firstSeen: FIRST_SEEN[p.path]!,
+      confidence: p.confidence,
+    };
+  }),
   edges: [
     {
-      source: '/platform/gateway-routing',
-      target: '/platform/cedar-authorization',
+      source: fakeNodeId('platform', '/platform/gateway-routing'),
+      target: fakeNodeId('platform', '/platform/cedar-authorization'),
       type: 'depends_on',
     },
     {
-      source: '/platform/gateway-routing',
-      target: '/platform/guilds-gateway',
+      source: fakeNodeId('platform', '/platform/gateway-routing'),
+      target: fakeNodeId('platform', '/platform/guilds-gateway'),
       type: 'contradicts',
     },
-    { source: '/platform/gateway-routing', target: '/shared/openbao-policy', type: 'same_failure' },
-    { source: '/shared/openbao-policy', target: '/shared/volundr', type: 'routes_for' },
+    {
+      source: fakeNodeId('platform', '/platform/gateway-routing'),
+      target: fakeNodeId('shared', '/shared/openbao-policy'),
+      type: 'same_failure',
+    },
+    {
+      source: fakeNodeId('shared', '/shared/openbao-policy'),
+      target: fakeNodeId('shared', '/shared/volundr'),
+      type: 'routes_for',
+    },
   ],
 };
 
@@ -242,13 +264,13 @@ export const FAKE_LIVE_ACTIVITY: LiveActivity[] = [
 export const FAKE_LINT_REPORT: LintReport = {
   issues: [
     {
-      id: 'lint-l01-1',
-      rule: 'L01',
+      id: 'lint-l02-1',
+      rule: 'L02',
       severity: 'warn',
       page: '/platform/guilds-gateway',
       mount: 'platform',
       autoFix: false,
-      message: "Guild's gateway disagrees with Gateway routing on ymir",
+      message: '[CONTRADICTION] disagrees with Gateway routing on ymir',
     },
   ],
   pagesChecked: FAKE_PAGES.length,
@@ -435,12 +457,12 @@ export function createFakeMimirService(overrides: FakeMimirOverrides = {}): IMim
       },
       async getGraph(options) {
         if (!options?.mountName) return graph;
-        const mountPages = new Set(
-          pages.filter((p) => p.mounts.includes(options.mountName!)).map((p) => p.path),
+        const nodeIds = new Set(
+          graph.nodes.filter((n) => n.mount === options.mountName).map((n) => n.id),
         );
         return {
-          nodes: graph.nodes.filter((n) => mountPages.has(n.id)),
-          edges: graph.edges.filter((e) => mountPages.has(e.source) && mountPages.has(e.target)),
+          nodes: graph.nodes.filter((n) => nodeIds.has(n.id)),
+          edges: graph.edges.filter((e) => nodeIds.has(e.source) && nodeIds.has(e.target)),
         };
       },
       async listEntities() {

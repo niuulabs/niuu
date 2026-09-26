@@ -5,6 +5,7 @@ import { renderWithMimir } from '../../testing/renderWithMimir';
 import { createMimirMockAdapter } from '../../adapters/mock';
 import type { IMimirService } from '../../ports';
 import { MemoryPagePage } from './MemoryPagePage';
+import { encodeNodeId } from '../../domain/graphIndex';
 
 const mockNavigate = vi.fn();
 const mockSearch = vi.hoisted(() => ({
@@ -17,7 +18,7 @@ vi.mock('@tanstack/react-router', () => ({
   Link: ({
     to,
     children,
-    search: _search,
+    search,
     params: _params,
     ...rest
   }: {
@@ -26,7 +27,7 @@ vi.mock('@tanstack/react-router', () => ({
     search?: unknown;
     params?: unknown;
   }) => (
-    <a href={to} {...rest}>
+    <a href={to} data-search={search ? JSON.stringify(search) : undefined} {...rest}>
       {children}
     </a>
   ),
@@ -67,6 +68,16 @@ describe('MemoryPagePage', () => {
     };
     renderWithMimir(<MemoryPagePage />, service);
     expect(await screen.findByText('store unreachable')).toBeInTheDocument();
+  });
+
+  it('the Memory back link carries this page as a focus (graph node id), not a bare path', async () => {
+    renderWithMimir(<MemoryPagePage />);
+    const link = await screen.findByRole('link', { name: /Memory/ });
+    expect(link).toHaveAttribute('href', '/mimir');
+    expect(link).toHaveAttribute(
+      'data-search',
+      JSON.stringify({ focus: encodeNodeId('shared', ARCH) }),
+    );
   });
 
   it('shows the breadcrumb, title, type and confidence', async () => {

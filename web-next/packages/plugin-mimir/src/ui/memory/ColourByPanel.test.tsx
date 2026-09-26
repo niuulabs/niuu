@@ -62,11 +62,12 @@ describe('ColourByPanel', () => {
     expect(onColourChange).toHaveBeenCalledWith('proof');
   });
 
-  it('renders proof counts when colour=proof', () => {
+  it('renders proof counts when colour=proof, including a none tier', () => {
     setup({ colour: 'proof' });
     expect(screen.getByText('High')).toBeInTheDocument();
     expect(screen.getByText('Medium')).toBeInTheDocument();
     expect(screen.getByText('Low')).toBeInTheDocument();
+    expect(screen.getByText('No declared confidence')).toBeInTheDocument();
   });
 
   it('renders age bucket counts when colour=age', () => {

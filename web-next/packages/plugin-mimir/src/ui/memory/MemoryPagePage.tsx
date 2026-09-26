@@ -15,6 +15,7 @@ import { Chip, ErrorState, LoadingState, relTime } from '@niuulabs/ui';
 import { getZoneByKind, type Page } from '../../domain/page';
 import { evidenceForFact } from '../../domain/evidence';
 import { resolveWikilink } from '../../domain/wikilink';
+import { encodeNodeId } from '../../domain/graphIndex';
 import { useMimirPage, useMimirPages, useMimirPageSources } from '../useMimirPages';
 import { MountChip } from '../components/MountChip';
 import { PageTypeGlyph } from '../components/PageTypeGlyph';
@@ -145,6 +146,7 @@ export function MemoryPagePage() {
       <div className="niuu:flex niuu:items-center niuu:gap-2">
         <Link
           to="/mimir"
+          search={{ focus: encodeNodeId(mount ?? current.mounts[0] ?? '', current.path) }}
           className="niuu:inline-flex niuu:items-center niuu:gap-1.5 niuu:text-[11px] niuu:text-text-muted niuu:hover:text-text-primary"
         >
           <ArrowLeft size={12} aria-hidden="true" />

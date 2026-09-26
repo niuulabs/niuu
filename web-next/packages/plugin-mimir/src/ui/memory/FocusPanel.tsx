@@ -1,18 +1,26 @@
 /**
  * FocusPanel — left inspector shown when a node is focused: breadcrumb,
  * eyebrow, title, counts, summary, Key Facts (with `ProofPill`), actions,
- * and the depth-controlled Links list (`IPageStore.getRelated`).
+ * and the depth-controlled Links list.
+ *
+ * Links come from a pure BFS over the graph (`domain/graphNeighbors.ts`),
+ * not `IPageStore.getRelated` — that port takes no mount and 404s for a
+ * page kept on a mount other than the serving instance's own, so it cannot
+ * walk links for an arbitrary focused node.
  */
 import { relTime, LoadingState, ErrorState, SegmentedFilter } from '@niuulabs/ui';
 import { getZoneByKind } from '../../domain/page';
-import { relationLabel } from '../../domain/relationLabel';
-import { useEvidence, useRelated } from './useMemory';
+import { neighborsWithinDepth } from '../../domain/graphNeighbors';
+import { useEvidence } from './useMemory';
 import { ProofPill } from './ProofPill';
+import './MemoryLegend.css';
 import type { Page } from '../../domain/page';
 import type { MimirGraph } from '../../domain/api-types';
 import type { FocusDepth } from '../scene/types';
 
 export interface FocusPanelProps {
+  /** The currently focused graph node id — opaque, mount-qualified, not a page path. */
+  focusId: string;
   page: Page | null;
   isLoading: boolean;
   isError: boolean;
@@ -27,6 +35,7 @@ export interface FocusPanelProps {
 }
 
 export function FocusPanel({
+  focusId,
   page,
   isLoading,
   isError,
@@ -40,7 +49,6 @@ export function FocusPanel({
   onAskAbout,
 }: FocusPanelProps) {
   const evidence = useEvidence(page?.path ?? null);
-  const related = useRelated(page?.path ?? null, depth);
 
   if (isLoading) {
     return (
@@ -73,10 +81,9 @@ export function FocusPanel({
 
   const facts = getZoneByKind(page.zones ?? [], 'key-facts')?.items ?? [];
   const evidenceByFact = new Map((evidence.data ?? []).map((row) => [row.fact, row]));
-  const links = (related.data ?? []).filter((entry) => entry.path !== page.path);
+  const links = neighborsWithinDepth(graph, focusId, depth);
   const linkCount = links.length;
   const mount = page.mounts[0] ?? '';
-  const nodeByPath = new Map(graph.nodes.map((n) => [n.path ?? n.id, n]));
 
   return (
     <section
@@ -167,29 +174,25 @@ export function FocusPanel({
           <p className="niuu:text-xs niuu:text-text-muted niuu:italic niuu:m-0">No linked pages.</p>
         )}
         <ul className="niuu:flex niuu:flex-col niuu:gap-0.5 niuu:m-0 niuu:p-0 niuu:list-none">
-          {links.map((link) => {
-            const node = nodeByPath.get(link.path);
-            const label = relationLabel(link.rel);
-            const disputed = node ? disputedIds.has(node.id) : false;
+          {links.map(({ node, relation }) => {
+            const disputed = disputedIds.has(node.id);
             return (
-              <li key={link.path}>
+              <li key={node.id}>
                 <button
                   type="button"
-                  onClick={() => node && onFocusPage(node.id)}
+                  onClick={() => onFocusPage(node.id)}
                   className="niuu:w-full niuu:flex niuu:items-center niuu:justify-between niuu:px-2 niuu:py-1 niuu:rounded-sm niuu:text-sm niuu:hover:bg-bg-tertiary"
                 >
-                  <span className="niuu:truncate niuu:text-text-secondary">
-                    {node?.title ?? link.path}
-                  </span>
-                  {(label || disputed) && (
+                  <span className="niuu:truncate niuu:text-text-secondary">{node.title}</span>
+                  {(relation || disputed) && (
                     <span
                       className={
                         disputed
-                          ? 'niuu:text-xs niuu:text-status-amber niuu:flex-shrink-0 niuu:ml-2'
+                          ? 'memory-dispute niuu:text-xs niuu:flex-shrink-0 niuu:ml-2'
                           : 'niuu:text-xs niuu:text-text-muted niuu:flex-shrink-0 niuu:ml-2'
                       }
                     >
-                      {disputed ? 'disputed' : label}
+                      {disputed ? 'disputed' : relation}
                     </span>
                   )}
                 </button>

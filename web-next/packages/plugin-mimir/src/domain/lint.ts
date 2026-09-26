@@ -10,14 +10,24 @@
 // Lint rules and issues
 // ---------------------------------------------------------------------------
 
-/** Canonical lint rule identifiers. */
+/**
+ * Canonical lint rule identifiers — must match every `_check_*` in the
+ * backend's `src/mimir/adapters/markdown.py` exactly (verified against it,
+ * not guessed). L03 (stale sources) is defined conceptually there but
+ * skipped in the lint pass — it never actually appears in a report.
+ */
 export type LintRule =
-  | 'L01' // Contradiction between pages
-  | 'L02' // Stale source (source updated, page not recompiled)
-  | 'L05' // Broken wikilink
-  | 'L07' // Orphan page (no inbound links)
-  | 'L11' // Stale index (mount index out of sync)
-  | 'L12'; // Invalid frontmatter
+  | 'L01' // Page not linked from index.md (orphan)
+  | 'L02' // Page contains a [CONTRADICTION] flag marker
+  | 'L04' // Concept mentioned repeatedly without a dedicated page
+  | 'L05' // [[slug]] reference whose target page does not exist
+  | 'L06' // Timeline entry missing [Source: ...] attribution
+  | 'L07' // Compiled-truth page with too few Key Facts
+  | 'L08' // Page not updated in a long time
+  | 'L09' // Timeline section edited rather than appended to
+  | 'L10' // Page with an empty Compiled Truth section
+  | 'L11' // index.md out of sync with the wiki directory
+  | 'L12'; // Page missing the required 'type' frontmatter field
 
 export type IssueSeverity = 'info' | 'warn' | 'error';
 

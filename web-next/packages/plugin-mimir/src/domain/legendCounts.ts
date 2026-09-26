@@ -14,15 +14,19 @@ export function countsByKindGroup(nodes: GraphNode[]): Array<{ id: KindGroup; co
   })).filter((entry) => entry.count > 0);
 }
 
-const CONFIDENCE_ORDER: Array<'high' | 'medium' | 'low'> = ['high', 'medium', 'low'];
+export type ProofTier = 'high' | 'medium' | 'low' | 'none';
 
-/** Counts per confidence tier, high → low, always all three (even zero). Nodes with no declared confidence are not counted. */
-export function countsByConfidence(
-  nodes: GraphNode[],
-): Array<{ id: 'high' | 'medium' | 'low'; count: number }> {
+const CONFIDENCE_ORDER: ProofTier[] = ['high', 'medium', 'low', 'none'];
+
+/**
+ * Counts per confidence tier, high → low → none, always all four (even
+ * zero). `none` is every node whose page declares no confidence
+ * frontmatter — a real, honest bucket, not a dropped count.
+ */
+export function countsByConfidence(nodes: GraphNode[]): Array<{ id: ProofTier; count: number }> {
   return CONFIDENCE_ORDER.map((id) => ({
     id,
-    count: nodes.filter((n) => n.confidence === id).length,
+    count: nodes.filter((n) => (n.confidence ?? 'none') === id).length,
   }));
 }
 

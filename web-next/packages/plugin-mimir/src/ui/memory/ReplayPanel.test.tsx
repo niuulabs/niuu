@@ -2,7 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ReplayPanel } from './ReplayPanel';
-import { FAKE_GRAPH } from '../../testing/fakeMimirService';
+import { FAKE_GRAPH, fakeNodeId } from '../../testing/fakeMimirService';
+
+const OPENBAO = fakeNodeId('shared', '/shared/openbao-policy');
 
 describe('ReplayPanel', () => {
   it('renders the REPLAYING header, date, and page counts', () => {
@@ -20,7 +22,7 @@ describe('ReplayPanel', () => {
       <ReplayPanel graph={FAKE_GRAPH} asOf="2026-03-10" onExitReplay={vi.fn()} onFocus={onFocus} />,
     );
     await userEvent.click(screen.getByText('OpenBao policy'));
-    expect(onFocus).toHaveBeenCalledWith('/shared/openbao-policy');
+    expect(onFocus).toHaveBeenCalledWith(OPENBAO);
   });
 
   it('omits the "that day" ticker when nothing was born that day', () => {

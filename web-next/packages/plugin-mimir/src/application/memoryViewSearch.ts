@@ -1,21 +1,20 @@
 /**
  * URL search-param shape for `/mimir` (the Memory Explore view), so Explore
- * / Focus / Replay all deep-link.
+ * / Focus / Ask / Replay all deep-link.
  *
  *   mount?  — scope the graph to one mount instance
  *   focus?  — node id — presence switches to the Focus inspector
  *   depth?  — 1 | 2 | 3 — Focus panel's Links depth control
+ *   q?      — question text — presence switches to Ask mode
  *   asOf?   — ISO date — presence switches to Replay mode
  *   view?   — '3d' | '2d' — scene render mode
  *   colour? — 'type' | 'proof' | 'age' — "Colour by" panel selection
- *
- * Asking a question navigates to the existing `/mimir/ask` route (its own
- * `q`/`mount` params) rather than living on `/mimir` itself.
  */
 export interface MemoryViewSearch {
   mount?: string;
   focus?: string;
   depth?: 1 | 2 | 3;
+  q?: string;
   asOf?: string;
   view?: '3d' | '2d';
   colour?: 'type' | 'proof' | 'age';
@@ -43,6 +42,7 @@ export function validateMemoryViewSearch(search: Record<string, unknown>): Memor
     mount: str(search.mount),
     focus: str(search.focus),
     depth: VALID_DEPTHS.has(rawDepth) ? (rawDepth as 1 | 2 | 3) : undefined,
+    q: str(search.q),
     asOf: str(search.asOf),
     view: rawView && VALID_VIEWS.has(rawView) ? (rawView as '3d' | '2d') : undefined,
     colour:

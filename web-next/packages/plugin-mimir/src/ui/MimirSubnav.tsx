@@ -9,7 +9,7 @@
  * Navigation tabs live in the topbar (plugin descriptor `tabs` array).
  */
 
-import { useNavigate } from '@tanstack/react-router';
+import { useNavigate, useRouterState } from '@tanstack/react-router';
 import { StateDot } from '@niuulabs/ui';
 import type { PluginCtx } from '@niuulabs/plugin-sdk';
 import { useActiveMount } from '../application/useActiveMount';
@@ -25,8 +25,15 @@ interface MimirSubnavProps {
   ctx: PluginCtx;
 }
 
+/**
+ * The Memory scene (`/mimir`) is a full-canvas view with its own context —
+ * mount scoping, colour-by and the ask bar are all in the scene's own
+ * panels. The mount/filters/wardens subnav duplicates and conflicts with
+ * that, so it renders nothing there; the registry routes still get it.
+ */
 export function MimirSubnav({ ctx }: MimirSubnavProps) {
   const navigate = useNavigate();
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
 
   const { activeMount, mountName } = useActiveMount();
   const setActiveMount = (m: string) => {
@@ -44,6 +51,10 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
   const errorCount = lintSummary.error;
   const flaggedCount = pages.filter((p) => p.flagged).length;
   const lowConfidenceCount = pages.filter((p) => p.confidence === 'low').length;
+
+  // The Memory scene owns its own mount scoping, colour-by, and ask bar —
+  // nothing here applies to it. Registry routes still get the subnav.
+  if (pathname === '/mimir') return null;
 
   if (subnavCollapsed) {
     return (

@@ -4,6 +4,7 @@
  * `SceneMarker` (keyed by graph node `id`).
  */
 import type { LiveActivity, LiveActivityKind, MimirGraph } from './api-types';
+import { nodeIndex } from './graphIndex';
 
 /**
  * A live "someone is reading/writing this page right now" marker. Shaped to
@@ -23,9 +24,9 @@ export const MARKER_RECENCY_WINDOW_MS = 10 * 60 * 1000;
 
 /**
  * The latest activity per node, limited to events within `windowMs` of
- * `now`, newest first. An activity event without a matching graph node
- * (by `path` within its `mount`, falling back to any node with that path)
- * is dropped — a marker cannot point nowhere.
+ * `now`, newest first. An activity event is matched to a graph node by the
+ * exact (`mount`, `path`) pair only — never by path alone, since two mounts
+ * can carry the same page path. An event with no matching node is dropped.
  */
 export function recentMarkers(
   activity: LiveActivity[],
@@ -34,20 +35,16 @@ export function recentMarkers(
   windowMs: number = MARKER_RECENCY_WINDOW_MS,
 ): LiveMarker[] {
   const cutoff = now.getTime() - windowMs;
-  const nodeIdForPath = new Map<string, string>();
-  for (const node of graph.nodes) {
-    const key = node.path ?? node.id;
-    if (!nodeIdForPath.has(key)) nodeIdForPath.set(key, node.id);
-  }
+  const index = nodeIndex(graph);
 
   const latestByNode = new Map<string, LiveActivity>();
   for (const entry of activity) {
     if (new Date(entry.timestamp).getTime() < cutoff) continue;
-    const nodeId = nodeIdForPath.get(entry.path);
-    if (!nodeId) continue;
-    const existing = latestByNode.get(nodeId);
+    const node = index.byMountPath(entry.mount, entry.path);
+    if (!node) continue;
+    const existing = latestByNode.get(node.id);
     if (!existing || existing.timestamp < entry.timestamp) {
-      latestByNode.set(nodeId, entry);
+      latestByNode.set(node.id, entry);
     }
   }
 

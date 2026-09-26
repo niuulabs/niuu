@@ -19,12 +19,20 @@ describe('countsByKindGroup', () => {
 });
 
 describe('countsByConfidence', () => {
-  it('always returns all three tiers, high to low', () => {
+  it('always returns all four tiers, high to low to none', () => {
     expect(countsByConfidence(FAKE_GRAPH.nodes)).toEqual([
       { id: 'high', count: 3 },
       { id: 'medium', count: 1 },
       { id: 'low', count: 1 },
+      { id: 'none', count: 0 },
     ]);
+  });
+
+  it('counts a node with no declared confidence under "none", not dropping it', () => {
+    const nodes = [...FAKE_GRAPH.nodes, { ...FAKE_GRAPH.nodes[0]!, id: 'x', confidence: null }];
+    const counts = countsByConfidence(nodes);
+    expect(counts.find((c) => c.id === 'none')?.count).toBe(1);
+    expect(counts.reduce((sum, c) => sum + c.count, 0)).toBe(nodes.length);
   });
 });
 

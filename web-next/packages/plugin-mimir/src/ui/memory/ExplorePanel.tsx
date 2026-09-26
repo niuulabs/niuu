@@ -216,7 +216,7 @@ export function ExplorePanel({
   );
 }
 
-function AddSourceForm() {
+export function AddSourceForm() {
   const [url, setUrl] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { ingest, isPending, isError, error, data, reset } = useIngestSource(() => {

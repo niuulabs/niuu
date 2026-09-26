@@ -12,14 +12,16 @@ export interface UseMemoryUrlReturn {
   search: MemoryViewSearch;
   patch: (next: Partial<MemoryViewSearch>) => void;
   focusNode: (id: string | null) => void;
+  setQuestion: (q: string | null) => void;
   setAsOf: (asOf: string | null) => void;
   setDepth: (depth: 1 | 2 | 3) => void;
   setMount: (mount: string | null) => void;
   setView: (view: '3d' | '2d') => void;
   setColour: (colour: 'type' | 'proof' | 'age') => void;
   /**
-   * Apply one Escape step (clears a traced path, then focus, then exits
-   * replay). `tracedPath` is scene-local state, not URL state.
+   * Apply one Escape step (clears a traced path, then focus, then the
+   * question, then exits replay). `tracedPath` is scene-local state, not
+   * URL state.
    */
   handleEscape: (tracedPath: string[], clearTracedPath: () => void) => void;
 }
@@ -49,6 +51,7 @@ export function useMemoryUrl(): UseMemoryUrlReturn {
     search,
     patch,
     focusNode: (id) => patch({ focus: id ?? undefined }),
+    setQuestion: (q) => patch({ q: q ?? undefined }),
     setAsOf: (asOf) => patch({ asOf: asOf ?? undefined }),
     setDepth: (depth) => patch({ depth }),
     setMount: (mount) => patch({ mount: mount ?? undefined }),
@@ -58,6 +61,7 @@ export function useMemoryUrl(): UseMemoryUrlReturn {
       const step = escapeStep({
         path: tracedPath,
         focus: search.focus ?? null,
+        q: search.q ?? null,
         asOf: search.asOf ?? null,
       });
       if (step === 'path') {
@@ -66,6 +70,10 @@ export function useMemoryUrl(): UseMemoryUrlReturn {
       }
       if (step === 'focus') {
         patch({ focus: undefined });
+        return;
+      }
+      if (step === 'q') {
+        patch({ q: undefined });
         return;
       }
       if (step === 'asOf') {

@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { recentMarkers, MARKER_RECENCY_WINDOW_MS } from './liveMarkers';
-import { FAKE_GRAPH } from '../testing/fakeMimirService';
-import type { LiveActivity } from './api-types';
+import { FAKE_GRAPH, fakeNodeId } from '../testing/fakeMimirService';
+import type { GraphNode, LiveActivity, MimirGraph } from './api-types';
 
 const NOW = new Date('2026-04-19T14:00:00Z');
+const GATEWAY = fakeNodeId('platform', '/platform/gateway-routing');
 
 function activity(overrides: Partial<LiveActivity>): LiveActivity {
   return {
@@ -22,11 +23,12 @@ describe('recentMarkers', () => {
     const inWindow = activity({ id: '1', path: '/platform/gateway-routing' });
     const stale = activity({
       id: '2',
+      mount: 'shared',
       path: '/shared/volundr',
       timestamp: new Date(NOW.getTime() - MARKER_RECENCY_WINDOW_MS - 1000).toISOString(),
     });
     expect(recentMarkers([inWindow, stale], FAKE_GRAPH, NOW).map((m) => m.nodeId)).toEqual([
-      '/platform/gateway-routing',
+      GATEWAY,
     ]);
   });
 
@@ -45,5 +47,36 @@ describe('recentMarkers', () => {
 
   it('returns [] for empty activity', () => {
     expect(recentMarkers([], FAKE_GRAPH, NOW)).toEqual([]);
+  });
+
+  it('matches on (mount, path) — never on path alone, since two mounts can share a path', () => {
+    // Two mounts each carry a page at the same path; only the (mount, path)
+    // pair that actually matches a node should ever produce a marker.
+    const sharedPath = '/gateway';
+    const platformNode: GraphNode = {
+      id: fakeNodeId('platform', sharedPath),
+      title: 'Gateway (platform)',
+      category: 'infra',
+      kind: 'topic',
+      path: sharedPath,
+      mount: 'platform',
+      updatedAt: '2026-01-01T00:00:00Z',
+      firstSeen: '2026-01-01T00:00:00Z',
+      confidence: 'high',
+    };
+    const sharedNode: GraphNode = {
+      ...platformNode,
+      id: fakeNodeId('shared', sharedPath),
+      title: 'Gateway (shared)',
+      mount: 'shared',
+    };
+    const graph: MimirGraph = { nodes: [platformNode, sharedNode], edges: [] };
+
+    const onPlatform = activity({ id: '1', mount: 'platform', path: sharedPath });
+    const markers = recentMarkers([onPlatform], graph, NOW);
+
+    expect(markers).toHaveLength(1);
+    expect(markers[0]!.nodeId).toBe(platformNode.id);
+    expect(markers[0]!.nodeId).not.toBe(sharedNode.id);
   });
 });

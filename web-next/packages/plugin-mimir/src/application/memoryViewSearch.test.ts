@@ -8,6 +8,7 @@ describe('validateMemoryViewSearch', () => {
         mount: 'platform',
         focus: '/a',
         depth: 2,
+        q: 'why do routes 403?',
         asOf: '2026-04-01',
         view: '2d',
         colour: 'proof',
@@ -16,6 +17,7 @@ describe('validateMemoryViewSearch', () => {
       mount: 'platform',
       focus: '/a',
       depth: 2,
+      q: 'why do routes 403?',
       asOf: '2026-04-01',
       view: '2d',
       colour: 'proof',
@@ -27,6 +29,7 @@ describe('validateMemoryViewSearch', () => {
       mount: undefined,
       focus: undefined,
       depth: undefined,
+      q: undefined,
       asOf: undefined,
       view: undefined,
       colour: undefined,
@@ -34,7 +37,8 @@ describe('validateMemoryViewSearch', () => {
   });
 
   it('treats an empty string as absent', () => {
-    expect(validateMemoryViewSearch({ mount: '' }).mount).toBeUndefined();
+    expect(validateMemoryViewSearch({ mount: '', q: '' }).mount).toBeUndefined();
+    expect(validateMemoryViewSearch({ mount: '', q: '' }).q).toBeUndefined();
   });
 
   it('handles a bare empty search object', () => {
@@ -42,6 +46,7 @@ describe('validateMemoryViewSearch', () => {
       mount: undefined,
       focus: undefined,
       depth: undefined,
+      q: undefined,
       asOf: undefined,
       view: undefined,
       colour: undefined,

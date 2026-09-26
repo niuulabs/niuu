@@ -11,8 +11,9 @@ import { useMemo } from 'react';
 import { Link, useNavigate, useSearch } from '@tanstack/react-router';
 import { ArrowLeft, MessageSquare, TriangleAlert } from 'lucide-react';
 import { Chip, EmptyState, ErrorState, LoadingState } from '@niuulabs/ui';
-import { getZoneByKind, type Page, type SearchResult } from '../../domain/page';
-import { evidenceForFact, isWeakening, type FactEvidence } from '../../domain/evidence';
+import type { Page, SearchResult } from '../../domain/page';
+import { isWeakening, type FactEvidence } from '../../domain/evidence';
+import { factsOf, quoteKeyFacts, type QuotedFact } from '../../domain/quoteFacts';
 import { useMimirMounts } from '../useMimirMounts';
 import { MountChip } from '../components/MountChip';
 import { PageTypeGlyph } from '../components/PageTypeGlyph';
@@ -40,20 +41,8 @@ interface AskSearch {
   path?: string;
 }
 
-interface QuotedFact {
-  page: Page;
-  fact: string;
-  /** 1-based position in the page's Key Facts, used in the citation. */
-  position: number;
-  evidence: FactEvidence | null;
-}
-
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
-}
-
-function factsOf(page: Page): string[] {
-  return getZoneByKind(page.zones ?? [], 'key-facts')?.items ?? [];
 }
 
 // ---------------------------------------------------------------------------
@@ -135,20 +124,14 @@ export function AskMemoryPage() {
   const selectedPath = search.path ?? rows[0]?.path;
   const selected = rows.find((row) => row.path === selectedPath) ?? rows[0];
 
+  const quotedPages = useMemo(
+    () => quotedPaths.map((path) => pages.get(path)).filter((p): p is Page => Boolean(p)),
+    [quotedPaths, pages],
+  );
+
   const quoted: QuotedFact[] = useMemo(
-    () =>
-      quotedPaths.flatMap((path) => {
-        const page = pages.get(path);
-        if (!page) return [];
-        const rowsForPage = evidenceByPath.get(path) ?? [];
-        return factsOf(page).map((fact, index) => ({
-          page,
-          fact,
-          position: index + 1,
-          evidence: evidenceForFact(rowsForPage, fact),
-        }));
-      }),
-    [quotedPaths, pages, evidenceByPath],
+    () => quoteKeyFacts(quotedPages, evidenceByPath),
+    [quotedPages, evidenceByPath],
   );
 
   const weakQuoted = quoted.find((entry) => entry.evidence && isWeakening(entry.evidence));

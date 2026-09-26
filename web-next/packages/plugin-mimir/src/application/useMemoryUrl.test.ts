@@ -30,7 +30,7 @@ describe('useMemoryUrl', () => {
     expect(applyNavigate()).toEqual({ mount: 'platform', focus: '/a' });
   });
 
-  it('setDepth / setMount / setView / setColour / setAsOf patch their field', () => {
+  it('setDepth / setMount / setView / setColour / setAsOf / setQuestion patch their field', () => {
     const { result } = renderHook(() => useMemoryUrl());
     result.current.setDepth(2);
     expect(applyNavigate()).toEqual({ depth: 2 });
@@ -40,13 +40,22 @@ describe('useMemoryUrl', () => {
     expect(applyNavigate()).toEqual({ view: '2d' });
     result.current.setColour('age');
     expect(applyNavigate()).toEqual({ colour: 'age' });
+    result.current.setQuestion('why do routes 403?');
+    expect(applyNavigate()).toEqual({ q: 'why do routes 403?' });
     result.current.setAsOf('2026-04-01');
     expect(applyNavigate()).toEqual({ asOf: '2026-04-01' });
   });
 
+  it('setQuestion(null) removes q from the search', () => {
+    currentSearch = { q: 'why?' };
+    const { result } = renderHook(() => useMemoryUrl());
+    result.current.setQuestion(null);
+    expect(applyNavigate()).toEqual({});
+  });
+
   describe('handleEscape', () => {
     it('clears a traced path first, without touching the URL', () => {
-      currentSearch = { focus: '/a' };
+      currentSearch = { focus: '/a', q: 'x' };
       const { result } = renderHook(() => useMemoryUrl());
       const clearTracedPath = vi.fn();
       result.current.handleEscape(['/a', '/b'], clearTracedPath);
@@ -55,7 +64,14 @@ describe('useMemoryUrl', () => {
     });
 
     it('clears focus next when no path is traced', () => {
-      currentSearch = { focus: '/a', asOf: '2026-04-01' };
+      currentSearch = { focus: '/a', q: 'x' };
+      const { result } = renderHook(() => useMemoryUrl());
+      result.current.handleEscape([], vi.fn());
+      expect(applyNavigate()).toEqual({ q: 'x' });
+    });
+
+    it('clears the question next when no path or focus', () => {
+      currentSearch = { q: 'x', asOf: '2026-04-01' };
       const { result } = renderHook(() => useMemoryUrl());
       result.current.handleEscape([], vi.fn());
       expect(applyNavigate()).toEqual({ asOf: '2026-04-01' });

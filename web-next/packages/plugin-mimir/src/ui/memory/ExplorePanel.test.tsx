@@ -7,7 +7,11 @@ import {
   FAKE_GRAPH,
   FAKE_MOUNTS,
   FAKE_LIVE_ACTIVITY,
+  fakeNodeId,
 } from '../../testing/fakeMimirService';
+
+const GATEWAY = fakeNodeId('platform', '/platform/gateway-routing');
+const CEDAR = fakeNodeId('platform', '/platform/cedar-authorization');
 import { ExplorePanel } from './ExplorePanel';
 
 function setup(overrides: Partial<React.ComponentProps<typeof ExplorePanel>> = {}) {
@@ -35,14 +39,14 @@ describe('ExplorePanel', () => {
     await userEvent.type(screen.getByLabelText('Find a page'), 'gateway');
     expect(screen.getByRole('option', { name: 'Gateway routing on ymir' })).toBeInTheDocument();
     await userEvent.keyboard('{Enter}');
-    expect(props.onFocus).toHaveBeenCalledWith('/platform/gateway-routing');
+    expect(props.onFocus).toHaveBeenCalledWith(GATEWAY);
   });
 
   it('focuses a page from the find list on click', async () => {
     const props = setup();
     await userEvent.type(screen.getByLabelText('Find a page'), 'cedar');
     await userEvent.click(screen.getByRole('option', { name: 'Cedar authorization' }));
-    expect(props.onFocus).toHaveBeenCalledWith('/platform/cedar-authorization');
+    expect(props.onFocus).toHaveBeenCalledWith(CEDAR);
   });
 
   it('renders fly-to mounts with page counts and flies to one on click', async () => {
@@ -54,7 +58,7 @@ describe('ExplorePanel', () => {
   it('renders most-connected pages and focuses on click', async () => {
     const props = setup();
     await userEvent.click(screen.getByRole('button', { name: /Gateway routing on ymir.*3/ }));
-    expect(props.onFocus).toHaveBeenCalledWith('/platform/gateway-routing');
+    expect(props.onFocus).toHaveBeenCalledWith(GATEWAY);
   });
 
   it('renders the right-now feed with resolved page titles', () => {

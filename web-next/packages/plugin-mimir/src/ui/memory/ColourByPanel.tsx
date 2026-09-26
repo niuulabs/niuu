@@ -17,7 +17,12 @@ import type { MimirGraph } from '../../domain/api-types';
 import type { ColourBy } from '../scene/types';
 import './MemoryLegend.css';
 
-const CONFIDENCE_LABEL: Record<string, string> = { high: 'High', medium: 'Medium', low: 'Low' };
+const CONFIDENCE_LABEL: Record<string, string> = {
+  high: 'High',
+  medium: 'Medium',
+  low: 'Low',
+  none: 'No declared confidence',
+};
 
 interface ColourByPanelProps {
   graph: MimirGraph;
@@ -110,6 +115,7 @@ export function ColourByPanel({
               key={id}
               className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-secondary"
             >
+              <span className="memory-swatch" data-proof={id} aria-hidden />
               <span className="niuu:flex-1">{CONFIDENCE_LABEL[id]}</span>
               <span className="niuu:font-mono niuu:text-xs niuu:text-text-muted">{count}</span>
             </div>
@@ -126,6 +132,7 @@ export function ColourByPanel({
                 key={id}
                 className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-secondary"
               >
+                <span className="memory-swatch" data-age={id} aria-hidden />
                 <span className="niuu:flex-1">{bucket.label}</span>
                 <span className="niuu:font-mono niuu:text-xs niuu:text-text-muted">{count}</span>
               </div>
