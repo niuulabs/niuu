@@ -134,6 +134,10 @@ class WhatsAppGateway(GatewayHttpMixin, GatewayChannelPort):
         import uvicorn
         from fastapi import FastAPI, Query, Request, Response
 
+        from niuu.observability import install_uvicorn_log_redaction
+
+        # Meta's verification GET carries hub.verify_token in the query.
+        install_uvicorn_log_redaction()
         app = FastAPI(title="Ravn WhatsApp Webhook", docs_url=None, redoc_url=None)
 
         @app.get("/webhook")

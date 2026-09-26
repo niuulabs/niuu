@@ -46,6 +46,11 @@ def create_standalone_app(persona_dirs: list[str] | None = None) -> FastAPI:
             persona YAML files.  Defaults to the standard search path
             (project-local + user-global + built-ins).
     """
+    from niuu.observability import install_uvicorn_log_redaction
+
+    # Here, not in serve(): with reload=True uvicorn re-imports this factory
+    # in a child process that never runs serve().
+    install_uvicorn_log_redaction()
     persona_loader = FilesystemPersonaAdapter(persona_dirs=persona_dirs if persona_dirs else None)
     app = create_app(persona_loader=persona_loader)
 

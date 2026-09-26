@@ -508,7 +508,11 @@ def build_root_app(
     individually) instead of each plugin racing to be the first with a
     different identity — see ``niuu.observability``'s module docstring.
     """
-    from niuu.observability import configure_observability, instrument_fastapi_app
+    from niuu.observability import (
+        configure_observability,
+        install_uvicorn_log_redaction,
+        instrument_fastapi_app,
+    )
 
     if cli_settings is None:
         from cli.config import CLISettings as _CLISettings
@@ -627,6 +631,7 @@ def build_root_app(
     # they are separate ASGI app objects with their own middleware stacks,
     # not affected by instrumenting root.
     instrument_fastapi_app(root, telemetry, component="niuu-mini")
+    install_uvicorn_log_redaction()
     cors_origins = _configured_cors_origins()
     if cors_origins:
         apply_cors_middleware(

@@ -9,6 +9,9 @@ def main() -> None:
     """Run the standalone catalog service."""
     import os
 
+    from niuu.observability import install_uvicorn_log_redaction
+
+    install_uvicorn_log_redaction()
     uvicorn.run(
         "volundr.catalog.app:app",
         host=os.environ.get("HOST", "0.0.0.0"),

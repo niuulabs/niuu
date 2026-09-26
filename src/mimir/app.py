@@ -232,6 +232,7 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
     # inside a lifespan handler has no effect.
     from niuu.observability import (
         configure_observability,
+        install_uvicorn_log_redaction,
         instrument_fastapi_app,
         instrument_httpx_client,
     )
@@ -243,6 +244,7 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         default_service_name="mimir",
     )
     instrument_fastapi_app(app, telemetry, component="mimir")
+    install_uvicorn_log_redaction()
     instrument_httpx_client(telemetry)
 
     health_paths = {"/health", "/mimir/health", "/api/v1/mimir/health"}

@@ -13,6 +13,7 @@ import uvicorn
 from niuu.domain.logging import LoggingConfig
 from niuu.domain.services.pat_validator import PATValidator
 from niuu.domain.services.workload_identity import WorkloadIdentityService
+from niuu.observability import install_uvicorn_log_redaction
 from niuu.utils import import_class, resolve_secret_kwargs
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,7 @@ def configure_logging(config: LoggingConfig | None = None) -> None:
         force=True,
     )
     logging.getLogger().setLevel(level)
+    install_uvicorn_log_redaction()
     logger.info(
         "Logging configured: level=%s, format=%s",
         level_name,
@@ -367,4 +369,5 @@ def run_service_app(import_path: str, default_port: int) -> None:
     """Run a service app via uvicorn with simple env overrides."""
     host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", str(default_port)))
+    install_uvicorn_log_redaction()
     uvicorn.run(import_path, host=host, port=port)

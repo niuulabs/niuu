@@ -5782,6 +5782,9 @@ def main() -> None:
     """Run the broker server."""
     import uvicorn
 
+    from niuu.observability import install_uvicorn_log_redaction
+
+    install_uvicorn_log_redaction()
     settings = SkuldSettings()
     logger.info("Starting Skuld broker on %s:%d", settings.host, settings.port)
     uvicorn.run(app, host=settings.host, port=settings.port, access_log=False)

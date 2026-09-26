@@ -423,6 +423,9 @@ class HttpGateway:
         """Start the uvicorn server and block until cancelled."""
         import uvicorn
 
+        from niuu.observability import install_uvicorn_log_redaction
+
+        install_uvicorn_log_redaction()
         uv_config = uvicorn.Config(
             app=self._app,
             host=self._config.host,
