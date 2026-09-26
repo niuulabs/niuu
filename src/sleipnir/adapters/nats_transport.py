@@ -227,6 +227,12 @@ DEFAULT_CONSUMER_HEALTH_CHECK_JITTER_S = 3.0
 #: the replay burst after a subscription was unhealthy for a long time.
 DEFAULT_CONSUMER_RECOVERY_MAX_REPLAY_WINDOW_S = 3600.0
 
+#: Consecutive "consumer already exists" replies (a concurrent create by
+#: another replica winning the race) tolerated with a short, immediate-ish
+#: retry before falling back to the normal failure/backoff path.  Bounds
+#: what would otherwise be an unbounded fast retry loop.
+DEFAULT_CONSUMER_ALREADY_EXISTS_RETRY_LIMIT = 5
+
 #: NATS connection timeout in seconds.
 DEFAULT_CONNECT_TIMEOUT_S = 10.0
 
@@ -634,17 +640,32 @@ async def _safe_unsubscribe(nats_sub: Any, *, context: str) -> None:
 #: durable name that got there first.
 _JS_ERR_CONSUMER_NAME_IN_USE = 10013
 
+#: JetStream API error code for "start time can not be updated" — the same
+#: race, reported this way instead of 10013 when the two concurrent creates'
+#: configs disagree on ``opt_start_time`` (confirmed against server 2.14.2;
+#: each replica computes its own recovery replay start time, so they usually
+#: do).
+_JS_ERR_CONSUMER_START_TIME_UPDATE = 10012
+
+_JS_ERR_CODES_CONSUMER_ALREADY_EXISTS = (
+    _JS_ERR_CONSUMER_NAME_IN_USE,
+    _JS_ERR_CONSUMER_START_TIME_UPDATE,
+)
+
 
 def _is_consumer_already_exists_error(exc: Exception) -> bool:
-    """True if *exc* is JetStream's "consumer name already in use" (err_code 10013).
+    """True if *exc* means a concurrent create beat this one to the same durable.
 
     Two replicas racing to recreate the same missing durable can both attempt
     to create it — each with its own recovery config, since every replica
     tracks its own health-check history — so the loser's create is rejected
-    even though the durable now exists exactly as intended.  The fix is to
-    bind to it immediately, not treat this as a failure needing backoff.
+    even though the durable now exists exactly as intended.  nats-server
+    reports this as "consumer name already in use" (err_code 10013) or, when
+    the two configs' start times disagree, "start time can not be updated"
+    (err_code 10012).  Either way the fix is the same: bind to what's there,
+    not treat this as a failure needing the full backoff.
     """
-    return getattr(exc, "err_code", None) == _JS_ERR_CONSUMER_NAME_IN_USE
+    return getattr(exc, "err_code", None) in _JS_ERR_CODES_CONSUMER_ALREADY_EXISTS
 
 
 # ---------------------------------------------------------------------------
@@ -1218,6 +1239,7 @@ class NatsSubscriber(SleipnirSubscriber):
         consumer_recovery_max_replay_window_s: float = (
             DEFAULT_CONSUMER_RECOVERY_MAX_REPLAY_WINDOW_S
         ),
+        consumer_already_exists_retry_limit: int = DEFAULT_CONSUMER_ALREADY_EXISTS_RETRY_LIMIT,
     ) -> None:
         """Create the subscriber (connect with :meth:`start`).
 
@@ -1245,6 +1267,10 @@ class NatsSubscriber(SleipnirSubscriber):
         :param consumer_recovery_max_replay_window_s: Upper bound on how far
             back a recreated consumer replays from, regardless of how long
             its last health check has been stale.
+        :param consumer_already_exists_retry_limit: Consecutive "consumer
+            already exists" replies (a concurrent create winning) tolerated
+            with a short retry before falling back to the normal
+            failure/backoff path.
         """
         _require_nats()
         if ring_buffer_depth < 1:
@@ -1295,6 +1321,11 @@ class NatsSubscriber(SleipnirSubscriber):
                 "consumer_recovery_max_replay_window_s must be > 0, got "
                 f"{consumer_recovery_max_replay_window_s}"
             )
+        if consumer_already_exists_retry_limit < 1:
+            raise ValueError(
+                "consumer_already_exists_retry_limit must be >= 1, got "
+                f"{consumer_already_exists_retry_limit}"
+            )
         self._servers = servers or DEFAULT_SERVERS
         self._stream_name = stream_name
         self._subject_prefix = subject_prefix
@@ -1316,6 +1347,7 @@ class NatsSubscriber(SleipnirSubscriber):
         self._consumer_check_failure_threshold = consumer_check_failure_threshold
         self._consumer_health_check_jitter_s = consumer_health_check_jitter_s
         self._consumer_recovery_max_replay_window_s = consumer_recovery_max_replay_window_s
+        self._consumer_already_exists_retry_limit = consumer_already_exists_retry_limit
         self._dlq_subject = _nats_subject_for_event(registry.SYSTEM_DLQ_MESSAGE, subject_prefix)
         self._connect_timeout_s = connect_timeout_s
         self._max_reconnect_attempts = max_reconnect_attempts
@@ -1913,6 +1945,7 @@ class NatsSubscriber(SleipnirSubscriber):
             reason,
         )
         attempt = 0
+        already_exists_retries = 0
         while sub.active and self._running:
             attempt += 1
             if self._ensure_stream and watch.stream_name == self._stream_name:
@@ -1948,21 +1981,33 @@ class NatsSubscriber(SleipnirSubscriber):
                     stream_name=watch.stream_name,
                 )
             except Exception as exc:
-                if _is_consumer_already_exists_error(exc):
+                already_exists = _is_consumer_already_exists_error(exc)
+                retry_limit = self._consumer_already_exists_retry_limit
+                if already_exists and already_exists_retries < retry_limit:
                     # Another replica racing to recreate the same missing
                     # durable created it first — with its own recovery
                     # config (a different replay start time is expected,
                     # since each replica tracks its own health-check
-                    # history), so the server rejects a second create.  The
-                    # durable exists exactly as intended; retry immediately
-                    # to bind to it instead of waiting out a backoff delay.
+                    # history), so the server rejects a second create with
+                    # "consumer name already in use" (err_code 10013) or,
+                    # when the two start times disagree, "start time can not
+                    # be updated" (err_code 10012, confirmed on server
+                    # 2.14.2).  The durable exists exactly as intended;
+                    # retry with a short delay to bind to it, bounded so a
+                    # persistent disagreement still falls back to the normal
+                    # failure path below instead of retrying forever.
+                    already_exists_retries += 1
+                    delay = self._consumer_recovery_delay(attempt)
                     logger.info(
                         "NatsSubscriber: durable for subject=%s stream=%s was created "
-                        "concurrently by another replica on attempt %d; binding to it",
+                        "concurrently by another replica on attempt %d; retrying in %.1fs "
+                        "to bind to it",
                         watch.subject,
                         watch.stream_name,
                         attempt,
+                        delay,
                     )
+                    await asyncio.sleep(delay)
                     continue
                 self._stats["consumer_recovery_failures"] += 1
                 delay = self._consumer_recovery_delay(attempt)
@@ -2008,21 +2053,29 @@ class NatsSubscriber(SleipnirSubscriber):
             return
 
     def _recovery_replay_start_time(self, watch: _ConsumerWatch) -> datetime:
-        """Replay start time for a recreated consumer: *last_healthy_at*, bounded.
+        """Replay start time for a recreated consumer: *last_healthy_at*, margined and bounded.
 
         ``last_healthy_at`` is refreshed by every successful health check, so
         it is at most one ``consumer_health_check_interval_s`` (plus jitter,
         plus any time spent retrying while unhealthy) in the past — a good
         proxy for how far back this subscription could actually have missed
-        messages.  It is still clamped to
+        messages.  It is stamped client-side, after the health check's
+        server round trip returns, so it can run ahead of the server's own
+        clock; a message published right at the moment the consumer was
+        actually lost could sit at a stream timestamp earlier than what this
+        pod believes "last healthy" was, and get skipped.  Subtracting one
+        ``consumer_health_check_interval_s`` as a margin covers that gap
+        (handlers are idempotent, so replaying a message already delivered
+        before the loss is harmless).  The result is still clamped to
         *consumer_recovery_max_replay_window_s* so a subscription that was
         unhealthy for a long time (or whose watch was only just created, at
         `now`) never triggers a days-old replay burst.
         """
+        margined = watch.last_healthy_at - timedelta(seconds=self._consumer_health_check_interval_s)
         earliest_allowed = datetime.now(UTC) - timedelta(
             seconds=self._consumer_recovery_max_replay_window_s
         )
-        return max(watch.last_healthy_at, earliest_allowed)
+        return max(margined, earliest_allowed)
 
     def _consumer_recovery_delay(self, attempt: int) -> float:
         """Recovery retry delay after failed attempt number *attempt* (1-based)."""
@@ -2155,6 +2208,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
         consumer_recovery_max_replay_window_s: float = (
             DEFAULT_CONSUMER_RECOVERY_MAX_REPLAY_WINDOW_S
         ),
+        consumer_already_exists_retry_limit: int = DEFAULT_CONSUMER_ALREADY_EXISTS_RETRY_LIMIT,
     ) -> None:
         _require_nats()
         self._publisher = NatsPublisher(
@@ -2225,6 +2279,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             consumer_check_failure_threshold=consumer_check_failure_threshold,
             consumer_health_check_jitter_s=consumer_health_check_jitter_s,
             consumer_recovery_max_replay_window_s=consumer_recovery_max_replay_window_s,
+            consumer_already_exists_retry_limit=consumer_already_exists_retry_limit,
         )
 
     async def start(self) -> None:

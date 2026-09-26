@@ -30,6 +30,7 @@ from sleipnir.adapters.nats_transport import (
     DEFAULT_ACK_PROGRESS_INTERVAL_S,
     DEFAULT_ACK_WAIT_S,
     DEFAULT_CONNECT_TIMEOUT_S,
+    DEFAULT_CONSUMER_ALREADY_EXISTS_RETRY_LIMIT,
     DEFAULT_CONSUMER_CHECK_FAILURE_THRESHOLD,
     DEFAULT_CONSUMER_HEALTH_CHECK_INTERVAL_S,
     DEFAULT_CONSUMER_HEALTH_CHECK_JITTER_S,
@@ -879,6 +880,10 @@ def test_build_consumer_config_uses_explicit_max_ack_pending():
         (
             {"consumer_recovery_max_replay_window_s": -1.0},
             "consumer_recovery_max_replay_window_s",
+        ),
+        (
+            {"consumer_already_exists_retry_limit": 0},
+            "consumer_already_exists_retry_limit",
         ),
     ],
 )
@@ -2337,25 +2342,35 @@ async def test_rebind_failure_does_not_loop_and_is_retried_next_health_check(moc
     await sub.stop()
 
 
-async def test_recovery_treats_consumer_already_exists_as_a_concurrent_create(mock_nats):
-    """A racing replica's create winning must bind immediately, not wait out a backoff.
+@pytest.mark.parametrize(
+    ("err_code", "description"),
+    [
+        (10013, "consumer name already in use"),
+        (10012, "start time can not be updated"),
+    ],
+)
+async def test_recovery_treats_consumer_already_exists_as_a_concurrent_create(
+    mock_nats, err_code, description
+):
+    """A racing replica's create winning must retry with a short delay, not the full backoff.
 
     Two replicas concurrently recreating the same missing durable ask for
     different replay start times (each tracks its own health-check history),
-    so the loser's create is rejected by the server (400 err_code=10013,
-    "consumer name already in use") even though the durable now exists
-    exactly as intended.
+    so the loser's create is rejected by the server even though the durable
+    now exists exactly as intended — reported as ``err_code=10013``
+    ("consumer name already in use") or, when the two start times disagree,
+    ``err_code=10012`` ("start time can not be updated", confirmed on server
+    2.14.2).  The retry delay is still the short one from the configured
+    backoff, not immediate and not the general failure path.
     """
     mock_module, client, js, nats_sub = mock_nats
-    sub = NatsSubscriber(consumer_recovery_backoff_s=[5.0])
+    sub = NatsSubscriber(consumer_recovery_backoff_s=[0.05])
     await sub.start()
     handle = await sub.subscribe(["test.*"], AsyncMock())
     watch = handle.consumer_watches[0]
 
     nats_sub.consumer_info = AsyncMock(side_effect=js_errors.NotFoundError())
-    already_exists = js_errors.APIError(
-        code=400, err_code=10013, description="consumer name already in use"
-    )
+    already_exists = js_errors.APIError(code=400, err_code=err_code, description=description)
     recovered_sub = AsyncMock()
     recovered_sub.unsubscribe = AsyncMock()
     js.subscribe = AsyncMock(side_effect=[already_exists, recovered_sub])
@@ -2364,9 +2379,49 @@ async def test_recovery_treats_consumer_already_exists_as_a_concurrent_create(mo
     await sub._check_consumer_watch(handle, watch)
     elapsed = asyncio.get_event_loop().time() - started
 
-    assert elapsed < 1.0, "an 'already exists' failure must retry immediately, not back off"
+    assert 0.05 <= elapsed < 1.0, "must wait the short configured delay, not the full backoff"
     assert watch.nats_sub is recovered_sub
     assert sub.stats()["consumer_recovery_failures"] == 0
+    assert sub.stats()["consumer_recovered"] == 1
+    await sub.stop()
+
+
+async def test_already_exists_retry_is_bounded_then_falls_back_to_the_failure_path(mock_nats):
+    """Persistent 'already exists' replies must not retry the fast path forever.
+
+    A retry count that never gives up would be indistinguishable from the
+    unbounded immediate-continue loop this was meant to replace.  After the
+    configured limit, the same error is counted and logged like any other
+    recovery failure (still retried by the outer loop, just at the normal
+    backoff pace).
+    """
+    mock_module, client, js, nats_sub = mock_nats
+    sub = NatsSubscriber(consumer_recovery_backoff_s=[0.01], consumer_already_exists_retry_limit=2)
+    await sub.start()
+    handle = await sub.subscribe(["test.*"], AsyncMock())
+    watch = handle.consumer_watches[0]
+
+    nats_sub.consumer_info = AsyncMock(side_effect=js_errors.NotFoundError())
+    always_already_exists = js_errors.APIError(
+        code=400, err_code=10013, description="consumer name already in use"
+    )
+    recovered_sub = AsyncMock()
+    recovered_sub.unsubscribe = AsyncMock()
+    # 2 tolerated "already exists" attempts, a 3rd that also "already
+    # exists" but must now be treated as a failure, then success.
+    js.subscribe = AsyncMock(
+        side_effect=[
+            always_already_exists,
+            always_already_exists,
+            always_already_exists,
+            recovered_sub,
+        ]
+    )
+
+    await sub._check_consumer_watch(handle, watch)
+
+    assert watch.nats_sub is recovered_sub
+    assert sub.stats()["consumer_recovery_failures"] == 1
     assert sub.stats()["consumer_recovered"] == 1
     await sub.stop()
 
@@ -2522,10 +2577,18 @@ async def test_unsubscribe_survives_nats_subs_mutation_during_teardown(mock_nats
     await sub.stop()
 
 
-async def test_recovery_replays_from_last_healthy_check(mock_nats):
-    """Recreate must not reuse the startup deliver policy (NEW would skip the gap)."""
+async def test_recovery_replays_from_last_healthy_check_minus_a_margin(mock_nats):
+    """Recreate must not reuse the startup deliver policy (NEW would skip the gap).
+
+    The replay start time is also margined by one health-check interval: a
+    message published right at the moment of loss can sit at a stream
+    timestamp earlier than this pod's client-stamped ``last_healthy_at`` (the
+    pod's clock can run ahead of the server's), so without the margin it
+    would be skipped.
+    """
     mock_module, client, js, nats_sub = mock_nats
-    sub = NatsSubscriber()
+    interval_s = 15.0
+    sub = NatsSubscriber(consumer_health_check_interval_s=interval_s)
     await sub.start()
     handle = await sub.subscribe(["test.*"], AsyncMock())
     watch = handle.consumer_watches[0]
@@ -2541,7 +2604,7 @@ async def test_recovery_replays_from_last_healthy_check(mock_nats):
 
     config = js.subscribe.call_args.kwargs["config"]
     assert config.deliver_policy == js_api.DeliverPolicy.BY_START_TIME
-    assert config.opt_start_time == recent
+    assert config.opt_start_time == recent - timedelta(seconds=interval_s)
     await sub.stop()
 
 
@@ -2732,3 +2795,4 @@ def test_consumer_check_defaults():
     assert (
         sub._consumer_recovery_max_replay_window_s == DEFAULT_CONSUMER_RECOVERY_MAX_REPLAY_WINDOW_S
     )
+    assert sub._consumer_already_exists_retry_limit == DEFAULT_CONSUMER_ALREADY_EXISTS_RETRY_LIMIT
