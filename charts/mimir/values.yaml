@@ -257,6 +257,11 @@ config:
   # unconfigured — observability.enabled defaults to false, a decision, not
   # a fallback. Fields match niuu.domain.observability.ObservabilityConfig.
   observability: {}
+  # -- In-memory live read/write activity window for the 3D memory UI
+  # (GET /mimir/activity/live). Empty means the code defaults apply
+  # (buffer_size: 2000, window_seconds: 900). Fields match
+  # mimir.config.LiveActivityConfig.
+  liveActivity: {}
 
 # Optional dynamic Flux deployment adapter configuration. Disabled by default.
 # Supply namespace, source_name, chart_versions, images and cluster in this map.

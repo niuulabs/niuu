@@ -7,10 +7,16 @@ import { createMimirMockAdapter } from '../adapters/mock';
 import type { IMimirService } from '../ports';
 
 const navigateMock = vi.fn();
+let currentPathname = '/mimir/registry';
 
-// Mock TanStack Router hooks — subnav uses useNavigate
+// Mock TanStack Router hooks — subnav uses useNavigate + useRouterState
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => navigateMock,
+  useRouterState: ({
+    select,
+  }: {
+    select: (state: { location: { pathname: string } }) => unknown;
+  }) => select({ location: { pathname: currentPathname } }),
 }));
 
 const mockCtx: PluginCtx = {
@@ -23,6 +29,19 @@ const wrap = (ctx = mockCtx) => renderWithMimir(<MimirSubnav ctx={ctx} />, undef
 describe('MimirSubnav', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    currentPathname = '/mimir/registry';
+  });
+
+  it('renders nothing on the Memory scene route (/mimir) — the scene owns its own context', () => {
+    currentPathname = '/mimir';
+    const { container } = wrap();
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('still renders the full subnav on a registry route', () => {
+    currentPathname = '/mimir/registry/health';
+    wrap();
+    expect(screen.getByText('Mount focus')).toBeInTheDocument();
   });
 
   it('renders the mount focus section', () => {

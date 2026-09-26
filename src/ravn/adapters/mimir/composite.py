@@ -198,8 +198,16 @@ class CompositeMimirAdapter(MimirPort):
 
     async def search(self, query: str) -> list[MimirPage]:
         """Search all mounts in priority order, de-dup by path."""
+        return [page for _, page in await self.search_attributed(query)]
+
+    async def search_attributed(self, query: str) -> list[tuple[str, MimirPage]]:
+        """``search``, with the name of the mount each result was taken from.
+
+        A path found on several mounts is reported once, from the first mount
+        in priority order — the same copy ``get_page`` would read.
+        """
         seen_paths: set[str] = set()
-        results: list[MimirPage] = []
+        results: list[tuple[str, MimirPage]] = []
 
         for mount in self._mounts:
             try:
@@ -209,7 +217,7 @@ class CompositeMimirAdapter(MimirPort):
             for page in pages:
                 if page.meta.path not in seen_paths:
                     seen_paths.add(page.meta.path)
-                    results.append(page)
+                    results.append((mount.name, page))
 
         return results
 

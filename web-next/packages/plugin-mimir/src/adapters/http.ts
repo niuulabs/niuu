@@ -20,7 +20,14 @@ import type {
   ActivityEvent,
   ActivityEventKind,
 } from '../domain/lint';
-import type { MimirStats, MimirGraph, GraphNode, GraphEdge } from '../domain/api-types';
+import type {
+  MimirStats,
+  MimirGraph,
+  GraphNode,
+  GraphEdge,
+  LiveActivity,
+  LiveActivityKind,
+} from '../domain/api-types';
 import type { EmbeddingSearchResult } from '../ports/IEmbeddingStore';
 import type { EntityKind, EntityMeta } from '../domain/entity';
 import type { FactEvidence, RelatedPage, ReviseRequest } from '../domain/evidence';
@@ -110,6 +117,8 @@ interface RawSearchResult {
   title: string;
   summary: string;
   category: string;
+  /** The mount the result was read from. */
+  mount: string;
   type?: string;
   confidence?: string;
   score?: number;
@@ -191,11 +200,14 @@ interface RawGraphNode {
   id: string;
   title: string;
   category: string;
-  path?: string;
+  path: string;
   kind?: string;
   summary?: string;
-  mount?: string;
+  mount: string;
   inbound_count?: number;
+  updated_at: string;
+  first_seen: string;
+  confidence: string | null;
 }
 
 interface RawGraphEdge {
@@ -207,6 +219,15 @@ interface RawGraphEdge {
 interface RawGraph {
   nodes: RawGraphNode[];
   edges: RawGraphEdge[];
+}
+
+interface RawLiveActivity {
+  id: string;
+  timestamp: string;
+  kind: string;
+  mount: string;
+  path: string;
+  actor: string | null;
 }
 
 interface RawFactEvidence {
@@ -594,6 +615,9 @@ export function toGraphNode(raw: RawGraphNode): GraphNode {
     summary: raw.summary,
     mount: raw.mount,
     inboundCount: raw.inbound_count,
+    updatedAt: raw.updated_at,
+    firstSeen: raw.first_seen,
+    confidence: raw.confidence,
   };
 }
 
@@ -605,6 +629,17 @@ export function toGraph(raw: RawGraph): MimirGraph {
   return {
     nodes: raw.nodes.map(toGraphNode),
     edges: raw.edges.map(toGraphEdge),
+  };
+}
+
+export function toLiveActivity(raw: RawLiveActivity): LiveActivity {
+  return {
+    id: raw.id,
+    timestamp: raw.timestamp,
+    kind: raw.kind as LiveActivityKind,
+    mount: raw.mount,
+    path: raw.path,
+    actor: raw.actor,
   };
 }
 
@@ -1047,7 +1082,7 @@ export function buildMimirHttpAdapter(
           confidence: (r.confidence ?? 'medium') as SearchResult['confidence'],
           // The API sends JSON null outside debug mode — normalise to undefined.
           score: r.score ?? undefined,
-          mounts: mountName ? [mountName] : undefined,
+          mounts: [r.mount],
           scoreBreakdown: r.score_breakdown ?? undefined,
         }));
       },
@@ -1098,6 +1133,12 @@ export function buildMimirHttpAdapter(
         const qs = options?.mountName ? `?mount=${encodeURIComponent(options.mountName)}` : '';
         const raw = await client.get<RawGraph>(`/graph${qs}`);
         return toGraph(raw);
+      },
+
+      async getLiveActivity(options): Promise<LiveActivity[]> {
+        const qs = options?.since ? `?since=${encodeURIComponent(options.since)}` : '';
+        const raw = await client.get<RawLiveActivity[]>(`/activity/live${qs}`);
+        return raw.map(toLiveActivity);
       },
 
       async listEntities(options): Promise<EntityMeta[]> {

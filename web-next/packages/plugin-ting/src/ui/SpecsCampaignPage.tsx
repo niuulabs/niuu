@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { usePluginCtx } from '@niuulabs/plugin-sdk';
 import { openEventStream } from '@niuulabs/query';
 import type { CampaignArtifactDetail, SpecCampaignDetail } from '../ports';
 import { actionableSpecGates } from '../domain/campaignProgress';
@@ -203,7 +202,6 @@ function artifactTitle(artifact: CampaignArtifactDetail | null | undefined, path
 export function SpecsCampaignPage() {
   const { slug } = useParams({ from: '/ting/specs/$slug' });
   const navigate = useNavigate();
-  const ctx = usePluginCtx();
   const queryClient = useQueryClient();
   const { data: campaign, isLoading, isError, error } = useSpecCampaign(slug);
   const deleteCampaign = useDeleteSpecCampaign();
@@ -254,8 +252,7 @@ export function SpecsCampaignPage() {
 
   function openMimirPage() {
     if (!effectivePath) return;
-    ctx.setTweak('mimir.selectedPagePath', effectivePath);
-    void navigate({ to: '/mimir/pages' });
+    void navigate({ to: '/mimir' });
   }
 
   if (isLoading) return <div className="research-empty-state">Loading spec…</div>;

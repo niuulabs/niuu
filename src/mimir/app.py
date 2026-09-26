@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse
 from identity.adapters.jwks import JwksBearerAuthenticationAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.config import MimirServiceConfig
+from mimir.live_activity import LiveActivityRecorder
 from mimir.mcp import MimirMcpServer
 from mimir.registry import MimirRegistryStore
 from mimir.router import MimirRouter
@@ -162,6 +163,14 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         settings = dict(config.deployment)
         module, name = settings.pop("adapter").rsplit(".", 1)
         deployment = getattr(importlib.import_module(module), name)(**settings)
+    # Shared between the REST router and the MCP server so a resident
+    # reading/writing through either surface shows up in the same
+    # GET /activity/live window (see .claude/rules/no-magic-numbers.md —
+    # the buffer size and window come from config, not literals here).
+    live_activity = LiveActivityRecorder(
+        buffer_size=config.live_activity.buffer_size,
+        window_seconds=config.live_activity.window_seconds,
+    )
     mimir_router = MimirRouter(
         deployment=deployment,
         public_url=config.announce_url or "",
@@ -173,9 +182,14 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         eval_capture_dir=eval_capture_dir,
         auth=identity_adapter,
         auth_mode=auth_mode,
+        live_activity=live_activity,
     )
     mcp_server = MimirMcpServer(
-        adapter=adapter, name=config.name, auth=identity_adapter, auth_mode=auth_mode
+        adapter=adapter,
+        name=config.name,
+        auth=identity_adapter,
+        auth_mode=auth_mode,
+        live_activity=live_activity,
     )
 
     @asynccontextmanager

@@ -97,7 +97,7 @@ export function renderRealms(
   const rootRoute = createRootRoute({ component: () => <Outlet /> });
   // Stand-ins for the pages other plugins own, so the links on these pages resolve.
   const extra = [
-    '/mimir/pages',
+    '/mimir',
     '/ravn/ravens',
     '/valkyrie/inbox',
     '/volundr/forge',

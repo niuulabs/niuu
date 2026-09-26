@@ -151,6 +151,26 @@ class EvidenceConfig(BaseModel):
     )
 
 
+class LiveActivityConfig(BaseModel):
+    """In-memory live read/write activity window for the 3D memory UI.
+
+    Backs ``GET /mimir/activity/live`` (``mimir.live_activity.LiveActivityRecorder``).
+    This is presence, not the durable ``/activity`` log — process-local,
+    never persisted, and bounded so it cannot grow without limit.
+    """
+
+    buffer_size: int = Field(
+        default=2000,
+        ge=1,
+        description="Maximum number of recent read/write events retained in memory.",
+    )
+    window_seconds: int = Field(
+        default=900,
+        ge=1,
+        description="Only events within this many seconds of now are ever returned.",
+    )
+
+
 class MimirObservabilityConfig(ObservabilityConfig):
     """OpenTelemetry settings with Mímir's stable service identity."""
 
@@ -304,5 +324,9 @@ class MimirServiceConfig(BaseSettings):
     evidence: EvidenceConfig = Field(
         default_factory=EvidenceConfig,
         description="Evidence-counted belief thresholds (NIU-1062).",
+    )
+    live_activity: LiveActivityConfig = Field(
+        default_factory=LiveActivityConfig,
+        description="In-memory live read/write activity window (GET /activity/live).",
     )
     observability: MimirObservabilityConfig = Field(default_factory=MimirObservabilityConfig)

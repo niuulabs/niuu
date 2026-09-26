@@ -101,11 +101,10 @@ describe('RealmPage with a running resident', () => {
     expect(screen.getByText('fix flaky test')).toBeInTheDocument();
     expect(screen.queryByText('other')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Memory' }));
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Open realm memory' })).toBeEnabled(),
-    );
-    await user.click(screen.getByRole('button', { name: 'Open realm memory' }));
-    await waitFor(() => expect(router.state.location.pathname).toBe('/mimir/pages'));
+    const exploreLink = await screen.findByRole('link', { name: "Explore this realm's memory" });
+    await user.click(exploreLink);
+    await waitFor(() => expect(router.state.location.pathname).toBe('/mimir'));
+    expect(router.state.location.search).toEqual({ mount: 'realm-valhalla' });
   });
 
   it('lets you decide a pending review and finish the walkthrough', async () => {

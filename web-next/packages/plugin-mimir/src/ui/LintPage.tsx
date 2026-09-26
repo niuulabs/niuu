@@ -10,17 +10,23 @@
 
 import { useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';
-import { usePluginCtx } from '@niuulabs/plugin-sdk';
 import { StateDot } from '@niuulabs/ui';
 import { useActiveMount } from '../application/useActiveMount';
 import { useLint } from '../application/useLint';
 import type { LintRule, IssueSeverity } from '../domain/lint';
 
+// Verified against every `_check_*` in `src/mimir/adapters/markdown.py` — L03
+// is defined there but skipped in the lint pass, so it never appears here.
 const RULE_DESCRIPTIONS: Record<LintRule, string> = {
-  L01: 'Contradiction between pages',
-  L02: 'Stale source (page not recompiled)',
+  L01: 'Orphan page (not linked in index.md)',
+  L02: 'Contradiction flag ([CONTRADICTION] marker)',
+  L04: 'Concept gap (mentioned but no dedicated page)',
   L05: 'Broken wikilink',
-  L07: 'Orphan page (no inbound links)',
+  L06: 'Missing source attribution',
+  L07: 'Thin page (too few Key Facts)',
+  L08: 'Stale content',
+  L09: 'Timeline edited instead of appended',
+  L10: 'Empty Compiled Truth section',
   L11: 'Stale mount index',
   L12: 'Invalid frontmatter',
 };
@@ -41,7 +47,6 @@ const CHECK_ROW_BASE =
 
 export function LintPage() {
   const navigate = useNavigate();
-  const ctx = usePluginCtx();
   const { activeMount, mountName } = useActiveMount();
   const { issues, summary, isLoading, isError, error, runAutoFix, isFixing } = useLint(mountName);
   const [selectedRule, setSelectedRule] = useState<LintRule | null>(null);
@@ -275,9 +280,10 @@ export function LintPage() {
                     className={ACTION_BTN}
                     aria-label={`Open ${issue.page}`}
                     onClick={() => {
-                      ctx.setTweak('mimir.selectedPagePath', issue.page);
-                      if (issue.mount) ctx.setTweak('activeMount', issue.mount);
-                      navigate({ to: '/mimir/pages' });
+                      navigate({
+                        to: '/mimir/read',
+                        search: { path: issue.page, mount: issue.mount },
+                      });
                     }}
                   >
                     Open

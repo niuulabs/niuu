@@ -454,6 +454,9 @@ importers:
       '@niuulabs/ui':
         specifier: workspace:*
         version: link:../ui
+      three:
+        specifier: ^0.186.0
+        version: 0.186.0
     devDependencies:
       '@niuulabs/design-tokens':
         specifier: workspace:*
@@ -467,6 +470,9 @@ importers:
       '@types/react':
         specifier: ^19.2.18
         version: 19.2.18
+      '@types/three':
+        specifier: ^0.185.4
+        version: 0.185.4
       autoprefixer:
         specifier: ^10.5.5
         version: 10.5.5(postcss@8.5.28)

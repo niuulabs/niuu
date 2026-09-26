@@ -17,7 +17,7 @@ data:
   MIMIR_CATEGORIES: {{ .Values.config.categories | join "," | quote }}
   {{- end }}
 
-  {{- if or .Values.knowledgeDeployment .Values.niuu.tenantId .Values.config.observability }}
+  {{- if or .Values.knowledgeDeployment .Values.niuu.tenantId .Values.config.observability .Values.config.liveActivity }}
   config.yaml: |
     tenant_id: {{ .Values.niuu.tenantId | default "" | quote }}
     {{- if .Values.knowledgeDeployment }}
@@ -30,6 +30,10 @@ data:
     {{- end }}
     {{- with .Values.config.observability }}
     observability:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.config.liveActivity }}
+    live_activity:
       {{- toYaml . | nindent 6 }}
     {{- end }}
   {{- end }}

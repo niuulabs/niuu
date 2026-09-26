@@ -1,0 +1,75 @@
+/*
+ * Memory legend swatches — "Colour by · Type/Proof/Age" and the dispute
+ * indicator on the Memory Explore view. A co-located CSS file rather than
+ * Tailwind arbitrary values, since the swatch colour is data-driven. Reads
+ * the `--color-memory-*` custom properties owned by the scene build (see
+ * `@niuulabs/design-tokens/tokens.css`) — no fallback values here: these
+ * nine kind tokens, four proof tokens, age tokens and the dispute token are
+ * all defined there.
+ */
+.memory-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full, 9999px);
+  flex-shrink: 0;
+}
+
+.memory-swatch[data-group='topic'] {
+  background: var(--color-memory-kind-topic);
+}
+.memory-swatch[data-group='entity'] {
+  background: var(--color-memory-kind-entity);
+}
+.memory-swatch[data-group='decision'] {
+  background: var(--color-memory-kind-decision);
+}
+.memory-swatch[data-group='directive'] {
+  background: var(--color-memory-kind-directive);
+}
+.memory-swatch[data-group='preference'] {
+  background: var(--color-memory-kind-preference);
+}
+.memory-swatch[data-group='goal'] {
+  background: var(--color-memory-kind-goal);
+}
+.memory-swatch[data-group='observation'] {
+  background: var(--color-memory-kind-observation);
+}
+.memory-swatch[data-group='thread'] {
+  background: var(--color-memory-kind-thread);
+}
+.memory-swatch[data-group='page'] {
+  background: var(--color-memory-kind-page);
+}
+
+.memory-swatch[data-proof='high'] {
+  background: var(--color-memory-proof-high);
+}
+.memory-swatch[data-proof='medium'] {
+  background: var(--color-memory-proof-medium);
+}
+.memory-swatch[data-proof='low'] {
+  background: var(--color-memory-proof-low);
+}
+.memory-swatch[data-proof='none'] {
+  background: var(--color-memory-proof-none);
+}
+
+.memory-swatch[data-age='today'] {
+  background: var(--color-memory-age-today);
+}
+.memory-swatch[data-age='this-week'] {
+  background: var(--color-memory-age-this-week);
+}
+.memory-swatch[data-age='this-month'] {
+  background: var(--color-memory-age-this-month);
+}
+.memory-swatch[data-age='older'] {
+  background: var(--color-memory-age-older);
+}
+
+/* Amber dispute styling — a page with an open L02 contradiction flag. */
+.memory-dispute {
+  color: var(--color-memory-dispute);
+}

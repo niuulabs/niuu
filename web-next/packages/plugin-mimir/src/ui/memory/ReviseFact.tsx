@@ -8,7 +8,7 @@
 
 import { useState } from 'react';
 import { Pencil } from 'lucide-react';
-import { useRevisePage } from './useMemory';
+import { useRevisePage } from '../../application/useMemory';
 
 /** Who the revision is attributed to when an operator makes it. */
 const ATTRIBUTION = 'you';

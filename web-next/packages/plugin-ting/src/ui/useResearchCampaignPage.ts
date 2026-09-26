@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { usePluginCtx, useService } from '@niuulabs/plugin-sdk';
+import { useService } from '@niuulabs/plugin-sdk';
 import { openEventStream } from '@niuulabs/query';
 import type { IDispatcherService, IResearchService } from '../ports';
 import type { CampaignArtifactDetail } from '../domain/research';
@@ -33,7 +33,6 @@ import {
 export function useResearchCampaignPage() {
   const { slug } = useParams({ from: '/ting/research/$slug' });
   const navigate = useNavigate();
-  const ctx = usePluginCtx();
   const queryClient = useQueryClient();
   const research = useService<IResearchService>('ting.research');
   const dispatcher = useService<IDispatcherService>('ting.dispatcher');
@@ -122,8 +121,7 @@ export function useResearchCampaignPage() {
 
   const openMimirPage = (path: string | null | undefined) => {
     if (!path) return;
-    ctx.setTweak('mimir.selectedPagePath', path);
-    void navigate({ to: '/mimir/pages' });
+    void navigate({ to: '/mimir' });
   };
 
   const artifactByPath = useMemo(() => {

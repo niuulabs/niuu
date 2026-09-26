@@ -396,6 +396,67 @@ describe('createMimirMockAdapter', () => {
       const scoped = await svc.pages.getGraph({ mountName: 'local' });
       expect(scoped.nodes.length).toBeLessThanOrEqual(all.nodes.length);
     });
+
+    it('returns a convincing demo-sized graph (600-900 pages)', async () => {
+      const svc = createMimirMockAdapter();
+      const graph = await svc.pages.getGraph();
+      expect(graph.nodes.length).toBeGreaterThanOrEqual(600);
+      expect(graph.nodes.length).toBeLessThanOrEqual(900);
+      expect(graph.edges.length).toBeGreaterThan(graph.nodes.length);
+    });
+
+    it('scoping to a mount only returns nodes on that mount', async () => {
+      const svc = createMimirMockAdapter();
+      const scoped = await svc.pages.getGraph({ mountName: 'forge' });
+      expect(scoped.nodes.length).toBeGreaterThan(0);
+      for (const node of scoped.nodes) {
+        expect(node.mount).toBe('forge');
+      }
+      const scopedIds = new Set(scoped.nodes.map((n) => n.id));
+      for (const edge of scoped.edges) {
+        expect(scopedIds.has(edge.source)).toBe(true);
+        expect(scopedIds.has(edge.target)).toBe(true);
+      }
+    });
+
+    it('nodes carry kind, updatedAt, firstSeen, and confidence', async () => {
+      const svc = createMimirMockAdapter();
+      const graph = await svc.pages.getGraph();
+      for (const node of graph.nodes) {
+        expect(typeof node.kind).toBe('string');
+        expect(typeof node.updatedAt).toBe('string');
+        expect(typeof node.firstSeen).toBe('string');
+        expect(node.confidence === null || typeof node.confidence === 'string').toBe(true);
+      }
+    });
+
+    it('includes at least one contradiction edge', async () => {
+      const svc = createMimirMockAdapter();
+      const graph = await svc.pages.getGraph();
+      const contradictionTypes = new Set(['contradicts', 'disagrees_with', 'conflicts_with']);
+      expect(graph.edges.some((e) => contradictionTypes.has(e.type ?? ''))).toBe(true);
+    });
+  });
+
+  describe('pages.getLiveActivity', () => {
+    it('returns recent read/write events', async () => {
+      const svc = createMimirMockAdapter();
+      const events = await svc.pages.getLiveActivity();
+      expect(events.length).toBeGreaterThan(0);
+      for (const event of events) {
+        expect(['read', 'write']).toContain(event.kind);
+        expect(typeof event.mount).toBe('string');
+        expect(typeof event.path).toBe('string');
+      }
+    });
+
+    it('respects the since filter', async () => {
+      const svc = createMimirMockAdapter();
+      const all = await svc.pages.getLiveActivity();
+      const cutoff = all[Math.floor(all.length / 2)]!.timestamp;
+      const filtered = await svc.pages.getLiveActivity({ since: cutoff });
+      expect(filtered.every((e) => e.timestamp >= cutoff)).toBe(true);
+    });
   });
 
   describe('pages.listEntities', () => {
