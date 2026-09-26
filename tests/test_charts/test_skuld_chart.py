@@ -161,6 +161,11 @@ class TestValuesDefaults:
         env_vars = values_yaml["envVars"]
         assert env_vars == [{"name": "SKULD__CLAUDE_AUTH", "value": "api_key"}]
 
+    def test_claude_auto_update_disabled_by_default(self, values_yaml):
+        """Cluster sessions run the CLI pinned in the image; a self-update at
+        start-up restarts it inside the session and breaks transport checks."""
+        assert values_yaml["claude"]["disableAutoUpdate"] is True
+
     def test_service_exposes_single_entry_port(self, values_yaml):
         """Test service configuration has single nginx entry port."""
         service = values_yaml["service"]
@@ -341,6 +346,11 @@ class TestDeploymentTemplate:
     def test_deployment_uses_env_vars_range_loop(self, deployment_yaml):
         """Test deployment injects plain env vars via generic range loop."""
         assert "range .Values.envVars" in deployment_yaml
+
+    def test_deployment_disables_claude_auto_update(self, deployment_yaml):
+        """DISABLE_AUTOUPDATER is set outside envVars, so overriding envVars keeps it."""
+        assert "if .Values.claude.disableAutoUpdate" in deployment_yaml
+        assert "name: DISABLE_AUTOUPDATER" in deployment_yaml
 
     def test_external_api_token_is_loaded_from_secret(self, deployment_yaml):
         """The control-plane token is never rendered into a ConfigMap or plain env value."""

@@ -320,6 +320,13 @@ envSecrets:
     secretName: anthropic-api-key
     secretKey: api-key
 
+claude:
+  # -- Keep Claude Code from updating itself in cluster sessions. The CLI is
+  # pinned in the image; a self-update restarts it mid-start-up (breaking the
+  # interactive transport's readiness and delivery checks) and fails anyway
+  # without write access to the npm prefix. Sets DISABLE_AUTOUPDATER=1.
+  disableAutoUpdate: true
+
 # -- Plain environment variables injected into the skuld broker container.
 # Use for non-secret configuration like proxy URLs or auth tokens.
 envVars:

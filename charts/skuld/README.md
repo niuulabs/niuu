@@ -251,6 +251,7 @@ Configuration for reporting token usage and session events back to the Volundr c
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `envSecrets` | list | See below | Secrets injected as environment variables into the broker container. Each entry maps one key from a K8s Secret to an env var: `{envVar, secretName, secretKey}`. Default injects `ANTHROPIC_API_KEY` |
+| `claude.disableAutoUpdate` | bool | `true` | Sets `DISABLE_AUTOUPDATER=1` so Claude Code never updates itself in a cluster session (the CLI is pinned in the image; a self-update restarts it mid-start-up). Set independently of `envVars`. |
 | `envVars` | list | `[]` | Plain environment variables injected into the broker container. Use for non-secret configuration like proxy URLs. Each entry: `{name, value}` |
 
 **Default envSecrets:**
