@@ -18,7 +18,7 @@ import asyncio
 import base64
 import logging
 import ssl
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -34,6 +34,7 @@ from sleipnir.adapters.nats_transport import (
     DEFAULT_CONSUMER_HEALTH_CHECK_INTERVAL_S,
     DEFAULT_CONSUMER_HEALTH_CHECK_JITTER_S,
     DEFAULT_CONSUMER_RECOVERY_BACKOFF_S,
+    DEFAULT_CONSUMER_RECOVERY_MAX_REPLAY_WINDOW_S,
     DEFAULT_DEDUP_CACHE_SIZE,
     DEFAULT_MAX_AGE_SECONDS,
     DEFAULT_MAX_BYTES,
@@ -871,6 +872,14 @@ def test_build_consumer_config_uses_explicit_max_ack_pending():
         ({"consumer_recovery_backoff_s": [1.0, -1.0]}, "consumer_recovery_backoff_s"),
         ({"consumer_check_failure_threshold": 0}, "consumer_check_failure_threshold"),
         ({"consumer_health_check_jitter_s": -1.0}, "consumer_health_check_jitter_s"),
+        (
+            {"consumer_recovery_max_replay_window_s": 0},
+            "consumer_recovery_max_replay_window_s",
+        ),
+        (
+            {"consumer_recovery_max_replay_window_s": -1.0},
+            "consumer_recovery_max_replay_window_s",
+        ),
     ],
 )
 def test_subscriber_rejects_invalid_delivery_settings(kwargs, match):
@@ -2147,28 +2156,38 @@ async def test_transport_forwards_consumer_recovery_settings_to_subscriber(mock_
 
 
 async def test_recreated_durable_uses_a_deterministic_deliver_subject(mock_nats):
-    """Every replica's create-or-bind must land on the same inbox for a durable."""
+    """Every replica's create-or-bind must land on the same inbox for a durable.
+
+    The inbox must also sit outside every stream's ``{prefix}.>`` subjects —
+    nats-server 2.14 rejects a deliver_subject inside the stream it belongs
+    to with ``400 err_code=10081`` ("consumer deliver subject forms a
+    cycle"), so this asserts the literal ``_INBOX.`` form, not merely
+    whatever the helper happens to return.
+    """
     mock_module, client, js, nats_sub = mock_nats
-    sub = NatsSubscriber(consumer_group="workers")
+    sub = NatsSubscriber(consumer_group="workers", subject_prefix="sleipnir")
     await sub.start()
     await sub.subscribe(["test.*"], AsyncMock())
 
     kwargs = js.subscribe.call_args.kwargs
     durable = kwargs["durable"]
     config = kwargs["config"]
-    assert config.deliver_subject == sub._deliver_subject_for_durable(durable)
+    assert config.deliver_subject == f"_INBOX.sleipnir.{durable}"
+    assert not config.deliver_subject.startswith("sleipnir.")
     assert config.deliver_group == durable
     await sub.stop()
 
 
-async def test_deliver_subject_mismatch_triggers_a_rebind(mock_nats, caplog):
-    """Another replica recreating the durable elsewhere must be detected and rebound.
+async def test_deliver_subject_mismatch_migrates_the_durable_on_the_server(mock_nats, caplog):
+    """Another replica recreating the durable elsewhere must be migrated, not silently rebound.
 
     This is the two-replica scenario: replica B's watch still points at its
     old push subscription, but the server now reports a different deliver
-    subject (as if replica A had recreated the durable).  Without comparing
-    deliver_subject/deliver_group, a mere "the durable exists" 200 hides that
-    replica B stopped receiving anything.
+    subject (as if replica A had recreated the durable).  Binding to an
+    existing durable ignores the config passed in (nats-py keeps whatever
+    deliver_subject it already has), so simply resubscribing would rebind to
+    the exact same stale inbox forever.  The fix must call the JetStream
+    manager to update the durable's config on the server first.
     """
     mock_module, client, js, nats_sub = mock_nats
     sub = NatsSubscriber(consumer_group="workers")
@@ -2183,16 +2202,80 @@ async def test_deliver_subject_mismatch_triggers_a_rebind(mock_nats, caplog):
         )
     )
     nats_sub.consumer_info = AsyncMock(return_value=foreign_info)
-    rebound_sub = AsyncMock()
-    rebound_sub.unsubscribe = AsyncMock()
-    js.subscribe = AsyncMock(return_value=rebound_sub)
+    current_server_config = SimpleNamespace(
+        deliver_subject="_INBOX.some-other-replica", deliver_group=watch.durable
+    )
+    js._jsm.consumer_info = AsyncMock(return_value=SimpleNamespace(config=current_server_config))
+    js._jsm.add_consumer = AsyncMock()
+    migrated_sub = AsyncMock()
+    migrated_sub.unsubscribe = AsyncMock()
+    js.subscribe = AsyncMock(return_value=migrated_sub)
 
     with caplog.at_level(logging.ERROR, logger="sleipnir.adapters.nats_transport"):
         await sub._check_consumer_watch(handle, watch)
 
-    assert watch.nats_sub is rebound_sub
+    # The server-side config was actually updated to the deterministic
+    # inbox — not just a local resubscribe that leaves the server unchanged.
+    js._jsm.add_consumer.assert_awaited_once()
+    updated_config = js._jsm.add_consumer.call_args.kwargs["config"]
+    assert updated_config.deliver_subject == sub._deliver_subject_for_durable(watch.durable)
+    assert updated_config.deliver_group == watch.durable
+    assert watch.nats_sub is migrated_sub
     assert sub.stats()["consumer_recovered"] == 1
     assert any("recreated elsewhere" in record.message for record in caplog.records)
+    await sub.stop()
+
+
+async def test_migrated_durable_does_not_migrate_again(mock_nats):
+    """Once migrated, the next health check must see a match and stop, not loop forever.
+
+    Before the fix, binding to the existing durable never changed its
+    deliver_subject server-side, so every poll found the same mismatch and
+    "recovered" again: an ERROR log and churn roughly every health-check
+    interval, forever.
+    """
+    mock_module, client, js, nats_sub = mock_nats
+    sub = NatsSubscriber(consumer_group="workers")
+    await sub.start()
+    handle = await sub.subscribe(["test.*"], AsyncMock())
+    watch = handle.consumer_watches[0]
+
+    js._jsm.consumer_info = AsyncMock(
+        return_value=SimpleNamespace(
+            config=SimpleNamespace(deliver_subject="_INBOX.stale", deliver_group=watch.durable)
+        )
+    )
+    js._jsm.add_consumer = AsyncMock()
+    migrated_sub = AsyncMock()
+    migrated_sub.unsubscribe = AsyncMock()
+    # First poll: the original nats_sub reports the stale inbox and triggers
+    # migration.  Every poll after that goes through the *migrated*
+    # subscription, which must report the corrected inbox.
+    nats_sub.consumer_info = AsyncMock(
+        return_value=SimpleNamespace(
+            config=SimpleNamespace(deliver_subject="_INBOX.stale", deliver_group=watch.durable)
+        )
+    )
+    migrated_sub.consumer_info = AsyncMock(
+        return_value=SimpleNamespace(
+            config=SimpleNamespace(
+                deliver_subject=sub._deliver_subject_for_durable(watch.durable),
+                deliver_group=watch.durable,
+            )
+        )
+    )
+    js.subscribe = AsyncMock(return_value=migrated_sub)
+
+    await sub._check_consumer_watch(handle, watch)
+    assert sub.stats()["consumer_recovered"] == 1
+    assert watch.nats_sub is migrated_sub
+
+    js._jsm.add_consumer.reset_mock()
+    await sub._check_consumer_watch(handle, watch)
+    await sub._check_consumer_watch(handle, watch)
+
+    js._jsm.add_consumer.assert_not_called()
+    assert sub.stats()["consumer_recovered"] == 1
     await sub.stop()
 
 
@@ -2340,15 +2423,15 @@ async def test_unsubscribe_survives_nats_subs_mutation_during_teardown(mock_nats
     await sub.stop()
 
 
-async def test_recovery_replays_from_the_earlier_of_healthy_or_delivered(mock_nats):
+async def test_recovery_replays_from_last_healthy_check(mock_nats):
     """Recreate must not reuse the startup deliver policy (NEW would skip the gap)."""
     mock_module, client, js, nats_sub = mock_nats
     sub = NatsSubscriber()
     await sub.start()
     handle = await sub.subscribe(["test.*"], AsyncMock())
     watch = handle.consumer_watches[0]
-    watch.last_healthy_at = datetime(2020, 1, 1, tzinfo=UTC)
-    watch.last_delivered_at = datetime(2020, 1, 2, tzinfo=UTC)
+    recent = datetime.now(UTC) - timedelta(seconds=5)
+    watch.last_healthy_at = recent
 
     nats_sub.consumer_info = AsyncMock(side_effect=js_errors.NotFoundError())
     recovered_sub = AsyncMock()
@@ -2359,7 +2442,31 @@ async def test_recovery_replays_from_the_earlier_of_healthy_or_delivered(mock_na
 
     config = js.subscribe.call_args.kwargs["config"]
     assert config.deliver_policy == js_api.DeliverPolicy.BY_START_TIME
-    assert config.opt_start_time == datetime(2020, 1, 1, tzinfo=UTC)
+    assert config.opt_start_time == recent
+    await sub.stop()
+
+
+async def test_recovery_replay_window_is_bounded(mock_nats):
+    """A stale last_healthy_at must not trigger a days-old replay burst."""
+    mock_module, client, js, nats_sub = mock_nats
+    sub = NatsSubscriber(consumer_recovery_max_replay_window_s=60.0)
+    await sub.start()
+    handle = await sub.subscribe(["test.*"], AsyncMock())
+    watch = handle.consumer_watches[0]
+    watch.last_healthy_at = datetime(2020, 1, 1, tzinfo=UTC)
+
+    nats_sub.consumer_info = AsyncMock(side_effect=js_errors.NotFoundError())
+    recovered_sub = AsyncMock()
+    recovered_sub.unsubscribe = AsyncMock()
+    js.subscribe = AsyncMock(return_value=recovered_sub)
+
+    before = datetime.now(UTC)
+    await sub._check_consumer_watch(handle, watch)
+    after = datetime.now(UTC)
+
+    config = js.subscribe.call_args.kwargs["config"]
+    assert config.opt_start_time > datetime(2020, 1, 1, tzinfo=UTC)
+    assert before - timedelta(seconds=60) <= config.opt_start_time <= after - timedelta(seconds=60)
     await sub.stop()
 
 
@@ -2511,13 +2618,18 @@ async def test_transport_forwards_consumer_check_settings_to_subscriber(mock_nat
     transport = NatsTransport(
         consumer_check_failure_threshold=7,
         consumer_health_check_jitter_s=1.5,
+        consumer_recovery_max_replay_window_s=120.0,
     )
     subscriber = transport._subscriber
     assert subscriber._consumer_check_failure_threshold == 7
     assert subscriber._consumer_health_check_jitter_s == 1.5
+    assert subscriber._consumer_recovery_max_replay_window_s == 120.0
 
 
 def test_consumer_check_defaults():
     sub = NatsSubscriber()
     assert sub._consumer_check_failure_threshold == DEFAULT_CONSUMER_CHECK_FAILURE_THRESHOLD
     assert sub._consumer_health_check_jitter_s == DEFAULT_CONSUMER_HEALTH_CHECK_JITTER_S
+    assert (
+        sub._consumer_recovery_max_replay_window_s == DEFAULT_CONSUMER_RECOVERY_MAX_REPLAY_WINDOW_S
+    )
