@@ -6,12 +6,30 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from niuu.mesh.config import MeshNatsConfig
 from niuu.mesh.transport_builder import (
     TRANSPORT_ALIASES,
     TransportBuildError,
     build_nng_transport,
     build_transport,
 )
+
+
+class TestMeshNatsConfigConsumerRecoveryDefaults:
+    """The consumer-recovery watchdog settings (fix/sleipnir-nats-consumer-recovery)."""
+
+    def test_defaults_match_the_adapter(self):
+        config = MeshNatsConfig()
+        assert config.consumer_health_check_interval_s == 15.0
+        assert config.consumer_recovery_backoff_s == [1.0, 5.0, 15.0, 30.0]
+
+    def test_overridable(self):
+        config = MeshNatsConfig(
+            consumer_health_check_interval_s=5.0,
+            consumer_recovery_backoff_s=[2.0],
+        )
+        assert config.consumer_health_check_interval_s == 5.0
+        assert config.consumer_recovery_backoff_s == [2.0]
 
 
 class TestTransportAliases:

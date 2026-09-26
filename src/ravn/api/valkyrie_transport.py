@@ -290,6 +290,8 @@ def build_nats_telemetry_subscription_from_env(
                     consumer_group=f"{loaded.consumer_group}-{consumer_suffix}",
                     replay_from_time=replay_from_time,
                     connect_timeout_s=loaded.connect_timeout_seconds,
+                    consumer_health_check_interval_s=loaded.consumer_health_check_interval_seconds,
+                    consumer_recovery_backoff_s=list(loaded.consumer_recovery_backoff_seconds),
                     max_reconnect_attempts=loaded.nats_max_reconnect_attempts,
                     ensure_stream=False,
                     tls_ca_file=loaded.tls_ca_file,

@@ -147,6 +147,8 @@ def resolve_transport_kwargs(
             "ack_progress_interval_s": nats.ack_progress_interval_s,
             "max_ack_pending": nats.max_ack_pending,
             "nak_backoff_s": list(nats.nak_backoff_s),
+            "consumer_health_check_interval_s": nats.consumer_health_check_interval_s,
+            "consumer_recovery_backoff_s": list(nats.consumer_recovery_backoff_s),
             "connect_timeout_s": nats.connect_timeout_s,
             "max_reconnect_attempts": nats.max_reconnect_attempts,
             "ensure_stream": nats.ensure_stream,
