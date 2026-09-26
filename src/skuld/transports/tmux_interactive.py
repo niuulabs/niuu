@@ -145,6 +145,9 @@ _SLASH_COMMAND_ROW_RE = re.compile(r"^(/\S+)\s{2,}(.+?)\s*$")
 # the tmux test harness (tests/support/forge/tmux_page.py) imports this so it
 # parses menus exactly the way the shipped transport does.
 _MENU_ROW_RE = re.compile(r"^\s*[❯>\s]*([1-9])[.)]\s+(.+?)\s*$")
+# Claude Code fills an empty composer with a dimmed suggestion, e.g.
+# `❯ Try "how does work?"` (v2.1.x). It is not input: the composer is empty.
+_COMPOSER_SUGGESTION_RE = re.compile(r'Try "[^"\n]*"')
 _WORKSPACE_TRUST_ROW_RE = re.compile(
     r"^\s*([❯>])?\s*(?:[1-9][.)]\s+)?(No, exit|Yes, I trust this folder)\s*$"
 )
@@ -3839,7 +3842,8 @@ class TmuxInteractiveTransport(CLITransport):
         stripped = row.strip().replace("\u00a0", " ")
         if not stripped.startswith("❯"):
             return False
-        return not stripped[1:].strip()
+        rest = stripped[1:].strip()
+        return not rest or _COMPOSER_SUGGESTION_RE.fullmatch(rest) is not None
 
     @classmethod
     def _clean_response_row(cls, row: str) -> str | None:

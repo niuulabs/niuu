@@ -2038,3 +2038,31 @@ async def test_seed_prompt_and_command_discovery_reject_workspace_trust_menu(tmp
     with pytest.raises(RuntimeError, match="Workspace trust"):
         await transport._wait_for_repl_ready()
     assert not transport.loaded_buffers
+
+
+def test_composer_suggestion_counts_as_an_empty_prompt(tmp_path):
+    """Claude Code v2.1.x shows `❯ Try "…"` in the empty composer and its footer no
+    longer says "? for shortcuts": start-up must still see the REPL as ready."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    screen = (
+        "Claude Code v2.1.282\n"
+        "Opus 5.5 · Claude API\n"
+        "\n"
+        '❯ Try "how does work?"\n'
+        "⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
+    )
+    assert transport._repl_looks_ready(screen)
+    assert transport._is_empty_prompt_row('❯ Try "edit to..."')
+    assert not transport._is_empty_prompt_row("❯ Build the freight shed")
+    assert not transport._is_empty_prompt_row('❯ Try "x" and more')
+
+
+def test_suggestion_row_ends_the_assistant_response():
+    rows = [
+        "❯ build a shed",
+        "● Building the walls now.",
+        "",
+        '❯ Try "how does work?"',
+    ]
+    response = FakeTmuxInteractiveTransport._extract_assistant_response(rows)
+    assert response == "Building the walls now."
