@@ -206,7 +206,7 @@ data:
                           grpc_service:
                             envoy_grpc:
                               cluster_name: cedar_authz
-                            timeout: {{ .Values.envoy.authorization.timeout }}
+                            timeout: {{ include "volundr.extAuthzTimeout" . }}
                           failure_mode_allow: false
                           status_on_error:
                             code: ServiceUnavailable

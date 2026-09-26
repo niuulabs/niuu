@@ -342,6 +342,8 @@ envoy:
     identity: null
     # Keep outside localServices.portRange (9001-9020).
     port: 9000
+    # -- Envoy's budget for the authorization decision. When identityAuthority is
+    # enabled, identityAuthority.timeout is added so the identity lookup fits.
     timeout: 1s
     shutdownGraceSeconds: 5
     extraVolumeMounts: []
