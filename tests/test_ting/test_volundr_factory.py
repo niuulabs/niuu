@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -400,6 +401,86 @@ async def test_skips_credentialed_target_without_token_unless_dev_allows_it() ->
     allowed = await permissive.for_owner("owner-1")
     assert len(allowed) == 1
     assert allowed[0]._api_key is None
+
+
+@pytest.mark.asyncio
+async def test_for_owner_with_unresolved_counts_a_skipped_credentialless_instance() -> None:
+    """for_owner alone can't tell "zero clusters registered" apart from "a
+    registered cluster was skipped" — for_owner_with_unresolved is the
+    signal a caller needs before it can safely treat "not found on every
+    adapter I got" as "not found on every registered cluster" (see the
+    activity subscriber's run reconciliation).
+    """
+    registry = StubGuildRegistry(
+        [
+            _make_instance(
+                instance_id="system-1",
+                name="System Alpha",
+                base_url="http://alpha:8000",
+                config={"credential_name": "missing"},
+            ),
+            _make_instance(
+                instance_id="system-2",
+                name="System Beta",
+                base_url="http://beta:8000",
+            ),
+        ]
+    )
+    factory = VolundrAdapterFactory(registry, StubCredentialStore())
+
+    adapters, unresolved = await factory.for_owner_with_unresolved("owner-1")
+
+    assert len(adapters) == 1
+    assert adapters[0].name == "System Beta"
+    assert unresolved == 1
+
+
+@pytest.mark.asyncio
+async def test_for_owner_with_unresolved_reports_zero_when_nothing_is_skipped() -> None:
+    factory = VolundrAdapterFactory(
+        StubGuildRegistry(
+            [
+                _make_instance(
+                    instance_id="system-1",
+                    name="System Alpha",
+                    base_url="http://alpha:8000",
+                )
+            ]
+        ),
+        StubCredentialStore(),
+    )
+
+    adapters, unresolved = await factory.for_owner_with_unresolved("owner-1")
+
+    assert len(adapters) == 1
+    assert unresolved == 0
+
+
+@pytest.mark.asyncio
+async def test_skipped_credentialless_instance_is_logged_loudly(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A skip must be visible (ERROR), not a quiet WARNING nobody alerts on
+    — see .claude/rules/no-fallbacks.md.
+    """
+    registry = StubGuildRegistry(
+        [
+            _make_instance(
+                instance_id="system-1",
+                name="System Alpha",
+                base_url="http://alpha:8000",
+                config={"credential_name": "missing"},
+            )
+        ]
+    )
+    factory = VolundrAdapterFactory(registry, StubCredentialStore())
+
+    with caplog.at_level(logging.ERROR, logger="ting.adapters.volundr_factory"):
+        await factory.for_owner("owner-1")
+
+    error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(error_records) == 1
+    assert "system-1" in error_records[0].getMessage()
 
 
 @pytest.mark.asyncio

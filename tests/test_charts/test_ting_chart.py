@@ -150,6 +150,41 @@ class TestConfigMapTemplate:
         assert ".Values.workflowExecution.delivery.waitObservers" in template_yaml
         assert "admission_roles:" in template_yaml
 
+    def test_watcher_reconnect_settings_are_rendered_from_values(self, template_yaml):
+        assert "watcher:" in template_yaml
+        assert "reconnect_delay:" in template_yaml
+        assert "reconnect_initial_delay:" in template_yaml
+        assert "reconnect_max_delay:" in template_yaml
+        assert "reconnect_backoff_multiplier:" in template_yaml
+        assert "reconnect_jitter:" in template_yaml
+        assert "reconnect_stable_after_seconds:" in template_yaml
+        assert ".Values.watcher.reconnectDelay" in template_yaml
+        assert ".Values.watcher.reconnectInitialDelay" in template_yaml
+        assert ".Values.watcher.reconnectMaxDelay" in template_yaml
+        assert ".Values.watcher.reconnectBackoffMultiplier" in template_yaml
+        assert ".Values.watcher.reconnectJitter" in template_yaml
+        assert ".Values.watcher.reconnectStableAfterSeconds" in template_yaml
+
+    def test_watcher_settings_never_use_a_default_filter(self, template_yaml):
+        """`| default` turns a deliberate 0 (e.g. "no jitter") back into the
+        hardcoded fallback, since Go templates treat 0 as falsy — and
+        values.yaml already sets every one of these keys, so the filter
+        would only ever mask a legitimate zero, never fill a real gap.
+        """
+        watcher_block = template_yaml.split("watcher:", 1)[1].split("dispatch:", 1)[0]
+        for key in (
+            "reconnectDelay",
+            "reconnectInitialDelay",
+            "reconnectMaxDelay",
+            "reconnectBackoffMultiplier",
+            "reconnectJitter",
+            "reconnectStableAfterSeconds",
+        ):
+            line = next(
+                line for line in watcher_block.splitlines() if f".Values.watcher.{key}" in line
+            )
+            assert "default" not in line, f"{key} still uses | default: {line!r}"
+
     def test_default_values_render_a_config_ting_accepts(self, tmp_path):
         """A default install must start: both packs are off and the config loads."""
         config = _config_from_rendered(_render_ting_chart(tmp_path, {}))
@@ -158,6 +193,65 @@ class TestConfigMapTemplate:
 
         assert settings.workflow_execution.enabled is False
         assert settings.workflow_execution.delivery.enabled is False
+
+    def test_default_values_render_the_documented_watcher_defaults(self, tmp_path):
+        settings = Settings(**_config_from_rendered(_render_ting_chart(tmp_path, {})))
+
+        assert settings.watcher.reconnect_delay == 5.0
+        assert settings.watcher.reconnect_initial_delay == 2.0
+        assert settings.watcher.reconnect_max_delay == 120.0
+        assert settings.watcher.reconnect_backoff_multiplier == 2.0
+        assert settings.watcher.reconnect_jitter == 0.2
+        assert settings.watcher.reconnect_stable_after_seconds == 30.0
+
+    def test_watcher_values_override_render_into_settings(self, tmp_path):
+        rendered = _render_ting_chart(
+            tmp_path,
+            {
+                "watcher": {
+                    "reconnectDelay": 3.0,
+                    "reconnectInitialDelay": 1.5,
+                    "reconnectMaxDelay": 60.0,
+                    "reconnectBackoffMultiplier": 3.0,
+                    "reconnectJitter": 0.1,
+                    "reconnectStableAfterSeconds": 15.0,
+                }
+            },
+        )
+        settings = Settings(**_config_from_rendered(rendered))
+
+        assert settings.watcher.reconnect_delay == 3.0
+        assert settings.watcher.reconnect_initial_delay == 1.5
+        assert settings.watcher.reconnect_max_delay == 60.0
+        assert settings.watcher.reconnect_backoff_multiplier == 3.0
+        assert settings.watcher.reconnect_jitter == 0.1
+        assert settings.watcher.reconnect_stable_after_seconds == 15.0
+
+    def test_watcher_zero_values_survive_rendering(self, tmp_path):
+        """A deliberate 0 (e.g. "no jitter", "retry immediately") must not
+        get silently replaced by the hardcoded default — regression test
+        for `| default` turning falsy-but-valid values back into defaults.
+        """
+        rendered = _render_ting_chart(
+            tmp_path,
+            {
+                "watcher": {
+                    "reconnectDelay": 0,
+                    "reconnectInitialDelay": 0,
+                    "reconnectJitter": 0,
+                    "reconnectStableAfterSeconds": 0,
+                }
+            },
+        )
+        settings = Settings(**_config_from_rendered(rendered))
+
+        assert settings.watcher.reconnect_delay == 0.0
+        assert settings.watcher.reconnect_initial_delay == 0.0
+        assert settings.watcher.reconnect_jitter == 0.0
+        assert settings.watcher.reconnect_stable_after_seconds == 0.0
+        # Untouched fields still come through as their real (non-zero) values.
+        assert settings.watcher.reconnect_max_delay == 120.0
+        assert settings.watcher.reconnect_backoff_multiplier == 2.0
 
     def test_ci_values_render_a_config_ting_accepts(self, tmp_path):
         """The values the Helm smoke test installs with must load too."""

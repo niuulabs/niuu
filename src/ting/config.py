@@ -715,7 +715,55 @@ class WatcherConfig(BaseModel):
     )
     reconnect_delay: float = Field(
         default=5.0,
-        description="Seconds to wait before reconnecting after SSE subscription failure.",
+        ge=0.0,
+        le=3600.0,
+        description="Seconds to wait before reconnecting after a clean SSE stream close.",
+    )
+    reconnect_initial_delay: float = Field(
+        default=2.0,
+        ge=0.0,
+        le=3600.0,
+        description=(
+            "Initial per-cluster backoff delay in seconds after an SSE subscription "
+            "failure, before the multiplier is applied. 0 means retry immediately."
+        ),
+    )
+    reconnect_max_delay: float = Field(
+        default=120.0,
+        ge=0.0,
+        le=3600.0,
+        description="Ceiling in seconds for a failing cluster's per-cluster backoff delay.",
+    )
+    reconnect_backoff_multiplier: float = Field(
+        default=2.0,
+        ge=1.0,
+        le=10.0,
+        description=(
+            "Multiplier applied to a failing cluster's backoff delay after each "
+            "consecutive failure. 1.0 means retry at a constant reconnect_initial_delay."
+        ),
+    )
+    reconnect_jitter: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Fraction (0-1) randomly subtracted from each computed per-cluster backoff "
+            "delay to avoid synchronized reconnect storms."
+        ),
+    )
+    reconnect_stable_after_seconds: float = Field(
+        default=30.0,
+        ge=0.0,
+        le=3600.0,
+        description=(
+            "Seconds an SSE connection must stay open before it counts as healthy "
+            "enough to reset a cluster's backoff — even if it never sees an event "
+            "and then drops. Without this, a cluster that legitimately has no "
+            "sessions right now (so it never gets the 'first event' reset) would "
+            "treat every ordinary periodic reconnect as a failure and grow its "
+            "backoff without bound."
+        ),
     )
 
 

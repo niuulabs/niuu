@@ -111,6 +111,18 @@ data:
       {{- toYaml $pat | nindent 6 }}
     {{- end }}
 
+    watcher:
+      # No `| default` here: values.yaml already sets every one of these,
+      # and `| default` treats a deliberately-configured 0 (e.g. "retry
+      # immediately", "no jitter") the same as "unset", silently replacing
+      # it with the hardcoded default below instead of honouring it.
+      reconnect_delay: {{ .Values.watcher.reconnectDelay }}
+      reconnect_initial_delay: {{ .Values.watcher.reconnectInitialDelay }}
+      reconnect_max_delay: {{ .Values.watcher.reconnectMaxDelay }}
+      reconnect_backoff_multiplier: {{ .Values.watcher.reconnectBackoffMultiplier }}
+      reconnect_jitter: {{ .Values.watcher.reconnectJitter }}
+      reconnect_stable_after_seconds: {{ .Values.watcher.reconnectStableAfterSeconds }}
+
     dispatch:
       default_system_prompt: {{ .Values.dispatch.defaultSystemPrompt | quote }}
       default_model: {{ .Values.dispatch.defaultModel | quote }}
