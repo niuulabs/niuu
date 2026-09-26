@@ -777,6 +777,29 @@ def test_search_finds_page(client_with_page: TestClient) -> None:
     assert results[0]["path"] == "technical/test.md"
 
 
+def test_search_names_the_single_base_mount(client_with_page: TestClient) -> None:
+    results = client_with_page.get("/mimir/search", params={"q": "ravn tools"}).json()
+    assert {r["mount"] for r in results} == {"test"}
+
+
+def test_search_names_the_mount_each_result_came_from(composite_client: TestClient) -> None:
+    composite_client.put(
+        "/mimir/page",
+        json={"path": "self/notes.md", "content": "# Notes\n\nFjolnir keeps the gateway."},
+    )
+    composite_client.put(
+        "/mimir/page",
+        json={"path": "projects/gw.md", "content": "# Gateway\n\nFjolnir routes the gateway."},
+    )
+    results = composite_client.get("/mimir/search", params={"q": "gateway"}).json()
+    assert {r["path"]: r["mount"] for r in results} == {
+        "self/notes.md": "local",
+        "projects/gw.md": "shared",
+    }
+    scoped = composite_client.get("/mimir/search", params={"q": "gateway", "mount": "shared"})
+    assert [(r["path"], r["mount"]) for r in scoped.json()] == [("projects/gw.md", "shared")]
+
+
 def test_search_no_results(client_with_page: TestClient) -> None:
     resp = client_with_page.get("/mimir/search", params={"q": "kanuck valley models"})
     assert resp.status_code == 200

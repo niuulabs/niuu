@@ -20,9 +20,10 @@ describe('LintPage', () => {
     wrap(<LintPage />, service, { setTweak });
     const buttons = await screen.findAllByRole('button', { name: `Open ${issue.page}` });
     fireEvent.click(buttons[0]!);
-    expect(setTweak).toHaveBeenCalledWith('mimir.selectedPagePath', issue.page);
-    expect(setTweak).toHaveBeenCalledWith('activeMount', issue.mount);
-    expect(navigate).toHaveBeenCalledWith({ to: '/mimir/pages' });
+    expect(navigate).toHaveBeenCalledWith({
+      to: '/mimir/read',
+      search: { path: issue.page, mount: issue.mount },
+    });
   });
 
   it('shows loading state initially', () => {

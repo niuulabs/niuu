@@ -22,7 +22,7 @@ import { WikilinkPill } from '../components/WikilinkPill';
 import { NeighbourhoodGraph } from './NeighbourhoodGraph';
 import { ProofPill } from './ProofPill';
 import { ReviseFact } from './ReviseFact';
-import { useEvidence, useRelated } from './useMemory';
+import { useEvidence, useRelated } from '../../application/useMemory';
 
 const SECTION =
   'niuu:flex niuu:flex-col niuu:gap-3 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-5 niuu:py-4';

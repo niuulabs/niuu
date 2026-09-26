@@ -11,7 +11,7 @@
 import type { GraphEdge, GraphNode, MimirGraph } from '../../domain/api-types';
 import { kindGroup, type KindGroup } from '../../domain/memoryKinds';
 import { BORN_WINDOW_MS } from './scene3dConfig';
-import { relationLabel } from './relationLabel';
+import { isContradictionRelation, relationLabel } from '../../domain/relationLabel';
 import type { SceneAnswer, SceneFocus } from './types';
 
 export type LitLevel = 'lit' | 'dim-strong' | 'dim-soft' | 'normal';
@@ -52,10 +52,6 @@ export interface VisibilityInput {
   path?: readonly string[] | null;
   asOf?: string | null;
   disputedIds?: ReadonlySet<string> | readonly string[];
-}
-
-function isContradictionType(type: string | undefined): boolean {
-  return type === 'contradicts' || type === 'disagrees_with' || type === 'conflicts_with';
 }
 
 function buildAdjacency(
@@ -174,7 +170,7 @@ export function computeVisibility(graph: MimirGraph, input: VisibilityInput): Sc
 
   const edges: EdgeVisibility[] = graph.edges.map((edge, index) => {
     const bothVisible = visibleIds.has(edge.source) && visibleIds.has(edge.target);
-    const contradiction = isContradictionType(edge.type);
+    const contradiction = isContradictionRelation(edge.type);
 
     let pathOrder: number | null = null;
     if (pathSet.has(edge.source) && pathSet.has(edge.target)) {

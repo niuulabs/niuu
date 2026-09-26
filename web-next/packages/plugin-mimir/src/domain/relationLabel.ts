@@ -1,20 +1,23 @@
-/** Humanises `RelatedPage.rel` for the Focus panel's "Links" list, e.g. `depends_on` → "depends on". */
+/**
+ * How a typed graph edge reads to a person: `depends_on` → "depends on".
+ *
+ * Structural links — a plain wikilink, a generic link, "cites the same
+ * source", "mentions this entity" — carry no verb worth showing, so they have
+ * no label at all rather than a misleading one.
+ */
 
-const RELATION_LABELS: Record<string, string> = {
-  depends_on: 'depends on',
-  part_of: 'part of',
-  explains: 'explains',
-  fixed_by: 'fixed by',
-  shapes: 'shapes',
-  routes_for: 'routes for',
-  same_failure: 'same failure',
-  caused_by: 'caused by',
-  blocks: 'blocks',
-  supersedes: 'supersedes',
-};
+const UNTYPED_RELATIONS = new Set(['wikilink', 'link', 'shared_source', 'related_entity']);
 
-/** Humanise a typed relation. Returns null for a plain (untyped) link. */
-export function relationLabel(rel: string | null): string | null {
-  if (!rel) return null;
-  return RELATION_LABELS[rel] ?? rel.replace(/_/g, ' ');
+/** Relations that record a disagreement between two pages. */
+const CONTRADICTION_RELATIONS = new Set(['contradicts', 'disagrees_with', 'conflicts_with']);
+
+/** The label for an edge type, or null for an untyped or missing one. */
+export function relationLabel(type: string | null | undefined): string | null {
+  if (!type || UNTYPED_RELATIONS.has(type)) return null;
+  return type.replace(/_/g, ' ');
+}
+
+/** True for the relations that mean two pages disagree. */
+export function isContradictionRelation(type: string | null | undefined): boolean {
+  return Boolean(type && CONTRADICTION_RELATIONS.has(type));
 }

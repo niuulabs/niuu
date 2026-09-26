@@ -11,7 +11,7 @@
 import { relTime, LoadingState, ErrorState, SegmentedFilter } from '@niuulabs/ui';
 import { getZoneByKind } from '../../domain/page';
 import { neighborsWithinDepth } from '../../domain/graphNeighbors';
-import { useEvidence } from './useMemory';
+import { useEvidence } from '../../application/useMemory';
 import { ProofPill } from './ProofPill';
 import './MemoryLegend.css';
 import type { Page } from '../../domain/page';

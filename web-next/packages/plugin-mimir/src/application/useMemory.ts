@@ -14,9 +14,9 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
-import type { IMimirService } from '../../ports';
-import type { FactEvidence, ReviseRequest } from '../../domain/evidence';
-import type { Page, SearchResult } from '../../domain/page';
+import type { IMimirService } from '../ports';
+import type { FactEvidence, ReviseRequest } from '../domain/evidence';
+import type { Page, SearchResult } from '../domain/page';
 
 export function evidenceKey(path: string) {
   return ['mimir', 'evidence', path] as const;

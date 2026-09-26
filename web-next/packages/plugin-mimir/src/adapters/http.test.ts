@@ -363,6 +363,18 @@ describe('buildMimirHttpAdapter', () => {
       expect(call).toContain('mode=fts');
     });
 
+    it('carries the mount each result was read from', async () => {
+      const client = makeClient({
+        get: vi
+          .fn()
+          .mockResolvedValue([
+            { path: '/a', title: 'A', summary: 'S', category: 'arch', mount: 'shared' },
+          ]),
+      });
+      const [result] = await buildMimirHttpAdapter(client).pages.search('a');
+      expect(result?.mounts).toEqual(['shared']);
+    });
+
     it('passes the active mount through to the backend when provided', async () => {
       const client = makeClient({ get: vi.fn().mockResolvedValue([]) });
       await buildMimirHttpAdapter(client).pages.search('k8s', 'hybrid', 'local');

@@ -10,7 +10,6 @@
 
 import { useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';
-import { usePluginCtx } from '@niuulabs/plugin-sdk';
 import { StateDot } from '@niuulabs/ui';
 import { useActiveMount } from '../application/useActiveMount';
 import { useLint } from '../application/useLint';
@@ -48,7 +47,6 @@ const CHECK_ROW_BASE =
 
 export function LintPage() {
   const navigate = useNavigate();
-  const ctx = usePluginCtx();
   const { activeMount, mountName } = useActiveMount();
   const { issues, summary, isLoading, isError, error, runAutoFix, isFixing } = useLint(mountName);
   const [selectedRule, setSelectedRule] = useState<LintRule | null>(null);
@@ -282,9 +280,10 @@ export function LintPage() {
                     className={ACTION_BTN}
                     aria-label={`Open ${issue.page}`}
                     onClick={() => {
-                      ctx.setTweak('mimir.selectedPagePath', issue.page);
-                      if (issue.mount) ctx.setTweak('activeMount', issue.mount);
-                      navigate({ to: '/mimir/pages' });
+                      navigate({
+                        to: '/mimir/read',
+                        search: { path: issue.page, mount: issue.mount },
+                      });
                     }}
                   >
                     Open

@@ -21,7 +21,7 @@ export type { MemoryPalette, ProofBucket, AgeBucket } from './palette';
 
 export { nodeColour, nodeKindGroup, proofBucket, ageBucket } from './colour';
 
-export { relationLabel, isContradictionRelation } from './relationLabel';
+export { relationLabel, isContradictionRelation } from '../../domain/relationLabel';
 
 export { computeLayout, computeLayoutUncached, flattenTo2D, radiusForDegree } from './layout';
 export type { SceneLayout, NodeLayout } from './layout';

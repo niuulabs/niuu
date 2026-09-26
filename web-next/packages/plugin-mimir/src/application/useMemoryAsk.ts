@@ -6,7 +6,7 @@
  * the scene's `answers` prop.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useMemorySearch, usePagesForPaths, useEvidenceForPaths } from '../ui/memory/useMemory';
+import { useMemorySearch, usePagesForPaths, useEvidenceForPaths } from './useMemory';
 import { quoteKeyFacts, type QuotedFact } from '../domain/quoteFacts';
 import { nodeIndex } from '../domain/graphIndex';
 import type { MimirGraph } from '../domain/api-types';

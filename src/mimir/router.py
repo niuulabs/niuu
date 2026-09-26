@@ -181,6 +181,8 @@ class SearchResult(BaseModel):
     title: str
     summary: str
     category: str
+    #: The mount the result was read from — pages are identified by (mount, path).
+    mount: str
     # Populated only when the search is called with ?debug=true (NIU-1057).
     score: float | None = None
     score_breakdown: dict[str, float] | None = None
@@ -1400,6 +1402,20 @@ class MimirRouter:
                 return mount["port"], mount_name
         raise HTTPException(404, f"Unknown mount: {mount_name}")
 
+    async def _search_attributed(
+        self, query: str, mount_name: str | None
+    ) -> list[tuple[str, MimirPage]]:
+        """Search one mount, or every mount, naming the mount each result came from."""
+        from ravn.adapters.mimir.composite import CompositeMimirAdapter
+
+        if mount_name is not None:
+            port, resolved = self._resolve_port(mount_name)
+            return [(resolved, page) for page in await port.search(query)]
+        reader = self._read_adapter()
+        if isinstance(reader, CompositeMimirAdapter):
+            return await reader.search_attributed(query)
+        return [(self._name, page) for page in await reader.search(query)]
+
     def _register_routes(self) -> None:
         router = self.router
         adapter = self._adapter
@@ -1721,8 +1737,8 @@ class MimirRouter:
             mount: str | None = Query(default=None),
             debug: bool = Query(default=False),
         ) -> list[SearchResult]:
-            port, _ = self._resolve_port(mount)
-            pages = await port.search(q)
+            attributed = await self._search_attributed(q, mount)
+            pages = [page for _, page in attributed]
             if self._eval_capture_dir is not None:
                 from mimir.eval import append_capture
 
@@ -1738,10 +1754,11 @@ class MimirRouter:
                     title=p.meta.title,
                     summary=p.meta.summary,
                     category=p.meta.category,
+                    mount=mount_name,
                     score=p.meta.search_score if debug else None,
                     score_breakdown=p.meta.score_breakdown if debug else None,
                 )
-                for p in pages
+                for mount_name, p in attributed
             ]
 
         @router.get("/entities/index", response_model=list[EntityResponse])

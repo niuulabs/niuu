@@ -117,6 +117,8 @@ interface RawSearchResult {
   title: string;
   summary: string;
   category: string;
+  /** The mount the result was read from. */
+  mount: string;
   type?: string;
   confidence?: string;
   score?: number;
@@ -1080,7 +1082,7 @@ export function buildMimirHttpAdapter(
           confidence: (r.confidence ?? 'medium') as SearchResult['confidence'],
           // The API sends JSON null outside debug mode — normalise to undefined.
           score: r.score ?? undefined,
-          mounts: mountName ? [mountName] : undefined,
+          mounts: [r.mount],
           scoreBreakdown: r.score_breakdown ?? undefined,
         }));
       },
