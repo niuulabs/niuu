@@ -1,6 +1,6 @@
 import type { PageMeta, Page, SearchResult } from '../domain/page';
 import type { Source, OriginType } from '../domain/source';
-import type { MimirStats, MimirGraph } from '../domain/api-types';
+import type { MimirStats, MimirGraph, LiveActivity } from '../domain/api-types';
 import type { EntityKind, EntityMeta } from '../domain/entity';
 import type { FactEvidence, RelatedPage, ReviseRequest } from '../domain/evidence';
 
@@ -73,6 +73,12 @@ export interface IPageStore {
    * Optionally scoped to a single mount.
    */
   getGraph(options?: { mountName?: string }): Promise<MimirGraph>;
+
+  /**
+   * Page reads and writes served recently, newest first
+   * (`GET /activity/live`). `since` (ISO-8601) returns only newer events.
+   */
+  getLiveActivity(options?: { since?: string }): Promise<LiveActivity[]>;
 
   /**
    * Evidence-counted beliefs for a page: every Key Fact with its proof count

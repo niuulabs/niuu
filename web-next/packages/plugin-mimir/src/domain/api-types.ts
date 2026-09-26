@@ -72,6 +72,15 @@ export interface GraphNode {
   mount?: string;
   /** Number of inbound edges -- set during graph processing. */
   inboundCount?: number;
+  /** ISO-8601 time the page was last written. */
+  updatedAt: string;
+  /**
+   * ISO-8601 time the page first appears in the record: the earliest of its
+   * dated timeline entries and its last write. Replay hides a page until then.
+   */
+  firstSeen: string;
+  /** The page's own confidence frontmatter, or null when the page declares none. */
+  confidence: string | null;
 }
 
 export interface GraphEdge {
@@ -83,6 +92,30 @@ export interface GraphEdge {
 export interface MimirGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
+}
+
+// ---------------------------------------------------------------------------
+// Live activity — who is reading or writing which page right now
+// ---------------------------------------------------------------------------
+
+export type LiveActivityKind = 'read' | 'write';
+
+/**
+ * One page read or write, as the serving instance saw it.
+ *
+ * Held in a bounded in-memory window on the backend: it answers "what is
+ * happening now", not "what ever happened".
+ */
+export interface LiveActivity {
+  id: string;
+  /** ISO-8601 time the request was served. */
+  timestamp: string;
+  kind: LiveActivityKind;
+  mount: string;
+  /** Page path (not the mount-qualified graph node id). */
+  path: string;
+  /** Verified caller (the principal's user id), or null when the request was unauthenticated. */
+  actor: string | null;
 }
 
 // ---------------------------------------------------------------------------

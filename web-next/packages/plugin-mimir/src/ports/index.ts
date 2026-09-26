@@ -5,6 +5,7 @@ import type { ILintEngine } from './ILintEngine';
 
 export type { IMountAdapter, RecentWrite } from './IMountAdapter';
 export type { IPageStore, SearchMode } from './IPageStore';
+export type { LiveActivity, LiveActivityKind } from '../domain/api-types';
 export type { FactEvidence, EvidenceTrend, RelatedPage, ReviseRequest } from '../domain/evidence';
 export type { IEmbeddingStore, EmbeddingSearchResult } from './IEmbeddingStore';
 export type { ILintEngine } from './ILintEngine';
