@@ -11,6 +11,7 @@ import { GraphPage } from './ui/GraphPage';
 import { RegistryWorkspace } from './ui/RegistryWorkspace';
 import { MimirSubnav } from './ui/MimirSubnav';
 import { MimirTopbar } from './ui/MimirTopbar';
+import { validateMemoryViewSearch } from './application/memoryViewSearch';
 
 export const mimirPlugin = definePlugin({
   id: 'mimir',
@@ -43,6 +44,9 @@ export const mimirPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/mimir',
+      // Advanced mode's Memory Explore scene (Explore/Focus/Replay) deep-links
+      // through these; Simple mode's MemoryHomePage ignores them.
+      validateSearch: validateMemoryViewSearch,
       component: MemoryOverviewRoute,
     }),
     // Ask and read work in either mode: a link from a realm, a session, or the
@@ -184,6 +188,7 @@ export { WikilinkPill } from './ui/components/WikilinkPill';
 export { PageTypeGlyph } from './ui/components/PageTypeGlyph';
 export { MountChip } from './ui/components/MountChip';
 export { MemoryHomePage } from './ui/memory/MemoryHomePage';
+export { MemoryExploreView } from './ui/memory/MemoryExploreView';
 export { AskMemoryPage } from './ui/memory/AskMemoryPage';
 export { MemoryPagePage } from './ui/memory/MemoryPagePage';
 export { ProofPill } from './ui/memory/ProofPill';

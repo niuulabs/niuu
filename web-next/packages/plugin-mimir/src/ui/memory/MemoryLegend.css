@@ -1,0 +1,42 @@
+/*
+ * Memory-kind legend swatches — "Colour by · Type" on the Memory Explore
+ * view. A co-located CSS file rather than Tailwind arbitrary values, since
+ * the swatch colour is data-driven per kind group. Reads the
+ * `--color-memory-kind-<group>` custom properties owned by the scene build
+ * (see `@niuulabs/design-tokens/tokens.css`).
+ */
+.memory-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full, 9999px);
+  flex-shrink: 0;
+}
+
+.memory-swatch[data-group='topic'] {
+  background: var(--color-memory-kind-topic);
+}
+.memory-swatch[data-group='entity'] {
+  background: var(--color-memory-kind-entity);
+}
+.memory-swatch[data-group='decision'] {
+  background: var(--color-memory-kind-decision);
+}
+.memory-swatch[data-group='directive'] {
+  background: var(--color-memory-kind-directive);
+}
+.memory-swatch[data-group='preference'] {
+  background: var(--color-memory-kind-preference);
+}
+.memory-swatch[data-group='goal'] {
+  background: var(--color-memory-kind-goal, var(--status-green));
+}
+.memory-swatch[data-group='observation'] {
+  background: var(--color-memory-kind-observation, var(--status-indigo));
+}
+.memory-swatch[data-group='thread'] {
+  background: var(--color-memory-kind-thread, var(--status-red));
+}
+.memory-swatch[data-group='page'] {
+  background: var(--color-memory-kind-page, var(--text-faint));
+}
