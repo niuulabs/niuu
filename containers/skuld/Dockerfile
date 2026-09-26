@@ -28,22 +28,27 @@ RUN set -eux; \
     install -m 0755 "/tmp/${UV_ARCHIVE%.tar.gz}/uv" /usr/local/bin/uv; \
     rm -rf "/tmp/${UV_ARCHIVE}" "/tmp/${UV_ARCHIVE%.tar.gz}"
 
-# Copy volundr package and install
+# Dependency venv only. It resolves from the lockfile alone, so it survives
+# source edits; the runtime image copies it as one layer that session nodes
+# keep cached until uv.lock changes.
 WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
 # --extra dsh bundles the DeepSeek Harness runtime (single-file exe, exact-pinned)
 # for DshJsonRpcTransport; the binary needs no Node at runtime.
-# Dependencies resolve from the lockfile alone, so this layer survives source
-# edits; only the project itself is installed after src/ is copied.
 RUN uv sync --frozen --no-dev --no-editable --no-install-project --extra otel --extra dsh
+
+# ---------------------------------------------------------------------------
+# Project wheel — the only part of the Python install a source edit changes
+# ---------------------------------------------------------------------------
+FROM builder AS project
 COPY src/ /app/src/
 # vendor/envoy_authz_protos/ provides the envoy.service.auth.v3 ext_authz
 # bindings identity/authz_main.py needs (see its README); vendored instead of
 # depending on xds-protos, which bundled a copy of opentelemetry/proto/** that
 # collided with the otel extra installed above.
 COPY vendor/ /app/vendor/
-RUN uv sync --frozen --no-dev --no-editable --extra otel --extra dsh
+RUN uv build --wheel --out-dir /dist
 
 # ---------------------------------------------------------------------------
 # Runtime — Node.js stays (needed for claude-code/codex CLI at runtime)
@@ -59,6 +64,14 @@ LABEL org.opencontainers.image.source="https://github.com/niuulabs/volundr"
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
+
+# Copy the dependency venv before the daily OS refresh below, so that refresh
+# does not rebuild (and make every session node re-pull) this large layer.
+ENV VIRTUAL_ENV=/opt/venv
+COPY --from=builder /opt/venv /opt/venv
+# Repository startup hooks also need the pinned tooling installer at runtime.
+COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # CI passes the UTC date, so the registry layer cache cannot keep this upgrade
 # (and the security fixes it pulls) for more than a day.
@@ -129,19 +142,16 @@ RUN cd /opt/npm-bootstrap \
 # @xai-official/grok npm package above. Sessions authenticate with XAI_API_KEY or
 # the ~/.grok/auth.json the platform mounts after a wizard sign-in.
 
+# Pinned Muse is shared with the OpenShell image.
+COPY containers/skuld/install-muse.sh /tmp/install-muse.sh
+RUN sh /tmp/install-muse.sh "$TARGETARCH" && rm /tmp/install-muse.sh
+
 # Create app user with UID 1000 (matches helm chart runAsUser)
 RUN existing=$(getent passwd 1000 | cut -d: -f1) && \
     [ -n "$existing" ] && userdel -r "$existing" || true && \
     useradd -m -s /bin/bash -u 1000 skuld && \
     groupadd -r sandbox && \
     useradd -m -s /bin/bash -g sandbox sandbox
-
-# Copy the pre-built venv from builder.
-ENV VIRTUAL_ENV=/opt/venv
-COPY --from=builder /opt/venv /opt/venv
-# Repository startup hooks also need the pinned tooling installer at runtime.
-COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
-ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Copy entrypoint
 COPY containers/skuld/entrypoint.sh /app/entrypoint.sh
@@ -159,9 +169,10 @@ RUN chmod +x /usr/local/bin/openshell-run-installed-skuld
 # Set working directory
 WORKDIR /app
 
-# Pinned Muse is shared with the OpenShell image.
-COPY containers/skuld/install-muse.sh /tmp/install-muse.sh
-RUN sh /tmp/install-muse.sh "$TARGETARCH" && rm /tmp/install-muse.sh
+# Install the project last, into the dependency venv: a source edit then ships
+# only this small layer. Dependencies are already present from the lockfile.
+RUN --network=none --mount=type=bind,from=project,source=/dist,target=/tmp/dist \
+    uv pip install --python /opt/venv/bin/python --no-deps --no-cache --offline /tmp/dist/*.whl
 
 # Fail the image build if an advertised CLI is missing or cannot execute.
 RUN claude --version && codex --version && opencode --version && grok --version && pi --version && muse --version
