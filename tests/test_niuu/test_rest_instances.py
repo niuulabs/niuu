@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -19,15 +20,19 @@ from niuu.adapters.inbound.rest_instances import create_instances_router
 from niuu.config import InstanceRegistryConfig
 from niuu.domain.agent_directory import AgentDirectoryEntry, AgentDirectoryPage
 from niuu.domain.models import (
+    InstanceHealthStatus,
     InstanceKind,
     InstanceVisibility,
     Principal,
     RegisteredInstance,
 )
+from niuu.domain.services.instance_health import InstanceHealthCheckResult
 from niuu.domain.services.instances import (
     InstanceAccessError,
+    InstanceTransportSecurityError,
     InstanceValidationError,
 )
+from niuu.ports.instance_probe import InstanceProbeResult
 
 
 def _instance(
@@ -183,11 +188,42 @@ class StubAgentDirectoryAggregation:
         return self.entry if agent_id == self.entry.id else None
 
 
+class StubHealthChecker:
+    """Duck-typed stand-in for InstanceHealthChecker: no real network calls."""
+
+    def __init__(
+        self,
+        *,
+        ok: bool = True,
+        message: str = "reachable",
+        crash: Exception | None = None,
+    ) -> None:
+        self.ok = ok
+        self.message = message
+        self.crash = crash
+        self.checked_instance_ids: list[str] = []
+
+    async def check_instance(self, instance: RegisteredInstance) -> InstanceHealthCheckResult:
+        self.checked_instance_ids.append(instance.id)
+        if self.crash is not None:
+            raise self.crash
+        checked_at = datetime.now(UTC)
+        health = InstanceHealthStatus.OK if self.ok else InstanceHealthStatus.UNREACHABLE
+        return InstanceHealthCheckResult(
+            probe=InstanceProbeResult(ok=self.ok, status_code=200, message=self.message),
+            health=health,
+            checked_at=checked_at,
+            last_seen_at=checked_at if self.ok else instance.last_seen_at,
+            last_error=None if self.ok else self.message,
+        )
+
+
 def _client(
     service: StubInstanceService,
     *,
     catalog: list[Any] | None = None,
     agent_directory: StubAgentDirectoryAggregation | None = None,
+    health_checker: StubHealthChecker | None = None,
 ) -> TestClient:
     app = FastAPI()
     app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
@@ -198,6 +234,7 @@ def _client(
     app.include_router(
         create_instances_router(  # type: ignore[arg-type]
             service,
+            health_checker=health_checker or StubHealthChecker(),  # type: ignore[arg-type]
             agent_directory=agent_directory,  # type: ignore[arg-type]
         )
     )
@@ -373,6 +410,7 @@ def test_create_instance_passes_payload_to_service_and_maps_access_errors() -> N
     )
 
     assert response.status_code == 201
+    assert response.json()["health"] == "ok"
     assert service.create_calls[-1]["kind"] == InstanceKind.VOLUNDR
     assert service.create_calls[-1]["visibility"] == InstanceVisibility.USER
     assert service.create_calls[-1]["is_default"] is True
@@ -390,6 +428,112 @@ def test_create_instance_passes_payload_to_service_and_maps_access_errors() -> N
     )
     assert forbidden.status_code == 403
     assert forbidden.json()["detail"] == "forbidden"
+
+
+def test_create_instance_maps_transport_security_error_to_422() -> None:
+    """An http:// remote instance without config.allow_plaintext is a 422
+    with the remedy in the message — not the generic 403 used for
+    authorization/validation errors — so the CLI/web can tell "malformed
+    request" apart from "not permitted"."""
+    service = StubInstanceService()
+    service.create_result = InstanceTransportSecurityError(
+        "http://insecure.example.com must use https:// for a remote Guild "
+        "instance; set config.allow_plaintext: true only when the network "
+        "path is already encrypted or otherwise trusted"
+    )
+    client = _client(service)
+
+    response = client.post(
+        "/api/v1/niuu/instances",
+        headers=_headers(),
+        json={
+            "slug": "insecure",
+            "name": "Insecure",
+            "baseUrl": "http://insecure.example.com",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "allow_plaintext" in response.json()["detail"]
+
+
+def test_update_instance_maps_transport_security_error_to_422() -> None:
+    service = StubInstanceService()
+    service.single_instance = _instance("existing")
+    service.update_result = InstanceTransportSecurityError(
+        "http://insecure.example.com must use https:// for a remote Guild instance"
+    )
+    client = _client(service)
+
+    response = client.patch(
+        "/api/v1/niuu/instances/existing",
+        headers=_headers(),
+        json={"baseUrl": "http://insecure.example.com"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_create_instance_registers_even_when_the_initial_probe_fails() -> None:
+    """Registering an instance that happens to be offline (e.g. a Spark not
+    yet powered on) is a legitimate operator action — a failed register-time
+    probe must not reject the registration. It must, however, be recorded
+    as unreachable immediately rather than defaulting to a healthy-looking
+    state (see .claude/rules/no-fallbacks.md)."""
+    service = StubInstanceService()
+    service.create_result = _instance("created", visibility=InstanceVisibility.USER, owner_id="u")
+    checker = StubHealthChecker(ok=False, message="Connection refused")
+    client = _client(service, health_checker=checker)
+
+    response = client.post(
+        "/api/v1/niuu/instances",
+        headers=_headers(),
+        json={
+            "slug": "created",
+            "name": "Created",
+            "baseUrl": "https://created.example.com",
+            "visibility": "user",
+            "ownerId": "u",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["health"] == "unreachable"
+    assert body["lastError"] == "Connection refused"
+    # A never-reachable instance was still checked (lastCheckedAt is set),
+    # but never seen (lastSeenAt stays absent) — the two must not conflate.
+    assert body["lastCheckedAt"] is not None
+    assert body["lastSeenAt"] is None
+    assert checker.checked_instance_ids == ["created"]
+
+
+def test_create_instance_never_500s_when_the_post_save_health_check_crashes() -> None:
+    """The instance registration already succeeded and is durably saved by
+    the time the immediate follow-up health check runs — a crash there (e.g.
+    a database hiccup recording health) must not turn a successful create
+    into a 500. The periodic loop picks it up on the next sweep."""
+    service = StubInstanceService()
+    created = _instance("created", visibility=InstanceVisibility.USER, owner_id="u")
+    service.create_result = created
+    checker = StubHealthChecker(crash=RuntimeError("health db unavailable"))
+    client = _client(service, health_checker=checker)
+
+    response = client.post(
+        "/api/v1/niuu/instances",
+        headers=_headers(),
+        json={
+            "slug": "created",
+            "name": "Created",
+            "baseUrl": "https://created.example.com",
+            "visibility": "user",
+            "ownerId": "u",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["id"] == "created"
+    assert checker.checked_instance_ids == ["created"]
 
 
 def test_update_instance_maps_lookup_and_access_errors() -> None:
@@ -424,6 +568,48 @@ def test_update_instance_maps_lookup_and_access_errors() -> None:
     assert forbidden.status_code == 403
 
 
+def test_update_instance_reprobes_when_base_url_changes() -> None:
+    """A metadata edit no longer touches the persisted health row (ON
+    CONFLICT excludes it — record_health owns it), so after re-pointing an
+    instance at a different endpoint the old health data describes a target
+    that no longer applies. Re-probe immediately instead of leaving it stale
+    for up to a full niuu.health.interval_seconds."""
+    service = StubInstanceService()
+    service.single_instance = _instance("updated", base_url="https://old.example.com")
+    service.update_result = _instance("updated", base_url="https://new.example.com")
+    checker = StubHealthChecker(ok=False, message="Connection refused")
+    client = _client(service, health_checker=checker)
+
+    response = client.patch(
+        "/api/v1/niuu/instances/updated",
+        headers=_headers(),
+        json={"baseUrl": "https://new.example.com"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["health"] == "unreachable"
+    assert body["lastError"] == "Connection refused"
+    assert checker.checked_instance_ids == ["updated"]
+
+
+def test_update_instance_does_not_reprobe_when_the_endpoint_is_unchanged() -> None:
+    service = StubInstanceService()
+    service.single_instance = _instance("updated", base_url="https://same.example.com")
+    service.update_result = _instance("updated", base_url="https://same.example.com")
+    checker = StubHealthChecker(ok=True)
+    client = _client(service, health_checker=checker)
+
+    response = client.patch(
+        "/api/v1/niuu/instances/updated",
+        headers=_headers(),
+        json={"name": "Renamed only"},
+    )
+
+    assert response.status_code == 200
+    assert checker.checked_instance_ids == []
+
+
 def test_delete_instance_maps_access_error() -> None:
     service = StubInstanceService()
     client = _client(service)
@@ -438,12 +624,16 @@ def test_delete_instance_maps_access_error() -> None:
     assert forbidden.status_code == 403
 
 
-@respx.mock
-def test_test_instance_probes_health_and_returns_404_when_missing() -> None:
+def test_test_instance_delegates_to_the_health_checker_and_returns_404_when_missing() -> None:
+    """The endpoint no longer probes directly — it delegates to (and persists
+    through) the shared InstanceHealthChecker, the same one the periodic loop
+    and register-time check use. Probing itself is covered by
+    test_http_instance_probe.py."""
     service = StubInstanceService()
-    service.single_instance = _instance("instance-1", base_url="https://health.example.com")
-    client = _client(service)
-    route = respx.get("https://health.example.com/health").mock(return_value=Response(200))
+    instance = _instance("instance-1", base_url="https://health.example.com")
+    service.single_instance = instance
+    checker = StubHealthChecker(ok=True, message="Instance instance-1 is reachable")
+    client = _client(service, health_checker=checker)
 
     response = client.post("/api/v1/niuu/instances/instance-1/test", headers=_headers())
 
@@ -453,7 +643,7 @@ def test_test_instance_probes_health_and_returns_404_when_missing() -> None:
         "statusCode": 200,
         "message": "Instance instance-1 is reachable",
     }
-    assert route.called
+    assert checker.checked_instance_ids == ["instance-1"]
 
     service.single_instance = None
     missing = client.post("/api/v1/niuu/instances/missing/test", headers=_headers())
@@ -500,13 +690,41 @@ def test_list_instance_sessions_forwards_headers_and_status_filter() -> None:
         }
     ]
     assert route.calls.last.request.headers["authorization"] == "Bearer test-token"
-    assert route.calls.last.request.headers["x-auth-tenant"] == "tenant-a"
+    # A remote Guild instance never sees a client-supplied x-auth-* header.
+    assert "x-auth-tenant" not in route.calls.last.request.headers
+    assert "x-auth-user-id" not in route.calls.last.request.headers
 
     respx.get("https://volundr.example.com/api/v1/forge/sessions").mock(
         side_effect=RuntimeError("boom")
     )
     failed = client.get("/api/v1/niuu/instances/instance-1/sessions", headers=_headers())
     assert failed.status_code == 502
+
+
+def test_list_instance_sessions_returns_502_on_a_tls_pin_mismatch(monkeypatch) -> None:
+    """_load_remote_sessions's own guild_transport enforcement
+    (build_guild_httpx_client raising GuildTransportError) maps to a 502 —
+    the upstream is never contacted at all when the pin fails."""
+    monkeypatch.setattr(
+        "niuu.adapters.outbound.guild_transport.fetch_leaf_certificate_der",
+        lambda *a, **k: b"not the pinned certificate",
+    )
+    pinned_fingerprint = hashlib.sha256(b"the actual expected certificate").hexdigest()
+    service = StubInstanceService()
+    service.single_instance = _instance(
+        "instance-1",
+        base_url="https://volundr.example.com",
+        config={"tls_fingerprint": pinned_fingerprint},
+    )
+    client = _client(service)
+
+    response = client.get(
+        "/api/v1/niuu/instances/instance-1/sessions",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 502
+    assert "does not match" in response.json()["detail"]
 
 
 def test_list_instance_sessions_rejects_invalid_remote_base_urls() -> None:
@@ -546,6 +764,7 @@ def _inbox_client(inbox: Any) -> TestClient:
     app.include_router(
         create_instances_router(  # type: ignore[arg-type]
             StubInstanceService(),
+            health_checker=StubHealthChecker(),  # type: ignore[arg-type]
             fragment_inbox=inbox,
         )
     )
@@ -635,7 +854,12 @@ def test_a_fragment_cannot_claim_a_different_source_than_its_path() -> None:
 def test_publishing_without_a_configured_inbox_says_so() -> None:
     app = FastAPI()
     app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
-    app.include_router(create_instances_router(StubInstanceService()))  # type: ignore[arg-type]
+    app.include_router(
+        create_instances_router(  # type: ignore[arg-type]
+            StubInstanceService(),
+            health_checker=StubHealthChecker(),  # type: ignore[arg-type]
+        )
+    )
     client = TestClient(app)
 
     response = client.put(

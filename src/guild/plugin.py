@@ -27,7 +27,11 @@ class GuildPlugin(ServicePlugin):
             default_port=8084,
         )
 
-    def create_api_app(self, *, embedded_forge_app: Any | None = None) -> Any:
+    def create_api_app(
+        self,
+        *,
+        embedded_forge_app: Any | None = None,
+    ) -> Any:
         from guild.app import create_app
 
         return create_app(embedded_forge_app=embedded_forge_app)

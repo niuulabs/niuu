@@ -10,7 +10,7 @@ import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from identity.adapters.identity import AllowAllIdentityAdapter
+from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from niuu.adapters.inbound.rest_knowledge_deployments import create_knowledge_deployments_router
 from niuu.domain.models import InstanceKind
 
@@ -22,7 +22,9 @@ HEADERS = {
 
 
 def instance(name, base):
-    return SimpleNamespace(id=name, name=name, base_url=base, enabled=True, kind=InstanceKind.MIMIR)
+    return SimpleNamespace(
+        id=name, name=name, base_url=base, enabled=True, kind=InstanceKind.MIMIR, config={}
+    )
 
 
 def setup(instances):
@@ -32,7 +34,11 @@ def setup(instances):
         (i for i in instances if i.id == key), None
     )
     app = FastAPI()
-    app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
+    # Matches production's identity.adapter shape: a header-trust adapter
+    # that decodes x-auth-roles the way Envoy's claim_to_headers does
+    # (including base64-JSON, as HEADERS below uses) — _require_admin now
+    # goes through this via extract_principal, never raw headers directly.
+    app.state.identity = EnvoyHeaderAuthenticationAdapter()
     app.include_router(create_knowledge_deployments_router(service))
     return TestClient(app), service
 
@@ -122,13 +128,22 @@ def test_routes_creation_inspection_and_control_to_selected_guild_service():
 
 
 @pytest.mark.parametrize(
-    "headers",
-    [{}, {"x-auth-user-id": "user-a", "x-auth-roles": "developer"}, {"x-auth-roles": "admin"}],
+    ("headers", "expected_status"),
+    [
+        # No verifiable identity at all: unauthenticated, not merely forbidden.
+        ({}, 401),
+        ({"x-auth-roles": "admin"}, 401),
+        # A real, verified identity that just isn't an admin: forbidden.
+        ({"x-auth-user-id": "user-a", "x-auth-roles": "developer"}, 403),
+    ],
 )
-def test_requires_real_admin_identity(headers):
+def test_requires_real_admin_identity(headers, expected_status):
     client, service = setup([])
-    assert client.get("/knowledge/deployments", headers=headers).status_code == 403
-    assert client.post("/knowledge/deployments", headers=headers, json={}).status_code == 403
+    assert client.get("/knowledge/deployments", headers=headers).status_code == expected_status
+    assert (
+        client.post("/knowledge/deployments", headers=headers, json={}).status_code
+        == expected_status
+    )
     service.list_visible.assert_not_called()
 
 

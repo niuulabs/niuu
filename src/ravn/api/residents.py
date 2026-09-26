@@ -18,15 +18,44 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import Request
 
+from niuu.adapters.inbound.source_health import SourceFailure, source_failure
 from niuu.domain.models import InstanceVisibility, Principal
 from ravn.ports.platform_runtime import PlatformRuntimePort
 from ravn.ports.resident_discovery import ResidentDiscoveryPort, StandaloneResident
 
 logger = logging.getLogger(__name__)
+
+
+class StandaloneDiscoveryUnavailableError(RuntimeError):
+    """Raised when standalone-resident discovery fails and the caller needs
+    to know the truth rather than an answer that silently discounts it.
+
+    Session listing tolerates this (Forge sessions are authoritative and
+    keep working; the failure is reported additively — see
+    ``ResidentDirectory.list_sessions``), but a single-session lookup cannot:
+    silently returning "not found" here would misreport an unreachable
+    resident as one that never existed. See
+    ``.claude/rules/no-fallbacks.md``.
+    """
+
+
+@dataclass(frozen=True)
+class SessionsResult:
+    """Live sessions plus any source that failed to contribute.
+
+    Additive, mirroring the ``X-Niuu-Source-Failures`` shape used by Guild's
+    aggregate routers (``niuu.adapters.inbound.source_health``) — a failed
+    contributor is named, not silently absorbed into a shorter list.
+    """
+
+    sessions: list[dict[str, Any]]
+    source_failures: list[SourceFailure]
+
 
 # Headers that carry caller identity (Envoy-injected or bearer); forwarded
 # verbatim so Volundr resolves the same principal this request carries.
@@ -254,12 +283,17 @@ class ResidentDirectory:
         principal: Principal,
         auth_headers: dict[str, str],
         auth_params: dict[str, str],
-    ) -> list[dict[str, Any]]:
+    ) -> SessionsResult:
         """Return the caller's live ravn sessions (flock rooms + residents).
 
         These are the real running sessions you can open and chat with, the
         Ravn-side equivalent of the Volundr live session list — each carries a
         ``chat_endpoint`` (its Skuld room) so the UI can reuse the shared chat.
+
+        Forge sessions are authoritative and this keeps returning them even
+        when a resident-session or standalone-discovery source fails — but
+        that failure is reported in ``source_failures`` instead of being
+        silently absorbed into a shorter list.
         """
         sessions = await self._platform.list_forge_sessions(auth_headers, auth_params)
         ravn_sessions = []
@@ -272,35 +306,40 @@ class ResidentDirectory:
             if _is_live_session(mapped):
                 ravn_sessions.append(mapped)
         known_ids = {session["id"] for session in ravn_sessions}
+        source_failures: list[SourceFailure] = []
         managed = await self._platform.list_resident_runtimes(auth_headers, auth_params)
         for runtime in managed:
             runtime_id = str(runtime.get("id") or "")
             if not runtime_id:
                 continue
+            runtime_name = str(
+                runtime.get("persona_name")
+                or runtime.get("personaName")
+                or runtime.get("name")
+                or runtime_id
+            )
             capabilities = runtime.get("capabilities") or []
             if "session.list" in capabilities:
                 try:
                     native_sessions = await self._platform.list_resident_sessions(
                         runtime_id, auth_headers, auth_params
                     )
-                except Exception:
+                except Exception as exc:
                     logger.warning(
                         "native resident session discovery failed for %s",
                         runtime_id,
                         exc_info=True,
                     )
+                    source_failures.append(
+                        source_failure(
+                            instance_id=runtime_id,
+                            name=runtime_name,
+                            error=str(exc) or exc.__class__.__name__,
+                        )
+                    )
                     continue
                 for native in native_sessions:
-                    mapped_native = self._native_session(
-                        native,
-                        runtime_id,
-                        str(
-                            runtime.get("persona_name")
-                            or runtime.get("personaName")
-                            or runtime.get("name")
-                            or "resident-agent"
-                        ),
-                    )
+                    mapped_native = self._native_session(native, runtime_id, runtime_name)
                     if mapped_native["id"] and _is_live_session(mapped_native):
                         ravn_sessions.append(mapped_native)
                         known_ids.add(mapped_native["id"])
@@ -311,13 +350,16 @@ class ResidentDirectory:
             if _is_live_session(mapped):
                 ravn_sessions.append(mapped)
                 known_ids.add(runtime_id)
-        for resident in await self._discover_standalone_best_effort():
+        residents, discovery_failure = await self._discover_standalone_best_effort()
+        if discovery_failure is not None:
+            source_failures.append(discovery_failure)
+        for resident in residents:
             if resident.id in known_ids or not self._is_discovered_visible(resident, principal):
                 continue
             mapped = self._standalone_to_session(resident)
             if _is_live_session(mapped):
                 ravn_sessions.append(mapped)
-        return ravn_sessions
+        return SessionsResult(sessions=ravn_sessions, source_failures=source_failures)
 
     async def get_session(
         self,
@@ -456,23 +498,62 @@ class ResidentDirectory:
             return []
         return await self._discovery.list_residents()
 
-    async def _discover_standalone_best_effort(self) -> list[StandaloneResident]:
-        """Return compatibility residents without breaking Forge session reads."""
+    async def _discover_standalone_best_effort(
+        self,
+    ) -> tuple[list[StandaloneResident], SourceFailure | None]:
+        """Return compatibility residents without breaking Forge session reads.
+
+        Forge sessions are authoritative and must keep working even when the
+        standalone-discovery adapter chain is down, so this deliberately does
+        not raise. The old behavior swallowed the failure entirely — logged
+        at `warning` with no further trace, and the caller got back the same
+        `[]` it would get from "no standalone discovery configured". That
+        made ``/api/v1/ravn/status`` report healthy with an undercount: the
+        session list was simply shorter, with nothing to say why. The
+        failure is now returned alongside the (possibly empty) result so
+        callers can report it additively (see
+        ``.claude/rules/no-fallbacks.md`` — this is the "protocol-level
+        optional read... and is reported" escape, and only qualifies because
+        it *is* reported here).
+        """
         try:
-            return await self._discover_standalone()
-        except Exception:
-            logger.warning(
-                "standalone resident discovery failed; serving forge results only",
+            return await self._discover_standalone(), None
+        except Exception as exc:
+            message = str(exc) or exc.__class__.__name__
+            logger.error(
+                "Standalone resident discovery failed (%s); serving forge session results "
+                "only. Standalone residents will be missing from this session list until "
+                "the discovery adapter is reachable again.",
+                message,
                 exc_info=True,
             )
-            return []
+            return [], source_failure(
+                instance_id="standalone-discovery",
+                name="Standalone resident discovery",
+                error=message,
+            )
 
     async def _standalone_session(
         self,
         session_id: str,
         principal: Principal,
     ) -> dict[str, Any] | None:
-        for resident in await self._discover_standalone_best_effort():
+        """Look up one standalone resident by id.
+
+        Unlike the best-effort list used for session merging, a single
+        lookup that cannot determine the truth must not silently answer
+        "not found" — that would misreport an unreachable resident as one
+        that never existed. Discovery failures raise here instead (see
+        ``StandaloneDiscoveryUnavailableError``); the router maps it to a
+        503.
+        """
+        try:
+            residents = await self._discover_standalone()
+        except Exception as exc:
+            raise StandaloneDiscoveryUnavailableError(
+                f"Standalone resident discovery is unavailable: {exc}"
+            ) from exc
+        for resident in residents:
             if resident.id == session_id:
                 if not self._is_discovered_visible(resident, principal):
                     return None
@@ -517,6 +598,7 @@ class ResidentDirectory:
         flock_id = str(runtime.get("flock_id") or runtime.get("flockId") or "")
         flock_member_id = str(runtime.get("flock_member_id") or runtime.get("flockMemberId") or "")
         flock_peer_id = str(runtime.get("flock_peer_id") or runtime.get("flockPeerId") or "")
+        realm_id = str(runtime.get("realm_id") or runtime.get("realmId") or "")
         return {
             "id": str(runtime.get("id") or ""),
             "persona_name": runtime.get("persona_name") or runtime.get("personaName") or "",
@@ -538,6 +620,7 @@ class ResidentDirectory:
             "flock_member_id": flock_member_id,
             "flock_role": runtime.get("flock_role") or runtime.get("flockRole") or "",
             "flock_peer_id": flock_peer_id,
+            "realm_id": realm_id,
             "desired_state": runtime.get("desired_state") or runtime.get("desiredState"),
             "observed_state": observed_state,
             "backend_ref": runtime.get("backend_ref") or runtime.get("backendRef") or {},

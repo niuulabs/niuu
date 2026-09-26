@@ -56,6 +56,8 @@ config:
         deny_policy_name: {{ include "agent.learnedToolDenyPolicyName" . | quote }}
         allow_policy_name: {{ include "agent.learnedToolAllowPolicyName" . | quote }}
         network_policy_label_key: {{ .Values.learnedToolRunner.networkPolicyLabelKey | quote }}
+        job_pod_start_timeout_seconds: {{ .Values.learnedToolRunner.podStartTimeoutSeconds }}
+        job_ttl_seconds_after_finished: {{ .Values.learnedToolRunner.jobTtlSecondsAfterFinished }}
     {{- end }}
 
 serviceAccount:
@@ -80,10 +82,29 @@ learnedToolRunner:
   # Creates the verified NetworkPolicies/RBAC contract and selects k8s_job in
   # the chart's default Ravn config. Custom config maps must set the matching
   # resident_evolution.learned_tool_k8s coordinates themselves.
+  #
+  # Peer-proposal re-verification (KubernetesJobLearnedToolRunner.verify())
+  # runs in the SAME kind of denied-network Job execute() uses; it never
+  # installs dependencies (declared requirements are refused outright, same
+  # as run()). Job resource requests/limits and the writable /tmp size come
+  # from resident_evolution.learned_tool_k8s.job_* fields (sensible
+  # defaults; set them in a custom config map to override for this cluster).
   enabled: false
   image: >-
     ghcr.io/niuulabs/devrunner@sha256:ec7a32ffd8ca1f3ddb8bd4983198988538ab74804201ce45e14e56241adfc518
   networkPolicyLabelKey: niuu.world/tool-network
+  # Separate budget for a verify() Job's pod to leave Pending and start
+  # running (scheduling, image pull) before it counts as an infrastructure
+  # failure — decoupled from the verify() test timeout, which only starts
+  # counting once the container is actually running, so a slow image pull
+  # is never confused with the tool's own code hanging. run() has no
+  # separate pod-start budget: its activeDeadlineSeconds is exactly the
+  # invocation timeout, and this value is not consulted there.
+  podStartTimeoutSeconds: 120
+  # Kubernetes ttlSecondsAfterFinished set on every learned-tool Job, as a
+  # backup sweep if the explicit post-run delete never runs (process
+  # crash). 0 disables the TTL and relies solely on the explicit delete.
+  jobTtlSecondsAfterFinished: 3600
 
 service:
   enabled: false

@@ -7,6 +7,7 @@ import pytest
 import respx
 import yaml
 
+from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from mimir.connections import resolve_mimir_registry_refs
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
 from ravn.adapters.tools.mimir_tools import MimirReadTool, MimirSearchTool, MimirWriteTool
@@ -172,7 +173,8 @@ async def test_research_reads_the_same_gateway_mount_as_the_runtime(backend, tmp
                     ),
                     MimirMount(name="research-well", role="shared", port=well),
                 ]
-            )
+            ),
+            auth=EnvoyHeaderAuthenticationAdapter(),
         ).router,
         prefix="/api/v1/mimir",
     )
@@ -190,7 +192,11 @@ async def test_research_reads_the_same_gateway_mount_as_the_runtime(backend, tmp
                 transport=httpx.ASGITransport(app=gateway),
                 base_url=adapter._base_url,
                 event_hooks={"request": [observe]},
-                headers={"x-auth-user-id": "owner", "x-auth-tenant": "tenant"},
+                headers={
+                    "x-auth-user-id": "owner",
+                    "x-auth-tenant": "tenant",
+                    "x-auth-roles": "volundr:developer",
+                },
             )
         return adapter._client
 

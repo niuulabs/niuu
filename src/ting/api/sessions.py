@@ -51,16 +51,9 @@ class SessionInfoResponse(BaseModel):
     status: str
     chronicle_lines: list[str]
     branch: str | None = None
-    confidence: float
     run_name: str
     saga_name: str
     cluster_name: str = ""
-
-
-def _normalise_confidence(value: float) -> float:
-    if value <= 1.0:
-        return round(value * 100, 2)
-    return value
 
 
 def _session_status_for_run(run: Run | None, session: VolundrSession | None) -> str:
@@ -112,7 +105,6 @@ async def _build_session_info(
         status=_session_status_for_run(run, session),
         chronicle_lines=chronicle_lines,
         branch=session.branch or (run.branch if run else None),
-        confidence=_normalise_confidence(run.confidence if run else 0.0),
         run_name=run.name if run else session.name,
         saga_name=saga.name if saga else "",
         cluster_name=session.cluster_name or volundr.name,
@@ -129,15 +121,11 @@ async def _resolve_volundr_adapters(
     if factory is None:
         return [fallback]
 
-    try:
-        adapters = await factory.for_owner(owner_id)
-    except Exception:
-        logger.warning(
-            "Failed to resolve Volundr adapters for owner %s",
-            _sanitize_log(owner_id),
-            exc_info=True,
-        )
-        return [fallback]
+    # A Guild outage must not look like "this user has no connections" — let
+    # GuildRegistryUnavailableError (and anything else) propagate. Ting's own
+    # exception handler maps it to a 503 with the remedy (see main.py); see
+    # .claude/rules/no-fallbacks.md.
+    adapters = await factory.for_owner(owner_id)
 
     return adapters or [fallback]
 

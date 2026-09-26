@@ -32,6 +32,20 @@
             },
             "tenant_id": {
               "type": "String"
+            },
+            "room_viewers": {
+              "type": "Set",
+              "element": {
+                "type": "String"
+              },
+              "required": false
+            },
+            "room_approvers": {
+              "type": "Set",
+              "element": {
+                "type": "String"
+              },
+              "required": false
             }
           }
         }
@@ -465,6 +479,62 @@
           ],
           "resourceTypes": [
             "workflow"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "read_room": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "session"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "attach": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "session"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "resolve_gate": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "session"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "admit": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "session"
           ],
           "context": {
             "type": "Record",

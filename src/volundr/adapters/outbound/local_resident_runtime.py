@@ -6,19 +6,24 @@ import asyncio
 import hashlib
 import json
 import logging
-import re
 import shlex
 import shutil
-import socket
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import docker
-from docker.errors import ImageNotFound, NotFound
+from docker.errors import DockerException, ImageNotFound, NotFound
 
+from niuu.ports.realm_repository import RealmRepository
 from niuu.ports.session_proxy import SessionProxyTarget
+from volundr.adapters.outbound.local_resident_storage import (
+    LOCAL_PLATFORM_ACCESS_TOKEN,
+    materialize_agent_home,
+    parse_resident_logs,
+    service_ready,
+    write_resident_files,
+)
 from volundr.adapters.outbound.resident_container_spec import (
     HERMES_API_SERVER_KEY_ENV,
     PLATFORM_ACCESS_TOKEN_ENV,
@@ -39,7 +44,6 @@ from volundr.domain.models import (
     ResidentDeploymentProfile,
     ResidentEndpoint,
     ResidentEngine,
-    ResidentLogEntry,
     ResidentLogPage,
     ResidentObservedState,
     ResidentRuntime,
@@ -64,7 +68,6 @@ DEFAULT_SANDBOX_COMMAND = ("/usr/local/bin/openshell-run-installed-skuld",)
 MANAGED_BY_LABEL = "volundr.niuu.io/managed-by"
 RUNTIME_ID_LABEL = "volundr.niuu.io/resident"
 SPEC_HASH_LABEL = "volundr.niuu.io/spec-hash"
-LOG_LINE = re.compile(r"^(?P<timestamp>\S+)\s+(?:\[(?P<source>[^]]+)\]\s+)?(?P<message>.*)$")
 
 
 class LocalContainerResidentRuntimeController(
@@ -107,9 +110,20 @@ class LocalContainerResidentRuntimeController(
         self._retain_data_on_delete = bool(retain_data_on_delete)
         self._credential_store: CredentialStorePort | None = None
         self._skuld_registry: Any | None = None
-        self._client = (
-            docker.DockerClient(base_url=docker_base_url) if docker_base_url else docker.from_env()
-        )
+        self._realm_repository: RealmRepository | None = None
+        try:
+            self._client = (
+                docker.DockerClient(base_url=docker_base_url)
+                if docker_base_url
+                else docker.from_env()
+            )
+        except DockerException as exc:
+            raise RuntimeError(
+                f"Local container residents cannot reach the Docker Engine ({exc}). Start "
+                "Docker, or configure a resident runtime that does not need it: niuu mini "
+                "mode runs Ravn residents as host processes unless ~/.niuu/config.yaml sets "
+                "residents.runtime: docker."
+            ) from exc
 
     @property
     def backend(self) -> ResidentBackend:
@@ -120,6 +134,15 @@ class LocalContainerResidentRuntimeController(
 
     def set_skuld_registry(self, registry: Any) -> None:
         self._skuld_registry = registry
+
+    def set_realm_repository(self, repository: RealmRepository) -> None:
+        """Enable resolving a resident's realm slug for its container config.
+
+        Optional: without it, deploying a resident with ``realm_id`` set
+        raises in ``_resolve_realm_slug`` rather than silently deploying with
+        no realm/charter binding.
+        """
+        self._realm_repository = repository
 
     def supports(self, profile: ResidentDeploymentProfile) -> bool:
         if profile.backend is not ResidentBackend.LOCAL:
@@ -175,7 +198,7 @@ class LocalContainerResidentRuntimeController(
         environment = dict(spec.environment)
         environment.update(machine_environment)
         environment.update(resident_flock_environment(runtime))
-        environment.setdefault(PLATFORM_ACCESS_TOKEN_ENV, "local-mini")
+        environment.setdefault(PLATFORM_ACCESS_TOKEN_ENV, LOCAL_PLATFORM_ACCESS_TOKEN)
         run_kwargs: dict[str, Any] = {
             "image": spec.image,
             "name": self._container_name(runtime),
@@ -307,7 +330,11 @@ class LocalContainerResidentRuntimeController(
             timestamps=True,
             tail=lines,
         )
-        entries = _parse_logs(payload.decode("utf-8", errors="replace"), sources, min_level)
+        entries = parse_resident_logs(
+            payload.decode("utf-8", errors="replace"),
+            sources,
+            min_level,
+        )
         return ResidentLogPage(entries=entries[-lines:], buffer_total=len(entries))
 
     def resident_proxy_target(self, runtime: ResidentRuntime) -> SessionProxyTarget | None:
@@ -357,7 +384,32 @@ class LocalContainerResidentRuntimeController(
             default_service_port=self._service_port,
             volundr_api_url=self._volundr_api_url,
             sandbox_command=self._sandbox_command,
+            realm_slug=await self._resolve_realm_slug(runtime),
         )
+
+    async def _resolve_realm_slug(self, runtime: ResidentRuntime) -> str:
+        """Return the slug of the realm this resident is bound to, or "".
+
+        A configured ``realm_id`` whose realm no longer resolves is a real
+        misconfiguration (the realm was deleted out from under a resident
+        that still names it) and fails loudly rather than deploying with a
+        silently dropped charter/realm binding.
+        """
+        if runtime.realm_id is None:
+            return ""
+        if self._realm_repository is None:
+            raise RuntimeError(
+                f"resident {runtime.name!r} has realm_id={runtime.realm_id} but this "
+                "controller has no realm repository configured; call set_realm_repository "
+                "at composition time."
+            )
+        realm = await self._realm_repository.get_realm(runtime.realm_id)
+        if realm is None:
+            raise RuntimeError(
+                f"resident {runtime.name!r} names realm_id={runtime.realm_id}, but no "
+                "such realm exists; clear the resident's realm binding or restore the realm."
+            )
+        return realm.slug
 
     async def _machine_environment(self, runtime: ResidentRuntime) -> dict[str, str]:
         if runtime.engine is ResidentEngine.RAVN:
@@ -403,7 +455,7 @@ class LocalContainerResidentRuntimeController(
                 logs = container.logs(tail=100).decode("utf-8", errors="replace")
                 raise RuntimeError(f"Resident container exited before readiness:\n{logs}")
             port = _published_port(container, spec.service_port)
-            if port and await asyncio.to_thread(_service_ready, port):
+            if port and await asyncio.to_thread(service_ready, port):
                 return self._observation(runtime, container, spec)
             await asyncio.sleep(self._ready_poll_interval)
         raise TimeoutError(f"Resident container was not ready within {self._ready_timeout}s")
@@ -531,24 +583,8 @@ class LocalContainerResidentRuntimeController(
         return self._residents_dir / str(runtime.id) / "sandbox"
 
     def _materialize_agent_home(self, root: Path) -> None:
-        if not self._mount_agent_credentials:
-            return
-        candidates = {
-            self._host_home_dir / ".codex" / "auth.json": root / "home" / ".codex" / "auth.json",
-            self._host_home_dir / ".codex" / "config.toml": root
-            / "home"
-            / ".codex"
-            / "config.toml",
-            self._host_home_dir / ".claude" / ".credentials.json": root
-            / "home"
-            / ".claude"
-            / ".credentials.json",
-        }
-        for source, destination in candidates.items():
-            if not source.is_file() or destination.exists():
-                continue
-            shutil.copy2(source, destination)
-            destination.chmod(0o600)
+        if self._mount_agent_credentials:
+            materialize_agent_home(root, self._host_home_dir)
 
     @staticmethod
     def _container_name(runtime: ResidentRuntime) -> str:
@@ -592,34 +628,11 @@ class LocalContainerResidentRuntimeController(
 
     @staticmethod
     def _write_runtime_files(root: Path, spec: ResidentContainerSpec) -> None:
-        root.mkdir(parents=True, exist_ok=True)
-        (root / "workspace").mkdir(parents=True, exist_ok=True)
-        (root / "home" / ".codex").mkdir(parents=True, exist_ok=True)
-        (root / "home" / ".claude").mkdir(parents=True, exist_ok=True)
-        runtime_dir = root / "config"
-        runtime_dir.mkdir(parents=True, exist_ok=True)
-        for destination, content in spec.files.items():
-            path = _host_runtime_path(root, destination)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(content)
-            path.chmod(0o600)
+        write_resident_files(root, spec.files)
         script = _supervisor_script(spec.processes)
-        script_path = runtime_dir / "run-resident.sh"
+        script_path = root / "config" / "run-resident.sh"
         script_path.write_text(script, encoding="utf-8")
         script_path.chmod(0o700)
-
-
-def _host_runtime_path(root: Path, destination: str) -> Path:
-    mappings = {
-        "/sandbox/workspace/": root / "workspace",
-        "/sandbox/.volundr/": root / "config",
-        "/sandbox/.codex/": root / "home" / ".codex",
-        "/sandbox/.claude/": root / "home" / ".claude",
-    }
-    for prefix, host_root in mappings.items():
-        if destination.startswith(prefix):
-            return host_root / destination.removeprefix(prefix)
-    raise RuntimeError(f"Resident file path is not backed by durable local storage: {destination}")
 
 
 def _supervisor_script(processes: tuple[ResidentContainerProcess, ...]) -> str:
@@ -670,15 +683,6 @@ def _published_port(container: Any, service_port: int) -> int:
     return int(rows[0].get("HostPort") or 0)
 
 
-def _service_ready(port: int) -> bool:
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=0.5) as connection:
-            connection.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-            return connection.recv(16).startswith(b"HTTP/")
-    except OSError:
-        return False
-
-
 def _observed_state(status: str) -> ResidentObservedState:
     if status == "running":
         return ResidentObservedState.ACTIVE
@@ -689,51 +693,3 @@ def _observed_state(status: str) -> ResidentObservedState:
     if status in {"exited", "dead"}:
         return ResidentObservedState.FAILED
     return ResidentObservedState.PENDING
-
-
-def _parse_logs(
-    payload: str,
-    sources: tuple[str, ...],
-    min_level: str,
-) -> list[ResidentLogEntry]:
-    levels = {"debug": 10, "info": 20, "warning": 30, "error": 40, "critical": 50}
-    minimum = levels.get(min_level.lower(), 0)
-    entries: list[ResidentLogEntry] = []
-    for line in payload.splitlines():
-        match = LOG_LINE.match(line)
-        if match is None:
-            continue
-        source = match.group("source") or "container"
-        if sources and source not in sources:
-            continue
-        message = match.group("message")
-        level = _log_level(message)
-        if levels.get(level.lower(), 20) < minimum:
-            continue
-        try:
-            timestamp = datetime.fromisoformat(match.group("timestamp").replace("Z", "+00:00"))
-        except ValueError:
-            timestamp = datetime.now(UTC)
-        entries.append(
-            ResidentLogEntry(
-                timestamp_ms=int(timestamp.timestamp() * 1000),
-                level=level,
-                source=source,
-                target=source,
-                message=message,
-            )
-        )
-    return entries
-
-
-def _log_level(message: str) -> str:
-    lowered = message.lower()
-    if "critical" in lowered or "fatal" in lowered:
-        return "critical"
-    if "error" in lowered or "exception" in lowered:
-        return "error"
-    if "warning" in lowered or "warn" in lowered:
-        return "warning"
-    if "debug" in lowered:
-        return "debug"
-    return "info"

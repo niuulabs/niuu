@@ -16,15 +16,20 @@ Source = Callable[[], AsyncIterator[Event]]
 
 
 async def remote_events(
+    client: httpx.AsyncClient,
     url: str,
     headers: Mapping[str, str],
-    *,
-    timeout_seconds: float = 45.0,
-    connect_timeout_seconds: float = 5.0,
 ) -> AsyncIterator[Event]:
-    """Decode complete SSE records (including multi-line data) from one host."""
-    timeout = httpx.Timeout(timeout_seconds, connect=connect_timeout_seconds)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    """Decode complete SSE records (including multi-line data) from one host.
+
+    *client* is the caller's, built (and closed) by the caller — for a
+    genuinely remote Guild instance that must be
+    ``niuu.adapters.outbound.guild_transport.build_guild_httpx_client()``, so
+    the same transport-policy enforcement, TLS pinning, and ``trust_env``
+    handling applies to the session stream as to every other outbound Guild
+    call; this function only ever reads from it.
+    """
+    async with client:
         async with client.stream("GET", url, headers=headers) as response:
             response.raise_for_status()
             name, data = "message", []

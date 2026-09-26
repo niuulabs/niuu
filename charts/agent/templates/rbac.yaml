@@ -21,7 +21,11 @@ rules:
     verbs: ["get"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
-    verbs: ["get"]
+    # "list" backs the additive-policy check: an unrelated NetworkPolicy in
+    # the namespace can also select denied pods and grant them egress, so
+    # the two verified policies are checked by name (get) AND every other
+    # policy in the namespace is enumerated (list) to rule that out.
+    verbs: ["get", "list"]
   {{- end }}
   {{- if .Values.rbac.rules }}
   {{- toYaml .Values.rbac.rules | nindent 2 }}

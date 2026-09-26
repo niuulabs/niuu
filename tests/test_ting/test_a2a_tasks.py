@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -16,11 +17,17 @@ from fastapi.testclient import TestClient
 from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from niuu.domain.models import Principal
-from ting.api.a2a import create_a2a_router, resolve_a2a_launch_repo
+from ting.api.a2a import (
+    _launch_digest,
+    campaign_to_task,
+    create_a2a_router,
+    resolve_a2a_launch_repo,
+)
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.research import create_research_router, resolve_workflow_campaign_repo
 from ting.api.workflows import resolve_workflow_repo
 from ting.config import A2AConfig, AuthConfig, Settings
+from ting.domain.a2a_launch import A2ALaunchReservation
 from ting.domain.models import (
     WorkflowCampaign,
     WorkflowCampaignStatus,
@@ -80,6 +87,15 @@ class InMemoryWorkflowRepository(WorkflowRepository):
 
     async def delete_workflow(self, workflow_id: UUID) -> bool:
         return self._workflows.pop(workflow_id, None) is not None
+
+    async def has_recorded_version_history(self, workflow_id: UUID) -> bool:
+        return True
+
+    async def adopt_legacy_bundled(self, seed):
+        return await self.save_workflow(seed)
+
+    async def reclassify_orphaned_bundled_as_authored(self, workflow_id):
+        return await self.get_workflow(workflow_id)
 
 
 class InMemoryCampaignRepository(WorkflowCampaignRepository):
@@ -175,8 +191,23 @@ class InMemoryA2ALaunchRepository:
 
 
 class RecordingVolundrPort(VolundrPort):
-    def __init__(self, *, session_status: str = "starting", stop_failures: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        session_status: str = "starting",
+        stop_failures: int = 0,
+        name: str = "local",
+        target_id: str = "local",
+        tags: list[str] | None = None,
+        sessions: list[VolundrSession] | None = None,
+        spawn_failure: bool = False,
+    ) -> None:
         self._session_status = session_status
+        self._name = name
+        self._target_id = target_id
+        self._tags = tags or []
+        self.sessions: list[VolundrSession] = list(sessions or [])
+        self._spawn_failure = spawn_failure
         self.spawned: list[SpawnRequest] = []
         self.stopped: list[str] = []
         self.stop_attempts: list[str] = []
@@ -189,15 +220,15 @@ class RecordingVolundrPort(VolundrPort):
 
     @property
     def name(self) -> str:
-        return "local"
+        return self._name
 
     @property
     def target_id(self) -> str:
-        return "local"
+        return self._target_id
 
     @property
     def tags(self) -> list[str]:
-        return []
+        return self._tags
 
     async def spawn_session(
         self,
@@ -208,13 +239,15 @@ class RecordingVolundrPort(VolundrPort):
     ) -> VolundrSession:
         self.auth_calls.append(("spawn", auth_token, principal))
         self.spawned.append(request)
+        if self._spawn_failure:
+            raise RuntimeError("spawn failed")
         return VolundrSession(
             id="session-123",
             name=request.name,
             status=self._session_status,
             chat_endpoint="wss://sessions.example/s/session-123/session",
             tracker_issue_id=request.tracker_issue_id,
-            cluster_name="local",
+            cluster_name=self._name,
             repo=request.repo,
             branch=request.branch,
             base_branch=request.base_branch,
@@ -226,7 +259,7 @@ class RecordingVolundrPort(VolundrPort):
 
     async def list_sessions(self, *, auth_token=None, principal=None):
         self.auth_calls.append(("list_sessions", auth_token, principal))
-        return []
+        return list(self.sessions)
 
     async def get_pr_status(self, session_id: str):
         raise NotImplementedError
@@ -420,6 +453,17 @@ def _make_workflow(*, name: str = "tool-builder") -> WorkflowDefinition:
     )
 
 
+def _make_workflow_with_placement(
+    placement: dict, *, name: str = "tool-builder"
+) -> WorkflowDefinition:
+    workflow = _make_workflow(name=name)
+    return replace(
+        workflow,
+        schema_version=2,
+        graph={**workflow.graph, "placement": placement},
+    )
+
+
 def _make_campaign(
     *,
     slug: str = "task-1",
@@ -481,8 +525,10 @@ def _make_client(
     workflow_repo: WorkflowRepository | None = None,
     campaign_repo: WorkflowCampaignRepository | None = None,
     volundr: RecordingVolundrPort | None = None,
+    volundr_factory: RecordingVolundrFactory | None = None,
     settings: Settings | None = None,
     push_dispatcher: Any | None = None,
+    launch_repo: InMemoryA2ALaunchRepository | None = None,
 ) -> tuple[TestClient, InMemoryCampaignRepository, RecordingVolundrPort]:
     workflow_repo = workflow_repo or InMemoryWorkflowRepository()
     campaigns = campaign_repo or InMemoryCampaignRepository()
@@ -493,11 +539,13 @@ def _make_client(
     app.include_router(create_research_router())
     app.state.settings = settings or Settings(auth=AuthConfig(allow_anonymous_dev=False))
     app.state.a2a_push_dispatcher = push_dispatcher
-    launch_repo = InMemoryA2ALaunchRepository()
+    launch_repo = launch_repo or InMemoryA2ALaunchRepository()
     app.dependency_overrides[resolve_workflow_repo] = lambda: workflow_repo
     app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaigns
     app.dependency_overrides[resolve_a2a_launch_repo] = lambda: launch_repo
-    app.dependency_overrides[resolve_volundr_factory] = lambda: RecordingVolundrFactory([port])
+    app.dependency_overrides[resolve_volundr_factory] = lambda: (
+        volundr_factory or RecordingVolundrFactory([port])
+    )
     return TestClient(app), campaigns, port
 
 
@@ -513,6 +561,18 @@ def _rpc(
         json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
         headers=headers or _headers(),
     )
+
+
+def test_campaign_to_task_exposes_connection_id_when_set() -> None:
+    campaign = _make_campaign(connection_id="spark-01")
+    task = campaign_to_task(campaign)
+    assert task.metadata["connectionId"] == "spark-01"
+
+
+def test_campaign_to_task_omits_connection_id_when_unset() -> None:
+    campaign = _make_campaign(connection_id=None)
+    task = campaign_to_task(campaign)
+    assert "connectionId" not in task.metadata
 
 
 def _send_params(skill_id: str, *, prompt: str = "Build the widget tool") -> dict[str, Any]:
@@ -808,6 +868,219 @@ class TestSendMessage:
         assert "error" in response.json()
         assert port.spawned == []
         assert port.stopped == []
+
+    def test_launch_resolves_pinned_placement_tags_over_multiple_targets(self) -> None:
+        workflow = _make_workflow_with_placement({"tags": ["dgx-spark"]})
+        cpu = RecordingVolundrPort(name="cpu", target_id="cpu", tags=["cpu"])
+        spark = RecordingVolundrPort(name="spark-01", target_id="spark-01", tags=["dgx-spark"])
+        client, campaigns, _ = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([cpu, spark]),
+        )
+
+        response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
+
+        assert response.status_code == 200, response.text
+        assert cpu.spawned == []
+        assert len(spark.spawned) == 1
+        task = response.json()["result"]["task"]
+        assert task["metadata"]["connectionId"] == "spark-01"
+
+        import asyncio
+
+        campaign = asyncio.run(campaigns.get_campaign_by_slug(task["id"]))
+        assert campaign is not None
+        assert campaign.connection_id == "spark-01"
+
+    def test_launch_rejects_pinned_placement_with_no_visible_match(self) -> None:
+        workflow = _make_workflow_with_placement({"instance": "spark-01"})
+        cpu_only = RecordingVolundrPort(name="cpu-only", target_id="cpu-only")
+        client, campaigns, _ = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([cpu_only]),
+        )
+
+        response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
+
+        assert response.status_code == 422
+        assert "spark-01" in response.text
+        assert cpu_only.spawned == []
+
+        # The rejected launch must not leave a campaign stuck PENDING
+        # forever — either no campaign was ever created (resolution now
+        # happens before the campaign is saved) or it was resolved to a
+        # terminal state. Either way, no retry of this message should ever
+        # find a PENDING row it can only fail against again.
+        import asyncio
+
+        campaigns_list = asyncio.run(campaigns.list_campaigns(owner_id="user-1"))
+        assert all(c.status != WorkflowCampaignStatus.PENDING for c in campaigns_list)
+
+    def test_launch_rejects_metadata_connection_id_conflicting_with_placement(self) -> None:
+        workflow = _make_workflow_with_placement({"tags": ["dgx-spark"]})
+        cpu = RecordingVolundrPort(name="cpu", target_id="cpu", tags=["cpu"])
+        spark = RecordingVolundrPort(name="spark-01", target_id="spark-01", tags=["dgx-spark"])
+        client, campaigns, _ = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([cpu, spark]),
+        )
+        params = _send_params(str(workflow.id))
+        params["message"]["metadata"]["connectionId"] = "cpu"
+
+        response = _rpc(client, "SendMessage", params)
+
+        assert response.status_code == 422
+        assert "cpu" in response.text
+        assert cpu.spawned == []
+        assert spark.spawned == []
+
+        import asyncio
+
+        campaigns_list = asyncio.run(campaigns.list_campaigns(owner_id="user-1"))
+        assert all(c.status != WorkflowCampaignStatus.PENDING for c in campaigns_list)
+
+    def test_retry_reuses_the_persisted_target_and_does_not_duplicate_spawn(self) -> None:
+        """A retry (e.g. after a crash between spawn and mark_launched) must
+        land on the exact target the first attempt resolved and already
+        spawned on — never re-resolve and possibly pick a different Guild
+        target, which would duplicate the session."""
+        import asyncio
+
+        workflow = _make_workflow_with_placement({"tags": ["dgx-spark"]})
+        cpu = RecordingVolundrPort(name="cpu", target_id="cpu", tags=["cpu"])
+        spark = RecordingVolundrPort(name="spark-01", target_id="spark-01", tags=["dgx-spark"])
+        launch_repo = InMemoryA2ALaunchRepository()
+        client, campaigns, _ = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([cpu, spark]),
+            launch_repo=launch_repo,
+        )
+
+        prompt = "Build the widget tool"
+        metadata = {"skillId": str(workflow.id), "model": "gpt-5.5"}
+        reservation_id = uuid4()
+        campaign_id = uuid4()
+        task_id = f"a2a-{reservation_id.hex}"
+        now = datetime.now(UTC)
+
+        # Seed the state a first attempt would have left behind had it
+        # crashed after resolving+persisting its target and spawning a
+        # session, but before it could call mark_launched: a "launching"
+        # reservation, a PENDING campaign already carrying the resolved
+        # (non-primary) spark connection, and a session on spark whose
+        # tracker key matches this reservation.
+        asyncio.run(
+            launch_repo.reserve(
+                A2ALaunchReservation(
+                    id=reservation_id,
+                    owner_id="user-1",
+                    tenant_id="",
+                    message_id="msg-1",
+                    request_digest=_launch_digest(prompt, metadata),
+                    workflow_id=workflow.id,
+                    task_id=task_id,
+                    campaign_id=campaign_id,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        )
+        asyncio.run(
+            launch_repo.claim(
+                reservation_id,
+                lease_token=uuid4(),
+                lease_until=now + timedelta(seconds=60),
+            )
+        )
+        pending_snapshot = build_workflow_snapshot(workflow)
+        asyncio.run(
+            campaigns.save_campaign(
+                WorkflowCampaign(
+                    id=campaign_id,
+                    slug=task_id,
+                    name=workflow.name,
+                    owner_id="user-1",
+                    workflow_id=workflow.id,
+                    workflow_version=workflow.version,
+                    workflow_name=workflow.name,
+                    workflow_snapshot=pending_snapshot,
+                    session_id="",
+                    session_name="",
+                    status=WorkflowCampaignStatus.PENDING,
+                    active_stage_id=None,
+                    stage_state=[],
+                    metadata={
+                        "surface": "a2a",
+                        "prompt": prompt,
+                        "a2a_context_id": task_id,
+                        "a2a_message_id": "msg-1",
+                        "a2a_workflow_slug": "build-the-widget-tool",
+                    },
+                    created_at=now,
+                    updated_at=now,
+                    last_activity_at=now,
+                    connection_id="spark-01",
+                )
+            )
+        )
+        spark.sessions.append(
+            VolundrSession(
+                id="recovered-session",
+                name="recovered",
+                status="running",
+                chat_endpoint="wss://sessions.example/s/recovered-session/session",
+                tracker_issue_id=f"workflow:{task_id}",
+                cluster_name="spark-01",
+                repo="",
+                branch="",
+                base_branch="",
+                workload_type="ravn_flock",
+            )
+        )
+
+        params = _send_params(str(workflow.id), prompt=prompt)
+        params["message"]["messageId"] = "msg-1"
+        response = _rpc(client, "SendMessage", params)
+
+        assert response.status_code == 200, response.text
+        assert cpu.spawned == []
+        assert spark.spawned == []  # recovered, not re-spawned
+        task = response.json()["result"]["task"]
+        assert task["id"] == task_id
+        assert task["metadata"]["sessionId"] == "recovered-session"
+        assert task["metadata"]["connectionId"] == "spark-01"
+
+        campaign = asyncio.run(campaigns.get_campaign_by_slug(task_id))
+        assert campaign is not None
+        assert campaign.connection_id == "spark-01"
+        assert campaign.session_id == "recovered-session"
+
+    def test_launch_failure_marks_the_campaign_failed_instead_of_leaving_it_pending(
+        self,
+    ) -> None:
+        """A failure inside the launch attempt itself (after the campaign
+        row is already saved) must resolve that row, not leave it PENDING —
+        the placement pre-check only prevents the case where resolution
+        itself fails before the campaign is ever created."""
+        import asyncio
+
+        workflow = _make_workflow_with_placement({"tags": ["dgx-spark"]})
+        spark = RecordingVolundrPort(
+            name="spark-01", target_id="spark-01", tags=["dgx-spark"], spawn_failure=True
+        )
+        client, campaigns, _ = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([spark]),
+        )
+
+        response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
+
+        assert "error" in response.json()
+        campaigns_list = asyncio.run(campaigns.list_campaigns(owner_id="user-1"))
+        assert len(campaigns_list) == 1
+        [campaign] = campaigns_list
+        assert campaign.status == WorkflowCampaignStatus.FAILED
+        assert "spawn failed" in campaign.metadata["failure_error"]
 
 
 class TestGateContinuation:

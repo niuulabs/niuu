@@ -13,7 +13,7 @@ import respx
 from ravn.adapters.personas.loader import PersonaConfig
 from ravn.domain.persona_document import portable_persona_from_config
 from ting.adapters.volundr_http import VolundrHTTPAdapter
-from ting.ports.volundr import SpawnRequest
+from ting.ports.volundr import ActivityStreamConnected, SpawnRequest
 
 BASE_URL = "http://volundr.test:8000"
 SESSIONS_URL = f"{BASE_URL}/api/v1/forge/sessions"
@@ -21,7 +21,15 @@ SESSIONS_URL = f"{BASE_URL}/api/v1/forge/sessions"
 
 @pytest.fixture
 def adapter() -> VolundrHTTPAdapter:
-    return VolundrHTTPAdapter(base_url=BASE_URL, timeout=5.0, name="test-cluster")
+    # These fixtures exercise adapter *behavior* (request shape, response
+    # parsing, error propagation), not the guild_transport policy itself —
+    # see test_volundr_http_transport_security.py for that — so a non-loopback
+    # http:// fixture URL opts into plaintext explicitly, matching the
+    # pattern used by other Guild-outbound test suites (e.g.
+    # test_rest_volundr.py's _instance helper).
+    return VolundrHTTPAdapter(
+        base_url=BASE_URL, timeout=5.0, name="test-cluster", config={"allow_plaintext": True}
+    )
 
 
 class StaticAuth:
@@ -1156,6 +1164,11 @@ class _FakeAsyncClient:
     def __init__(self, response: _FakeStreamResponse, expected_headers: dict[str, str]) -> None:
         self._response = response
         self._expected_headers = expected_headers
+        # VolundrHTTPAdapter._client() reads .timeout.connect back off the
+        # client build_guild_httpx_client() returned (to strip the read
+        # timeout for this streaming call) — a real httpx.AsyncClient always
+        # has one; this fake needs the same shape.
+        self.timeout = httpx.Timeout(30.0, connect=5.0)
 
     async def __aenter__(self):
         return self
@@ -1206,11 +1219,13 @@ class TestSubscribeActivity:
         monkeypatch.setattr(
             httpx,
             "AsyncClient",
-            lambda timeout=None: _FakeAsyncClient(response, expected_headers={}),
+            lambda *args, **kwargs: _FakeAsyncClient(response, expected_headers={}),
         )
 
-        events = [event async for event in adapter.subscribe_activity()]
+        items = [item async for item in adapter.subscribe_activity()]
 
+        assert isinstance(items[0], ActivityStreamConnected)
+        events = items[1:]
         assert len(events) == 2
         assert events[0].session_id == "ses-1"
         assert events[0].state == "running"
@@ -1223,6 +1238,7 @@ class TestSubscribeActivity:
         adapter = VolundrHTTPAdapter(
             base_url=BASE_URL,
             auth=StaticAuth({"Authorization": "Bearer service-token"}),
+            config={"allow_plaintext": True},
         )
         response = _FakeStreamResponse(
             [
@@ -1234,12 +1250,58 @@ class TestSubscribeActivity:
         monkeypatch.setattr(
             httpx,
             "AsyncClient",
-            lambda timeout=None: _FakeAsyncClient(
+            lambda *args, **kwargs: _FakeAsyncClient(
                 response,
                 expected_headers={"Authorization": "Bearer service-token"},
             ),
         )
 
-        events = [event async for event in adapter.subscribe_activity()]
+        items = [item async for item in adapter.subscribe_activity()]
 
+        assert isinstance(items[0], ActivityStreamConnected)
+        events = items[1:]
         assert events[0].session_id == "ses-1"
+
+    @pytest.mark.asyncio
+    async def test_yields_connected_marker_before_an_empty_stream_ends(
+        self, adapter: VolundrHTTPAdapter, monkeypatch
+    ):
+        """Even a stream with zero activity events yields the marker —
+
+        it signals "the connection opened", not "an event arrived".
+        """
+        response = _FakeStreamResponse([])
+        monkeypatch.setattr(
+            httpx,
+            "AsyncClient",
+            lambda *args, **kwargs: _FakeAsyncClient(response, expected_headers={}),
+        )
+
+        items = [item async for item in adapter.subscribe_activity()]
+
+        assert len(items) == 1
+        assert isinstance(items[0], ActivityStreamConnected)
+
+    @pytest.mark.asyncio
+    async def test_connect_failure_never_yields_the_connected_marker(
+        self, adapter: VolundrHTTPAdapter, monkeypatch
+    ):
+        """A connect that fails (here, a non-2xx response) must raise
+
+        before yielding anything — a caller must never see
+        ``ActivityStreamConnected`` for a connection that didn't actually
+        open.
+        """
+        response = _FakeStreamResponse([], status_code=503)
+        monkeypatch.setattr(
+            httpx,
+            "AsyncClient",
+            lambda *args, **kwargs: _FakeAsyncClient(response, expected_headers={}),
+        )
+
+        items = []
+        with pytest.raises(httpx.HTTPStatusError):
+            async for item in adapter.subscribe_activity():
+                items.append(item)
+
+        assert items == []

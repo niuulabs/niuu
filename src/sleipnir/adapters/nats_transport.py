@@ -35,18 +35,79 @@ All events are persisted in a single stream (``sleipnir`` by default) that
 covers all subjects under the configured prefix.  Configurable retention
 policies: ``limits`` (default), ``interest``, ``workqueue``.
 
+Delivery guarantee
+------------------
+JetStream subscriptions are **at-least-once**; handlers must be idempotent.
+A message is acknowledged only after the subscriber's handler has returned.
+If the handler raises, the message is nak'd with a delay from ``nak_backoff_s``
+and JetStream redelivers it.  After ``max_deliver`` failed deliveries it is
+published to ``{prefix}.system.dlq.message`` and terminated.  It is never
+acked unless it was handled or dead-lettered.  While a message waits in the
+subscription's bounded queue or runs in its handler, the subscriber sends
+in-progress pings every ``ack_progress_interval_s``.  Slow handling therefore
+never triggers redelivery, but a crashed process stops pinging, and JetStream
+redelivers after ``ack_wait_s``.  A full queue blocks the NATS callback and
+withholds acks, and ``max_ack_pending`` stops JetStream pushing more.  Nothing
+is dropped to make room.
+
+Core NATS subscriptions (``core_subscriptions`` or ``stream_name: core``)
+have no server-side log and no acks, so they are at-most-once.
+
+Consumer and stream recovery
+-----------------------------
+If a JetStream store is reset (streams recreated empty), a subscriber's
+existing consumers vanish with it and nats-py does not notice: the push
+subscription just goes quiet.  Each JetStream subscription is polled every
+``consumer_health_check_interval_s`` (plus jitter) via
+``PushSubscription.consumer_info()``.  A ``404`` (consumer or stream not
+found) is logged at ERROR and triggers recovery: the consumer is recreated
+with the same durable name and config once its stream exists, retried with
+``consumer_recovery_backoff_s`` while the stream is absent, replaying from a
+bounded window (``consumer_recovery_max_replay_window_s``) so the gap is not
+missed.  Any other health-check failure (timeout, connectivity) is logged at
+WARNING (escalating to ERROR after ``consumer_check_failure_threshold``
+consecutive failures) and left alone — only a confirmed 404 is treated as
+loss, so a transient error never triggers a spurious consumer recreation.
+
+A durable created (or recreated) by this code always gets a deterministic
+push delivery subject — ``_INBOX.sleipnir.<durable>``, never a subject any
+stream's ``{prefix}.>`` filter would capture, which the server otherwise
+rejects as a "consumer deliver subject forms a cycle" — so every replica
+that *creates* the durable lands on the same inbox.  An older durable
+(created before this existed, or left with whatever random inbox nats-py
+assigned) keeps that inbox until it is next recreated; this code never
+rewrites a durable's config in place, because the server refuses to change a
+push durable's deliver_subject while any client is still subscribed to its
+current one (``400 err_code=10013 "consumer name already in use"``,
+confirmed against server 2.14) — every replica already is, at startup, so a
+write would simply fail.  Instead, a health check compares the durable's
+live ``deliver_subject``/``deliver_group`` against what *this* subscription
+is actually bound to, and on a mismatch resubscribes: nats-py binds to
+whatever the server has right now, which fixes the deaf-replica case (one
+replica recreated the durable and moved everyone else's inbox from under
+them) with no server write.  Each watch is health-checked independently, in
+its own task, so a slow recovery or rebind on one watch never delays the
+others in the same subscription.
+
 Consumer groups
 ---------------
 Pass ``consumer_group`` to :class:`NatsSubscriber` (or :class:`NatsTransport`)
-to create a durable, queue-group consumer.  Multiple replicas sharing the same
-group name receive each message exactly once, distributing load across the
-group.
+to create a durable, queue-group consumer.  Replicas sharing the same group
+name split the messages between them: each message goes to one member at a
+time, and to another member if the first fails or dies before acking.
+
+A durable consumer that already exists keeps its server-side ``ack_wait``,
+``max_deliver`` and ``max_ack_pending``.  nats-py binds to it without
+reconfiguring it.  The subscriber enforces ``max_deliver`` and the DLQ itself,
+so dead-lettering works on old durables too.  Apply the other settings with
+``nats consumer edit`` or by recreating the durable.
 
 Replay
 ------
 Pass ``replay_from_sequence`` or ``replay_from_time`` to
-:class:`NatsSubscriber` for crash recovery.  On restart the subscriber resumes
-from the specified position in the stream, reprocessing missed events.
+:class:`NatsSubscriber` to choose where a new consumer starts in the stream.
+Recovery from a crash does not depend on it: unacknowledged messages are
+redelivered to a durable consumer group regardless.
 
 Configuration example
 ---------------------
@@ -68,11 +129,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import random
 import ssl
 import time
 from collections import deque
+from collections.abc import Callable
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import ParseResult, urlparse
@@ -81,6 +144,7 @@ from urllib.request import getproxies
 try:
     import nats
     import nats.js.api as js_api
+    import nats.js.errors as js_errors
     from nats.aio.client import DEFAULT_BUFFER_SIZE
     from nats.aio.client import Client as NatsClient
     from nats.aio.transport import TcpTransport
@@ -90,12 +154,13 @@ except ImportError:  # pragma: no cover
     DEFAULT_BUFFER_SIZE = 0
     NatsClient = object  # type: ignore[assignment,misc]
     TcpTransport = object  # type: ignore[assignment,misc]
+    js_errors = None  # type: ignore[assignment]
     _NATS_AVAILABLE = False
 
 from sleipnir.adapters._subscriber_support import (
+    Delivery,
     _BaseSubscription,
-    consume_queue,
-    enqueue_with_overflow,
+    consume_deliveries,
 )
 from sleipnir.adapters.serialization import deserialize, serialize
 from sleipnir.domain import registry
@@ -119,8 +184,54 @@ DEFAULT_MAX_AGE_SECONDS = 7 * 24 * 3600
 #: Default maximum stream size — 1 GiB in bytes.
 DEFAULT_MAX_BYTES = 1024 * 1024 * 1024
 
-#: Per-subscriber in-process ring buffer depth (events).
+#: Per-subscription queue depth (events).  A full queue blocks the NATS
+#: callback and withholds acks; it never drops events.
 DEFAULT_RING_BUFFER_DEPTH = 1000
+
+#: JetStream deliveries of one message before it is dead-lettered.
+DEFAULT_MAX_DELIVER = 5
+
+#: Seconds JetStream waits for an ack or in-progress ping before redelivering.
+DEFAULT_ACK_WAIT_S = 30.0
+
+#: Seconds between in-progress pings for received but unsettled messages.
+#: Must be shorter than the ack wait.
+DEFAULT_ACK_PROGRESS_INTERVAL_S = 10.0
+
+#: Redelivery delay (seconds) after the 1st, 2nd, … failed delivery; the last
+#: entry repeats for any later attempt.
+DEFAULT_NAK_BACKOFF_S: tuple[float, ...] = (1.0, 5.0, 30.0, 60.0)
+
+#: Seconds between checks that each subscription's JetStream consumer (and
+#: its stream) still exists.  nats-py's push-subscription heartbeats do not
+#: surface a missed-heartbeat signal to the application for non-ordered
+#: consumers, so this polls ``PushSubscription.consumer_info()`` instead —
+#: the same JetStream API call nats-py itself uses to bind to a durable.
+DEFAULT_CONSUMER_HEALTH_CHECK_INTERVAL_S = 15.0
+
+#: Recovery retry delay (seconds) after the 1st, 2nd, … failed attempt to
+#: recreate a consumer whose stream is still absent; the last entry repeats.
+DEFAULT_CONSUMER_RECOVERY_BACKOFF_S: tuple[float, ...] = (1.0, 5.0, 15.0, 30.0)
+
+#: Consecutive non-404 health-check failures before escalating the log from
+#: WARNING to ERROR.  Every check failing (wrong credentials, network split)
+#: must become loud even though no single failure is a confirmed loss.
+DEFAULT_CONSUMER_CHECK_FAILURE_THRESHOLD = 3
+
+#: Maximum random jitter (seconds) added on top of the health-check interval
+#: so many subscriptions (or replicas) don't all poll JetStream in lockstep.
+DEFAULT_CONSUMER_HEALTH_CHECK_JITTER_S = 3.0
+
+#: Upper bound (seconds) on how far back a recreated consumer replays from,
+#: regardless of how long its watch's last_healthy_at has been stale — caps
+#: the replay burst after a subscription was unhealthy for a long time.
+DEFAULT_CONSUMER_RECOVERY_MAX_REPLAY_WINDOW_S = 3600.0
+
+#: Consecutive "consumer already exists" replies (a concurrent create by
+#: another replica winning the race) tolerated with a short, immediate-ish
+#: retry before falling back to the normal failure/backoff path.  Bounds
+#: what would otherwise be an unbounded fast retry loop.
+DEFAULT_CONSUMER_ALREADY_EXISTS_RETRY_LIMIT = 5
 
 #: NATS connection timeout in seconds.
 DEFAULT_CONNECT_TIMEOUT_S = 10.0
@@ -446,13 +557,24 @@ def _parse_retention(retention_str: str) -> Any:
 def _decode_nats_message(data: bytes) -> SleipnirEvent | None:
     """Decode a NATS message payload (msgpack-serialised :class:`SleipnirEvent`).
 
-    Returns ``None`` and logs a warning on malformed or undeserializable input.
+    Returns ``None`` and logs the error on malformed or undeserializable input;
+    JetStream callers dead-letter the message.
     """
     try:
         return deserialize(data)
     except Exception:
-        logger.exception("NatsTransport: deserialization failed, message dropped")
+        logger.exception("NatsTransport: deserialization failed")
         return None
+
+
+def _delivery_attempt(msg: Any) -> int:
+    """Return how many times JetStream has delivered *msg* (1 on first delivery)."""
+    return int(msg.metadata.num_delivered)
+
+
+def _stream_sequence(msg: Any) -> int:
+    """Return the sequence number of *msg* in its JetStream stream."""
+    return int(msg.metadata.sequence.stream)
 
 
 async def _ensure_stream(
@@ -493,6 +615,57 @@ async def _ensure_stream(
                     f"NATS stream {stream_name!r} does not exist and could not "
                     f"be created: {create_exc}"
                 ) from info_exc
+
+
+async def _safe_unsubscribe(nats_sub: Any, *, context: str) -> None:
+    """Best-effort NATS unsubscribe; a failure is logged, never swallowed silently.
+
+    The server drops the interest anyway when the connection closes, so a
+    failure here is not fatal — but it must be visible, not a bare
+    ``suppress(Exception)``, or a leaked subscription looks like success.
+    """
+    try:
+        await nats_sub.unsubscribe()
+    except Exception:
+        logger.warning(
+            "NatsSubscriber: NATS unsubscribe failed for %s; the server drops the "
+            "interest when the connection closes",
+            context,
+            exc_info=True,
+        )
+
+
+#: JetStream API error code for "consumer name already in use" — the server's
+#: reply when a create races another create (or a rebind) for the same
+#: durable name that got there first.
+_JS_ERR_CONSUMER_NAME_IN_USE = 10013
+
+#: JetStream API error code for "start time can not be updated" — the same
+#: race, reported this way instead of 10013 when the two concurrent creates'
+#: configs disagree on ``opt_start_time`` (confirmed against server 2.14.2;
+#: each replica computes its own recovery replay start time, so they usually
+#: do).
+_JS_ERR_CONSUMER_START_TIME_UPDATE = 10012
+
+_JS_ERR_CODES_CONSUMER_ALREADY_EXISTS = (
+    _JS_ERR_CONSUMER_NAME_IN_USE,
+    _JS_ERR_CONSUMER_START_TIME_UPDATE,
+)
+
+
+def _is_consumer_already_exists_error(exc: Exception) -> bool:
+    """True if *exc* means a concurrent create beat this one to the same durable.
+
+    Two replicas racing to recreate the same missing durable can both attempt
+    to create it — each with its own recovery config, since every replica
+    tracks its own health-check history — so the loser's create is rejected
+    even though the durable now exists exactly as intended.  nats-server
+    reports this as "consumer name already in use" (err_code 10013) or, when
+    the two configs' start times disagree, "start time can not be updated"
+    (err_code 10012).  Either way the fix is the same: bind to what's there,
+    not treat this as a failure needing the full backoff.
+    """
+    return getattr(exc, "err_code", None) in _JS_ERR_CODES_CONSUMER_ALREADY_EXISTS
 
 
 # ---------------------------------------------------------------------------
@@ -790,16 +963,225 @@ class NatsCorePublisher(SleipnirPublisher):
 # ---------------------------------------------------------------------------
 
 
+class _JetStreamDelivery(Delivery):
+    """A JetStream message, acknowledged only once its handler has returned."""
+
+    __slots__ = ("msg", "_subscription")
+
+    def __init__(self, event: SleipnirEvent, msg: Any, subscription: _NatsSubscription) -> None:
+        super().__init__(event)
+        self.msg = msg
+        self._subscription = subscription
+        subscription.unsettled.add(self)
+
+    # Each settlement leaves ``unsettled`` only after it has been sent, so a
+    # cancellation mid-settlement still has the message released on unsubscribe.
+
+    async def ack(self) -> None:
+        await self._subscription.owner._settle(self.msg, "ack")
+        self._subscription.unsettled.discard(self)
+
+    async def nak(self, error: Exception) -> None:
+        await self._subscription.owner._reject(self.msg, error)
+        self._subscription.unsettled.discard(self)
+
+    async def release(self) -> None:
+        """Hand an unhandled message straight back to JetStream (unsubscribe/stop)."""
+        await self._subscription.owner._settle(self.msg, "nak")
+        self._subscription.unsettled.discard(self)
+
+
+class _CoreDelivery(Delivery):
+    """A core NATS message: no server-side log, so nothing to ack or redeliver."""
+
+    __slots__ = ("_owner",)
+
+    def __init__(self, event: SleipnirEvent, owner: NatsSubscriber) -> None:
+        super().__init__(event)
+        self._owner = owner
+
+    async def ack(self) -> None:
+        return None
+
+    async def nak(self, error: Exception) -> None:
+        self._owner._stats["handler_failures"] += 1
+        logger.error(
+            "NatsSubscriber: handler raised for core NATS event %s (%s); core subjects "
+            "are at-most-once, so the event is not redelivered",
+            self.event.event_id,
+            self.event.event_type,
+            exc_info=error,
+        )
+
+
+class _ConsumerWatch:
+    """Tracks one JetStream push subscription so it can be recovered or rebound.
+
+    ``nats_sub`` is replaced in place when :meth:`NatsSubscriber._recover_consumer`
+    or :meth:`NatsSubscriber._rebind_consumer` swaps in a new underlying push
+    subscription, so the watch always names the subscription currently in
+    service for *subject*.  ``durable`` is ``None`` for an ephemeral (no
+    ``consumer_group``) subscription — it has no deliver-subject-sharing
+    replicas to rebind against, only a consumer that can be lost.
+    ``last_healthy_at`` bounds how far back a recreated consumer must replay
+    from; see ``_build_recovery_consumer_config``.
+    """
+
+    __slots__ = (
+        "subject",
+        "stream_name",
+        "patterns",
+        "nats_sub",
+        "durable",
+        "last_healthy_at",
+        "consecutive_check_failures",
+    )
+
+    def __init__(
+        self,
+        subject: str,
+        stream_name: str,
+        patterns: list[str],
+        nats_sub: Any,
+        durable: str | None,
+    ) -> None:
+        self.subject = subject
+        self.stream_name = stream_name
+        self.patterns = patterns
+        self.nats_sub = nats_sub
+        self.durable = durable
+        self.last_healthy_at = datetime.now(UTC)
+        self.consecutive_check_failures = 0
+
+
+class _NatsSubscription(_BaseSubscription):
+    """One logical subscription: its NATS subscriptions, queue and unsettled messages.
+
+    Every JetStream message from the moment its callback accepts it until it
+    is settled sits in :attr:`unsettled` and gets an in-progress ping every
+    *progress_interval_s*, so waiting in the queue or a slow handler never
+    exhausts ``ack_wait``.  Unsubscribing hands whatever is still unsettled
+    back to JetStream with an immediate nak.
+
+    :attr:`consumer_watches` holds one :class:`_ConsumerWatch` per JetStream
+    push subscription (core NATS subscriptions are not watched — they have no
+    consumer to lose), polled every *health_check_interval_s* (plus jitter) to
+    detect and recover a deleted or rebound consumer.  The watchdog task is
+    started lazily, on the first watch registered — a core-only subscription,
+    or one torn down before it ever gets one, never pays for it.  Each watch
+    is checked in its own task (:attr:`_watch_check_tasks`), so a slow
+    recovery retry loop on one watch never delays the next poll of another.
+    """
+
+    def __init__(
+        self,
+        patterns: list[str],
+        queue: asyncio.Queue[Delivery],
+        task: asyncio.Task[None],
+        remove_fn: Callable[[], None],
+        owner: NatsSubscriber,
+        progress_interval_s: float,
+        health_check_interval_s: float,
+        health_check_jitter_s: float,
+    ) -> None:
+        super().__init__(patterns, queue, task, remove_fn)
+        self.owner = owner
+        self.nats_subs: list[Any] = []
+        self.consumer_watches: list[_ConsumerWatch] = []
+        self.unsettled: set[_JetStreamDelivery] = set()
+        self._health_check_interval_s = health_check_interval_s
+        self._health_check_jitter_s = health_check_jitter_s
+        self._watchdog_task: asyncio.Task[None] | None = None
+        self._watch_check_tasks: dict[int, asyncio.Task[None]] = {}
+        self._progress_task = asyncio.create_task(self._report_progress(progress_interval_s))
+
+    async def put(self, delivery: Delivery) -> None:
+        """Queue *delivery* for the handler, waiting while the queue is full."""
+        await self._queue.put(delivery)
+
+    async def _report_progress(self, interval_s: float) -> None:
+        while True:
+            await asyncio.sleep(interval_s)
+            for delivery in list(self.unsettled):
+                await self.owner._settle(delivery.msg, "in_progress")
+
+    def ensure_watchdog_started(self) -> None:
+        """Start the consumer-health watchdog on the first watch registered.
+
+        Called after a :class:`_ConsumerWatch` is appended.  A core-only
+        subscription, or one that is unsubscribed before it ever registers a
+        watch (for example a short-lived RPC reply subscription that gets its
+        answer first), never spawns the task at all.
+        """
+        if self._watchdog_task is not None:
+            return
+        self._watchdog_task = asyncio.create_task(
+            self._watch_consumers(self._health_check_interval_s, self._health_check_jitter_s)
+        )
+
+    async def _watch_consumers(self, interval_s: float, jitter_s: float) -> None:
+        while True:
+            await asyncio.sleep(interval_s + random.uniform(0, jitter_s))
+            for watch in list(self.consumer_watches):
+                key = id(watch)
+                existing = self._watch_check_tasks.get(key)
+                if existing is not None and not existing.done():
+                    # A check (or a recovery retry loop inside it) for this
+                    # watch is still running from a previous tick — starting
+                    # a second one could race the first's swap of
+                    # watch.nats_sub.  Other watches are scheduled below
+                    # regardless: isolation is per watch, not per tick.
+                    continue
+                self._watch_check_tasks[key] = asyncio.create_task(
+                    self.owner._check_consumer_watch(self, watch)
+                )
+
+    async def unsubscribe(self) -> None:
+        if not self.active:
+            return
+        await super().unsubscribe()
+        # The watchdog scheduling loop, and every per-watch check/recovery
+        # task it spawned, are cancelled and fully awaited before anything
+        # below touches nats_subs/consumer_watches: otherwise a recovery
+        # already in flight can resume after this method has cleared those
+        # collections and append a live, never-acking subscription that
+        # nothing then cleans up (it keeps eating queue-group messages and
+        # max_deliver).
+        if self._watchdog_task is not None:
+            self._watchdog_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._watchdog_task
+        for check_task in self._watch_check_tasks.values():
+            check_task.cancel()
+        for check_task in list(self._watch_check_tasks.values()):
+            with suppress(asyncio.CancelledError):
+                await check_task
+        self._watch_check_tasks.clear()
+        for nats_sub in list(self.nats_subs):
+            await _safe_unsubscribe(nats_sub, context="subscription teardown")
+        self.nats_subs.clear()
+        self.consumer_watches.clear()
+        self._progress_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await self._progress_task
+        for delivery in list(self.unsettled):
+            await delivery.release()
+
+
 class NatsSubscriber(SleipnirSubscriber):
-    """NATS JetStream subscriber with consumer group and replay support.
+    """NATS JetStream subscriber with at-least-once delivery.
 
-    *consumer_group* enables parallel processing across replicas: all
-    instances sharing the same group name receive each message exactly once
-    (load distribution via JetStream queue groups).
+    Each JetStream message is acked only after the handler returns.  A handler
+    that raises gets the message redelivered with backoff, and after
+    *max_deliver* deliveries it is dead-lettered.  Handlers must be idempotent.
+    See the module docstring for the full guarantee.
 
-    *replay_from_sequence* or *replay_from_time* enable crash recovery: on
-    restart the subscriber resumes from the specified position in the stream,
-    reprocessing any events that were missed.
+    *consumer_group* enables parallel processing across replicas: instances
+    sharing the group name split the messages between them (JetStream queue
+    groups), and a message a member failed to ack goes to another member.
+
+    *replay_from_sequence* or *replay_from_time* choose where a new consumer
+    starts reading the stream.
 
     Usage::
 
@@ -845,10 +1227,105 @@ class NatsSubscriber(SleipnirSubscriber):
         proxy_url: str = "",
         extra_subscriptions: list[dict[str, str]] | None = None,
         core_subscriptions: list[str | dict[str, str]] | None = None,
+        max_deliver: int = DEFAULT_MAX_DELIVER,
+        ack_wait_s: float = DEFAULT_ACK_WAIT_S,
+        ack_progress_interval_s: float = DEFAULT_ACK_PROGRESS_INTERVAL_S,
+        max_ack_pending: int | None = None,
+        nak_backoff_s: list[float] | None = None,
+        consumer_health_check_interval_s: float = DEFAULT_CONSUMER_HEALTH_CHECK_INTERVAL_S,
+        consumer_recovery_backoff_s: list[float] | None = None,
+        consumer_check_failure_threshold: int = DEFAULT_CONSUMER_CHECK_FAILURE_THRESHOLD,
+        consumer_health_check_jitter_s: float = DEFAULT_CONSUMER_HEALTH_CHECK_JITTER_S,
+        consumer_recovery_max_replay_window_s: float = (
+            DEFAULT_CONSUMER_RECOVERY_MAX_REPLAY_WINDOW_S
+        ),
+        consumer_already_exists_retry_limit: int = DEFAULT_CONSUMER_ALREADY_EXISTS_RETRY_LIMIT,
     ) -> None:
+        """Create the subscriber (connect with :meth:`start`).
+
+        :param ring_buffer_depth: Events queued per subscription before the
+            NATS callback blocks and acks are withheld.
+        :param max_deliver: Deliveries of one message before it is
+            dead-lettered to ``{subject_prefix}.system.dlq.message``.
+        :param ack_wait_s: Seconds without an ack or in-progress ping before
+            JetStream redelivers — how long a crashed process holds a message.
+        :param ack_progress_interval_s: Seconds between in-progress pings for
+            unsettled messages; must be shorter than *ack_wait_s*.
+        :param max_ack_pending: Unacked messages JetStream may push to one
+            consumer; defaults to *ring_buffer_depth*.
+        :param nak_backoff_s: Redelivery delay after the 1st, 2nd, … failed
+            delivery; the last entry repeats.
+        :param consumer_health_check_interval_s: Seconds between checks that
+            each JetStream consumer (and its stream) still exists.
+        :param consumer_recovery_backoff_s: Retry delay after the 1st, 2nd, …
+            failed attempt to recreate a lost consumer while its stream is
+            still absent; the last entry repeats.
+        :param consumer_check_failure_threshold: Consecutive non-404 health
+            check failures before the log escalates from WARNING to ERROR.
+        :param consumer_health_check_jitter_s: Maximum random jitter added to
+            the health-check interval on each poll.
+        :param consumer_recovery_max_replay_window_s: Upper bound on how far
+            back a recreated consumer replays from, regardless of how long
+            its last health check has been stale.
+        :param consumer_already_exists_retry_limit: Consecutive "consumer
+            already exists" replies (a concurrent create winning) tolerated
+            with a short retry before falling back to the normal
+            failure/backoff path.
+        """
         _require_nats()
         if ring_buffer_depth < 1:
             raise ValueError(f"ring_buffer_depth must be >= 1, got {ring_buffer_depth}")
+        if max_deliver < 1:
+            raise ValueError(f"max_deliver must be >= 1, got {max_deliver}")
+        if ack_wait_s <= 0:
+            raise ValueError(f"ack_wait_s must be > 0, got {ack_wait_s}")
+        if not 0 < ack_progress_interval_s < ack_wait_s:
+            raise ValueError(
+                "ack_progress_interval_s must be > 0 and shorter than ack_wait_s "
+                f"({ack_wait_s}), got {ack_progress_interval_s}"
+            )
+        resolved_max_ack_pending = ring_buffer_depth if max_ack_pending is None else max_ack_pending
+        if resolved_max_ack_pending < 1:
+            raise ValueError(f"max_ack_pending must be >= 1, got {resolved_max_ack_pending}")
+        backoff = list(DEFAULT_NAK_BACKOFF_S if nak_backoff_s is None else nak_backoff_s)
+        if not backoff or any(delay < 0 for delay in backoff):
+            raise ValueError(
+                f"nak_backoff_s must be a non-empty list of delays >= 0, got {nak_backoff_s}"
+            )
+        if consumer_health_check_interval_s <= 0:
+            raise ValueError(
+                "consumer_health_check_interval_s must be > 0, got "
+                f"{consumer_health_check_interval_s}"
+            )
+        recovery_backoff = list(
+            DEFAULT_CONSUMER_RECOVERY_BACKOFF_S
+            if consumer_recovery_backoff_s is None
+            else consumer_recovery_backoff_s
+        )
+        if not recovery_backoff or any(delay < 0 for delay in recovery_backoff):
+            raise ValueError(
+                "consumer_recovery_backoff_s must be a non-empty list of delays >= 0, got "
+                f"{consumer_recovery_backoff_s}"
+            )
+        if consumer_check_failure_threshold < 1:
+            raise ValueError(
+                "consumer_check_failure_threshold must be >= 1, got "
+                f"{consumer_check_failure_threshold}"
+            )
+        if consumer_health_check_jitter_s < 0:
+            raise ValueError(
+                f"consumer_health_check_jitter_s must be >= 0, got {consumer_health_check_jitter_s}"
+            )
+        if consumer_recovery_max_replay_window_s <= 0:
+            raise ValueError(
+                "consumer_recovery_max_replay_window_s must be > 0, got "
+                f"{consumer_recovery_max_replay_window_s}"
+            )
+        if consumer_already_exists_retry_limit < 1:
+            raise ValueError(
+                "consumer_already_exists_retry_limit must be >= 1, got "
+                f"{consumer_already_exists_retry_limit}"
+            )
         self._servers = servers or DEFAULT_SERVERS
         self._stream_name = stream_name
         self._subject_prefix = subject_prefix
@@ -860,6 +1337,18 @@ class NatsSubscriber(SleipnirSubscriber):
         self._replay_from_sequence = replay_from_sequence
         self._replay_from_time = replay_from_time
         self._ring_buffer_depth = ring_buffer_depth
+        self._max_deliver = max_deliver
+        self._ack_wait_s = ack_wait_s
+        self._ack_progress_interval_s = ack_progress_interval_s
+        self._max_ack_pending = resolved_max_ack_pending
+        self._nak_backoff_s = backoff
+        self._consumer_health_check_interval_s = consumer_health_check_interval_s
+        self._consumer_recovery_backoff_s = recovery_backoff
+        self._consumer_check_failure_threshold = consumer_check_failure_threshold
+        self._consumer_health_check_jitter_s = consumer_health_check_jitter_s
+        self._consumer_recovery_max_replay_window_s = consumer_recovery_max_replay_window_s
+        self._consumer_already_exists_retry_limit = consumer_already_exists_retry_limit
+        self._dlq_subject = _nats_subject_for_event(registry.SYSTEM_DLQ_MESSAGE, subject_prefix)
         self._connect_timeout_s = connect_timeout_s
         self._max_reconnect_attempts = max_reconnect_attempts
         self._ensure_stream = ensure_stream
@@ -906,15 +1395,23 @@ class NatsSubscriber(SleipnirSubscriber):
         ]
         self._client: Any = None
         self._js: Any = None
-        self._nats_subs: list[Any] = []
-        self._subscriptions: list[_BaseSubscription] = []
+        self._subscriptions: list[_NatsSubscription] = []
         self._running = False
         self._stats: dict[str, int] = {
             "ack_failures": 0,
+            "nak_failures": 0,
+            "term_failures": 0,
+            "in_progress_failures": 0,
+            "handler_failures": 0,
             "decode_failures": 0,
             "dlq_published": 0,
             "dlq_publish_failures": 0,
-            "ring_buffer_overflows": 0,
+            "consumer_lost": 0,
+            "consumer_recovered": 0,
+            "consumer_recovery_failures": 0,
+            "consumer_check_failures": 0,
+            "consumer_rebound": 0,
+            "consumer_rebind_failures": 0,
         }
 
     def stats(self) -> dict[str, int]:
@@ -951,12 +1448,10 @@ class NatsSubscriber(SleipnirSubscriber):
         )
 
     async def stop(self) -> None:
-        """Unsubscribe all NATS subscriptions and close the connection."""
+        """Unsubscribe everything, hand unsettled messages back, and close the connection."""
         self._running = False
-        for nats_sub in self._nats_subs:
-            with suppress(Exception):
-                await nats_sub.unsubscribe()
-        self._nats_subs.clear()
+        for sub in list(self._subscriptions):
+            await sub.unsubscribe()
         if self._client is not None:
             with suppress(Exception):
                 await self._client.drain()
@@ -981,16 +1476,31 @@ class NatsSubscriber(SleipnirSubscriber):
         if self._js is None:
             raise RuntimeError("NatsSubscriber is not started. Call start() first.")
 
-        queue: asyncio.Queue[SleipnirEvent] = asyncio.Queue(maxsize=self._ring_buffer_depth)
-        consumer_task = asyncio.create_task(consume_queue(queue, handler))
-        sub = _BaseSubscription(
+        queue: asyncio.Queue[Delivery] = asyncio.Queue(maxsize=self._ring_buffer_depth)
+        consumer_task = asyncio.create_task(consume_deliveries(queue, handler))
+        sub = _NatsSubscription(
             list(event_types),
             queue,
             consumer_task,
             lambda: self._remove_subscription(sub),
+            owner=self,
+            progress_interval_s=self._ack_progress_interval_s,
+            health_check_interval_s=self._consumer_health_check_interval_s,
+            health_check_jitter_s=self._consumer_health_check_jitter_s,
         )
         self._subscriptions.append(sub)
+        try:
+            await self._attach_nats_subscriptions(sub, event_types)
+        except BaseException:
+            await sub.unsubscribe()
+            raise
+        return sub
 
+    async def _attach_nats_subscriptions(
+        self,
+        sub: _NatsSubscription,
+        event_types: list[str],
+    ) -> None:
         core_only = self._stream_name.lower() == "core"
         subscriptions = []
         if not core_only:
@@ -1012,6 +1522,13 @@ class NatsSubscriber(SleipnirSubscriber):
             if key in seen:
                 continue
             seen.add(key)
+            watch = _ConsumerWatch(
+                subject,
+                stream_name,
+                list(event_types),
+                nats_sub=None,
+                durable=self._durable_for_subject(subject),
+            )
             nats_sub = await self._create_nats_subscription(
                 subject,
                 event_types,
@@ -1023,27 +1540,28 @@ class NatsSubscriber(SleipnirSubscriber):
                 self._build_consumer_config(),
                 stream_name=stream_name,
             )
-            self._nats_subs.append(nats_sub)
+            watch.nats_sub = nats_sub
+            sub.nats_subs.append(nats_sub)
+            sub.consumer_watches.append(watch)
+            sub.ensure_watchdog_started()
 
         core_subjects = list(self._core_subscriptions)
         if core_only:
             core_subjects.extend(_nats_subjects_for_patterns(event_types, self._subject_prefix))
         for subject in dict.fromkeys(core_subjects):
             nats_sub = await self._create_core_subscription(subject, event_types, sub)
-            self._nats_subs.append(nats_sub)
-
-        return sub
+            sub.nats_subs.append(nats_sub)
 
     async def _create_core_subscription(
         self,
         subject: str,
         patterns: list[str],
-        sub: _BaseSubscription,
+        sub: _NatsSubscription,
     ) -> Any:
-        """Create a core NATS subscription for live control subjects."""
+        """Create a core NATS subscription for live control subjects (at-most-once)."""
 
         async def _on_message(msg: Any) -> None:
-            if not self._running:
+            if not self._running or not sub.active:
                 return
             event = _decode_nats_message(msg.data)
             if event is None:
@@ -1053,79 +1571,205 @@ class NatsSubscriber(SleipnirSubscriber):
                 return
             if not any(match_event_type(p, event.event_type) for p in patterns):
                 return
-            overflowed = await enqueue_with_overflow(
-                sub._queue, event, self._ring_buffer_depth, logger
-            )
-            if overflowed:
-                self._stats["ring_buffer_overflows"] += 1
+            await sub.put(_CoreDelivery(event, self))
 
         return await self._client.subscribe(subject, cb=_on_message)
+
+    def _durable_for_subject(self, subject: str) -> str | None:
+        """Return this subscriber's durable name for *subject*, or ``None`` if ephemeral."""
+        if self._consumer_group is None:
+            return None
+        return _durable_name_for_subject(self._consumer_group, subject)
+
+    def _deliver_subject_for_durable(self, durable: str) -> str:
+        """Deterministic push-delivery inbox for *durable*.
+
+        Must NOT be a subject any stream's ``{prefix}.>`` filter would
+        capture: JetStream rejects a consumer whose deliver_subject falls
+        inside its own stream's subjects as "a cycle" (delivering into it
+        would republish every message back into the stream it came from) —
+        confirmed against nats-server 2.14 (``400 err_code=10081``).
+        ``_INBOX.`` is never captured by any Sleipnir stream and is the
+        conventional NATS prefix for delivery inboxes, so
+        ``_INBOX.sleipnir.<durable>`` is safe regardless of which stream
+        (this subscriber's own, or an ``extra_subscriptions`` one) the
+        durable belongs to.
+
+        All replicas of a queue-group subscription must also land on the
+        same inbox.  nats-py only assigns a random inbox when *creating* a
+        brand new consumer — if one replica recreates a deleted durable
+        while another is still bound to its old, randomly-assigned inbox,
+        the second replica goes deaf even though the durable "exists"
+        again.  Deriving the inbox from the durable name (already sanitized
+        to safe subject-token characters by ``_durable_name_for_subject``)
+        makes every replica's create-or-bind agree on the same inbox, and
+        lets a health check detect a replica bound to the wrong one (see
+        ``_check_consumer_watch``).
+        """
+        return f"_INBOX.sleipnir.{durable}"
 
     async def _create_nats_subscription(
         self,
         subject: str,
         patterns: list[str],
-        sub: _BaseSubscription,
+        sub: _NatsSubscription,
         config: Any,
         stream_name: str | None = None,
     ) -> Any:
-        """Create a JetStream push subscription for *subject*."""
+        """Create (or bind to) a JetStream push subscription for *subject*.
+
+        The callback only queues the message; the subscription's consumer
+        loop acks it after the handler returns.  Messages the subscriber
+        deliberately ignores (expired TTL, a pattern this subscription does
+        not match) are acked here.  A message that arrives while stopping is
+        left unacked, and JetStream redelivers it.
+
+        A durable's ``deliver_subject``/``deliver_group`` are only taken from
+        *config* when nats-py actually creates a new consumer here; binding
+        to an existing one uses the server's current config regardless (see
+        the module docstring's "Consumer and stream recovery" section) — an
+        existing durable bound to a stale inbox is fixed by calling this
+        again (:meth:`_rebind_consumer`), which simply picks up whatever
+        inbox the server has now.
+        """
 
         async def _on_message(msg: Any) -> None:
-            try:
-                if not self._running:
-                    return
-                event = _decode_nats_message(msg.data)
-                if event is None:
-                    self._stats["decode_failures"] += 1
-                    await self._publish_dlq(msg, reason="deserialization failed")
-                    return
-                if event.ttl is not None and event.ttl <= 0:
-                    return
-                if not any(match_event_type(p, event.event_type) for p in patterns):
-                    return
-                overflowed = await enqueue_with_overflow(
-                    sub._queue, event, self._ring_buffer_depth, logger
+            if not self._running or not sub.active:
+                return
+            event = _decode_nats_message(msg.data)
+            if event is None:
+                self._stats["decode_failures"] += 1
+                await self._dead_letter(
+                    msg, reason="deserialization failed", attempt=_delivery_attempt(msg)
                 )
-                if overflowed:
-                    self._stats["ring_buffer_overflows"] += 1
-            finally:
-                try:
-                    await msg.ack()
-                except Exception:
-                    self._stats["ack_failures"] += 1
-                    logger.warning(
-                        "NatsSubscriber: ack failed for subject=%s "
-                        "(message will be redelivered); ack_failures=%d",
-                        getattr(msg, "subject", "?"),
-                        self._stats["ack_failures"],
-                        exc_info=True,
-                    )
+                return
+            if event.ttl is not None and event.ttl <= 0:
+                await self._settle(msg, "ack")
+                return
+            if not any(match_event_type(p, event.event_type) for p in patterns):
+                await self._settle(msg, "ack")
+                return
+            await sub.put(_JetStreamDelivery(event, msg, sub))
 
-        kwargs: dict[str, Any] = {"stream": stream_name or self._stream_name, "config": config}
-        if self._consumer_group is not None:
-            durable = _durable_name_for_subject(self._consumer_group, subject)
+        durable = self._durable_for_subject(subject)
+        kwargs: dict[str, Any] = {
+            "stream": stream_name or self._stream_name,
+            "config": config,
+            # nats-py otherwise acks every message as soon as this callback
+            # returns — after queueing, before the handler has run.
+            "manual_ack": True,
+        }
+        if durable is not None:
+            config.deliver_subject = self._deliver_subject_for_durable(durable)
+            config.deliver_group = durable
             kwargs["durable"] = durable
             kwargs["queue"] = durable
 
         return await self._js.subscribe(subject, cb=_on_message, **kwargs)
 
-    async def _publish_dlq(self, msg: Any, *, reason: str) -> None:
-        """Dead-letter an unprocessable message instead of dropping it.
+    async def _settle(self, msg: Any, op: str, **kwargs: float) -> None:
+        """Send one JetStream acknowledgement: ``ack``, ``nak``, ``term`` or ``in_progress``.
+
+        An acknowledgement that fails to send leaves the message unacked.
+        JetStream answers that with a redelivery after ``ack_wait``, which is
+        a duplicate, not a loss.  So the failure is counted and logged here
+        rather than raised into the consumer loop.
+        """
+        try:
+            await getattr(msg, op)(**kwargs)
+        except Exception:
+            counter = f"{op}_failures"
+            self._stats[counter] += 1
+            logger.warning(
+                "NatsSubscriber: %s failed for subject=%s (JetStream redelivers the "
+                "message after ack_wait); %s=%d",
+                op,
+                getattr(msg, "subject", "?"),
+                counter,
+                self._stats[counter],
+                exc_info=True,
+            )
+
+    def _nak_delay(self, attempt: int) -> float:
+        """Redelivery delay after failed delivery number *attempt* (1-based)."""
+        return self._nak_backoff_s[min(attempt, len(self._nak_backoff_s)) - 1]
+
+    async def _reject(self, msg: Any, error: Exception) -> None:
+        """The handler raised: nak for a delayed redelivery, or dead-letter when exhausted."""
+        self._stats["handler_failures"] += 1
+        attempt = _delivery_attempt(msg)
+        if attempt < self._max_deliver:
+            delay = self._nak_delay(attempt)
+            logger.warning(
+                "NatsSubscriber: handler raised for subject=%s (delivery %d of %d); "
+                "redelivering in %.1fs",
+                getattr(msg, "subject", "?"),
+                attempt,
+                self._max_deliver,
+                delay,
+                exc_info=error,
+            )
+            await self._settle(msg, "nak", delay=delay)
+            return
+        logger.error(
+            "NatsSubscriber: handler raised for subject=%s on its final delivery "
+            "(%d of %d); dead-lettering",
+            getattr(msg, "subject", "?"),
+            attempt,
+            self._max_deliver,
+            exc_info=error,
+        )
+        await self._dead_letter(
+            msg,
+            reason=f"handler failed after {attempt} deliveries: {error!r}",
+            attempt=attempt,
+        )
+
+    async def _dead_letter(self, msg: Any, *, reason: str, attempt: int) -> None:
+        """Move an unprocessable message to the DLQ, then terminate it.
+
+        A message is terminated only once its DLQ record is safely published.
+        If the DLQ publish fails, the message is nak'd with backoff, so the
+        dead-lettering is retried on redelivery.  A DLQ record that cannot be
+        processed itself is terminated without another DLQ record, which would
+        loop.  It stays in the stream at the logged sequence.
+        """
+        subject = str(getattr(msg, "subject", "") or "")
+        if subject == self._dlq_subject:
+            logger.error(
+                "NatsSubscriber: DLQ record on %s (stream sequence %s) cannot be "
+                "processed (%s); terminating it — it remains in the stream",
+                subject,
+                _stream_sequence(msg),
+                reason,
+            )
+            await self._settle(msg, "term")
+            return
+        if await self._publish_dlq(msg, reason=reason, attempt=attempt):
+            await self._settle(msg, "term")
+            return
+        delay = self._nak_delay(attempt)
+        logger.error(
+            "NatsSubscriber: could not dead-letter the message on %s (stream sequence %s, "
+            "delivery %d of %d); nak so it is retried in %.1fs. If JetStream has "
+            "already reached max_deliver for this consumer it stops redelivering and "
+            "the message stays in the stream at that sequence",
+            subject,
+            _stream_sequence(msg),
+            attempt,
+            self._max_deliver,
+            delay,
+        )
+        await self._settle(msg, "nak", delay=delay)
+
+    async def _publish_dlq(self, msg: Any, *, reason: str, attempt: int) -> bool:
+        """Publish a DLQ record for *msg*; return whether it was published.
 
         The record is itself a valid Sleipnir event (``system.dlq.message``)
         carrying the raw bytes base64-encoded, published under the configured
-        prefix so the main stream retains it. DLQ records are never
-        dead-lettered again — a poison DLQ entry is dropped with an error log.
+        prefix so the main stream retains it.
         """
         subject = str(getattr(msg, "subject", "") or "")
-        dlq_subject = _nats_subject_for_event(registry.SYSTEM_DLQ_MESSAGE, self._subject_prefix)
-        if subject == dlq_subject:
-            logger.error(
-                "NatsSubscriber: DLQ record on %s is itself unprocessable; dropping",
-                subject,
-            )
-            return
         import base64  # noqa: PLC0415
 
         record = SleipnirEvent(
@@ -1135,6 +1779,8 @@ class NatsSubscriber(SleipnirSubscriber):
                 "reason": reason,
                 "original_subject": subject,
                 "stream": self._stream_name,
+                "stream_sequence": _stream_sequence(msg),
+                "deliveries": attempt,
                 "raw_base64": base64.b64encode(bytes(msg.data)).decode("ascii"),
                 "raw_bytes": len(msg.data),
             },
@@ -1144,41 +1790,355 @@ class NatsSubscriber(SleipnirSubscriber):
             timestamp=datetime.now(UTC),
         )
         try:
-            await self._js.publish(dlq_subject, serialize(record))
-            self._stats["dlq_published"] += 1
+            await self._js.publish(self._dlq_subject, serialize(record))
         except Exception:
             self._stats["dlq_publish_failures"] += 1
             logger.exception(
-                "NatsSubscriber: failed to dead-letter message from %s; "
-                "raw payload is lost after ack",
+                "NatsSubscriber: failed to publish the DLQ record for %s; the message "
+                "stays unacked",
                 subject,
             )
+            return False
+        self._stats["dlq_published"] += 1
+        return True
+
+    async def _check_consumer_watch(self, sub: _NatsSubscription, watch: _ConsumerWatch) -> None:
+        """Poll JetStream for *watch*'s consumer; recover or rebind it as needed.
+
+        A confirmed 404 (consumer or stream not found) means the consumer
+        must be recreated.  A 200 whose ``deliver_subject``/``deliver_group``
+        no longer match what *this* subscription is actually bound to means
+        another replica (or an operator) recreated the durable while this
+        process was still listening on its old inbox — the durable "exists"
+        but this replica would otherwise never receive anything again.  The
+        fix is to resubscribe: nats-py binds to whatever the server currently
+        has, with no server-side write (the server refuses to change a push
+        durable's deliver subject while anything is still subscribed to its
+        current inbox — every replica is, at startup — so writing a new one
+        here is not an option; see ``_rebind_consumer``).  Any other failure
+        (timeout, connectivity) is logged and left alone — recreating on a
+        transient error risks a duplicate consumer racing the one that is
+        still there.
+        """
+        if not sub.active or not self._running:
+            return
+        try:
+            info = await watch.nats_sub.consumer_info()
+        except js_errors.NotFoundError:
+            await self._recover_consumer(
+                sub, watch, reason="its consumer is missing (deleted, or its stream was reset)"
+            )
+            return
+        except Exception:
+            watch.consecutive_check_failures += 1
+            self._stats["consumer_check_failures"] += 1
+            level = (
+                logging.ERROR
+                if watch.consecutive_check_failures >= self._consumer_check_failure_threshold
+                else logging.WARNING
+            )
+            logger.log(
+                level,
+                "NatsSubscriber: consumer health check failed for subject=%s stream=%s "
+                "(%d consecutive failure(s)); not recreating (treating as transient)",
+                watch.subject,
+                watch.stream_name,
+                watch.consecutive_check_failures,
+                exc_info=True,
+            )
+            return
+        watch.consecutive_check_failures = 0
+        watch.last_healthy_at = datetime.now(UTC)
+        if watch.durable is None:
+            return
+        bound_deliver_subject = watch.nats_sub.subject
+        if (
+            info.config.deliver_subject == bound_deliver_subject
+            and info.config.deliver_group == watch.durable
+        ):
+            return
+        await self._rebind_consumer(
+            sub,
+            watch,
+            reason=(
+                f"it now delivers to {info.config.deliver_subject!r} via group "
+                f"{info.config.deliver_group!r}, not the {bound_deliver_subject!r} this "
+                f"subscription is bound to (recreated elsewhere)"
+            ),
+        )
+
+    async def _rebind_consumer(
+        self, sub: _NatsSubscription, watch: _ConsumerWatch, *, reason: str
+    ) -> None:
+        """Resubscribe to *watch*'s durable so nats-py binds to the server's current inbox.
+
+        No server write: the server refuses to change a push durable's
+        deliver_subject while any client is subscribed to its current one
+        (``400 err_code=10013 "consumer name already in use"``, confirmed
+        against server 2.14) — and at startup every replica already is.
+        Binding to an existing durable makes nats-py fetch and use whatever
+        config the server has right now (see ``_create_nats_subscription``'s
+        docstring), which is exactly what a replica stuck on a stale inbox
+        needs; the durable's config itself is left untouched.  A single
+        attempt: a failure here is retried on the next health-check poll,
+        not in a loop that would block this subscription's other watches.
+        """
+        logger.error(
+            "NatsSubscriber: JetStream durable for subject=%s stream=%s is bound to the "
+            "wrong inbox: %s — resubscribing",
+            watch.subject,
+            watch.stream_name,
+            reason,
+        )
+        try:
+            new_nats_sub = await self._create_nats_subscription(
+                watch.subject,
+                watch.patterns,
+                sub,
+                self._build_consumer_config(),
+                stream_name=watch.stream_name,
+            )
+        except Exception:
+            self._stats["consumer_rebind_failures"] += 1
+            logger.error(
+                "NatsSubscriber: rebind failed for subject=%s stream=%s; will retry on the "
+                "next health check",
+                watch.subject,
+                watch.stream_name,
+                exc_info=True,
+            )
+            return
+        if not (sub.active and self._running):
+            await _safe_unsubscribe(
+                new_nats_sub,
+                context=f"rebound but abandoned subscription (subject={watch.subject})",
+            )
+            return
+        old_nats_sub = watch.nats_sub
+        with suppress(ValueError):
+            sub.nats_subs.remove(old_nats_sub)
+        sub.nats_subs.append(new_nats_sub)
+        watch.nats_sub = new_nats_sub
+        watch.last_healthy_at = datetime.now(UTC)
+        self._stats["consumer_rebound"] += 1
+        logger.info(
+            "NatsSubscriber: JetStream durable for subject=%s stream=%s rebound to its "
+            "current server-side inbox; delivery resumed",
+            watch.subject,
+            watch.stream_name,
+        )
+        await _safe_unsubscribe(
+            old_nats_sub, context=f"replaced push subscription (subject={watch.subject})"
+        )
+
+    async def _recover_consumer(
+        self, sub: _NatsSubscription, watch: _ConsumerWatch, *, reason: str
+    ) -> None:
+        """Recreate *watch*'s missing consumer, retrying with backoff while its stream is
+        absent."""
+        self._stats["consumer_lost"] += 1
+        logger.error(
+            "NatsSubscriber: JetStream consumer for subject=%s stream=%s needs recovery: "
+            "%s — this subscription stopped receiving messages on it; recovering",
+            watch.subject,
+            watch.stream_name,
+            reason,
+        )
+        attempt = 0
+        already_exists_retries = 0
+        while sub.active and self._running:
+            attempt += 1
+            if self._ensure_stream and watch.stream_name == self._stream_name:
+                # Only this subscriber's own configured stream: an extra
+                # (foreign) stream's subjects/retention are not known here,
+                # and guessing them would risk creating it with the wrong
+                # config instead of leaving it to whatever owns it.
+                try:
+                    await _ensure_stream(
+                        self._js,
+                        self._stream_name,
+                        self._subject_prefix,
+                        self._retention,
+                        self._max_age_seconds,
+                        self._max_bytes,
+                    )
+                except Exception:
+                    logger.warning(
+                        "NatsSubscriber: could not re-ensure stream=%s before recovery "
+                        "attempt %d for subject=%s; attempting consumer recreation anyway",
+                        watch.stream_name,
+                        attempt,
+                        watch.subject,
+                        exc_info=True,
+                    )
+            start_time = self._recovery_replay_start_time(watch)
+            try:
+                new_nats_sub = await self._create_nats_subscription(
+                    watch.subject,
+                    watch.patterns,
+                    sub,
+                    self._build_recovery_consumer_config(start_time),
+                    stream_name=watch.stream_name,
+                )
+            except Exception as exc:
+                already_exists = _is_consumer_already_exists_error(exc)
+                retry_limit = self._consumer_already_exists_retry_limit
+                if already_exists and already_exists_retries < retry_limit:
+                    # Another replica racing to recreate the same missing
+                    # durable created it first — with its own recovery
+                    # config (a different replay start time is expected,
+                    # since each replica tracks its own health-check
+                    # history), so the server rejects a second create with
+                    # "consumer name already in use" (err_code 10013) or,
+                    # when the two start times disagree, "start time can not
+                    # be updated" (err_code 10012, confirmed on server
+                    # 2.14.2).  The durable exists exactly as intended;
+                    # retry with a short delay to bind to it, bounded so a
+                    # persistent disagreement still falls back to the normal
+                    # failure path below instead of retrying forever.
+                    already_exists_retries += 1
+                    delay = self._consumer_recovery_delay(attempt)
+                    logger.info(
+                        "NatsSubscriber: durable for subject=%s stream=%s was created "
+                        "concurrently by another replica on attempt %d; retrying in %.1fs "
+                        "to bind to it",
+                        watch.subject,
+                        watch.stream_name,
+                        attempt,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                self._stats["consumer_recovery_failures"] += 1
+                delay = self._consumer_recovery_delay(attempt)
+                logger.error(
+                    "NatsSubscriber: consumer recovery for subject=%s stream=%s failed on "
+                    "attempt %d (%s); retrying in %.1fs",
+                    watch.subject,
+                    watch.stream_name,
+                    attempt,
+                    exc,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            if not (sub.active and self._running):
+                # Unsubscribed (or stopped) while the create was in flight:
+                # the subscription this consumer belongs to no longer exists,
+                # so leaving it bound would leak a live, never-acking push
+                # subscription that keeps eating queue-group messages and
+                # max_deliver.
+                await _safe_unsubscribe(
+                    new_nats_sub,
+                    context=f"recovered but abandoned subscription (subject={watch.subject})",
+                )
+                return
+            old_nats_sub = watch.nats_sub
+            with suppress(ValueError):
+                sub.nats_subs.remove(old_nats_sub)
+            sub.nats_subs.append(new_nats_sub)
+            watch.nats_sub = new_nats_sub
+            watch.last_healthy_at = datetime.now(UTC)
+            self._stats["consumer_recovered"] += 1
+            logger.info(
+                "NatsSubscriber: JetStream consumer for subject=%s stream=%s recovered after "
+                "%d attempt(s); delivery resumed",
+                watch.subject,
+                watch.stream_name,
+                attempt,
+            )
+            await _safe_unsubscribe(
+                old_nats_sub, context=f"replaced push subscription (subject={watch.subject})"
+            )
+            return
+
+    def _recovery_replay_start_time(self, watch: _ConsumerWatch) -> datetime:
+        """Replay start time for a recreated consumer: *last_healthy_at*, margined and bounded.
+
+        ``last_healthy_at`` is refreshed by every successful health check, so
+        it is at most one ``consumer_health_check_interval_s`` (plus jitter,
+        plus any time spent retrying while unhealthy) in the past — a good
+        proxy for how far back this subscription could actually have missed
+        messages.  It is stamped client-side, after the health check's
+        server round trip returns, so it can run ahead of the server's own
+        clock; a message published right at the moment the consumer was
+        actually lost could sit at a stream timestamp earlier than what this
+        pod believes "last healthy" was, and get skipped.  Subtracting one
+        ``consumer_health_check_interval_s`` as a margin covers that gap
+        (handlers are idempotent, so replaying a message already delivered
+        before the loss is harmless).  The result is still clamped to
+        *consumer_recovery_max_replay_window_s* so a subscription that was
+        unhealthy for a long time (or whose watch was only just created, at
+        `now`) never triggers a days-old replay burst.
+        """
+        margined = watch.last_healthy_at - timedelta(seconds=self._consumer_health_check_interval_s)
+        earliest_allowed = datetime.now(UTC) - timedelta(
+            seconds=self._consumer_recovery_max_replay_window_s
+        )
+        return max(margined, earliest_allowed)
+
+    def _consumer_recovery_delay(self, attempt: int) -> float:
+        """Recovery retry delay after failed attempt number *attempt* (1-based)."""
+        backoff = self._consumer_recovery_backoff_s
+        return backoff[min(attempt, len(backoff)) - 1]
 
     def _build_consumer_config(self) -> Any:
         """Build the :class:`~nats.js.api.ConsumerConfig` for this subscriber.
+
+        Every consumer uses explicit acks, ``ack_wait``, ``max_deliver`` and
+        ``max_ack_pending`` from this subscriber.  The deliver policy:
 
         - *replay_from_sequence* → ``DeliverPolicy.BY_START_SEQUENCE``
         - *replay_from_time* → ``DeliverPolicy.BY_START_TIME``
         - Otherwise → ``DeliverPolicy.NEW`` (only future messages)
         """
+        settlement = {
+            "ack_policy": js_api.AckPolicy.EXPLICIT,
+            "ack_wait": self._ack_wait_s,
+            "max_deliver": self._max_deliver,
+            "max_ack_pending": self._max_ack_pending,
+        }
         if self._replay_from_sequence is not None:
             return js_api.ConsumerConfig(
                 deliver_policy=js_api.DeliverPolicy.BY_START_SEQUENCE,
                 opt_start_seq=self._replay_from_sequence,
-                ack_policy=js_api.AckPolicy.EXPLICIT,
+                **settlement,
             )
         if self._replay_from_time is not None:
             return js_api.ConsumerConfig(
                 deliver_policy=js_api.DeliverPolicy.BY_START_TIME,
                 opt_start_time=self._replay_from_time,
-                ack_policy=js_api.AckPolicy.EXPLICIT,
+                **settlement,
             )
+        return js_api.ConsumerConfig(deliver_policy=js_api.DeliverPolicy.NEW, **settlement)
+
+    def _build_recovery_consumer_config(self, start_time: datetime) -> Any:
+        """Consumer config for a recreated consumer.
+
+        Recovery must not reuse the startup deliver policy: ``NEW`` would
+        skip every message published during the gap, and this subscriber's
+        own *replay_from_time*/*replay_from_sequence* are startup-only — they
+        point at a moment or a stream sequence that may no longer mean
+        anything once the stream itself was reset.  Replaying from
+        *start_time* (see ``_recovery_replay_start_time``) instead covers
+        the gap this subscription may have missed, without replaying the
+        whole stream.
+
+        Only used to *create* a brand new consumer (``_recover_consumer``);
+        rebinding to an existing durable whose inbox no longer matches
+        (``_rebind_consumer``) never sends this — nats-py fetches and uses
+        the server's current config as-is when the durable already exists.
+        """
         return js_api.ConsumerConfig(
-            deliver_policy=js_api.DeliverPolicy.NEW,
+            deliver_policy=js_api.DeliverPolicy.BY_START_TIME,
+            opt_start_time=start_time,
             ack_policy=js_api.AckPolicy.EXPLICIT,
+            ack_wait=self._ack_wait_s,
+            max_deliver=self._max_deliver,
+            max_ack_pending=self._max_ack_pending,
         )
 
-    def _remove_subscription(self, sub: _BaseSubscription) -> None:
+    def _remove_subscription(self, sub: _NatsSubscription) -> None:
         with suppress(ValueError):
             self._subscriptions.remove(sub)
 
@@ -1236,6 +2196,19 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
         proxy_url: str = "",
         extra_subscriptions: list[dict[str, str]] | None = None,
         core_subscriptions: list[str | dict[str, str]] | None = None,
+        max_deliver: int = DEFAULT_MAX_DELIVER,
+        ack_wait_s: float = DEFAULT_ACK_WAIT_S,
+        ack_progress_interval_s: float = DEFAULT_ACK_PROGRESS_INTERVAL_S,
+        max_ack_pending: int | None = None,
+        nak_backoff_s: list[float] | None = None,
+        consumer_health_check_interval_s: float = DEFAULT_CONSUMER_HEALTH_CHECK_INTERVAL_S,
+        consumer_recovery_backoff_s: list[float] | None = None,
+        consumer_check_failure_threshold: int = DEFAULT_CONSUMER_CHECK_FAILURE_THRESHOLD,
+        consumer_health_check_jitter_s: float = DEFAULT_CONSUMER_HEALTH_CHECK_JITTER_S,
+        consumer_recovery_max_replay_window_s: float = (
+            DEFAULT_CONSUMER_RECOVERY_MAX_REPLAY_WINDOW_S
+        ),
+        consumer_already_exists_retry_limit: int = DEFAULT_CONSUMER_ALREADY_EXISTS_RETRY_LIMIT,
     ) -> None:
         _require_nats()
         self._publisher = NatsPublisher(
@@ -1296,6 +2269,17 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             proxy_url=proxy_url,
             extra_subscriptions=extra_subscriptions,
             core_subscriptions=core_subscriptions,
+            max_deliver=max_deliver,
+            ack_wait_s=ack_wait_s,
+            ack_progress_interval_s=ack_progress_interval_s,
+            max_ack_pending=max_ack_pending,
+            nak_backoff_s=nak_backoff_s,
+            consumer_health_check_interval_s=consumer_health_check_interval_s,
+            consumer_recovery_backoff_s=consumer_recovery_backoff_s,
+            consumer_check_failure_threshold=consumer_check_failure_threshold,
+            consumer_health_check_jitter_s=consumer_health_check_jitter_s,
+            consumer_recovery_max_replay_window_s=consumer_recovery_max_replay_window_s,
+            consumer_already_exists_retry_limit=consumer_already_exists_retry_limit,
         )
 
     async def start(self) -> None:
@@ -1358,9 +2342,13 @@ class NatsBridgeAdapter(SleipnirPublisher, SleipnirSubscriber):
     **Publishing**: events are forwarded to *both* the local transport and the
     NATS cluster so that both local and remote consumers receive them.
 
-    **Subscribing**: the bridge subscribes to both transports and deduplicates
-    by *event_id* so that each logical event is delivered to handlers exactly
-    once, regardless of which transport delivered it first.
+    **Subscribing**: the bridge subscribes to both transports and skips an
+    event whose *event_id* a handler has already processed successfully, so
+    the copy arriving over the second transport is normally suppressed.  An
+    event is only recorded as seen once its handler has returned: a failed
+    attempt must not suppress the redelivery that retries it.  Two copies
+    that arrive while the first is still being handled both reach the
+    handler, so this is still at-least-once and handlers must be idempotent.
 
     The deduplication cache is bounded to *dedup_cache_size* entries.  When
     full, the oldest entry is evicted (LRU semantics).
@@ -1409,13 +2397,13 @@ class NatsBridgeAdapter(SleipnirPublisher, SleipnirSubscriber):
         event_types: list[str],
         handler: EventHandler,
     ) -> Subscription:
-        """Subscribe to both transports, delivering each event exactly once."""
+        """Subscribe to both transports, skipping events already handled successfully."""
 
         async def _dedup_handler(event: SleipnirEvent) -> None:
             if self._dedup.is_seen(event.event_id):
                 return
-            self._dedup.mark_seen(event.event_id)
             await handler(event)
+            self._dedup.mark_seen(event.event_id)
 
         local_sub = await self._local_sub.subscribe(event_types, _dedup_handler)
         nats_sub = await self._nats_sub.subscribe(event_types, _dedup_handler)

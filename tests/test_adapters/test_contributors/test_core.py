@@ -78,3 +78,36 @@ class TestCoreSessionContributor:
             unknown_kwarg="ignored",
         )
         assert c.name == "core"
+
+    async def test_no_trace_env_vars_when_observability_disabled(self, session):
+        c = CoreSessionContributor(base_domain="example.com")
+        result = await c.contribute(session, SessionContext())
+        assert "envVars" not in result.values
+
+    async def test_carries_w3c_trace_context_into_env_vars(self, session, monkeypatch):
+        """Every session, not only ravn_flock, picks up the active trace.
+
+        ``LocalProcessPodManager._session_env`` (used by every pod type, per
+        its own docstring) folds ``envVars`` into the spawned process/pod, so
+        landing the W3C trace context here is what makes it universal.
+        """
+        pytest.importorskip("opentelemetry.sdk")
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.trace import TracerProvider
+
+        from niuu import observability as obs_module
+        from niuu.observability import Observability
+
+        telemetry = Observability(
+            tracer_provider=TracerProvider(),
+            meter_provider=MeterProvider(),
+        )
+        monkeypatch.setattr(obs_module, "_active", telemetry)
+
+        with telemetry.span("session.create"):
+            c = CoreSessionContributor(base_domain="example.com")
+            result = await c.contribute(session, SessionContext())
+
+        env_by_name = {entry["name"]: entry["value"] for entry in result.values["envVars"]}
+        assert "TRACEPARENT" in env_by_name
+        assert env_by_name["TRACEPARENT"].count("-") == 3

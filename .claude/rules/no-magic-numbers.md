@@ -2,7 +2,7 @@
 
 ## Rule
 
-No hardcoded timing values, thresholds, intervals, or counts in business logic code. All such values must come from configuration (`src/config.py`) with sensible defaults.
+No hardcoded timing values, thresholds, intervals, or counts in business logic code. All such values must come from the package's configuration model (`src/<package>/config.py`) with sensible defaults.
 
 ## What Counts as a Magic Number
 
@@ -20,7 +20,7 @@ No hardcoded timing values, thresholds, intervals, or counts in business logic c
 
 ## How to Fix
 
-1. Add the value to the appropriate config class in `src/buri/config.py`
+1. Add the value to the appropriate config class in `src/<package>/config.py`
 2. Give it a sensible default so existing behavior doesn't change
 3. Thread the config value through to where it's used
-4. Update the three config YAML files: `buri.example.yaml`, `buri.docker.yaml`, `buri.mac.yaml`
+4. Expose it where the service's configuration is rendered (Helm chart values and config templates, example configs) when operators may need to change it

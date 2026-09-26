@@ -15,7 +15,8 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from niuu.adapters.outbound.http_auth import WorkloadIdentityBearerTokenAuthAdapter
-from ravn.config import Settings, ToolGroupConfig
+from ravn.config import PermissionConfig, Settings, ToolGroupConfig
+from ravn.domain.permission_mode import PermissionMode, parse_permission_mode
 from ravn.ports.executor import ExecutorPort
 
 logger = logging.getLogger(__name__)
@@ -702,6 +703,19 @@ def _with_mimir_fact_capture(memory: Any | None, mimir: Any | None) -> Any | Non
 # ---------------------------------------------------------------------------
 
 
+def _effective_permission_mode(settings: Settings, persona_config: Any | None) -> PermissionMode:
+    """Return the permission mode a run enforces: the persona's, else Settings'.
+
+    The permission adapter and the executor both take their mode from here so
+    they can never disagree about which boundary applies.  Both sources are
+    re-parsed: a value that is not a known mode raises instead of reaching an
+    enforcer that would read it as its permissive default.
+    """
+    if persona_config is not None and persona_config.parsed_permission_mode is not None:
+        return parse_permission_mode(persona_config.parsed_permission_mode)
+    return parse_permission_mode(settings.permission.mode)
+
+
 def _build_permission(
     settings: Settings,
     workspace: Path,
@@ -715,23 +729,23 @@ def _build_permission(
     if no_tools:
         return DenyAllPermission()
 
-    # Determine effective permission mode: persona override takes precedence
-    mode = settings.permission.mode
-    if persona_config is not None and persona_config.permission_mode:
-        mode = persona_config.permission_mode
+    mode = _effective_permission_mode(settings, persona_config)
 
-    if mode in ("allow_all", "full_access"):
+    if mode in (PermissionMode.ALLOW_ALL, PermissionMode.FULL_ACCESS):
         return AllowAllPermission()
 
-    if mode == "deny_all":
+    if mode == PermissionMode.DENY_ALL:
         return DenyAllPermission()
 
     # Rich permission enforcer for workspace_write, read_only, prompt modes
     from ravn.adapters.memory.approval import ApprovalMemory
     from ravn.adapters.permission.enforcer import PermissionEnforcer
 
-    # Override config mode with the effective mode (persona takes precedence)
-    effective_config = settings.permission.model_copy(update={"mode": mode})
+    # Re-validate rather than model_copy(update=...), which skips validation
+    # and let an unrecognised persona mode reach the enforcer unchecked.
+    effective_config = PermissionConfig.model_validate(
+        {**settings.permission.model_dump(), "mode": mode}
+    )
     return PermissionEnforcer(
         config=effective_config,
         workspace_root=workspace,
@@ -859,6 +873,7 @@ def _build_mimir_auth(settings: Settings, auth_config: Any) -> Any:
         exchange_url=exchange_url,
         audiences=tuple(auth_config.audiences),
         trust_domain=auth_config.trust_domain,
+        token_refresh_margin_seconds=auth_config.token_refresh_margin_seconds,
     )
 
 

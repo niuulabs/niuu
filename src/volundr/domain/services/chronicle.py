@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from contextlib import suppress
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from volundr.domain.models import (
     Chronicle,
@@ -13,19 +13,25 @@ from volundr.domain.models import (
     CommitSummary,
     FileSummary,
     GitSource,
+    LocalMountSource,
+    Principal,
     Session,
     TimelineEvent,
+    TimelineEventType,
     TimelineResponse,
 )
 from volundr.domain.ports import (
     ChronicleRepository,
     EventBroadcaster,
+    Resource,
     TimelineRepository,
 )
 
-from .session import SessionNotFoundError, SessionService
+from .session import SessionAccessDeniedError, SessionNotFoundError, SessionService
 
 logger = logging.getLogger(__name__)
+
+_Scope = tuple[str | None, str | None]
 
 
 def _sanitize_log(value: object) -> str:
@@ -34,12 +40,30 @@ def _sanitize_log(value: object) -> str:
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
 
+def _resource_key(resource: Resource) -> tuple[str, str, object, object]:
+    return (
+        resource.kind,
+        resource.id,
+        resource.attr.get("owner_id"),
+        resource.attr.get("tenant_id"),
+    )
+
+
 class ChronicleNotFoundError(Exception):
     """Raised when a chronicle is not found."""
 
     def __init__(self, chronicle_id: UUID):
         self.chronicle_id = chronicle_id
         super().__init__(f"Chronicle not found: {chronicle_id}")
+
+
+class ChronicleAccessDeniedError(Exception):
+    """Raised when a principal may see a chronicle but not perform an action on it."""
+
+    def __init__(self, chronicle_id: UUID, action: str):
+        self.chronicle_id = chronicle_id
+        self.action = action
+        super().__init__(f"Not authorized to {action} chronicle {chronicle_id}")
 
 
 def _detect_git_info(path: str) -> dict[str, str]:
@@ -67,7 +91,19 @@ def _detect_git_info(path: str) -> dict[str, str]:
 
 
 class ChronicleService:
-    """Service for managing session chronicles."""
+    """Service for managing session chronicles.
+
+    Methods taking a ``principal`` act on its behalf. Reads are bounded like
+    ``GET /sessions`` (``SessionService.visibility_scope`` and the authorization
+    policy's ``read``/``list``), and a chronicle outside that bound is reported
+    as not found. Writes additionally need the policy to allow the action on a
+    resource carrying the chronicle's own owner and tenant, which it keeps after
+    its session is deleted. With authorization configured, an absent principal
+    raises ``PermissionError``.
+
+    ``get_chronicle_by_session`` and ``session_timeline`` serve in-process
+    callers that have already established their authority (session archiving).
+    """
 
     def __init__(
         self,
@@ -81,67 +117,62 @@ class ChronicleService:
         self._broadcaster = broadcaster
         self._timeline_repository = timeline_repository
 
-    async def create_chronicle(self, session_id: UUID) -> Chronicle:
-        """Create a chronicle from a session's current state.
-
-        Captures session metadata into a chronicle entry.
-        """
-        session = await self._session_service.get_session(session_id)
-        if session is None:
-            raise SessionNotFoundError(session_id)
-
-        # Derive project/repo/branch from source type
-        from volundr.domain.models import LocalMountSource
-
-        if isinstance(session.source, LocalMountSource) and session.source.local_path:
-            local_path = session.source.local_path
-            git_info = _detect_git_info(local_path)
-            dir_name = local_path.rstrip("/").split("/")[-1]
-            project = git_info.get("project") or dir_name or session.name
-            repo = git_info.get("remote") or local_path
-            branch = git_info.get("branch") or "local"
-        else:
-            repo = session.repo or session.name
-            branch = session.branch or "main"
-            project = repo.rstrip("/").split("/")[-1].replace(".git", "") or session.name
-
-        config_snapshot = {
-            "name": session.name,
-            "model": session.model,
-            "repo": repo,
-            "branch": branch,
-        }
-
-        chronicle = Chronicle(
-            session_id=session_id,
-            status=ChronicleStatus.DRAFT,
-            project=project,
-            repo=repo,
-            branch=branch,
-            model=session.model,
-            config_snapshot=config_snapshot,
-            token_usage=session.tokens_used,
-        )
-
-        created = await self._chronicle_repository.create(chronicle)
-        logger.info(
-            "Chronicle created: id=%s, session=%s, project=%s",
-            _sanitize_log(created.id),
-            _sanitize_log(session_id),
-            _sanitize_log(project),
-        )
-        return created
-
-    async def get_chronicle(self, chronicle_id: UUID) -> Chronicle | None:
-        """Get a chronicle by ID."""
-        return await self._chronicle_repository.get(chronicle_id)
+    # --- In-process access -------------------------------------------------
 
     async def get_chronicle_by_session(self, session_id: UUID) -> Chronicle | None:
-        """Get the most recent chronicle for a session."""
+        """Get the most recent chronicle for a session, unscoped."""
         return await self._chronicle_repository.get_by_session(session_id)
+
+    async def session_timeline(self, session_id: UUID) -> TimelineResponse | None:
+        """Get the full timeline for a session, unscoped.
+
+        Returns None if no chronicle or no timeline repository is configured.
+        """
+        if self._timeline_repository is None:
+            return None
+
+        chronicle = await self._chronicle_repository.get_by_session(session_id)
+        if chronicle is None:
+            return None
+
+        return await self._build_timeline(chronicle.id, session_id)
+
+    # --- On behalf of a principal ------------------------------------------
+
+    async def create_chronicle(self, session_id: UUID, *, principal: Principal | None) -> Chronicle:
+        """Create a chronicle from a session's current state.
+
+        Raises:
+            PermissionError: Authorization is configured and no principal was given.
+            SessionNotFoundError: The session does not exist or is outside the
+                principal's visibility scope.
+            SessionAccessDeniedError: The policy denies ``report_chronicle``.
+        """
+        session = await self._session_service.get_authorized_session(
+            session_id, principal, "report_chronicle"
+        )
+        return await self._create_from_session(session)
+
+    async def get_chronicle(
+        self, chronicle_id: UUID, *, principal: Principal | None
+    ) -> Chronicle | None:
+        """Get a chronicle by ID, or None when absent or not readable by *principal*."""
+        scope = self._session_service.visibility_scope(principal)
+        chronicle = await self._chronicle_repository.get(chronicle_id)
+        return await self._readable(principal, scope, chronicle)
+
+    async def get_session_chronicle(
+        self, session_id: UUID, *, principal: Principal | None
+    ) -> Chronicle | None:
+        """Get a session's most recent chronicle, or None when absent or not readable."""
+        scope = self._session_service.visibility_scope(principal)
+        chronicle = await self._chronicle_repository.get_by_session(session_id)
+        return await self._readable(principal, scope, chronicle)
 
     async def list_chronicles(
         self,
+        *,
+        principal: Principal | None,
         project: str | None = None,
         repo: str | None = None,
         model: str | None = None,
@@ -149,8 +180,12 @@ class ChronicleService:
         limit: int = 50,
         offset: int = 0,
     ) -> list[Chronicle]:
-        """List chronicles with optional filters."""
-        return await self._chronicle_repository.list(
+        """List the chronicles *principal* may read, with optional filters."""
+        scope = self._session_service.visibility_scope(principal)
+        tenant_id, owner_id = scope
+        chronicles = await self._chronicle_repository.list(
+            tenant_id=tenant_id,
+            owner_id=owner_id,
             project=project,
             repo=repo,
             model=model,
@@ -158,10 +193,13 @@ class ChronicleService:
             limit=limit,
             offset=offset,
         )
+        return await self._filter_readable(principal, scope, chronicles, "list")
 
     async def update_chronicle(
         self,
         chronicle_id: UUID,
+        *,
+        principal: Principal | None,
         summary: str | None = None,
         key_changes: list[str] | None = None,
         unfinished_work: str | None = None,
@@ -169,9 +207,7 @@ class ChronicleService:
         status: ChronicleStatus | None = None,
     ) -> Chronicle:
         """Update a chronicle's mutable fields."""
-        chronicle = await self._chronicle_repository.get(chronicle_id)
-        if chronicle is None:
-            raise ChronicleNotFoundError(chronicle_id)
+        chronicle = await self._authorized_chronicle(chronicle_id, principal, "update")
 
         updates: dict = {"updated_at": datetime.now(UTC)}
         if summary is not None:
@@ -190,16 +226,18 @@ class ChronicleService:
         logger.info("Chronicle updated: id=%s", _sanitize_log(chronicle_id))
         return result
 
-    async def delete_chronicle(self, chronicle_id: UUID) -> bool:
+    async def delete_chronicle(self, chronicle_id: UUID, *, principal: Principal | None) -> None:
         """Delete a chronicle."""
-        deleted = await self._chronicle_repository.delete(chronicle_id)
-        if deleted:
-            logger.info("Chronicle deleted: id=%s", _sanitize_log(chronicle_id))
-        return deleted
+        await self._authorized_chronicle(chronicle_id, principal, "delete")
+        if not await self._chronicle_repository.delete(chronicle_id):
+            raise ChronicleNotFoundError(chronicle_id)
+        logger.info("Chronicle deleted: id=%s", _sanitize_log(chronicle_id))
 
     async def create_or_update_from_broker(
         self,
         session_id: UUID,
+        *,
+        principal: Principal | None,
         summary: str | None = None,
         key_changes: list[str] | None = None,
         unfinished_work: str | None = None,
@@ -213,9 +251,12 @@ class ChronicleService:
         state and finalized immediately.
 
         This is the ingestion point for the broker's ``_report_chronicle``
-        POST at shutdown time.
+        POST at shutdown time. The latest chronicle's attribution, or the
+        session's when it has none yet, must allow ``report_chronicle``.
         """
-        existing = await self._chronicle_repository.get_by_session(session_id)
+        existing, session = await self._authorized_history(
+            session_id, principal, "report_chronicle"
+        )
 
         if existing is not None:
             updates: dict = {"updated_at": datetime.now(UTC)}
@@ -239,7 +280,7 @@ class ChronicleService:
             return result
 
         # No existing draft — create a fresh chronicle
-        chronicle = await self.create_chronicle(session_id)
+        chronicle = await self._create_from_session(session)
 
         # Apply broker data on top of the freshly-created chronicle
         updates = {
@@ -266,15 +307,14 @@ class ChronicleService:
         )
         return chronicle
 
-    async def reforge(self, chronicle_id: UUID) -> Session:
+    async def reforge(self, chronicle_id: UUID, *, principal: Principal | None) -> Session:
         """Relaunch a session from a chronicle entry.
 
-        Creates a new session with the same configuration as the original,
-        linking it to the parent chronicle for traceability.
+        Reforging restarts the recorded session, so the policy must allow
+        ``start`` on the chronicle. The new session has the same configuration
+        as the original and belongs to *principal*.
         """
-        chronicle = await self._chronicle_repository.get(chronicle_id)
-        if chronicle is None:
-            raise ChronicleNotFoundError(chronicle_id)
+        chronicle = await self._authorized_chronicle(chronicle_id, principal, "start")
 
         config = chronicle.config_snapshot
         name = config.get("name", f"Reforged: {chronicle.project}")
@@ -286,6 +326,7 @@ class ChronicleService:
             name=f"{name} (reforged)",
             model=model,
             source=GitSource(repo=repo, branch=branch),
+            principal=principal,
         )
 
         logger.info(
@@ -295,19 +336,94 @@ class ChronicleService:
         )
         return session
 
-    async def get_chain(self, chronicle_id: UUID) -> list[Chronicle]:
-        """Get the full reforge chain for a chronicle."""
-        return await self._chronicle_repository.get_chain(chronicle_id)
+    async def get_chain(
+        self, chronicle_id: UUID, *, principal: Principal | None
+    ) -> list[Chronicle]:
+        """Get the readable part of a chronicle's reforge chain.
 
-    async def add_timeline_event(self, session_id: UUID, event: TimelineEvent) -> TimelineEvent:
-        """Add a timeline event for a session's chronicle.
+        Empty unless *principal* may read the chronicle itself; ancestors it may
+        not read are left out.
+        """
+        scope = self._session_service.visibility_scope(principal)
+        chain = await self._chronicle_repository.get_chain(chronicle_id)
+        readable = await self._filter_readable(principal, scope, chain, "read")
+        if not any(c.id == chronicle_id for c in readable):
+            return []
+        return readable
 
-        Persists the event and publishes it via SSE if a broadcaster is
-        configured.
+    async def get_timeline(
+        self, session_id: UUID, *, principal: Principal | None
+    ) -> TimelineResponse | None:
+        """Get the full timeline for a session's chronicle.
+
+        Returns None if no timeline repository is configured, or the session
+        has no chronicle *principal* may read.
+        """
+        scope = self._session_service.visibility_scope(principal)
+        if self._timeline_repository is None:
+            return None
+
+        chronicle = await self._chronicle_repository.get_by_session(session_id)
+        chronicle = await self._readable(principal, scope, chronicle)
+        if chronicle is None:
+            return None
+
+        return await self._build_timeline(chronicle.id, session_id)
+
+    async def add_timeline_event(
+        self,
+        session_id: UUID,
+        *,
+        principal: Principal | None,
+        t: int,
+        type: TimelineEventType,
+        label: str,
+        tokens: int | None = None,
+        action: str | None = None,
+        ins: int | None = None,
+        del_: int | None = None,
+        hash: str | None = None,
+        exit_code: int | None = None,
+    ) -> TimelineEvent:
+        """Add a timeline event to a session's chronicle, creating one if needed.
+
+        The latest chronicle's attribution, or the session's when it has none
+        yet, must allow ``report_timeline`` before anything is written. Persists
+        the event and publishes it via SSE if a broadcaster is configured.
         """
         if self._timeline_repository is None:
             raise RuntimeError("Timeline repository not configured")
 
+        chronicle, session = await self._authorized_history(
+            session_id, principal, "report_timeline"
+        )
+
+        # The realtime event is scoped to the session's owner and tenant, so
+        # resolve them before persisting rather than store an event we cannot
+        # publish.
+        if self._broadcaster is not None and session is None:
+            session = await self._session_service.get_session(session_id)
+            if session is None:
+                raise SessionNotFoundError(session_id)
+
+        if chronicle is None:
+            chronicle = await self._create_from_session(session)
+
+        event = TimelineEvent(
+            id=uuid4(),
+            chronicle_id=chronicle.id,
+            session_id=session_id,
+            t=t,
+            type=type,
+            label=label,
+            tokens=tokens,
+            action=action,
+            ins=ins,
+            del_=del_,
+            hash=hash,
+            exit_code=exit_code,
+            created_at=datetime.now(UTC),
+        )
         stored = await self._timeline_repository.add_event(event)
         logger.info(
             "Timeline event added: session=%s, type=%s, t=%d",
@@ -317,28 +433,158 @@ class ChronicleService:
         )
 
         if self._broadcaster is not None:
-            timeline = await self._build_timeline(event.chronicle_id, session_id)
+            timeline = await self._build_timeline(chronicle.id, session_id)
             await self._broadcaster.publish_chronicle_event(
                 session_id=session_id,
                 event=stored,
                 timeline=timeline,
+                owner_id=session.owner_id,
+                tenant_id=session.tenant_id,
             )
 
         return stored
 
-    async def get_timeline(self, session_id: UUID) -> TimelineResponse | None:
-        """Get the full timeline for a session.
+    # --- Authorization -----------------------------------------------------
 
-        Returns None if no chronicle or no timeline repository is configured.
-        """
-        if self._timeline_repository is None:
-            return None
+    def _resource(self, chronicle: Chronicle) -> Resource:
+        return self._session_service.attributed_resource(
+            str(chronicle.session_id or chronicle.id),
+            owner_id=chronicle.owner_id,
+            tenant_id=chronicle.tenant_id,
+        )
 
-        chronicle = await self._chronicle_repository.get_by_session(session_id)
+    async def _filter_readable(
+        self,
+        principal: Principal | None,
+        scope: _Scope,
+        chronicles: list[Chronicle],
+        action: str,
+    ) -> list[Chronicle]:
+        """Keep the chronicles inside *scope* that the policy lets *principal* read."""
+        visible = [
+            c
+            for c in chronicles
+            if SessionService.within_scope(scope, owner_id=c.owner_id, tenant_id=c.tenant_id)
+        ]
+        if not visible:
+            return []
+        resources = [self._resource(c) for c in visible]
+        allowed = await self._session_service.filter_authorized(principal, action, resources)
+        allowed_keys = {_resource_key(r) for r in allowed}
+        return [
+            c
+            for c, resource in zip(visible, resources, strict=True)
+            if _resource_key(resource) in allowed_keys
+        ]
+
+    async def _readable(
+        self,
+        principal: Principal | None,
+        scope: _Scope,
+        chronicle: Chronicle | None,
+    ) -> Chronicle | None:
         if chronicle is None:
             return None
+        readable = await self._filter_readable(principal, scope, [chronicle], "read")
+        return readable[0] if readable else None
 
-        return await self._build_timeline(chronicle.id, session_id)
+    async def _authorized_chronicle(
+        self, chronicle_id: UUID, principal: Principal | None, action: str
+    ) -> Chronicle:
+        """Return the chronicle once the policy lets *principal* do *action* on it.
+
+        Raises:
+            PermissionError: Authorization is configured and no principal was given.
+            ChronicleNotFoundError: The chronicle does not exist or is outside the
+                principal's visibility scope.
+            ChronicleAccessDeniedError: The policy denies *action*.
+        """
+        scope = self._session_service.visibility_scope(principal)
+        chronicle = await self._chronicle_repository.get(chronicle_id)
+        if chronicle is None or not SessionService.within_scope(
+            scope, owner_id=chronicle.owner_id, tenant_id=chronicle.tenant_id
+        ):
+            raise ChronicleNotFoundError(chronicle_id)
+        if not await self._session_service.authorizes(principal, action, self._resource(chronicle)):
+            raise ChronicleAccessDeniedError(chronicle_id, action)
+        return chronicle
+
+    async def _authorized_history(
+        self, session_id: UUID, principal: Principal | None, action: str
+    ) -> tuple[Chronicle | None, Session | None]:
+        """Authorize *action* on a session's history before anything is written.
+
+        The latest chronicle's attribution decides; when the session has no
+        chronicle yet, the session's owner and tenant, which a new chronicle
+        inherits, decide. Returns ``(chronicle, None)`` or ``(None, session)``.
+
+        Raises:
+            PermissionError: Authorization is configured and no principal was given.
+            SessionNotFoundError: The session has neither a chronicle nor a
+                record, or its history is outside the principal's visibility scope.
+            SessionAccessDeniedError: The policy denies *action*.
+        """
+        scope = self._session_service.visibility_scope(principal)
+        chronicle = await self._chronicle_repository.get_by_session(session_id)
+        if chronicle is None:
+            session = await self._session_service.get_authorized_session(
+                session_id, principal, action
+            )
+            return None, session
+        if not SessionService.within_scope(
+            scope, owner_id=chronicle.owner_id, tenant_id=chronicle.tenant_id
+        ):
+            raise SessionNotFoundError(session_id)
+        if not await self._session_service.authorizes(principal, action, self._resource(chronicle)):
+            user_id = principal.user_id if principal is not None else "unauthenticated"
+            raise SessionAccessDeniedError(session_id, user_id)
+        return chronicle, None
+
+    # --- Construction ------------------------------------------------------
+
+    async def _create_from_session(self, session: Session) -> Chronicle:
+        """Create a chronicle capturing *session*'s current metadata."""
+        # Derive project/repo/branch from source type
+        if isinstance(session.source, LocalMountSource) and session.source.local_path:
+            local_path = session.source.local_path
+            git_info = _detect_git_info(local_path)
+            dir_name = local_path.rstrip("/").split("/")[-1]
+            project = git_info.get("project") or dir_name or session.name
+            repo = git_info.get("remote") or local_path
+            branch = git_info.get("branch") or "local"
+        else:
+            repo = session.repo or session.name
+            branch = session.branch or "main"
+            project = repo.rstrip("/").split("/")[-1].replace(".git", "") or session.name
+
+        config_snapshot = {
+            "name": session.name,
+            "model": session.model,
+            "repo": repo,
+            "branch": branch,
+        }
+
+        chronicle = Chronicle(
+            session_id=session.id,
+            status=ChronicleStatus.DRAFT,
+            project=project,
+            repo=repo,
+            branch=branch,
+            model=session.model,
+            config_snapshot=config_snapshot,
+            token_usage=session.tokens_used,
+            owner_id=session.owner_id,
+            tenant_id=session.tenant_id,
+        )
+
+        created = await self._chronicle_repository.create(chronicle)
+        logger.info(
+            "Chronicle created: id=%s, session=%s, project=%s",
+            _sanitize_log(created.id),
+            _sanitize_log(session.id),
+            _sanitize_log(project),
+        )
+        return created
 
     async def _build_timeline(self, chronicle_id: UUID, session_id: UUID) -> TimelineResponse:
         """Build a full TimelineResponse from stored events."""

@@ -36,7 +36,7 @@ import type {
   ResidentEndpoint,
 } from '../domain/ravn';
 import type { Session, SessionStatus } from '../domain/session';
-import type { Trigger, TriggerKind } from '../domain/trigger';
+import type { CreatedTrigger, Trigger, TriggerKind } from '../domain/trigger';
 import type { Message, MessageKind } from '../domain/message';
 
 // ---------------------------------------------------------------------------
@@ -261,6 +261,7 @@ interface RawRavn {
   flock_member_id?: string;
   flock_role?: string;
   flock_peer_id?: string;
+  realm_id?: string;
   desired_state?: string;
   observed_state?: string;
   backend_ref?: Record<string, unknown>;
@@ -324,6 +325,7 @@ interface RawSession {
   cost?: number | string;
   chat_endpoint?: string | null;
   instance_id?: string;
+  instance_name?: string;
   flock_id?: string;
   flock_member_id?: string;
   flock_role?: string;
@@ -358,8 +360,11 @@ interface RawTrigger {
   kind: string;
   persona_name: string;
   spec: string;
+  repo: string;
   enabled: boolean;
   created_at: string;
+  /** Only present on the POST /triggers (create) response, not GET (list). */
+  execution_enabled?: boolean;
 }
 
 interface RawBudgetState {
@@ -510,6 +515,7 @@ function toRavn(raw: RawRavn): Ravn {
     ...(raw.flock_member_id && { flockMemberId: raw.flock_member_id }),
     ...(raw.flock_role && { flockRole: raw.flock_role }),
     ...(raw.flock_peer_id && { flockPeerId: raw.flock_peer_id }),
+    ...(raw.realm_id && { realmId: raw.realm_id }),
     ...(raw.desired_state !== undefined && {
       desiredState: raw.desired_state as Ravn['desiredState'],
     }),
@@ -546,6 +552,7 @@ function toSession(raw: RawSession): Session {
     costUsd: raw.cost === undefined ? undefined : Number(raw.cost),
     chatEndpoint: withInstanceQuery(raw.chat_endpoint, raw.instance_id),
     instanceId: raw.instance_id,
+    ...(raw.instance_name && { instanceName: raw.instance_name }),
     flockId: raw.flock_id,
     flockMemberId: raw.flock_member_id,
     flockRole: raw.flock_role,
@@ -602,9 +609,14 @@ function toTrigger(raw: RawTrigger): Trigger {
     kind: raw.kind as TriggerKind,
     personaName: raw.persona_name,
     spec: raw.spec,
+    repo: raw.repo ?? '',
     enabled: raw.enabled,
     createdAt: raw.created_at,
   };
+}
+
+function toCreatedTrigger(raw: RawTrigger): CreatedTrigger {
+  return { ...toTrigger(raw), executionEnabled: raw.execution_enabled ?? false };
 }
 
 function toBudgetState(raw: RawBudgetState): BudgetState {
@@ -821,6 +833,7 @@ export function buildRavnResidentControlAdapter(client: ApiClient): IResidentCon
         ...(request.flockMemberId && { flock_member_id: request.flockMemberId }),
         ...(request.flockRole && { flock_role: request.flockRole }),
         ...(request.flockPeerId && { flock_peer_id: request.flockPeerId }),
+        ...(request.realmId && { realm_id: request.realmId }),
       });
       return toRavn(raw);
     },
@@ -898,6 +911,10 @@ export function buildRavnSessionAdapter(client: ApiClient): ISessionStream {
       );
       return raw.map(toMessage);
     },
+    async stopSession(sessionId, instanceId) {
+      const query = instanceId ? `?instance_id=${encodeURIComponent(instanceId)}` : '';
+      await client.post<unknown>(`/sessions/${encodeURIComponent(sessionId)}/stop${query}`, {});
+    },
   };
 }
 
@@ -915,10 +932,11 @@ export function buildRavnTriggerAdapter(client: ApiClient): ITriggerStore {
         kind: t.kind,
         persona_name: t.personaName,
         spec: t.spec,
+        repo: t.repo,
         enabled: t.enabled,
       };
       const raw = await client.post<RawTrigger>('/triggers', body);
-      return toTrigger(raw);
+      return toCreatedTrigger(raw);
     },
     async deleteTrigger(id) {
       await client.delete<void>(`/triggers/${encodeURIComponent(id)}`);

@@ -22,6 +22,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.router import MimirRouter
 from niuu.domain.mimir import MimirSource, compute_content_hash, compute_source_id
@@ -35,11 +36,23 @@ from ravn.domain.mimir import MimirMount, WriteRouting
 
 _HOSTED_BASE = "http://mimir-test"
 
+#: Satisfies both _require_write_auth (tenant + WRITE_ROLES) and
+#: _require_deploy_auth for the EnvoyHeaderAuthenticationAdapter fixture
+#: these tests use — this suite exercises the HTTP adapter round-trip, not
+#: auth, so it gets a fixed admin identity by default.
+_ADMIN_HEADERS = {
+    "x-auth-user-id": "test-user",
+    "x-auth-tenant": "test-tenant",
+    "x-auth-roles": "volundr:admin",
+}
+
 
 def _make_mimir_app(root: Path) -> FastAPI:
     """Return a FastAPI app backed by MarkdownMimirAdapter at *root*."""
     adapter = MarkdownMimirAdapter(root=root)
-    router = MimirRouter(adapter=adapter, name="test-hosted", role="shared")
+    router = MimirRouter(
+        adapter=adapter, name="test-hosted", role="shared", auth=EnvoyHeaderAuthenticationAdapter()
+    )
     app = FastAPI()
     app.include_router(router.router, prefix="/mimir")
     return app
@@ -49,7 +62,9 @@ def _http_adapter_over_asgi(app: FastAPI) -> HttpMimirAdapter:
     """Return an HttpMimirAdapter whose HTTP calls go through the ASGI app."""
     transport = httpx.ASGITransport(app=app)
     adapter = HttpMimirAdapter(base_url=_HOSTED_BASE)
-    adapter._client = httpx.AsyncClient(transport=transport, base_url=_HOSTED_BASE, timeout=30.0)
+    adapter._client = httpx.AsyncClient(
+        transport=transport, base_url=_HOSTED_BASE, timeout=30.0, headers=_ADMIN_HEADERS
+    )
     return adapter
 
 

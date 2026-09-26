@@ -6,9 +6,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 import guild.app as guild_app
+from niuu.config import InstanceSeedConfig
+from niuu.domain.models import InstanceKind, InstanceVisibility
 from volundr.config import Settings
 
 
@@ -123,3 +126,321 @@ def test_create_app_seeds_embedded_forge_when_no_workers_configured(monkeypatch)
     seed_instances.assert_not_awaited()
     seed_embedded.assert_awaited_once()
     instance_repo.ensure_schema.assert_awaited_once()
+
+
+def test_create_app_never_threads_dev_identity_to_the_ravn_session_proxy(monkeypatch) -> None:
+    """Guild has no local dev-identity mode: every route may proxy to another
+    machine, so the Ravn session proxy is built with no dev_identity kwarg at
+    all — it forwards only the caller's bearer token regardless of host mode."""
+    from fastapi import APIRouter
+
+    received_kwargs: list[dict] = []
+
+    def _router(_service, **kwargs):
+        received_kwargs.append(kwargs)
+        return APIRouter()
+
+    monkeypatch.setattr(guild_app, "database_pool", _fake_database_pool)
+    monkeypatch.setattr(
+        guild_app, "PostgresInstanceRepository", lambda _pool: _DummyInstanceRepository()
+    )
+    monkeypatch.setattr(guild_app, "PostgresPATRepository", lambda _pool: object())
+    monkeypatch.setattr(guild_app, "create_pat_validator", lambda *_args: _DummyPATValidator())
+    monkeypatch.setattr(guild_app, "seed_configured_instances", AsyncMock(return_value=0))
+    monkeypatch.setattr(guild_app, "create_ravn_session_proxy_router", _router)
+
+    with TestClient(guild_app.create_app(settings=Settings())):
+        pass
+
+    assert received_kwargs == [{"embedded_forge_app": None, "owner_probe_timeout_seconds": 15.0}]
+
+
+def test_create_app_configures_guild_transport_from_settings(monkeypatch) -> None:
+    """The pin-handshake connect-timeout ceiling is a Settings field, not a
+    hardcoded module constant — create_app must push it into
+    guild_transport's process-wide default on every startup."""
+    from niuu.adapters.outbound import guild_transport
+
+    monkeypatch.setattr(guild_app, "database_pool", _fake_database_pool)
+    monkeypatch.setattr(
+        guild_app, "PostgresInstanceRepository", lambda _pool: _DummyInstanceRepository()
+    )
+    monkeypatch.setattr(guild_app, "PostgresPATRepository", lambda _pool: object())
+    monkeypatch.setattr(guild_app, "create_pat_validator", lambda *_args: _DummyPATValidator())
+    monkeypatch.setattr(guild_app, "seed_configured_instances", AsyncMock(return_value=0))
+
+    original = guild_transport.default_connect_timeout_ceiling_seconds()
+    try:
+        with TestClient(
+            guild_app.create_app(settings=Settings(guild_transport_connect_timeout_seconds=2.5))
+        ):
+            pass
+        assert guild_transport.default_connect_timeout_ceiling_seconds() == 2.5
+    finally:
+        guild_transport.configure_default_timeouts(connect_timeout_ceiling_seconds=original)
+
+
+def test_instance_health_config_rejects_non_positive_interval_and_timeout() -> None:
+    import pydantic
+
+    from niuu.config import InstanceHealthConfig, InstanceProbeConfig
+
+    with pytest.raises(pydantic.ValidationError):
+        InstanceHealthConfig(interval_seconds=0)
+    with pytest.raises(pydantic.ValidationError):
+        InstanceHealthConfig(interval_seconds=-1)
+    with pytest.raises(pydantic.ValidationError):
+        InstanceProbeConfig(timeout_seconds=0)
+
+
+def test_build_instance_probe_imports_the_configured_adapter_and_injects_embedded_app() -> None:
+    """The probe is a dynamic adapter (.claude/rules/dynamic-adapters.md):
+    config names the class, every other key is a kwarg, and embedded_app is
+    injected by the composition root rather than configured."""
+    from niuu.adapters.outbound.http_instance_probe import HttpInstanceProbeAdapter
+    from niuu.config import InstanceProbeConfig
+
+    embedded = guild_app.FastAPI()
+    probe = guild_app._build_instance_probe(
+        InstanceProbeConfig(timeout_seconds=7.5), embedded_app=embedded
+    )
+
+    assert isinstance(probe, HttpInstanceProbeAdapter)
+    assert probe._timeout_seconds == 7.5
+    assert probe._embedded_app is embedded
+
+
+def test_build_instance_probe_honours_a_different_configured_adapter_class() -> None:
+    class _StubProbe:
+        def __init__(
+            self,
+            *,
+            embedded_app=None,
+            timeout_seconds: float = 1.0,
+            health_paths: dict | None = None,
+        ) -> None:
+            self.embedded_app = embedded_app
+            self.timeout_seconds = timeout_seconds
+            self.health_paths = health_paths or {}
+
+    import niuu.config as niuu_config_module
+
+    setattr(niuu_config_module, "_StubProbeForTest", _StubProbe)
+    try:
+        from niuu.config import InstanceProbeConfig
+
+        probe = guild_app._build_instance_probe(
+            InstanceProbeConfig(
+                adapter="niuu.config._StubProbeForTest",
+                timeout_seconds=2.0,
+            ),
+            embedded_app=None,
+        )
+        assert isinstance(probe, _StubProbe)
+        assert probe.timeout_seconds == 2.0
+    finally:
+        delattr(niuu_config_module, "_StubProbeForTest")
+
+
+def _seed(
+    *,
+    is_default: bool = False,
+    kind: InstanceKind = InstanceKind.VOLUNDR,
+    slug: str = "remote",
+) -> InstanceSeedConfig:
+    return InstanceSeedConfig(
+        kind=kind,
+        slug=slug,
+        name="Remote Forge",
+        base_url="https://remote.example.com",
+        visibility=InstanceVisibility.SYSTEM,
+        is_default=is_default,
+    )
+
+
+class _RecordingInstanceService:
+    def __init__(self) -> None:
+        self.upsert_calls: list[dict] = []
+
+    async def upsert_seed_instance(self, **kwargs) -> None:
+        self.upsert_calls.append(kwargs)
+
+
+class TestEmbeddedForgeDefaultOwnership:
+    """Local Forge must not silently outrank an operator's configured
+    default — list_visible sorts default-before-name, so an unconditional
+    is_default=True on the embedded seed would beat a configured default
+    remote on every restart."""
+
+    async def test_embedded_forge_is_default_when_no_configured_volundr_claims_it(self) -> None:
+        service = _RecordingInstanceService()
+
+        await guild_app._seed_embedded_forge_instance(service, [_seed(is_default=False)])
+
+        assert service.upsert_calls[-1]["is_default"] is True
+
+    async def test_embedded_forge_defers_to_a_configured_default_volundr(self) -> None:
+        service = _RecordingInstanceService()
+
+        await guild_app._seed_embedded_forge_instance(service, [_seed(is_default=True)])
+
+        assert service.upsert_calls[-1]["is_default"] is False
+
+    async def test_a_default_seed_of_another_kind_does_not_count(self) -> None:
+        """Only a Volundr seed's is_default matters — a default Mimir or
+        Bifrost entry has no bearing on which Volundr instance is default."""
+        service = _RecordingInstanceService()
+
+        await guild_app._seed_embedded_forge_instance(
+            service, [_seed(is_default=True, kind=InstanceKind.MIMIR)]
+        )
+
+        assert service.upsert_calls[-1]["is_default"] is True
+
+    def test_has_configured_default_volundr_checks_kind_and_flag(self) -> None:
+        assert guild_app._has_configured_default_volundr([]) is False
+        assert guild_app._has_configured_default_volundr([_seed(is_default=False)]) is False
+        assert guild_app._has_configured_default_volundr([_seed(is_default=True)]) is True
+        assert (
+            guild_app._has_configured_default_volundr(
+                [_seed(is_default=True, kind=InstanceKind.TING)]
+            )
+            is False
+        )
+
+
+def test_create_app_skips_the_embedded_seed_when_the_operator_names_their_own_local_slug(
+    monkeypatch,
+) -> None:
+    """An operator who deliberately configures their own `local`-slugged
+    Volundr entry owns that identity — the embedded seed must not
+    overwrite it back to the embedded transport on the next restart."""
+    seed_instances = AsyncMock(return_value=1)
+    seed_embedded = AsyncMock()
+    instance_repo = _DummyInstanceRepository()
+
+    monkeypatch.setattr(guild_app, "database_pool", _fake_database_pool)
+    monkeypatch.setattr(guild_app, "PostgresInstanceRepository", lambda _pool: instance_repo)
+    monkeypatch.setattr(guild_app, "PostgresPATRepository", lambda _pool: object())
+    monkeypatch.setattr(guild_app, "create_pat_validator", lambda *_args: _DummyPATValidator())
+    monkeypatch.setattr(guild_app, "seed_configured_instances", seed_instances)
+    monkeypatch.setattr(guild_app, "_seed_embedded_forge_instance", seed_embedded)
+
+    embedded = guild_app.FastAPI()
+    app = guild_app.create_app(
+        settings=Settings(
+            niuu={
+                "instances": [
+                    {
+                        "kind": "volundr",
+                        "slug": "local",
+                        "name": "My Own Local Forge",
+                        "base_url": "http://127.0.0.1:9090",
+                        "visibility": "system",
+                    }
+                ]
+            }
+        ),
+        embedded_forge_app=embedded,
+    )
+
+    with TestClient(app):
+        pass
+
+    seed_instances.assert_awaited_once()
+    seed_embedded.assert_not_awaited()
+
+
+def test_create_app_seeds_embedded_forge_alongside_other_configured_instances(
+    monkeypatch,
+) -> None:
+    """A configured remote (under a different slug) and the embedded Local
+    Forge are independent — both get seeded, and the embedded one still
+    computes its own is_default from what was configured."""
+    seed_instances = AsyncMock(return_value=1)
+    instance_repo = _DummyInstanceRepository()
+    recording_service = _RecordingInstanceService()
+
+    monkeypatch.setattr(guild_app, "database_pool", _fake_database_pool)
+    monkeypatch.setattr(guild_app, "PostgresInstanceRepository", lambda _pool: instance_repo)
+    monkeypatch.setattr(guild_app, "PostgresPATRepository", lambda _pool: object())
+    monkeypatch.setattr(guild_app, "create_pat_validator", lambda *_args: _DummyPATValidator())
+    monkeypatch.setattr(guild_app, "seed_configured_instances", seed_instances)
+    monkeypatch.setattr(guild_app, "InstanceService", lambda *_a, **_k: recording_service)
+
+    embedded = guild_app.FastAPI()
+    app = guild_app.create_app(
+        settings=Settings(
+            niuu={
+                "instances": [
+                    {
+                        "kind": "volundr",
+                        "slug": "remote-alpha",
+                        "name": "Remote Alpha",
+                        "base_url": "http://remote-alpha:8080",
+                        "visibility": "system",
+                        "is_default": True,
+                    }
+                ]
+            }
+        ),
+        embedded_forge_app=embedded,
+    )
+
+    with TestClient(app):
+        pass
+
+    seed_instances.assert_awaited_once()
+    # The embedded seed still ran (a different slug than "local"), and
+    # deferred is_default to the configured Remote Alpha.
+    embedded_calls = [c for c in recording_service.upsert_calls if c.get("slug") == "local"]
+    assert len(embedded_calls) == 1
+    assert embedded_calls[0]["is_default"] is False
+
+
+def test_create_app_mounts_guild_join_routes(monkeypatch) -> None:
+    instance_repo = _DummyInstanceRepository()
+
+    monkeypatch.setattr(guild_app, "database_pool", _fake_database_pool)
+    monkeypatch.setattr(guild_app, "PostgresInstanceRepository", lambda _pool: instance_repo)
+    monkeypatch.setattr(guild_app, "PostgresPATRepository", lambda _pool: object())
+    monkeypatch.setattr(guild_app, "create_pat_validator", lambda *_args: _DummyPATValidator())
+
+    app = guild_app.create_app(settings=Settings())
+
+    with TestClient(app) as client:
+        paths = client.get("/openapi.json").json()["paths"]
+        assert "/api/v1/niuu/guild/pairing-codes" in paths
+        assert "/api/v1/niuu/guild/join" in paths
+        assert "/api/v1/niuu/guild/nodes/{node_id}/heartbeat" in paths
+        assert "/api/v1/niuu/guild/nodes/{node_id}/leave" in paths
+
+
+class TestIdentityTrustConfig:
+    """`niuu join` must hand a newly joined node Guild's own auth_mode/issuers —
+    never a second, invented human-auth path (the "Shared IdP" owner decision)."""
+
+    def test_oidc_mode_surfaces_the_configured_issuers(self) -> None:
+        from types import SimpleNamespace
+
+        settings = SimpleNamespace(
+            auth_mode="oidc",
+            identity=SimpleNamespace(
+                kwargs={"issuers": [{"issuer": "https://idp.example.com", "audiences": ["x"]}]}
+            ),
+        )
+
+        trust = guild_app._identity_trust_config(settings)
+
+        assert trust.mode == "oidc"
+        assert trust.issuers == [{"issuer": "https://idp.example.com", "audiences": ["x"]}]
+
+    def test_none_mode_reports_an_explicit_empty_trust_list(self) -> None:
+        from types import SimpleNamespace
+
+        settings = SimpleNamespace(auth_mode="none", identity=SimpleNamespace(kwargs={}))
+
+        trust = guild_app._identity_trust_config(settings)
+
+        assert trust.mode == "none"
+        assert trust.issuers == []

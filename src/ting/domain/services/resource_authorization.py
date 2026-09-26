@@ -96,6 +96,17 @@ class AuthorizedWorkflowRepository(_Policy, WorkflowRepository):
         await self.check(await self.repo.get_workflow(workflow_id), "workflow", "delete")
         return await self.repo.delete_workflow(workflow_id)
 
+    async def has_recorded_version_history(self, workflow_id):
+        # Startup-seeding-only operation, never reached through the
+        # request-scoped principal wrapper; delegated for the port contract.
+        return await self.repo.has_recorded_version_history(workflow_id)
+
+    async def adopt_legacy_bundled(self, seed):
+        return await self.repo.adopt_legacy_bundled(seed)
+
+    async def reclassify_orphaned_bundled_as_authored(self, workflow_id):
+        return await self.repo.reclassify_orphaned_bundled_as_authored(workflow_id)
+
 
 class AuthorizedCampaignRepository(_Policy, WorkflowCampaignRepository):
     async def list_campaigns(self, *, owner_id):

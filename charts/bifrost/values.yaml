@@ -140,6 +140,7 @@ envoy:
       - /healthz
       - /readyz
       - /metrics
+      - /api/v1/bifrost/health
     # -- Additional JWT provider for short-lived Niuu workload tokens.
     # When enabled, Envoy accepts either Keycloak user tokens or workload tokens.
     workload:

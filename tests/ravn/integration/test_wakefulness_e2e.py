@@ -266,6 +266,12 @@ class TestFullWakefulnessLoop:
             queue_journal_path=str(tmp_path / "queue.json"),
         )
         settings = Settings()
+        # budget.enabled defaults False (see ravn.config.BudgetConfig) — this
+        # test is specifically about pricing/recording, so opt in. pricing_source
+        # stays at flat since the AsyncMock agent's auto-generated _model
+        # attribute is not a real model Bifröst (the real default) could price.
+        settings.budget.enabled = True
+        settings.budget.pricing_source = "flat"
         loop = DriveLoop(
             agent_factory=factory,
             config=cfg,
@@ -314,6 +320,9 @@ class TestBudgetGate:
             queue_journal_path=str(tmp_path / "queue.json"),
         )
         settings = Settings()
+        # budget.enabled defaults False (see ravn.config.BudgetConfig) — this
+        # test is specifically about cap enforcement, so opt in.
+        settings.budget.enabled = True
         # Budget already exhausted.
         exhausted_budget = DailyBudgetTracker(daily_cap_usd=0.001)
         exhausted_budget.record(0.001)  # push past cap

@@ -7,7 +7,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from tests.conftest import InMemorySessionRepository, MockPodManager
+from tests.conftest import (
+    InMemorySessionRepository,
+    MockPodManager,
+    make_session_participant_service,
+)
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.outbound.archive_store import FileSystemArchiveStore
 from volundr.adapters.outbound.local_storage_adapter import LocalStorageAdapter
@@ -41,7 +45,13 @@ def archive_service(session_service, storage):
 
 def build_app(session_service, archive_service):
     app = FastAPI()
-    app.include_router(create_router(session_service, archive_service=archive_service))
+    app.include_router(
+        create_router(
+            session_service,
+            archive_service=archive_service,
+            session_participant_service=make_session_participant_service(session_service),
+        )
+    )
     return app
 
 

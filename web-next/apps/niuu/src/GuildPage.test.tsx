@@ -44,6 +44,10 @@ const node: InstanceRecord = {
   },
   createdAt: '2026-09-18T10:00:00Z',
   updatedAt: '2026-09-18T10:00:00Z',
+  health: 'ok',
+  lastSeenAt: '2026-09-18T10:00:00Z',
+  lastCheckedAt: '2026-09-18T10:00:00Z',
+  lastError: null,
 };
 let records: InstanceRecord[];
 let failure = false;
@@ -216,6 +220,47 @@ describe('Guild node management', () => {
     });
     expect(mutations[0]!.body!.config).not.toHaveProperty('defaultFolder');
   });
+  it('saves an allow-plaintext opt-in and a TLS fingerprint into config, and validates the fingerprint', async () => {
+    const fingerprintPlaceholder = 'sha256 leaf certificate fingerprint, e.g. AB:CD:…';
+    // 32 colon-separated byte pairs = 64 hex chars once colons are stripped.
+    const validFingerprint = Array.from({ length: 32 }, () => 'ab').join(':');
+    renderGuild();
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit settings' }));
+    fireEvent.change(screen.getByPlaceholderText(fingerprintPlaceholder), {
+      target: { value: 'not-a-fingerprint' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('sha256 hex digest');
+    expect(mutations).toHaveLength(0);
+
+    fireEvent.click(screen.getByLabelText('Allow plaintext (trusted network only)'));
+    fireEvent.change(screen.getByPlaceholderText(fingerprintPlaceholder), {
+      target: { value: validFingerprint },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(mutations[0]!.body!.config).toMatchObject({
+      allow_plaintext: true,
+      tls_fingerprint: validFingerprint,
+    });
+  });
+  it('never treats a stored non-boolean allow_plaintext as opted-in', async () => {
+    // A legacy/corrupted row can carry a truthy *string* "false" in its
+    // config (the backend now rejects a non-boolean on write, but a row
+    // written before that check existed, or edited outside this UI, is not
+    // guaranteed to have a real boolean). Boolean("false") is true, so a
+    // loose truthiness check here would silently show — and, on save,
+    // silently persist — the opt-in as enabled. Only === true may opt in.
+    records[0]!.config = { ...records[0]!.config, allow_plaintext: 'false' };
+    renderGuild();
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit settings' }));
+    expect(screen.getByLabelText('Allow plaintext (trusted network only)')).not.toBeChecked();
+
+    fireEvent.change(screen.getByLabelText(/^Routing slug/), { target: { value: 'renamed-kit' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(mutations[0]!.body!.config).not.toHaveProperty('allow_plaintext');
+  });
   it('disables management of a system node for a non-admin', async () => {
     const roles = identity.roles;
     identity.roles = [];
@@ -240,6 +285,56 @@ describe('Guild node management', () => {
     fireEvent.click(screen.getByRole('button', { name: 'test endpoint' }));
     await waitFor(() => expect(probes).toBe(2));
   });
+  it('shows a banner naming every server-recorded unreachable instance', async () => {
+    probeFailure = true;
+    records = [
+      { ...structuredClone(node), health: 'unreachable', lastError: 'connection refused' },
+    ];
+    renderGuild();
+    const banner = await screen.findByTestId('guild-unreachable-banner');
+    expect(banner).toHaveTextContent('1 instance unreachable: build-kit');
+    expect(screen.getByText('last error')).toBeInTheDocument();
+    expect(screen.getByText('connection refused')).toBeInTheDocument();
+  });
+  it('treats an unrecognized health value as unknown instead of rendering it as unreachable', async () => {
+    records = [{ ...structuredClone(node), health: 'weird-future-value' as never }];
+    renderGuild();
+    await screen.findByRole('button', { name: 'Edit settings' });
+    expect(screen.queryByTestId('guild-unreachable-banner')).not.toBeInTheDocument();
+  });
+
+  it('never invents a last-seen time for a node that has no lastCheckedAt', async () => {
+    records = [
+      {
+        ...structuredClone(node),
+        health: 'unreachable',
+        lastSeenAt: null,
+        lastCheckedAt: null,
+        lastError: 'connection refused',
+      },
+    ];
+    probeFailure = true;
+    renderGuild();
+    await screen.findByTestId('guild-unreachable-banner');
+    expect(screen.getByText('not seen')).toBeInTheDocument();
+  });
+
+  it('patches the cached instance list when a manual health test succeeds', async () => {
+    records = [
+      { ...structuredClone(node), health: 'unreachable', lastError: 'connection refused' },
+    ];
+    probeFailure = true;
+    renderGuild();
+    await screen.findByTestId('guild-unreachable-banner');
+
+    probeFailure = false;
+    fireEvent.click(screen.getByRole('button', { name: 'test endpoint' }));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('guild-unreachable-banner')).not.toBeInTheDocument(),
+    );
+  });
+
   it('matches owner, tenant and administrator management permissions', () => {
     const member = { ...identity, roles: [] };
     expect(canManageInstance(node, member)).toBe(true);
@@ -274,6 +369,56 @@ it('loads credentials from the credential service only when the selected scope n
       '/api/v1/credentials/tenant',
     ]),
   );
+});
+
+it('registers a new node carrying the plaintext opt-in and TLS fingerprint into config', async () => {
+  const validFingerprint = Array.from({ length: 32 }, () => 'ab').join(':');
+  renderGuild();
+  await screen.findByRole('button', { name: 'Edit settings' });
+  fireEvent(window, new CustomEvent('guild:open-register'));
+  const dialog = screen.getByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'next' }));
+  fireEvent.change(within(dialog).getByPlaceholderText('volundr • prod'), {
+    target: { value: 'edge node' },
+  });
+  fireEvent.change(within(dialog).getByPlaceholderText('https://...'), {
+    target: { value: 'https://edge.test' },
+  });
+  fireEvent.click(within(dialog).getByLabelText('allow plaintext (trusted network only)'));
+  fireEvent.change(
+    within(dialog).getByPlaceholderText('sha256 leaf certificate fingerprint, e.g. AB:CD:…'),
+    { target: { value: validFingerprint } },
+  );
+  fireEvent.click(within(dialog).getByRole('button', { name: 'next' }));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'register' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  expect(mutations).toHaveLength(1);
+  expect(mutations[0]!.body!.config).toMatchObject({
+    allow_plaintext: true,
+    tls_fingerprint: validFingerprint,
+  });
+});
+
+it('blocks advancing the register wizard on a malformed TLS fingerprint', async () => {
+  renderGuild();
+  await screen.findByRole('button', { name: 'Edit settings' });
+  fireEvent(window, new CustomEvent('guild:open-register'));
+  const dialog = screen.getByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'next' }));
+  fireEvent.change(within(dialog).getByPlaceholderText('volundr • prod'), {
+    target: { value: 'edge node' },
+  });
+  fireEvent.change(within(dialog).getByPlaceholderText('https://...'), {
+    target: { value: 'https://edge.test' },
+  });
+  fireEvent.change(
+    within(dialog).getByPlaceholderText('sha256 leaf certificate fingerprint, e.g. AB:CD:…'),
+    { target: { value: 'not-a-fingerprint' } },
+  );
+
+  expect(within(dialog).getByRole('button', { name: 'next' })).toBeDisabled();
+  expect(within(dialog).getByText(/must be a sha256 hex digest/i)).toBeInTheDocument();
+  expect(mutations).toHaveLength(0);
 });
 
 it('shows credential read errors and allows explicit retry instead of claiming the scope is empty', async () => {

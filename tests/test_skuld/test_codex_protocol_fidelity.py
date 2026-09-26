@@ -286,7 +286,7 @@ def test_command_http_rejection_is_not_reported_as_sent(tmp_path, monkeypatch, e
     transport.send_control = AsyncMock(side_effect=error)
     monkeypatch.setattr(broker_api, "_broker_getter", lambda: SimpleNamespace(_transport=transport))
     # No lifespan context: this test must never initialize the application runtime.
-    response = TestClient(broker_api.app).post(
+    response = TestClient(broker_api.app, headers={"x-niuu-room-role": "owner"}).post(
         "/api/slash-commands/send", json={"command": "/review"}
     )
     assert response.status_code == status

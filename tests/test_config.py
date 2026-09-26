@@ -170,6 +170,24 @@ class TestSettings:
         assert settings.forge_stream_keepalive_seconds == 10.0
         assert settings.forge_stream_queue_maxsize == 64
 
+    def test_guild_transport_timeout_defaults(self):
+        """The pin-handshake ceiling and the owner-probe timeout are
+        configured, not hardcoded — see niuu.adapters.outbound.guild_transport
+        and niuu.adapters.inbound.rest_ravn."""
+        settings = Settings()
+
+        assert settings.guild_transport_connect_timeout_seconds == 5.0
+        assert settings.guild_owner_probe_timeout_seconds == 15.0
+
+    def test_guild_transport_timeout_settings_are_configurable(self):
+        settings = Settings(
+            guild_transport_connect_timeout_seconds=2.0,
+            guild_owner_probe_timeout_seconds=30.0,
+        )
+
+        assert settings.guild_transport_connect_timeout_seconds == 2.0
+        assert settings.guild_owner_probe_timeout_seconds == 30.0
+
 
 class TestGitHubConfig:
     """Tests for GitHubConfig."""
@@ -1156,13 +1174,17 @@ def test_model_server_is_a_local_provider_configured_from_runtime_settings():
         MODEL_SERVER_SLUG,
         _default_integration_definitions,
     )
+    from volundr.domain.model_gateway import MODEL_GATEWAY_TOKEN_ENV
 
     entry = next(e for e in _default_integration_definitions() if e.slug == MODEL_SERVER_SLUG)
     assert entry.integration_type == "ai_provider"
     assert entry.model_vendor == "local"
     assert entry.auth_type == "none"
     assert entry.env_from_credentials == {}
-    assert entry.env_from_config == {MODEL_GATEWAY_URL_ENV: "gateway_url"}
+    assert entry.env_from_config == {
+        MODEL_GATEWAY_URL_ENV: "gateway_url",
+        MODEL_GATEWAY_TOKEN_ENV: "token",
+    }
     assert "Settings → Runtime" in entry.description
 
 
@@ -1181,13 +1203,17 @@ def test_env_from_config_reaches_the_registry():
         MODEL_SERVER_SLUG,
         _default_integration_definitions,
     )
+    from volundr.domain.model_gateway import MODEL_GATEWAY_TOKEN_ENV
     from volundr.domain.services.integration_registry import definitions_from_config
 
     loaded = definitions_from_config(
         [entry.model_dump() for entry in _default_integration_definitions()]
     )
     entry = next(d for d in loaded if d.slug == MODEL_SERVER_SLUG)
-    assert entry.env_from_config == {MODEL_GATEWAY_URL_ENV: "gateway_url"}
+    assert entry.env_from_config == {
+        MODEL_GATEWAY_URL_ENV: "gateway_url",
+        MODEL_GATEWAY_TOKEN_ENV: "token",
+    }
 
 
 def test_git_hosts_sign_the_cli_tools_in():
@@ -1217,3 +1243,46 @@ def test_jira_catalog_supports_api_tokens_and_oauth_authorization_code():
     assert jira.oauth.token_request_format == "json"
     assert jira.oauth.client_secret_required is True
     assert "offline_access" in jira.oauth.scopes
+
+
+def test_ravn_flock_llm_config_loads_from_the_shared_config_file(monkeypatch, tmp_path):
+    """Mini mode: Volundr reads its own key from the file Ting also reads."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+dispatch:
+  flock:
+    llm_config:
+      model: ting/dispatch-model
+ravn_flock_llm_config:
+  model: Qwen/Qwen3.8-27B
+  max_tokens: 8192
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: https://vllm.example.test
+"""
+    )
+    _clear_settings_env(monkeypatch)
+    monkeypatch.setenv("NIUU_CONFIG", str(config_file))
+
+    settings = Settings()
+
+    assert settings.ravn_flock_llm_config["model"] == "Qwen/Qwen3.8-27B"
+    assert settings.ravn_flock_llm_config["provider"]["kwargs"] == {
+        "base_url": "https://vllm.example.test"
+    }
+
+
+def test_ravn_flock_llm_config_defaults_to_no_forge_default(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _clear_settings_env(monkeypatch)
+
+    assert Settings().ravn_flock_llm_config == {}
+
+
+def test_ravn_flock_llm_config_rejects_a_block_ravn_cannot_load():
+    import pytest
+
+    with pytest.raises(ValueError, match="max_tokens"):
+        Settings(ravn_flock_llm_config={"model": "Qwen/Qwen3.8-27B", "max_tokens": "lots"})

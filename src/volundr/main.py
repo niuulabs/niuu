@@ -62,6 +62,9 @@ from volundr.adapters.inbound.rest_resident_runtimes import create_resident_runt
 from volundr.adapters.inbound.rest_resources import create_resources_router
 from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
+from volundr.adapters.inbound.rest_session_participants import (
+    create_session_participants_router,
+)
 from volundr.adapters.inbound.rest_trace import create_trace_router
 from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
 from volundr.adapters.inbound.rest_user_storage import create_user_storage_router
@@ -97,6 +100,9 @@ from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
 from volundr.adapters.outbound.postgres_resident_runtimes import (
     PostgresResidentRuntimeRepository,
 )
+from volundr.adapters.outbound.postgres_session_participants import (
+    PostgresSessionParticipantRepository,
+)
 from volundr.adapters.outbound.postgres_spans import PostgresSpanRepository
 from volundr.adapters.outbound.postgres_stats import PostgresStatsRepository
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
@@ -124,6 +130,7 @@ from volundr.composition_builders import (  # noqa: F401
     _create_secret_injection_adapter,
     _create_workflow_execution_credential_service,
     _runtime_backend,
+    _validate_remote_room_role_config,
     create_oauth_client_registry,
     integration_database_pool,
     with_oauth_device_runner,
@@ -153,6 +160,8 @@ from volundr.domain.services.resident_runtime import (
     ResidentRuntimeNotFoundError,
     ResidentRuntimeService,
 )
+from volundr.domain.services.session_events import SessionEventStream
+from volundr.domain.services.session_participants import SessionParticipantService
 from volundr.domain.services.telegram_ingress import TelegramIngressService
 from volundr.domain.services.tracker import TrackerService
 from volundr.domain.services.tracker_factory import TrackerFactory
@@ -230,15 +239,14 @@ async def _bootstrap_startup_schema(settings: Settings) -> None:
         await conn.close()
 
 
-async def _broadcast_periodic_updates(
-    broadcaster: InMemoryEventBroadcaster,
-    stats_service: StatsService,
-) -> None:
-    """Background task to broadcast periodic stats and heartbeat updates.
+async def _broadcast_periodic_updates(broadcaster: InMemoryEventBroadcaster) -> None:
+    """Background task to broadcast periodic stats ticks and heartbeats.
+
+    The stats tick carries no figures: the session event stream computes them
+    for each subscriber over the sessions it may list.
 
     Args:
         broadcaster: The event broadcaster to publish events to.
-        stats_service: The stats service to fetch current statistics.
     """
     logger.info("SSE periodic broadcast task started, interval=%ds", BROADCAST_INTERVAL)
     while True:
@@ -251,17 +259,8 @@ async def _broadcast_periodic_updates(
                 logger.debug("SSE periodic: no subscribers, skipping broadcast")
                 continue
 
-            # Broadcast current stats
-            logger.info("SSE periodic: broadcasting stats to %d subscriber(s)", sub_count)
-            stats = await stats_service.get_stats()
-            logger.info(
-                "SSE periodic: stats fetched - tokens_today=%d, cloud=%d, local=%d, cost=%.4f",
-                stats.tokens_today,
-                stats.cloud_tokens,
-                stats.local_tokens,
-                float(stats.cost_today),
-            )
-            await broadcaster.publish_stats(stats)
+            logger.info("SSE periodic: stats tick to %d subscriber(s)", sub_count)
+            await broadcaster.publish_stats_tick()
 
             # Broadcast heartbeat
             await broadcaster.publish_heartbeat()
@@ -445,6 +444,33 @@ def _create_otel_providers(otel_cfg):  # pragma: no cover
     return tracer_provider, meter_provider
 
 
+def _build_otel_event_sink(otel_cfg):
+    """Build the OTel GenAI event sink from validated config, or raise.
+
+    ``event_pipeline.otel.enabled: true`` with the SDK missing is a
+    configured-but-impossible state — raise with the remedy, per
+    .claude/rules/no-fallbacks.md, rather than logging a warning and running
+    the pipeline without it.
+    """
+    from volundr.adapters.outbound.otel_event_sink import OtelEventSink
+
+    try:
+        tracer_provider, meter_provider = _create_otel_providers(otel_cfg)
+    except ImportError as exc:
+        raise RuntimeError(
+            "event_pipeline.otel.enabled is true but opentelemetry is "
+            "not installed — install the 'otel' extra "
+            "(pip install 'volundr[otel]') or set "
+            "event_pipeline.otel.enabled: false"
+        ) from exc
+    return OtelEventSink(
+        tracer_provider=tracer_provider,
+        meter_provider=meter_provider,
+        service_name=otel_cfg.service_name,
+        provider_name=otel_cfg.provider_name,
+    )
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -461,6 +487,26 @@ def create_app(
         settings = Settings()
 
     app = build_app_shell(settings)
+
+    # Configured and instrumented here, in create_app, not in lifespan:
+    # Starlette builds and caches its middleware stack on the app's first
+    # ASGI __call__ (which is also how the lifespan startup event arrives),
+    # so instrumenting from inside a lifespan handler has no effect — the
+    # stack was already frozen by the time that code would run.
+    from niuu.observability import (
+        configure_observability,
+        instrument_fastapi_app,
+        instrument_httpx_client,
+    )
+
+    telemetry = configure_observability(
+        settings.observability,
+        resource_attributes={"service.namespace": "volundr"},
+        component="volundr",
+        default_service_name="volundr",
+    )
+    instrument_fastapi_app(app, telemetry, component="volundr")
+    instrument_httpx_client(telemetry)
 
     # Keep schema mismatch diagnostics without copying credentials or prompts into logs.
     @app.exception_handler(RequestValidationError)
@@ -548,6 +594,7 @@ def create_app(
             workload_identity_service = create_workload_identity_service(settings.workload_identity)
             pod_manager = _create_pod_manager(settings)
             runtime_backend = _runtime_backend(settings, pod_manager)
+            _validate_remote_room_role_config(settings, runtime_backend)
             execution_credential_service = _create_workflow_execution_credential_service(
                 settings,
                 repository=repository,
@@ -822,6 +869,10 @@ def create_app(
                 resident_controllers,
                 credential_store,
             )
+            # Built early (not just at realm-router mount time below) so
+            # ResidentRuntimeService can validate a create() call's realm_id
+            # as a 422 instead of a bare FK violation during background deploy.
+            realm_repository = PostgresRealmRepository(pool)
             resident_runtime_service = ResidentRuntimeService(
                 resident_runtime_repository,
                 resident_profile_provider,
@@ -829,6 +880,7 @@ def create_app(
                 resident_session_controllers,
                 span_repository=span_repository,
                 event_repository=pg_event_sink,
+                realm_repository=realm_repository,
             )
             resident_flock_adapter = (
                 ResidentFlockAdapter(
@@ -1018,7 +1070,41 @@ def create_app(
             # this is the check that actually covers proxied browser traffic.
             if skuld_reg is not None and hasattr(skuld_reg, "set_ownership_guard"):
                 from niuu.domain.models import Principal
-                from volundr.domain.ports import Resource
+
+                async def _resolve_ws_principal(
+                    user_id: str | None, tenant_id: str | None, roles: tuple[str, ...]
+                ) -> Principal:
+                    """Validate the caller's asserted identity, same as every other
+                    proxy guard — shared so _may_attach and _resolve_room_role can
+                    never resolve different principals for one connection.
+
+                    Raises:
+                        InvalidTokenError: The identity adapter rejected the headers.
+                    """
+                    from identity.adapters.jwks import JwksIdentityAdapter
+                    from niuu.ports.identity import HeaderAuthenticationPort
+
+                    principal = Principal(
+                        user_id=user_id or "",
+                        email="",
+                        tenant_id=tenant_id or "",
+                        roles=list(roles),
+                    )
+                    if isinstance(identity_adapter, JwksIdentityAdapter):
+                        # The proxy already verified this caller's bearer JWT
+                        # once (extract_principal, before the guard runs), so
+                        # there is no fresh token to re-verify here. Re-derive
+                        # role mapping and membership for that identity instead.
+                        return await identity_adapter.revalidate_verified_principal(principal)
+                    if not isinstance(identity_adapter, HeaderAuthenticationPort):
+                        return principal
+                    keys = settings.identity.kwargs
+                    headers = {
+                        keys.get("user_id_header", "x-auth-user-id"): principal.user_id,
+                        keys.get("tenant_header", "x-auth-tenant"): principal.tenant_id,
+                        keys.get("roles_header", "x-auth-roles"): ",".join(principal.roles),
+                    }
+                    return await identity_adapter.validate_headers(headers)
 
                 async def _may_attach(
                     session_id: str,
@@ -1030,25 +1116,12 @@ def create_app(
                         resource_id = UUID(session_id)
                     except ValueError:
                         return False
-                    from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
+                    from niuu.ports.identity import InvalidTokenError
 
-                    principal = Principal(
-                        user_id=user_id or "",
-                        email="",
-                        tenant_id=tenant_id or "",
-                        roles=list(roles),
-                    )
-                    if isinstance(identity_adapter, HeaderAuthenticationPort):
-                        keys = settings.identity.kwargs
-                        headers = {
-                            keys.get("user_id_header", "x-auth-user-id"): principal.user_id,
-                            keys.get("tenant_header", "x-auth-tenant"): principal.tenant_id,
-                            keys.get("roles_header", "x-auth-roles"): ",".join(principal.roles),
-                        }
-                        try:
-                            principal = await identity_adapter.validate_headers(headers)
-                        except InvalidTokenError:
-                            return False
+                    try:
+                        principal = await _resolve_ws_principal(user_id, tenant_id, roles)
+                    except InvalidTokenError:
+                        return False
                     session = await repository.get(resource_id)
                     if session is None:
                         try:
@@ -1058,21 +1131,65 @@ def create_app(
                         return True
                     # Delegate to the ONE authorization policy (the same adapter
                     # the REST API uses) so the WS attach check can never drift
-                    # from it. "start" is the mutating action-class the ladder
-                    # gates on owner match.
-                    resource = Resource(
-                        kind="session",
-                        id=session_id,
-                        attr={
-                            "owner_id": session.owner_id,
-                            "tenant_id": session.tenant_id,
-                        },
+                    # from it. "attach" is the room-entry action: it is granted
+                    # to the owner/admin AND to any ACTIVE, unexpired
+                    # session_participants grant (see
+                    # SessionParticipantService.active_grants), unlike "start"
+                    # which is owner/admin only.
+                    grants = await session_participant_service.active_grants(resource_id)
+                    resource = SessionService.attributed_resource(
+                        session_id,
+                        owner_id=session.owner_id,
+                        tenant_id=session.tenant_id,
+                        room_viewers=grants.viewer_ids,
+                        room_approvers=grants.approver_ids,
                     )
-                    return await authorization_adapter.is_allowed(principal, "start", resource)
+                    return await authorization_adapter.is_allowed(principal, "attach", resource)
 
                 skuld_reg.set_ownership_guard(_may_attach)
 
-            stats_service = StatsService(stats_repository)
+                async def _resolve_room_role(
+                    session_id: str,
+                    user_id: str | None,
+                    tenant_id: str | None,
+                    roles: tuple[str, ...],
+                ) -> str | None:
+                    """Resolve the caller's room role for the stamped proxy header.
+
+                    Derived from the SAME Cedar decisions ``_may_attach`` and the
+                    REST API use — never a hand-written owner_id/admin-role
+                    comparison (the pattern #1032 removed from this exact file):
+                    that silently stops matching the moment authority is granted
+                    any way other than literal ownership or a tenant-admin role,
+                    which is exactly how it dropped dev-identity callers to no
+                    role at all. Only called after ``_may_attach`` already
+                    allowed the connection, so this never needs to deny outright
+                    — it picks the most senior of owner/approver/viewer Cedar
+                    actually grants, for Skuld's broker to gate tool-permission
+                    responses and gate resolution.
+                    """
+                    try:
+                        resource_id = UUID(session_id)
+                    except ValueError:
+                        return None
+                    from niuu.ports.identity import InvalidTokenError
+
+                    try:
+                        principal = await _resolve_ws_principal(user_id, tenant_id, roles)
+                    except InvalidTokenError:
+                        return None
+                    session = await repository.get(resource_id)
+                    if session is None:
+                        # Resident runtimes and other non-Forge subjects have no
+                        # participant model; may_attach already approved this
+                        # caller for full access, matching pre-existing behavior.
+                        return "owner"
+                    return await session_participant_service.effective_room_role(session, principal)
+
+                if hasattr(skuld_reg, "set_room_role_resolver"):
+                    skuld_reg.set_room_role_resolver(_resolve_room_role)
+
+            stats_service = StatsService(stats_repository, session_service)
             token_service = TokenService(
                 token_tracker, repository, pricing_provider, broadcaster=broadcaster
             )
@@ -1090,6 +1207,27 @@ def create_app(
                 broadcaster=broadcaster,
                 timeline_repository=timeline_repository,
             )
+            session_participant_repository = PostgresSessionParticipantRepository(pool)
+            session_participant_service = SessionParticipantService(
+                session_participant_repository,
+                session_service,
+                user_repository,
+            )
+            app.state.session_participant_service = session_participant_service
+            if skuld_reg is not None and hasattr(skuld_reg, "close_connections"):
+
+                async def _close_revoked_connections(session_id: UUID, user_id: str) -> None:
+                    # Immediate effect: the session proxy's interval
+                    # revalidation (SkuldPortRegistry / _revalidate_loop) is
+                    # the mechanism of record and would close this socket
+                    # within one interval regardless — this just does not
+                    # make a revoked participant wait for the next tick.
+                    await skuld_reg.close_connections(
+                        str(session_id), user_id, reason="Participant grant revoked"
+                    )
+
+                session_participant_service.set_revocation_notifier(_close_revoked_connections)
+
             archive_store = _create_archive_store(settings)
             archive_service = SessionArchiveService(
                 session_service,
@@ -1183,6 +1321,7 @@ def create_app(
                 runtime_health_timeout=settings.runtime_health_timeout_seconds,
                 history_max_turns=settings.conversation_recent_max_turns,
                 history_max_bytes=settings.conversation_recent_max_bytes,
+                session_participant_service=session_participant_service,
             )
             app.include_router(forge_router)
             app.include_router(create_resident_runtimes_router(resident_runtime_service))
@@ -1272,9 +1411,15 @@ def create_app(
 
             # Realm governance — a Valkyrie's build capability, trust, and config
             # readable by ravn over HTTP (shared niuu postgres, no ravn-local db).
-            realm_repository = PostgresRealmRepository(pool)
+            # realm_repository was already built above, before
+            # ResidentRuntimeService, so it could validate realm_id at create().
             app.state.realm_service = RealmService(realm_repository)
             app.include_router(create_realms_router(extract_principal, prefix="/api/v1/realms"))
+            # Let resident deployment controllers resolve a resident's realm slug
+            # (for realm_slug/charter binding in the rendered container config).
+            for controller in resident_controllers:
+                if hasattr(controller, "set_realm_repository"):
+                    controller.set_realm_repository(realm_repository)
 
             git_router = create_git_router(
                 git_workflow_service,
@@ -1405,31 +1550,13 @@ def create_app(
             # Optional: OTel sink (GenAI semantic conventions)
             otel_sink = None
             if settings.event_pipeline.otel.enabled:
-                try:
-                    from volundr.adapters.outbound.otel_event_sink import (
-                        OtelEventSink,
-                    )
-
-                    otel_cfg = settings.event_pipeline.otel
-                    tp, mp = _create_otel_providers(otel_cfg)
-                    otel_sink = OtelEventSink(
-                        tracer_provider=tp,
-                        meter_provider=mp,
-                        service_name=otel_cfg.service_name,
-                        provider_name=otel_cfg.provider_name,
-                    )
-                    event_sinks.append(otel_sink)
-                    logger.info(
-                        "OTel event sink enabled (endpoint=%s)",
-                        otel_cfg.endpoint,
-                    )
-                except ImportError:
-                    logger.warning(
-                        "OTel sink enabled but opentelemetry not installed. "
-                        "Install with: pip install volundr[otel]"
-                    )
-                except Exception:
-                    logger.exception("Failed to initialize OTel event sink")
+                otel_cfg = settings.event_pipeline.otel
+                otel_sink = _build_otel_event_sink(otel_cfg)
+                event_sinks.append(otel_sink)
+                logger.info(
+                    "OTel event sink enabled (endpoint=%s)",
+                    otel_cfg.endpoint,
+                )
 
             # Register Sleipnir event sink when integration is active
             if sleipnir_bus is not None:
@@ -1460,6 +1587,15 @@ def create_app(
             app.include_router(session_log_router)
             app.include_router(
                 create_message_delivery_router(PostgresMessageDelivery(pool), session_service)
+            )
+            app.include_router(
+                create_session_participants_router(
+                    session_participant_service,
+                    session_service,
+                    runtime_backend=runtime_backend,
+                    room_role_source=settings.pod_manager.room_role_source,
+                    identity_header_names=settings.identity.kwargs,
+                )
             )
 
             # Replay-as-live: paced re-emit of recorded frames over a WebSocket,
@@ -1503,6 +1639,11 @@ def create_app(
             app.state.pricing_provider = pricing_provider
             app.state.git_registry = git_registry
             app.state.broadcaster = broadcaster
+            # Principal-scoped view of the broadcaster; the Niuu host's embedded
+            # Forge stream subscribes through this, never the raw broadcaster.
+            app.state.session_event_stream = SessionEventStream(
+                broadcaster, session_service, stats_service
+            )
             app.state.chronicle_service = chronicle_service
             app.state.launch_spec_service = catalog.launch_spec_service
             app.state.git_workflow_service = git_workflow_service
@@ -1515,9 +1656,7 @@ def create_app(
             app.state.storage = storage_adapter
 
             # Start background task for periodic stats and heartbeat broadcasts
-            background_task = asyncio.create_task(
-                _broadcast_periodic_updates(broadcaster, stats_service)
-            )
+            background_task = asyncio.create_task(_broadcast_periodic_updates(broadcaster))
 
             # Start liveness reconciliation: expire running sessions whose broker
             # has gone silent so clients stop dialing dead chat endpoints.
@@ -1573,6 +1712,11 @@ def create_app(
             try:
                 yield
             finally:
+                # Not shutdown_observability() here: this composition root may
+                # share the process with others (mini mode). configure_observability
+                # registers an atexit shutdown hook, which is the correct place
+                # to flush/close a provider that might still be owned by, and in
+                # use by, a co-located service's own lifespan.
                 if execution_credential_service is not None:
                     await execution_credential_service.stop()
                 if compute_pool_task is not None:

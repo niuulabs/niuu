@@ -23,7 +23,7 @@ from pydantic import ValidationError
 
 import bifrost.metrics as _metrics
 from bifrost import catalog as _catalog
-from bifrost.auth import AgentIdentity
+from bifrost.auth import AgentIdentity, AuthMode
 from bifrost.config import AgentPermissions, AuditDetailLevel, BifrostConfig, BudgetGuardrailConfig
 from bifrost.domain.models import RequestLog, TokenUsage
 from bifrost.domain.routing import RuleRejectError
@@ -65,7 +65,7 @@ from bifrost.ports.events import BudgetDegradedEvent, CostEventEmitter
 from bifrost.ports.rules import RoutingContext
 from bifrost.ports.usage_store import UsageRecord, UsageStore
 from bifrost.pricing import ModelPricing, calculate_cost
-from bifrost.router import ModelRouter, RouterError
+from bifrost.router import ModelRouter, RouterError, record_genai_span_attributes
 from bifrost.translation.models import AnthropicRequest, AnthropicResponse
 from niuu.domain.model_catalog import ProviderHealthState
 from niuu.settings_schema import SettingsFieldSchema, SettingsProviderSchema, SettingsSectionSchema
@@ -196,6 +196,14 @@ async def _try_cache_hit(
         return None
     latency_ms = (time.monotonic() - start) * 1000
     await store.record(_cache_hit_record(request_id, identity, model, provider, latency_ms))
+    record_genai_span_attributes(
+        requested_model=model,
+        provider=provider,
+        failover_attempts=0,
+        cache_hit=True,
+        response_model=cached.model,
+        usage=cached.usage,
+    )
     content = response_transform(cached) if response_transform else cached.model_dump()
     return JSONResponse(content=content)
 
@@ -768,7 +776,8 @@ def create_router(
         return {"status": "ok"}
 
     @api_router.get("/settings", response_model=SettingsProviderSchema)
-    async def settings() -> SettingsProviderSchema:
+    async def settings(raw_request: Request) -> SettingsProviderSchema:
+        await auth_adapter.extract(raw_request)
         return SettingsProviderSchema(
             title="Bifrost",
             subtitle="model catalog and routing settings",
@@ -830,8 +839,9 @@ def create_router(
         )
 
     @api_router.get("/models")
-    async def list_catalog_models() -> list[dict]:
+    async def list_catalog_models(raw_request: Request) -> list[dict]:
         """Return the canonical Bifrost-owned model catalog for platform consumers."""
+        await auth_adapter.extract(raw_request)
         return [
             {
                 "id": model.id,
@@ -857,8 +867,9 @@ def create_router(
         ]
 
     @api_router.get("/models/{model_id}")
-    async def get_catalog_model(model_id: str) -> dict:
+    async def get_catalog_model(model_id: str, raw_request: Request) -> dict:
         """Return one canonical model entry, resolving aliases on lookup."""
+        await auth_adapter.extract(raw_request)
         model = _catalog.get_model(config, model_id)
         if model is None:
             raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
@@ -884,15 +895,17 @@ def create_router(
         }
 
     @api_router.get("/aliases")
-    async def list_catalog_aliases() -> list[dict]:
+    async def list_catalog_aliases(raw_request: Request) -> list[dict]:
         """Return configured model aliases."""
+        await auth_adapter.extract(raw_request)
         return [
             {"alias": item.alias, "target": item.target} for item in _catalog.list_aliases(config)
         ]
 
     @api_router.get("/providers")
-    async def list_catalog_providers() -> list[dict]:
+    async def list_catalog_providers(raw_request: Request) -> list[dict]:
         """Return configured providers without performing active probes."""
+        await auth_adapter.extract(raw_request)
         return [
             {
                 "key": provider.key,
@@ -908,8 +921,9 @@ def create_router(
         ]
 
     @api_router.get("/providers/health")
-    async def list_provider_health() -> list[dict]:
+    async def list_provider_health(raw_request: Request) -> list[dict]:
         """Return provider entries plus observed reachability health."""
+        await auth_adapter.extract(raw_request)
         states, details = await _provider_health_snapshot(config)
         return [
             {
@@ -936,7 +950,7 @@ def create_router(
         Returns hit/miss counts, hit rate, and saved token counts since the
         process started.  Statistics are per-instance and reset on restart.
         """
-        auth_adapter.extract(raw_request)
+        await auth_adapter.extract(raw_request)
         s = _cache.stats()
         return {
             "hits": s.hits,
@@ -957,8 +971,16 @@ def create_router(
         containers without a shell, or Windows).
 
         Authentication is enforced according to the configured auth mode —
-        in PAT or mesh mode a valid credential is required to call this
-        endpoint, preventing unauthenticated disruption of the adapter cache.
+        in PAT, oidc or mesh mode a valid credential is required to call
+        this endpoint, preventing unauthenticated disruption of the adapter
+        cache. In PAT and oidc mode the credential must additionally carry
+        an admin role (`admin` or `volundr:admin`) — those modes have a
+        per-caller role concept; mesh's XFCC-derived service identity does
+        not, so a verified mesh credential remains sufficient there, as it
+        always has been. A PAT minted without a `roles` claim (e.g. via
+        `niuu.adapters.memory_token_issuer.MemoryTokenIssuer`, which never
+        sets one) cannot satisfy this — mint one with an IDP-backed issuer
+        that includes it, or use SIGHUP instead.
 
         After this call, all cached provider adapters are discarded and
         will be rebuilt with the freshly loaded keys on the next request.
@@ -966,17 +988,25 @@ def create_router(
         Returns:
             ``{"status": "ok"}``
         """
-        auth_adapter.extract(raw_request)
+        identity = await auth_adapter.extract(raw_request)
+        if config.auth_mode in (
+            AuthMode.PAT,
+            AuthMode.OIDC,
+        ) and not {"admin", "volundr:admin"}.intersection(identity.roles):
+            raise HTTPException(
+                status_code=403, detail="Reloading provider keys requires an admin role"
+            )
         router.reload_keys()
         return {"status": "ok"}
 
     @api_router.get("/v1/models")
-    async def list_models() -> dict:
+    async def list_models(raw_request: Request) -> dict:
         """List models available across all configured providers.
 
         Returns an OpenAI-compatible list response including both canonical
         model IDs and any configured aliases.
         """
+        await auth_adapter.extract(raw_request)
         data: list[dict[str, str]] = []
         for model in _catalog.list_models(config):
             if not model.enabled:
@@ -1012,7 +1042,7 @@ def create_router(
         Token usage is tracked per-request and attributed to the caller.
         """
         # --- Authentication ---
-        identity = auth_adapter.extract(raw_request)
+        identity = await auth_adapter.extract(raw_request)
 
         try:
             body = await raw_request.json()
@@ -1248,6 +1278,7 @@ def create_router(
 
     @api_router.get("/v1/usage")
     async def usage_endpoint(
+        raw_request: Request,
         agent_id: str | None = None,
         tenant_id: str | None = None,
         model: str | None = None,
@@ -1260,7 +1291,8 @@ def create_router(
 
         Query parameters:
             agent_id:    Filter by agent identifier.
-            tenant_id:   Filter by tenant identifier.
+            tenant_id:   Filter by tenant identifier — ignored outside 'open'
+                         mode (see below).
             model:       Filter by model name.
             since:       ISO-8601 datetime (inclusive lower bound).
             until:       ISO-8601 datetime (inclusive upper bound).
@@ -1269,9 +1301,31 @@ def create_router(
                          When provided, the response includes a ``timeseries``
                          array with per-bucket aggregates.
 
+        Requires the configured auth mode's credential like every other
+        endpoint. Outside 'open' mode, the ``tenant_id`` query parameter is
+        always ignored in favour of ``identity.tenant_id`` — a caller can
+        never simply ask for another tenant's usage by passing its id — but
+        how trustworthy that tenant actually is depends on the mode:
+        'oidc' — a signature-verified claim (a tenant-less token is refused
+        outright, see ``OidcAuthAdapter``); 'pat' — a claim on the PAT's own
+        payload if present, else every tenant-less PAT pools into the
+        shared 'default' tenant (unlike oidc, this is *not* rejected here —
+        ``niuu.adapters.memory_token_issuer.MemoryTokenIssuer`` never sets a
+        tenant_id claim at all today, so PATs minted through it always fall
+        into this case; rejecting them would break ordinary PAT auth, not
+        harden it); 'mesh' — the caller-supplied ``X-Tenant-Id`` application
+        header, not cryptographically verified at all (mesh mode verifies
+        the *agent* identity via XFCC/SPIFFE, not a tenant claim). 'open'
+        has no identity to scope by, so the query parameter is honoured
+        as-is, matching its existing trust-all posture.
+
         Returns a summary (totals + per-model/provider breakdown), an optional
         time-series breakdown, and the raw record list.
         """
+        identity = await auth_adapter.extract(raw_request)
+        if config.auth_mode != AuthMode.OPEN:
+            tenant_id = identity.tenant_id
+
         since_dt: datetime | None = None
         until_dt: datetime | None = None
 
@@ -1381,7 +1435,7 @@ def create_router(
         path is supported; token usage is extracted and logged on each request.
         """
         # --- Authentication ---
-        identity = auth_adapter.extract(raw_request)
+        identity = await auth_adapter.extract(raw_request)
 
         try:
             body = await raw_request.json()
@@ -1637,7 +1691,7 @@ def create_router(
         carries the full conversation.
         """
         # --- Authentication ---
-        identity = auth_adapter.extract(raw_request)
+        identity = await auth_adapter.extract(raw_request)
 
         try:
             body = await raw_request.json()
@@ -1927,7 +1981,7 @@ def create_router(
                 → dict`` — translates a non-streaming Anthropic response to Ollama
                 format.
         """
-        identity = auth_adapter.extract(raw_request)
+        identity = await auth_adapter.extract(raw_request)
 
         try:
             body = await raw_request.json()
@@ -2168,12 +2222,13 @@ def create_router(
             return ollama_error_response(502, "Upstream provider error")
 
     @api_router.get("/api/tags")
-    async def ollama_tags() -> dict:
+    async def ollama_tags(raw_request: Request) -> dict:
         """List available models in Ollama /api/tags format.
 
         Maps the internal model registry to the Ollama model list shape so
         that tools like Open WebUI can discover available models automatically.
         """
+        await auth_adapter.extract(raw_request)
         return {
             "models": [
                 {

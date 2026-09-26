@@ -24,8 +24,6 @@ from ting.adapters.inbound.rest_telegram_webhook import (
 )
 from ting.config import ReviewConfig, TelegramConfig
 from ting.domain.models import (
-    ConfidenceEvent,
-    ConfidenceEventType,
     DispatcherState,
     Phase,
     PhaseStatus,
@@ -83,7 +81,6 @@ class StubSagaRepo(SagaRepository):
             repos=["org/repo"],
             feature_branch=f"feat/{slug}",
             status=SagaStatus.ACTIVE,
-            confidence=0.0,
             created_at=_datetime.now(_UTC),
             base_branch="dev",
             owner_id=owner_id,
@@ -128,7 +125,6 @@ class StubTracker(TrackerPort):
 
     def __init__(self) -> None:
         self.runs: dict[UUID, Run] = {}
-        self.events: dict[UUID, list[ConfidenceEvent]] = {}
         self._tracker_id_map: dict[str, Run] = {}
         self._phase_for_run: dict[str, object] = {}
         self._all_merged: bool = False
@@ -200,7 +196,6 @@ class StubTracker(TrackerPort):
         *,
         status: RunStatus | None = None,
         session_id: str | None = None,
-        confidence: float | None = None,
         pr_url: str | None = None,
         pr_id: str | None = None,
         retry_count: int | None = None,
@@ -214,9 +209,6 @@ class StubTracker(TrackerPort):
         if run is None:
             raise ValueError(f"Run not found: {tracker_id}")
 
-        existing_events = self.events.get(run.id, [])
-        new_confidence = existing_events[-1].score_after if existing_events else run.confidence
-
         updated = Run(
             id=run.id,
             phase_id=run.phase_id,
@@ -227,7 +219,6 @@ class StubTracker(TrackerPort):
             declared_files=run.declared_files,
             estimate_hours=run.estimate_hours,
             status=status if status is not None else run.status,
-            confidence=confidence if confidence is not None else new_confidence,
             session_id=session_id if session_id is not None else run.session_id,
             branch=run.branch,
             chronicle_summary=run.chronicle_summary,
@@ -252,19 +243,6 @@ class StubTracker(TrackerPort):
 
     async def get_run_by_id(self, run_id: UUID) -> Run | None:
         return self.runs.get(run_id)
-
-    # -- Confidence events --
-
-    async def add_confidence_event(self, tracker_id: str, event: ConfidenceEvent) -> None:
-        run = self._tracker_id_map.get(tracker_id)
-        if run is not None:
-            self.events.setdefault(run.id, []).append(event)
-
-    async def get_confidence_events(self, tracker_id: str) -> list[ConfidenceEvent]:
-        run = self._tracker_id_map.get(tracker_id)
-        if run is None:
-            return []
-        return self.events.get(run.id, [])
 
     # -- Phase gate management --
 
@@ -311,7 +289,6 @@ class StubDispatcherRepo(DispatcherRepository):
             id=uuid4(),
             owner_id="user-1",
             running=running,
-            threshold=0.7,
             max_concurrent_runs=3,
             auto_continue=False,
             updated_at=datetime.now(UTC),
@@ -326,7 +303,6 @@ class StubDispatcherRepo(DispatcherRepository):
             id=self._state.id,
             owner_id=owner_id,
             running=running,
-            threshold=self._state.threshold,
             max_concurrent_runs=self._state.max_concurrent_runs,
             auto_continue=self._state.auto_continue,
             updated_at=datetime.now(UTC),
@@ -457,7 +433,6 @@ def _make_run(
         declared_files=["src/main.py"],
         estimate_hours=2.0,
         status=status,
-        confidence=0.55,
         session_id="session-1",
         branch="run/test",
         chronicle_summary="summary",
@@ -479,7 +454,6 @@ def _make_saga(owner_id: str = OWNER_ID) -> Saga:
         repos=["org/repo"],
         feature_branch="feat/alpha",
         status=SagaStatus.ACTIVE,
-        confidence=0.0,
         created_at=datetime.now(UTC),
         base_branch="dev",
         owner_id=owner_id,
@@ -775,12 +749,12 @@ class TestStatusCommand:
 
 
 # ---------------------------------------------------------------------------
-# /approve command — now verifies confidence events are recorded
+# /approve command
 # ---------------------------------------------------------------------------
 
 
 class TestApproveCommand:
-    def test_approve_success_with_confidence_event(
+    def test_approve_success(
         self,
         client: TestClient,
         tracker: StubTracker,
@@ -795,12 +769,6 @@ class TestApproveCommand:
         assert "approved" in reply.lower()
         assert "MERGED" in reply
         assert tracker.runs[run.id].status == RunStatus.MERGED
-
-        # Verify confidence event was recorded
-        events = tracker.events[run.id]
-        assert len(events) == 1
-        assert events[0].event_type == ConfidenceEventType.HUMAN_APPROVED
-        assert events[0].delta == ReviewConfig().confidence_delta_approved
 
     def test_approve_no_args(self, client: TestClient, reply_client: StubReplyClient):
         resp = _post_webhook(client, "/approve")
@@ -840,12 +808,12 @@ class TestApproveCommand:
 
 
 # ---------------------------------------------------------------------------
-# /reject command — now verifies confidence events are recorded
+# /reject command
 # ---------------------------------------------------------------------------
 
 
 class TestRejectCommand:
-    def test_reject_success_with_confidence_event(
+    def test_reject_success(
         self,
         client: TestClient,
         tracker: StubTracker,
@@ -861,12 +829,6 @@ class TestRejectCommand:
         assert "FAILED" in reply
         assert "scope drift" in reply
         assert tracker.runs[run.id].status == RunStatus.FAILED
-
-        # Verify confidence event was recorded
-        events = tracker.events[run.id]
-        assert len(events) == 1
-        assert events[0].event_type == ConfidenceEventType.HUMAN_REJECT
-        assert events[0].delta == ReviewConfig().confidence_delta_rejected
 
     def test_reject_no_reason(
         self,
@@ -903,12 +865,12 @@ class TestRejectCommand:
 
 
 # ---------------------------------------------------------------------------
-# /retry command — now verifies confidence events and retry_count
+# /retry command — verifies retry_count
 # ---------------------------------------------------------------------------
 
 
 class TestRetryCommand:
-    def test_retry_from_review_with_confidence_event(
+    def test_retry_from_review(
         self,
         client: TestClient,
         tracker: StubTracker,
@@ -924,12 +886,6 @@ class TestRetryCommand:
         assert "PENDING" in reply
         assert tracker.runs[run.id].status == RunStatus.PENDING
         assert tracker.runs[run.id].retry_count == 1
-
-        # Verify confidence event was recorded
-        events = tracker.events[run.id]
-        assert len(events) == 1
-        assert events[0].event_type == ConfidenceEventType.RETRY
-        assert events[0].delta == ReviewConfig().confidence_delta_retry
 
     def test_retry_from_failed(
         self,
@@ -984,7 +940,6 @@ class TestPauseResumeCommands:
             id=uuid4(),
             owner_id=OWNER_ID,
             running=False,
-            threshold=0.7,
             max_concurrent_runs=3,
             auto_continue=False,
             updated_at=datetime.now(UTC),
@@ -1003,7 +958,6 @@ class TestPauseResumeCommands:
             id=uuid4(),
             owner_id=OWNER_ID,
             running=False,
-            threshold=0.7,
             max_concurrent_runs=3,
             auto_continue=False,
             updated_at=datetime.now(UTC),
@@ -1460,7 +1414,7 @@ class TestDispatchCommandFunction:
             volundr=StubVolundr(),
             dispatcher_repo=StubDispatcherRepo(),
             dispatch_service=StubDispatchService(),
-            review_service=RunReviewService(stub_tracker, OWNER_ID, ReviewConfig()),
+            review_service=RunReviewService(stub_tracker, OWNER_ID),
         )
         assert "Unknown command" in result
         assert "/xyz" in result

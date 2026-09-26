@@ -1,4 +1,54 @@
-{{- if .Values.config.settings }}
+{{- $settings := .Values.config.settings | default dict }}
+{{/*
+Both stores are opt-in (empty adapter by default — see
+ravn.config.TriggerStoreConfig/BudgetLedgerConfig, and
+ravn.triggerStoreAdapter/ravn.budgetLedgerAdapter in _helpers.tpl for the
+resolution order): with neither resolving to an adapter, this block renders
+nothing for either, and this Ravn API has no durable trigger/budget store at
+all (503 on those routes) — an already-deployed chart with no new values
+set, even one that already has database.enabled/persistence.enabled true
+for an unrelated, prior reason (persistence already backs the cron job store
+and a sqlite memory backend under the same mount).
+*/}}
+{{- $triggerAdapter := include "ravn.triggerStoreAdapter" . }}
+{{- if eq $triggerAdapter "ravn.adapters.trigger_store.LazyPostgresTriggerStore" }}
+{{- $settings = mergeOverwrite (deepCopy $settings) (dict
+      "trigger_store" (dict
+        "adapter" $triggerAdapter
+        "kwargs" dict
+        "secret_kwargs_env" (dict "dsn" .Values.database.dsnEnvVar)
+      )
+    ) }}
+{{- else if eq $triggerAdapter "ravn.adapters.trigger_store.FileTriggerStore" }}
+{{- $mountPath := .Values.persistence.mountPath | default "/home/niuu/.ravn" }}
+{{- $settings = mergeOverwrite (deepCopy $settings) (dict
+      "trigger_store" (dict
+        "adapter" $triggerAdapter
+        "kwargs" (dict "path" (printf "%s/ravn_triggers.json" $mountPath))
+        "secret_kwargs_env" dict
+      )
+    ) }}
+{{- end }}
+{{- $budgetAdapter := include "ravn.budgetLedgerAdapter" . }}
+{{- if eq $budgetAdapter "ravn.adapters.budget_ledger.LazyPostgresBudgetLedger" }}
+{{- $settings = mergeOverwrite (deepCopy $settings) (dict
+      "budget_ledger" (dict
+        "adapter" $budgetAdapter
+        "kwargs" dict
+        "secret_kwargs_env" (dict "dsn" .Values.database.dsnEnvVar)
+      )
+    ) }}
+{{- else if eq $budgetAdapter "ravn.adapters.budget_ledger.FileBudgetLedger" }}
+{{- $mountPath := .Values.persistence.mountPath | default "/home/niuu/.ravn" }}
+{{- $settings = mergeOverwrite (deepCopy $settings) (dict
+      "budget_ledger" (dict
+        "adapter" $budgetAdapter
+        "kwargs" (dict "path" (printf "%s/ravn_budget_ledger.json" $mountPath))
+        "secret_kwargs_env" dict
+      )
+    ) }}
+{{- end }}
+{{- if include "ravn.configEnabled" . }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -7,5 +57,5 @@ metadata:
     {{- include "ravn.labels" . | nindent 4 }}
 data:
   config.yaml: |
-    {{- toYaml .Values.config.settings | nindent 4 }}
+    {{- toYaml $settings | nindent 4 }}
 {{- end }}

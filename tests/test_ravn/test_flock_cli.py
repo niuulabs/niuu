@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import yaml
+
 from niuu.mesh.ipc import cleanup_ravn_mesh_sockets, flock_socket_dir, ipc_path, ravn_mesh_addresses
 from ravn.cli.flock import (
     FlockDef,
@@ -171,3 +173,33 @@ def test_mdns_discovery_uses_the_adapters_list(tmp_path: Path) -> None:
     assert "ravn.adapters.discovery.mdns.MdnsDiscoveryAdapter" in config
     assert f"handshake_port: {node.handshake_port}" in config
     assert "adapter: mdns" not in config
+
+
+def test_write_node_config_without_llm_carries_no_llm_section(tmp_path: Path) -> None:
+    """No model or endpoint is baked into the template."""
+    node = _node(tmp_path)
+
+    _write_node_config(node, tmp_path, discovery="static", mesh_transport="tcp")
+
+    text = Path(node.config_path).read_text(encoding="utf-8")
+    assert "llm" not in yaml.safe_load(text)
+    assert "# No llm: section" in text
+    assert "--llm-config" in text
+
+
+def test_write_node_config_writes_the_given_llm(tmp_path: Path) -> None:
+    node = _node(tmp_path)
+    llm = {
+        "model": "Qwen/Qwen3.8-27B",
+        "max_tokens": 8192,
+        "provider": {
+            "adapter": "ravn.adapters.llm.openai.OpenAICompatibleAdapter",
+            "kwargs": {"base_url": "https://vllm.example.test"},
+        },
+    }
+
+    _write_node_config(node, tmp_path, discovery="static", mesh_transport="tcp", llm=llm)
+
+    config = yaml.safe_load(Path(node.config_path).read_text(encoding="utf-8"))
+    assert config["llm"] == llm
+    assert config["mesh"]["own_peer_id"] == node.peer_id

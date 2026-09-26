@@ -9,10 +9,11 @@ requires-python = ">=3.12"
 dependencies = [
     "cedarpy==4.8.7",
     "a2a-sdk>=1.1.2,<2",
+    "packaging>=24.0",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
     "pyyaml>=6.0.3",
-    "claude-agent-sdk==0.2.152",
+    "claude-agent-sdk==0.2.159",
     "mcp==1.30.0",
     "asyncpg>=0.31.0",
     "httpx>=0.28.1",
@@ -38,7 +39,6 @@ dependencies = [
     "python-telegram-bot>=22.8",
     "sqlite-vec>=0.1.9",
     "docker>=7.2.0",
-    "xds-protos>=1.78.0,<2",
     "grpcio>=1.78.0,<2",
 
     "pillow>=12.3.0",
@@ -87,6 +87,8 @@ otel = [
     "opentelemetry-sdk>=1.44.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.44.0",
     "opentelemetry-exporter-otlp-proto-http>=1.44.0",
+    "opentelemetry-instrumentation-fastapi>=0.65b0",
+    "opentelemetry-instrumentation-httpx>=0.65b0",
 ]
 encryption = [
     "cryptography>=50.0.1",
@@ -103,6 +105,11 @@ cli = [
     "nuitka[onefile]>=4.2.1",
     "ordered-set>=4.1",
     "patchelf>=0.19.1.0; sys_platform == 'linux'",
+    # `niuu platform up` (mini mode) calls configure_observability itself —
+    # enabling observability.enabled: true without this extra would raise
+    # (no-fallbacks), turning on tracing into a broken local platform. The
+    # CLI binary always carries the otel packages so that choice always works.
+    "volundr[otel]",
 ]
 tui = [
     "textual>=8.2.8",
@@ -171,14 +178,18 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/audit", "src/cli", "src/credentials", "src/features", "src/guild", "src/identity", "src/integrations", "src/niuu", "src/volundr", "src/ting", "src/tracker", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory", "src/personas"]
+# The last four entries are generated Envoy ext_authz proto bindings vendored
+# under vendor/envoy_authz_protos/ (see its README and
+# scripts/generate_envoy_authz_protos.py) instead of depending on the
+# xds-protos wheel, which bundles a colliding copy of opentelemetry/proto/**.
+packages = ["src/audit", "src/cli", "src/credentials", "src/features", "src/guild", "src/identity", "src/integrations", "src/niuu", "src/volundr", "src/ting", "src/tracker", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory", "src/personas", "vendor/envoy_authz_protos/envoy", "vendor/envoy_authz_protos/xds", "vendor/envoy_authz_protos/udpa", "vendor/envoy_authz_protos/validate"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "vendor/envoy_authz_protos"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 addopts = "-v --tb=short -m 'not integration and not broker and not kind_integration and not live_cli'"
@@ -196,6 +207,12 @@ markers = [
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+# vendor/envoy_authz_protos/ is protoc-generated code (see its README and
+# scripts/generate_envoy_authz_protos.py), not hand-written; force-exclude so
+# pre-commit's explicit-file invocation honours this even though it bypasses
+# ruff's default directory-discovery exclude behavior.
+extend-exclude = ["vendor/envoy_authz_protos"]
+force-exclude = true
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]

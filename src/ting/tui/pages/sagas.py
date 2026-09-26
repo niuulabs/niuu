@@ -11,7 +11,6 @@ from textual.widget import Widget
 from textual.widgets import Input, Static
 
 from cli.tui.theme import (
-    ACCENT_AMBER,
     ACCENT_CYAN,
     ACCENT_EMERALD,
     ACCENT_RED,
@@ -22,7 +21,6 @@ from cli.tui.theme import (
 )
 from cli.tui.widgets.metric_card import MetricCard, MetricRow
 from cli.tui.widgets.tabs import NiuuTabs
-from ting.tui._helpers import format_confidence
 
 if TYPE_CHECKING:
     from niuu.cli_api_client import CLIAPIClient
@@ -74,19 +72,16 @@ class SagaRow(Widget):
         status = saga.get("status", "ACTIVE")
         run_count = saga.get("run_count", 0)
         progress = saga.get("progress", "0/0")
-        confidence = saga.get("confidence", 0.0)
         saga_id = str(saga.get("id", ""))[:8]
 
         color = _STATUS_COLORS.get(status, TEXT_MUTED)
-        conf_pct = format_confidence(confidence)
 
         yield Static(
             f"[bold {TEXT_PRIMARY}]{name}[/]  "
             f"[{TEXT_MUTED}]{saga_id}[/]  "
             f"[{color}]{status}[/]  "
             f"[{TEXT_SECONDARY}]Runs: {run_count}[/]  "
-            f"[{TEXT_SECONDARY}]Progress: {progress}[/]  "
-            f"[{ACCENT_AMBER}]{conf_pct}[/]",
+            f"[{TEXT_SECONDARY}]Progress: {progress}[/]",
             id="saga-row-content",
         )
 

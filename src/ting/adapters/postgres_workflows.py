@@ -78,6 +78,26 @@ class PostgresWorkflowRepository(WorkflowRepository):
         rows = await self._pool.fetch("SELECT * FROM workflows ORDER BY updated_at, created_at, id")
         return [self._row_to_workflow(row) for row in rows]
 
+    async def has_recorded_version_history(self, workflow_id: UUID) -> bool:
+        """True once at least one snapshot has actually been archived for this id.
+
+        Unlike ``list_workflow_versions`` (which always synthesizes the
+        current head as a version when none is archived, so a bare row
+        always returns non-empty), this checks ``workflow_versions``
+        directly. A row can only have zero archived snapshots if it has
+        never been written by the versioned save path (``save_workflow``/
+        ``_advance`` always archive on every write, including a row's very
+        first creation) — i.e. a pre-#1012 legacy row untouched since.
+        ``seed_system_workflows`` uses this to tell that apart from a row
+        this same seeding code created or last updated itself.
+        """
+        return bool(
+            await self._pool.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM workflow_versions WHERE workflow_id = $1)",
+                workflow_id,
+            )
+        )
+
     async def referenced_workflow_ids(self) -> set[UUID]:
         """Return workflow identities referenced by sagas or workflow campaigns."""
         rows = await self._pool.fetch(
@@ -121,6 +141,79 @@ class PostgresWorkflowRepository(WorkflowRepository):
                 base_revision=workflow_document_revision(current),
                 bundled_version=workflow.version if workflow.origin == "bundled" else None,
             )
+
+    async def adopt_legacy_bundled(self, seed: WorkflowDefinition) -> WorkflowDefinition:
+        """Publish a packaged seed as the head of a never-versioned legacy row.
+
+        Re-verifies under the row's own advisory lock that it is still
+        never-versioned (a concurrent replica's own seeding pass may have
+        already adopted, advanced, or reclassified it) before writing.
+        Archives the new head always; archives the legacy row's own snapshot
+        only when its version differs from the seed's -- equal versions
+        would collide in the same immutable ``(id, version)`` archive slot
+        the new head is about to occupy.
+        """
+        async with self._pool.acquire() as connection, connection.transaction():
+            await self._lock(connection, seed.id)
+            row = await connection.fetchrow(
+                "SELECT * FROM workflows WHERE id = $1 FOR UPDATE", seed.id
+            )
+            current = self._row_to_workflow(row) if row else None
+            if current is None:
+                raise WorkflowConflictError(f"Workflow {seed.id} no longer exists")
+            has_history = await connection.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM workflow_versions WHERE workflow_id = $1)",
+                seed.id,
+            )
+            if has_history or current.based_on_revision is not None or current.origin == "authored":
+                return current
+            successor = replace(
+                seed,
+                revision=current.revision,
+                created_at=current.created_at,
+                updated_at=datetime.now(UTC),
+                read_only=True,
+                origin="bundled",
+                is_head=True,
+                based_on_revision=None,
+                source="postgres",
+            )
+            saved = await self._write_workflow(connection, successor)
+            if current.version != seed.version:
+                await self._archive(connection, current)
+            await self._archive(connection, saved)
+            return saved
+
+    async def reclassify_orphaned_bundled_as_authored(
+        self, workflow_id: UUID
+    ) -> WorkflowDefinition | None:
+        """Flip a never-versioned, package-orphaned bundled row to authored.
+
+        Deliberately not routed through save_workflow/_advance: that path
+        bumps the version label (raising on a pre-#1012 row whose version
+        predates the semantic-version requirement, e.g. "v1") and archives a
+        snapshot that then makes delete_workflow refuse the row forever.
+        This is a guarded UPDATE of version_origin only -- no version
+        change, no archive -- re-checking under the row's advisory lock that
+        it is still bundled and never-versioned before writing.
+        """
+        async with self._pool.acquire() as connection, connection.transaction():
+            await self._lock(connection, workflow_id)
+            await connection.execute(
+                """
+                UPDATE workflows
+                SET version_origin = 'authored'
+                WHERE id = $1
+                  AND version_origin = 'bundled'
+                  AND based_on_revision IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM workflow_versions v WHERE v.workflow_id = workflows.id
+                  )
+                """,
+                workflow_id,
+            )
+            row = await connection.fetchrow("SELECT * FROM workflows WHERE id = $1", workflow_id)
+            return self._row_to_workflow(row) if row else None
 
     async def save_workflow_version(
         self,

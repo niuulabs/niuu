@@ -94,7 +94,8 @@ class TestBuildAgentReflectionWiring:
         persona.stop_on_outcome = True
         persona.llm = MagicMock()
         persona.llm.max_tokens = 0
-        persona.permission_mode = "suggest"
+        persona.permission_mode = ""
+        persona.parsed_permission_mode = None
         persona.allowed_tools = []
         persona.forbidden_tools = []
 

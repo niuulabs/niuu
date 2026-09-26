@@ -1,6 +1,7 @@
 """The public Forge facade must carry replay WebSockets, including owner auth."""
 
 import asyncio
+import hashlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -8,9 +9,12 @@ import pytest
 import respx
 from fastapi import FastAPI, WebSocket
 from httpx import Response
+from starlette.datastructures import QueryParams
 from starlette.websockets import WebSocketDisconnect
 
-from niuu.adapters.inbound.ws_forge_replay import _relay
+from niuu.adapters.inbound.ws_forge_replay import _relay, forward_replay
+from niuu.adapters.outbound import guild_transport
+from tests.test_niuu.test_guild_transport import _LEAF_CERT_DER, _LEAF_FINGERPRINT
 from tests.test_niuu.test_rest_volundr import _client, _headers, _instance
 
 
@@ -109,7 +113,96 @@ def test_remote_replay_uses_owner_url_and_forwards_auth_and_parameters(monkeypat
             assert ws.receive_json() == {"type": "result"}
     assert seen["url"] == "wss://owner/api/v1/forge/sessions/s1/replay?after=42&speed=4"
     assert seen["additional_headers"]["authorization"] == "Bearer test-token"
+    # A remote Guild instance never sees a client-supplied x-auth-* header,
+    # even though _headers() below asserts one.
+    assert "x-auth-user-id" not in seen["additional_headers"]
+    assert "x-auth-tenant" not in seen["additional_headers"]
     assert seen["closed"]
+
+
+@respx.mock
+def test_remote_replay_owner_lookup_fails_closed_on_a_tls_pin_mismatch(monkeypatch):
+    """The owner lookup (_find_session_owner -> _request_remote) is the
+    first outbound leg and shares the same TLS-pinning factory as
+    forward_replay, so a pin mismatch is already caught here — before
+    forward_replay's own connect() is ever reached. See
+    test_forward_replay_closes_on_its_own_pin_mismatch below for a direct,
+    isolated test of forward_replay's own mismatch handling instead."""
+
+    def _unexpected_connect(url, **kwargs):
+        raise AssertionError("must not connect on a TLS pin mismatch")
+
+    monkeypatch.setattr("niuu.adapters.inbound.ws_forge_replay.connect", _unexpected_connect)
+    monkeypatch.setattr(
+        "niuu.adapters.outbound.guild_transport.fetch_leaf_certificate_der",
+        lambda *a, **k: b"not the pinned certificate",
+    )
+    pinned_fingerprint = "ab" * 32
+    instance = _instance(
+        "remote", base_url="https://owner", config={"tls_fingerprint": pinned_fingerprint}
+    )
+    with _client([instance]) as client:
+        with pytest.raises(WebSocketDisconnect) as closed:
+            with client.websocket_connect("/api/v1/forge/sessions/s1/replay", headers=_headers()):
+                pytest.fail("pin mismatch did not close the socket")
+        assert closed.value.code == 1008
+
+
+async def test_forward_replay_pins_a_matching_certificate_and_bridges(monkeypatch):
+    """A direct, isolated call to forward_replay (bypassing the router-level
+    owner lookup, which does its own separate pin check first) — proves the
+    pinned-success branch is actually reached: a real SSLContext is resolved
+    against a real loopback-verified certificate and passed into connect()."""
+    monkeypatch.setattr(
+        guild_transport, "fetch_leaf_certificate_der", lambda *a, **k: _LEAF_CERT_DER
+    )
+    captured: dict = {}
+
+    def _connect(url, **kwargs):
+        captured.update(url=url, **kwargs)
+        raise OSError("stop after capturing connect() kwargs")
+
+    monkeypatch.setattr("niuu.adapters.inbound.ws_forge_replay.connect", _connect)
+    instance = _instance(
+        "remote", base_url="https://owner", config={"tls_fingerprint": _LEAF_FINGERPRINT}
+    )
+    websocket = SimpleNamespace(query_params=QueryParams({}), close=AsyncMock(), accept=AsyncMock())
+
+    await forward_replay(websocket, instance, "s1", headers={}, embedded_app=None)
+
+    assert "ssl" in captured
+    websocket.close.assert_awaited_once_with(code=1011)
+
+
+async def test_forward_replay_closes_on_its_own_pin_mismatch(monkeypatch, caplog):
+    """A direct, isolated call to forward_replay proving its own mismatch
+    branch (except GuildTransportError: close(1011)) is reached, that
+    connect() is never attempted on a mismatch, and — unlike the old silent
+    close — that the refusal is logged with the instance and session it
+    refused, so an operator can tell a policy refusal from a network blip."""
+    monkeypatch.setattr(
+        guild_transport,
+        "fetch_leaf_certificate_der",
+        lambda *a, **k: b"not the pinned certificate",
+    )
+
+    def _unexpected_connect(url, **kwargs):
+        raise AssertionError("must not connect on a TLS pin mismatch")
+
+    monkeypatch.setattr("niuu.adapters.inbound.ws_forge_replay.connect", _unexpected_connect)
+    pinned_fingerprint = hashlib.sha256(b"the actual expected certificate").hexdigest()
+    instance = _instance(
+        "remote", base_url="https://owner", config={"tls_fingerprint": pinned_fingerprint}
+    )
+    websocket = SimpleNamespace(query_params=QueryParams({}), close=AsyncMock(), accept=AsyncMock())
+
+    with caplog.at_level("WARNING", logger="niuu.adapters.inbound.ws_forge_replay"):
+        await forward_replay(websocket, instance, "s1", headers={}, embedded_app=None)
+
+    websocket.close.assert_awaited_once_with(code=1011)
+    websocket.accept.assert_not_awaited()
+    assert "remote" in caplog.text
+    assert "s1" in caplog.text
 
 
 async def test_client_disconnect_cancels_a_sleeping_remote_replay():

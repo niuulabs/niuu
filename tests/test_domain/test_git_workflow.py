@@ -331,7 +331,7 @@ class TestGitWorkflowService:
         broadcaster: MockEventBroadcaster,
     ):
         """Creates a PR with chronicle summary as description."""
-        session = _make_session()
+        session = _make_session().model_copy(update={"owner_id": "alice", "tenant_id": "t1"})
         await session_repo.create(session)
         chronicle = _make_chronicle(session.id)
         await chronicle_repo.create(chronicle)
@@ -346,9 +346,11 @@ class TestGitWorkflowService:
         assert call["target_branch"] == "main"
         assert "Fixed authentication bug" in call["description"]
         assert "Updated auth middleware" in call["description"]
-        # SSE event was broadcast
+        # SSE event was broadcast, scoped by the session's owner and tenant
         assert len(broadcaster.events) == 1
         assert broadcaster.events[0].type.value == "pr_created"
+        assert broadcaster.events[0].data["owner_id"] == "alice"
+        assert broadcaster.events[0].data["tenant_id"] == "t1"
 
     @pytest.mark.asyncio
     async def test_create_pr_from_session_no_chronicle(

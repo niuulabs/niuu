@@ -56,7 +56,6 @@ def _make_saga(
         feature_branch=feature_branch,
         base_branch=base_branch,
         status=SagaStatus.ACTIVE,
-        confidence=0.5,
         created_at=datetime.now(UTC),
         owner_id="user-1",
     )
@@ -744,7 +743,9 @@ class TestVolundrHTTPAdapterFlockPassthrough:
             }
             return resp
 
-        adapter = VolundrHTTPAdapter(base_url="http://volundr.local", api_key="tok")
+        adapter = VolundrHTTPAdapter(
+            base_url="http://volundr.local", api_key="tok", config={"allow_plaintext": True}
+        )
 
         workload_cfg = {
             "personas": ["coordinator", "reviewer"],
@@ -810,7 +811,9 @@ class TestVolundrHTTPAdapterFlockPassthrough:
             }
             return resp
 
-        adapter = VolundrHTTPAdapter(base_url="http://volundr.local", api_key="tok")
+        adapter = VolundrHTTPAdapter(
+            base_url="http://volundr.local", api_key="tok", config={"allow_plaintext": True}
+        )
         request = SpawnRequest(
             name="alpha-2",
             repo="https://github.com/org/repo",

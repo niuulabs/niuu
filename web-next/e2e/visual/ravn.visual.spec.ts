@@ -1,62 +1,56 @@
 /**
- * Visual regression specs for the Ravn plugin.
- *
- * All views live at /ravn with tab-based navigation. Tests click each tab to
- * reach the target view, then compare the full page snapshot.
- *
- * Shell tabs: Overview, Ravens, Personas, Sessions, Budget
- * (Triggers and Events content lives within the Overview page.)
+ * Visual regression specs for the Ravn plugin: the ravens workbench and the
+ * persona library. The fleet is answered here so the snapshot is stable.
  */
 
 import { test, expect } from '@playwright/test';
 
+const ravens = [
+  {
+    id: '11111111-1111-4111-8111-111111111111',
+    persona_name: 'reviewer',
+    resident_name: 'Muninn',
+    kind: 'resident',
+    status: 'failed',
+    model: 'claude-sonnet-4-6',
+    created_at: '2026-09-01T10:00:00Z',
+    backend: 'local',
+    engine: 'ravn',
+    profile_id: 'ravn-local',
+    desired_state: 'running',
+    observed_state: 'failed',
+    capabilities: ['chat', 'runtime.restart', 'logs'],
+    conditions: [
+      {
+        type: 'BackendReady',
+        status: 'unknown',
+        reason: 'ReconcileFailed',
+        message: 'connection aborted',
+        lastTransitionAt: '2026-09-24T11:36:21Z',
+      },
+    ],
+    managed: true,
+    instance_id: 'local',
+    instance_name: 'Local Forge',
+  },
+];
+
 test.beforeEach(async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.route('**/api/v1/ravn/ravens', (route) => route.fulfill({ json: ravens }));
+  await page.route('**/api/v1/ravn/sessions', (route) => route.fulfill({ json: [] }));
+});
+
+test('ravn workbench', async ({ page }) => {
   await page.goto('/ravn');
-  await page.waitForSelector('[data-testid="ravn-page"]', { timeout: 10_000 });
+  await page.waitForSelector('[data-testid="ravn-health-banner"]', { timeout: 10_000 });
   await page.waitForLoadState('networkidle');
+  await expect(page).toHaveScreenshot('ravn-workbench.png');
 });
 
-// ── Overview ──────────────────────────────────────────────────────────────────
-
-test('ravn overview matches web2', async ({ page }) => {
-  // Overview is the default tab at /ravn
-  await page.waitForSelector('[data-testid="overview-page"]', { timeout: 5_000 });
-  await expect(page).toHaveScreenshot('ravn-overview.png');
-});
-
-// ── Ravens ─────────────────────────────────────────────────────────────────────
-
-test('ravn ravens split view matches web2', async ({ page }) => {
-  await page.getByTestId('ravn-tab-ravens').click();
-  await page.waitForSelector('[data-testid="ravens-page"]', { timeout: 5_000 });
-  await page.waitForSelector('[data-testid="layout-split"]', { timeout: 5_000 });
-  await expect(page).toHaveScreenshot('ravn-ravens-split.png');
-});
-
-// ── Sessions ──────────────────────────────────────────────────────────────────
-
-test('ravn sessions matches web2', async ({ page }) => {
-  await page.getByTestId('ravn-tab-sessions').click();
-  await page.waitForTimeout(400);
-  await expect(page).toHaveScreenshot('ravn-sessions.png');
-});
-
-// ── Budget ─────────────────────────────────────────────────────────────────────
-
-test('ravn budget matches web2', async ({ page }) => {
-  await page.getByTestId('ravn-tab-budget').click();
-  await page.waitForTimeout(400);
-  await expect(page).toHaveScreenshot('ravn-budget.png');
-});
-
-// ── Personas ───────────────────────────────────────────────────────────────────
-
-test('ravn personas matches web2', async ({ page }) => {
-  await page.getByTestId('ravn-tab-personas').click();
-  await page.waitForSelector('[data-testid="personas-page"]', { timeout: 5_000 });
-  // Select "reviewer" persona to show the form (matches web2 baseline)
-  await page.getByText('reviewer', { exact: true }).first().click();
-  await page.waitForTimeout(300);
-  await expect(page).toHaveScreenshot('ravn-personas.png');
+test('ravn persona library', async ({ page }) => {
+  await page.goto('/ravn/personas?persona=reviewer');
+  await page.waitForSelector('[data-testid="persona-sheet"]', { timeout: 10_000 });
+  await page.waitForLoadState('networkidle');
+  await expect(page).toHaveScreenshot('ravn-persona-library.png');
 });

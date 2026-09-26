@@ -64,6 +64,19 @@ async def _run_daemon(
     # Build Mímir adapter early so _agent_factory closure can capture it.
     daemon_mimir = _build_mimir(settings)
     memory = _with_mimir_fact_capture(memory, daemon_mimir)
+
+    # Resolve the resident's charter once, before any consumer (this runtime,
+    # EnvironmentSignalRuntime's triage prompts, resident context, the HUD
+    # dashboard payload) reads settings.environment.charter — otherwise only
+    # some of them would see a Mímir-resolved charter and the rest would see
+    # the stale static one. Mutating settings here, not passing the resolved
+    # value around, is what makes every later reader consistent for free.
+    from ravn.cli.resident_runtime_wiring import (
+        _resolve_environment_charter,
+    )
+
+    settings.environment.charter = await _resolve_environment_charter(settings, daemon_mimir)
+
     drive_loop: Any | None = None
     resident_inbox: Any | None = None
     resident_state: Any | None = None
@@ -154,9 +167,7 @@ async def _run_daemon(
             no_tools=False,
             persona_config=resolved_persona,
         )
-        permission_mode = settings.permission.mode
-        if resolved_persona is not None and resolved_persona.permission_mode:
-            permission_mode = resolved_persona.permission_mode
+        permission_mode = _effective_permission_mode(settings, resolved_persona)
 
         # Determine the profile for this task:
         #   - Anonymous cascade subtasks (no persona, no task_persona) → "worker" (core only)
@@ -443,12 +454,20 @@ async def _run_daemon(
                     settings.sleipnir.amqp_url_env,
                 )
 
+        from ravn.api.persistence_wiring import build_resident_budget  # noqa: PLC0415
+
+        _resident_budget = build_resident_budget(
+            settings.resident_budget,
+            default_timeout_seconds=settings.gateway.platform.timeout,
+        )
+
         drive_loop = DriveLoop(
             agent_factory=_agent_factory,
             config=settings.initiative,
             settings=settings,
             event_publisher=event_publisher,
             resume=resume,
+            resident_budget=_resident_budget,
             mimir=daemon_mimir,
             sleipnir_publisher=environment_signal_publisher
             or sleipnir_catalog_publisher
@@ -504,6 +523,15 @@ async def _run_daemon(
                 )
         _cron_jobs = _wire_triggers(drive_loop, settings.initiative)
         cron_tools[:] = _wire_cron(drive_loop, _cron_jobs, settings.initiative)
+
+        # Load this resident's own durably-stored triggers (POST /ravn/triggers)
+        # and run them — gated by resident_triggers.enabled (see trigger_wiring).
+        _api_triggers_persona = (
+            persona_config.name
+            if persona_config is not None
+            else settings.initiative.default_persona
+        )
+        _wire_api_triggers(drive_loop, settings, _api_triggers_persona)
 
         # Wire Mímir triggers (source synthesis + staleness refresh + threads)
         if daemon_mimir is not None:

@@ -238,6 +238,70 @@ def test_status_endpoint_reports_discovery_unavailable(client: TestClient):
     assert resp.json()["detail"] == "Ravn runtime discovery is unavailable"
 
 
+class _FailingStandaloneDiscovery:
+    """Simulates a broken standalone-resident discovery adapter chain."""
+
+    async def list_residents(self) -> list:
+        raise RuntimeError("discovery adapter unreachable")
+
+
+@respx.mock
+def test_status_endpoint_is_not_healthy_when_a_managed_runtimes_native_sessions_fail() -> None:
+    """list_ravens does not call list_resident_sessions, so a managed
+    runtime's own native-session listing failing does not raise there —
+    only list_sessions sees it, previously via a swallow that just skipped
+    the runtime with a warning log. The old behavior therefore reported
+    "healthy": True with an undercount: fewer sessions, no trace of why. It
+    must be additively reported instead, on both the body and the
+    X-Niuu-Source-Failures header."""
+    runtime = {
+        "id": "runtime-flaky",
+        "name": "Flaky Resident",
+        "capabilities": ["session.list"],
+    }
+    respx.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+        return_value=httpx.Response(200, json=[runtime])
+    )
+    respx.get("http://localhost:8080/api/v1/forge/resident-runtimes/runtime-flaky/sessions").mock(
+        return_value=httpx.Response(500)
+    )
+    respx.get("http://localhost:8080/api/v1/forge/sessions").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    app_client = TestClient(create_app())
+
+    resp = app_client.get("/api/v1/ravn/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["healthy"] is False
+    failures = json.loads(resp.headers["X-Niuu-Source-Failures"])
+    assert failures[0]["instanceId"] == "runtime-flaky"
+    assert failures[0]["name"] == "Flaky Resident"
+
+
+@respx.mock
+def test_get_session_endpoint_fails_loud_when_standalone_discovery_fails() -> None:
+    """A single-session lookup that falls through to standalone discovery
+    must not silently answer "not found" when discovery itself is down —
+    that would misreport an unreachable resident as one that never existed."""
+    respx.get("http://localhost:8080/api/v1/forge/sessions/missing-session").mock(
+        return_value=httpx.Response(404)
+    )
+    respx.get("http://localhost:8080/api/v1/forge/resident-runtimes/missing-session").mock(
+        return_value=httpx.Response(404)
+    )
+    respx.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    app_client = TestClient(create_app(resident_discovery=_FailingStandaloneDiscovery()))
+
+    resp = app_client.get("/api/v1/ravn/sessions/missing-session")
+
+    assert resp.status_code == 503
+    assert "discovery adapter unreachable" in resp.json()["detail"]
+
+
 def test_valkyrie_dashboard_projection(client: TestClient):
     resp = client.get("/api/v1/ravn/valkyrie/dashboard")
     assert resp.status_code == 200
@@ -1772,6 +1836,8 @@ def test_valkyrie_dashboard_telemetry_nats_subscription_supports_multiple_stream
     monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_START_TIMEOUT_SECONDS", "3")
     monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_CONNECT_TIMEOUT_SECONDS", "1.5")
     monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_MAX_RECONNECT_ATTEMPTS", "0")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_CONSUMER_HEALTH_CHECK_INTERVAL_SECONDS", "7.0")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_CONSUMER_RECOVERY_BACKOFF_SECONDS", "[2.0, 4.0]")
     monkeypatch.setenv(
         "RAVN_VALKYRIE_TELEMETRY_NATS_STREAMS",
         (
@@ -1793,6 +1859,8 @@ def test_valkyrie_dashboard_telemetry_nats_subscription_supports_multiple_stream
     assert created[0].kwargs["replay_from_time"] is not None
     assert created[0].kwargs["connect_timeout_s"] == 1.5
     assert created[0].kwargs["max_reconnect_attempts"] == 0
+    assert created[0].kwargs["consumer_health_check_interval_s"] == 7.0
+    assert created[0].kwargs["consumer_recovery_backoff_s"] == [2.0, 4.0]
     assert created[1].kwargs["stream_name"] == "obs-valhalla-events"
     assert created[1].kwargs["subject_prefix"] == "obs.valhalla"
     assert created[1].kwargs["consumer_group"] == "dashboard-obs-valhalla-events"
@@ -2297,7 +2365,7 @@ def test_resident_create_lifecycle_and_delete_proxy_target_control_plane(client:
         b'{"name":"Muninn","profile_id":"ravn-helm","persona_name":"","model":"",'
         b'"flock_id":"11111111-1111-4111-8111-111111111111",'
         b'"flock_member_id":"22222222-2222-4222-8222-222222222222",'
-        b'"flock_role":"coordinator","flock_peer_id":"ravn-muninn"}'
+        b'"flock_role":"coordinator","flock_peer_id":"ravn-muninn","realm_id":null}'
     )
     assert suspended.status_code == 200
     assert deleted.status_code == 204

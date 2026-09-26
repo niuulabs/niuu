@@ -1881,6 +1881,314 @@ data:
     ALTER TABLE sessions DROP COLUMN IF EXISTS latest_final_at;
     ALTER TABLE sessions DROP COLUMN IF EXISTS latest_final_turn_id;
     ALTER TABLE sessions DROP COLUMN IF EXISTS latest_final_seq;
+  000076_chronicle_attribution.up.sql: |
+    -- Chronicles outlive their session, so they carry the session's owner and tenant
+    -- themselves: history that survives a session delete is still scoped to the
+    -- principals who could list that session. No foreign keys, for the same reason
+    -- 000038 dropped the session one: history must survive what it references.
+    ALTER TABLE chronicles ADD COLUMN IF NOT EXISTS owner_id TEXT;
+    ALTER TABLE chronicles ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+
+    UPDATE chronicles c
+    SET owner_id = s.owner_id, tenant_id = s.tenant_id
+    FROM sessions s
+    WHERE c.session_id = s.id AND c.owner_id IS NULL AND c.tenant_id IS NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_chronicles_tenant_owner ON chronicles(tenant_id, owner_id);
+
+  000076_chronicle_attribution.down.sql: |
+    DROP INDEX IF EXISTS idx_chronicles_tenant_owner;
+    ALTER TABLE chronicles DROP COLUMN IF EXISTS tenant_id;
+    ALTER TABLE chronicles DROP COLUMN IF EXISTS owner_id;
+  000077_instance_health.up.sql: |
+    -- Server-side reachability tracking for registered runtime instances. Guild
+    -- probes each instance on register and on a periodic loop, and records the
+    -- result here so an offline node is reported as such instead of looking like
+    -- an idle one that simply has no sessions.
+    ALTER TABLE niuu_instances ADD COLUMN IF NOT EXISTS health TEXT NOT NULL DEFAULT 'unknown';
+    -- last_seen_at: the last time a probe SUCCEEDED — "when did it last work".
+    -- last_checked_at: the last time a probe was ATTEMPTED, success or not —
+    -- "when did we last look". A never-reachable instance has a last_checked_at
+    -- but no last_seen_at; conflating the two would let the UI invent a "just
+    -- now" last-seen time for a node that has never actually answered.
+    ALTER TABLE niuu_instances ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+    ALTER TABLE niuu_instances ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ;
+    ALTER TABLE niuu_instances ADD COLUMN IF NOT EXISTS last_error TEXT;
+
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'niuu_instances_health_check'
+        ) THEN
+            ALTER TABLE niuu_instances
+                ADD CONSTRAINT niuu_instances_health_check
+                CHECK (health IN ('unknown', 'ok', 'unreachable'));
+        END IF;
+    END $$;
+  000077_instance_health.down.sql: |
+    ALTER TABLE niuu_instances DROP CONSTRAINT IF EXISTS niuu_instances_health_check;
+    ALTER TABLE niuu_instances DROP COLUMN IF EXISTS last_error;
+    ALTER TABLE niuu_instances DROP COLUMN IF EXISTS last_checked_at;
+    ALTER TABLE niuu_instances DROP COLUMN IF EXISTS last_seen_at;
+    ALTER TABLE niuu_instances DROP COLUMN IF EXISTS health;
+  000078_session_span_w3c_trace_id.up.sql: |
+    -- Forge session spans key on trace_id = the session UUID, a stable per-session
+    -- correlation id predating OTel adoption here. It is not a W3C trace id and
+    -- cannot become one without breaking every existing consumer of
+    -- GET /sessions/{id}/trace. Store the W3C trace id (32 lowercase hex chars)
+    -- alongside instead, when the span was recorded while a real OTel trace was
+    -- active, so a Forge span can be cross-referenced with the OTLP trace it
+    -- belongs to.
+    ALTER TABLE session_spans ADD COLUMN IF NOT EXISTS w3c_trace_id VARCHAR(32);
+
+    CREATE INDEX IF NOT EXISTS idx_session_spans_w3c_trace_id
+        ON session_spans(w3c_trace_id)
+        WHERE w3c_trace_id IS NOT NULL;
+  000078_session_span_w3c_trace_id.down.sql: |
+    DROP INDEX IF EXISTS idx_session_spans_w3c_trace_id;
+    ALTER TABLE session_spans DROP COLUMN IF EXISTS w3c_trace_id;
+  000079_resident_realm_binding.up.sql: |
+    -- Explicit realm<->resident link, by id, instead of the naming convention
+    -- the web join previously relied on (resident named after the realm slug).
+    --
+    -- ON DELETE RESTRICT, not SET NULL: the realms REST route's own contract
+    -- says the resident must be torn down first ("The realm's resident is a
+    -- Ravn fleet object and is removed through DELETE /api/v1/ravn/ravens/{id}"
+    -- in rest_realms.py), but nothing enforced it. SET NULL would silently
+    -- unbind an still-live resident from its realm on delete -- a fallback, not
+    -- an answer. RESTRICT makes an out-of-order delete fail loudly instead.
+    ALTER TABLE resident_runtimes
+        ADD COLUMN IF NOT EXISTS realm_id UUID REFERENCES realms(id) ON DELETE RESTRICT;
+
+    CREATE INDEX IF NOT EXISTS idx_resident_runtimes_realm
+        ON resident_runtimes (realm_id)
+        WHERE realm_id IS NOT NULL;
+
+    -- Backfill the explicit link for existing residents that were only ever
+    -- matched by the (now-secondary) naming convention: a resident's name
+    -- equals its realm's slug (web-next's residentNameFor). Only backfill an
+    -- UNAMBIGUOUS match -- one resident, one realm, same name/slug, resident
+    -- not already bound to some other realm -- so we never guess.
+    UPDATE resident_runtimes rr
+    SET realm_id = r.id
+    FROM realms r
+    WHERE rr.realm_id IS NULL
+      AND rr.name = r.slug
+      AND (SELECT COUNT(*) FROM resident_runtimes rr2 WHERE rr2.name = r.slug) = 1
+      AND (SELECT COUNT(*) FROM realms r2 WHERE r2.slug = rr.name) = 1;
+  000079_resident_realm_binding.down.sql: |
+    DROP INDEX IF EXISTS idx_resident_runtimes_realm;
+    ALTER TABLE resident_runtimes DROP COLUMN IF EXISTS realm_id;
+  000080_session_participants.up.sql: |
+    -- Durable per-session collaboration grants: several participants share one
+    -- agent room in the browser through DURABLE grants exposed as Cedar
+    -- attributes (room_viewers/room_approvers), computed from the
+    -- ACTIVE, unexpired rows here. Cascades with the session it grants access
+    -- to, unlike chronicles (000076), which are deliberately kept alive after
+    -- their session is gone.
+    CREATE TABLE IF NOT EXISTS session_participants (
+        id UUID NOT NULL DEFAULT gen_random_uuid(),
+        session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'invited',
+        expires_at TIMESTAMPTZ,
+        invited_by TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (id),
+        UNIQUE (session_id, user_id)
+    );
+
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'session_participants_role_check'
+        ) THEN
+            ALTER TABLE session_participants
+                ADD CONSTRAINT session_participants_role_check
+                CHECK (role IN ('observer', 'teacher', 'debugger', 'approver'));
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'session_participants_status_check'
+        ) THEN
+            ALTER TABLE session_participants
+                ADD CONSTRAINT session_participants_status_check
+                CHECK (status IN ('invited', 'active', 'revoked'));
+        END IF;
+    END $$;
+
+    CREATE INDEX IF NOT EXISTS idx_session_participants_session ON session_participants(session_id);
+    CREATE INDEX IF NOT EXISTS idx_session_participants_user ON session_participants(user_id);
+  000080_session_participants.down.sql: |
+    DROP TABLE IF EXISTS session_participants;
+  000081_ravn_trigger_store.up.sql: |
+    -- Durable storage for the Ravn API's /triggers routes (POST /ravn/triggers
+    -- was returning 503 because no store was wired). trigger_store is a dynamic
+    -- adapter (trigger_store.adapter); only used when it is set to
+    -- ravn.adapters.trigger_store.postgres_store.LazyPostgresTriggerStore — the
+    -- default (ravn.adapters.trigger_store.FileTriggerStore) is a local file.
+    -- Scoped by owner_id/tenant_id so one tenant cannot list or delete another
+    -- tenant's triggers. repo scopes an event-kind trigger to one repository's
+    -- events (ravn.adapters.triggers.api_source filters on it before
+    -- enqueueing) so a QA resident does not fire on every tenant's pull
+    -- requests; empty for cron-kind triggers, which have no event payload.
+    CREATE TABLE IF NOT EXISTS ravn_triggers (
+        id           UUID        PRIMARY KEY,
+        kind         TEXT        NOT NULL,
+        persona_name TEXT        NOT NULL,
+        spec         TEXT        NOT NULL,
+        repo         TEXT        NOT NULL DEFAULT '',
+        enabled      BOOLEAN     NOT NULL DEFAULT TRUE,
+        owner_id     TEXT        NOT NULL,
+        tenant_id    TEXT        NOT NULL,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ravn_triggers_tenant_created
+        ON ravn_triggers (tenant_id, created_at DESC);
+  000081_ravn_trigger_store.down.sql: |
+    DROP INDEX IF EXISTS idx_ravn_triggers_tenant_created;
+    DROP TABLE IF EXISTS ravn_triggers;
+  000082_ravn_budget_ledger.up.sql: |
+    -- Durable fleet-wide budget ledger for the Ravn API's /budget routes
+    -- (GET /ravn/budget/fleet and /ravn/budget/{ravnId} were returning 503
+    -- because no store was wired). budget_ledger is a dynamic adapter
+    -- (budget_ledger.adapter); only used when it is set to
+    -- ravn.adapters.budget_ledger.postgres_store.LazyPostgresBudgetLedger — the
+    -- default (ravn.adapters.budget_ledger.FileBudgetLedger) is a local file.
+    -- One row per (tenant, ravn) per
+    -- UTC day. tenant_id is part of the primary key, not a bare index, so a
+    -- ravn_id collision across tenants cannot upsert into another tenant's row.
+    -- ravn_id is TEXT, not UUID: standalone/discovered residents are not
+    -- guaranteed to carry a UUID id, and this table must never 500 on a
+    -- caller-supplied id the way an earlier draft's UUID trigger id did.
+    -- Written synchronously by the Ravn API's POST /budget/spend, called by each
+    -- resident's DailyBudgetTracker (ravn.drive_loop._record_task_cost) as real
+    -- spend happens, with ravn_id/tenant_id derived server-side from the
+    -- caller's workload principal — never client-supplied.
+    CREATE TABLE IF NOT EXISTS ravn_budget_ledger (
+        tenant_id  TEXT        NOT NULL,
+        ravn_id    TEXT        NOT NULL,
+        day        DATE        NOT NULL,
+        spent_usd  NUMERIC     NOT NULL DEFAULT 0,
+        cap_usd    NUMERIC     NOT NULL DEFAULT 0,
+        warn_at    DOUBLE PRECISION NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (tenant_id, ravn_id, day)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ravn_budget_ledger_tenant_day
+        ON ravn_budget_ledger (tenant_id, day);
+  000082_ravn_budget_ledger.down.sql: |
+    DROP INDEX IF EXISTS idx_ravn_budget_ledger_tenant_day;
+    DROP TABLE IF EXISTS ravn_budget_ledger;
+  000083_guild_node_join.up.sql: |
+    -- `niuu join` — machines (K8s clusters, DGX Sparks, laptops in mini/docker
+    -- mode) joined to Guild via a single-use pairing code, and the nodes that
+    -- results in. See docs/operator/joining-machines.md.
+
+    -- Server-side record of a minted pairing code. The code itself is a scoped
+    -- workload JWT (token_use=valkyrie_build, scopes=["node_join"]) so entry to
+    -- the join route is gated by the existing require_scope("node_join")
+    -- machinery; this table exists in addition to that so the code can be spent
+    -- exactly once even though the JWT itself stays structurally valid until it
+    -- expires (see .claude/rules/architecture.md).
+    CREATE TABLE IF NOT EXISTS niuu_pairing_codes (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        code_hash TEXT NOT NULL UNIQUE,
+        created_by TEXT NOT NULL,
+        tenant_id TEXT NOT NULL DEFAULT '',
+        -- Operator consent, recorded at mint time, for the joining node to
+        -- register a plaintext (http://) instance URL. A node can never grant
+        -- itself this — only whoever minted the code decides.
+        allow_plaintext BOOLEAN NOT NULL DEFAULT false,
+        -- Operator consent, recorded at mint time, for a node that does not
+        -- itself verify caller identity (host_auth.mode: none) to join a Guild
+        -- that runs host_auth.mode: oidc. Without this, Guild forwards a
+        -- caller's real bearer token to an instance that trusts everyone —
+        -- an explicit, admin-granted exception, never a node self-declaration.
+        allow_untrusted_node_auth BOOLEAN NOT NULL DEFAULT false,
+        expires_at TIMESTAMPTZ NOT NULL,
+        consumed_at TIMESTAMPTZ,
+        consumed_by_node_id UUID,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_niuu_pairing_codes_expires
+        ON niuu_pairing_codes(expires_at);
+
+    -- A machine joined through a pairing code. Node-originated calls
+    -- (heartbeat/leave) are authenticated by an Ed25519 signature checked
+    -- against public_key, never a bearer JWT.
+    CREATE TABLE IF NOT EXISTS niuu_nodes (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name TEXT NOT NULL,
+        -- Base64-encoded raw 32-byte Ed25519 public key.
+        public_key TEXT NOT NULL,
+        tenant_id TEXT NOT NULL DEFAULT '',
+        created_by TEXT NOT NULL,
+        -- Copied once from the pairing code that admitted this node (never
+        -- writable afterward — there is no node-update endpoint at all) so
+        -- every later heartbeat re-registration enforces the same
+        -- operator-granted transport consent, not a value the node supplies.
+        allow_plaintext BOOLEAN NOT NULL DEFAULT false,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_seen_at TIMESTAMPTZ,
+        -- Strictly-increasing replay-protection watermark (Unix MILLISECONDS,
+        -- not seconds — a heartbeat and a leave issued within the same second
+        -- must both be able to advance it) for signed node requests. NULL
+        -- before the node's first signed call. Advanced only by the single
+        -- atomic conditional UPDATE in PostgresNodeRepository.try_advance_watermark;
+        -- never read-then-written from application code.
+        last_request_at BIGINT
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_niuu_nodes_public_key
+        ON niuu_nodes(public_key);
+
+    CREATE INDEX IF NOT EXISTS idx_niuu_nodes_tenant
+        ON niuu_nodes(tenant_id);
+
+    -- Node display names are shown to admins choosing what to revoke, so a
+    -- second node cannot masquerade as an existing one within the same tenant.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_niuu_nodes_tenant_name
+        ON niuu_nodes(tenant_id, name);
+
+    -- The real ownership link for instances a node registers. This column is
+    -- never exposed on InstanceCreateRequest/InstanceUpdateRequest, so the
+    -- authenticated PATCH /api/v1/niuu/instances/{id} route can never set or
+    -- clear it — only GuildJoinRepository (join/heartbeat) writes it. A slug
+    -- derived from the operator-chosen node *name* must never be the ownership
+    -- key (a node named to collide with an existing slug must not be able to
+    -- adopt that row) — node_id is a Guild-assigned UUID the node never
+    -- chooses, so it cannot be gamed the same way.
+    ALTER TABLE niuu_instances ADD COLUMN IF NOT EXISTS node_id UUID
+        REFERENCES niuu_nodes(id) ON DELETE CASCADE;
+
+    CREATE INDEX IF NOT EXISTS idx_niuu_instances_node_id
+        ON niuu_instances(node_id);
+
+    -- One row per (node, kind): concurrent heartbeats deciding "no existing row
+    -- for this kind, insert a new one" at the same time would otherwise both
+    -- succeed and leave two rows for the same node+kind. The second concurrent
+    -- INSERT now fails fast on this constraint instead of silently duplicating.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_niuu_instances_node_kind
+        ON niuu_instances(node_id, kind) WHERE node_id IS NOT NULL;
+  000083_guild_node_join.down.sql: |
+    DROP INDEX IF EXISTS idx_niuu_instances_node_kind;
+    DROP INDEX IF EXISTS idx_niuu_instances_node_id;
+    ALTER TABLE niuu_instances DROP COLUMN IF EXISTS node_id;
+
+    DROP INDEX IF EXISTS idx_niuu_nodes_tenant_name;
+    DROP INDEX IF EXISTS idx_niuu_nodes_tenant;
+    DROP INDEX IF EXISTS idx_niuu_nodes_public_key;
+    DROP TABLE IF EXISTS niuu_nodes;
+
+    DROP INDEX IF EXISTS idx_niuu_pairing_codes_expires;
+    DROP TABLE IF EXISTS niuu_pairing_codes;
+
   lineage-aliases.json: |
     {
       "000050_session_definition.up.sql": [

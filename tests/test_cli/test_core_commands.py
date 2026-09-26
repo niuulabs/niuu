@@ -281,11 +281,16 @@ class TestStartup:
                 enabled_mounts=None,
             )
 
-    async def test_startup_enabled_services_forwarded(self) -> None:
+    # Only mini mode (the local, IDP-less host) trusts browser-asserted identity.
+    @pytest.mark.parametrize(
+        ("mode", "dev_identity"),
+        [("mini", True), ("openshell", False), ("cluster", False)],
+    )
+    async def test_startup_enabled_services_forwarded(self, mode: str, dev_identity: bool) -> None:
         manager = MagicMock()
         manager.start_all = AsyncMock()
         manager._registry = MagicMock()
-        settings = CLISettings()
+        settings = CLISettings(mode=mode)
         enabled = {"volundr", "ting"}
         mounts = {"niuu-api", "runtime-config"}
 
@@ -310,6 +315,8 @@ class TestStartup:
             port=settings.server.port,
             host_profile="api",
             enabled_mounts=mounts,
+            dev_identity=dev_identity,
+            cli_settings=settings,
         )
 
 

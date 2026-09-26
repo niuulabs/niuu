@@ -62,7 +62,7 @@ describe('DashboardPage', () => {
     expect(screen.getByText('Active runs')).toBeInTheDocument();
     expect(screen.getByText('Awaiting review')).toBeInTheDocument();
     expect(screen.getByText('Merged · 24h')).toBeInTheDocument();
-    expect(screen.getByText('Confidence overview')).toBeInTheDocument();
+    expect(screen.getByText('Saga overview')).toBeInTheDocument();
   });
 
   it('renders active saga names from the service', async () => {
@@ -154,8 +154,7 @@ describe('DashboardPage', () => {
     const bar = screen.getByTestId('ting-dispatcher-stats');
     expect(bar).toHaveTextContent('dispatcher');
     expect(bar).toHaveTextContent('on');
-    expect(bar).toHaveTextContent('threshold');
-    expect(bar).toHaveTextContent('70.00');
+    expect(bar).toHaveTextContent('concurrent');
   });
 
   it('shows dispatcher off when running is false', async () => {
@@ -164,7 +163,6 @@ describe('DashboardPage', () => {
       getState: async () => ({
         id: 'test',
         running: false,
-        threshold: 0.8,
         maxConcurrentRuns: 5,
         autoContinue: false,
         updatedAt: '2026-01-01T00:00:00Z',
@@ -175,7 +173,6 @@ describe('DashboardPage', () => {
     });
     await waitFor(() => expect(screen.getByTestId('ting-dispatcher-stats')).toBeInTheDocument());
     expect(screen.getByTestId('ting-dispatcher-stats')).toHaveTextContent('off');
-    expect(screen.getByTestId('ting-dispatcher-stats')).toHaveTextContent('0.80');
   });
 
   it('hides active-only saga cards when every saga is terminal', async () => {
@@ -191,7 +188,6 @@ describe('DashboardPage', () => {
             repos: [],
             featureBranch: 'feat/done',
             status: 'complete',
-            confidence: 95,
             createdAt: '2026-01-01T00:00:00Z',
             phaseSummary: { total: 1, completed: 1 },
             baseBranch: 'main',
@@ -206,21 +202,10 @@ describe('DashboardPage', () => {
     expect(screen.queryByText('Done Saga')).not.toBeInTheDocument();
   });
 
-  it('renders confidence and saga completion events in the activity feed', async () => {
+  it('renders saga completion events in the activity feed', async () => {
     const eventfulDispatcher = {
       ...createMockDispatcherService(),
       getActivityLog: async () => [
-        {
-          id: 'evt-confidence',
-          timestamp: '2026-05-25T12:00:00Z',
-          event: 'confidence.updated',
-          data: {
-            event_type: 'confidence_updated',
-            delta: -0.12,
-            score_after: 0.58,
-            tracker_id: 'NIU-902',
-          },
-        },
         {
           id: 'evt-saga-complete',
           timestamp: '2026-05-25T11:59:00Z',
@@ -238,10 +223,7 @@ describe('DashboardPage', () => {
       wrapper: wrap({ ting: createMockTingService(), 'ting.dispatcher': eventfulDispatcher }),
     });
 
-    await waitFor(() =>
-      expect(screen.getByText(/confidence updated · -0.12 · → 0.58/i)).toBeInTheDocument(),
-    );
-    expect(screen.getByText('NIU-902')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('NIU-903')).toBeInTheDocument());
     expect(screen.getByText(/^completed$/i)).toBeInTheDocument();
     expect(screen.queryByTestId('ting-dispatcher-stats')).not.toBeInTheDocument();
   });
@@ -262,7 +244,6 @@ describe('DashboardPage', () => {
           repos: [],
           featureBranch: 'feat/terminal',
           status: 'active',
-          confidence: 61,
           createdAt: '2026-05-25T08:00:00Z',
           phaseSummary: { total: 2, completed: 1 },
           baseBranch: 'main',
@@ -285,7 +266,6 @@ describe('DashboardPage', () => {
               persona: 'publisher',
               updatedAt: '2026-05-25T11:00:00Z',
               createdAt: '2026-05-25T10:30:00Z',
-              confidence: 0.91,
             },
           ],
         },
@@ -372,7 +352,6 @@ describe('DashboardPage', () => {
             repos: [],
             featureBranch: 'feat/fresh',
             status: 'active',
-            confidence: 44,
             createdAt: '2026-05-25T08:00:00Z',
             phaseSummary: { total: 0, completed: 0 },
             baseBranch: 'main',

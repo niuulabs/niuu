@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -17,9 +18,16 @@ from niuu.domain.models import (
 from niuu.domain.services.instances import (
     InstanceAccessError,
     InstanceService,
+    InstanceTransportSecurityError,
     InstanceValidationError,
 )
+from niuu.domain.transport_security import (
+    _DEFAULT_TRUSTED_PLAINTEXT_HOST_SUFFIXES,
+    configure_trusted_plaintext_host_suffixes,
+)
 from niuu.service_instances import seed_configured_instances
+
+_VALID_FINGERPRINT = "ab" * 32
 
 
 class InMemoryInstanceRepository:
@@ -376,9 +384,10 @@ async def test_upsert_seed_instance_updates_existing_match_and_creates_new_seed(
 
 
 @pytest.mark.asyncio
-async def test_seed_configured_instances_skips_incomplete_items(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_seed_configured_instances_raises_on_incomplete_items() -> None:
+    """An incomplete `niuu.instances` entry is a configuration error, not a
+    hint to skip — it must stop startup with the remedy in the message
+    rather than silently registering fewer instances than configured."""
     repo = InMemoryInstanceRepository()
     service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
     seeded_items = [
@@ -404,11 +413,63 @@ async def test_seed_configured_instances_skips_incomplete_items(
         ),
     ]
 
+    with pytest.raises(InstanceValidationError, match="niuu.instances\\[1\\] is incomplete"):
+        await seed_configured_instances(service, seeded_items)
+
+    # The first, valid entry was already persisted before the second one
+    # was found incomplete — a partial seed on a hard failure, not a
+    # silently-smaller one.
+    assert list(repo.instances) == ["seed-1"]
+
+
+@pytest.mark.asyncio
+async def test_seed_configured_instances_persists_every_complete_item() -> None:
+    repo = InMemoryInstanceRepository()
+    service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
+    seeded_items = [
+        SimpleNamespace(
+            id="seed-1",
+            kind=InstanceKind.VOLUNDR,
+            slug="seed-one",
+            name="Seed One",
+            base_url="https://seed-one.example.com",
+            visibility=InstanceVisibility.SYSTEM,
+        ),
+    ]
+
     seeded = await seed_configured_instances(service, seeded_items)
 
     assert seeded == 1
-    assert "Skipping incomplete seeded instance" in caplog.text
     assert list(repo.instances) == ["seed-1"]
+
+
+@pytest.mark.asyncio
+async def test_seed_configured_instances_accepts_ymir_style_in_cluster_seeds_by_default() -> None:
+    """The real startup path (niuu.service_instances.seed_configured_instances,
+    called from the Guild composition root) must not refuse a live cluster's
+    plain-http in-cluster seeds with the default trusted-plaintext suffixes —
+    this is exactly the deployment-safety scenario the suffix exemption
+    exists for."""
+    repo = InMemoryInstanceRepository()
+    service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
+    seeded_items = [
+        SimpleNamespace(
+            id="volundr",
+            kind=InstanceKind.VOLUNDR,
+            slug="volundr",
+            name="Volundr",
+            base_url="http://niuu-volundr.volundr.svc.cluster.local",
+            visibility=InstanceVisibility.SYSTEM,
+            enabled=True,
+            is_default=True,
+            config={"ravn_base_url": "http://niuu-ravn.volundr.svc.cluster.local"},
+        ),
+    ]
+
+    seeded = await seed_configured_instances(service, seeded_items)
+
+    assert seeded == 1
+    assert repo.instances["volundr"].base_url == "http://niuu-volundr.volundr.svc.cluster.local"
 
 
 @pytest.mark.asyncio
@@ -487,3 +548,354 @@ async def test_cedar_prevents_cross_tenant_admin_registry_changes():
         await service.update_instance(foreign_admin, instance.id, name="hijacked")
     with pytest.raises(InstanceAccessError):
         await service.delete_instance(foreign_admin, instance.id)
+
+
+class TestTransportSecurity:
+    """A remote Guild instance must use https:// unless it explicitly opts
+    into plaintext, and a configured tls_fingerprint must be well-formed and
+    only ever paired with https:// — see .claude/rules/no-fallbacks.md and
+    the LAN transport owner decision (Tailscale/pinned-TLS first, plaintext
+    only as an explicit per-instance opt-in)."""
+
+    @pytest.mark.asyncio
+    async def test_create_instance_rejects_plain_http_without_opt_in(self) -> None:
+        service = InstanceService(
+            InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
+        )
+        with pytest.raises(InstanceTransportSecurityError, match="allow_plaintext"):
+            await service.create_instance(
+                _principal(admin=True),
+                kind=InstanceKind.VOLUNDR,
+                slug="plain",
+                name="Plain",
+                base_url="http://remote.example.com",
+                visibility=InstanceVisibility.SYSTEM,
+            )
+
+    @pytest.mark.asyncio
+    async def test_create_instance_allows_plain_http_with_explicit_opt_in(self) -> None:
+        service = InstanceService(
+            InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
+        )
+        instance = await service.create_instance(
+            _principal(admin=True),
+            kind=InstanceKind.VOLUNDR,
+            slug="tailnet",
+            name="Tailnet",
+            base_url="http://100.90.20.64:8080",
+            visibility=InstanceVisibility.SYSTEM,
+            config={"allow_plaintext": True},
+        )
+        assert instance.base_url == "http://100.90.20.64:8080"
+        assert instance.config["allow_plaintext"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("host", "url_host"),
+        [("localhost", "localhost"), ("127.0.0.1", "127.0.0.1"), ("::1", "[::1]")],
+    )
+    async def test_create_instance_exempts_localhost_from_https_requirement(
+        self, host: str, url_host: str
+    ) -> None:
+        service = InstanceService(
+            InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
+        )
+        instance = await service.create_instance(
+            _principal(admin=True),
+            kind=InstanceKind.VOLUNDR,
+            slug=f"local-{host.replace(':', '')}",
+            name="Local",
+            base_url=f"http://{url_host}:8080",
+            visibility=InstanceVisibility.SYSTEM,
+        )
+        assert instance.base_url == f"http://{url_host}:8080"
+
+    @pytest.mark.asyncio
+    async def test_create_instance_exempts_embedded_transport(self) -> None:
+        service = InstanceService(
+            InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
+        )
+        instance = await service.create_instance(
+            _principal(admin=True),
+            kind=InstanceKind.VOLUNDR,
+            slug="local-forge",
+            name="Local Forge",
+            base_url="embedded://local-forge",
+            visibility=InstanceVisibility.SYSTEM,
+            config={"transport": "embedded"},
+        )
+        assert instance.base_url == "embedded://local-forge"
+
+    @pytest.mark.asyncio
+    async def test_update_instance_rejects_downgrade_to_plain_http(self) -> None:
+        repo = InMemoryInstanceRepository()
+        service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
+        admin = _principal(admin=True)
+        instance = await service.create_instance(
+            admin,
+            kind=InstanceKind.VOLUNDR,
+            slug="secure",
+            name="Secure",
+            base_url="https://secure.example.com",
+            visibility=InstanceVisibility.SYSTEM,
+        )
+        with pytest.raises(InstanceTransportSecurityError):
+            await service.update_instance(admin, instance.id, base_url="http://secure.example.com")
+
+    @pytest.mark.asyncio
+    async def test_create_instance_accepts_a_well_formed_tls_fingerprint(self) -> None:
+        service = InstanceService(
+            InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
+        )
+        instance = await service.create_instance(
+            _principal(admin=True),
+            kind=InstanceKind.VOLUNDR,
+            slug="pinned",
+            name="Pinned",
+            base_url="https://pinned.example.com",
+            visibility=InstanceVisibility.SYSTEM,
+            config={"tls_fingerprint": _VALID_FINGERPRINT},
+        )
+        assert instance.config["tls_fingerprint"] == _VALID_FINGERPRINT
+
+    @pytest.mark.asyncio
+    async def test_create_instance_rejects_a_malformed_tls_fingerprint(self) -> None:
+        service = InstanceService(
+            InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
+        )
+        with pytest.raises(InstanceTransportSecurityError, match="sha256 hex digest"):
+            await service.create_instance(
+                _principal(admin=True),
+                kind=InstanceKind.VOLUNDR,
+                slug="bad-pin",
+                name="Bad Pin",
+                base_url="https://bad-pin.example.com",
+                visibility=InstanceVisibility.SYSTEM,
+                config={"tls_fingerprint": "not-a-fingerprint"},
+            )
+
+    @pytest.mark.asyncio
+    async def test_create_instance_rejects_a_tls_fingerprint_on_plain_http(self) -> None:
+        service = InstanceService(
+            InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
+        )
+        with pytest.raises(InstanceTransportSecurityError, match="https"):
+            await service.create_instance(
+                _principal(admin=True),
+                kind=InstanceKind.VOLUNDR,
+                slug="pin-over-http",
+                name="Pin Over HTTP",
+                base_url="http://100.90.20.64:8080",
+                visibility=InstanceVisibility.SYSTEM,
+                config={"allow_plaintext": True, "tls_fingerprint": _VALID_FINGERPRINT},
+            )
+
+    @pytest.mark.asyncio
+    async def test_upsert_seed_instance_rejects_plain_http_without_opt_in(self) -> None:
+        service = InstanceService(
+            InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
+        )
+        with pytest.raises(InstanceTransportSecurityError):
+            await service.upsert_seed_instance(
+                kind=InstanceKind.VOLUNDR,
+                slug="seeded",
+                name="Seeded",
+                base_url="http://seeded.example.com",
+                visibility=InstanceVisibility.SYSTEM,
+            )
+
+    @pytest.mark.asyncio
+    async def test_upsert_seed_instance_allows_a_ymir_style_in_cluster_seed_by_default(
+        self,
+    ) -> None:
+        """A live cluster's Guild seed, like ymir's, registers
+        http://niuu-volundr.volundr.svc.cluster.local with a
+        ravn_base_url on the same in-cluster suffix — both must pass without
+        an explicit allow_plaintext, or every such deployment's Guild would
+        refuse to start."""
+        service = InstanceService(
+            InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
+        )
+        instance = await service.upsert_seed_instance(
+            kind=InstanceKind.VOLUNDR,
+            slug="volundr",
+            name="Volundr",
+            base_url="http://niuu-volundr.volundr.svc.cluster.local",
+            visibility=InstanceVisibility.SYSTEM,
+            config={"ravn_base_url": "http://niuu-ravn.volundr.svc.cluster.local"},
+        )
+        assert instance.base_url == "http://niuu-volundr.volundr.svc.cluster.local"
+        assert instance.config["ravn_base_url"] == "http://niuu-ravn.volundr.svc.cluster.local"
+
+    @pytest.mark.asyncio
+    async def test_upsert_seed_instance_refuses_the_in_cluster_seed_once_emptied(self) -> None:
+        """guild_transport_trusted_plaintext_host_suffixes: [] is an
+        operator decision to require the explicit opt-in everywhere,
+        in-cluster addresses included — the suffix exemption must actually
+        be gone, not just unused."""
+        configure_trusted_plaintext_host_suffixes([])
+        try:
+            service = InstanceService(
+                InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
+            )
+            with pytest.raises(InstanceTransportSecurityError, match="allow_plaintext"):
+                await service.upsert_seed_instance(
+                    kind=InstanceKind.VOLUNDR,
+                    slug="volundr",
+                    name="Volundr",
+                    base_url="http://niuu-volundr.volundr.svc.cluster.local",
+                    visibility=InstanceVisibility.SYSTEM,
+                )
+        finally:
+            configure_trusted_plaintext_host_suffixes(_DEFAULT_TRUSTED_PLAINTEXT_HOST_SUFFIXES)
+
+    @pytest.mark.asyncio
+    async def test_create_instance_rejects_an_insecure_ravn_base_url_even_when_base_url_is_https(
+        self,
+    ) -> None:
+        """A split-service target's ravn_base_url is what a caller actually
+        dials for Ravn reads (see rest_ravn._ravn_base_url) — an insecure
+        one must be caught here just like an insecure base_url, even though
+        base_url itself is fine."""
+        service = InstanceService(
+            InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
+        )
+        with pytest.raises(InstanceTransportSecurityError, match="allow_plaintext"):
+            await service.create_instance(
+                _principal(admin=True),
+                kind=InstanceKind.VOLUNDR,
+                slug="split",
+                name="Split",
+                base_url="https://volundr.example.com",
+                visibility=InstanceVisibility.SYSTEM,
+                config={"ravn_base_url": "http://ravn.example.com"},
+            )
+
+    @pytest.mark.asyncio
+    async def test_create_instance_allows_an_insecure_ravn_base_url_with_opt_in(self) -> None:
+        service = InstanceService(
+            InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
+        )
+        instance = await service.create_instance(
+            _principal(admin=True),
+            kind=InstanceKind.VOLUNDR,
+            slug="split",
+            name="Split",
+            base_url="https://volundr.example.com",
+            visibility=InstanceVisibility.SYSTEM,
+            config={"ravn_base_url": "http://ravn.example.com", "allow_plaintext": True},
+        )
+        assert instance.config["ravn_base_url"] == "http://ravn.example.com"
+
+    @pytest.mark.asyncio
+    async def test_create_instance_rejects_a_non_boolean_allow_plaintext(self) -> None:
+        service = InstanceService(
+            InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
+        )
+        with pytest.raises(InstanceTransportSecurityError, match="boolean"):
+            await service.create_instance(
+                _principal(admin=True),
+                kind=InstanceKind.VOLUNDR,
+                slug="bad-flag",
+                name="Bad Flag",
+                base_url="http://100.90.20.64:8080",
+                visibility=InstanceVisibility.SYSTEM,
+                config={"allow_plaintext": "true"},
+            )
+
+    @pytest.mark.asyncio
+    async def test_create_instance_does_not_exempt_a_plain_http_url_flagged_as_embedded(
+        self,
+    ) -> None:
+        """The embedded exemption is keyed on the base_url's own scheme
+        (embedded://), never on the user-editable config.transport flag — a
+        caller dialling base_url directly (bypassing whatever routing reads
+        that flag) must get the same answer everyone else gets."""
+        service = InstanceService(
+            InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
+        )
+        with pytest.raises(InstanceTransportSecurityError, match="allow_plaintext"):
+            await service.create_instance(
+                _principal(admin=True),
+                kind=InstanceKind.VOLUNDR,
+                slug="fake-embedded",
+                name="Fake Embedded",
+                base_url="http://not-actually-embedded.example.com",
+                visibility=InstanceVisibility.SYSTEM,
+                config={"transport": "embedded"},
+            )
+
+    @pytest.mark.asyncio
+    async def test_update_instance_allows_disabling_a_legacy_insecure_row(self) -> None:
+        """A row that predates this validation (inserted directly into the
+        repository here, simulating one already in the database) must still
+        be disable-able — the write-time check must not trap an operator
+        trying to turn the insecure instance off. Call-time enforcement in
+        guild_transport.py remains the real boundary regardless."""
+        repo = InMemoryInstanceRepository()
+        service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
+        admin = _principal(admin=True)
+        legacy = _instance("legacy", visibility=InstanceVisibility.SYSTEM, tenant_id=None)
+        legacy = replace(legacy, base_url="http://legacy.example.com", config={})
+        repo.instances[legacy.id] = legacy
+
+        updated = await service.update_instance(admin, legacy.id, enabled=False)
+
+        assert updated.enabled is False
+        assert updated.base_url == "http://legacy.example.com"
+
+    @pytest.mark.asyncio
+    async def test_update_instance_allows_untouched_transport_fields_on_a_legacy_insecure_row(
+        self,
+    ) -> None:
+        repo = InMemoryInstanceRepository()
+        service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
+        admin = _principal(admin=True)
+        legacy = _instance("legacy", visibility=InstanceVisibility.SYSTEM, tenant_id=None)
+        legacy = replace(legacy, base_url="http://legacy.example.com", config={})
+        repo.instances[legacy.id] = legacy
+
+        updated = await service.update_instance(admin, legacy.id, name="Renamed Legacy")
+
+        assert updated.name == "Renamed Legacy"
+        assert updated.base_url == "http://legacy.example.com"
+
+    @pytest.mark.asyncio
+    async def test_update_instance_revalidates_when_re_enabling_an_insecure_row(self) -> None:
+        """PATCH {base_url: 'http://x', enabled: false} correctly disables
+        without a 422 (see test above). A later, separate
+        PATCH {enabled: true} that never touches base_url/config must not
+        silently re-enable that same insecure row — it has to re-run the
+        transport check, exactly as if the insecure base_url were being set
+        for the first time."""
+        repo = InMemoryInstanceRepository()
+        service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
+        admin = _principal(admin=True)
+        legacy = _instance("legacy", visibility=InstanceVisibility.SYSTEM, tenant_id=None)
+        legacy = replace(legacy, base_url="http://legacy.example.com", config={}, enabled=False)
+        repo.instances[legacy.id] = legacy
+
+        with pytest.raises(InstanceTransportSecurityError, match="allow_plaintext"):
+            await service.update_instance(admin, legacy.id, enabled=True)
+
+    @pytest.mark.asyncio
+    async def test_update_instance_allows_re_enabling_once_made_secure(self) -> None:
+        """The re-enable check is satisfied once the row is actually secure
+        (or has opted into plaintext) — it is not a blanket ban on
+        re-enabling a previously-disabled instance."""
+        repo = InMemoryInstanceRepository()
+        service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
+        admin = _principal(admin=True)
+        legacy = _instance("legacy", visibility=InstanceVisibility.SYSTEM, tenant_id=None)
+        legacy = replace(legacy, base_url="http://legacy.example.com", config={}, enabled=False)
+        repo.instances[legacy.id] = legacy
+
+        updated = await service.update_instance(
+            admin,
+            legacy.id,
+            enabled=True,
+            base_url="https://legacy.example.com",
+        )
+
+        assert updated.enabled is True
+        assert updated.base_url == "https://legacy.example.com"

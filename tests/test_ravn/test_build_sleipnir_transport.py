@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from niuu.mesh.transport_builder import TRANSPORT_ALIASES as _TRANSPORT_ALIASES
+from niuu.mesh.transport_builder import TransportBuildError
 from ravn.cli.commands import _resolve_transport_kwargs
 from ravn.config import Settings
 
@@ -26,6 +27,13 @@ def _default_nats_kwargs(servers: list[str] | None = None) -> dict[str, Any]:
         "max_age_seconds": 604800,
         "max_bytes": 1073741824,
         "ring_buffer_depth": 1000,
+        "max_deliver": 5,
+        "ack_wait_s": 30.0,
+        "ack_progress_interval_s": 10.0,
+        "max_ack_pending": None,
+        "nak_backoff_s": [1.0, 5.0, 30.0, 60.0],
+        "consumer_health_check_interval_s": 15.0,
+        "consumer_recovery_backoff_s": [1.0, 5.0, 15.0, 30.0],
         "connect_timeout_s": 10.0,
         "max_reconnect_attempts": 60,
         "ensure_stream": True,
@@ -67,16 +75,13 @@ class TestTransportAliases:
     """Verify the alias map covers all known transport short names."""
 
     def test_all_short_names_present(self):
-        expected = {"nng", "sleipnir", "rabbitmq", "nats", "redis", "in_process"}
+        expected = {"nng", "nats", "in_process"}
         assert set(_TRANSPORT_ALIASES.keys()) == expected
 
     def test_aliases_are_fully_qualified(self):
         for alias, fq in _TRANSPORT_ALIASES.items():
             parts = fq.rsplit(".", 1)
             assert len(parts) == 2, f"alias {alias!r} is not a dotted class path"
-
-    def test_sleipnir_and_rabbitmq_resolve_to_same_class(self):
-        assert _TRANSPORT_ALIASES["sleipnir"] == _TRANSPORT_ALIASES["rabbitmq"]
 
 
 class TestResolveTransportKwargs:
@@ -88,24 +93,6 @@ class TestResolveTransportKwargs:
         assert kwargs["address"] == "ipc:///tmp/test.ipc"
         assert kwargs["service_id"] == "ravn:test-peer"
         assert "peer_addresses" in kwargs
-
-    def test_rabbitmq_kwargs_with_env(self):
-        settings = _make_settings()
-        with patch.dict("os.environ", {"SLEIPNIR_AMQP_URL": "amqp://host"}):
-            kwargs = _resolve_transport_kwargs(settings, "rabbitmq")
-        assert kwargs == {"amqp_url": "amqp://host"}
-
-    def test_rabbitmq_kwargs_empty_when_env_missing(self):
-        settings = _make_settings()
-        with patch.dict("os.environ", {}, clear=True):
-            kwargs = _resolve_transport_kwargs(settings, "rabbitmq")
-        assert kwargs == {}
-
-    def test_sleipnir_alias_same_as_rabbitmq(self):
-        settings = _make_settings()
-        with patch.dict("os.environ", {"SLEIPNIR_AMQP_URL": "amqp://host"}):
-            kwargs = _resolve_transport_kwargs(settings, "sleipnir")
-        assert kwargs == {"amqp_url": "amqp://host"}
 
     def test_nats_kwargs(self):
         with patch.dict("os.environ", {"NATS_URL": "nats://custom:4222"}):
@@ -138,6 +125,22 @@ class TestResolveTransportKwargs:
             "consumer_group": "k8s-watchers",
             "replay_from_sequence": 42,
             "ring_buffer_depth": 2048,
+        }
+
+    def test_nats_kwargs_supports_consumer_recovery_settings(self):
+        """fix/sleipnir-nats-consumer-recovery: reachable from mesh config, not just adapter
+        kwargs."""
+        settings = _make_settings(
+            **{
+                "mesh.nats.consumer_health_check_interval_s": 5.0,
+                "mesh.nats.consumer_recovery_backoff_s": [2.0, 4.0],
+            }
+        )
+        kwargs = _resolve_transport_kwargs(settings, "nats")
+        assert kwargs == {
+            **_default_nats_kwargs(),
+            "consumer_health_check_interval_s": 5.0,
+            "consumer_recovery_backoff_s": [2.0, 4.0],
         }
 
     def test_nats_kwargs_supports_gitops_managed_tls_and_auth(self):
@@ -179,18 +182,6 @@ class TestResolveTransportKwargs:
             "nkeys_seed_file": "/etc/nats/user.nk",
         }
 
-    def test_redis_kwargs(self):
-        settings = _make_settings()
-        with patch.dict("os.environ", {"REDIS_URL": "redis://custom:6379"}):
-            kwargs = _resolve_transport_kwargs(settings, "redis")
-        assert kwargs == {"redis_url": "redis://custom:6379"}
-
-    def test_redis_kwargs_default(self):
-        settings = _make_settings()
-        with patch.dict("os.environ", {}, clear=True):
-            kwargs = _resolve_transport_kwargs(settings, "redis")
-        assert kwargs == {"redis_url": "redis://localhost:6379"}
-
     def test_in_process_kwargs_empty(self):
         settings = _make_settings()
         kwargs = _resolve_transport_kwargs(settings, "in_process")
@@ -204,7 +195,7 @@ class TestBuildMesh:
         """Legacy nng adapter (default) → SleipnirMeshAdapter is constructed."""
         from ravn.cli.commands import _build_mesh
 
-        settings = _make_settings()
+        settings = _make_settings(**{"mesh.rpc_reply_cache_size": 7})
         with (
             patch("niuu.mesh.transport_builder.build_transport", return_value=MagicMock()),
             patch("ravn.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter") as mock_cls,
@@ -212,16 +203,28 @@ class TestBuildMesh:
         ):
             _build_mesh(settings)
         mock_cls.assert_called_once()
+        assert mock_cls.call_args.kwargs["rpc_reply_cache_size"] == 7
 
-    def test_legacy_rabbitmq_no_env_returns_none(self):
-        """Legacy rabbitmq adapter with no AMQP_URL env → returns None (guard fires)."""
+    def test_legacy_transport_that_cannot_be_built_is_fatal(self):
+        """A configured transport that cannot be built raises; the mesh is never disabled."""
         from ravn.cli.commands import _build_mesh
 
         settings = _make_settings()
         settings.mesh.adapter = "rabbitmq"
-        with patch.dict("os.environ", {}, clear=True):
-            result = _build_mesh(settings)
-        assert result is None
+        with pytest.raises(TransportBuildError, match="unknown mesh transport 'rabbitmq'"):
+            _build_mesh(settings)
+
+    def test_legacy_transport_constructor_failure_is_fatal(self):
+        from ravn.cli.commands import _build_mesh
+
+        settings = _make_settings()
+        with (
+            patch("niuu.mesh.transport_builder.import_class") as import_class,
+            patch("niuu.mesh.cluster.read_cluster_pub_addresses", return_value=[]),
+        ):
+            import_class.return_value = MagicMock(side_effect=OSError("address in use"))
+            with pytest.raises(TransportBuildError, match="address in use"):
+                _build_mesh(settings)
 
     def test_adapters_list_exercises_closure_body(self):
         """When mesh.adapters list is set, _sleipnir_tb closure body is exercised."""
@@ -229,6 +232,7 @@ class TestBuildMesh:
 
         settings = _make_settings()
         settings.mesh.adapters = [{"role": "pub_sub", "transport": "nng"}]
+        settings.mesh.rpc_reply_cache_size = 7
         settings.discovery.realm_id = "flock-a"
 
         captured: list = []
@@ -237,11 +241,13 @@ class TestBuildMesh:
             adapters,
             own_peer_id,
             rpc_timeout_s,
+            rpc_reply_cache_size,
             discovery,
             sleipnir_transport_builder,
             environment_id,
         ):
             assert environment_id == "flock-a"
+            assert rpc_reply_cache_size == 7
             captured.append(sleipnir_transport_builder)
             return MagicMock()
 
@@ -255,8 +261,8 @@ class TestBuildMesh:
             nng_result = captured[0]({"transport": "nng"})
         assert nng_result is not None
 
-    def test_adapters_list_closure_rabbitmq_no_env_returns_none(self):
-        """_sleipnir_tb closure returns None when rabbitmq env is missing."""
+    def test_adapters_list_closure_raises_for_unbuildable_transport(self):
+        """_sleipnir_tb raises for a transport it cannot build instead of skipping it."""
         from ravn.cli.commands import _build_mesh
 
         settings = _make_settings()
@@ -268,6 +274,7 @@ class TestBuildMesh:
             adapters,
             own_peer_id,
             rpc_timeout_s,
+            rpc_reply_cache_size,
             discovery,
             sleipnir_transport_builder,
             environment_id,
@@ -275,15 +282,11 @@ class TestBuildMesh:
             captured.append(sleipnir_transport_builder)
             return MagicMock()
 
-        with (
-            patch("niuu.mesh.build_mesh_from_adapters_list", side_effect=_fake_build_mesh),
-            patch("niuu.mesh.transport_builder.build_transport", return_value=MagicMock()),
-            patch.dict("os.environ", {}, clear=True),
-        ):
+        with patch("niuu.mesh.build_mesh_from_adapters_list", side_effect=_fake_build_mesh):
             _build_mesh(settings)
-            assert captured
-            result = captured[0]({"transport": "rabbitmq"})
-        assert result is None
+        assert captured
+        with pytest.raises(TransportBuildError, match="unknown mesh transport 'rabbitmq'"):
+            captured[0]({"transport": "rabbitmq"})
 
 
 class TestBuildDiscovery:
@@ -316,6 +319,73 @@ class TestBuildDiscovery:
         ):
             result = _build_discovery(settings)
         assert result is mock_discovery
+
+    def test_event_bus_transport_builds_or_raises(self):
+        """The discovery event-bus builder never hands back None for a configured transport."""
+        from ravn.cli.commands import _build_discovery
+        from sleipnir.adapters.in_process import InProcessBus
+
+        settings = _make_settings()
+        captured: list = []
+
+        def _fake_build_discovery(**kwargs):
+            captured.append(kwargs["sleipnir_transport_builder"])
+            return MagicMock()
+
+        with (
+            patch(
+                "ravn.adapters.discovery._identity.load_or_create_peer_id",
+                return_value="p1",
+            ),
+            patch(
+                "ravn.adapters.discovery._identity.load_or_create_realm_key",
+                return_value=b"key",
+            ),
+            patch(
+                "ravn.adapters.discovery._identity.realm_id_from_key",
+                return_value="realm-1",
+            ),
+            patch("importlib.metadata.version", return_value="0.0.0"),
+            patch(
+                "niuu.mesh.discovery_builder.build_discovery_adapters",
+                side_effect=_fake_build_discovery,
+            ),
+        ):
+            _build_discovery(settings)
+
+        assert captured
+        assert isinstance(captured[0]({"transport": "in_process"}), InProcessBus)
+        with pytest.raises(TransportBuildError, match="unknown mesh transport 'redis'"):
+            captured[0]({"transport": "redis"})
+
+
+class TestBuildEnvironmentSignalPublisher:
+    """The resident signal publisher raises when its configured transport cannot be built."""
+
+    def test_unbuildable_transport_is_fatal(self):
+        from ravn.cli.commands import _build_environment_signal_publisher
+
+        settings = _make_settings()
+        settings.mesh.enabled = True
+        settings.mesh.adapter = "rabbitmq"
+        settings.environment.flocks = ["flock-a"]
+
+        with pytest.raises(TransportBuildError, match="unknown mesh transport 'rabbitmq'"):
+            _build_environment_signal_publisher(settings)
+
+    def test_builds_the_configured_transport(self):
+        from ravn.cli.commands import _build_environment_signal_publisher
+        from sleipnir.adapters.in_process import InProcessBus
+
+        settings = _make_settings()
+        settings.mesh.enabled = True
+        settings.mesh.adapters = [{"adapter": "sleipnir", "transport": "in_process"}]
+        settings.environment.flocks = ["flock-a"]
+        settings.observability.enabled = False
+
+        publisher = _build_environment_signal_publisher(settings)
+
+        assert isinstance(publisher, InProcessBus)
 
 
 class TestRunPeers:
@@ -386,18 +456,6 @@ class TestBuildMeshTransport:
             roster.append("tcp://q:7482")
 
             assert provider() == ["tcp://p:7480", "tcp://q:7482"]
-
-    def test_rabbitmq_returns_none_when_env_missing(self):
-        settings = _make_settings()
-        with patch.dict("os.environ", {}, clear=True):
-            kwargs = _resolve_transport_kwargs(settings, "rabbitmq")
-        assert kwargs == {}
-
-    def test_rabbitmq_kwargs_with_env(self):
-        settings = _make_settings()
-        with patch.dict("os.environ", {"SLEIPNIR_AMQP_URL": "amqp://host"}):
-            kwargs = _resolve_transport_kwargs(settings, "rabbitmq")
-        assert kwargs == {"amqp_url": "amqp://host"}
 
     def test_in_process_kwargs_empty(self):
         settings = _make_settings()

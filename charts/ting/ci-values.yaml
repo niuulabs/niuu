@@ -56,9 +56,6 @@ credentialStore:
   adapter: "niuu.adapters.memory_credential_store.MemoryCredentialStore"
   kwargs: {}
 
-cerbos:
-  url: "http://localhost:3592"
-
 auth:
   patSigningKey: "ci-test-signing-key-not-for-production"
   patTtlDays: 1

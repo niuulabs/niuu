@@ -1,7 +1,8 @@
 """Tests for shared subscriber support helpers.
 
-Covers :func:`dispatch_to_subscriptions` and the ``DEFAULT_RING_BUFFER_DEPTH``
-constant introduced by the code-review refactor (NIU-523).
+Covers :func:`dispatch_to_subscriptions`, the ``DEFAULT_RING_BUFFER_DEPTH``
+constant introduced by the code-review refactor (NIU-523), and the
+settle-after-handling loop :func:`consume_deliveries`.
 """
 
 from __future__ import annotations
@@ -9,9 +10,13 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import pytest
+
 from sleipnir.adapters._subscriber_support import (
     DEFAULT_RING_BUFFER_DEPTH,
+    Delivery,
     _BaseSubscription,
+    consume_deliveries,
     consume_queue,
     dispatch_to_subscriptions,
 )
@@ -227,3 +232,67 @@ async def test_dispatch_ring_buffer_overflow_warns(caplog):
     finally:
         released.set()
         await sub.unsubscribe()
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — consume_deliveries (broker-backed, settle after handling)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingDelivery(Delivery):
+    def __init__(self, event: SleipnirEvent, log: list[tuple[str, ...]]) -> None:
+        super().__init__(event)
+        self.log = log
+
+    async def ack(self) -> None:
+        self.log.append(("ack", self.event.event_id))
+
+    async def nak(self, error: Exception) -> None:
+        self.log.append(("nak", self.event.event_id, str(error)))
+
+
+async def test_consume_deliveries_acks_after_handler_and_naks_on_failure():
+    """Each delivery is settled after its handler: ack on return, nak on raise."""
+    queue: asyncio.Queue[Delivery] = asyncio.Queue()
+    log: list[tuple[str, ...]] = []
+
+    async def handler(event: SleipnirEvent) -> None:
+        log.append(("handle", event.event_id))
+        if event.event_id == "bad":
+            raise RuntimeError("boom")
+
+    task = asyncio.create_task(consume_deliveries(queue, handler))
+    for event_id in ("good", "bad", "after"):
+        await queue.put(_RecordingDelivery(make_event(event_id=event_id), log))
+    await asyncio.wait_for(queue.join(), timeout=1.0)
+    task.cancel()
+
+    assert log == [
+        ("handle", "good"),
+        ("ack", "good"),
+        ("handle", "bad"),
+        ("nak", "bad", "boom"),
+        ("handle", "after"),
+        ("ack", "after"),
+    ]
+
+
+async def test_consume_deliveries_leaves_cancelled_delivery_unsettled():
+    """Cancelling mid-handler settles nothing; the owning subscription releases it."""
+    queue: asyncio.Queue[Delivery] = asyncio.Queue()
+    log: list[tuple[str, ...]] = []
+    started = asyncio.Event()
+
+    async def stuck_handler(event: SleipnirEvent) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(consume_deliveries(queue, stuck_handler))
+    await queue.put(_RecordingDelivery(make_event(event_id="in-flight"), log))
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    task.cancel()
+    # The loop must propagate cancellation, not swallow it and settle anyway.
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert log == []

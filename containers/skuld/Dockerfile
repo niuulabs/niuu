@@ -38,11 +38,12 @@ COPY pyproject.toml uv.lock README.md /app/
 # edits; only the project itself is installed after src/ is copied.
 RUN uv sync --frozen --no-dev --no-editable --no-install-project --extra otel --extra dsh
 COPY src/ /app/src/
+# vendor/envoy_authz_protos/ provides the envoy.service.auth.v3 ext_authz
+# bindings identity/authz_main.py needs (see its README); vendored instead of
+# depending on xds-protos, which bundled a copy of opentelemetry/proto/** that
+# collided with the otel extra installed above.
+COPY vendor/ /app/vendor/
 RUN uv sync --frozen --no-dev --no-editable --extra otel --extra dsh
-# xds-protos also ships obsolete OpenTelemetry modules. Restore the locked
-# official package after installation so enabled OTLP exporters can start.
-RUN uv pip install --python /opt/venv/bin/python --no-deps --reinstall \
-    "opentelemetry-proto==$(/opt/venv/bin/python -c 'from importlib.metadata import version; print(version("opentelemetry-proto"))')"
 
 # ---------------------------------------------------------------------------
 # Runtime — Node.js stays (needed for claude-code/codex CLI at runtime)

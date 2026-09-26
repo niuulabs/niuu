@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -11,11 +12,23 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from niuu.adapters.inbound.remote_urls import build_remote_url
+from niuu.adapters.outbound.guild_transport import (
+    GuildTransportError,
+    default_connect_timeout_ceiling_seconds,
+    resolve_guild_ws_ssl,
+)
 from niuu.domain.models import RegisteredInstance
+
+logger = logging.getLogger(__name__)
 
 # Same maximum frame size used by the live-session proxy: histories can exceed
 # the library's 1 MiB default. Replay frames remain bounded independently of pages.
 REPLAY_MAX_FRAME_BYTES = 16 * 1024 * 1024
+
+
+def _safe_log_value(value: str) -> str:
+    """Keep request identifiers from forging additional log records."""
+    return value.replace("\r", "").replace("\n", "")
 
 
 async def forward_replay(
@@ -52,8 +65,14 @@ async def forward_replay(
                 "",
             )
         )
+        ssl_context = await resolve_guild_ws_ssl(
+            instance,
+            dial_url=instance.base_url,
+            timeout=default_connect_timeout_ceiling_seconds(),
+        )
+        connect_kwargs: dict[str, object] = {"ssl": ssl_context} if ssl_context is not None else {}
         async with connect(
-            url, additional_headers=headers, max_size=REPLAY_MAX_FRAME_BYTES
+            url, additional_headers=headers, max_size=REPLAY_MAX_FRAME_BYTES, **connect_kwargs
         ) as remote:
             await websocket.accept()
             await _relay(websocket, remote)
@@ -61,6 +80,14 @@ async def forward_replay(
         await websocket.close(code=1008)
     except (ConnectionClosed, WebSocketDisconnect):
         return
+    except GuildTransportError as exc:
+        logger.warning(
+            "Guild transport refused replay bridging to instance %s (session %s): %s",
+            _safe_log_value(instance.id),
+            _safe_log_value(session_id),
+            _safe_log_value(str(exc)),
+        )
+        await websocket.close(code=1011)
     except (OSError, ValueError):
         await websocket.close(code=1011)
 

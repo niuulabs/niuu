@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from bifrost.auth import AuthMode
 from niuu.domain.model_catalog import ManagedModelProvider, ManagedModelTier
+from niuu.domain.observability import ObservabilityConfig
 from niuu.domain.reasoning import MODEL_EFFORTS, preferred_effort
 
 
@@ -183,14 +184,21 @@ def _default_models() -> list[ManagedModelConfig]:
             supports_thinking=True,
         ),
         ManagedModelConfig(
-            id="claude-opus-4-8",
-            name="Claude Opus 4.8",
+            # Claude Opus 5.5 (released 2026-09-22) is the catalogue's Opus row, replacing
+            # Opus 4.8. The older Opus ids stay served by Anthropic, so a client that keeps
+            # sending one is not broken — it just no longer appears here.
+            id="claude-opus-5-5",
+            name="Claude Opus 5.5",
             vendor="anthropic",
             provider=ManagedModelProvider.CLOUD,
             tier=ManagedModelTier.FRONTIER,
             color="#8B5CF6",
-            description="Anthropic frontier reasoning model, 1M-token context.",
-            cost_per_million_tokens=15.0,
+            description=(
+                "Anthropic's newest Opus — close to Fable 5.1 on most work at a lower "
+                "price; 1M-token context. Needs Claude Code 2.1.280 or newer."
+            ),
+            # Claude Opus 5.5 is $4 in / $20 out per 1M tokens (blended shown).
+            cost_per_million_tokens=12.0,
             session_definition="skuldClaude",
             supports_tools=True,
             supports_thinking=True,
@@ -211,8 +219,9 @@ def _default_models() -> list[ManagedModelConfig]:
             supports_tools=True,
             supports_thinking=True,
         ),
-        # Astra + Sol are the only two Codex choices, Astra the default (Damien,
-        # 2026-09-05). Terra was removed with the same decision.
+        # Astra is the default Codex model (Damien, 2026-09-05). GPT-6 Sol and Luna
+        # (released 2026-09-22, Codex CLI 0.157.0+) join it; GPT-5.6 Sol and Terra stay
+        # listed because running sessions and saved launch specs still name them.
         ManagedModelConfig(
             id="gpt-6-astra",
             name="GPT-6 Astra",
@@ -227,6 +236,40 @@ def _default_models() -> list[ManagedModelConfig]:
             ),
             # GPT-6 Astra is $10 in / $50 out per 1M tokens; use the output rate.
             cost_per_million_tokens=50.0,
+            session_definition="skuldCodex",
+            supports_tools=True,
+            supports_thinking=True,
+        ),
+        ManagedModelConfig(
+            id="gpt-6-sol",
+            name="GPT-6 Sol",
+            vendor="openai",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.FRONTIER,
+            color="#047857",
+            description=(
+                "OpenAI GPT-6 Sol — complex coding and agentic workflows at a fraction "
+                "of Astra's price; 1M-token context; defaults to Ultra reasoning"
+            ),
+            # GPT-6 Sol is $2 in / $10 out per 1M tokens; use the output rate.
+            cost_per_million_tokens=10.0,
+            session_definition="skuldCodex",
+            supports_tools=True,
+            supports_thinking=True,
+        ),
+        ManagedModelConfig(
+            id="gpt-6-luna",
+            name="GPT-6 Luna",
+            vendor="openai",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.BALANCED,
+            color="#34D399",
+            description=(
+                "OpenAI GPT-6 Luna — fast, low-cost model for focused, high-volume "
+                "tasks; 1M-token context."
+            ),
+            # GPT-6 Luna is $0.10 in / $0.50 out per 1M tokens; use the output rate.
+            cost_per_million_tokens=0.5,
             session_definition="skuldCodex",
             supports_tools=True,
             supports_thinking=True,
@@ -736,6 +779,20 @@ class OtelAuditConfig(BaseModel):
     )
 
 
+class BifrostObservabilityConfig(ObservabilityConfig):
+    """OpenTelemetry trace/metric settings for Bifröst's own request spans.
+
+    Distinct from ``AuditConfig.otel`` (``OtelAuditConfig``), which exports
+    audit log records, not spans. This config drives the shared
+    ``niuu.observability`` facade — a server span per inbound completion
+    request, with GenAI attributes (model, provider, failover attempts,
+    cache hit, token usage) — so a trace started by a caller (Ravn, Ting)
+    continues through the gateway instead of stopping at the audit log.
+    """
+
+    service_name: str = Field(default="bifrost")
+
+
 class AuditAdapter(StrEnum):
     """Supported audit logging backends."""
 
@@ -845,6 +902,76 @@ _DEFAULT_BASE_URLS: dict[str, str] = {
 }
 
 
+class PATRevocationConfig(BaseModel):
+    """Revocation check applied to PATs Bifröst accepts (``auth_mode: pat``).
+
+    Dynamic-adapter slot (fully-qualified ``niuu.domain.services.pat_validator
+    .PATValidator`` subclass + plain kwargs — see .claude/rules/dynamic-adapters.md),
+    mirroring ``ting.config.PATConfig`` / ``volundr.config.PATConfig``'s
+    ``validator_adapter``/``validator_kwargs`` pair.
+
+    ``auth_mode: pat`` requires a decision here — ``BifrostConfig``'s
+    ``_pat_mode_requires_revocation_decision`` validator refuses to start
+    otherwise. Configure ``adapter`` (a real revocation check), or set
+    ``enabled: false`` to explicitly accept any signature-valid PAT
+    regardless of revocation status. There is no silent default either way —
+    this used to run with no revocation check at all and nothing said so.
+
+    The intended real adapter, ``niuu.adapters.remote_pats.RemotePATValidator``,
+    checks revocation against the platform's identity authority over HTTPS
+    (Bifröst is typically a standalone process — ``bifrost.__main__`` or the
+    ``BifrostPlugin`` mount, see ``bifrost.app.create_app`` — with no
+    database pool of its own, the same situation Ravn's own gateway and
+    off-cluster residents are in; see .claude/rules/architecture.md's
+    workload-identity section), and that adapter refuses non-HTTPS URLs with
+    no localhost exception (unlike the JWKS adapters) — so it has no URL a
+    same-host mini/docker deployment without a locally-trusted TLS
+    certificate can default to. Configure ``adapter``/``kwargs.authority_url``
+    explicitly for a real multi-host deployment; ``bifrost.app.
+    _build_pat_revocation_validator`` supplies the ``repo`` argument
+    ``PATValidator.__init__`` requires — ``RemotePATValidator`` never reads
+    it (its own ``is_valid`` calls the authority instead, see
+    ``tests/test_niuu/test_remote_authority.py``), so a real, pool-backed
+    ``repo`` is not required, and that function rejects at startup any
+    configured adapter that *does* need one (it would silently crash on the
+    first PAT-checked request instead). Configuring a repo-backed validator
+    (plain ``PATValidator`` + ``PostgresPATRepository``) is not supported
+    through this flat-kwargs slot for that reason — that needs a database
+    pool this composition root does not have.
+
+    Also applied under ``auth_mode: oidc`` when a caller's verified bearer
+    happens to be a PAT (an IDP-backed ``TokenIssuer`` PAT shares the same
+    issuer/JWKS as regular tokens — see ``bifrost.adapters.auth.oidc.
+    OidcAuthAdapter``) — optional there, since oidc's primary verification
+    is the bearer signature, not PAT-specific.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether auth_mode: pat requires a revocation check. True (the "
+            "default) requires 'adapter' to be configured too; set False to "
+            "explicitly accept any signature-valid PAT with no revocation check."
+        ),
+    )
+    adapter: str = Field(
+        default="",
+        description="Fully-qualified PATValidator subclass — see class docstring.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Kwargs for `adapter`, e.g. {'authority_url': 'https://...'}.",
+    )
+    cache_ttl: float = Field(
+        default=300.0,
+        description="Seconds to cache a valid-PAT lookup before re-checking revocation.",
+    )
+    revoked_cache_ttl: float = Field(
+        default=60.0,
+        description="Seconds to cache a revoked-PAT lookup (shorter for fast propagation).",
+    )
+
+
 class BifrostConfig(BaseModel):
     """Top-level Bifröst gateway configuration."""
 
@@ -907,8 +1034,11 @@ class BifrostConfig(BaseModel):
     auth_mode: AuthMode = Field(
         default=AuthMode.OPEN,
         description=(
-            "Authentication mode: 'open' (trust headers), "
-            "'pat' (Bearer JWT), or 'mesh' (Envoy injected headers)."
+            "Authentication mode: 'open' (trust headers), 'pat' (Bearer JWT), "
+            "'mesh' (Envoy injected headers), or 'oidc' (in-process JWKS "
+            "verification — set automatically by the CLI host from "
+            "host_auth.mode: oidc, see cli.commands.platform."
+            "_resolve_local_pod_manager_env)."
         ),
     )
     pat_secret: str = Field(
@@ -919,6 +1049,40 @@ class BifrostConfig(BaseModel):
             "Read from the PAT_SECRET environment variable if blank."
         ),
     )
+    pat_revocation: PATRevocationConfig = Field(
+        default_factory=PATRevocationConfig,
+        description="Revocation check applied to PATs accepted in auth_mode='pat'.",
+    )
+    oidc_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Kwargs for identity.adapters.jwks.JwksBearerAuthenticationAdapter "
+            "(issuers, clock_leeway_seconds, ...). Required when auth_mode = 'oidc'. "
+            "Set by the CLI host from host_auth.oidc (cli.config._oidc_adapter_kwargs) "
+            "when host_auth.mode: oidc."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _pat_mode_requires_revocation_decision(self) -> BifrostConfig:
+        """auth_mode: pat must not silently run with no revocation check.
+
+        Before pat_revocation existed, every PAT accepted in 'pat' mode was
+        never checked for revocation at all — signature verification alone,
+        forever. Rather than keep that as the unstated default, an operator
+        must now say so explicitly (pat_revocation.enabled: false) or
+        configure a real check (pat_revocation.adapter).
+        """
+        if self.auth_mode != AuthMode.PAT:
+            return self
+        if self.pat_revocation.adapter or not self.pat_revocation.enabled:
+            return self
+        raise ValueError(
+            "auth_mode: 'pat' requires pat_revocation.adapter (a PATValidator, "
+            "e.g. niuu.adapters.remote_pats.RemotePATValidator) to check "
+            "revocation, or an explicit pat_revocation.enabled: false to accept "
+            "any signature-valid PAT regardless of revocation status."
+        )
 
     # ── Pricing overrides ───────────────────────────────────────────────────
     pricing: dict[str, PricingOverride] = Field(
@@ -1009,6 +1173,15 @@ class BifrostConfig(BaseModel):
             "Request audit log configuration. "
             "Appends one entry per LLM request with configurable detail level. "
             "Default adapter is 'null' (no audit logging)."
+        ),
+    )
+
+    # ── Observability (W3C traces/metrics) ─────────────────────────────────────
+    observability: BifrostObservabilityConfig = Field(
+        default_factory=BifrostObservabilityConfig,
+        description=(
+            "OTLP trace/metric export for the gateway's own request spans. "
+            "Separate from audit.otel, which exports audit log records."
         ),
     )
 

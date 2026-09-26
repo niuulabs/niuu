@@ -39,7 +39,6 @@ def _saga(*, connection_id: str = "", provider: str = "jira") -> Saga:
         feature_branch="feat/vmaas",
         base_branch="main",
         status=SagaStatus.ACTIVE,
-        confidence=0.0,
         created_at=datetime.now(UTC),
     )
 

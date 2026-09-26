@@ -1046,6 +1046,52 @@ class TestFluxResidentRuntimeController:
         assert observation.backend_ref["kind"] == "HelmRelease"
         assert observation.endpoints[0].protocol == "skuld-v1"
 
+    async def test_deploy_omits_realm_values_without_realm_id(
+        self,
+        pod_manager: FluxPodManager,
+        mock_api,
+    ) -> None:
+        runtime = _resident_runtime()
+        with patch.object(pod_manager, "_get_api", return_value=mock_api):
+            await pod_manager.deploy(runtime, _resident_profile())
+
+        body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
+        assert "realm" not in body["spec"]["values"]["resident"]
+
+    async def test_deploy_with_realm_id_requires_a_configured_repository(
+        self,
+        pod_manager: FluxPodManager,
+        mock_api,
+    ) -> None:
+        runtime = _resident_runtime(realm_id=uuid4())
+        with (
+            patch.object(pod_manager, "_get_api", return_value=mock_api),
+            pytest.raises(RuntimeError, match="no realm repository configured"),
+        ):
+            await pod_manager.deploy(runtime, _resident_profile())
+
+    async def test_deploy_renders_the_resolved_realm_slug(
+        self,
+        pod_manager: FluxPodManager,
+        mock_api,
+    ) -> None:
+        realm_id = uuid4()
+
+        class _FakeRealm:
+            slug = "workshop"
+
+        class _FakeRealmRepository:
+            async def get_realm(self, realm_ref):
+                return _FakeRealm() if realm_ref == realm_id else None
+
+        pod_manager.set_realm_repository(_FakeRealmRepository())
+        runtime = _resident_runtime(realm_id=realm_id)
+        with patch.object(pod_manager, "_get_api", return_value=mock_api):
+            await pod_manager.deploy(runtime, _resident_profile())
+
+        body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
+        assert body["spec"]["values"]["resident"]["realm"] == {"slug": "workshop"}
+
     async def test_reconcile_combines_flux_and_workload_state(
         self,
         pod_manager: FluxPodManager,
@@ -1244,3 +1290,126 @@ def test_inject_workload_exchange_env_updates_builtin_and_extra_containers():
         "extraContainers"
     ][0]["env"]
     assert values["extraContainers"][1]["env"][0]["value"] == "https://override/exchange"
+
+
+class TestFluxPodManagerRejectsExecutionFlagsWithoutBaseUrl:
+    """resident_triggers_enabled/resident_budget_enabled without
+    resident_platform_base_url used to be silently ignored — _resident_values
+    never renders a "platform" block at all without a base_url, so the flags
+    did nothing, and an operator who set them (believing triggers/budget now
+    execute) got no signal that nothing changed. Configured-but-impossible
+    must raise, not silently no-op (.claude/rules/no-fallbacks.md)."""
+
+    def test_triggers_enabled_without_base_url_raises(self) -> None:
+        with pytest.raises(ValueError, match="resident_platform_base_url"):
+            FluxPodManager(namespace="test-ns", resident_triggers_enabled=True)
+
+    def test_budget_enabled_without_base_url_raises(self) -> None:
+        with pytest.raises(ValueError, match="resident_platform_base_url"):
+            FluxPodManager(namespace="test-ns", resident_budget_enabled=True)
+
+    def test_both_flags_without_base_url_raises(self) -> None:
+        with pytest.raises(ValueError, match="resident_platform_base_url"):
+            FluxPodManager(
+                namespace="test-ns",
+                resident_triggers_enabled=True,
+                resident_budget_enabled=True,
+            )
+
+    def test_flags_with_base_url_do_not_raise(self) -> None:
+        FluxPodManager(
+            namespace="test-ns",
+            resident_platform_base_url="http://niuu-volundr.volundr.svc.cluster.local",
+            resident_triggers_enabled=True,
+            resident_budget_enabled=True,
+        )  # must not raise
+
+    def test_neither_flag_without_base_url_does_not_raise(self) -> None:
+        FluxPodManager(namespace="test-ns")  # must not raise — the all-off default
+
+
+class TestFluxResidentPlatformTriggersAndBudget:
+    """resident_platform_base_url / resident_triggers_enabled /
+    resident_budget_enabled — every managed resident gets platform
+    reachability, and triggers/budget are additive opt-ins on top of it."""
+
+    async def test_no_base_url_configured_leaves_platform_untouched(self, mock_api) -> None:
+        pod_manager = FluxPodManager(namespace="test-ns")
+        runtime = _resident_runtime()
+        profile = _resident_profile()
+        with patch.object(pod_manager, "_get_api", return_value=mock_api):
+            await pod_manager.deploy(runtime, profile)
+
+        values = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]["spec"]["values"]
+        # The profile's own configured platform block survives unchanged —
+        # this controller adds nothing when it has no base URL of its own.
+        assert values["resident"]["platform"]["baseUrl"] == "https://niuu.example.test"
+        assert "triggers" not in values["resident"]
+        assert "budget" not in values["resident"]
+        # No dedicated identity either — no platform to authenticate to.
+        assert "serviceAccountName" not in values
+        # And nothing tells the skuld chart to create one, either — it stays
+        # at its own default (false), so a shared/Fleet-managed SA is left
+        # alone.
+        assert "serviceAccount" not in values["resident"]
+
+    async def test_base_url_configured_sets_platform_for_a_profile_without_one(
+        self, mock_api
+    ) -> None:
+        pod_manager = FluxPodManager(
+            namespace="test-ns",
+            resident_platform_base_url="http://niuu-volundr.volundr.svc.cluster.local:80",
+        )
+        runtime = _resident_runtime()
+        profile = _resident_profile()
+        # Strip the profile's own platform config to prove the controller
+        # supplies it when the profile does not.
+        del profile.deployment["values"]["resident"]["platform"]
+        with patch.object(pod_manager, "_get_api", return_value=mock_api):
+            await pod_manager.deploy(runtime, profile)
+
+        values = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]["spec"]["values"]
+        assert values["resident"]["platform"] == {
+            "enabled": True,
+            "baseUrl": "http://niuu-volundr.volundr.svc.cluster.local:80",
+        }
+        assert "triggers" not in values["resident"]
+        assert "budget" not in values["resident"]
+        # A dedicated ServiceAccount, named exactly like the HelmRelease
+        # itself, so the workload-identity mapping's owner_id_claim_pattern
+        # (system:serviceaccount:<ns>:resident-<uuid>) resolves to this
+        # runtime's own id.
+        assert values["serviceAccountName"] == f"resident-{runtime.id}"
+        # This release owns creating that ServiceAccount, because the name
+        # is unique to this runtime and no other release can already own it
+        # — see charts/skuld's resident.serviceAccount.create (default
+        # false, so a shared/Fleet-managed name is never claimed here).
+        assert values["resident"]["serviceAccount"] == {"create": True}
+
+    async def test_triggers_and_budget_flags_add_their_own_enabled_blocks(self, mock_api) -> None:
+        pod_manager = FluxPodManager(
+            namespace="test-ns",
+            resident_platform_base_url="http://niuu-volundr.volundr.svc.cluster.local:80",
+            resident_triggers_enabled=True,
+            resident_budget_enabled=True,
+        )
+        runtime = _resident_runtime()
+        with patch.object(pod_manager, "_get_api", return_value=mock_api):
+            await pod_manager.deploy(runtime, _resident_profile())
+
+        values = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]["spec"]["values"]
+        assert values["resident"]["triggers"] == {"enabled": True}
+        assert values["resident"]["budget"] == {"enabled": True}
+
+    async def test_triggers_and_budget_default_off_even_with_a_base_url(self, mock_api) -> None:
+        pod_manager = FluxPodManager(
+            namespace="test-ns",
+            resident_platform_base_url="http://niuu-volundr.volundr.svc.cluster.local:80",
+        )
+        runtime = _resident_runtime()
+        with patch.object(pod_manager, "_get_api", return_value=mock_api):
+            await pod_manager.deploy(runtime, _resident_profile())
+
+        values = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]["spec"]["values"]
+        assert "triggers" not in values["resident"]
+        assert "budget" not in values["resident"]

@@ -35,8 +35,12 @@ def test_guild_plugin_create_api_app() -> None:
     plugin = GuildPlugin()
     sentinel = object()
 
-    with patch("guild.app.create_app", return_value=sentinel):
+    with patch("guild.app.create_app", return_value=sentinel) as create_app:
         assert plugin.create_api_app() is sentinel
+
+    # Guild never has a local dev-identity mode of its own: every route may
+    # proxy to another machine, so create_app() takes no dev_identity kwarg.
+    assert "dev_identity" not in create_app.call_args.kwargs
 
 
 def test_guild_plugin_route_domains_are_stable_without_configured_workers() -> None:

@@ -12,8 +12,13 @@ from ravn.adapters.tools.learned_tool_run import LearnedToolRunTool
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.learned_tools import (
     ContainedLearnedToolRunner,
+    LearnedTool,
     LearnedToolError,
+    LearnedToolInfrastructureError,
     LearnedToolResolver,
+    _ContainerProcessResult,
+    _is_binary_wheel_resolution_failure,
+    _validate_pip_requirement,
     learned_tool_storage,
     write_learned_tool,
     write_learned_tool_artifact,
@@ -232,6 +237,103 @@ class TestLearnedToolRunTool:
         assert shown["metadata"]["run_count"] == 1
         assert shown["metadata"]["success_count"] == 1
 
+    async def test_regression_beyond_threshold_archives_the_tool(self, tmp_path: Path) -> None:
+        """The YOLO invariant applies to the path every learned tool actually
+        runs through, not only the autonomous install loop: a tool that keeps
+        failing is automatically rolled back, not left to fail forever."""
+        _install_tool(
+            tmp_path,
+            "flaky_tool",
+            tool_code="def run(input):\n    raise RuntimeError('boom')\n",
+        )
+        manager = await self._manager(tmp_path, "flaky_tool")
+        dispatch = LearnedToolRunTool(
+            resolver=LearnedToolResolver(state_dir=tmp_path),
+            permission=AllowAllPermission(),
+            skill_manager=manager,
+            rollback_consecutive_failures=2,
+        )
+
+        first = await dispatch.execute({"name": "flaky_tool", "input": {}})
+        assert first.is_error
+        assert "archived" not in first.content
+
+        second = await dispatch.execute({"name": "flaky_tool", "input": {}})
+        assert second.is_error
+        assert "archived after 2 consecutive failures" in second.content
+        shown = await manager.show("flaky_tool", include_archived=True)
+        assert shown["metadata"]["status"] == "archived"
+
+        third = await dispatch.execute({"name": "flaky_tool", "input": {}})
+        assert third.is_error
+        assert "archived" in third.content
+
+    async def test_container_backend_infrastructure_failure_is_not_counted_toward_rollback(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The bug a reviewer's script confirmed: on the default 'container'
+        backend, every dispatch used to be handed a host_call the runner
+        refuses outright, so a perfectly healthy tool was archived after a
+        handful of calls. Fixed two ways, both exercised here: (1) the
+        container runner is never offered a host_call it cannot honor, and
+        (2) a genuine backend outage (docker unreachable) is classified as
+        infrastructure and never reaches record_usage/rollback at all."""
+
+        async def docker_daemon_unreachable(argv, stdin, timeout_seconds, name):
+            return _ContainerProcessResult(
+                returncode=127,
+                stderr=(
+                    b"docker: failed to connect to the docker API at "
+                    b"unix:///var/run/docker.sock: connect: no such file or directory\n"
+                ),
+            )
+
+        async def unused_host_call(_name: str, _arguments: dict) -> object:
+            return None  # never invoked; presence alone used to trip the old bug
+
+        artifact = _install_tool(tmp_path, "good_tool")
+        code_dir, _artifacts_dir = learned_tool_storage(tmp_path)
+        runner = ContainedLearnedToolRunner(
+            workspace_root=tmp_path,
+            command_runner=docker_daemon_unreachable,
+        )
+        tool = LearnedTool(
+            manifest=artifact.manifest,
+            tool_path=code_dir / "good_tool.py",
+            runner=runner,
+            host_call=unused_host_call,
+        )
+
+        class _FakeResolver:
+            def load(self, name: str, *, host_call=None) -> LearnedTool:
+                assert name == "good_tool"
+                return tool
+
+        manager = await self._manager(tmp_path, "good_tool")
+        dispatch = LearnedToolRunTool(
+            resolver=_FakeResolver(),  # type: ignore[arg-type]
+            permission=AllowAllPermission(),
+            skill_manager=manager,
+            rollback_consecutive_failures=2,
+        )
+
+        for _ in range(4):
+            result = await dispatch.execute({"name": "good_tool", "input": {}})
+            assert result.is_error
+            assert "backend error, not a tool failure" in result.content
+            # Proves host_call was withheld from the container runner (it was
+            # actually reached and ran the fake docker command), not that the
+            # runner refused up front with "cannot provide the host SDK".
+            assert "docker: failed to connect" in result.content
+            assert "cannot provide the host SDK" not in result.content
+            assert "archived" not in result.content
+
+        shown = await manager.show("good_tool")
+        assert shown["metadata"]["status"] == "active"
+        assert shown["metadata"]["run_count"] == 0
+        assert shown["metadata"]["consecutive_failures"] == 0
+
     async def test_archived_learned_tool_cannot_run(self, tmp_path: Path) -> None:
         _install_tool(tmp_path, "obsolete_probe")
         manager = await self._manager(tmp_path, "obsolete_probe")
@@ -364,3 +466,283 @@ class TestCapabilityKeyDedup:
             )
             is None
         )
+
+
+class TestContainedLearnedToolRunnerVerify:
+    """verify() runs in the SAME execution boundary as run() — the fix for
+    peer test_code/tool_code and pip-installed requirements running on the
+    resident's own host (its own network, its own filesystem access) during
+    re-verification, regardless of the configured execution backend."""
+
+    async def test_verify_runs_the_test_suite_inside_a_container(self, tmp_path: Path) -> None:
+        calls: list[list[str]] = []
+
+        async def fake_docker(argv, stdin, timeout_seconds, name):
+            calls.append(list(argv))
+            if "install" in argv:
+                return _ContainerProcessResult(returncode=0)
+            return _ContainerProcessResult(returncode=0, stdout=b"verify: ran 1 test callable(s)")
+
+        runner = ContainedLearnedToolRunner(
+            workspace_root=tmp_path,
+            command_runner=fake_docker,
+        )
+
+        result = await runner.verify(
+            tool_name="echo_tool",
+            tool_code="def run(input):\n    return {'ok': True}\n",
+            test_code=(
+                "import _verify_tool\n\n"
+                "def test_ok():\n"
+                "    assert _verify_tool.run({}) == {'ok': True}\n"
+            ),
+            requirements=["requests"],
+        )
+
+        assert result.ok
+        # Three container runs: venv creation, dependency install, then the
+        # test itself — never a bare host subprocess for any of them.
+        assert len(calls) == 3
+        assert any("install" in argv for argv in calls)
+        assert any("_verify_runner.py" in " ".join(argv) for argv in calls)
+        # The verify scratch dir is cleaned up, not left behind.
+        assert not (tmp_path / ".ravn" / "verify_runs").exists() or not list(
+            (tmp_path / ".ravn" / "verify_runs").iterdir()
+        )
+
+    async def test_verify_reports_a_failing_test_without_raising(self, tmp_path: Path) -> None:
+        async def fake_docker(argv, stdin, timeout_seconds, name):
+            if "install" in argv:
+                return _ContainerProcessResult(returncode=0)
+            return _ContainerProcessResult(
+                returncode=1,
+                stderr=b"AssertionError: expected True, got False",
+            )
+
+        runner = ContainedLearnedToolRunner(
+            workspace_root=tmp_path,
+            command_runner=fake_docker,
+        )
+
+        result = await runner.verify(
+            tool_name="broken_tool",
+            tool_code="def run(input):\n    return {'ok': False}\n",
+            test_code=(
+                "import _verify_tool\n\n"
+                "def test_ok():\n"
+                "    assert _verify_tool.run({}) == {'ok': True}\n"
+            ),
+            requirements=[],
+        )
+
+        assert not result.ok
+        assert "AssertionError" in result.logs
+
+    async def test_verify_backend_outage_raises_infrastructure_error(self, tmp_path: Path) -> None:
+        async def docker_daemon_unreachable(argv, stdin, timeout_seconds, name):
+            return _ContainerProcessResult(
+                returncode=1,
+                error="docker: failed to connect to the docker API",
+            )
+
+        runner = ContainedLearnedToolRunner(
+            workspace_root=tmp_path,
+            command_runner=docker_daemon_unreachable,
+        )
+
+        with pytest.raises(LearnedToolInfrastructureError):
+            await runner.verify(
+                tool_name="echo_tool",
+                tool_code="def run(input):\n    return {'ok': True}\n",
+                test_code="import _verify_tool\n\ndef test_ok():\n    pass\n",
+                requirements=[],
+            )
+
+    async def test_verify_title_colliding_with_the_test_file_name_never_swaps_them(
+        self, tmp_path: Path
+    ) -> None:
+        """A peer that titles its tool `_verify_test` (the fixed test-file
+        name) must never have that title clobber the test file on disk. File
+        names are always fixed now, independent of the peer-controlled
+        title — before this fix, a colliding title made `write_text` for the
+        tool overwrite, then get overwritten by, the same path as the test
+        file: whichever write happened last silently won, so the tool's own
+        code could go completely untested while a crafted test module
+        verified itself and reported success."""
+        captured: dict[str, str] = {}
+
+        async def fake_docker(argv, stdin, timeout_seconds, name):
+            mount_arg = next(a for a in argv if "dst=/opt/ravn/verify" in a)
+            run_dir = Path(mount_arg.split("src=", 1)[1].split(",")[0])
+            captured["tool"] = (run_dir / "_verify_tool.py").read_text()
+            captured["test"] = (run_dir / "_verify_test.py").read_text()
+            return _ContainerProcessResult(returncode=0, stdout=b"verify: ran 1 test callable(s)")
+
+        runner = ContainedLearnedToolRunner(workspace_root=tmp_path, command_runner=fake_docker)
+
+        result = await runner.verify(
+            tool_name="_verify_test",
+            tool_code="def run(input):\n    return {'from': 'real_tool'}\n",
+            test_code=(
+                "import _verify_tool\n\n"
+                "def test_ok():\n"
+                "    assert _verify_tool.run({})['from'] == 'real_tool'\n"
+            ),
+        )
+
+        assert result.ok
+        assert "real_tool" in captured["tool"]
+        assert "_verify_tool.run" in captured["test"]
+        assert captured["tool"] != captured["test"]
+
+    async def test_verify_skips_execution_for_static_defects(self, tmp_path: Path) -> None:
+        async def unreachable_docker(argv, stdin, timeout_seconds, name):
+            raise AssertionError("must never reach docker: static analysis should reject first")
+
+        runner = ContainedLearnedToolRunner(
+            workspace_root=tmp_path,
+            command_runner=unreachable_docker,
+        )
+
+        result = await runner.verify(
+            tool_name="undeclared_import_tool",
+            tool_code="import requests\n\ndef run(input):\n    return {}\n",
+            test_code="import _verify_tool\n\ndef test_ok():\n    pass\n",
+            requirements=[],  # 'requests' is used but never declared
+        )
+
+        assert not result.ok
+        assert result.missing_module == "requests"
+
+    async def test_verify_declines_a_direct_url_reference_without_touching_docker(
+        self, tmp_path: Path
+    ) -> None:
+        """--only-binary=:all: alone is not enough: pip still builds a
+        direct reference (a PEP 508 "name @ url", a VCS URL, or a local
+        path) from source regardless of that flag, since it skips index
+        resolution entirely. The requirement must never reach `pip
+        install` — and, being the proposal's own fault, a declined
+        VerificationResult, never an infrastructure raise (which a peer
+        could otherwise abuse to look like an outage instead of a durable
+        rejection)."""
+
+        async def unreachable_docker(argv, stdin, timeout_seconds, name):
+            raise AssertionError("must never reach docker: the requirement must be rejected first")
+
+        runner = ContainedLearnedToolRunner(
+            workspace_root=tmp_path, command_runner=unreachable_docker
+        )
+
+        result = await runner.verify(
+            tool_name="net_tool",
+            tool_code="def run(input):\n    return {'ok': True}\n",
+            test_code="import _verify_tool\n\ndef test_ok():\n    pass\n",
+            requirements=["probe @ file:///tmp/evil"],
+        )
+
+        assert not result.ok
+        assert "direct reference" in result.logs
+
+    async def test_verify_binary_wheel_resolution_failure_is_a_declined_result_not_infra(
+        self, tmp_path: Path
+    ) -> None:
+        async def fake_docker(argv, stdin, timeout_seconds, name):
+            if "-m" in argv and "venv" in argv:
+                return _ContainerProcessResult(returncode=0)
+            return _ContainerProcessResult(
+                returncode=1,
+                stderr=(
+                    b"ERROR: Could not find a version that satisfies the requirement "
+                    b"not-a-real-pkg (from versions: none)\n"
+                    b"ERROR: No matching distribution found for not-a-real-pkg\n"
+                ),
+            )
+
+        runner = ContainedLearnedToolRunner(workspace_root=tmp_path, command_runner=fake_docker)
+
+        result = await runner.verify(
+            tool_name="net_tool",
+            tool_code="def run(input):\n    return {'ok': True}\n",
+            test_code="import _verify_tool\n\ndef test_ok():\n    pass\n",
+            requirements=["not-a-real-pkg"],
+        )
+
+        assert not result.ok
+        assert "No matching distribution found" in result.logs
+        assert "binary wheels only" in result.logs
+
+    async def test_verify_docker_outage_during_install_still_raises_infrastructure(
+        self, tmp_path: Path
+    ) -> None:
+        async def docker_daemon_unreachable(argv, stdin, timeout_seconds, name):
+            return _ContainerProcessResult(
+                returncode=1, error="docker: failed to connect to the docker API"
+            )
+
+        runner = ContainedLearnedToolRunner(
+            workspace_root=tmp_path, command_runner=docker_daemon_unreachable
+        )
+
+        with pytest.raises(LearnedToolInfrastructureError):
+            await runner.verify(
+                tool_name="net_tool",
+                tool_code="def run(input):\n    return {'ok': True}\n",
+                test_code="import _verify_tool\n\ndef test_ok():\n    pass\n",
+                requirements=["requests"],
+            )
+
+
+class TestValidatePipRequirement:
+    @pytest.mark.parametrize(
+        "requirement",
+        [
+            "probe @ https://evil.example/x.tar.gz",
+            "probe @ file:///tmp/evil",
+            "git+https://evil.example/repo.git",
+            "../../etc/passwd",
+            "/etc/passwd",
+            "sub/dir/pkg",
+            "",
+            "   ",
+            "-e git+https://evil.example/repo.git",
+            "not a valid requirement !!!",
+        ],
+    )
+    def test_rejects_direct_references_paths_and_garbage(self, requirement: str) -> None:
+        with pytest.raises(LearnedToolError):
+            _validate_pip_requirement(requirement)
+
+    @pytest.mark.parametrize(
+        "requirement",
+        ["requests", "numpy==1.26.4", "pandas>=2.0,<3.0", "foo[extra]==1.0"],
+    )
+    def test_accepts_plain_name_and_specifier(self, requirement: str) -> None:
+        _validate_pip_requirement(requirement)  # must not raise
+
+
+class TestIsBinaryWheelResolutionFailure:
+    def test_recognizes_no_matching_distribution(self) -> None:
+        message = (
+            "contained learned-tool dependency install failed: ERROR: No matching "
+            "distribution found for not-a-real-pkg"
+        )
+
+        assert _is_binary_wheel_resolution_failure(message) is True
+
+    def test_recognizes_could_not_find_a_version(self) -> None:
+        message = (
+            "contained learned-tool dependency install failed: Could not find a "
+            "version that satisfies the requirement not-a-real-pkg"
+        )
+
+        assert _is_binary_wheel_resolution_failure(message) is True
+
+    def test_venv_creation_failure_is_not_a_resolution_failure(self) -> None:
+        message = "contained learned-tool venv creation failed: docker: daemon unreachable"
+
+        assert _is_binary_wheel_resolution_failure(message) is False
+
+    def test_unrelated_install_failure_is_not_a_resolution_failure(self) -> None:
+        message = "contained learned-tool dependency install failed: timed out"
+
+        assert _is_binary_wheel_resolution_failure(message) is False

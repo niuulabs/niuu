@@ -8,6 +8,7 @@ from skuld.config import (
     SkuldSessionConfig,
     SkuldSettings,
     WorkflowRuntimeConfig,
+    WsAuthConfig,
 )
 
 
@@ -17,6 +18,42 @@ def _no_yaml_config(monkeypatch):
     monkeypatch.setitem(SkuldSettings.model_config, "yaml_file", [])
 
 
+class TestWsAuthConfigRemoteRoomRole:
+    """room_role_source: 'remote' — Kubernetes participants opt-in."""
+
+    def test_deployment_default_is_unchanged(self):
+        cfg = WsAuthConfig()
+        assert cfg.room_role_source == "deployment"
+        assert cfg.room_role_remote is None
+
+    def test_remote_without_an_adapter_raises(self):
+        with pytest.raises(ValueError, match="room_role_remote is not set"):
+            WsAuthConfig(room_role_source="remote")
+
+    def test_remote_with_an_adapter_and_enforce_ownership_off_is_valid(self):
+        cfg = WsAuthConfig(
+            room_role_source="remote",
+            enforce_ownership=False,
+            room_role_remote={"adapter": "skuld.room_role_remote.RemoteAuthorizationAdapter"},
+        )
+        assert cfg.room_role_source == "remote"
+        assert cfg.room_role_remote is not None
+
+    def test_remote_with_enforce_ownership_raises(self):
+        """The ext_authz sidecar's owner/admin-only 'start' gate would block
+        every participant before a remote room-role lookup ever ran."""
+        with pytest.raises(ValueError, match="enforce_ownership is true"):
+            WsAuthConfig(
+                room_role_source="remote",
+                enforce_ownership=True,
+                room_role_remote={"adapter": "skuld.room_role_remote.RemoteAuthorizationAdapter"},
+            )
+
+    def test_revalidate_interval_has_a_sensible_default(self):
+        cfg = WsAuthConfig()
+        assert cfg.room_role_revalidate_interval_seconds == 5.0
+
+
 class TestSkuldSessionConfig:
     """Tests for SkuldSessionConfig defaults."""
 
@@ -24,7 +61,7 @@ class TestSkuldSessionConfig:
         config = SkuldSessionConfig()
         assert config.id == "unknown"
         assert config.name == "unknown"
-        assert config.model == "claude-opus-5"
+        assert config.model == "claude-opus-5-5"
         assert config.workspace_dir is None
 
     def test_explicit_values(self):
@@ -60,7 +97,7 @@ class TestSkuldSettings:
         assert s.session.id == "unknown"
         assert s.session.name == "unknown"
         assert s.codex_auth.adapter == "skuld.codex_auth.HostCodexAuthProvider"
-        assert s.session.model == "claude-opus-5"
+        assert s.session.model == "claude-opus-5-5"
         assert s.observability.service_name == "skuld"
         assert s.persistence_mount_path == "/volundr/sessions"
         assert s.peer_watchdog.enabled is True
@@ -149,7 +186,7 @@ class TestSkuldSettings:
 
         s = SkuldSettings()
         assert s.session.id == "unknown"
-        assert s.session.model == "claude-opus-5"
+        assert s.session.model == "claude-opus-5-5"
         assert s.host == "0.0.0.0"
         assert s.port == 8081
         assert s.volundr_api_url == ""
@@ -494,7 +531,7 @@ class TestModelGatewayConfig:
         monkeypatch.delenv("SKULD__MODEL_GATEWAY__URL", raising=False)
         s = SkuldSettings()
         assert s.model_gateway.url == ""
-        assert s.model_gateway.token == "niuu-gateway"
+        assert s.model_gateway.token == ""
 
     def test_platform_sets_it_through_the_env(self, monkeypatch):
         monkeypatch.setenv("SKULD__MODEL_GATEWAY__URL", "http://niuu:8080/api/v1/bifrost")

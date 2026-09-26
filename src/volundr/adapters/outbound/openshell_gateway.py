@@ -41,6 +41,7 @@ from niuu.domain.services.token_scope import (
     OPENSHELL_RESIDENT_TOKEN_USE,
     OPENSHELL_SESSION_TOKEN_USE,
 )
+from niuu.ports.realm_repository import RealmRepository
 from niuu.ports.session_proxy import SessionProxyTarget
 from niuu.ports.workload_identity import WorkloadTokenIssuer
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
@@ -49,15 +50,18 @@ from volundr.adapters.outbound.resident_container_spec import (
     image_from_values as _shared_image_from_values,
 )
 from volundr.adapters.outbound.resident_container_spec import (
-    resident_attribution_headers as _shared_resident_attribution_headers,
-)
-from volundr.adapters.outbound.resident_container_spec import (
+    realm_charter_page_for,
+    realm_mount_name_for,
+    realm_routing_prefix_for,
     resident_flock_environment,
     resident_flock_labels,
     resident_flock_profile_configured,
     resident_flock_runtime_config,
     resident_flock_skuld_config,
     resident_mesh_pod_metadata,
+)
+from volundr.adapters.outbound.resident_container_spec import (
+    resident_attribution_headers as _shared_resident_attribution_headers,
 )
 from volundr.adapters.outbound.resident_container_spec import (
     resident_process_files as _shared_resident_process_files,
@@ -900,10 +904,20 @@ class OpenShellGatewayPodManager(
         self._session_repository: SessionRepository | None = None
         self._resident_runtime_repository: ResidentRuntimeRepository | None = None
         self._workload_token_issuer: WorkloadTokenIssuer | None = None
+        self._realm_repository: RealmRepository | None = None
 
     def set_credential_store(self, store: CredentialStorePort) -> None:
         """Inject credential store for resolving OpenShell launch credentials."""
         self._credential_store = store
+
+    def set_realm_repository(self, repository: RealmRepository) -> None:
+        """Enable resolving a resident's realm slug for its container config.
+
+        Optional: without it, deploying a resident with ``realm_id`` set
+        raises in ``_resolve_realm_slug`` rather than silently deploying with
+        no realm/charter binding.
+        """
+        self._realm_repository = repository
 
     def set_session_repository(self, repository: SessionRepository) -> None:
         """Inject session persistence for sandbox-to-owner grant authorization."""
@@ -1630,7 +1644,7 @@ class OpenShellGatewayPodManager(
             ready = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
             files = {
                 **credential_context.files,
-                **self._resident_config_files(runtime, values),
+                **await self._resident_config_files(runtime, values),
             }
             processes = self._resident_processes(runtime, values)
             for process in processes:
@@ -1785,7 +1799,7 @@ class OpenShellGatewayPodManager(
         )
         if exit_code != 0:
             raise RuntimeError(f"OpenShell resident process stop failed: {output.strip()}")
-        files = {**credential_context.files, **self._resident_config_files(runtime, values)}
+        files = {**credential_context.files, **await self._resident_config_files(runtime, values)}
         for process in processes:
             files.update(_shared_resident_process_files(runtime, process.files))
         await asyncio.to_thread(
@@ -2041,7 +2055,7 @@ class OpenShellGatewayPodManager(
             f"OpenShell resident processes were not ready within {self._ready_timeout}s"
         )
 
-    def _resident_config_files(
+    async def _resident_config_files(
         self,
         runtime: ResidentRuntime,
         values: dict[str, Any],
@@ -2055,6 +2069,7 @@ class OpenShellGatewayPodManager(
             }
         if runtime.engine is not ResidentEngine.RAVN:
             return {}
+        realm_slug = await self._resolve_realm_slug(runtime)
         return {
             "/sandbox/.volundr/skuld.yaml": yaml.safe_dump(
                 _resident_skuld_config(
@@ -2066,10 +2081,36 @@ class OpenShellGatewayPodManager(
                 sort_keys=False,
             ).encode(),
             "/sandbox/.volundr/ravn.yaml": yaml.safe_dump(
-                _resident_ravn_config(runtime, values, self._service_port),
+                _resident_ravn_config(
+                    runtime, values, self._service_port, realm_slug, self._volundr_api_url
+                ),
                 sort_keys=False,
             ).encode(),
         }
+
+    async def _resolve_realm_slug(self, runtime: ResidentRuntime) -> str:
+        """Return the slug of the realm this resident is bound to, or "".
+
+        Mirrors LocalContainerResidentRuntimeController._resolve_realm_slug:
+        a configured realm_id that cannot be resolved is a real
+        misconfiguration and fails loudly rather than deploying with a
+        silently dropped charter/realm binding.
+        """
+        if runtime.realm_id is None:
+            return ""
+        if self._realm_repository is None:
+            raise RuntimeError(
+                f"resident {runtime.name!r} has realm_id={runtime.realm_id} but this "
+                "controller has no realm repository configured; call set_realm_repository "
+                "at composition time."
+            )
+        realm = await self._realm_repository.get_realm(runtime.realm_id)
+        if realm is None:
+            raise RuntimeError(
+                f"resident {runtime.name!r} names realm_id={runtime.realm_id}, but no "
+                "such realm exists; clear the resident's realm binding or restore the realm."
+            )
+        return realm.slug
 
     def _resident_environment(
         self,
@@ -2973,6 +3014,8 @@ def _resident_ravn_config(
     runtime: ResidentRuntime,
     values: dict[str, Any],
     service_port: int,
+    realm_slug: str = "",
+    volundr_api_url: str = "",
 ) -> dict[str, Any]:
     persona = runtime.persona_name or "product-steward"
     route_id = runtime.id.hex[:12]
@@ -3046,6 +3089,12 @@ def _resident_ravn_config(
         config["llm"] = llm
     if isinstance(resident.get("wakefulness"), dict):
         config["wakefulness"] = resident["wakefulness"]
+    if realm_slug:
+        config["environment"]["charter_mimir_page"] = realm_charter_page_for(realm_slug)
+        config["resident_evolution"] = {
+            "realm_slug": realm_slug,
+            "realm_api_base_url": volundr_api_url,
+        }
     resident_flock_runtime_config(config, runtime, values)
     if resident.get("dailyBudgetUsd") or resident.get("daily_budget_usd"):
         config["budget"] = {
@@ -3053,7 +3102,7 @@ def _resident_ravn_config(
                 resident.get("dailyBudgetUsd") or resident.get("daily_budget_usd")
             )
         }
-    mimir = _resident_mimir_config(values)
+    mimir = _resident_mimir_config(values, realm_slug)
     if mimir:
         config["mimir"] = mimir
     openshell = values.get("openshell")
@@ -3093,7 +3142,7 @@ def _resident_mesh_peers(
     ]
 
 
-def _resident_mimir_config(values: dict[str, Any]) -> dict[str, Any]:
+def _resident_mimir_config(values: dict[str, Any], realm_slug: str = "") -> dict[str, Any]:
     raw = values.get("mimir")
     if not isinstance(raw, dict) or not isinstance(raw.get("instances"), list):
         return {}
@@ -3116,6 +3165,19 @@ def _resident_mimir_config(values: dict[str, Any]) -> dict[str, Any]:
     ][:1]
     if not write_default and len(instances) == 1 and instances[0].get("name"):
         write_default = [str(instances[0]["name"])]
+    mount_name = realm_mount_name_for(realm_slug) if realm_slug else ""
+    write_rules: list[list[Any]] = []
+    if mount_name and any(item.get("name") == mount_name for item in instances):
+        write_rules = [[realm_routing_prefix_for(realm_slug), [mount_name]]]
+        if not write_default:
+            write_default = [mount_name]
+    if not write_default and not write_rules:
+        raise RuntimeError(
+            "Resident Mímir instances are configured but no write target resolves: no "
+            f"instance has role 'local', there is more than one instance, and no mount "
+            f"named {mount_name!r} is present. Configure a 'local' role on one instance "
+            "or tag one mount for this realm, so resident writes have somewhere to go."
+        )
     resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
     resident_mimir = resident.get("mimir") if isinstance(resident.get("mimir"), dict) else {}
     source = resident_mimir.get("sourceTrigger") or resident_mimir.get("source_trigger") or {}
@@ -3133,7 +3195,7 @@ def _resident_mimir_config(values: dict[str, Any]) -> dict[str, Any]:
             "enabled": bool(stale.get("enabled", False)),
             "schedule_hours": int(stale.get("scheduleHours") or stale.get("schedule_hours") or 6),
         },
-        "write_routing": {"rules": [], "default": write_default},
+        "write_routing": {"rules": write_rules, "default": write_default},
     }
 
 

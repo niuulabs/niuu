@@ -1176,6 +1176,14 @@ class LocalProcessPodManager(PodManager):
             env["SKULD__SESSION__OWNER_ID"] = session.owner_id
         if session.tenant_id:
             env["SKULD__SESSION__TENANT_ID"] = session.tenant_id
+        # This pod is reached exclusively through niuu.session_proxy on the
+        # process backend (never a Kubernetes-style Gateway/ext_authz
+        # boundary), so it is the one backend where the proxy's own
+        # session_participants-derived room-role header is the correct
+        # source of truth for a missing header, instead of "this pod's own
+        # auth boundary already gates every caller" (skuld.config.WsAuthConfig
+        # .room_role_source, default "deployment" — every other backend).
+        env["SKULD__WS_AUTH__ROOM_ROLE_SOURCE"] = "proxy"
         model = str(session.model or spec.values.get("model", "") or "").strip()
         env["SKULD__SESSION__MODEL"] = model
         env["SKULD__SESSION__WORKSPACE_DIR"] = str(workspace)
@@ -1525,6 +1533,9 @@ class LocalProcessPodManager(PodManager):
                 continue
 
             node_config = yaml.safe_load(node_path.read_text()) or {}
+            # `ravn flock init` renders the host operator's own LLM; a Forge
+            # session's nodes use only the LLM the session resolved.
+            node_config.pop("llm", None)
             node_config = _merge_flock_runtime_config(node_config, global_ravn_config)
             persona_override = persona_overrides.get(persona, {})
 
@@ -1533,6 +1544,10 @@ class LocalProcessPodManager(PodManager):
                 global_override=global_llm,
                 persona_override=persona_override.get("llm"),
             )
+            # Same order as pod sidecars: the workload ravn_config lands last.
+            ravn_config_llm = global_ravn_config.get("llm")
+            if isinstance(ravn_config_llm, dict):
+                effective_llm = _merge_flock_runtime_config(effective_llm, ravn_config_llm)
             if effective_llm:
                 node_config["llm"] = effective_llm
 

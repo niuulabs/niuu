@@ -45,8 +45,8 @@ export const RECIPE_STEPS: RecipeStep[] = [
   { id: 'trust', label: 'grant trust', advancedPath: '/valkyrie' },
   { id: 'jobs', label: 'schedule standing jobs', advancedPath: '/ravn' },
   { id: 'board', label: 'import the tracker board', advancedPath: '/ting/sagas' },
-  { id: 'resident', label: 'start the resident', advancedPath: '/ravn/ravens' },
   { id: 'charter', label: 'write the charter to memory', advancedPath: '/mimir/pages' },
+  { id: 'resident', label: 'start the resident', advancedPath: '/ravn/ravens' },
 ];
 
 export type StepState = 'todo' | 'running' | 'done' | 'failed';
@@ -221,13 +221,28 @@ export function useCreateRealm() {
       });
 
       await step('jobs', async () => {
-        for (const job of template.jobs) {
-          await triggers.createTrigger({
+        for (const [index, job] of template.jobs.entries()) {
+          const created = await triggers.createTrigger({
             kind: job.kind,
             personaName,
             spec: job.spec,
+            // Event triggers must be scoped to this realm's repo — the
+            // Sleipnir event bus is not tenant-scoped, so without this an
+            // event-kind trigger would fire on every tenant's matching
+            // events (ravn.adapters.triggers.api_source's payload filter).
+            repo: job.kind === 'event' ? draft.repo : '',
             enabled: true,
           });
+          // executionEnabled is deployment-wide, not per-trigger, so one
+          // check after the first create is enough — fail loud instead of
+          // quietly storing standing jobs that nothing will ever run.
+          if (index === 0 && !created.executionEnabled) {
+            throw new Error(
+              'Standing jobs were created but nothing executes them: trigger execution is ' +
+                'disabled for this deployment. Ask an operator to enable resident-side ' +
+                'trigger execution before relying on scheduled jobs.',
+            );
+          }
         }
       });
 
@@ -241,16 +256,12 @@ export function useCreateRealm() {
         );
       });
 
-      await step('resident', () =>
-        residents.deploy({
-          name: residentNameFor(draft.slug),
-          profileId: draft.profileId,
-          instanceId: draft.instanceId,
-          personaName,
-          model: draft.model || undefined,
-        }),
-      );
-
+      // The charter must exist in Mímir before the resident starts: the
+      // deployed resident resolves its charter from realm memory at
+      // startup and exits if that page is configured but missing (see
+      // resident_runtime_wiring.py's _resolve_environment_charter), and the
+      // local controller has no restart policy — so this step runs before
+      // 'resident', not after.
       await step('charter', async () => {
         const deadline = Date.now() + MOUNT_DISCOVERY_DEADLINE_MS;
         while (Date.now() < deadline) {
@@ -269,6 +280,17 @@ export function useCreateRealm() {
           `Realm memory ${mountName} did not appear within 60 s; the deployment is still starting. Check Mímir › Registry and write the charter from Settings once it is up.`,
         );
       });
+
+      await step('resident', () =>
+        residents.deploy({
+          name: residentNameFor(draft.slug),
+          profileId: draft.profileId,
+          instanceId: draft.instanceId,
+          personaName,
+          model: draft.model || undefined,
+          realmId: realm.id,
+        }),
+      );
 
       await queryClient.invalidateQueries({ queryKey: REALMS_QUERY_KEY });
       await queryClient.invalidateQueries({ queryKey: ['ravn'] });

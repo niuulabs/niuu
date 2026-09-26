@@ -9,7 +9,8 @@ from uuid import uuid4
 
 import pytest
 
-from volundr.domain.models import ModelProvider, SessionActivityState
+from tests.conftest import make_session_participant_service
+from volundr.domain.models import ModelProvider, Principal, SessionActivityState
 from volundr.domain.services import RepoService, SessionService, StatsService, TokenService
 from volundr.domain.services.forge import ForgeService
 
@@ -21,7 +22,10 @@ async def test_create_and_start_session_delegates_to_session_service() -> None:
     started = SimpleNamespace(id=created.id)
     session_service.create_session.return_value = created
     session_service.start_session.return_value = started
-    forge = ForgeService(session_service)
+    forge = ForgeService(
+        session_service,
+        session_participant_service=make_session_participant_service(session_service),
+    )
     data = SimpleNamespace(
         name="demo",
         model="claude",
@@ -73,7 +77,11 @@ async def test_create_and_start_session_resolves_definition_from_model_catalog()
     pricing_provider = SimpleNamespace(
         list_models=lambda: [SimpleNamespace(id="gpt-5.5", session_definition="skuldCodex")]
     )
-    forge = ForgeService(session_service, pricing_provider=pricing_provider)
+    forge = ForgeService(
+        session_service,
+        pricing_provider=pricing_provider,
+        session_participant_service=make_session_participant_service(session_service),
+    )
     data = SimpleNamespace(
         name="codex",
         model="gpt-5.5",
@@ -110,7 +118,11 @@ async def test_create_and_start_session_prefers_explicit_definition_over_catalog
     pricing_provider = SimpleNamespace(
         list_models=lambda: [SimpleNamespace(id="gpt-5.5", session_definition="skuldCodex")]
     )
-    forge = ForgeService(session_service, pricing_provider=pricing_provider)
+    forge = ForgeService(
+        session_service,
+        pricing_provider=pricing_provider,
+        session_participant_service=make_session_participant_service(session_service),
+    )
     data = SimpleNamespace(
         name="codex",
         model="gpt-5.5",
@@ -148,7 +160,11 @@ async def test_create_and_start_session_leaves_definition_none_when_catalog_has_
             SimpleNamespace(id="claude-sonnet-4-6", session_definition="skuldClaude")
         ]
     )
-    forge = ForgeService(session_service, pricing_provider=pricing_provider)
+    forge = ForgeService(
+        session_service,
+        pricing_provider=pricing_provider,
+        session_participant_service=make_session_participant_service(session_service),
+    )
     data = SimpleNamespace(
         name="codex",
         model="gpt-5.5",
@@ -181,7 +197,10 @@ async def test_create_and_start_session_leaves_definition_none_without_pricing_p
     started = SimpleNamespace(id=created.id)
     session_service.create_session.return_value = created
     session_service.start_session.return_value = started
-    forge = ForgeService(session_service)
+    forge = ForgeService(
+        session_service,
+        session_participant_service=make_session_participant_service(session_service),
+    )
     data = SimpleNamespace(
         name="claude",
         model="claude-sonnet-4-6",
@@ -219,7 +238,11 @@ async def test_create_and_start_session_leaves_definition_none_for_blank_model()
             SimpleNamespace(id="claude-sonnet-4-6", session_definition="skuldClaude")
         ]
     )
-    forge = ForgeService(session_service, pricing_provider=pricing_provider)
+    forge = ForgeService(
+        session_service,
+        pricing_provider=pricing_provider,
+        session_participant_service=make_session_participant_service(session_service),
+    )
     data = SimpleNamespace(
         name="blank",
         model="   ",
@@ -249,7 +272,11 @@ async def test_create_and_start_session_leaves_definition_none_for_blank_model()
 async def test_record_usage_delegates_to_token_service() -> None:
     session_service = AsyncMock(spec=SessionService)
     token_service = AsyncMock(spec=TokenService)
-    forge = ForgeService(session_service, token_service=token_service)
+    forge = ForgeService(
+        session_service,
+        token_service=token_service,
+        session_participant_service=make_session_participant_service(session_service),
+    )
 
     await forge.record_usage(
         session_id=uuid4(),
@@ -268,18 +295,26 @@ async def test_get_stats_uses_stats_service() -> None:
     session_service = AsyncMock(spec=SessionService)
     stats_service = AsyncMock(spec=StatsService)
     stats_service.get_stats.return_value = SimpleNamespace(active_sessions=1)
-    forge = ForgeService(session_service, stats_service=stats_service)
+    forge = ForgeService(
+        session_service,
+        stats_service=stats_service,
+        session_participant_service=make_session_participant_service(session_service),
+    )
 
-    stats = await forge.get_stats()
+    principal = Principal(user_id="alice", email="", tenant_id="t1", roles=[])
+    stats = await forge.get_stats(principal)
 
     assert stats.active_sessions == 1
-    stats_service.get_stats.assert_awaited_once_with()
+    stats_service.get_stats.assert_awaited_once_with(principal)
 
 
 @pytest.mark.asyncio
 async def test_update_activity_delegates_to_session_service() -> None:
     session_service = AsyncMock(spec=SessionService)
-    forge = ForgeService(session_service)
+    forge = ForgeService(
+        session_service,
+        session_participant_service=make_session_participant_service(session_service),
+    )
     session_id = uuid4()
 
     await forge.update_activity(session_id, SessionActivityState.ACTIVE, {"source": "test"})
@@ -302,7 +337,10 @@ async def test_update_activity_forwards_state_since() -> None:
     session service.
     """
     session_service = AsyncMock(spec=SessionService)
-    forge = ForgeService(session_service)
+    forge = ForgeService(
+        session_service,
+        session_participant_service=make_session_participant_service(session_service),
+    )
     session_id = uuid4()
     state_since = datetime(2026, 6, 28, 12, 0, 0, tzinfo=UTC)
 
@@ -332,7 +370,10 @@ async def test_update_activity_forwards_turn_started_at() -> None:
     reach the deep session service.
     """
     session_service = AsyncMock(spec=SessionService)
-    forge = ForgeService(session_service)
+    forge = ForgeService(
+        session_service,
+        session_participant_service=make_session_participant_service(session_service),
+    )
     session_id = uuid4()
     state_since = datetime(2026, 7, 10, 5, 10, 0, tzinfo=UTC)
     turn_started_at = datetime(2026, 7, 10, 5, 12, 30, tzinfo=UTC)
@@ -358,7 +399,11 @@ def test_list_providers_uses_repo_service() -> None:
     session_service = AsyncMock(spec=SessionService)
     repo_service = AsyncMock(spec=RepoService)
     repo_service.list_providers.return_value = [SimpleNamespace(name="github")]
-    forge = ForgeService(session_service, repo_service=repo_service)
+    forge = ForgeService(
+        session_service,
+        repo_service=repo_service,
+        session_participant_service=make_session_participant_service(session_service),
+    )
 
     providers = forge.list_providers()
 
@@ -373,7 +418,10 @@ async def test_with_workspace_service_enables_workspace_calls() -> None:
     workspace_service.list_workspaces.return_value = [SimpleNamespace(session_id="sess-1")]
     session_service._repository = AsyncMock()
     session_service._repository.get_many.return_value = {"sess-1": SimpleNamespace(id="sess-1")}
-    forge = ForgeService(session_service).with_workspace_service(workspace_service)
+    forge = ForgeService(
+        session_service,
+        session_participant_service=make_session_participant_service(session_service),
+    ).with_workspace_service(workspace_service)
 
     workspaces = await forge.list_workspaces(user_id="user-1")
     sessions = await forge.get_sessions_for_workspaces(workspaces)
@@ -389,7 +437,10 @@ async def test_get_session_proxy_target_normalizes_chat_endpoint() -> None:
     session_service.reconcile_session_if_active.return_value = SimpleNamespace(
         chat_endpoint="wss://example.test/session",
     )
-    forge = ForgeService(session_service)
+    forge = ForgeService(
+        session_service,
+        session_participant_service=make_session_participant_service(session_service),
+    )
 
     session, base_url = await forge.get_session_proxy_target(uuid4())
 
@@ -401,7 +452,10 @@ async def test_get_session_proxy_target_normalizes_chat_endpoint() -> None:
 async def test_get_session_proxy_target_requires_active_endpoint() -> None:
     session_service = AsyncMock(spec=SessionService)
     session_service.reconcile_session_if_active.return_value = SimpleNamespace(chat_endpoint=None)
-    forge = ForgeService(session_service)
+    forge = ForgeService(
+        session_service,
+        session_participant_service=make_session_participant_service(session_service),
+    )
 
     with pytest.raises(ValueError, match="has no active endpoint"):
         await forge.get_session_proxy_target(uuid4())

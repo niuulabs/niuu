@@ -193,6 +193,23 @@ class TestListRavens:
         assert ravens[0]["instance_id"] == "target-local"
 
     @respx.mock
+    async def test_managed_resident_carries_its_realm_binding(self):
+        managed = _managed_runtime(realmId="55555555-5555-5555-5555-555555555555")
+        directory = _directory(managed=[managed])
+
+        ravens = await directory.list_ravens(_PRINCIPAL, {}, {})
+
+        assert ravens[0]["realm_id"] == "55555555-5555-5555-5555-555555555555"
+
+    @respx.mock
+    async def test_managed_resident_without_realm_binding_reports_empty_realm_id(self):
+        directory = _directory(managed=[_managed_runtime()])
+
+        ravens = await directory.list_ravens(_PRINCIPAL, {}, {})
+
+        assert ravens[0]["realm_id"] == ""
+
+    @respx.mock
     async def test_discovery_visibility_is_owner_and_tenant_scoped(self):
         directory = _directory(
             discovery=_StaticDiscovery(
@@ -370,11 +387,12 @@ class TestStandaloneMerge:
         directory = _directory(
             discovery=_StaticDiscovery([_standalone()]),
         )
-        sessions = await directory.list_sessions(_PRINCIPAL, {}, {})
-        assert [s["id"] for s in sessions] == [
+        result = await directory.list_sessions(_PRINCIPAL, {}, {})
+        assert [s["id"] for s in result.sessions] == [
             "11111111-2222-4333-8444-555555555555",
             "resident-muninn",
         ]
+        assert result.source_failures == []
 
     @respx.mock
     async def test_forge_wins_on_id_collision(self):
@@ -385,18 +403,28 @@ class TestStandaloneMerge:
         directory = _directory(
             discovery=_StaticDiscovery([_standalone(id=forge["id"])]),
         )
-        sessions = await directory.list_sessions(_PRINCIPAL, {}, {})
-        assert len(sessions) == 1
-        assert sessions[0]["title"] == "research campaign"
+        result = await directory.list_sessions(_PRINCIPAL, {}, {})
+        assert len(result.sessions) == 1
+        assert result.sessions[0]["title"] == "research campaign"
 
     @respx.mock
     async def test_discovery_failure_keeps_forge_sessions(self):
+        """Forge sessions remain authoritative and keep working even when
+        standalone discovery is down, but the failure must not be silently
+        absorbed — it is additive, mirroring X-Niuu-Source-Failures, so a
+        caller can tell "no standalone residents" apart from "standalone
+        discovery is unreachable" (see .claude/rules/no-fallbacks.md)."""
         respx.get(f"{_BASE}/api/v1/forge/sessions").mock(
             return_value=httpx.Response(200, json=[_forge_session()])
         )
         directory = _directory(discovery=_FailingDiscovery())
-        sessions = await directory.list_sessions(_PRINCIPAL, {}, {})
-        assert len(sessions) == 1
+        result = await directory.list_sessions(_PRINCIPAL, {}, {})
+        assert len(result.sessions) == 1
+        assert len(result.source_failures) == 1
+        failure = result.source_failures[0]
+        assert failure["instanceId"] == "standalone-discovery"
+        assert failure["status"] == "unreachable"
+        assert "cluster unreachable" in failure["error"]
 
     @respx.mock
     async def test_forge_failure_still_propagates(self):
@@ -423,8 +451,8 @@ class TestStandaloneMerge:
                 ]
             ),
         )
-        sessions = await directory.list_sessions(_PRINCIPAL, {}, {})
-        standalone = {s["id"]: s for s in sessions[1:]}
+        result = await directory.list_sessions(_PRINCIPAL, {}, {})
+        standalone = {s["id"]: s for s in result.sessions[1:]}
         assert standalone["resident-muninn"]["status"] == "running"
         assert standalone["resident-idle"]["status"] == "idle"
         assert "resident-off" not in standalone
@@ -495,7 +523,8 @@ class TestListSessions:
         )
         directory = _directory(managed=[runtime])
 
-        sessions = await directory.list_sessions(_PRINCIPAL, {}, {})
+        result = await directory.list_sessions(_PRINCIPAL, {}, {})
+        sessions = result.sessions
 
         assert [session["id"] for session in sessions] == [native_id]
         assert sessions[0]["ravn_id"] == runtime["id"]
@@ -514,7 +543,8 @@ class TestListSessions:
             )
         )
         directory = _directory()
-        sessions = await directory.list_sessions(_PRINCIPAL, {}, {})
+        result = await directory.list_sessions(_PRINCIPAL, {}, {})
+        sessions = result.sessions
         # flock only, NOT the plain coding session
         assert len(sessions) == 1
         flock = sessions[0]
@@ -552,7 +582,8 @@ class TestListSessions:
             )
         )
         directory = _directory()
-        statuses = [s["status"] for s in await directory.list_sessions(_PRINCIPAL, {}, {})]
+        result = await directory.list_sessions(_PRINCIPAL, {}, {})
+        statuses = [s["status"] for s in result.sessions]
         assert statuses == ["idle"]
 
     @respx.mock

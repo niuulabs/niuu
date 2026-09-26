@@ -1,3 +1,45 @@
+{{- $filesystemWorkflowAdapter := "ting.adapters.filesystem_workflows.FilesystemWorkflowRepository" -}}
+{{- $rwoAccessModes := list "ReadWriteOnce" "ReadWriteOncePod" -}}
+{{- $isRwoVolume := false -}}
+{{- $hasRwxAccessMode := false -}}
+{{- if .Values.workflowPersistence.enabled -}}
+  {{- range .Values.workflowPersistence.accessModes -}}
+    {{- if has . $rwoAccessModes -}}
+      {{- $isRwoVolume = true -}}
+    {{- end -}}
+    {{- if eq . "ReadWriteMany" -}}
+      {{- $hasRwxAccessMode = true -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if and (not $hasRwxAccessMode) (or (gt (.Values.replicaCount | int) 1) .Values.autoscaling.enabled) -}}
+    {{- fail "workflowPersistence.accessModes does not include ReadWriteMany, so replicaCount must be 1 and autoscaling.enabled must be false -- a volume that isn't ReadWriteMany cannot be attached by more than one pod at a time. This also applies when workflowPersistence.existingClaim is set: accessModes is the operator's statement about what that claim supports. Use ReadWriteMany storage for multiple replicas, or set replicaCount: 1 and autoscaling.enabled: false." -}}
+  {{- end -}}
+{{- end -}}
+{{- $explicitStrategy := .Values.strategy | default dict -}}
+{{- $explicitStrategyType := "" -}}
+{{- if $explicitStrategy -}}
+  {{- $explicitStrategyType = $explicitStrategy.type | default "" -}}
+{{- end -}}
+{{- $effectiveStrategyType := "" -}}
+{{- if $explicitStrategy -}}
+  {{- if and $isRwoVolume (ne $explicitStrategyType "Recreate") -}}
+    {{- fail (printf "strategy.type must be Recreate when workflowPersistence.accessModes is ReadWriteOnce/ReadWriteOncePod (got %q) — RollingUpdate would surge a second pod that cannot attach the same block volume. Use ReadWriteMany storage, or set strategy.type: Recreate." $explicitStrategyType) -}}
+  {{- end -}}
+  {{- $effectiveStrategyType = $explicitStrategyType -}}
+{{- else if $isRwoVolume -}}
+  {{- $effectiveStrategyType = "Recreate" -}}
+{{- end -}}
+{{- if .Values.workflowMigration.applyOnStart -}}
+  {{- if ne .Values.workflowRepository.adapter $filesystemWorkflowAdapter -}}
+    {{- fail "workflowMigration.applyOnStart requires workflowRepository.adapter to be ting.adapters.filesystem_workflows.FilesystemWorkflowRepository." -}}
+  {{- end -}}
+  {{- if not .Values.workflowPersistence.enabled -}}
+    {{- fail "workflowMigration.applyOnStart requires workflowPersistence.enabled: true." -}}
+  {{- end -}}
+  {{- if ne $effectiveStrategyType "Recreate" -}}
+    {{- fail "workflowMigration.applyOnStart requires the Recreate deployment strategy (automatic when workflowPersistence.accessModes is ReadWriteOnce/ReadWriteOncePod, or set strategy.type: Recreate explicitly) so no old Ting pod can still be writing workflow definitions while the migration runs. replicaCount can be > 1 under Recreate on ReadWriteMany storage -- concurrent migration init containers serialize on ting.migrate_workflows --skip-if-migrated's own catalog lock." -}}
+  {{- end -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -13,6 +55,13 @@ spec:
   replicas: {{ .Values.replicaCount }}
   {{- end }}
   revisionHistoryLimit: {{ .Values.revisionHistoryLimit | default 10 }}
+  {{- if $explicitStrategy }}
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
+  {{- else if $isRwoVolume }}
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "ting.selectorLabels" . | nindent 6 }}
@@ -31,6 +80,10 @@ spec:
     spec:
       {{- include "ting.imagePullSecrets" . | nindent 6 }}
       serviceAccountName: {{ include "ting.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: {{ include "ting.image" . | quote }}
@@ -222,8 +275,9 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 15
         {{- end }}
-      {{- if .Values.migrations.enabled }}
+      {{- if or .Values.migrations.enabled .Values.workflowMigration.applyOnStart }}
       initContainers:
+        {{- if .Values.migrations.enabled }}
         - name: migrate
           image: "{{ .Values.migrations.image.repository }}:{{ .Values.migrations.image.tag }}"
           imagePullPolicy: {{ .Values.migrations.image.pullPolicy }}
@@ -256,6 +310,54 @@ spec:
             - name: migrations
               mountPath: /migrations
               readOnly: true
+        {{- end }}
+        {{- if .Values.workflowMigration.applyOnStart }}
+        - name: workflow-catalog-migrate
+          image: {{ include "ting.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - python
+            - -m
+            - ting.migrate_workflows
+          args:
+            - "--catalog-path=/data/ting/workflows"
+            - "--apply"
+            - "--skip-if-migrated"
+            - "--persona-database={{ .Values.workflowMigration.personaDatabase }}"
+            {{- if .Values.workflowMigration.replaceDivergentBundled }}
+            - "--replace-divergent-bundled"
+            {{- end }}
+          env:
+            - name: DATABASE__HOST
+              value: {{ include "ting.databaseHost" . | quote }}
+            - name: DATABASE__PORT
+              value: {{ include "ting.databasePort" . | quote }}
+            - name: DATABASE__NAME
+              value: {{ .Values.database.name | quote }}
+            - name: DATABASE__USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ting.databaseSecretName" . }}
+                  key: {{ .Values.database.userKey | default "username" }}
+            - name: DATABASE__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ting.databaseSecretName" . }}
+                  key: {{ .Values.database.passwordKey | default "password" }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.workflowMigration.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/ting
+              readOnly: true
+            - name: workflow-catalog
+              mountPath: /data/ting/workflows
+        {{- end }}
       {{- end }}
       volumes:
         {{- if .Values.envoy.authorization.enabled }}

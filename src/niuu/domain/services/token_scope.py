@@ -31,14 +31,20 @@ OPENSHELL_RESIDENT_TOKEN_USE = "openshell_resident"
 KNOWN_WORKLOAD_SCOPES: frozenset[str] = frozenset(
     {
         "forge:session:create",
+        "forge:session:room-role",
         "ting:workflow:launch",
         "ting:workflow:coordinate",
         "observatory:topology:push",
+        "node_join",
     }
 )
 
 #: Scope required to publish a topology fragment to the push inbox.
 TOPOLOGY_PUSH_SCOPE = "observatory:topology:push"
+
+#: Scope carried by a minted Guild pairing code — see
+#: ``niuu.domain.services.guild_join`` and ``.claude/rules/architecture.md``.
+NODE_JOIN_SCOPE = "node_join"
 
 
 def _decode_claims(token: str) -> dict | None:
@@ -113,6 +119,25 @@ def scoped_credential_claims(token: str) -> dict | None:
     return claims
 
 
+def workload_owner_scoped(token: str) -> bool:
+    """Whether this caller's workload-identity mapping derived a per-caller
+    ``owner_id`` (``owner_id_claim``) rather than a fixed one every caller
+    matching that mapping's subject/subject_prefix shares.
+
+    Set by ``niuu.domain.services.workload_identity.WorkloadIdentityService``
+    at exchange time as the ``workload_owner_scoped`` claim. Read directly off
+    the trusted claims (Envoy already verified the signature upstream — same
+    posture as the rest of this module) rather than threading a new field
+    through ``Principal``, so the one caller that needs this narrow signal
+    (resident budget reporting, which must refuse to run under a possibly
+    shared identity) does not force it onto every consumer of ``Principal``.
+    """
+    claims = _decode_claims(token)
+    if claims is None:
+        return False
+    return bool(claims.get("workload_owner_scoped", False))
+
+
 def bound_workload_scopes(requested: list[str] | None) -> list[str]:
     """Intersect requested scopes with :data:`KNOWN_WORKLOAD_SCOPES`.
 
@@ -154,6 +179,11 @@ def credential_allows_route(token: str, method: str, path: str) -> bool:
         return True
     routes = [
         ("POST", r"/api/v1/forge/sessions", "forge:session:create"),
+        (
+            "GET",
+            r"/api/v1/forge/sessions/[^/?%]+/participants/role",
+            "forge:session:room-role",
+        ),
         ("POST", r"/api/v1/ting/a2a", "ting:workflow:launch"),
         ("POST", r"/api/v1/ting/workflows/[^/?%]+/launch", "ting:workflow:launch"),
         (
@@ -179,6 +209,7 @@ def credential_allows_route(token: str, method: str, path: str) -> bool:
         ),
         ("PUT", r"/api/v1/niuu/observatory/fragments/[^/?%]+", "observatory:topology:push"),
         ("DELETE", r"/api/v1/niuu/observatory/fragments/[^/?%]+", "observatory:topology:push"),
+        ("POST", r"/api/v1/niuu/guild/join", NODE_JOIN_SCOPE),
     ]
     granted = credential_scopes(claims)
     return any(
@@ -230,6 +261,7 @@ def require_scope(scope: str) -> Callable[..., Awaitable[None]]:
 
 __all__ = [
     "KNOWN_WORKLOAD_SCOPES",
+    "NODE_JOIN_SCOPE",
     "OPENSHELL_SESSION_TOKEN_USE",
     "OPENSHELL_RESIDENT_TOKEN_USE",
     "TOPOLOGY_PUSH_SCOPE",

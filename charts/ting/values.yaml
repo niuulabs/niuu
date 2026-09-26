@@ -21,6 +21,27 @@ args: []
 nameOverride: ""
 fullnameOverride: ""
 
+# -- Pod-level securityContext. fsGroup matches the unified niuu image's
+# runtime user (65532, non-root — see containers/niuu/Dockerfile) so a
+# freshly provisioned workflowPersistence block volume is group-writable
+# on single-node (ReadWriteOnce) storage; without this, the filesystem
+# workflow catalog refuses to start on a root-owned mount.
+# fsGroupChangePolicy: OnRootMismatch skips the recursive chown once
+# ownership already matches, instead of doing it on every pod restart.
+podSecurityContext:
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+
+# -- Deployment update strategy override. Leave empty (the default) to let
+# the chart choose: RollingUpdate (Kubernetes' own default, unset here) for
+# ReadWriteMany or persistence-disabled installs, and an automatic
+# `{type: Recreate}` whenever workflowPersistence.accessModes is
+# ReadWriteOnce or ReadWriteOncePod — a surge pod cannot attach the same
+# block volume, so RollingUpdate would deadlock. Set this only to force a
+# specific strategy explicitly; on a ReadWriteOnce/ReadWriteOncePod volume,
+# only `{type: Recreate}` is accepted (the chart fails the render otherwise).
+strategy: {}
+
 serviceAccount:
   create: true
   automount: true
@@ -54,6 +75,12 @@ ingress:
 config:
   logLevel: "info"
   logFormat: "json"
+  # -- OpenTelemetry trace/metric export for Ting's own process (distinct
+  # from dispatch.flock.observability below, which is for the Ravn/Skuld
+  # flock nodes Ting launches). Empty (the default) means unconfigured —
+  # observability.enabled defaults to false, a decision, not a fallback.
+  # Fields match niuu.domain.observability.ObservabilityConfig.
+  observability: {}
   host: "0.0.0.0"
   port: 8081
   workers: 2
@@ -66,6 +93,27 @@ config:
     # -- Whether credentialed CORS requests are allowed
     allowCredentials: true
   extra: {}
+
+# Session activity watcher — per-cluster Volundr SSE subscriptions
+watcher:
+  # -- Seconds to wait before reconnecting after a clean SSE stream close,
+  # and between owner sync cycles.
+  reconnectDelay: 5.0
+  # -- Initial per-cluster backoff delay (seconds) after an SSE subscription
+  # failure, before reconnectBackoffMultiplier is applied.
+  reconnectInitialDelay: 2.0
+  # -- Ceiling (seconds) for a failing cluster's per-cluster backoff delay.
+  reconnectMaxDelay: 120.0
+  # -- Multiplier applied to a failing cluster's backoff delay after each
+  # consecutive failure.
+  reconnectBackoffMultiplier: 2.0
+  # -- Fraction (0-1) randomly subtracted from each computed backoff delay
+  # to avoid synchronized reconnect storms across clusters.
+  reconnectJitter: 0.2
+  # -- Seconds a connection must stay open before it counts as healthy
+  # enough to reset a cluster's backoff, even if it drops without ever
+  # seeing an event (e.g. a cluster that legitimately has no sessions).
+  reconnectStableAfterSeconds: 30.0
 
 # Dispatcher configuration
 dispatch:
@@ -261,10 +309,44 @@ workflowPersistence:
   enabled: true
   existingClaim: ""
   storageClass: ""
+  # Existing PVCs' accessModes are immutable — changing this default would
+  # break upgrades of installs already running on it. Single-node
+  # (ReadWriteOnce/ReadWriteOncePod) block storage is supported and detected
+  # automatically (see `strategy` above); set it explicitly for a new install
+  # on storage that cannot do ReadWriteMany, such as most single-node CSI
+  # drivers (e.g. Harvester). replicaCount > 1 (or autoscaling.enabled)
+  # requires ReadWriteMany here — e.g. NFS, with the export owned by uid
+  # 65532 and attribute/lookup caching disabled, since kubelet does not
+  # apply podSecurityContext.fsGroup to NFS mounts — the chart fails the
+  # render otherwise. This also governs existingClaim: accessModes is read
+  # as the operator's statement about what that claim supports.
   accessModes:
     - ReadWriteMany
   size: 1Gi
   annotations: {}
+
+# Opt-in, automated database-to-file workflow catalog cutover: an init
+# container that runs `python -m ting.migrate_workflows --apply
+# --skip-if-migrated` ahead of the main container, after the golang-migrate
+# schema migration. Safe to leave enabled indefinitely — --skip-if-migrated
+# makes every start after the first a no-op. Safe with replicaCount > 1 too:
+# concurrent init containers serialize on the catalog's own cutover lock
+# (FilesystemWorkflowRepository.cutover_lock), so exactly one migrates and
+# the rest see its result and skip. See docs/operator/workflow-catalog.md
+# for the two-phase GitOps rollout this is meant to be turned on for.
+workflowMigration:
+  # -- Run the migration init container on every pod start.
+  applyOnStart: false
+  # -- Database name on the configured PostgreSQL host holding the persona
+  # registry rows referenced by workflows being migrated (--persona-database).
+  # Reuses Ting's own database.username/password secret against this other
+  # database name on the same PostgreSQL host -- not a separate credential.
+  personaDatabase: volundr
+  # -- Pass --replace-divergent-bundled: preserve database system rows that
+  # diverge from their packaged definition under their existing identity,
+  # instead of failing the migration.
+  replaceDivergentBundled: false
+  resources: {}
 
 # Envoy sidecar proxy (JWT validation, header extraction)
 envoy:
@@ -331,6 +413,7 @@ envoy:
       - /api/v1/tokens/workload/exchange
       - /api/v1/tokens/workload/jwks
       - /health
+      - /api/v1/ting/health
     # -- Additional JWT provider for short-lived Niuu workload tokens.
     # When enabled, Envoy accepts either Keycloak user tokens or workload tokens.
     workload:
@@ -453,10 +536,6 @@ sharedIntegrations:
   baseUrl: ""
   # -- HTTP timeout for shared integration requests
   timeoutSeconds: 30.0
-
-cerbos:
-  # -- Cerbos authorization service URL
-  url: "http://localhost:3592"
 
 auth:
   adapter: identity.adapters.identity.EnvoyHeaderAuthenticationAdapter

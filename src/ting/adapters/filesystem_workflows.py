@@ -15,7 +15,7 @@ from hashlib import sha256
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import yaml
 
@@ -135,6 +135,41 @@ class FilesystemWorkflowRepository(WorkflowRepository):
     async def delete_workflow(self, workflow_id: UUID) -> bool:
         return await asyncio.to_thread(self._delete_sync, workflow_id)
 
+    async def has_recorded_version_history(self, workflow_id: UUID) -> bool:
+        """True once at least one immutable snapshot is archived under ``.history``."""
+        return await asyncio.to_thread(self._has_recorded_version_history_sync, workflow_id)
+
+    def _has_recorded_version_history_sync(self, workflow_id: UUID) -> bool:
+        with self._locked():
+            self._recover_transactions()
+            return bool(self._load_history_payloads(workflow_id))
+
+    async def adopt_legacy_bundled(self, seed: WorkflowDefinition) -> WorkflowDefinition:
+        """No-op here: a bundled id with no local override is always served live.
+
+        There is no persisted legacy system row to reconcile on this
+        catalog -- ``get_workflow(seed.id)`` already returns the current
+        packaged definition on every read, since bundled workflows are
+        loaded directly from the package on each access rather than stored.
+        Exists to satisfy the shared ``WorkflowRepository`` port;
+        ``seed_system_workflows`` never actually calls this against the
+        filesystem adapter, because ``workflow_repository.seed_bundled``
+        must be false for it (see charts/ting/templates/configmap.yaml).
+        """
+        current = await self.get_workflow(seed.id)
+        if current is None:
+            raise WorkflowDocumentError(f"Workflow {seed.id} not found for legacy adoption")
+        return current
+
+    async def reclassify_orphaned_bundled_as_authored(
+        self, workflow_id: UUID
+    ) -> WorkflowDefinition | None:
+        """No-op here, for the same reason as ``adopt_legacy_bundled``: this
+        catalog has no persisted ``version_origin`` row to flip -- a bundled
+        id is always served live from the package, never orphaned.
+        """
+        return await self.get_workflow(workflow_id)
+
     async def mark_migration_complete(self, metadata: dict[str, Any]) -> None:
         """Durably record a verified legacy catalog migration."""
         await asyncio.to_thread(self._mark_migration_complete_sync, metadata)
@@ -217,7 +252,10 @@ class FilesystemWorkflowRepository(WorkflowRepository):
         self._history_path.mkdir(mode=0o700, exist_ok=True)
         self._transaction_path.mkdir(mode=0o700, exist_ok=True)
         self._lock_path.touch(mode=0o600, exist_ok=True)
-        probe = self._catalog_path / f".write-probe-{os.getpid()}"
+        # Unique per call, not just per PID: two instances constructed
+        # concurrently in the same process (e.g. separate threads, as in
+        # tests) must not collide on the same probe filename.
+        probe = self._catalog_path / f".write-probe-{os.getpid()}-{uuid4().hex}"
         try:
             probe.write_text("probe", encoding="utf-8")
             probe.unlink()
@@ -1190,6 +1228,33 @@ class FilesystemWorkflowRepository(WorkflowRepository):
     @contextmanager
     def _locked(self) -> Iterator[None]:
         with self._lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    @contextmanager
+    def cutover_lock(self) -> Iterator[None]:
+        """Serialize a concurrent automated-cutover check-then-apply.
+
+        `ting.migrate_workflows --skip-if-migrated` (the chart's optional
+        `workflow-catalog-migrate` init container) may run from several pods
+        at once against the same catalog. Its "is this already migrated?"
+        check and its "apply the migration" write are separate steps that
+        each call back into this repository's own operations (``save_workflow``,
+        ``mark_migration_complete``, ...), each of which takes ``self._locked()``
+        internally. A caller must not hold ``self._locked()`` across that
+        whole span — a second ``flock()`` call from the *same process* on a
+        new file descriptor for the same lock file blocks forever waiting for
+        the first, self-deadlocking. This is a distinct lock file so the
+        automated-cutover critical section (check + verified apply) can be
+        held for its full duration without deadlocking the operations nested
+        inside it.
+        """
+        path = self._catalog_path / ".migration-cutover.lock"
+        path.touch(mode=0o600, exist_ok=True)
+        with path.open("a+", encoding="utf-8") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
                 yield

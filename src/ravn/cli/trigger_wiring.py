@@ -192,6 +192,92 @@ def _wire_cron(
     return tools
 
 
+def _wire_api_triggers(drive_loop: Any, settings: Settings, persona_name: str) -> None:
+    """Load this resident's durable triggers from the Ravn API and run them.
+
+    Reuses the workload-authenticated HTTP boundary ``RealmClient`` already
+    uses (``ravn.adapters.realm.client``) rather than a direct database
+    connection — a resident deployed in a container already carries
+    ``gateway.platform``'s base URL and workload identity, so this avoids
+    shipping Postgres credentials to every resident pod. See
+    ``ravn.adapters.triggers.api_source`` for the execution engines this
+    drives (cron reuses ``CronTrigger``; event reuses ``SleipnirEventTrigger``).
+
+    Configured-but-impossible is fatal, not a skip: ``resident_triggers.enabled:
+    true`` with no persona, no platform base URL, or no AMQP transport
+    configured cannot silently run with zero triggers or retry an unusable
+    event transport forever.
+    """
+    if not settings.resident_triggers.enabled:
+        return
+    if not persona_name:
+        raise ValueError(
+            "resident_triggers.enabled is true but this resident has no persona "
+            "configured — triggers are scoped by persona_name, so set a persona "
+            "(initiative.default_persona or a deployed persona_config), or set "
+            "resident_triggers.enabled: false"
+        )
+    platform = settings.gateway.platform
+    if not platform.base_url:
+        raise ValueError(
+            "resident_triggers.enabled is true but gateway.platform.base_url is empty — "
+            "set gateway.platform.base_url (and a PAT or workload identity) so this "
+            "resident can reach its trigger store, or set resident_triggers.enabled: false"
+        )
+
+    import os  # noqa: PLC0415
+
+    from ravn.adapters.tool_build.http import client_from_workload_identity  # noqa: PLC0415
+    from ravn.adapters.triggers.api_source import ApiCronJobStore, ApiTriggerSource  # noqa: PLC0415
+    from ravn.adapters.triggers.cron import CronTrigger  # noqa: PLC0415
+
+    amqp_url = os.environ.get(settings.sleipnir.amqp_url_env, "")
+    if not amqp_url:
+        raise ValueError(
+            f"resident_triggers.enabled is true but ${settings.sleipnir.amqp_url_env} is "
+            "not set — event-kind triggers need Sleipnir's AMQP transport, and templates "
+            "this resident may be assigned (e.g. Simple mode's product/QA residents) "
+            "create event triggers by default. Set that env var, or set "
+            "resident_triggers.enabled: false if this resident will only ever use "
+            "cron-kind triggers"
+        )
+
+    client = client_from_workload_identity(
+        base_url=platform.base_url,
+        external_token=platform.pat_token,
+        workload_token_file=platform.workload_token_file,
+        workload_exchange_url=platform.workload_exchange_url,
+        workload_audiences=platform.workload_audiences,
+        timeout_seconds=platform.timeout,
+    )
+    source = ApiTriggerSource(
+        client=client,
+        base_url=platform.base_url,
+        persona_name=persona_name,
+        poll_interval_seconds=settings.resident_triggers.poll_interval_seconds,
+        amqp_url=amqp_url,
+        sleipnir_exchange=settings.sleipnir.exchange,
+        max_consecutive_poll_failures=settings.resident_triggers.max_consecutive_poll_failures,
+    )
+    drive_loop.register_trigger(source)
+
+    journal_dir = Path(settings.initiative.queue_journal_path).expanduser().parent
+    cron_trigger = CronTrigger(
+        jobs=[],
+        state_path=journal_dir / "cron_api_state.json",
+        lock_path=journal_dir / "cron_api.lock",
+        tick_seconds=settings.initiative.cron_tick_seconds,
+        store=ApiCronJobStore(source),
+    )
+    drive_loop.register_trigger(cron_trigger)
+    logger.info(
+        "api_triggers: polling %s every %.0fs for persona=%s",
+        platform.base_url,
+        settings.resident_triggers.poll_interval_seconds,
+        persona_name,
+    )
+
+
 def _wire_task_dispatch(drive_loop: Any, sleipnir_config: Any) -> None:
     """Register a TaskDispatchChannel as a drive-loop trigger (NIU-505)."""
     from ravn.adapters.channels.event import TaskDispatchChannel
@@ -239,21 +325,17 @@ def _wire_cascade(
     """
     from ravn.adapters.tools.cascade_tools import build_cascade_tools  # noqa: PLC0415
 
-    # Build optional mesh and discovery adapters (discovery first — mesh needs it)
+    # Build optional mesh and discovery adapters (discovery first — mesh needs it).
+    # Enabled-but-unbuildable is fatal: a cascade without its configured mesh
+    # would run as a lone peer while every indicator reads healthy.
     mesh: Any = None
     discovery: Any = None
 
     if settings.discovery.enabled:
-        try:
-            discovery = _build_discovery(settings, persona_config, profile_name)
-        except Exception as exc:
-            logger.warning("cascade: failed to build discovery adapter: %s", exc)
+        discovery = _build_discovery(settings, persona_config, profile_name)
 
     if settings.mesh.enabled:
-        try:
-            mesh = _build_mesh(settings, discovery)
-        except Exception as exc:
-            logger.warning("cascade: failed to build mesh adapter: %s", exc)
+        mesh = _build_mesh(settings, discovery)
 
     # Build cascade tools (Mode 1 always; Mode 2/3 when mesh/discovery available)
     allowed_target_personas = None

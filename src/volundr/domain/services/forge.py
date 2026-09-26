@@ -17,15 +17,18 @@ if TYPE_CHECKING:
         SessionActivityState,
         Timeline,
         TimelineEvent,
+        TimelineEventType,
         WorkspaceStatus,
     )
     from volundr.domain.ports import PricingProvider
     from volundr.domain.services.chronicle import ChronicleService
     from volundr.domain.services.repo import ProviderInfo, RepoService
     from volundr.domain.services.session_archive import SessionArchiveService
+    from volundr.domain.services.session_participants import SessionParticipantService
     from volundr.domain.services.stats import StatsService
     from volundr.domain.services.token import TokenService
     from volundr.domain.services.workspace import WorkspaceService
+    from volundr.domain.session_participants import SessionParticipant
     from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 
     from .session import SessionService
@@ -46,6 +49,7 @@ class ForgeService:
         archive_service: SessionArchiveService | None = None,
         workspace_service: WorkspaceService | None = None,
         project_service=None,
+        session_participant_service: SessionParticipantService,
     ) -> None:
         self._session_service = session_service
         self._stats_service = stats_service
@@ -56,6 +60,7 @@ class ForgeService:
         self._archive_service = archive_service
         self._workspace_service = workspace_service
         self._project_service = project_service
+        self._session_participant_service = session_participant_service
 
     @property
     def has_broadcaster(self) -> bool:
@@ -72,6 +77,7 @@ class ForgeService:
             archive_service=self._archive_service,
             workspace_service=workspace_service,
             project_service=self._project_service,
+            session_participant_service=self._session_participant_service,
         )
 
     async def list_sessions(
@@ -86,6 +92,34 @@ class ForgeService:
             include_archived=include_archived,
             principal=principal,
         )
+
+    async def list_participant_only_sessions(
+        self,
+        *,
+        status=None,
+        include_archived: bool = False,
+        principal: Principal | None = None,
+        exclude_ids: frozenset[UUID] = frozenset(),
+    ) -> list[tuple[Session, SessionParticipant]]:
+        """Sessions *principal* actively participates in but does not own.
+
+        Returns each session paired with the caller's own grant (for
+        rendering a room summary that shows their role). Excludes
+        ``exclude_ids`` (the caller's own ``list_sessions`` result, so a
+        session already owned/tenant-visible is never duplicated) and honors
+        the status filter, matching ``list_sessions``'s own contract. Cedar
+        authorizes these for ``read_room``, not ``read`` — the caller must
+        never render the full session detail for one of these (see
+        SessionParticipantService.list_participant_sessions).
+        """
+        if principal is None:
+            return []
+        pairs = await self._session_participant_service.list_participant_sessions(
+            principal, include_archived=include_archived
+        )
+        if status is not None:
+            pairs = [(s, g) for s, g in pairs if s.status == status]
+        return [(s, g) for s, g in pairs if s.id not in exclude_ids]
 
     async def archive_stopped_sessions(self) -> list[UUID]:
         return await self._session_service.archive_stopped_sessions()
@@ -182,11 +216,16 @@ class ForgeService:
         """Force a pod-status reconcile of one session (used on a dead-pod op)."""
         return await self._session_service.mark_session_dead(session_id)
 
+    async def get_authorized_session(
+        self, session_id: UUID, *, principal: Principal | None, action: str
+    ) -> Session:
+        return await self._session_service.get_authorized_session(session_id, principal, action)
+
     async def ensure_access(
         self,
         session: Session,
         principal: Principal | None,
-        action: str = "view",
+        action: str,
     ) -> None:
         await self._session_service._check_access(session, principal, action)
 
@@ -307,15 +346,15 @@ class ForgeService:
         self,
         *,
         session_id: UUID,
+        principal: Principal | None,
         summary: str | None = None,
         key_changes: list[str] | None = None,
         unfinished_work: str | None = None,
         duration_seconds: int | None = None,
     ) -> Chronicle:
-        if self._chronicle_service is None:
-            raise RuntimeError("Chronicle service not available")
-        return await self._chronicle_service.create_or_update_from_broker(
-            session_id=session_id,
+        return await self._chronicles().create_or_update_from_broker(
+            session_id,
+            principal=principal,
             summary=summary,
             key_changes=key_changes,
             unfinished_work=unfinished_work,
@@ -325,6 +364,7 @@ class ForgeService:
     async def list_chronicles(
         self,
         *,
+        principal: Principal | None,
         project: str | None = None,
         repo: str | None = None,
         model: str | None = None,
@@ -332,9 +372,8 @@ class ForgeService:
         limit: int = 50,
         offset: int = 0,
     ) -> list[Chronicle]:
-        if self._chronicle_service is None:
-            raise RuntimeError("Chronicle service not available")
-        return await self._chronicle_service.list_chronicles(
+        return await self._chronicles().list_chronicles(
+            principal=principal,
             project=project,
             repo=repo,
             model=model,
@@ -343,30 +382,28 @@ class ForgeService:
             offset=offset,
         )
 
-    async def create_chronicle(self, session_id: UUID) -> Chronicle:
-        if self._chronicle_service is None:
-            raise RuntimeError("Chronicle service not available")
-        return await self._chronicle_service.create_chronicle(session_id)
+    async def create_chronicle(self, session_id: UUID, *, principal: Principal | None) -> Chronicle:
+        return await self._chronicles().create_chronicle(session_id, principal=principal)
 
-    async def get_chronicle(self, chronicle_id: UUID) -> Chronicle | None:
-        if self._chronicle_service is None:
-            raise RuntimeError("Chronicle service not available")
-        return await self._chronicle_service.get_chronicle(chronicle_id)
+    async def get_chronicle(
+        self, chronicle_id: UUID, *, principal: Principal | None
+    ) -> Chronicle | None:
+        return await self._chronicles().get_chronicle(chronicle_id, principal=principal)
 
     async def update_chronicle(
         self,
         chronicle_id: UUID,
         *,
+        principal: Principal | None,
         summary: str | None = None,
         key_changes: list[str] | None = None,
-        unfinished_work: list[str] | None = None,
+        unfinished_work: str | None = None,
         tags: list[str] | None = None,
         status=None,
     ) -> Chronicle:
-        if self._chronicle_service is None:
-            raise RuntimeError("Chronicle service not available")
-        return await self._chronicle_service.update_chronicle(
+        return await self._chronicles().update_chronicle(
             chronicle_id,
+            principal=principal,
             summary=summary,
             key_changes=key_changes,
             unfinished_work=unfinished_work,
@@ -374,43 +411,62 @@ class ForgeService:
             status=status,
         )
 
-    async def delete_chronicle(self, chronicle_id: UUID) -> bool:
-        if self._chronicle_service is None:
-            raise RuntimeError("Chronicle service not available")
-        return await self._chronicle_service.delete_chronicle(chronicle_id)
+    async def delete_chronicle(self, chronicle_id: UUID, *, principal: Principal | None) -> None:
+        await self._chronicles().delete_chronicle(chronicle_id, principal=principal)
 
-    async def reforge_chronicle(self, chronicle_id: UUID) -> Session:
-        if self._chronicle_service is None:
-            raise RuntimeError("Chronicle service not available")
-        return await self._chronicle_service.reforge(chronicle_id)
+    async def reforge_chronicle(
+        self, chronicle_id: UUID, *, principal: Principal | None
+    ) -> Session:
+        return await self._chronicles().reforge(chronicle_id, principal=principal)
 
-    async def get_chronicle_chain(self, chronicle_id: UUID) -> list[Chronicle]:
-        if self._chronicle_service is None:
-            raise RuntimeError("Chronicle service not available")
-        return await self._chronicle_service.get_chain(chronicle_id)
+    async def get_chronicle_chain(
+        self, chronicle_id: UUID, *, principal: Principal | None
+    ) -> list[Chronicle]:
+        return await self._chronicles().get_chain(chronicle_id, principal=principal)
 
-    async def get_session_chronicle(self, session_id: UUID) -> Chronicle | None:
-        if self._chronicle_service is None:
-            raise RuntimeError("Chronicle service not available")
-        return await self._chronicle_service.get_chronicle_by_session(session_id)
+    async def get_session_chronicle(
+        self, session_id: UUID, *, principal: Principal | None
+    ) -> Chronicle | None:
+        return await self._chronicles().get_session_chronicle(session_id, principal=principal)
 
-    async def get_timeline(self, session_id: UUID) -> Timeline | None:
-        if self._chronicle_service is None:
-            raise RuntimeError("Chronicle service not available")
-        return await self._chronicle_service.get_timeline(session_id)
+    async def get_timeline(
+        self, session_id: UUID, *, principal: Principal | None
+    ) -> Timeline | None:
+        return await self._chronicles().get_timeline(session_id, principal=principal)
 
-    async def add_timeline_event(self, session_id: UUID, event: TimelineEvent) -> TimelineEvent:
-        if self._chronicle_service is None:
-            raise RuntimeError("Chronicle service not available")
-        return await self._chronicle_service.add_timeline_event(session_id, event)
+    async def add_timeline_event(
+        self,
+        session_id: UUID,
+        *,
+        principal: Principal | None,
+        t: int,
+        type: TimelineEventType,
+        label: str,
+        tokens: int | None = None,
+        action: str | None = None,
+        ins: int | None = None,
+        del_: int | None = None,
+        hash: str | None = None,
+        exit_code: int | None = None,
+    ) -> TimelineEvent:
+        return await self._chronicles().add_timeline_event(
+            session_id,
+            principal=principal,
+            t=t,
+            type=type,
+            label=label,
+            tokens=tokens,
+            action=action,
+            ins=ins,
+            del_=del_,
+            hash=hash,
+            exit_code=exit_code,
+        )
 
-    async def ensure_session_chronicle(self, session_id: UUID) -> Chronicle:
+    def _chronicles(self) -> ChronicleService:
         if self._chronicle_service is None:
             raise RuntimeError("Chronicle service not available")
-        chronicle = await self._chronicle_service.get_chronicle_by_session(session_id)
-        if chronicle is not None:
-            return chronicle
-        return await self._chronicle_service.create_chronicle(session_id)
+        return self._chronicle_service
 
     async def list_workspaces(
         self,
@@ -493,10 +549,10 @@ class ForgeService:
             query=query,
         )
 
-    async def get_stats(self):
+    async def get_stats(self, principal: Principal | None):
         if self._stats_service is None:
             raise RuntimeError("Stats service not available")
-        return await self._stats_service.get_stats()
+        return await self._stats_service.get_stats(principal)
 
     async def record_usage(
         self,

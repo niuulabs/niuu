@@ -22,7 +22,7 @@ import json
 import logging
 from contextlib import suppress
 from typing import Any
-from urllib.parse import quote, urlencode, urlsplit, urlunsplit
+from urllib.parse import SplitResult, quote, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
 import httpx
@@ -42,7 +42,7 @@ from fastapi import (
 from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.auth import extract_principal
-from niuu.adapters.inbound.remote_urls import build_remote_url
+from niuu.adapters.inbound.remote_urls import build_remote_url, forward_identity_headers
 from niuu.adapters.inbound.rest_volundr import (
     _ensure_remote_success,
     _normalize_timestamp,
@@ -51,15 +51,27 @@ from niuu.adapters.inbound.rest_volundr import (
     _resolve_target_instance,
     _strip_instance_hints,
     _sync_persona_to_instance,
+    _sync_realm_to_instance,
     _visible_instances,
     _with_instance,
+)
+from niuu.adapters.inbound.source_health import (
+    instance_source_failures,
+    set_source_health_header,
+)
+from niuu.adapters.outbound.guild_transport import (
+    GuildTLSPinMismatchError,
+    GuildTransportError,
+    GuildTransportUnreachableError,
+    build_guild_httpx_client,
+    resolve_guild_ws_ssl,
 )
 from niuu.domain.models import Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
 from niuu.session_proxy import (
     _bearer_token_from_ws,
-    _proxy_forward_headers,
-    _proxy_ws_identity,
+    _proxy_principal,
+    _without_dev_params,
     bridge_websocket,
 )
 
@@ -79,27 +91,102 @@ def _safe_log_value(value: str) -> str:
     return value.replace("\r", "").replace("\n", "")
 
 
+def _ws_close_reason(exc: GuildTransportError) -> str:
+    """A short, WS-close-safe (<=123 bytes) reason; the full detail is logged."""
+    if isinstance(exc, GuildTLSPinMismatchError):
+        return "Remote certificate does not match its configured pin"
+    if isinstance(exc, GuildTransportUnreachableError):
+        return "Remote instance was unreachable for its certificate pin"
+    return "Remote instance transport is not permitted"
+
+
+async def _ws_connect_kwargs(
+    owner: RegisteredInstance,
+    parsed_owner_url: SplitResult,
+    websocket: WebSocket,
+    *,
+    timeout: float,
+) -> dict[str, object] | None:
+    """Resolve ``websockets.connect`` kwargs for *owner*, enforcing transport
+    policy and pinning TLS when configured, against the URL the bridge is
+    actually about to dial (*parsed_owner_url*, i.e. ``owner.base_url``).
+
+    Returns ``None`` (after closing *websocket* with the reason) when *owner*
+    fails the https-unless-allow_plaintext policy, or pins a
+    ``tls_fingerprint`` whose live certificate does not match — the bridge
+    must never be attempted on a connection that failed either check.
+    """
+    try:
+        ssl_context = await resolve_guild_ws_ssl(
+            owner, dial_url=parsed_owner_url.geturl(), timeout=timeout
+        )
+    except GuildTransportError as exc:
+        logger.warning(
+            "Guild transport refused bridging to instance %s: %s",
+            _safe_log_value(owner.id),
+            _safe_log_value(str(exc)),
+        )
+        await websocket.close(code=1011, reason=_ws_close_reason(exc))
+        return None
+    if ssl_context is None:
+        return {}
+    return {"ssl": ssl_context}
+
+
 def create_ravn_session_proxy_router(
     service: InstanceService,
     *,
     embedded_forge_app: ASGIApp | None = None,
+    owner_probe_timeout_seconds: float = 15.0,
 ) -> APIRouter:
-    """Proxy Yggdrasil Ravn chat sockets to their registry-owned target."""
+    """Proxy Yggdrasil Ravn chat sockets to their registry-owned target.
+
+    A target may be a remote Guild instance on another machine, so only the
+    caller's bearer token crosses the wire — never a client-supplied
+    ``x-auth-*`` header or dev-identity query param, and never the identity
+    this process resolved for its own local trust boundary (see
+    ``niuu.adapters.inbound.remote_urls.forward_identity_headers``). The
+    remote verifies the bearer itself.
+
+    ``owner_probe_timeout_seconds`` bounds how long a single candidate
+    instance's owner-probe HTTP GET and TLS-pin handshake may take,
+    independent of anything an instance's own config sets — sourced from
+    ``Settings.guild_owner_probe_timeout_seconds``.
+    """
     router = APIRouter(tags=["Ravn"])
+
+    def _upstream_headers(websocket: WebSocket) -> dict[str, str]:
+        headers = forward_identity_headers(websocket)
+        token = _bearer_token_from_ws(websocket)
+        if token and "authorization" not in headers:
+            headers["authorization"] = f"Bearer {token}"
+        return headers
+
+    def _upstream_query(websocket: WebSocket) -> str:
+        return urlencode(
+            _without_dev_params(
+                [
+                    (key, value)
+                    for key, value in websocket.query_params.multi_items()
+                    if key != "instance_id"
+                ],
+                dev_identity=False,
+            )
+        )
+
+    async def _caller(websocket: WebSocket) -> Principal | None:
+        principal = await _proxy_principal(websocket)
+        if principal is None or not principal.user_id:
+            return None
+        return principal
 
     @router.websocket("/s/{session_id}/session")
     async def proxy_ravn_session(websocket: WebSocket, session_id: str) -> None:
-        user_id, tenant_id, roles = await _proxy_ws_identity(websocket)
-        if not user_id:
+        principal = await _caller(websocket)
+        if principal is None:
             await websocket.close(code=1008, reason="Not authorized for this session")
             return
 
-        principal = Principal(
-            user_id=user_id,
-            email="",
-            tenant_id=tenant_id or "",
-            roles=list(roles),
-        )
         instance_hint = str(websocket.query_params.get("instance_id") or "").strip()
         if instance_hint:
             try:
@@ -110,35 +197,49 @@ def create_ravn_session_proxy_router(
         else:
             instances = await _visible_instances(service, principal)
 
-        headers = _proxy_forward_headers(
-            websocket,
-            include_cookie=False,
-            forward_dev_params=True,
-        )
-        token = _bearer_token_from_ws(websocket)
-        if token and not any(key.lower() == "authorization" for key in headers):
-            headers["authorization"] = f"Bearer {token}"
+        headers = _upstream_headers(websocket)
 
         owner: RegisteredInstance | None = None
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            for instance in instances:
-                try:
-                    target_url = build_remote_url(
-                        _ravn_base_url(instance),
-                        _RAVN_REMOTE_PREFIX,
-                        f"/sessions/{quote(session_id, safe='')}",
-                    )
-                    response = await client.get(
-                        target_url,
-                        headers=headers,
-                    )
-                except (ValueError, httpx.HTTPError):
-                    continue
-                if response.status_code == status.HTTP_200_OK:
-                    owner = instance
-                    break
+        transport_failure: GuildTransportError | None = None
+        for instance in instances:
+            ravn_dial_url = _ravn_base_url(instance)
+            try:
+                target_url = build_remote_url(
+                    ravn_dial_url,
+                    _RAVN_REMOTE_PREFIX,
+                    f"/sessions/{quote(session_id, safe='')}",
+                )
+                client = await build_guild_httpx_client(
+                    instance,
+                    dial_url=ravn_dial_url,
+                    timeout_seconds=owner_probe_timeout_seconds,
+                )
+                async with client:
+                    response = await client.get(target_url, headers=headers)
+            except GuildTransportUnreachableError:
+                # "We could not check" is an ordinary connection failure for
+                # this candidate, not a policy/pin refusal — try the next one
+                # exactly like a plain httpx.HTTPError would.
+                continue
+            except GuildTransportError as exc:
+                transport_failure = exc
+                logger.warning(
+                    "Guild transport refused probing instance %s for session %s: %s",
+                    _safe_log_value(instance.id),
+                    _safe_log_value(session_id),
+                    _safe_log_value(str(exc)),
+                )
+                continue
+            except (ValueError, httpx.HTTPError):
+                continue
+            if response.status_code == status.HTTP_200_OK:
+                owner = instance
+                break
 
         if owner is None:
+            if transport_failure is not None:
+                await websocket.close(code=1011, reason=_ws_close_reason(transport_failure))
+                return
             await websocket.close(code=4410, reason="Session is no longer running")
             return
 
@@ -146,29 +247,23 @@ def create_ravn_session_proxy_router(
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             await websocket.close(code=1011, reason="Target has no public endpoint")
             return
-        query = urlencode(
-            [
-                (key, value)
-                for key, value in websocket.query_params.multi_items()
-                if key != "instance_id"
-            ]
+        connect_kwargs = await _ws_connect_kwargs(
+            owner, parsed, websocket, timeout=owner_probe_timeout_seconds
         )
+        if connect_kwargs is None:
+            return
         connect_url = urlunsplit(
             (
                 "wss" if parsed.scheme == "https" else "ws",
                 parsed.netloc,
                 f"/s/{quote(session_id, safe='')}/session",
-                query,
+                _upstream_query(websocket),
                 "",
             )
         )
         try:
             await bridge_websocket(
-                websocket,
-                connect_url,
-                additional_headers=headers,
-                include_cookie=False,
-                forward_dev_params=True,
+                websocket, connect_url, headers=headers, connect_kwargs=connect_kwargs
             )
         except Exception:
             logger.debug("Remote Ravn socket ended for %s", _safe_log_value(session_id))
@@ -182,16 +277,10 @@ def create_ravn_session_proxy_router(
         ravn_id: str,
         session_id: str,
     ) -> None:
-        user_id, tenant_id, roles = await _proxy_ws_identity(websocket)
-        if not user_id:
+        principal = await _caller(websocket)
+        if principal is None:
             await websocket.close(code=1008, reason="Not authorized for this resident")
             return
-        principal = Principal(
-            user_id=user_id,
-            email="",
-            tenant_id=tenant_id or "",
-            roles=list(roles),
-        )
         instance_hint = str(websocket.query_params.get("instance_id") or "").strip()
         if instance_hint:
             try:
@@ -202,53 +291,67 @@ def create_ravn_session_proxy_router(
         else:
             instances = await _visible_instances(service, principal)
 
-        headers = _proxy_forward_headers(
-            websocket,
-            include_cookie=False,
-            forward_dev_params=True,
-        )
-        token = _bearer_token_from_ws(websocket)
-        if token and not any(key.lower() == "authorization" for key in headers):
-            headers["authorization"] = f"Bearer {token}"
+        headers = _upstream_headers(websocket)
 
         owner: RegisteredInstance | None = None
         embedded_connection: Any | None = None
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            for instance in instances:
-                if instance.config.get("transport") == "embedded":
-                    resident_service = getattr(
-                        getattr(embedded_forge_app, "state", None),
-                        "resident_runtime_service",
-                        None,
-                    )
-                    if resident_service is None:
-                        continue
-                    try:
-                        embedded_connection = await resident_service.connect_chat(
-                            principal,
-                            UUID(ravn_id),
-                            UUID(session_id),
-                        )
-                    except Exception:
-                        continue
-                    owner = instance
-                    break
-                try:
-                    target_url = build_remote_url(
-                        _ravn_base_url(instance),
-                        _RAVN_REMOTE_PREFIX,
-                        f"/ravens/{quote(ravn_id, safe='')}",
-                    )
-                    response = await client.get(
-                        target_url,
-                        headers=headers,
-                    )
-                except (ValueError, httpx.HTTPError):
+        transport_failure: GuildTransportError | None = None
+        for instance in instances:
+            if instance.config.get("transport") == "embedded":
+                resident_service = getattr(
+                    getattr(embedded_forge_app, "state", None),
+                    "resident_runtime_service",
+                    None,
+                )
+                if resident_service is None:
                     continue
-                if response.status_code == status.HTTP_200_OK:
-                    owner = instance
-                    break
+                try:
+                    embedded_connection = await resident_service.connect_chat(
+                        principal,
+                        UUID(ravn_id),
+                        UUID(session_id),
+                    )
+                except Exception:
+                    continue
+                owner = instance
+                break
+            ravn_dial_url = _ravn_base_url(instance)
+            try:
+                target_url = build_remote_url(
+                    ravn_dial_url,
+                    _RAVN_REMOTE_PREFIX,
+                    f"/ravens/{quote(ravn_id, safe='')}",
+                )
+                client = await build_guild_httpx_client(
+                    instance,
+                    dial_url=ravn_dial_url,
+                    timeout_seconds=owner_probe_timeout_seconds,
+                )
+                async with client:
+                    response = await client.get(target_url, headers=headers)
+            except GuildTransportUnreachableError:
+                # "We could not check" is an ordinary connection failure for
+                # this candidate, not a policy/pin refusal — try the next one
+                # exactly like a plain httpx.HTTPError would.
+                continue
+            except GuildTransportError as exc:
+                transport_failure = exc
+                logger.warning(
+                    "Guild transport refused probing instance %s for resident %s: %s",
+                    _safe_log_value(instance.id),
+                    _safe_log_value(ravn_id),
+                    _safe_log_value(str(exc)),
+                )
+                continue
+            except (ValueError, httpx.HTTPError):
+                continue
+            if response.status_code == status.HTTP_200_OK:
+                owner = instance
+                break
         if owner is None:
+            if transport_failure is not None:
+                await websocket.close(code=1011, reason=_ws_close_reason(transport_failure))
+                return
             await websocket.close(code=4410, reason="Resident is no longer available")
             return
 
@@ -284,30 +387,24 @@ def create_ravn_session_proxy_router(
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             await websocket.close(code=1011, reason="Target has no public endpoint")
             return
-        query = urlencode(
-            [
-                (key, value)
-                for key, value in websocket.query_params.multi_items()
-                if key != "instance_id"
-            ]
+        connect_kwargs = await _ws_connect_kwargs(
+            owner, parsed, websocket, timeout=owner_probe_timeout_seconds
         )
+        if connect_kwargs is None:
+            return
         connect_url = urlunsplit(
             (
                 "wss" if parsed.scheme == "https" else "ws",
                 parsed.netloc,
                 "/api/v1/forge/resident-runtimes/"
                 f"{quote(ravn_id, safe='')}/sessions/{quote(session_id, safe='')}/chat",
-                query,
+                _upstream_query(websocket),
                 "",
             )
         )
         try:
             await bridge_websocket(
-                websocket,
-                connect_url,
-                additional_headers=headers,
-                include_cookie=False,
-                forward_dev_params=True,
+                websocket, connect_url, headers=headers, connect_kwargs=connect_kwargs
             )
         except Exception:
             logger.debug(
@@ -334,6 +431,8 @@ def create_ravn_router(
         request: Request,
         principal: Principal,
         path: str,
+        *,
+        response: Response,
     ) -> list[dict[str, Any]]:
         instances = await _visible_instances(service, principal)
         params = _query_params(request)
@@ -353,6 +452,7 @@ def create_ravn_router(
             ],
             return_exceptions=True,
         )
+        set_source_health_header(response, instance_source_failures(instances, results))
 
         merged: dict[str, dict[str, Any]] = {}
         for instance, result in zip(instances, results, strict=False):
@@ -433,10 +533,11 @@ def create_ravn_router(
     @router.get("/ravens")
     async def list_ravens(
         request: Request,
+        response: Response,
         principal: Principal = Depends(extract_principal),
     ) -> list[dict[str, Any]]:
         """Aggregate discovered resident ravns across visible instances."""
-        return await _aggregate_list(request, principal, "/ravens")
+        return await _aggregate_list(request, principal, "/ravens", response=response)
 
     @router.post("/ravens", status_code=status.HTTP_201_CREATED)
     async def create_raven(
@@ -462,6 +563,12 @@ def create_ravn_router(
             body.get("persona_name") or body.get("personaName"),
             embedded_app=embedded_forge_app,
         )
+        await _sync_realm_to_instance(
+            instance,
+            request,
+            body.get("realm_id") or body.get("realmId"),
+            embedded_app=embedded_forge_app,
+        )
         response = await _request_remote(
             instance,
             request,
@@ -485,18 +592,20 @@ def create_ravn_router(
     @router.get("/sessions")
     async def list_ravn_sessions(
         request: Request,
+        response: Response,
         principal: Principal = Depends(extract_principal),
     ) -> list[dict[str, Any]]:
         """Aggregate live ravn sessions across visible instances."""
-        return await _aggregate_list(request, principal, "/sessions")
+        return await _aggregate_list(request, principal, "/sessions", response=response)
 
     @router.get("/deployment-profiles")
     async def list_deployment_profiles(
         request: Request,
+        response: Response,
         principal: Principal = Depends(extract_principal),
     ) -> list[dict[str, Any]]:
         """List target-compatible resident deployment profiles."""
-        return await _aggregate_list(request, principal, "/deployment-profiles")
+        return await _aggregate_list(request, principal, "/deployment-profiles", response=response)
 
     @router.get("/ravens/{ravn_id}")
     async def get_raven(

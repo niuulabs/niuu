@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class DatabaseConfig(BaseModel):
@@ -69,7 +70,7 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 "files and MCP tools. The usual choice for Claude."
             ),
             labels=["session", "claude"],
-            default_model="claude-opus-5",
+            default_model="claude-opus-5-5",
             compatible_providers=["anthropic", "local"],
             defaults={
                 "broker": {
@@ -89,7 +90,7 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 "when you want the CLI itself rather than the chat workspace."
             ),
             labels=["session", "claude", "interactive"],
-            default_model="claude-opus-5",
+            default_model="claude-opus-5-5",
             compatible_providers=["anthropic", "local"],
             defaults={
                 "broker": {
@@ -282,7 +283,31 @@ class WorkloadIdentityMappingConfig(BaseModel):
     )
     owner_id: str = Field(
         default="",
-        description="User id used as the exchanged token subject and session owner.",
+        description=(
+            "Fixed user id used as the exchanged token subject and session owner. "
+            "Ignored when owner_id_claim is set."
+        ),
+    )
+    owner_id_claim: str = Field(
+        default="",
+        description=(
+            "When set, derive owner_id per-caller from this claim on the verified "
+            "workload proof (dot notation supported) instead of the fixed owner_id "
+            "above — e.g. 'sub' to give each distinct ServiceAccount its own "
+            "identity, so callers sharing one mapping are not conflated into one "
+            "principal. A workload proof missing this claim is rejected, not "
+            "silently mapped to a default."
+        ),
+    )
+    owner_id_claim_pattern: str = Field(
+        default="",
+        description=(
+            "Optional regex with one capture group applied to the owner_id_claim "
+            "value, e.g. '^system:serviceaccount:[^:]+:resident-(.+)$' to pull the "
+            "resident id out of a Kubernetes ServiceAccount subject. Unset uses the "
+            "whole claim value verbatim; a claim value that fails to match a "
+            "configured pattern is rejected, not passed through unstripped."
+        ),
     )
     tenant_id: str = Field(default="default", description="Tenant/org id for isolation.")
     email: str = Field(default="", description="Optional owner/workload email claim.")
@@ -294,6 +319,58 @@ class WorkloadIdentityMappingConfig(BaseModel):
         default_factory=dict,
         description="Non-secret audit metadata embedded as workload_* claims.",
     )
+
+    @model_validator(mode="after")
+    def _validate_owner_id_claim_pattern(self) -> WorkloadIdentityMappingConfig:
+        """A bad pattern here was a 500 at exchange time, not a config-load
+        error — every real caller through this mapping would fail the same
+        way, discoverable only by trying it. Fail at load time instead."""
+        pattern = self.owner_id_claim_pattern.strip()
+        if not pattern:
+            return self
+        if not self.owner_id_claim.strip():
+            raise ValueError(
+                "owner_id_claim_pattern requires owner_id_claim to also be set — a "
+                "pattern with no claim to apply it to can never be reached"
+            )
+        try:
+            compiled = re.compile(pattern)
+        except re.error as exc:
+            raise ValueError(f"owner_id_claim_pattern {pattern!r} does not compile: {exc}") from exc
+        if compiled.groups != 1:
+            raise ValueError(
+                f"owner_id_claim_pattern {pattern!r} must have exactly one capture "
+                f"group, found {compiled.groups}"
+            )
+        return self
+
+
+class WorkloadIdentityTenantResolverConfig(BaseModel):
+    """Dynamic adapter resolving a per-caller tenant_id for a mapping that
+    also derives owner_id per-caller (``owner_id_claim`` set).
+
+    Every deployed resident's own tenant_id lives in ONE durable record
+    (Völundr's ``resident_runtimes`` table) — a mapping's own static
+    ``tenant_id`` is a single fixed guess that is wrong for any tenant other
+    than the one it names. When this is configured, a mapping using
+    ``owner_id_claim`` derives its tenant from here instead, keyed by the
+    same resolved owner_id (see ``niuu.ports.owner_tenant_resolver
+    .OwnerTenantResolverPort``); the mapping's own ``tenant_id`` is unused
+    for that mapping in that case. Left unset (the default), every mapping
+    falls back to its own static ``tenant_id`` — an explicit,
+    single-tenant-only mode, not a silent guess.
+    """
+
+    adapter: str = Field(
+        default="",
+        description=(
+            "Fully-qualified OwnerTenantResolverPort adapter class path. Empty "
+            "means no resolver is configured — every mapping uses its own static "
+            "tenant_id."
+        ),
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
 
 
 class WorkloadIdentityConfig(BaseModel):
@@ -320,3 +397,6 @@ class WorkloadIdentityConfig(BaseModel):
     )
     verifiers: list[WorkloadIdentityVerifierConfig] = Field(default_factory=list)
     mappings: list[WorkloadIdentityMappingConfig] = Field(default_factory=list)
+    tenant_resolver: WorkloadIdentityTenantResolverConfig = Field(
+        default_factory=WorkloadIdentityTenantResolverConfig
+    )

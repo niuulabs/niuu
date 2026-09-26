@@ -18,12 +18,17 @@ from mimir.connections import normalize_mimir_workload_config, resolve_mimir_reg
 from niuu.domain.models import Principal
 from niuu.domain.services.token_scope import require_scope
 from niuu.domain.session_endpoint import public_session_endpoint
+from niuu.domain.tags import matches_tags
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.a2a_identity import local_agent_card_url
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.workflow_bindings import binding_errors
 from ting.api.workflow_personas import authoring_persona_source
-from ting.domain.exceptions import WorkflowConflictError, WorkflowReadOnlyError
+from ting.domain.exceptions import (
+    WorkflowConflictError,
+    WorkflowDocumentError,
+    WorkflowReadOnlyError,
+)
 from ting.domain.models import (
     PersonaDependency,
     WorkflowCampaign,
@@ -34,11 +39,13 @@ from ting.domain.models import (
     WorkflowVersionSummary,
 )
 from ting.domain.services.dispatch_service import (
+    TargetSelectionError,
     _resolve_workflow_execution,
     select_adapter_by_tags,
 )
 from ting.domain.utils import _session_name, _slugify
 from ting.domain.workflow_document import (
+    WorkflowPlacement,
     document_from_workflow,
     dump_workflow_document,
     load_workflow_document,
@@ -57,6 +64,7 @@ from ting.domain.workflow_snapshot import (
     pin_workflow_personas,
     workflow_mimir_from_snapshot,
     workflow_personas_from_snapshot,
+    workflow_placement_from_snapshot,
 )
 from ting.domain.workflow_versioning import WorkflowVersionBump
 from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrPort, VolundrSession
@@ -809,10 +817,15 @@ async def launch_workflow_execution(
         ),
         registry_path=settings.dispatch.flock.mimir_registry_path,
     )
+    try:
+        placement = workflow_placement_from_snapshot(workflow_snapshot)
+    except WorkflowDocumentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     target_adapter = await _resolve_target_adapter(
         volundr_factory=volundr_factory,
         principal=principal,
         connection_id=launch.connection_id,
+        placement=placement,
     )
     if target_adapter is None:
         raise HTTPException(
@@ -975,11 +988,16 @@ async def _resolve_target_adapter(
     volundr_factory: VolundrFactory,
     principal: Principal,
     connection_id: str | None = None,
+    placement: WorkflowPlacement | None = None,
 ):
     adapters = await volundr_factory.for_principal(principal)
     if not adapters:
         return None
     normalized_connection_id = str(connection_id or "").strip()
+    if normalized_connection_id and placement is not None:
+        return _resolve_pinned_connection_against_placement(
+            adapters, normalized_connection_id, placement
+        )
     if normalized_connection_id:
         for adapter in adapters:
             if normalized_connection_id in {adapter.target_id, adapter.name}:
@@ -988,7 +1006,99 @@ async def _resolve_target_adapter(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Volundr target not found: {normalized_connection_id}",
         )
+    if placement is not None:
+        return _resolve_placement_target(adapters, placement)
     return select_adapter_by_tags(adapters)
+
+
+def _resolve_pinned_connection_against_placement(
+    adapters: list[VolundrPort],
+    connection_id: str,
+    placement: WorkflowPlacement,
+) -> VolundrPort:
+    """An explicit connectionId must satisfy the workflow's pinned placement.
+
+    Without this check, any caller naming a connection — a human, an A2A
+    ``connectionId`` metadata field, or a Ravn resident's configured
+    ``a2a_default_connection_id`` applied to every launch it starts — could
+    silently strip placement from a workflow that asked to run on specific
+    hardware. A pin that is compatible with the placement still resolves
+    directly (no re-balancing among other eligible targets); a pin that
+    conflicts is rejected loudly, naming both.
+    """
+    resolved = next(
+        (adapter for adapter in adapters if connection_id in {adapter.target_id, adapter.name}),
+        None,
+    )
+    if resolved is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Volundr target not found: {connection_id}",
+        )
+    if placement.instance:
+        if placement.instance in {resolved.target_id, resolved.name}:
+            return resolved
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"connectionId {connection_id!r} conflicts with workflow placement "
+                f"instance={placement.instance!r}"
+            ),
+        )
+    if matches_tags(resolved.tags, placement.tags, placement.match):
+        return resolved
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=(
+            f"connectionId {connection_id!r} (tags={sorted(resolved.tags)}) does not satisfy "
+            f"workflow placement (tags={sorted(placement.tags)} match={placement.match!r})"
+        ),
+    )
+
+
+def _resolve_placement_target(
+    adapters: list[VolundrPort],
+    placement: WorkflowPlacement,
+) -> VolundrPort:
+    """Resolve the workflow's pinned graph.placement against visible Guild targets.
+
+    ``instance`` is an exact pin — id or name — with no fallback. ``tags``
+    reuses the same eligibility and balancing rule as the untargeted launch
+    path. Either way, no match never falls back to the default instance: it
+    is a rejected launch, loud, with the requested placement and every
+    visible target's tags in the message. Callers always pass a non-empty
+    ``adapters``: an empty registry is a 503 before this function runs.
+    """
+    if placement.instance:
+        for adapter in adapters:
+            if placement.instance in {adapter.target_id, adapter.name}:
+                return adapter
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=_placement_rejection_detail(placement, adapters),
+        )
+    try:
+        return select_adapter_by_tags(adapters, list(placement.tags), placement.match)
+    except TargetSelectionError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=_placement_rejection_detail(placement, adapters),
+        ) from None
+
+
+def _placement_rejection_detail(
+    placement: WorkflowPlacement,
+    adapters: list[VolundrPort],
+) -> str:
+    requested = (
+        f"instance={placement.instance!r}"
+        if placement.instance
+        else f"tags={sorted(placement.tags)} match={placement.match!r}"
+    )
+    visible = ", ".join(
+        f"{adapter.name} ({adapter.target_id}) tags={sorted(adapter.tags)}" for adapter in adapters
+    )
+    return f"No Guild target satisfies workflow placement ({requested}); visible targets: {visible}"
 
 
 def _build_workflow_initiative_context(

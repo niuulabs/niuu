@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -43,8 +43,10 @@ from niuu.config_models import (
     default_session_definitions,
 )
 from niuu.domain.delivery import AcceptancePolicy
-from ravn.config import PersonaSourceConfig
+from niuu.domain.observability import ObservabilityConfig
+from ravn.config import LLMConfig, PersonaSourceConfig
 from volundr.compute.config import ComputeConfig
+from volundr.domain.model_gateway import MODEL_GATEWAY_TOKEN_ENV
 from volundr.domain.models import (
     IntegrationType,
     ResidentBackend,
@@ -276,6 +278,12 @@ class LoggingConfig(BaseSettings):
     format: str = Field(default="text", validation_alias=AliasChoices("format", "LOG_FORMAT"))
 
 
+class VolundrObservabilityConfig(ObservabilityConfig):
+    """OpenTelemetry settings with Volundr's stable service identity."""
+
+    service_name: str = Field(default="volundr")
+
+
 class PodManagerConfig(BaseModel):
     """Dynamic pod manager adapter configuration.
 
@@ -298,6 +306,38 @@ class PodManagerConfig(BaseModel):
     runtime_backend: str | None = Field(
         default=None,
         description="Explicit contributor backend identity; VM deployments use vm.",
+    )
+    room_role_source: Literal["deployment", "remote"] = Field(
+        default="deployment",
+        description=(
+            "ws_auth.room_role_source Volundr renders into this backend's session "
+            "pods (kubernetes only — see charts/skuld/values.yaml's wsAuth and "
+            "volundr/adapters/outbound/contributors/room_role.py). 'deployment' "
+            "(the default): unchanged pre-session_participants behavior — a caller "
+            "reaching the pod at all is owner, and session_participants invites are "
+            "refused with 409 for this backend (see rest_session_participants.py's "
+            "REMOTE_CAPABLE_RUNTIME_BACKENDS). 'remote': pods are deployed with "
+            "ws_auth.room_role_source: remote and a wsAuth.room_role_remote adapter "
+            "(RemoteAuthorizationAdapter) that asks Forge for each caller's grant, "
+            "so session_participants invites are honoured and the 409 is lifted. "
+            "Also requires wsAuth.enforce_ownership: false (the chart's Helm render "
+            "fails otherwise — the ext_authz sidecar's owner/admin-only 'start' gate "
+            "would block every participant before a remote lookup ever ran). This is "
+            "a property of the WHOLE deployment, not a per-session choice — flipping "
+            "it changes every future session pod's trust boundary, so it must be set "
+            "deliberately, verified in a non-production cluster first, and never "
+            "enabled by inference from other settings."
+        ),
+    )
+    room_role_cache_ttl_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Rendered as room_role_remote.kwargs.cache_ttl_seconds when "
+            "room_role_source is 'remote' — how long RemoteAuthorizationAdapter "
+            "caches a resolved role before re-asking Forge, bounding how quickly "
+            "a revoked or demoted grant takes effect on an already-open connection."
+        ),
     )
     kwargs: dict[str, Any] = Field(
         default_factory=dict,
@@ -553,7 +593,30 @@ class RabbitMQConfig(BaseModel):
 
 
 class OtelConfig(BaseModel):
-    """OpenTelemetry event sink configuration.
+    """OpenTelemetry event *sink* configuration — GenAI spans from durable
+    ``SessionEvent`` rows, one span per already-recorded event
+    (``OtelEventSink``, wired via ``event_pipeline.otel``).
+
+    Distinct from top-level ``observability`` (``VolundrObservabilityConfig``,
+    on ``Settings.observability``), which drives the shared
+    ``niuu.observability`` facade: the FastAPI/httpx auto-instrumentation and
+    every ``get_observability()`` call site across the codebase (Ravn LLM
+    adapters, Bifröst, session contributors, ...). Two separate OTel
+    pipelines, each with its own ``TracerProvider``/exporter, because they
+    serve different questions:
+
+    * ``observability`` (this process's server/client spans) answers "what
+      did this request do, and in what larger trace" — real-time, one trace
+      id follows the work end to end.
+    * ``event_pipeline.otel`` (this sink) answers "replay this session's
+      already-recorded event history as spans" — after the fact, from
+      Postgres, keyed by ``session_id``, not tied to any live trace context.
+
+    Not consolidated into one pipeline: they run on different triggers (live
+    request vs. durable event replay) and would need one to synthesize
+    context for the other's spans to nest correctly, which neither
+    currently does. If you only want live traces, ``observability.enabled``
+    alone is enough — leave this at its default (disabled).
 
     Follows OTel GenAI semantic conventions (v1.39+).
     The exporter endpoint should point at an OTLP-compatible collector
@@ -1087,8 +1150,18 @@ GITLAB_DEVICE_AUTHORIZATION_URL = "https://gitlab.com/oauth/authorize_device"
 GITLAB_TOKEN_URL = "https://gitlab.com/oauth/token"
 
 
-# The seeded "Model server" provider (see cli.commands.platform) and the env var
-# that tells a session's Skuld to route Claude Code and Codex through the gateway.
+# The seeded "Model server" provider (see cli.commands.platform) and the env
+# vars that tell a session's Skuld to route Claude Code and Codex through the
+# gateway. MODEL_GATEWAY_TOKEN_ENV is imported from the contributor that owns
+# it (volundr.adapters.outbound.contributors.model_gateway) rather than
+# duplicated as a literal string here. The IntegrationContributor's
+# env_from_config path below (not ModelGatewayContributor, which isn't wired
+# in docker/mini mode) is what actually emits both env vars for a seeded
+# "model-server" connection — see model_server_seed_connections() in
+# cli.commands.platform, which supplies the "gateway_url" and "token" config
+# keys these map to. A connection missing either key fails loudly at session
+# creation (IntegrationContributor.contribute) rather than spawning a session
+# that can't reach the gateway.
 MODEL_SERVER_SLUG = "model-server"
 MODEL_GATEWAY_URL_ENV = "SKULD__MODEL_GATEWAY__URL"
 
@@ -1427,10 +1500,14 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "properties": {
                     "provider": {"label": "Gateway provider", "type": "string"},
                     "gateway_url": {"label": "Gateway URL", "type": "string"},
+                    "token": {"label": "Gateway token", "type": "string"},
                     "models": {"label": "Models", "type": "list"},
                 },
             },
-            env_from_config={MODEL_GATEWAY_URL_ENV: "gateway_url"},
+            env_from_config={
+                MODEL_GATEWAY_URL_ENV: "gateway_url",
+                MODEL_GATEWAY_TOKEN_ENV: "token",
+            },
         ),
         IntegrationDefinitionConfig(
             slug="telegram",
@@ -2059,6 +2136,7 @@ class Settings(BaseSettings):
     )
 
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    observability: VolundrObservabilityConfig = Field(default_factory=VolundrObservabilityConfig)
     compute: ComputeConfig | None = None
 
     projects: ProjectsConfig = Field(default_factory=ProjectsConfig)
@@ -2087,6 +2165,39 @@ class Settings(BaseSettings):
         default=256,
         gt=0,
         description="Bound on the in-memory queue merging per-host session stream events.",
+    )
+    guild_transport_connect_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Ceiling for the connect leg of every outbound Guild call "
+            "(niuu.adapters.outbound.guild_transport), and the timeout for the bare "
+            "handshake that fetches a pinned instance's live certificate."
+        ),
+    )
+    guild_owner_probe_timeout_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        description=(
+            "Timeout for the Ravn resident/session proxy's owner-probe HTTP GET "
+            "(niuu.adapters.inbound.rest_ravn) and its TLS-pin handshake."
+        ),
+    )
+    guild_transport_trusted_plaintext_host_suffixes: list[str] = Field(
+        default_factory=lambda: [".svc.cluster.local", ".svc"],
+        description=(
+            "Host suffixes (label-boundary match, e.g. a host ending in "
+            "'.svc.cluster.local') exempt from the https-unless-allow_plaintext "
+            "policy in niuu.domain.transport_security, the same way localhost is: "
+            "in-cluster Kubernetes service DNS never leaves the cluster's pod "
+            "network, so an operator does not have to set config.allow_plaintext "
+            "on every in-cluster seed. Applies at both registration/seed-time "
+            "validation and outbound call-time enforcement — the same choke "
+            "point Ting's Volundr calls also go through. Set to [] to require "
+            "the explicit allow_plaintext opt-in everywhere, including "
+            "in-cluster addresses. Never exempts config.tls_fingerprint pinning, "
+            "which always requires https:// regardless of hostname."
+        ),
     )
     conversation_recent_max_turns: int = Field(default=15, gt=0)
     conversation_recent_max_bytes: int = Field(default=256 * 1024, ge=4096)
@@ -2176,6 +2287,18 @@ class Settings(BaseSettings):
     push: PushNotificationConfig = Field(default_factory=PushNotificationConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)
+    auth_mode: str = Field(
+        default="envoy",
+        description=(
+            "How this host trusts identity: 'envoy' (default — an Envoy sidecar "
+            "verifies JWTs and forwards trusted x-auth-* headers; unchanged "
+            "Kubernetes behaviour), 'none' (explicit no-auth for a host without "
+            "Envoy — mini/docker mode's default), or 'oidc' (in-process JWT "
+            "verification for a host without Envoy). Set by the mini/docker CLI "
+            "host from auth.mode (cli.config.AuthConfig); Kubernetes deployments "
+            "leave this at its default."
+        ),
+    )
     credential_store: CredentialStoreConfig = Field(default_factory=CredentialStoreConfig)
     codex_credential_broker: DynamicAdapterConfig = Field(
         default_factory=_default_codex_credential_broker,
@@ -2228,6 +2351,16 @@ class Settings(BaseSettings):
             "config files. When empty, the contributor's built-in default is used."
         ),
     )
+    ravn_flock_llm_config: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Default LLM for the Ravn nodes of flock sessions, in Ravn's `llm:` shape "
+            "(model, max_tokens, timeout, provider). It is the base layer: "
+            "workload_config.llm_config and per-persona llm overrides are merged over "
+            "it. When empty, every flock session must name its own model or its "
+            "launch fails."
+        ),
+    )
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
         default_factory=default_session_definitions,
         description="Session definitions keyed by name (e.g. skuldClaude, skuldCodex).",
@@ -2248,6 +2381,14 @@ class Settings(BaseSettings):
     )
     ravn: RavnConfig = Field(default_factory=RavnConfig)
     observatory: ObservatoryConfig = Field(default_factory=ObservatoryConfig)
+
+    @field_validator("ravn_flock_llm_config")
+    @classmethod
+    def _validate_ravn_flock_llm_config(cls, value: dict[str, Any]) -> dict[str, Any]:
+        """Reject a flock LLM default Ravn could not load, at startup, not per node."""
+        if value:
+            LLMConfig.model_validate(value)
+        return value
 
     @model_validator(mode="after")
     def _merge_built_in_session_definitions(self) -> "Settings":

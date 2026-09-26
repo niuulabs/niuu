@@ -97,10 +97,27 @@ def test_agent_chart_can_install_verified_learned_tool_job_contract() -> None:
 
     assert values["learnedToolRunner"]["enabled"] is False
     assert "@sha256:" in values["learnedToolRunner"]["image"]
+    assert values["learnedToolRunner"]["podStartTimeoutSeconds"] > 0
+    assert values["learnedToolRunner"]["jobTtlSecondsAfterFinished"] >= 0
     assert "ingress: []" in network_policy
     assert "egress: []" in network_policy
     assert "networkpolicies" in rbac
+    # "list" backs the additive-egress check (verify(), and run() of a
+    # tool without network reach): every OTHER NetworkPolicy in the
+    # namespace is enumerated, not only the two verified by name.
+    assert 'verbs: ["get", "list"]' in rbac
+    # The PVC rule this backend used to need was removed once verify()
+    # started declining requirements outright instead of installing them.
+    assert "persistentvolumeclaims" not in rbac
     assert "learned_tool_execution_backend: k8s_job" in config
+    assert (
+        "job_pod_start_timeout_seconds: {{ .Values.learnedToolRunner.podStartTimeoutSeconds }}"
+        in config
+    )
+    assert (
+        "job_ttl_seconds_after_finished: {{ .Values.learnedToolRunner.jobTtlSecondsAfterFinished }}"
+        in config
+    )
 
 
 @pytest.mark.parametrize("chart", CHARTS)

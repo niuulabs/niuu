@@ -8,7 +8,12 @@ from uuid import uuid4
 import pytest
 
 from niuu.adapters.postgres_instances import PostgresInstanceRepository
-from niuu.domain.models import InstanceKind, InstanceVisibility, RegisteredInstance
+from niuu.domain.models import (
+    InstanceHealthStatus,
+    InstanceKind,
+    InstanceVisibility,
+    RegisteredInstance,
+)
 
 
 class FakePool:
@@ -54,6 +59,11 @@ def _row(
         "tags": [] if tags is None else tags,
         "created_at": now,
         "updated_at": now,
+        "health": "unknown",
+        "last_seen_at": None,
+        "last_checked_at": None,
+        "last_error": None,
+        "node_id": None,
     }
 
 
@@ -122,14 +132,45 @@ async def test_save_and_delete_instance_send_expected_sql_payloads() -> None:
     assert saved == instance
     insert_query, insert_args = pool.execute_calls[0]
     assert "INSERT INTO niuu_instances" in insert_query
+    # health/last_seen_at/last_checked_at/last_error are owned by
+    # record_health — a metadata save must never clobber them via ON
+    # CONFLICT, e.g. with a stale in-memory value racing the health loop.
+    update_clause = insert_query[insert_query.index("DO UPDATE SET") :]
+    assert "health" not in update_clause
+    assert "last_seen_at" not in update_clause
+    assert "last_checked_at" not in update_clause
+    assert "last_error" not in update_clause
+    # node_id is likewise excluded from the UPDATE SET — the real ownership
+    # column must be immutable once written, set only by GuildJoinRepository
+    # at INSERT time, never editable through a later metadata PATCH.
+    assert "node_id" not in update_clause
     assert insert_args[0] == instance.id
     assert insert_args[1] == "volundr"
     assert insert_args[5] == "tenant"
     assert insert_args[10] == '{"region": "ca-central-1"}'
+    assert insert_args[14] == "unknown"
+    assert insert_args[15] is None  # last_seen_at
+    assert insert_args[16] is None  # last_checked_at
+    assert insert_args[17] is None  # last_error
+    assert insert_args[18] is None  # node_id
 
     delete_query, delete_args = pool.execute_calls[1]
     assert "DELETE FROM niuu_instances" in delete_query
     assert delete_args == (instance.id,)
+
+
+@pytest.mark.asyncio
+async def test_list_for_node_filters_by_the_node_id_column() -> None:
+    pool = FakePool()
+    pool.fetch_result = [_row("node-owned")]
+    repo = PostgresInstanceRepository(pool)
+
+    instances = await repo.list_for_node("node-1")
+
+    assert [i.id for i in instances] == ["node-owned"]
+    query, args = pool.fetch_calls[-1]
+    assert "WHERE node_id = $1" in query
+    assert args == ("node-1",)
 
 
 @pytest.mark.asyncio
@@ -143,6 +184,48 @@ async def test_ensure_schema_executes_bootstrap_statements() -> None:
     assert any(
         "CREATE TABLE IF NOT EXISTS niuu_instances" in query for query, _ in pool.execute_calls
     )
+
+
+@pytest.mark.asyncio
+async def test_record_health_sends_a_targeted_update() -> None:
+    pool = FakePool()
+    repo = PostgresInstanceRepository(pool)
+    checked_at = datetime.now(UTC)
+
+    await repo.record_health(
+        "instance-1",
+        health=InstanceHealthStatus.UNREACHABLE,
+        last_seen_at=None,
+        last_checked_at=checked_at,
+        last_error="connection refused",
+    )
+
+    query, args = pool.execute_calls[-1]
+    assert "UPDATE niuu_instances" in query
+    assert "SET health = $2, last_seen_at = $3, last_checked_at = $4, last_error = $5" in query
+    assert args == ("instance-1", "unreachable", None, checked_at, "connection refused")
+
+
+def test_row_to_instance_maps_health_fields_directly() -> None:
+    """health is NOT NULL with a CHECK constraint (migration 000077), so the
+    row always carries a valid value — a direct parse, not a guess."""
+    checked_at = datetime.now(UTC)
+    healthy = PostgresInstanceRepository._row_to_instance(
+        _row("healthy", config={})
+        | {"health": "ok", "last_seen_at": checked_at, "last_checked_at": checked_at}
+    )
+    unknown = PostgresInstanceRepository._row_to_instance(
+        _row("unknown", config={}) | {"health": "unknown"}
+    )
+    unreachable = PostgresInstanceRepository._row_to_instance(
+        _row("unreachable", config={}) | {"health": "unreachable"}
+    )
+
+    assert healthy.health == InstanceHealthStatus.OK
+    assert healthy.last_seen_at == checked_at
+    assert healthy.last_checked_at == checked_at
+    assert unknown.health == InstanceHealthStatus.UNKNOWN
+    assert unreachable.health == InstanceHealthStatus.UNREACHABLE
 
 
 def test_row_to_instance_handles_mapping_and_json_string_configs() -> None:

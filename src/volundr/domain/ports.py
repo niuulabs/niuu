@@ -96,6 +96,7 @@ from volundr.domain.models import (  # noqa: F401
     WorkspaceStatus,
 )
 from volundr.domain.projects import SessionCoordination
+from volundr.domain.session_participants import ParticipantRole, SessionParticipant
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 
 __all__ = [
@@ -372,6 +373,58 @@ class CommunicationCursorRepository(ABC):
         """Persist the latest consumer cursor."""
 
 
+class SessionParticipantRepository(ABC):
+    """Port for durable per-session collaboration grants (shared agent rooms).
+
+    ``list_active_for_session`` filters on the stored ``status`` only; expiry
+    is judged uniformly by ``SessionParticipant.is_active`` (see
+    ``compute_room_grants``), never re-derived here, so a clock read in SQL
+    can never disagree with the one Cedar attribution uses.
+    """
+
+    @abstractmethod
+    async def invite(
+        self,
+        session_id: UUID,
+        user_id: str,
+        tenant_id: str,
+        role: ParticipantRole,
+        invited_by: str,
+        expires_at: datetime | None,
+    ) -> SessionParticipant:
+        """Create, or re-invite, a grant. Always resets status to INVITED."""
+
+    @abstractmethod
+    async def accept(self, session_id: UUID, user_id: str) -> SessionParticipant | None:
+        """Transition an INVITED grant to ACTIVE. Returns None if none is invited."""
+
+    @abstractmethod
+    async def revoke(self, session_id: UUID, user_id: str) -> SessionParticipant | None:
+        """Transition a grant to REVOKED. Returns None if no grant exists."""
+
+    @abstractmethod
+    async def get(self, session_id: UUID, user_id: str) -> SessionParticipant | None:
+        """Return the grant for one (session, user) pair, if any."""
+
+    @abstractmethod
+    async def list_for_session(self, session_id: UUID) -> list[SessionParticipant]:
+        """Return every grant (any status) for a session."""
+
+    @abstractmethod
+    async def list_active_for_session(self, session_id: UUID) -> list[SessionParticipant]:
+        """Return grants with status=ACTIVE. Callers still filter expiry."""
+
+    @abstractmethod
+    async def list_active_for_user(self, user_id: str) -> list[SessionParticipant]:
+        """Return every status=ACTIVE grant for a user, across sessions.
+
+        Used to widen session *listing* to sessions the user actively
+        participates in but does not own (see ``SessionParticipantService.
+        list_participant_sessions``) — a visibility grant, not a Cedar
+        read/list grant.
+        """
+
+
 class ChronicleRepository(ABC):
     """Port for chronicle persistence operations."""
 
@@ -390,6 +443,9 @@ class ChronicleRepository(ABC):
     @abstractmethod
     async def list(
         self,
+        *,
+        tenant_id: str | None,
+        owner_id: str | None,
         project: str | None = None,
         repo: str | None = None,
         model: str | None = None,
@@ -397,7 +453,14 @@ class ChronicleRepository(ABC):
         limit: int = 50,
         offset: int = 0,
     ) -> list[Chronicle]:
-        """Retrieve chronicles with optional filters."""
+        """Retrieve chronicles with optional filters, newest first.
+
+        Args:
+            tenant_id: Return only chronicles attributed to this tenant. ``None``
+                is unbounded; a bound never matches an untenanted chronicle.
+            owner_id: Return only chronicles attributed to this owner. ``None``
+                is unbounded; a bound never matches an unowned chronicle.
+        """
 
     @abstractmethod
     async def update(self, chronicle: Chronicle) -> Chronicle:
@@ -532,8 +595,14 @@ class StatsRepository(ABC):
     """Port for retrieving aggregate statistics."""
 
     @abstractmethod
-    async def get_stats(self) -> Stats:
+    async def get_stats(self, *, tenant_id: str | None, owner_id: str | None) -> Stats:
         """Retrieve aggregate statistics for the dashboard.
+
+        Args:
+            tenant_id: Count only sessions and history of this tenant. ``None``
+                is unbounded; a bound never matches untenanted rows.
+            owner_id: Count only sessions and history of this owner. ``None``
+                is unbounded; a bound never matches unowned rows.
 
         Returns:
             Stats containing session counts, token usage, and cost for today.

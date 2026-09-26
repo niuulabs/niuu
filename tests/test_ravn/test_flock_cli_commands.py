@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from ravn.cli import flock as flock_mod
@@ -28,6 +29,12 @@ runner = CliRunner()
 
 # A pid that is essentially never alive — os.kill(pid, 0) raises ProcessLookupError.
 _DEAD_PID = 2**30
+
+
+@pytest.fixture(autouse=True)
+def _no_operator_ravn_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep init from reading the developer's own ~/.ravn/config.yaml."""
+    monkeypatch.setattr("ravn.cli.room._default_base_config", lambda: None)
 
 
 def _init(tmp_path: Path, *args: str) -> None:
@@ -133,6 +140,112 @@ def test_init_force_overwrites_existing_definition(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert [n.persona for n in _load_flock_def(tmp_path).nodes] == ["coder"]
+
+
+def _node_llm(flock_dir: Path, persona: str = "coordinator") -> object:
+    config = yaml.safe_load((flock_dir / f"node-{persona}.yaml").read_text(encoding="utf-8"))
+    return config.get("llm")
+
+
+def test_init_writes_no_model_when_none_is_configured(tmp_path: Path) -> None:
+    result = runner.invoke(flock_app, ["init", "coordinator", "--flock-dir", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert _node_llm(tmp_path) is None
+    assert "LLM:         none configured" in result.output
+
+
+def test_init_takes_the_llm_section_of_the_operator_ravn_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    operator_config = tmp_path / "operator.yaml"
+    operator_config.write_text(
+        "llm:\n  model: Qwen/Qwen3.8-27B\n  max_tokens: 8192\nlogging:\n  level: DEBUG\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("ravn.cli.room._default_base_config", lambda: operator_config)
+    flock_dir = tmp_path / "flock"
+
+    result = runner.invoke(flock_app, ["init", "coordinator", "--flock-dir", str(flock_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert _node_llm(flock_dir) == {"model": "Qwen/Qwen3.8-27B", "max_tokens": 8192}
+    assert f"Qwen/Qwen3.8-27B (from {operator_config})" in result.output
+
+
+def test_init_llm_config_option_overrides_the_operator_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    operator_config = tmp_path / "operator.yaml"
+    operator_config.write_text("llm:\n  model: host/operator-model\n", encoding="utf-8")
+    monkeypatch.setattr("ravn.cli.room._default_base_config", lambda: operator_config)
+    chosen = tmp_path / "chosen.yaml"
+    chosen.write_text("llm:\n  model: nvidia/nemotron-3-super\n", encoding="utf-8")
+    flock_dir = tmp_path / "flock"
+
+    result = runner.invoke(
+        flock_app,
+        ["init", "coordinator", "reviewer", "--flock-dir", str(flock_dir)]
+        + ["--llm-config", str(chosen)],
+    )
+
+    assert result.exit_code == 0, result.output
+    for persona in ("coordinator", "reviewer"):
+        assert _node_llm(flock_dir, persona) == {"model": "nvidia/nemotron-3-super"}
+
+
+def test_init_llm_config_without_llm_section_writes_none(tmp_path: Path) -> None:
+    chosen = tmp_path / "no-llm.yaml"
+    chosen.write_text("logging:\n  level: INFO\n", encoding="utf-8")
+    flock_dir = tmp_path / "flock"
+
+    result = runner.invoke(
+        flock_app,
+        ["init", "coordinator", "--flock-dir", str(flock_dir), "--llm-config", str(chosen)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _node_llm(flock_dir) is None
+    assert "LLM:         none configured" in result.output
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        ("llm: Qwen/Qwen3.8-27B\n", "not a mapping"),
+        ("llm:\n  model: Qwen/Qwen3.8-27B\n  max_tokens: lots\n", "max_tokens"),
+        ("- llm\n", "not a YAML mapping"),
+    ],
+)
+def test_init_rejects_an_llm_config_ravn_cannot_load(
+    tmp_path: Path, content: str, message: str
+) -> None:
+    chosen = tmp_path / "bad.yaml"
+    chosen.write_text(content, encoding="utf-8")
+    flock_dir = tmp_path / "flock"
+
+    result = runner.invoke(
+        flock_app,
+        ["init", "coordinator", "--flock-dir", str(flock_dir), "--llm-config", str(chosen)],
+    )
+
+    assert result.exit_code == 1
+    assert message in result.output
+    assert not flock_dir.exists()
+
+
+def test_init_rejects_a_missing_llm_config_file(tmp_path: Path) -> None:
+    flock_dir = tmp_path / "flock"
+
+    result = runner.invoke(
+        flock_app,
+        ["init", "coordinator", "--flock-dir", str(flock_dir)]
+        + ["--llm-config", str(tmp_path / "missing.yaml")],
+    )
+
+    assert result.exit_code == 1
+    assert "missing.yaml" in result.output
+    assert not flock_dir.exists()
 
 
 # ---------------------------------------------------------------------------

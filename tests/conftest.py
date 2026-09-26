@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from identity.ports import UserRepository
 from volundr.domain.models import (
     Chronicle,
     EventType,
@@ -36,11 +37,14 @@ from volundr.domain.ports import (
     PodManager,
     PodStartResult,
     PricingProvider,
+    SessionParticipantRepository,
     SessionRepository,
     StatsRepository,
     TimelineRepository,
     TokenTracker,
 )
+from volundr.domain.services.session_participants import SessionParticipantService
+from volundr.domain.session_participants import ParticipantStatus, SessionParticipant
 
 # Ambient configuration a developer box leaks into the test process. A machine
 # running a live Forge/Skuld session exports ``SKULD__*`` / ``VOLUNDR*`` /
@@ -244,6 +248,131 @@ class InMemorySessionRepository(SessionRepository):
         return False
 
 
+class InMemorySessionParticipantRepository(SessionParticipantRepository):
+    """In-memory durable-grant repository for testing."""
+
+    def __init__(self):
+        self._grants: dict[tuple[UUID, str], SessionParticipant] = {}
+
+    async def invite(self, session_id, user_id, tenant_id, role, invited_by, expires_at):
+        now = datetime.now(UTC)
+        key = (session_id, user_id)
+        existing = self._grants.get(key)
+        participant = SessionParticipant(
+            session_id=session_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            role=role,
+            status=ParticipantStatus.INVITED,
+            invited_by=invited_by,
+            created_at=existing.created_at if existing else now,
+            updated_at=now,
+            expires_at=expires_at,
+        )
+        self._grants[key] = participant
+        return participant
+
+    async def accept(self, session_id, user_id):
+        key = (session_id, user_id)
+        existing = self._grants.get(key)
+        if existing is None or existing.status != ParticipantStatus.INVITED:
+            return None
+        updated = existing.model_copy(
+            update={"status": ParticipantStatus.ACTIVE, "updated_at": datetime.now(UTC)}
+        )
+        self._grants[key] = updated
+        return updated
+
+    async def revoke(self, session_id, user_id):
+        key = (session_id, user_id)
+        existing = self._grants.get(key)
+        if existing is None:
+            return None
+        updated = existing.model_copy(
+            update={"status": ParticipantStatus.REVOKED, "updated_at": datetime.now(UTC)}
+        )
+        self._grants[key] = updated
+        return updated
+
+    async def get(self, session_id, user_id):
+        return self._grants.get((session_id, user_id))
+
+    async def list_for_session(self, session_id):
+        return [p for p in self._grants.values() if p.session_id == session_id]
+
+    async def list_active_for_session(self, session_id):
+        return [
+            p
+            for p in self._grants.values()
+            if p.session_id == session_id and p.status == ParticipantStatus.ACTIVE
+        ]
+
+    async def list_active_for_user(self, user_id):
+        return [
+            p
+            for p in self._grants.values()
+            if p.user_id == user_id and p.status == ParticipantStatus.ACTIVE
+        ]
+
+
+class InMemoryUserRepository(UserRepository):
+    """Minimal in-memory user repository for tests that only need to satisfy
+    SessionParticipantService's constructor, not exercise user lookups."""
+
+    def __init__(self):
+        self._users: dict[str, object] = {}
+
+    async def create(self, user):
+        self._users[user.id] = user
+        return user
+
+    async def get(self, user_id):
+        return self._users.get(user_id)
+
+    async def get_by_email(self, email):
+        return next((u for u in self._users.values() if u.email == email), None)
+
+    async def list(self):
+        return list(self._users.values())
+
+    async def update(self, user):
+        self._users[user.id] = user
+        return user
+
+    async def delete(self, user_id):
+        return self._users.pop(user_id, None) is not None
+
+    async def add_membership(self, membership):
+        return membership
+
+    async def get_memberships(self, user_id):
+        return []
+
+    async def get_members(self, tenant_id):
+        return []
+
+    async def remove_membership(self, user_id, tenant_id):
+        return True
+
+
+def make_session_participant_service(
+    session_service, user_repository=None
+) -> SessionParticipantService:
+    """Build a SessionParticipantService backed by in-memory state.
+
+    create_router() and ForgeService() both require this dependency now
+    (no-fallbacks: a missing SessionParticipantService is a wiring bug, not
+    a degraded mode); this gives call sites a one-line way to supply it
+    without duplicating the in-memory repository/user-repository wiring
+    everywhere.
+    """
+    return SessionParticipantService(
+        InMemorySessionParticipantRepository(),
+        session_service,
+        user_repository if user_repository is not None else InMemoryUserRepository(),
+    )
+
+
 class InMemoryChronicleRepository(ChronicleRepository):
     """In-memory chronicle repository for testing."""
 
@@ -265,6 +394,9 @@ class InMemoryChronicleRepository(ChronicleRepository):
 
     async def list(
         self,
+        *,
+        tenant_id: str | None,
+        owner_id: str | None,
         project: str | None = None,
         repo: str | None = None,
         model: str | None = None,
@@ -274,6 +406,10 @@ class InMemoryChronicleRepository(ChronicleRepository):
     ) -> list[Chronicle]:
         results = list(self._chronicles.values())
 
+        if tenant_id is not None:
+            results = [c for c in results if c.tenant_id and c.tenant_id == tenant_id]
+        if owner_id is not None:
+            results = [c for c in results if c.owner_id and c.owner_id == owner_id]
         if project is not None:
             results = [c for c in results if c.project == project]
         if repo is not None:
@@ -449,8 +585,10 @@ class InMemoryStatsRepository(StatsRepository):
             sessions_today=sessions_today,
             sparklines=sparklines,
         )
+        self.scopes: list[tuple[str | None, str | None]] = []
 
-    async def get_stats(self) -> Stats:
+    async def get_stats(self, *, tenant_id: str | None, owner_id: str | None) -> Stats:
+        self.scopes.append((tenant_id, owner_id))
         return self._stats
 
     def set_stats(
@@ -761,7 +899,7 @@ class MockEventBroadcaster(EventBroadcaster):
         self._session_created_events: list[Session] = []
         self._session_updated_events: list[Session] = []
         self._session_deleted_events: list[UUID] = []
-        self._stats_events: list[Stats] = []
+        self._stats_tick_count: int = 0
         self._heartbeat_count: int = 0
 
     async def publish(self, event: RealtimeEvent) -> None:
@@ -779,7 +917,11 @@ class MockEventBroadcaster(EventBroadcaster):
         await self.publish(
             RealtimeEvent(
                 type=EventType.SESSION_CREATED,
-                data={"id": str(session.id)},
+                data={
+                    "id": str(session.id),
+                    "owner_id": session.owner_id,
+                    "tenant_id": session.tenant_id,
+                },
                 timestamp=datetime.now(UTC),
             )
         )
@@ -790,31 +932,37 @@ class MockEventBroadcaster(EventBroadcaster):
         await self.publish(
             RealtimeEvent(
                 type=EventType.SESSION_UPDATED,
-                data={"id": str(session.id)},
+                data={
+                    "id": str(session.id),
+                    "owner_id": session.owner_id,
+                    "tenant_id": session.tenant_id,
+                },
                 timestamp=datetime.now(UTC),
             )
         )
 
-    async def publish_session_deleted(self, session_id: UUID) -> None:
+    async def publish_session_deleted(
+        self,
+        session_id: UUID,
+        *,
+        owner_id: str | None,
+        tenant_id: str | None,
+    ) -> None:
         """Record a session deleted event."""
         self._session_deleted_events.append(session_id)
         await self.publish(
             RealtimeEvent(
                 type=EventType.SESSION_DELETED,
-                data={"id": str(session_id)},
+                data={"id": str(session_id), "owner_id": owner_id, "tenant_id": tenant_id},
                 timestamp=datetime.now(UTC),
             )
         )
 
-    async def publish_stats(self, stats: Stats) -> None:
-        """Record a stats event."""
-        self._stats_events.append(stats)
+    async def publish_stats_tick(self) -> None:
+        """Record a figure-less stats tick."""
+        self._stats_tick_count += 1
         await self.publish(
-            RealtimeEvent(
-                type=EventType.STATS_UPDATED,
-                data={"active_sessions": stats.active_sessions},
-                timestamp=datetime.now(UTC),
-            )
+            RealtimeEvent(type=EventType.STATS_UPDATED, data={}, timestamp=datetime.now(UTC))
         )
 
     async def publish_heartbeat(self) -> None:
@@ -833,6 +981,9 @@ class MockEventBroadcaster(EventBroadcaster):
         session_id: UUID,
         event: TimelineEvent,
         timeline: TimelineResponse,
+        *,
+        owner_id: str | None,
+        tenant_id: str | None,
     ) -> None:
         """Record a chronicle event."""
         await self.publish(
@@ -841,6 +992,8 @@ class MockEventBroadcaster(EventBroadcaster):
                 data={
                     "session_id": str(session_id),
                     "event": {"t": event.t, "type": event.type.value},
+                    "owner_id": owner_id,
+                    "tenant_id": tenant_id,
                 },
                 timestamp=datetime.now(UTC),
             )

@@ -10,7 +10,6 @@ import type { RulesFormState } from './EditRulesModal';
 
 function makeRules(overrides: Partial<RulesFormState> = {}): RulesFormState {
   return {
-    threshold: 70,
     maxConcurrentRuns: 3,
     autoContinue: false,
     retryCount: 2,
@@ -43,11 +42,10 @@ describe('EditRulesModal', () => {
       <EditRulesModal
         open={true}
         onOpenChange={vi.fn()}
-        rules={makeRules({ threshold: 80, maxConcurrentRuns: 5, retryCount: 3 })}
+        rules={makeRules({ maxConcurrentRuns: 5, retryCount: 3 })}
         onSave={vi.fn()}
       />,
     );
-    expect(screen.getByRole('spinbutton', { name: /confidence threshold/i })).toHaveValue(80);
     expect(screen.getByRole('spinbutton', { name: /max concurrent runs/i })).toHaveValue(5);
     expect(screen.getByRole('spinbutton', { name: /retry count/i })).toHaveValue(3);
   });
@@ -101,7 +99,6 @@ describe('EditRulesModal', () => {
         open={true}
         onOpenChange={onOpenChange}
         rules={makeRules({
-          threshold: 70,
           maxConcurrentRuns: 3,
           autoContinue: false,
           retryCount: 2,
@@ -113,7 +110,6 @@ describe('EditRulesModal', () => {
     await user.click(screen.getByRole('button', { name: /toggle auto-continue/i }));
     await user.click(screen.getByRole('button', { name: /save/i }));
     expect(onSave).toHaveBeenCalledWith({
-      threshold: 70,
       maxConcurrentRuns: 3,
       autoContinue: true,
       retryCount: 2,
@@ -137,7 +133,7 @@ describe('EditRulesModal', () => {
   });
 
   it('resets to original rules when reopened', () => {
-    const rules = makeRules({ threshold: 70 });
+    const rules = makeRules({ maxConcurrentRuns: 3 });
     const { rerender } = render(
       <EditRulesModal open={false} onOpenChange={vi.fn()} rules={rules} onSave={vi.fn()} />,
     );
@@ -145,18 +141,17 @@ describe('EditRulesModal', () => {
       <EditRulesModal
         open={true}
         onOpenChange={vi.fn()}
-        rules={makeRules({ threshold: 85 })}
+        rules={makeRules({ maxConcurrentRuns: 8 })}
         onSave={vi.fn()}
       />,
     );
-    expect(screen.getByRole('spinbutton', { name: /confidence threshold/i })).toHaveValue(85);
+    expect(screen.getByRole('spinbutton', { name: /max concurrent runs/i })).toHaveValue(8);
   });
 
-  it('renders all four form fields', () => {
+  it('renders all three form fields', () => {
     render(
       <EditRulesModal open={true} onOpenChange={vi.fn()} rules={makeRules()} onSave={vi.fn()} />,
     );
-    expect(screen.getByLabelText(/confidence threshold/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/max concurrent runs/i)).toBeInTheDocument();
     expect(screen.getByText('Auto-continue')).toBeInTheDocument();
     expect(screen.getByLabelText(/retry count/i)).toBeInTheDocument();

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -31,6 +33,12 @@ def _instance(
     config: dict[str, Any] | None = None,
 ) -> RegisteredInstance:
     now = datetime.now(UTC)
+    # These fixtures exist to exercise aggregate-routing behavior, not the
+    # transport-security policy, so http:// fixtures opt into plaintext by
+    # default; a test exercising that policy itself overrides
+    # allow_plaintext explicitly (see test_guild_transport.py /
+    # test_rest_ravn.py's dedicated transport-security tests).
+    merged_config: dict[str, Any] = {"allow_plaintext": True, **(config or {})}
     return RegisteredInstance(
         id=instance_id,
         kind=InstanceKind.VOLUNDR,
@@ -42,7 +50,7 @@ def _instance(
         tenant_id=tenant_id,
         enabled=enabled,
         is_default=is_default,
-        config=config or {},
+        config=merged_config,
         created_at=now,
         updated_at=now,
         tags=tags or [],
@@ -206,7 +214,37 @@ def test_delivery_typed_operations_proxy_to_selected_remote_instance(operation: 
     request = route.calls.last.request
     assert request.url.query == b""
     assert request.headers["authorization"] == "Bearer test-token"
-    assert request.headers["x-auth-user-id"] == "user-a"
+    # A remote Guild instance never sees a client-supplied x-auth-* header.
+    assert "x-auth-user-id" not in request.headers
+
+
+def test_request_remote_returns_502_on_a_tls_pin_mismatch(monkeypatch) -> None:
+    """_request_remote's own guild_transport enforcement (build_guild_httpx_client
+    raising GuildTransportError) maps to a 502 — the upstream is never
+    contacted at all when the pin fails."""
+    monkeypatch.setattr(
+        "niuu.adapters.outbound.guild_transport.fetch_leaf_certificate_der",
+        lambda *a, **k: b"not the pinned certificate",
+    )
+    pinned_fingerprint = hashlib.sha256(b"the actual expected certificate").hexdigest()
+    client = _client(
+        [
+            _instance(
+                "target",
+                base_url="https://target",
+                config={"tls_fingerprint": pinned_fingerprint},
+            )
+        ]
+    )
+
+    response = client.post(
+        "/api/v1/forge/delivery/refs/resolve?instance_id=target",
+        headers=_headers(),
+        json={"operation": "refs/resolve"},
+    )
+
+    assert response.status_code == 502
+    assert "does not match" in response.json()["detail"]
 
 
 @respx.mock
@@ -448,7 +486,7 @@ def test_list_sessions_merges_visible_instances_and_forwards_auth() -> None:
         }
     ]
     assert sessions_route.calls.last.request.headers["authorization"] == "Bearer test-token"
-    assert sessions_route.calls.last.request.headers["x-auth-tenant"] == "tenant-a"
+    assert "x-auth-tenant" not in sessions_route.calls.last.request.headers
 
 
 @respx.mock
@@ -595,6 +633,18 @@ def test_list_sessions_ignores_errors_and_sorts_last_active_descending() -> None
 
     assert response.status_code == 200
     assert [item["id"] for item in response.json()] == ["s2", "s1"]
+    # A failed instance's contribution is dropped from the merged list, but
+    # not silently — it is named, additively, on the response so a caller
+    # can tell "nothing reported" apart from "one node was unreachable".
+    failures = json.loads(response.headers["X-Niuu-Source-Failures"])
+    assert failures == [
+        {
+            "instanceId": "gamma",
+            "name": "Instance gamma",
+            "status": "unreachable",
+            "error": "HTTP 503",
+        }
+    ]
 
 
 @pytest.mark.parametrize("archived", [False, True])
@@ -1642,14 +1692,18 @@ def test_session_stream_scopes_visible_hosts_and_stamps_owning_instance(
     from niuu.adapters.inbound import rest_volundr
 
     embedded = FastAPI()
+    subscribers = []
 
-    async def subscribe():
+    async def subscribe(principal):
+        subscribers.append(principal.user_id)
         yield SimpleNamespace(
             type=SimpleNamespace(value="session_activity"),
             data={"session_id": "local-session", "state": "idle"},
         )
 
-    embedded.state.broadcaster = SimpleNamespace(subscribe=subscribe)
+    embedded.state.session_event_stream = SimpleNamespace(
+        authorize=lambda principal: None, subscribe=subscribe
+    )
     remote = respx.get("http://bro/api/v1/forge/sessions/stream").mock(
         return_value=Response(
             200,
@@ -1688,9 +1742,12 @@ def test_session_stream_scopes_visible_hosts_and_stamps_owning_instance(
     assert captured == expected
     for host in expected:
         assert f"session_activity:{host}:{host}-session" in response.text
+    # The embedded Forge is subscribed as the caller, so it can scope events.
+    assert subscribers == (["user-a"] if "local" in expected else [])
     if "bro" in expected:
         assert remote.calls[0].request.url.query == b""  # No recursive fleet fan-out.
-        assert remote.calls[0].request.headers["x-auth-user-id"] == "user-a"
+        assert remote.calls[0].request.headers["authorization"] == "Bearer test-token"
+        assert "x-auth-user-id" not in remote.calls[0].request.headers
 
 
 @respx.mock
@@ -1966,7 +2023,8 @@ def test_read_state_is_forwarded_to_owning_instance(method, status_code):
         )
     assert response.status_code == status_code
     assert route.called
-    assert route.calls[0].request.headers["x-auth-user-id"] == "user-a"
+    assert route.calls[0].request.headers["authorization"] == "Bearer test-token"
+    assert "x-auth-user-id" not in route.calls[0].request.headers
     if method == "PATCH":
         import json
 

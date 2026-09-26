@@ -32,6 +32,7 @@ from niuu.config_models import (
     WorkloadIdentityConfig,
     default_session_definitions,
 )
+from niuu.domain.observability import ObservabilityConfig
 
 
 # Config file search paths (in order of priority).
@@ -102,6 +103,12 @@ class LoggingConfig(BaseModel):
     format: str = Field(default="text")
 
 
+class TingObservabilityConfig(ObservabilityConfig):
+    """OpenTelemetry settings with Ting's stable service identity."""
+
+    service_name: str = Field(default="ting")
+
+
 class VolundrConfig(BaseModel):
     """Volundr API connection configuration."""
 
@@ -151,20 +158,8 @@ class GuildRegistryConfig(BaseModel):
 
 
 class ReviewConfig(BaseModel):
-    """Run review projection settings.
+    """Run review projection settings."""
 
-    The confidence deltas here feed only the human review audit trail
-    (RunReviewService); the automated confidence gate they once tuned was
-    removed in favour of authoritative workflow outcomes.
-    """
-
-    confidence_delta_approved: float = Field(default=0.15)
-    confidence_delta_rejected: float = Field(default=-0.20)
-    confidence_delta_retry: float = Field(default=-0.05)
-    initial_confidence: float = Field(
-        default=0.5,
-        description="Starting confidence score for newly committed sagas, phases, and runs.",
-    )
     max_retries: int = Field(
         default=3,
         description="Maximum auto-retries before escalation to human review.",
@@ -490,12 +485,6 @@ class DispatchConfig(BaseModel):
     )
 
 
-class CerbosConfig(BaseModel):
-    """Cerbos authorization service configuration."""
-
-    url: str = Field(default="http://localhost:3592")
-
-
 class PATConfig(BaseModel):
     """Personal access token configuration (matches Volundr's PATConfig)."""
 
@@ -724,25 +713,57 @@ class WatcherConfig(BaseModel):
         default=False,
         description="If true, CI must pass for completion.",
     )
-    confidence_base: float = Field(
-        default=0.5,
-        description="Base confidence score when completion criteria are met.",
-    )
-    confidence_pr_bonus: float = Field(
-        default=0.2,
-        description="Confidence bonus when a PR exists.",
-    )
-    confidence_ci_bonus: float = Field(
-        default=0.2,
-        description="Confidence bonus when CI has passed.",
-    )
-    confidence_idle_bonus: float = Field(
-        default=0.1,
-        description="Confidence bonus for extended idle beyond threshold.",
-    )
     reconnect_delay: float = Field(
         default=5.0,
-        description="Seconds to wait before reconnecting after SSE subscription failure.",
+        ge=0.0,
+        le=3600.0,
+        description="Seconds to wait before reconnecting after a clean SSE stream close.",
+    )
+    reconnect_initial_delay: float = Field(
+        default=2.0,
+        ge=0.0,
+        le=3600.0,
+        description=(
+            "Initial per-cluster backoff delay in seconds after an SSE subscription "
+            "failure, before the multiplier is applied. 0 means retry immediately."
+        ),
+    )
+    reconnect_max_delay: float = Field(
+        default=120.0,
+        ge=0.0,
+        le=3600.0,
+        description="Ceiling in seconds for a failing cluster's per-cluster backoff delay.",
+    )
+    reconnect_backoff_multiplier: float = Field(
+        default=2.0,
+        ge=1.0,
+        le=10.0,
+        description=(
+            "Multiplier applied to a failing cluster's backoff delay after each "
+            "consecutive failure. 1.0 means retry at a constant reconnect_initial_delay."
+        ),
+    )
+    reconnect_jitter: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Fraction (0-1) randomly subtracted from each computed per-cluster backoff "
+            "delay to avoid synchronized reconnect storms."
+        ),
+    )
+    reconnect_stable_after_seconds: float = Field(
+        default=30.0,
+        ge=0.0,
+        le=3600.0,
+        description=(
+            "Seconds an SSE connection must stay open before it counts as healthy "
+            "enough to reset a cluster's backoff — even if it never sees an event "
+            "and then drops. Without this, a cluster that legitimately has no "
+            "sessions right now (so it never gets the 'first event' reset) would "
+            "treat every ordinary periodic reconnect as a failure and grow its "
+            "backoff without bound."
+        ),
     )
 
 
@@ -890,10 +911,6 @@ class NotificationConfig(BaseModel):
     public_origin: str = Field(
         default="http://localhost:8080",
         description="Browser-facing Niuu origin used to build notification links.",
-    )
-    confidence_threshold: float = Field(
-        default=0.3,
-        description="Notify when run confidence drops below this value.",
     )
 
 
@@ -1226,6 +1243,7 @@ class Settings(BaseSettings):
     )
 
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    observability: TingObservabilityConfig = Field(default_factory=TingObservabilityConfig)
     cors: CorsConfig = Field(default_factory=CorsConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     workflow_repository: WorkflowRepositoryConfig = Field(
@@ -1259,7 +1277,18 @@ class Settings(BaseSettings):
     pat: PATConfig = Field(default_factory=PATConfig)
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
-    cerbos: CerbosConfig = Field(default_factory=CerbosConfig)
+    auth_mode: str = Field(
+        default="envoy",
+        description=(
+            "How this host trusts identity: 'envoy' (default — an Envoy sidecar "
+            "verifies JWTs and forwards trusted x-auth-* headers; unchanged "
+            "Kubernetes behaviour), 'none' (explicit no-auth for a host without "
+            "Envoy), or 'oidc' (in-process JWT verification for a host without "
+            "Envoy). Set by the mini/docker CLI host from host_auth.mode "
+            "(cli.config.AuthConfig) via the AUTH_MODE env var; Kubernetes "
+            "deployments leave this at its default."
+        ),
+    )
     llm: LLMConfig = Field(default_factory=LLMConfig)
     watcher: WatcherConfig = Field(default_factory=WatcherConfig)
     event_bus: EventBusConfig = Field(default_factory=EventBusConfig)

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from tests.conftest import (
     InMemorySessionRepository,
     MockPodManager,
+    make_session_participant_service,
 )
 from volundr.adapters.inbound.auth import extract_principal
 from volundr.adapters.inbound.rest import WorkspaceResponse, create_router
@@ -81,7 +82,10 @@ def workspace_service(storage):
 
 def _make_app(session_service, workspace_service, principal_fn):
     app = FastAPI()
-    router = create_router(session_service)
+    router = create_router(
+        session_service,
+        session_participant_service=make_session_participant_service(session_service),
+    )
     app.include_router(router)
 
     class _Stubs:
@@ -198,7 +202,10 @@ class TestListWorkspaces:
     def test_list_without_identity(self, session_service, workspace_service):
         """When no identity adapter is configured, returns empty list."""
         app = FastAPI()
-        router = create_router(session_service)
+        router = create_router(
+            session_service,
+            session_participant_service=make_session_participant_service(session_service),
+        )
         app.include_router(router)
 
         class _Stubs:

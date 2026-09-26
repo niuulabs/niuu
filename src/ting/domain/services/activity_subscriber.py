@@ -11,8 +11,12 @@ subscription to their Volundr instance.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import math
+import random
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -29,13 +33,25 @@ from ting.ports.activity_projection import ActivityProjector
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.event_bus import EventBusPort, TingEvent
 from ting.ports.tracker import TrackerFactory, TrackerPort  # noqa: F401 — re-exported for consumers
-from ting.ports.volundr import ActivityEvent, VolundrFactory, VolundrPort
+from ting.ports.volundr import (
+    ActivityEvent,
+    ActivityStreamConnected,
+    VolundrFactory,
+    VolundrPort,
+    VolundrSession,
+)
 
 if TYPE_CHECKING:
     from ting.domain.services.review_engine import ReviewEngine
     from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 
 logger = logging.getLogger(__name__)
+
+# Sentinel returned by _lookup_run_session() to distinguish "this cluster
+# errored while being asked" from a clean "not found" (None) — a plain
+# module-level object rather than an exception or a magic string, since it
+# is compared by identity and never meant to be raised or serialized.
+_SESSION_LOOKUP_FAILED = object()
 
 
 @dataclass(frozen=True)
@@ -44,9 +60,35 @@ class CompletionEvaluation:
 
     is_complete: bool
     signals: dict[str, bool]
-    confidence: float
     pr_id: str | None = None
     pr_url: str | None = None
+
+
+@dataclass
+class _ClusterBackoffState:
+    """Per-(owner, cluster) SSE reconnect backoff state.
+
+    Cleared entirely once a cluster reconnects successfully or its
+    subscription is torn down (cluster removed, owner removed) — see
+    ``SessionActivitySubscriber._on_cluster_connected`` and
+    ``_cancel_owner_tasks``. ``next_retry_at`` (``time.monotonic()`` clock)
+    is what makes ``_sync_owner_clusters`` wait out the backoff delay
+    instead of rebuilding a failed cluster's task on the very next sync
+    cycle.
+    """
+
+    consecutive_failures: int = 0
+    next_retry_at: float = 0.0
+
+
+class DuplicateVolundrClusterError(RuntimeError):
+    """Raised when two of an owner's adapters resolve to the same cluster key.
+
+    Silently keeping only one would mean Ting stops watching a real,
+    distinctly-registered Forge cluster with no signal that it happened
+    (see .claude/rules/no-fallbacks.md) — almost certainly a Guild
+    registration bug (two instances sharing a target_id/name).
+    """
 
 
 class SessionActivitySubscriber:
@@ -80,11 +122,13 @@ class SessionActivitySubscriber:
         self._attested_review_projector = attested_review_projector
         self._running = False
         self._task: asyncio.Task[None] | None = None
-        self._owner_tasks: dict[str, list[asyncio.Task[None]]] = {}
+        # owner_id -> {cluster_key: task} — one isolated task per (owner, cluster).
+        self._owner_tasks: dict[str, dict[str, asyncio.Task[None]]] = {}
         self._pending_evaluations: dict[str, asyncio.Task[None]] = {}
         self._completed_workflow_sessions: set[str] = set()
-        # Cache per-owner adapters so we don't re-resolve on every cycle
-        self._owner_adapters: dict[str, list[VolundrPort]] = {}
+        # (owner_id, cluster_key) -> backoff state, isolated per cluster so one
+        # cluster's outage never affects another's reconnect cadence.
+        self._cluster_backoff: dict[tuple[str, str], _ClusterBackoffState] = {}
 
     @property
     def running(self) -> bool:
@@ -110,11 +154,17 @@ class SessionActivitySubscriber:
             task.cancel()
         self._pending_evaluations.clear()
         self._completed_workflow_sessions.clear()
-        for tasks in self._owner_tasks.values():
-            for task in tasks:
-                task.cancel()
+        cluster_tasks = [task for tasks in self._owner_tasks.values() for task in tasks.values()]
+        for task in cluster_tasks:
+            task.cancel()
         self._owner_tasks.clear()
-        self._owner_adapters.clear()
+        self._cluster_backoff.clear()
+        if cluster_tasks:
+            # Wait for cancellation to actually land instead of returning
+            # with tasks still mid-teardown — return_exceptions so one
+            # task's CancelledError (or any other exception) never stops us
+            # from waiting for the rest.
+            await asyncio.gather(*cluster_tasks, return_exceptions=True)
         if self._task is not None:
             self._task.cancel()
             try:
@@ -142,118 +192,410 @@ class SessionActivitySubscriber:
         if self._workflow_campaign_projector is not None:
             active_owners.update(await self._workflow_campaign_projector.list_active_owner_ids())
         logger.info(
-            "Sync: active_owners=%s, existing_tasks=%s",
+            "Sync: active_owners=%s, existing_clusters=%s",
             active_owners,
-            {
-                k: [("running" if not t.done() else "done") for t in v]
-                for k, v in self._owner_tasks.items()
-            },
+            {owner: list(clusters) for owner, clusters in self._owner_tasks.items()},
         )
 
         if not active_owners:
-            for owner_id, tasks in list(self._owner_tasks.items()):
-                for task in tasks:
-                    task.cancel()
-            self._owner_tasks.clear()
-            self._owner_adapters.clear()
+            for owner_id in list(self._owner_tasks):
+                self._cancel_owner_tasks(owner_id)
             await asyncio.sleep(self._config.reconnect_delay)
             return
 
-        # Start subscriptions for new owners (one task per cluster)
+        # Ensure a subscription set for every active owner. A brand-new owner
+        # (no cluster tasks yet) gets a workflow-campaign reconcile pass, same
+        # as before; an owner already being tracked does not get a repeat
+        # reconcile just because this cycle ran again. Each owner is isolated
+        # in its own try/except: one owner's broken Guild registration (e.g.
+        # GuildRegistryUnavailableError, CredentialBindingError) must not
+        # abort the sync cycle for every other owner — but it stays loud,
+        # logged at ERROR with a traceback every time it recurs, never
+        # swallowed (see .claude/rules/no-fallbacks.md).
         for owner_id in active_owners:
-            existing = self._owner_tasks.get(owner_id, [])
-            all_done = not existing or all(t.done() for t in existing)
-            if all_done:
-                if self._workflow_campaign_projector is not None:
+            try:
+                is_new_owner = owner_id not in self._owner_tasks
+                if is_new_owner and self._workflow_campaign_projector is not None:
                     await self._workflow_campaign_projector.reconcile_owner(owner_id)
-                adapters = await self._resolve_owner_adapters(owner_id)
-                tasks = []
-                for idx, adapter in enumerate(adapters):
-                    task = asyncio.create_task(
-                        self._adapter_subscription_loop(owner_id, adapter),
-                        name=f"sse-{owner_id[:8]}-{idx}",
-                    )
-                    tasks.append(task)
-                self._owner_tasks[owner_id] = tasks
+                await self._sync_owner_clusters(owner_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.error(
+                    "Failed to sync Volundr subscriptions for owner %s",
+                    owner_id[:8],
+                    exc_info=True,
+                )
 
         # Cancel subscriptions for owners with no more active dispatchers
         for owner_id in list(self._owner_tasks):
             if owner_id not in active_owners:
-                for task in self._owner_tasks.pop(owner_id):
-                    task.cancel()
-                self._owner_adapters.pop(owner_id, None)
+                self._cancel_owner_tasks(owner_id)
 
         # Wait before re-syncing
         await asyncio.sleep(self._config.reconnect_delay)
 
-    async def _adapter_subscription_loop(self, owner_id: str, volundr: VolundrPort) -> None:
-        """Maintain an SSE subscription for a single owner-cluster pair."""
-        while self._running:
-            try:
-                await self._reconcile_running_runs(owner_id, volundr)
-                logger.info("SSE subscription started for owner %s", owner_id[:8])
-                async for event in volundr.subscribe_activity():
-                    if not self._running:
-                        break
-                    await self._on_activity_event(event, volundr, owner_id)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception(
-                    "SSE subscription failed for owner %s, reconnecting",
-                    owner_id[:8],
-                )
-                # One cluster failed — cancel ALL tasks for this owner so the
-                # sync cycle recreates them with fresh adapters.
-                self._cancel_owner_tasks(owner_id)
-                return
+    async def _sync_owner_clusters(self, owner_id: str) -> None:
+        """Ensure *owner_id* has exactly one live SSE task per registered cluster.
 
-            if self._running:
-                await asyncio.sleep(self._config.reconnect_delay)
-
-    async def _reconcile_running_runs(self, owner_id: str, volundr: VolundrPort) -> None:
-        """Fail tracker-side RUNNING runs whose backing Forge sessions are already terminal.
-
-        This closes the restart gap where Volundr has reconciled dead local
-        sessions to ``stopped`` before Ting's SSE subscription comes online.
-        Without this pass, ``try_auto_continue()`` can believe all owner slots
-        are still occupied by phantom RUNNING runs.
+        Adapters are resolved fresh every cycle — no caching — so a cluster's
+        rotated PAT or changed Guild ``base_url`` is visible the moment its
+        task needs rebuilding, and a cluster added or removed from the
+        owner's Guild registration is picked up. A cluster whose task is
+        still running (or still waiting out its own backoff delay — see
+        ``_ClusterBackoffState.next_retry_at``) is left completely alone;
+        only a cluster whose task has finished and is due gets a new task
+        with the freshly resolved adapter.
         """
+        adapters = await self._resolve_owner_adapters(owner_id)
+        if not adapters:
+            # Nothing known for this owner right now. Tear down anything
+            # stale, but leave no entry behind: an empty entry would read as
+            # "already reconciled" forever, and _sync_owner_subscriptions
+            # would then never call reconcile_owner again even once a
+            # cluster reappears for this owner.
+            if owner_id in self._owner_tasks:
+                self._cancel_owner_tasks(owner_id)
+            return
+
+        desired: dict[str, VolundrPort] = {}
+        for adapter in adapters:
+            key = self._cluster_key(adapter)
+            if key in desired:
+                raise DuplicateVolundrClusterError(
+                    f"Owner {owner_id[:8]} has two Volundr adapters resolving to the "
+                    f"same cluster key {key!r}: {self._cluster_label(desired[key])!r} "
+                    f"and {self._cluster_label(adapter)!r}. Fix the Guild registration "
+                    "so each instance has a unique target_id/name."
+                )
+            desired[key] = adapter
+
+        clusters = self._owner_tasks.setdefault(owner_id, {})
+        now = time.monotonic()
+
+        for key, adapter in desired.items():
+            existing_task = clusters.get(key)
+            if existing_task is not None and not existing_task.done():
+                continue
+            backoff = self._cluster_backoff.get((owner_id, key))
+            if backoff is not None and now < backoff.next_retry_at:
+                continue
+            if backoff is not None and self._workflow_campaign_projector is not None:
+                # This cluster just failed and is now due for its
+                # backed-off resubscribe — catch up on any campaign
+                # terminal events its outage could have missed, the same
+                # pass a brand-new owner gets (see the is_new_owner branch
+                # in _sync_owner_subscriptions). Without this, a workflow
+                # gate resolved or a campaign finished while this one
+                # cluster was down would never be picked up.
+                await self._workflow_campaign_projector.reconcile_owner(owner_id)
+            clusters[key] = asyncio.create_task(
+                self._adapter_subscription_loop(owner_id, adapter),
+                name=f"sse-{owner_id[:8]}-{key}",
+            )
+
+        for key in list(clusters):
+            if key in desired:
+                continue
+            task = clusters.pop(key)
+            if not task.done():
+                task.cancel()
+            self._cluster_backoff.pop((owner_id, key), None)
+
+    async def _adapter_subscription_loop(self, owner_id: str, volundr: VolundrPort) -> None:
+        """Run one connect-and-stream attempt for a single owner-cluster pair.
+
+        This is a single attempt, not a retry loop: on failure it records
+        backoff state and returns; ``_sync_owner_clusters`` rebuilds the
+        cluster's task — once the recorded backoff delay has elapsed — with
+        a freshly resolved adapter. That is what picks up a rotated PAT or a
+        changed Guild ``base_url`` instead of retrying forever against a
+        stale one, and it never touches another cluster's task (see
+        .claude/rules/no-fallbacks.md — a stale credential must not keep
+        being silently retried against the wrong target). A clean stream end
+        (no error) also just returns; the next sync cycle reconnects it at
+        the ordinary ``reconnect_delay`` cadence.
+
+        Guards against double-handling events from an orphaned task: before
+        starting, and before handling each event, this checks that it is
+        still the task ``_owner_tasks`` has recorded for its ``(owner,
+        key)`` — if sync has since rebuilt this cluster under a different
+        task, this one stops silently instead of also processing events.
+
+        A cluster that legitimately has no sessions right now never gets
+        the "first event" backoff reset below — if it then drops mid-stream
+        (raises instead of closing cleanly) before ever sending an event,
+        that reset never fires either. So the connection's own age is also
+        a health signal: ``volundr.subscribe_activity()`` yields
+        ``ActivityStreamConnected`` exactly once, as soon as the connection
+        is genuinely open (not merely "we started trying"), and one that
+        has stayed open at least ``reconnect_stable_after_seconds`` since
+        then still counts as a recovery even though it ends in an
+        exception. The clock starts there, never at task start — a connect
+        that hangs to its own timeout (which can be the same order of
+        magnitude as the stability window) must never be credited as
+        "connected", or the backoff would never grow for a cluster that
+        never actually answers.
+        """
+        key = self._cluster_key(volundr)
+        label = self._cluster_label(volundr)
+        this_task = asyncio.current_task()
+
+        def _is_current() -> bool:
+            return self._running and self._owner_tasks.get(owner_id, {}).get(key) is this_task
+
+        if not _is_current():
+            return
+
+        connected = False
+        stream_opened_at: float | None = None
+        try:
+            # aclosing: close the SSE stream as soon as this attempt ends, even on
+            # an early return or a reconcile failure, not at garbage collection.
+            async with contextlib.aclosing(volundr.subscribe_activity()) as stream:
+                async for item in stream:
+                    if not _is_current():
+                        return
+                    if isinstance(item, ActivityStreamConnected):
+                        stream_opened_at = time.monotonic()
+                        # Reconcile only once the connection is genuinely open —
+                        # not before, which left a window where a session status
+                        # change (or the outage this cluster just had) went
+                        # unnoticed until the *next* resubscribe, and skipped
+                        # this cluster's own runs as "still backing off" since
+                        # its backoff state isn't cleared until later in this
+                        # same attempt.
+                        await self._reconcile_running_runs(owner_id, exempt_cluster_key=key)
+                        logger.info(
+                            "SSE subscription started for owner %s cluster=%s", owner_id[:8], label
+                        )
+                        continue
+                    if not connected:
+                        self._on_cluster_connected(owner_id, key, label)
+                        connected = True
+                    await self._on_activity_event(item, volundr, owner_id)
+            if not connected and stream_opened_at is not None:
+                self._on_cluster_connected(owner_id, key, label)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if this_task is not None and this_task.cancelling():
+                # A cancellation is already in flight for this task (e.g.
+                # sync just removed this cluster) — let that win instead of
+                # recording a spurious failure for a cluster we're no longer
+                # tracking.
+                raise
+            if (
+                not connected
+                and stream_opened_at is not None
+                and self._attempt_was_stable(stream_opened_at)
+            ):
+                self._on_cluster_connected(owner_id, key, label)
+            self._on_cluster_failure(owner_id, key, label, exc)
+
+    def _attempt_was_stable(self, stream_opened_at: float) -> bool:
+        """Whether the connection stayed open long enough to count as healthy.
+
+        *stream_opened_at* must be the moment ``ActivityStreamConnected``
+        was observed — never task start, which would count time spent
+        waiting on a connect (including one that eventually times out) as
+        time spent connected.
+        """
+        return time.monotonic() - stream_opened_at >= self._config.reconnect_stable_after_seconds
+
+    async def _reconcile_running_runs(
+        self, owner_id: str, *, exempt_cluster_key: str | None = None
+    ) -> None:
+        """Fail tracker-side RUNNING runs whose backing Forge session is confirmed terminal.
+
+        Called right after *this* cluster's SSE connection actually opens
+        (``ActivityStreamConnected``) — including the resubscribe after an
+        outage — so a session-status change missed while it was down is
+        caught up the moment it is back, and there is no gap between this
+        check and the stream actually starting. This closes the restart gap
+        where Volundr has reconciled dead local sessions to ``stopped``
+        before Ting's SSE subscription comes online; without this pass,
+        ``try_auto_continue()`` can believe all owner slots are still
+        occupied by phantom RUNNING runs.
+
+        A ``Run`` does not record which Forge cluster its session lives on,
+        so every one of the owner's currently registered adapters is asked
+        — see ``_reconcile_run_session`` for how a definitive "missing"
+        verdict is kept scoped to clusters that were actually, successfully
+        queried, so this pass run for one cluster's resubscribe can never
+        raise (or fail a run) because a *different* cluster is down.
+
+        *exempt_cluster_key* is the cluster whose own resubscribe triggered
+        this call: it is always queried regardless of its recorded backoff
+        state, which — at this point — has not been cleared yet (that
+        happens once an event arrives or the stream ends). Without the
+        exemption, a cluster's own reconcile pass would skip itself as
+        "currently backing off" and its phantom RUNNING runs from the
+        outage that just ended would never get checked by anyone.
+        """
+        adapters, unresolved = await self._resolve_owner_adapters_for_reconcile(owner_id)
+        if not adapters:
+            return
+
         trackers = await self._tracker_factory.for_owner(owner_id)
         for tracker in trackers:
             running_runs = await tracker.list_runs_by_status(RunStatus.RUNNING)
             for run in running_runs:
                 if not run.session_id:
                     continue
-                session = await volundr.get_session(run.session_id)
-                if session is None:
-                    await self._handle_failure(
-                        run,
-                        tracker,
-                        owner_id,
-                        reason="Session not found during subscriber startup",
-                    )
-                    continue
-                if session.status in self._FAILED_STATUSES:
-                    await self._handle_failure(
-                        run,
-                        tracker,
-                        owner_id,
-                        reason=f"Session {session.status}",
-                    )
+                await self._reconcile_run_session(
+                    run,
+                    tracker,
+                    owner_id,
+                    adapters,
+                    unresolved,
+                    exempt_cluster_key=exempt_cluster_key,
+                )
+
+    async def _resolve_owner_adapters_for_reconcile(
+        self, owner_id: str
+    ) -> tuple[list[VolundrPort], int]:
+        """Resolve adapters for a reconcile pass, plus how many registered
+        clusters could not be resolved into a usable adapter this cycle —
+        see ``VolundrFactory.for_owner_with_unresolved``.
+        """
+        return await self._factory.for_owner_with_unresolved(owner_id)
+
+    def _cluster_is_backing_off(
+        self, owner_id: str, adapter: VolundrPort, *, exempt_cluster_key: str | None
+    ) -> bool:
+        """Whether *adapter*'s cluster currently has recorded backoff state.
+
+        A cluster with an active failure streak has an unknown status until
+        it reconnects — querying it here would both delay this reconcile
+        pass by however long its own connect/read timeout takes, and risk
+        the exact 404 misattribution ``_reconcile_run_session`` otherwise
+        guards against. Its own ``_adapter_subscription_loop`` is already
+        responsible for finding out when it recovers.
+
+        *exempt_cluster_key*, when it matches this adapter's key, means
+        this is that cluster's own resubscribe calling — it is never
+        skipped for itself, only for other clusters still in backoff (see
+        ``_reconcile_running_runs``).
+        """
+        key = self._cluster_key(adapter)
+        if key == exempt_cluster_key:
+            return False
+        return (owner_id, key) in self._cluster_backoff
+
+    async def _reconcile_run_session(
+        self,
+        run: Run,
+        tracker: TrackerPort,
+        owner_id: str,
+        adapters: list[VolundrPort],
+        unresolved: int,
+        *,
+        exempt_cluster_key: str | None = None,
+    ) -> None:
+        """Resolve *run*'s session across *adapters* and fail it only on real evidence.
+
+        A run is marked FAILED for a missing session only when EVERY
+        registered cluster gave a clean, error-free answer and none of them
+        recognised the session. Three things stop that verdict, each
+        leaving the run's status simply unknown this pass rather than
+        failing it or letting anything raise out of this call (see
+        .claude/rules/no-fallbacks.md):
+
+        - A cluster currently in backoff — other than *exempt_cluster_key*
+          — is skipped without being queried at all (see
+          ``_cluster_is_backing_off``).
+        - A cluster that errored while being asked (down, timing out) — the
+          remaining clusters are still queried, concurrently, so one down
+          cluster never delays or blocks the others.
+        - Any cluster the factory could not even build an adapter for
+          (*unresolved* > 0) — it was never queried at all, so "not found
+          on every adapter we got" is not "not found on every registered
+          cluster".
+
+        A cluster that DID answer — found the session, healthy or terminal
+        — is always trusted for that verdict regardless of what any other
+        cluster did.
+        """
+        queryable = [
+            adapter
+            for adapter in adapters
+            if not self._cluster_is_backing_off(
+                owner_id, adapter, exempt_cluster_key=exempt_cluster_key
+            )
+        ]
+        skipped_for_backoff = len(adapters) - len(queryable)
+
+        results = await asyncio.gather(
+            *(self._lookup_run_session(adapter, run, owner_id) for adapter in queryable)
+        )
+
+        session = next((result for result in results if isinstance(result, VolundrSession)), None)
+        if session is not None:
+            if session.status in self._FAILED_STATUSES:
+                await self._handle_failure(
+                    run,
+                    tracker,
+                    owner_id,
+                    reason=f"Session {session.status}",
+                )
+            return
+
+        any_lookup_failed = any(result is _SESSION_LOOKUP_FAILED for result in results)
+        if any_lookup_failed or skipped_for_backoff > 0 or unresolved > 0:
+            return
+
+        await self._handle_failure(
+            run,
+            tracker,
+            owner_id,
+            reason="Session not found on any registered Volundr cluster",
+        )
+
+    async def _lookup_run_session(
+        self,
+        adapter: VolundrPort,
+        run: Run,
+        owner_id: str,
+    ) -> VolundrSession | None | object:
+        """Look up *run*'s session on *adapter*, catching that adapter's own error.
+
+        Returns the session (or ``None`` for a clean "not found") on
+        success, or the ``_SESSION_LOOKUP_FAILED`` sentinel on any
+        non-cancellation exception — so one cluster's error, surfaced here
+        per cluster, never propagates to cancel its siblings' concurrent
+        lookups (``asyncio.gather`` would otherwise do exactly that).
+        """
+        try:
+            return await adapter.get_session(run.session_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "Could not check session %s on cluster %s for owner %s while "
+                "reconciling run %s; leaving its status unknown this pass",
+                run.session_id,
+                self._cluster_label(adapter),
+                owner_id[:8],
+                run.tracker_id,
+                exc_info=True,
+            )
+            return _SESSION_LOOKUP_FAILED
 
     def _cancel_owner_tasks(self, owner_id: str) -> None:
-        """Cancel all SSE tasks for *owner_id* and clear the adapter cache."""
-        self._owner_adapters.pop(owner_id, None)
-        for task in self._owner_tasks.pop(owner_id, []):
+        """Cancel all SSE tasks for *owner_id* and clear its backoff state."""
+        for key, task in self._owner_tasks.pop(owner_id, {}).items():
             if not task.done():
                 task.cancel()
+            self._cluster_backoff.pop((owner_id, key), None)
 
     async def _resolve_owner_adapters(self, owner_id: str) -> list[VolundrPort]:
-        """Resolve and cache per-owner Volundr adapters (one per cluster)."""
-        if owner_id in self._owner_adapters:
-            return self._owner_adapters[owner_id]
+        """Resolve the owner's current Volundr adapters (one per registered cluster).
 
+        Called every sync cycle (no caching) so ``_sync_owner_clusters`` can
+        diff against the live set and pick up a cluster the owner added or
+        removed from their Guild registration.
+        """
         adapters = await self._factory.for_owner(owner_id)
         if not adapters:
             logger.error(
@@ -261,9 +603,131 @@ class SessionActivitySubscriber:
                 "user must configure a CODE_FORGE integration with a valid PAT",
                 owner_id[:8],
             )
-            return []
-        self._owner_adapters[owner_id] = adapters
         return adapters
+
+    @staticmethod
+    def _cluster_key(volundr: VolundrPort) -> str:
+        """Stable per-cluster key used to track tasks and backoff state.
+
+        Raises rather than falling back to a shared placeholder — silently
+        collapsing every unidentified adapter into one key would merge
+        distinct clusters into a single tracked subscription (see
+        .claude/rules/no-fallbacks.md).
+        """
+        key = volundr.target_id or volundr.name
+        if not key:
+            raise ValueError(
+                "Volundr adapter has neither target_id nor name set; cannot derive a "
+                "stable per-cluster subscription key for it — set target_id or name "
+                "on the registered Guild instance."
+            )
+        return key
+
+    @staticmethod
+    def _cluster_label(volundr: VolundrPort) -> str:
+        """Human-readable cluster identity for log lines (name/slug + base URL)."""
+        name = volundr.name or volundr.target_id
+        base_url = volundr.base_url
+        if base_url:
+            return f"{name} ({base_url})"
+        return name
+
+    def _max_backoff_exponent(self) -> int:
+        """Largest exponent worth computing before the delay is already capped.
+
+        Prevents ``multiplier ** attempt`` from ever approaching float
+        overflow when a cluster fails for a very long time (an unbounded
+        number of consecutive failures): once ``initial *
+        multiplier ** exponent`` reaches ``reconnect_max_delay`` the result
+        is clamped anyway, so no larger exponent is ever needed. Derived
+        entirely from config, not a hardcoded cap.
+        """
+        cfg = self._config
+        if cfg.reconnect_backoff_multiplier <= 1.0:
+            return 0
+        if cfg.reconnect_max_delay <= cfg.reconnect_initial_delay:
+            return 0
+        ratio = cfg.reconnect_max_delay / cfg.reconnect_initial_delay
+        return max(math.ceil(math.log(ratio, cfg.reconnect_backoff_multiplier)), 0)
+
+    def _compute_backoff_delay(self, attempt: int) -> float:
+        """Exponential backoff with a cap and downward jitter, all config-driven.
+
+        ``attempt`` is the 1-based consecutive-failure count. The delay grows
+        as ``reconnect_initial_delay * reconnect_backoff_multiplier **
+        (attempt - 1)``, capped at ``reconnect_max_delay``, then reduced by up
+        to ``reconnect_jitter`` fraction so many clusters failing together
+        don't retry in lockstep. ``reconnect_jitter`` is validated to
+        ``[0, 1]`` by ``WatcherConfig``, so it is used directly here — no
+        silent runtime clamp.
+        """
+        cfg = self._config
+        if cfg.reconnect_initial_delay <= 0:
+            return 0.0
+        exponent = min(max(attempt - 1, 0), self._max_backoff_exponent())
+        base = min(
+            cfg.reconnect_initial_delay * (cfg.reconnect_backoff_multiplier**exponent),
+            cfg.reconnect_max_delay,
+        )
+        if cfg.reconnect_jitter == 0.0:
+            return base
+        return base * (1 - random.uniform(0.0, cfg.reconnect_jitter))
+
+    def _on_cluster_connected(self, owner_id: str, key: str, label: str) -> None:
+        """Reset a cluster's backoff state as soon as it proves it's live.
+
+        Called on the first event received (proof of a live connection) or,
+        for a stream that ends cleanly having never sent one, once it ends —
+        not only on a clean close, so a cluster that reconnects and stays up
+        for a long time has its backoff reset promptly rather than only
+        after that (possibly very long) stream eventually ends. A no-op
+        unless the cluster had previously failed — a healthy cluster must
+        not get a recovery log line on every ordinary reconnect cycle.
+        """
+        state = self._cluster_backoff.pop((owner_id, key), None)
+        if state is None or state.consecutive_failures == 0:
+            return
+        logger.info(
+            "SSE subscription for owner %s cluster=%s recovered after %d failed attempt(s)",
+            owner_id[:8],
+            label,
+            state.consecutive_failures,
+        )
+
+    def _on_cluster_failure(self, owner_id: str, key: str, label: str, exc: Exception) -> float:
+        """Record a cluster's SSE failure, log it, and return the next retry delay.
+
+        The traceback is logged once, on the first failure of a run of
+        failures. Every subsequent attempt logs one WARNING line — exception
+        class, message, attempt number, next delay — with no repeated
+        traceback, so a down cluster stays loud without flooding logs (see
+        .claude/rules/no-fallbacks.md).
+        """
+        state = self._cluster_backoff.setdefault((owner_id, key), _ClusterBackoffState())
+        state.consecutive_failures += 1
+        delay = self._compute_backoff_delay(state.consecutive_failures)
+        state.next_retry_at = time.monotonic() + delay
+        if state.consecutive_failures == 1:
+            logger.error(
+                "SSE subscription failed for owner %s cluster=%s — retrying with "
+                "backoff (attempt 1, next in %.1fs)",
+                owner_id[:8],
+                label,
+                delay,
+                exc_info=True,
+            )
+        else:
+            logger.warning(
+                "SSE subscription still failing for owner %s cluster=%s: %s: %s "
+                "(attempt %d, next in %.1fs)",
+                owner_id[:8],
+                label,
+                type(exc).__name__,
+                exc,
+                state.consecutive_failures,
+                delay,
+            )
+        return delay
 
     _FAILED_STATUSES: frozenset[str] = frozenset({"stopped", "failed"})
 
@@ -477,28 +941,16 @@ class SessionActivitySubscriber:
         if self._config.require_ci and not signals["ci_passed"]:
             is_complete = False
 
-        # Calculate confidence based on configurable signal strength
-        cfg = self._config
-        confidence = cfg.confidence_base if is_complete else 0.0
-        if signals["pr_exists"]:
-            confidence += cfg.confidence_pr_bonus
-        if signals["ci_passed"]:
-            confidence += cfg.confidence_ci_bonus
-        if signals["extended_idle"]:
-            confidence += cfg.confidence_idle_bonus
-
         logger.info(
-            "Completion evaluation: session=%s is_complete=%s confidence=%.2f signals=%s",
+            "Completion evaluation: session=%s is_complete=%s signals=%s",
             run.session_id,
             is_complete,
-            min(confidence, 1.0),
             signals,
         )
 
         return CompletionEvaluation(
             is_complete=is_complete,
             signals=signals,
-            confidence=min(confidence, 1.0),
             pr_id=pr_id,
             pr_url=pr_url,
         )

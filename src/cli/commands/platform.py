@@ -26,6 +26,7 @@ from cli.services.preflight import (
 )
 
 if TYPE_CHECKING:
+    from bifrost.config import BifrostConfig
     from cli.config import CLISettings
     from cli.registry import PluginRegistry
     from cli.services.manager import ServiceManager
@@ -182,6 +183,13 @@ async def _startup(
         port=port,
         host_profile=host_profile,
         enabled_mounts=enabled_mounts,
+        # Browser-asserted dev identity (client x-auth-*, devUserId/devRoles
+        # query params) is only the identity contract for a mini host that
+        # ALSO explicitly declared it has no authentication (auth.mode:
+        # none). auth.mode: oidc verifies bearer tokens itself — trusting
+        # the browser's own claims there would silently undo that.
+        dev_identity=settings.mode == "mini" and settings.host_auth.mode == "none",
+        cli_settings=settings,
     )
     manager._root_server = root_server  # type: ignore[attr-defined]
 
@@ -274,7 +282,9 @@ def _build_up_callback(
         if effective_settings.mode == "mini":
             _set_environment("LOCAL_MOUNTS__ENABLED", "true", only_if_missing=True)
             _set_environment("LOCAL_MOUNTS__MINI_MODE", "true", only_if_missing=True)
-            for key, value in _resolve_local_pod_manager_env(effective_settings).items():
+            local_env = _resolve_local_pod_manager_env(effective_settings)
+            _check_auth_env_conflicts(local_env, effective_settings.host_auth.mode)
+            for key, value in local_env.items():
                 _set_environment(
                     key,
                     value,
@@ -397,6 +407,85 @@ def _build_up_callback(
     return up
 
 
+#: Env vars auth_adapter_env() computes that select WHICH identity/authz
+#: adapter runs. An operator-set value here disagreeing with what auth.mode
+#: computes must raise, not silently be overwritten — the running host would
+#: then not match what config.yaml or /auth/config claims. BIFROST_CONFIG is
+#: checked separately below: it is a full BifrostConfig JSON blob (providers,
+#: models, ...), not an adapter-selection string, so comparing it whole here
+#: would raise over unrelated provider/model differences and would blame
+#: auth.mode for them — only its own auth_mode field is this function's
+#: concern, and only under 'oidc' (host_auth.mode: none never touches
+#: bifrost.auth_mode at all — see cli.commands.platform._effective_bifrost_config).
+_AUTH_ADAPTER_ENV_KEYS = frozenset(
+    {
+        "IDENTITY__ADAPTER",
+        "AUTHORIZATION__ADAPTER",
+        "RAVN_API_AUTH__ADAPTER",
+        "AUTH__ADAPTER",
+        "HOST_IDENTITY__ADAPTER",
+        "MIMIR_AUTH__ADAPTER",
+        "AUTH_MODE",
+    }
+)
+
+
+def _check_bifrost_config_auth_mode_conflict(computed: dict[str, str], auth_mode: str) -> None:
+    """Raise if the operator's own BIFROST_CONFIG disagrees on auth_mode only.
+
+    Only meaningful under 'oidc': that is the only mode
+    ``_effective_bifrost_config`` forces ``bifrost.auth_mode`` to a specific
+    value, so it is the only mode where an operator-set BIFROST_CONFIG could
+    silently lose that override. Comparing the full JSON (as the other
+    _AUTH_ADAPTER_ENV_KEYS do) would also raise over incidental differences
+    in providers/models that have nothing to do with auth.mode.
+    """
+    if auth_mode != "oidc":
+        return
+    existing_raw = os.environ.get("BIFROST_CONFIG")
+    computed_raw = computed.get("BIFROST_CONFIG")
+    if existing_raw is None or computed_raw is None:
+        return
+    try:
+        existing_auth_mode = json.loads(existing_raw).get("auth_mode")
+        computed_auth_mode = json.loads(computed_raw).get("auth_mode")
+    except (ValueError, AttributeError):
+        return
+    if existing_auth_mode is None or existing_auth_mode == computed_auth_mode:
+        return
+    raise typer.BadParameter(
+        f"BIFROST_CONFIG is already set in the environment with auth_mode "
+        f"{existing_auth_mode!r}, which disagrees with auth.mode: {auth_mode!r} "
+        f"(computed {computed_auth_mode!r}). Remove the operator-set BIFROST_CONFIG "
+        "env var, or change auth.mode/host_auth.oidc to match it.",
+        param_hint="BIFROST_CONFIG",
+    )
+
+
+def _check_auth_env_conflicts(computed: dict[str, str], auth_mode: str) -> None:
+    """Raise if the operator's own environment disagrees with auth.mode.
+
+    Selecting the identity/authorization adapter used to unconditionally
+    overwrite whatever the operator had already exported — silently
+    discarding it. The running host would then not match what config.yaml
+    or /auth/config claims, which is exactly the "claims a security the
+    host doesn't have" failure mode this whole fix round exists to close.
+    """
+    for key in _AUTH_ADAPTER_ENV_KEYS:
+        existing = os.environ.get(key)
+        computed_value = computed.get(key)
+        if existing is None or computed_value is None or existing == computed_value:
+            continue
+        raise typer.BadParameter(
+            f"{key} is already set in the environment to {existing!r}, which "
+            f"disagrees with auth.mode: {auth_mode!r} (computed {computed_value!r}). "
+            f"Remove the operator-set {key} env var, or change auth.mode/"
+            "host_auth.oidc to match it.",
+            param_hint=key,
+        )
+    _check_bifrost_config_auth_mode_conflict(computed, auth_mode)
+
+
 MINI_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.local_process.LocalProcessPodManager"
 CLUSTER_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.direct_k8s_pod_manager.DirectK8sPodManager"
 OPENSHELL_POD_MANAGER_ADAPTER = (
@@ -405,6 +494,19 @@ OPENSHELL_POD_MANAGER_ADAPTER = (
 LOCAL_RESIDENT_RUNTIME_ADAPTER = (
     "volundr.adapters.outbound.local_resident_runtime.LocalContainerResidentRuntimeController"
 )
+HOST_PROCESS_RESIDENT_RUNTIME_ADAPTER = (
+    "volundr.adapters.outbound.host_resident_runtime.HostProcessResidentRuntimeController"
+)
+MINI_RESIDENTS_DIR = "~/.niuu/residents"
+MINI_RESIDENT_CODEX_MODEL = "gpt-5.6-sol"
+MINI_RESIDENT_CAPABILITIES = [
+    "chat",
+    "runtime.restart",
+    "runtime.suspend",
+    "logs",
+    "metrics",
+    "usage",
+]
 OPENCLAW_RESIDENT_SESSION_ADAPTER = (
     "volundr.adapters.outbound.openclaw_gateway.OpenClawResidentSessionController"
 )
@@ -451,6 +553,69 @@ OPENSHELL_POD_MANAGER_DEFAULTS: dict[str, Any] = {
 }
 
 
+def _effective_bifrost_config(settings: CLISettings) -> BifrostConfig:
+    """Return ``settings.bifrost``, forced into verified oidc mode when the host is.
+
+    ``host_auth.mode: oidc`` is a platform-wide claim that every inbound
+    identity path on this host is signature-verified (see
+    ``cli.config.AuthConfig``); Bifröst does not read the shared
+    ``AUTH_MODE``/``IDENTITY__ADAPTER`` env vars ``auth_adapter_env()``
+    computes for the other co-hosted services (it is configured via
+    ``BIFROST_CONFIG`` instead — see that function's docstring), so nothing
+    else makes this claim true for it. This mirrors ``auth_adapter_env()``'s
+    own behaviour: it unconditionally overrides the computed adapters for
+    'oidc', not merging with whatever the operator separately configured, so
+    a stale ``bifrost.auth_mode: open`` (or 'pat'/'mesh') in config.yaml can
+    never leave a host claiming oidc coverage it doesn't have. 'none' leaves
+    ``settings.bifrost`` untouched — Bifröst stays open (or whatever the
+    operator configured) exactly as today, per the no-auth owner contract.
+
+    Raises (rather than silently overriding) when the operator explicitly
+    configured an ``bifrost.auth_mode`` this override would discard (checked
+    via ``model_fields_set``, not a comparison against the default — the
+    default IS 'open', so a comparison couldn't tell "operator wrote open"
+    from "operator wrote nothing"). ``bifrost.pat_revocation`` is not
+    discarded: it survives the ``model_copy`` below untouched and
+    ``bifrost.app._build_pat_revocation_validator`` applies it under 'oidc'
+    too, whenever the verified bearer happens to be a PAT — see
+    ``bifrost.adapters.auth.oidc.OidcAuthAdapter``.
+
+    Does not raise while the ``bifrost`` plugin itself is disabled — a
+    stale ``bifrost.auth_mode`` in config.yaml is inert then (nothing reads
+    ``BIFROST_CONFIG``), and demanding it be removed anyway would be a
+    second, redundant way to say what
+    ``CLISettings._OIDC_UNCOVERED_PLUGINS['bifrost']`` already says.
+    """
+    if settings.host_auth.mode != "oidc":
+        return settings.bifrost
+
+    if settings.plugins.enabled.get("bifrost", True) and (
+        "auth_mode" in settings.bifrost.model_fields_set
+    ):
+        raise typer.BadParameter(
+            f"bifrost.auth_mode: {settings.bifrost.auth_mode!r} is configured, but "
+            "host_auth.mode: oidc always overrides it to 'oidc' (every inbound path "
+            "on this host must be verified). Remove bifrost.auth_mode from "
+            "config.yaml, or set host_auth.mode: none if Bifröst should keep its "
+            "own separately-configured auth mode instead.",
+            param_hint="bifrost.auth_mode",
+        )
+
+    from bifrost.auth import AuthMode as BifrostAuthModeEnum
+    from cli.config import auth_adapter_env
+
+    # Reuse the same computed kwargs every other co-hosted service's oidc
+    # slot gets (IDENTITY__KWARGS / RAVN_API_AUTH__KWARGS / ... are all the
+    # same JSON — see auth_adapter_env()) rather than recomputing them.
+    oidc_kwargs = json.loads(auth_adapter_env(settings.host_auth)["IDENTITY__KWARGS"])
+    return settings.bifrost.model_copy(
+        update={
+            "auth_mode": BifrostAuthModeEnum.OIDC,
+            "oidc_kwargs": oidc_kwargs,
+        }
+    )
+
+
 def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
     """Build env overrides for Volundr host-local runtime configuration."""
     from pathlib import Path
@@ -465,7 +630,7 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
         "STORAGE__KWARGS__HOME_MOUNT_PATH": str(home_dir),
         "GIT__VALIDATE_ON_CREATE": "false",
         "RESIDENT_RUNTIMES": json.dumps(_mini_resident_runtimes_config(settings)),
-        "BIFROST_CONFIG": settings.bifrost.model_dump_json(),
+        "BIFROST_CONFIG": _effective_bifrost_config(settings).model_dump_json(),
         "CREDENTIAL_STORE": json.dumps(
             {
                 "adapter": ("volundr.adapters.outbound.file_credential_store.FileCredentialStore"),
@@ -489,13 +654,9 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
     if seeds:
         env["INTEGRATIONS__SEED_CONNECTIONS"] = json.dumps(seeds)
     if settings.mode == "mini":
-        env["RAVN_API_AUTH__ADAPTER"] = (
-            "identity.adapters.identity.AllowAllHeaderAuthenticationAdapter"
-        )
-        env["AUTH__ALLOW_ANONYMOUS_DEV"] = "true"
-        env["AUTHORIZATION__ADAPTER"] = (
-            "identity.adapters.authorization.AllowAllAuthorizationAdapter"
-        )
+        from cli.config import auth_adapter_env
+
+        env.update(auth_adapter_env(settings.host_auth))
     return env
 
 
@@ -522,12 +683,22 @@ def model_server_seed_connections(settings: CLISettings) -> list[dict[str, Any]]
     A self-hosted provider without a base URL (the gateway's built-in ``local``
     entry) is not a server anyone can reach and is skipped.
 
-    Sessions launched with the connection get the gateway URL from its config
-    (``env_from_config`` on the catalog entry), which is what points Claude Code
-    and Codex at the served models. Seeded again on every start, so the model
-    list follows the stack settings.
+    Sessions launched with the connection get the gateway URL and gateway
+    token from its config (``env_from_config`` on the catalog entry), which is
+    what points Claude Code and Codex at the served models and lets them
+    authenticate to it. Seeded again on every start, so the model list follows
+    the stack settings.
+
+    The token is the named ``OPEN_GATEWAY_TOKEN`` sentinel, never a real
+    credential: this function only ever runs where the bifrost plugin is
+    active, and ``CLISettings._oidc_covers_every_enabled_mount`` already
+    refuses to start with ``host_auth.mode: oidc`` and the bifrost plugin both
+    enabled (no per-session credential exists to mint yet), so every call here
+    is under ``none`` or ``envoy``, where the gateway trusts every caller and
+    the sentinel is all a session needs.
     """
     from cli.services.compose_bundle import MODEL_SERVER_PROVIDERS, bifrost_providers
+    from volundr.domain.model_gateway import OPEN_GATEWAY_TOKEN
 
     gateway_url = f"{_session_platform_url(settings)}/api/v1/bifrost"
     seeds: list[dict[str, Any]] = []
@@ -547,6 +718,7 @@ def model_server_seed_connections(settings: CLISettings) -> list[dict[str, Any]]
                 "config": {
                     "provider": provider,
                     "gateway_url": gateway_url,
+                    "token": OPEN_GATEWAY_TOKEN,
                     "models": list(config["models"]),
                 },
             }
@@ -555,13 +727,97 @@ def model_server_seed_connections(settings: CLISettings) -> list[dict[str, Any]]
 
 
 def _mini_resident_runtimes_config(settings: CLISettings) -> dict[str, Any]:
-    local_platform_url = "http://host.docker.internal:8080"
+    """Resident runtime configuration for the selected local resident runtime."""
+    builders = {
+        "process": _host_process_resident_runtimes,
+        "docker": _docker_resident_runtimes,
+    }
+    return builders[settings.residents.runtime](settings)
+
+
+def _host_resident_platform_url(settings: CLISettings) -> str:
+    """Where a resident process on this host reaches the platform."""
+    host = settings.server.host.strip()
+    if host in {"", "0.0.0.0", "::"}:
+        host = "127.0.0.1"
+    return f"http://{host}:{settings.server.port}"
+
+
+def _ravn_local_profile(
+    platform_url: str,
+    *,
+    description: str,
+    runtime_values: dict[str, Any],
+) -> dict[str, Any]:
+    """The ``ravn-local`` profile, identical across the local resident runtimes."""
+    return {
+        "id": "ravn-local",
+        "display_name": "Resident Ravn (Local)",
+        "description": description,
+        "backend": "local",
+        "engine": "ravn",
+        "capabilities": MINI_RESIDENT_CAPABILITIES,
+        "default_model": MINI_RESIDENT_CODEX_MODEL,
+        "allowed_models": [MINI_RESIDENT_CODEX_MODEL],
+        "catalog_vendors": [],
+        "labels": ["resident", "ravn", "local"],
+        "deployment": {
+            "values": {
+                **runtime_values,
+                "broker": {
+                    "cliType": "codex-ws",
+                    "transportAdapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
+                    "skipPermissions": True,
+                },
+                "session": {"reasoningEffort": "high"},
+                "resident": {
+                    "persona": "product-steward",
+                    "llm": {
+                        "provider": {
+                            "adapter": "ravn.adapters.llm.bifrost.BifrostAdapter",
+                            "kwargs": {"base_url": f"{platform_url}/api/v1/bifrost"},
+                        }
+                    },
+                    "platform": {"enabled": True, "baseUrl": platform_url},
+                    "wakefulness": {"enabled": True},
+                },
+            }
+        },
+    }
+
+
+def _host_process_resident_runtimes(settings: CLISettings) -> dict[str, Any]:
+    """Ravn residents as host processes; no container engine involved."""
+    platform_url = _host_resident_platform_url(settings)
+    return {
+        "controllers": [
+            {
+                "adapter": HOST_PROCESS_RESIDENT_RUNTIME_ADAPTER,
+                "kwargs": {
+                    "residents_dir": MINI_RESIDENTS_DIR,
+                    "volundr_api_url": platform_url,
+                },
+            }
+        ],
+        "session_controllers": [],
+        "profiles": [
+            _ravn_local_profile(
+                platform_url,
+                description="Long-lived Ravn resident running as processes on this host",
+                runtime_values={},
+            )
+        ],
+    }
+
+
+def _docker_resident_runtimes(settings: CLISettings) -> dict[str, Any]:
+    """Resident images through the local Docker Engine (``residents.runtime: docker``)."""
+    local_platform_url = f"http://host.docker.internal:{settings.server.port}"
     local_bifrost_url = f"{local_platform_url}/api/v1/bifrost"
     configured_models = [
         model for provider in settings.bifrost.providers.values() for model in provider.models
     ]
-    model_ids = list(dict.fromkeys(configured_models)) or ["gpt-5.6-sol"]
-    codex_model = "gpt-5.6-sol"
+    model_ids = list(dict.fromkeys(configured_models)) or [MINI_RESIDENT_CODEX_MODEL]
     resident_model_ids = [f"niuu/{model}" for model in model_ids]
     resident_default_model = resident_model_ids[0]
     openclaw_models = [
@@ -575,21 +831,16 @@ def _mini_resident_runtimes_config(settings: CLISettings) -> dict[str, Any]:
         }
         for model in model_ids
     ]
-    common_capabilities = [
-        "chat",
-        "runtime.restart",
-        "runtime.suspend",
-        "logs",
-        "metrics",
-        "usage",
-    ]
+    common_capabilities = MINI_RESIDENT_CAPABILITIES
     session_capabilities = ["session.list", "session.create", "session.delete"]
     return {
         "controllers": [
             {
                 "adapter": LOCAL_RESIDENT_RUNTIME_ADAPTER,
-                "residents_dir": "~/.niuu/residents",
-                "volundr_api_url": local_platform_url,
+                "kwargs": {
+                    "residents_dir": MINI_RESIDENTS_DIR,
+                    "volundr_api_url": local_platform_url,
+                },
             }
         ],
         "session_controllers": [
@@ -603,43 +854,14 @@ def _mini_resident_runtimes_config(settings: CLISettings) -> dict[str, Any]:
             },
         ],
         "profiles": [
-            {
-                "id": "ravn-local",
-                "display_name": "Resident Ravn (Local)",
-                "description": "Long-lived Ravn resident hosted by the local container engine",
-                "backend": "local",
-                "engine": "ravn",
-                "capabilities": common_capabilities,
-                "default_model": codex_model,
-                "allowed_models": [codex_model],
-                "catalog_vendors": [],
-                "labels": ["resident", "ravn", "local"],
-                "deployment": {
-                    "values": {
-                        "image": LOCAL_RAVN_IMAGE,
-                        "runtime": {"service": {"name": "skuld", "port": 9200}},
-                        "broker": {
-                            "cliType": "codex-ws",
-                            "transportAdapter": (
-                                "skuld.transports.codex_ws.CodexWebSocketTransport"
-                            ),
-                            "skipPermissions": True,
-                        },
-                        "session": {"reasoningEffort": "high"},
-                        "resident": {
-                            "persona": "product-steward",
-                            "llm": {
-                                "provider": {
-                                    "adapter": "ravn.adapters.llm.bifrost.BifrostAdapter",
-                                    "kwargs": {"base_url": local_bifrost_url},
-                                }
-                            },
-                            "platform": {"enabled": True, "baseUrl": local_platform_url},
-                            "wakefulness": {"enabled": True},
-                        },
-                    }
+            _ravn_local_profile(
+                local_platform_url,
+                description="Long-lived Ravn resident hosted by the local container engine",
+                runtime_values={
+                    "image": LOCAL_RAVN_IMAGE,
+                    "runtime": {"service": {"name": "skuld", "port": 9200}},
                 },
-            },
+            ),
             {
                 "id": "nemoclaw-local",
                 "display_name": "NemoClaw (Local)",
@@ -982,5 +1204,19 @@ def create_platform_commands(
         from skuld.broker import main as skuld_main
 
         skuld_main()
+
+    @platform_app.command(
+        hidden=True,
+        context_settings={
+            "allow_extra_args": True,
+            "ignore_unknown_options": True,
+            "help_option_names": [],
+        },
+    )
+    def ravn(ctx: typer.Context) -> None:
+        """Run the Ravn CLI (internal, host-process residents in a compiled binary)."""
+        from ravn.cli.commands import app as ravn_app
+
+        ravn_app(args=list(ctx.args), prog_name="ravn")
 
     return platform_app

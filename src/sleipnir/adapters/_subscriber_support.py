@@ -1,14 +1,29 @@
 """Shared helpers for Sleipnir subscriber adapters.
 
-Extracted so that all transport adapters (in-process, nng, RabbitMQ, …) can
-reuse the consumer loop, base subscription class, ring-buffer overflow helper,
+Extracted so that all transport adapters (in-process, nng, NATS, …) can
+reuse the consumer loops, base subscription class, ring-buffer overflow helper,
 and event dispatch logic without duplicating code.
+
+Two consumer loops exist because transports differ in what they can promise:
+
+- :func:`consume_deliveries` is for broker-backed transports that can
+  redeliver.  Each queued :class:`Delivery` is settled with the broker only
+  after the handler has run: :meth:`Delivery.ack` when it returned,
+  :meth:`Delivery.nak` when it raised.  Callers enqueue with a blocking
+  ``await queue.put(...)`` so a full queue withholds acks and pushes back on
+  the broker instead of discarding events.
+- :func:`consume_queue` is for broker-less transports (in-process, nng,
+  webhook, CLI command).  Nothing can redeliver their events, so a failing
+  handler is logged and the event is gone, and :func:`enqueue_with_overflow`
+  drops the oldest event rather than block a publisher.  These transports are
+  at-most-once by construction.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from contextlib import suppress
 
@@ -20,11 +35,63 @@ from sleipnir.ports.events import EventHandler, Subscription
 DEFAULT_RING_BUFFER_DEPTH = 1000
 
 
+class Delivery(ABC):
+    """One event queued for a subscription handler, plus its broker settlement.
+
+    The consumer loop calls exactly one of :meth:`ack` or :meth:`nak` once the
+    handler has finished with :attr:`event`.  Implementations must not raise:
+    a settlement that fails leaves the message unacknowledged, which the broker
+    already treats as "redeliver later", so they record the failure and return.
+    """
+
+    __slots__ = ("event",)
+
+    def __init__(self, event: SleipnirEvent) -> None:
+        self.event = event
+
+    @abstractmethod
+    async def ack(self) -> None:
+        """The handler returned: tell the broker never to redeliver this event."""
+
+    @abstractmethod
+    async def nak(self, error: Exception) -> None:
+        """The handler raised *error*: request redelivery, or dead-letter the event."""
+
+
+async def consume_deliveries(
+    queue: asyncio.Queue[Delivery],
+    handler: EventHandler,
+) -> None:
+    """Consumer loop for broker-backed transports: settle only after handling.
+
+    The ack is sent after ``handler`` returns, never before, so an event whose
+    handler raised, or whose process died mid-handler, is redelivered by the
+    broker.  Cancellation (unsubscribe/stop) leaves the in-flight delivery
+    unsettled on purpose; the owning subscription releases it.
+    """
+    while True:
+        delivery = await queue.get()
+        try:
+            try:
+                await handler(delivery.event)
+            except Exception as exc:
+                await delivery.nak(exc)
+                continue
+            await delivery.ack()
+        finally:
+            queue.task_done()
+
+
 async def consume_queue(
     queue: asyncio.Queue[SleipnirEvent],
     handler: EventHandler,
 ) -> None:
-    """Consumer loop: read events from *queue* and invoke *handler*."""
+    """Consumer loop for broker-less transports: read events and invoke *handler*.
+
+    There is no broker to redeliver from, so a handler exception is logged with
+    its traceback and the event is not retried (at-most-once).  Broker-backed
+    transports use :func:`consume_deliveries` instead.
+    """
     while True:
         event = await queue.get()
         try:
@@ -47,10 +114,13 @@ async def enqueue_with_overflow(
 ) -> bool:
     """Put *event* on *queue*, dropping the oldest entry on overflow.
 
-    When the queue is full the oldest event is dequeued and discarded so that
-    the producer is never blocked.  A ``WARNING`` is logged with the dropped
-    event's id and type.  Returns ``True`` when an event was dropped so
-    callers can surface sustained backpressure through their stats.
+    Only for broker-less transports, whose publishers must never block on a
+    slow subscriber and which have no broker to push back on.  When the queue
+    is full the oldest event is dequeued and discarded; a ``WARNING`` is logged
+    with the dropped event's id and type.  Returns ``True`` when an event was
+    dropped so callers can surface sustained backpressure through their stats.
+    Broker-backed transports must use a blocking ``await queue.put(...)`` so
+    that a full queue withholds acknowledgements instead of losing events.
     """
     overflowed = False
     if queue.full():
@@ -79,7 +149,7 @@ class _BaseSubscription(Subscription):
     def __init__(
         self,
         patterns: list[str],
-        queue: asyncio.Queue[SleipnirEvent],
+        queue: asyncio.Queue[SleipnirEvent] | asyncio.Queue[Delivery],
         task: asyncio.Task[None],
         remove_fn: Callable[[], None],
     ) -> None:

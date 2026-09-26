@@ -9,7 +9,7 @@ from tests.conftest import (
     InMemorySessionRepository,
     MockPodManager,
 )
-from volundr.domain.models import ChronicleStatus, GitSource, SessionStatus
+from volundr.domain.models import ChronicleStatus, GitSource, Principal, SessionStatus
 from volundr.domain.services import (
     ChronicleNotFoundError,
     ChronicleService,
@@ -42,7 +42,7 @@ class TestChronicleServiceCreate:
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
 
-        chronicle = await chronicle_service.create_chronicle(session.id)
+        chronicle = await chronicle_service.create_chronicle(session.id, principal=None)
 
         assert chronicle.session_id == session.id
         assert chronicle.project == "repo"
@@ -58,6 +58,28 @@ class TestChronicleServiceCreate:
         assert stored is not None
         assert stored.id == chronicle.id
 
+    async def test_create_chronicle_carries_the_sessions_owner_and_tenant(
+        self,
+        chronicle_repository: ChronRepo,
+        repository: SessRepo,
+        pod_manager: Pods,
+    ):
+        """History outlives the session, so it keeps the session's attribution."""
+        session_service = SessionService(repository, pod_manager)
+        chronicle_service = ChronicleService(chronicle_repository, session_service)
+        session = await session_service.create_session(
+            name="my-session",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            principal=Principal(
+                user_id="alice", email="", tenant_id="t1", roles=["volundr:developer"]
+            ),
+        )
+
+        chronicle = await chronicle_service.create_chronicle(session.id, principal=None)
+
+        assert (chronicle.owner_id, chronicle.tenant_id) == ("alice", "t1")
+
     async def test_create_chronicle_nonexistent_session(
         self,
         chronicle_repository: ChronRepo,
@@ -69,7 +91,7 @@ class TestChronicleServiceCreate:
         chronicle_service = ChronicleService(chronicle_repository, session_service)
 
         with pytest.raises(SessionNotFoundError):
-            await chronicle_service.create_chronicle(uuid4())
+            await chronicle_service.create_chronicle(uuid4(), principal=None)
 
     async def test_create_chronicle_derives_project_from_repo(
         self,
@@ -93,7 +115,7 @@ class TestChronicleServiceCreate:
                 model="claude-sonnet-4-20250514",
                 source=GitSource(repo=repo_url, branch="main"),
             )
-            chronicle = await chronicle_service.create_chronicle(session.id)
+            chronicle = await chronicle_service.create_chronicle(session.id, principal=None)
             assert chronicle.project == expected_project, (
                 f"Expected project '{expected_project}' for repo '{repo_url}', "
                 f"got '{chronicle.project}'"
@@ -118,9 +140,9 @@ class TestChronicleServiceGet:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        created = await chronicle_service.create_chronicle(session.id)
+        created = await chronicle_service.create_chronicle(session.id, principal=None)
 
-        result = await chronicle_service.get_chronicle(created.id)
+        result = await chronicle_service.get_chronicle(created.id, principal=None)
 
         assert result is not None
         assert result.id == created.id
@@ -136,7 +158,7 @@ class TestChronicleServiceGet:
         session_service = SessionService(repository, pod_manager)
         chronicle_service = ChronicleService(chronicle_repository, session_service)
 
-        result = await chronicle_service.get_chronicle(uuid4())
+        result = await chronicle_service.get_chronicle(uuid4(), principal=None)
 
         assert result is None
 
@@ -154,7 +176,7 @@ class TestChronicleServiceList:
         session_service = SessionService(repository, pod_manager)
         chronicle_service = ChronicleService(chronicle_repository, session_service)
 
-        result = await chronicle_service.list_chronicles()
+        result = await chronicle_service.list_chronicles(principal=None)
 
         assert result == []
 
@@ -178,10 +200,10 @@ class TestChronicleServiceList:
             model="claude-opus-4-20250514",
             source=GitSource(repo="https://github.com/org/repo2", branch="dev"),
         )
-        await chronicle_service.create_chronicle(s1.id)
-        await chronicle_service.create_chronicle(s2.id)
+        await chronicle_service.create_chronicle(s1.id, principal=None)
+        await chronicle_service.create_chronicle(s2.id, principal=None)
 
-        result = await chronicle_service.list_chronicles()
+        result = await chronicle_service.list_chronicles(principal=None)
 
         assert len(result) == 2
 
@@ -205,10 +227,10 @@ class TestChronicleServiceList:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/beta", branch="main"),
         )
-        await chronicle_service.create_chronicle(s1.id)
-        await chronicle_service.create_chronicle(s2.id)
+        await chronicle_service.create_chronicle(s1.id, principal=None)
+        await chronicle_service.create_chronicle(s2.id, principal=None)
 
-        result = await chronicle_service.list_chronicles(project="alpha")
+        result = await chronicle_service.list_chronicles(project="alpha", principal=None)
 
         assert len(result) == 1
         assert result[0].project == "alpha"
@@ -233,13 +255,13 @@ class TestChronicleServiceList:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo2", branch="main"),
         )
-        c1 = await chronicle_service.create_chronicle(s1.id)
-        c2 = await chronicle_service.create_chronicle(s2.id)
+        c1 = await chronicle_service.create_chronicle(s1.id, principal=None)
+        c2 = await chronicle_service.create_chronicle(s2.id, principal=None)
 
-        await chronicle_service.update_chronicle(c1.id, tags=["python", "testing"])
-        await chronicle_service.update_chronicle(c2.id, tags=["rust"])
+        await chronicle_service.update_chronicle(c1.id, tags=["python", "testing"], principal=None)
+        await chronicle_service.update_chronicle(c2.id, tags=["rust"], principal=None)
 
-        result = await chronicle_service.list_chronicles(tags=["python"])
+        result = await chronicle_service.list_chronicles(tags=["python"], principal=None)
 
         assert len(result) == 1
         assert "python" in result[0].tags
@@ -263,9 +285,11 @@ class TestChronicleServiceUpdate:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        created = await chronicle_service.create_chronicle(session.id)
+        created = await chronicle_service.create_chronicle(session.id, principal=None)
 
-        updated = await chronicle_service.update_chronicle(created.id, summary="Added new feature")
+        updated = await chronicle_service.update_chronicle(
+            created.id, summary="Added new feature", principal=None
+        )
 
         assert updated.summary == "Added new feature"
         assert updated.id == created.id
@@ -285,9 +309,11 @@ class TestChronicleServiceUpdate:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        created = await chronicle_service.create_chronicle(session.id)
+        created = await chronicle_service.create_chronicle(session.id, principal=None)
 
-        updated = await chronicle_service.update_chronicle(created.id, tags=["python", "refactor"])
+        updated = await chronicle_service.update_chronicle(
+            created.id, tags=["python", "refactor"], principal=None
+        )
 
         assert updated.tags == ["python", "refactor"]
 
@@ -306,11 +332,13 @@ class TestChronicleServiceUpdate:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        created = await chronicle_service.create_chronicle(session.id)
+        created = await chronicle_service.create_chronicle(session.id, principal=None)
         assert created.status == ChronicleStatus.DRAFT
 
         updated = await chronicle_service.update_chronicle(
-            created.id, status=ChronicleStatus.COMPLETE
+            created.id,
+            status=ChronicleStatus.COMPLETE,
+            principal=None,
         )
 
         assert updated.status == ChronicleStatus.COMPLETE
@@ -327,7 +355,7 @@ class TestChronicleServiceUpdate:
         fake_id = uuid4()
 
         with pytest.raises(ChronicleNotFoundError) as exc_info:
-            await chronicle_service.update_chronicle(fake_id, summary="test")
+            await chronicle_service.update_chronicle(fake_id, summary="test", principal=None)
 
         assert exc_info.value.chronicle_id == fake_id
 
@@ -341,7 +369,7 @@ class TestChronicleServiceDelete:
         repository: SessRepo,
         pod_manager: Pods,
     ):
-        """Deleting an existing chronicle returns True."""
+        """Deleting an existing chronicle removes it."""
         session_service = SessionService(repository, pod_manager)
         chronicle_service = ChronicleService(chronicle_repository, session_service)
 
@@ -350,11 +378,10 @@ class TestChronicleServiceDelete:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        created = await chronicle_service.create_chronicle(session.id)
+        created = await chronicle_service.create_chronicle(session.id, principal=None)
 
-        result = await chronicle_service.delete_chronicle(created.id)
+        await chronicle_service.delete_chronicle(created.id, principal=None)
 
-        assert result is True
         assert await chronicle_repository.get(created.id) is None
 
     async def test_delete_nonexistent(
@@ -363,13 +390,12 @@ class TestChronicleServiceDelete:
         repository: SessRepo,
         pod_manager: Pods,
     ):
-        """Deleting a nonexistent chronicle returns False."""
+        """Deleting a nonexistent chronicle raises ChronicleNotFoundError."""
         session_service = SessionService(repository, pod_manager)
         chronicle_service = ChronicleService(chronicle_repository, session_service)
 
-        result = await chronicle_service.delete_chronicle(uuid4())
-
-        assert result is False
+        with pytest.raises(ChronicleNotFoundError):
+            await chronicle_service.delete_chronicle(uuid4(), principal=None)
 
 
 class TestChronicleServiceCreateOrUpdateFromBroker:
@@ -396,6 +422,7 @@ class TestChronicleServiceCreateOrUpdateFromBroker:
             summary="Did some work",
             key_changes=["main.py: added feature"],
             duration_seconds=120,
+            principal=None,
         )
 
         assert chronicle.session_id == session.id
@@ -420,7 +447,7 @@ class TestChronicleServiceCreateOrUpdateFromBroker:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        existing = await chronicle_service.create_chronicle(session.id)
+        existing = await chronicle_service.create_chronicle(session.id, principal=None)
         assert existing.summary is None
 
         updated = await chronicle_service.create_or_update_from_broker(
@@ -429,6 +456,7 @@ class TestChronicleServiceCreateOrUpdateFromBroker:
             key_changes=["app.py: refactored"],
             unfinished_work="Tests still needed",
             duration_seconds=300,
+            principal=None,
         )
 
         assert updated.id == existing.id  # same chronicle, updated
@@ -453,12 +481,15 @@ class TestChronicleServiceCreateOrUpdateFromBroker:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        existing = await chronicle_service.create_chronicle(session.id)
-        await chronicle_service.update_chronicle(existing.id, status=ChronicleStatus.COMPLETE)
+        existing = await chronicle_service.create_chronicle(session.id, principal=None)
+        await chronicle_service.update_chronicle(
+            existing.id, status=ChronicleStatus.COMPLETE, principal=None
+        )
 
         updated = await chronicle_service.create_or_update_from_broker(
             session_id=session.id,
             summary="New session work",
+            principal=None,
         )
 
         assert updated.id == existing.id
@@ -479,6 +510,7 @@ class TestChronicleServiceCreateOrUpdateFromBroker:
             await chronicle_service.create_or_update_from_broker(
                 session_id=uuid4(),
                 summary="test",
+                principal=None,
             )
 
     async def test_partial_update_preserves_existing_fields(
@@ -496,14 +528,18 @@ class TestChronicleServiceCreateOrUpdateFromBroker:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        existing = await chronicle_service.create_chronicle(session.id)
+        existing = await chronicle_service.create_chronicle(session.id, principal=None)
         await chronicle_service.update_chronicle(
-            existing.id, tags=["python"], summary="Manual summary"
+            existing.id,
+            tags=["python"],
+            summary="Manual summary",
+            principal=None,
         )
 
         updated = await chronicle_service.create_or_update_from_broker(
             session_id=session.id,
             duration_seconds=60,
+            principal=None,
         )
 
         assert updated.id == existing.id
@@ -532,7 +568,7 @@ class TestChronicleServiceGetBySession:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        created = await chronicle_service.create_chronicle(session.id)
+        created = await chronicle_service.create_chronicle(session.id, principal=None)
 
         result = await chronicle_service.get_chronicle_by_session(session.id)
 
@@ -573,9 +609,9 @@ class TestChronicleServiceGetChain:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        chronicle = await chronicle_service.create_chronicle(session.id)
+        chronicle = await chronicle_service.create_chronicle(session.id, principal=None)
 
-        chain = await chronicle_service.get_chain(chronicle.id)
+        chain = await chronicle_service.get_chain(chronicle.id, principal=None)
 
         assert len(chain) == 1
         assert chain[0].id == chronicle.id
@@ -590,7 +626,7 @@ class TestChronicleServiceGetChain:
         session_service = SessionService(repository, pod_manager)
         chronicle_service = ChronicleService(chronicle_repository, session_service)
 
-        chain = await chronicle_service.get_chain(uuid4())
+        chain = await chronicle_service.get_chain(uuid4(), principal=None)
 
         assert chain == []
 
@@ -613,9 +649,9 @@ class TestChronicleServiceReforge:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
-        chronicle = await chronicle_service.create_chronicle(session.id)
+        chronicle = await chronicle_service.create_chronicle(session.id, principal=None)
 
-        new_session = await chronicle_service.reforge(chronicle.id)
+        new_session = await chronicle_service.reforge(chronicle.id, principal=None)
 
         assert "(reforged)" in new_session.name
         assert new_session.repo == session.repo
@@ -639,9 +675,9 @@ class TestChronicleServiceReforge:
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/org/repo", branch="feature/old"),
         )
-        chronicle = await chronicle_service.create_chronicle(session.id)
+        chronicle = await chronicle_service.create_chronicle(session.id, principal=None)
 
-        new_session = await chronicle_service.reforge(chronicle.id)
+        new_session = await chronicle_service.reforge(chronicle.id, principal=None)
 
         assert new_session.model == "claude-sonnet-4-20250514"
         assert new_session.repo == "https://github.com/org/repo"
@@ -659,6 +695,6 @@ class TestChronicleServiceReforge:
         fake_id = uuid4()
 
         with pytest.raises(ChronicleNotFoundError) as exc_info:
-            await chronicle_service.reforge(fake_id)
+            await chronicle_service.reforge(fake_id, principal=None)
 
         assert exc_info.value.chronicle_id == fake_id

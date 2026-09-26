@@ -220,6 +220,54 @@ def _create_pod_manager(settings: Settings) -> PodManager:
     return instance
 
 
+_OPENBAO_SECRET_INJECTION_ADAPTER = (
+    "volundr.adapters.outbound.openbao_secret_injection.OpenBaoAgentInjectionAdapter"
+)
+
+
+def _validate_remote_room_role_config(settings: Settings, runtime_backend: str) -> None:
+    """Fail fast at startup rather than shipping a 'remote' config that can never work.
+
+    ``pod_manager.room_role_source`` is a whole-deployment decision (see its
+    own field description in ``volundr/config.py``) — every future session
+    pod's trust boundary changes with it, so refusing an impossible
+    combination once at process startup is far better than letting it
+    render broken session pods one at a time, discovered only when the
+    first invited participant can never attach.
+    """
+    if settings.pod_manager.room_role_source != "remote":
+        return
+    if runtime_backend != "kubernetes":
+        return
+    session_defaults = settings.pod_manager.kwargs.get("session_defaults") or {}
+    ws_auth_defaults = session_defaults.get("wsAuth") or {}
+    if ws_auth_defaults.get("enforce_ownership"):
+        raise ValueError(
+            "pod_manager.room_role_source is 'remote' but pod_manager.kwargs."
+            "session_defaults.wsAuth.enforce_ownership is true — the pod-local "
+            "ext_authz sidecar (identity.adapters.envoy_authz) would gate every "
+            "connection to Cedar's owner/admin-only 'start' action before a "
+            "remote room-role lookup ever ran, so a participant could never "
+            "attach. Set pod_manager.kwargs.session_defaults.wsAuth"
+            ".enforce_ownership: false, or set pod_manager.room_role_source "
+            "back to 'deployment'."
+        )
+    if settings.secret_injection.adapter != _OPENBAO_SECRET_INJECTION_ADAPTER:
+        raise ValueError(
+            "pod_manager.room_role_source is 'remote' but secret_injection.adapter "
+            f"is {settings.secret_injection.adapter!r}, not "
+            f"{_OPENBAO_SECRET_INJECTION_ADAPTER!r} — "
+            "skuld.room_role_remote.RemoteAuthorizationAdapter's session-binding "
+            "check (see rest_session_participants._require_session_scoped_"
+            "workload_credential) trusts the openbao-session-{id} service "
+            "account OpenBaoAgentInjectionAdapter creates per session; without "
+            "it, session pods have no per-session service account for Forge's "
+            "role endpoint to bind a workload credential to. Configure "
+            f"secret_injection.adapter: {_OPENBAO_SECRET_INJECTION_ADAPTER!r}, "
+            "or set pod_manager.room_role_source back to 'deployment'."
+        )
+
+
 def _create_resident_controllers(
     settings: Settings,
     pod_manager: PodManager,
@@ -380,6 +428,7 @@ def _create_contributors(
     can accept the ports they need and ignore others via **_extra.
     """
     from volundr.adapters.outbound.contributors.local_mount import LocalMountContributor
+    from volundr.adapters.outbound.contributors.room_role import RoomRoleSourceContributor
     from volundr.adapters.outbound.contributors.session_def import SessionDefinitionContributor
     from volundr.adapters.outbound.contributors.workload_config import WorkloadConfigContributor
     from volundr.adapters.outbound.contributors.workload_identity import (
@@ -435,6 +484,18 @@ def _create_contributors(
         contributors.append(WorkloadIdentityContributor())
         logger.info("Session contributor: workload_identity (auto-wired)")
 
+    if not _has_contributor("room_role_source"):
+        contributors.append(
+            RoomRoleSourceContributor(
+                room_role_source=settings.pod_manager.room_role_source,
+                cache_ttl_seconds=settings.pod_manager.room_role_cache_ttl_seconds,
+            )
+        )
+        logger.info(
+            "Session contributor: room_role_source (auto-wired, %s)",
+            settings.pod_manager.room_role_source,
+        )
+
     # The integrations a launch attaches carry more than credentials: the
     # Claude auth mode, MCP servers, and the model gateway URL of a self-hosted
     # model server. Wire the contributor whenever a catalog is present, so a
@@ -455,7 +516,11 @@ def _create_contributors(
         )
 
         contributors.append(
-            ModelGatewayContributor(gateway_url=settings.bifrost.session_gateway_url, **ports)
+            ModelGatewayContributor(
+                gateway_url=settings.bifrost.session_gateway_url,
+                auth_mode=settings.auth_mode,
+                **ports,
+            )
         )
         logger.info("Session contributor: model_gateway (auto-wired)")
 
@@ -501,6 +566,8 @@ def _create_contributors(
             ravn_kwargs["ravn_image"] = settings.ravn_flock_image
         if settings.ravn_flock_init_writer_image:
             ravn_kwargs["init_writer_image"] = settings.ravn_flock_init_writer_image
+        if settings.ravn_flock_llm_config:
+            ravn_kwargs["default_llm_config"] = settings.ravn_flock_llm_config
         contributors.append(RavnFlockContributor(**ravn_kwargs))
         logger.info("Session contributor: ravn_flock (auto-wired)")
 

@@ -548,6 +548,20 @@ Subscribe here:
 
 This stream is for platform-level events, not chat token streaming.
 
+The stream is scoped to the caller the same way `GET /sessions` is: you receive
+events for your own sessions, or for your tenant's sessions if you hold
+`volundr:admin` in that tenant, and never another tenant's. Authenticate the
+subscription like any other session route; with identity configured, an
+unauthenticated subscriber gets `401`. `heartbeat` reaches every subscriber.
+`stats_updated` also reaches every subscriber, but its figures cover only the
+sessions that subscriber may list, the same figures `GET /stats` returns to it.
+`session_read_state` reaches only the reader it names. `pr_merged`
+names no session, so it is only delivered when the deployment runs without
+identity. Session-scoped payloads carry `owner_id` and `tenant_id`.
+
+On a standalone Forge the only accepted `scope` is `local` (the default);
+`scope=guild` returns `422`. Guild aggregation is served by the Niuu host.
+
 ### Event types you should handle
 
 Documented session-stream events:
@@ -1081,6 +1095,24 @@ Chronicles are the durable narrative summary of a session.
 | `GET` | `/api/v1/forge/chronicles/{id}/chain` |
 | `GET` | `/api/v1/forge/sessions/{session_id}/chronicle` |
 
+### Who can see and change a chronicle
+
+A chronicle keeps the owner and tenant of the session that produced it, even
+after that session is deleted, and is scoped like `GET /sessions`:
+
+- A caller sees its own chronicles, or every chronicle in its tenant as a
+  tenant admin (`volundr:admin`). Other tenants' chronicles are never visible,
+  and neither is a chronicle with no recorded tenant.
+- A chronicle outside the caller's scope returns `404`, for reads and writes
+  alike. `GET /chronicles` omits it, and `GET /chronicles/{id}/chain` leaves
+  out the ancestors the caller cannot read.
+- Writes also need the authorization policy to allow the action on the
+  chronicle: `update` for `PATCH`, `delete` for `DELETE`, `start` for
+  `reforge`, and `report_chronicle` / `report_timeline` for the session-keyed
+  writes. A chronicle the caller can see but may not change returns `403`.
+- With authorization configured, a request without an identity returns `401`.
+- A reforged session belongs to the caller, not to the original owner.
+
 ### Chronicle fields that matter to a controller
 
 - `summary`
@@ -1106,6 +1138,11 @@ Recommended use:
 |---|---|
 | `GET` | `/api/v1/forge/chronicles/{session_id}/timeline` |
 | `POST` | `/api/v1/forge/chronicles/{session_id}/timeline` |
+| `GET` | `/api/v1/forge/chronicles/{session_id}/diff?file=...` |
+
+The timeline follows its chronicle's scope. Appending an event creates the
+session's chronicle if it has none yet, only after `report_timeline` is
+authorized. The diff proxy needs `read` on the session itself.
 
 Use timeline data for:
 

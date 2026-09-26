@@ -5,13 +5,17 @@ from __future__ import annotations
 import pytest
 
 from cli.config import (
+    AuthConfig,
+    AuthOidcConfig,
     CLISettings,
     DatabaseConfig,
+    OidcIssuerConfig,
     PluginConfig,
     PodManagerConfig,
     ServerConfig,
     ServiceConfig,
     TUIConfig,
+    auth_adapter_env,
 )
 
 
@@ -107,3 +111,162 @@ class TestServerConfig:
     def test_custom_port(self) -> None:
         config = ServerConfig(port=9090)
         assert config.port == 9090
+
+
+class TestAuthConfig:
+    def test_default_is_none_explicit_no_auth(self) -> None:
+        settings = CLISettings()
+        assert settings.host_auth.mode == "none"
+        assert settings.host_auth.oidc.issuers == []
+
+    def test_oidc_without_issuers_raises_with_remedy(self) -> None:
+        with pytest.raises(ValueError, match="auth.oidc.issuers"):
+            AuthConfig(mode="oidc")
+
+    def test_oidc_with_issuer_missing_audience_raises(self) -> None:
+        with pytest.raises(ValueError):
+            AuthConfig(
+                mode="oidc",
+                oidc=AuthOidcConfig(issuers=[OidcIssuerConfig(issuer="https://kc.example")]),
+            )
+
+    def test_oidc_with_valid_issuer_is_accepted(self) -> None:
+        config = AuthConfig(
+            mode="oidc",
+            oidc=AuthOidcConfig(
+                issuers=[
+                    OidcIssuerConfig(issuer="https://kc.example/realms/volundr", audiences=["api"])
+                ]
+            ),
+        )
+        assert config.mode == "oidc"
+
+    def test_rejects_unknown_mode(self) -> None:
+        with pytest.raises(ValueError):
+            AuthConfig(mode="envoy")
+
+
+class TestAuthAdapterEnv:
+    def test_none_mode_env(self) -> None:
+        env = auth_adapter_env(AuthConfig())
+        assert env["IDENTITY__ADAPTER"].endswith("AllowAllIdentityAdapter")
+        assert env["AUTHORIZATION__ADAPTER"].endswith("AllowAllAuthorizationAdapter")
+        assert env["RAVN_API_AUTH__ADAPTER"].endswith("AllowAllHeaderAuthenticationAdapter")
+        assert env["HOST_IDENTITY__ADAPTER"].endswith("AllowAllHeaderAuthenticationAdapter")
+        assert env["AUTH__ALLOW_ANONYMOUS_DEV"] == "true"
+        assert env["AUTH_MODE"] == "none"
+        assert "IDENTITY__KWARGS" not in env
+        # 'none' also switches Ting off its Envoy-trusting default onto the
+        # same explicit allow-all adapter every other service gets.
+        assert env["AUTH__ADAPTER"].endswith("AllowAllHeaderAuthenticationAdapter")
+
+    def test_oidc_mode_env(self) -> None:
+        import json
+
+        auth = AuthConfig(
+            mode="oidc",
+            oidc=AuthOidcConfig(
+                issuers=[
+                    OidcIssuerConfig(
+                        issuer="https://kc.example/realms/volundr",
+                        audiences=["volundr-api"],
+                        jwks_uri="https://kc.example/realms/volundr/protocol/openid-connect/certs",
+                    )
+                ]
+            ),
+        )
+        env = auth_adapter_env(auth)
+
+        assert env["IDENTITY__ADAPTER"] == "identity.adapters.jwks.JwksIdentityAdapter"
+        assert env["AUTHORIZATION__ADAPTER"] == "identity.adapters.cedar.CedarAuthorizationAdapter"
+        assert (
+            env["RAVN_API_AUTH__ADAPTER"]
+            == "identity.adapters.jwks.JwksBearerAuthenticationAdapter"
+        )
+        assert env["AUTH__ADAPTER"] == "identity.adapters.jwks.JwksBearerAuthenticationAdapter"
+        assert (
+            env["HOST_IDENTITY__ADAPTER"]
+            == "identity.adapters.jwks.JwksBearerAuthenticationAdapter"
+        )
+        assert env["AUTH__ALLOW_ANONYMOUS_DEV"] == "false"
+        assert env["AUTH_MODE"] == "oidc"
+
+        kwargs = json.loads(env["IDENTITY__KWARGS"])
+        assert kwargs["issuers"][0]["issuer"] == "https://kc.example/realms/volundr"
+        assert kwargs["issuers"][0]["audiences"] == ["volundr-api"]
+        assert kwargs["role_mapping"] == {
+            "admin": "volundr:admin",
+            "developer": "volundr:developer",
+            "viewer": "volundr:viewer",
+        }
+        assert json.loads(env["RAVN_API_AUTH__KWARGS"]) == kwargs
+        assert json.loads(env["AUTH__KWARGS"]) == kwargs
+        assert json.loads(env["HOST_IDENTITY__KWARGS"]) == kwargs
+
+
+class TestOidcCoverageGate:
+    _ISSUER_KWARGS = {
+        "mode": "oidc",
+        "oidc": {
+            "issuers": [{"issuer": "https://kc.example/realms/volundr", "audiences": ["api"]}]
+        },
+    }
+
+    _CLEAR_UNCOVERED = {"enabled": {"bifrost": False}}
+
+    def test_oidc_allowed_with_mimir_plugin_enabled_by_default(self) -> None:
+        """Mímir's own auth checks now go through auth_mode (see mimir.config.
+
+        MimirServiceConfig.auth_mode/identity_adapter and
+        niuu.service_runtime._validate_identity_adapter_class), so it no
+        longer needs plugins.enabled.mimir: false to run oidc — only bifrost
+        (its client-credential gap — see the 'bifrost' entry in
+        _OIDC_UNCOVERED_PLUGINS) still needs disabling.
+        """
+        settings = CLISettings(host_auth=self._ISSUER_KWARGS, plugins=self._CLEAR_UNCOVERED)
+        assert settings.host_auth.mode == "oidc"
+
+    def test_oidc_allowed_with_guild_enabled(self) -> None:
+        """Guild forwards only the caller's bearer token to a remote instance
+
+        (see niuu.adapters.inbound.remote_urls.forward_identity_headers), so
+        it does not need to be disabled for auth.mode: oidc.
+        """
+        settings = CLISettings(host_auth=self._ISSUER_KWARGS, plugins=self._CLEAR_UNCOVERED)
+        assert settings.host_auth.mode == "oidc"
+        assert settings.plugins.enabled.get("guild", True) is True
+
+    def test_oidc_allowed_regardless_of_bifrost_auth_mode_once_bifrost_plugin_disabled(
+        self,
+    ) -> None:
+        """Bifröst's auth_mode is now forced to oidc by the CLI host itself
+
+        (cli.commands.platform._effective_bifrost_config) whenever
+        host_auth.mode: oidc, so a stale bifrost.auth_mode in config.yaml no
+        longer needs to be validated here — see that function's docstring.
+        The bifrost *plugin* still needs disabling separately (see below):
+        that's about whether anything can reach it without a credential,
+        not about what auth_mode it's configured with.
+        """
+        settings = CLISettings(
+            host_auth=self._ISSUER_KWARGS,
+            plugins=self._CLEAR_UNCOVERED,
+            bifrost={"auth_mode": "open"},
+        )
+        assert settings.host_auth.mode == "oidc"
+        assert settings.bifrost.auth_mode == "open"  # untouched here; platform.py overrides it
+
+    def test_oidc_blocked_while_bifrost_plugin_enabled_by_default(self) -> None:
+        """Bifröst's inbound auth is verified now, but sessions/residents have
+
+        no way to authenticate to it yet (skuld.config.ModelGatewayConfig.
+        token has no real default; ravn.adapters.llm.bifrost.BifrostAdapter
+        sends no Authorization header) — every model call would 401. See the
+        'bifrost' entry in _OIDC_UNCOVERED_PLUGINS for the full reasoning.
+        """
+        with pytest.raises(ValueError, match="bifrost"):
+            CLISettings(host_auth=self._ISSUER_KWARGS)
+
+    def test_none_mode_ignores_uncovered_plugins(self) -> None:
+        settings = CLISettings()
+        assert settings.host_auth.mode == "none"

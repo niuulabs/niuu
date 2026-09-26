@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Any
+from datetime import datetime
+from typing import Any, Protocol
 from uuid import UUID
 
 from ravn.domain.persona_document import (
@@ -17,11 +18,59 @@ from ravn.domain.persona_document import (
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition
 from ting.domain.workflow_document import referenced_persona_aliases
+from ting.domain.workflow_versioning import workflow_version_tuple
 from ting.ports.workflow_migration import (
     WorkflowMigrationSource,
     WorkflowMigrationTarget,
     WorkflowPersonaSourceResolver,
 )
+
+
+class LegacyCatalogMigrationTarget(Protocol):
+    """The subset of the file catalog the legacy-migration guard needs."""
+
+    def read_migration_marker(self) -> dict[str, Any] | None: ...
+
+    async def get_workflow(self, workflow_id: UUID) -> object | None: ...
+
+
+async def workflow_catalog_migration_is_current(
+    workflow_repo: LegacyCatalogMigrationTarget,
+    *,
+    legacy_count: int,
+    legacy_max_updated_at: datetime | None,
+) -> bool:
+    """Return whether the file catalog is a verified, current copy of PostgreSQL.
+
+    Shared by the startup guard (``ting.main._assert_workflow_catalog_migrated``)
+    and the operator migration command (``ting.migrate_workflows
+    --skip-if-migrated``): both need to know whether the configured file
+    catalog already reflects the PostgreSQL ``workflows`` table exactly, given
+    its row count and most recent ``updated_at``. An empty PostgreSQL table has
+    nothing to migrate and is trivially current.
+    """
+    if not legacy_count:
+        return True
+    marker = workflow_repo.read_migration_marker()
+    marker_max_updated_at = marker.get("source_max_updated_at") if marker else None
+    marker_matches = bool(
+        marker
+        and marker.get("source_count") == legacy_count
+        and marker_max_updated_at
+        == (legacy_max_updated_at.isoformat() if legacy_max_updated_at is not None else None)
+    )
+    if not marker_matches:
+        return False
+    deleted_ids = set(marker.get("deleted_ids", []))
+    expected_ids = set(marker.get("inventory_ids", [])) - deleted_ids
+    for workflow_id in expected_ids:
+        try:
+            parsed_workflow_id = UUID(workflow_id)
+        except (TypeError, ValueError):
+            return False
+        if await workflow_repo.get_workflow(parsed_workflow_id) is None:
+            return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -33,6 +82,7 @@ class WorkflowMigrationReport:
     unchanged_count: int
     errors: tuple[str, ...]
     applied: bool = False
+    bundled_superseded: int = 0
 
     @property
     def can_apply(self) -> bool:
@@ -43,6 +93,7 @@ class WorkflowMigrationReport:
             "source_count": self.source_count,
             "referenced_count": self.referenced_count,
             "bundled_matches": self.bundled_matches,
+            "bundled_superseded": self.bundled_superseded,
             "create_count": self.create_count,
             "unchanged_count": self.unchanged_count,
             "errors": list(self.errors),
@@ -71,6 +122,7 @@ async def migrate_workflow_catalog(
     bundled = {workflow.id: workflow for workflow in bundled_workflows}
     prepared: list[WorkflowDefinition] = []
     bundled_matches = 0
+    bundled_superseded = 0
     unchanged = 0
     errors: list[str] = []
     bundled_replacements: set[UUID] = set()
@@ -84,6 +136,44 @@ async def migrate_workflow_catalog(
         )
 
     for workflow in source_workflows:
+        packaged = bundled.get(workflow.id)
+        # A package-seeded ('bundled', never operator-authored) row that no
+        # longer matches the packaged definition is not divergence to
+        # resolve when it is an OLDER release of the package's own content --
+        # superseded by the current packaged definition under the same
+        # identity. The filesystem catalog already serves that current
+        # packaged definition for this id by default, so there is nothing to
+        # write or reconcile, and no persona resolution is needed for
+        # content that will not be published. A bundled row at a NEWER
+        # version than this image's own package is not superseded, it is a
+        # sign this image is older than the database (a rollback): treat it
+        # as an error rather than silently discarding the newer content. A
+        # bundled row diverging at the SAME version (or with an unparsable
+        # version) is genuinely ambiguous, not an ordering question, so it
+        # falls through to the divergence handling below unchanged.
+        if (
+            packaged is not None
+            and workflow.origin == "bundled"
+            and not _same_packaged_identity(workflow, packaged)
+        ):
+            try:
+                source_version = workflow_version_tuple(workflow.version)
+                packaged_version = workflow_version_tuple(packaged.version)
+            except ValueError as exc:
+                errors.append(f"Workflow {workflow.id} version cannot be compared: {exc}")
+                continue
+            if source_version < packaged_version:
+                bundled_superseded += 1
+                continue
+            if source_version > packaged_version:
+                errors.append(
+                    f"System workflow {workflow.id} ({workflow.name!r}) is at version "
+                    f"{workflow.version}, newer than this image's packaged version "
+                    f"{packaged.version}. This looks like an image rollback: deploy the "
+                    "image that shipped that version, or bump the packaged workflow's "
+                    "own version forward past it."
+                )
+                continue
         try:
             persona_source = await persona_source_for_workflow(workflow)
         except (PersonaDocumentError, WorkflowDocumentError) as exc:
@@ -91,7 +181,6 @@ async def migrate_workflow_catalog(
             continue
         pinned, pin_errors = _pin_workflow(workflow, persona_source)
         errors.extend(pin_errors)
-        packaged = bundled.get(workflow.id)
         if packaged is not None:
             if not _same_packaged_identity(workflow, packaged):
                 if replace_divergent_bundled:
@@ -135,6 +224,7 @@ async def migrate_workflow_catalog(
         source_count=len(source_workflows),
         referenced_count=len(referenced_ids),
         bundled_matches=bundled_matches,
+        bundled_superseded=bundled_superseded,
         create_count=len(prepared),
         unchanged_count=unchanged,
         errors=tuple(errors),
@@ -168,6 +258,7 @@ async def migrate_workflow_catalog(
             ),
             "referenced_count": len(referenced_ids),
             "bundled_matches": bundled_matches,
+            "bundled_superseded": bundled_superseded,
             "migrated_count": len(prepared),
             "unchanged_count": unchanged,
         }

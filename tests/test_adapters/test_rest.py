@@ -20,6 +20,7 @@ from tests.conftest import (
     MockGitProvider,
     MockGitRegistry,
     MockPodManager,
+    make_session_participant_service,
 )
 from volundr.adapters.inbound.rest import (
     SessionCreate,
@@ -75,9 +76,9 @@ def stats_repo() -> InMemoryStatsRepository:
 
 
 @pytest.fixture
-def stats_service(stats_repo: InMemoryStatsRepository) -> StatsService:
+def stats_service(stats_repo: InMemoryStatsRepository, service: SessionService) -> StatsService:
     """Create a stats service with test repository."""
-    return StatsService(stats_repo)
+    return StatsService(stats_repo, service)
 
 
 @pytest.fixture
@@ -92,7 +93,12 @@ def app(
 ) -> FastAPI:
     """Create a test FastAPI app."""
     app = FastAPI()
-    router = create_router(service, stats_service, pricing_provider=pricing)
+    router = create_router(
+        service,
+        stats_service,
+        pricing_provider=pricing,
+        session_participant_service=make_session_participant_service(service),
+    )
     app.include_router(router)
 
     # Minimal settings stub for endpoints that read app.state.settings
@@ -268,7 +274,14 @@ class TestListSessions:
     ):
         """The canonical /api/v1/forge alias should expose the same routes."""
         app = FastAPI()
-        app.include_router(create_router(service, stats_service, prefix="/api/v1/forge"))
+        app.include_router(
+            create_router(
+                service,
+                stats_service,
+                prefix="/api/v1/forge",
+                session_participant_service=make_session_participant_service(service),
+            )
+        )
 
         client = TestClient(app)
         try:
@@ -1615,7 +1628,12 @@ class TestWorkflowGateProxy:
         assert response.json() == {"status": "resolved"}
         mock_client.post.assert_awaited_once_with(
             f"http://localhost:8080/s/{session.id}/api/workflow/gates/prd%20review%3Fstep%3D1/resolve",
-            headers={"x-niuu-workflow-gate-intent": "resolve"},
+            headers={
+                "x-niuu-workflow-gate-intent": "resolve",
+                # Stamped once this route's own check_room_access("resolve_gate")
+                # succeeded — see ROOM_ROLE_HEADER in rest.py.
+                "x-niuu-room-role": "approver",
+            },
             json={"decision": "approved", "notes": "looks good", "source": "human"},
         )
 
@@ -1930,7 +1948,11 @@ class TestGetStats:
     def test_get_stats_without_service(self, service: SessionService):
         """Returns 503 when stats service is not available."""
         app = FastAPI()
-        router = create_router(service, stats_service=None)
+        router = create_router(
+            service,
+            stats_service=None,
+            session_participant_service=make_session_participant_service(service),
+        )
         app.include_router(router)
         with TestClient(app) as client:
             response = client.get("/api/v1/forge/stats")
@@ -1940,9 +1962,13 @@ class TestGetStats:
     def test_get_stats_with_zero_values(self, service: SessionService):
         """Returns stats with zero values."""
         stats_repo = InMemoryStatsRepository()
-        stats_svc = StatsService(stats_repo)
+        stats_svc = StatsService(stats_repo, service)
         app = FastAPI()
-        router = create_router(service, stats_svc)
+        router = create_router(
+            service,
+            stats_svc,
+            session_participant_service=make_session_participant_service(service),
+        )
         app.include_router(router)
         with TestClient(app) as client:
             response = client.get("/api/v1/forge/stats")

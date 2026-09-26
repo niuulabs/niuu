@@ -3638,6 +3638,19 @@ class TestReasoningEffort:
         assert _model_supports_ultra("GPT-6-Astra") is True
         assert _codex_effort_for_model("gpt-6-astra") == "ultra"
 
+    def test_effort_helpers_recognize_gpt_6_sol_not_luna(self) -> None:
+        # Codex 0.157.0 lists ultra for GPT-6 Sol; GPT-6 Luna tops out at max.
+        assert _model_supports_ultra("gpt-6-sol") is True
+        assert _codex_effort_for_model("gpt-6-sol") == "ultra"
+        assert _model_supports_ultra("gpt-6-luna") is False
+        assert _codex_effort_for_model("gpt-6-luna") == "high"
+
+    @pytest.mark.asyncio
+    async def test_gpt_6_sol_handshake_sends_ultra_effort(self, tmp_path) -> None:
+        t = _make_transport(tmp_path, model="gpt-6-sol")
+        params = await _capture_thread_start_params(t)
+        assert params["config"]["model_reasoning_effort"] == "ultra"
+
     def test_sol_defaults_to_ultra(self, tmp_path) -> None:
         t = _make_transport(tmp_path, model="gpt-5.6-sol")
         assert t._reasoning_effort == "ultra"
@@ -3731,6 +3744,31 @@ class TestModelGateway:
         assert 'model_providers.niuu.base_url="http://niuu:8080/api/v1/bifrost/v1"' in args
         assert 'model_providers.niuu.wire_api="responses"' in args
         assert mock_exec.call_args.kwargs["env"]["NIUU_MODEL_GATEWAY_TOKEN"] == "niuu-gateway"
+
+    @pytest.mark.asyncio
+    async def test_blank_token_with_a_gateway_url_raises(self, tmp_path):
+        """Codex reads NIUU_MODEL_GATEWAY_TOKEN as its provider key and
+
+        refuses an empty value — never a silent, unauthenticated session.
+        """
+        t = _make_transport(
+            tmp_path,
+            model_gateway_url="http://niuu:8080/api/v1/bifrost",
+            model_gateway_token="",
+        )
+        with (
+            patch(
+                "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ),
+            patch("skuld.transports.codex_ws.resolve_codex_cli", return_value="/bin/codex"),
+            patch(
+                "skuld.transports.codex_ws.ensure_codex_tool_shims",
+                return_value=(tmp_path / ".skuld-tools" / "bin", {}),
+            ),
+            pytest.raises(ValueError, match="model_gateway_token is blank"),
+        ):
+            await t._spawn_app_server()
 
     @pytest.mark.asyncio
     async def test_read_only_mcp_spawn_disables_other_native_capability_sources(self, tmp_path):

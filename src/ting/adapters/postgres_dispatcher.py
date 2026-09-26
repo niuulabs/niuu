@@ -11,7 +11,6 @@ from ting.ports.dispatcher_repository import DispatcherRepository
 
 # Defaults used when creating a new dispatcher state row.
 _DEFAULT_RUNNING = True
-_DEFAULT_THRESHOLD = 0.75
 _DEFAULT_MAX_CONCURRENT_RUNS = 3
 _DEFAULT_AUTO_CONTINUE = False
 
@@ -34,22 +33,21 @@ class PostgresDispatcherRepository(DispatcherRepository):
         row = await self._pool.fetchrow(
             """
             INSERT INTO dispatcher_state
-                (owner_id, running, threshold, max_concurrent_runs, auto_continue, updated_at)
-            VALUES ($1, $2, $3, $4, $5, NOW())
+                (owner_id, running, max_concurrent_runs, auto_continue, updated_at)
+            VALUES ($1, $2, $3, $4, NOW())
             ON CONFLICT (owner_id)
             DO UPDATE SET owner_id = dispatcher_state.owner_id
             RETURNING *
             """,
             owner_id,
             _DEFAULT_RUNNING,
-            _DEFAULT_THRESHOLD,
             _DEFAULT_MAX_CONCURRENT_RUNS,
             self._auto_continue_default,
         )
         return self._row_to_state(row)
 
     async def update(self, owner_id: str, **fields: object) -> DispatcherState:
-        allowed = {"running", "threshold", "max_concurrent_runs", "auto_continue"}
+        allowed = {"running", "max_concurrent_runs", "auto_continue"}
         to_set = {k: v for k, v in fields.items() if k in allowed and v is not None}
 
         if not to_set:
@@ -87,7 +85,6 @@ class PostgresDispatcherRepository(DispatcherRepository):
             id=row["id"],
             owner_id=row["owner_id"],
             running=row["running"],
-            threshold=row["threshold"],
             max_concurrent_runs=row["max_concurrent_runs"],
             auto_continue=row["auto_continue"],
             updated_at=row["updated_at"] or datetime.now(UTC),

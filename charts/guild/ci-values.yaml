@@ -53,6 +53,15 @@ registry:
       slug: ci-volundr
       name: CI Volundr
       base_url: http://volundr:80
+      # The default trusted-plaintext suffixes (.svc.cluster.local, .svc —
+      # see guildTransport.trustedPlaintextHostSuffixes) exempt a fully
+      # qualified in-cluster service address, but this CI fixture dials the
+      # short, unqualified Service name ("volundr", not
+      # "volundr.<ns>.svc.cluster.local"), which does not end with either
+      # suffix — so this remains an explicit, deliberate opt-in rather than
+      # relying on the suffix match.
+      config:
+        allow_plaintext: true
       visibility: system
       enabled: true
       is_default: true

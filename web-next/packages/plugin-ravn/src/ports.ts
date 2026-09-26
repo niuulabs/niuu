@@ -14,7 +14,7 @@ import type {
 } from '@niuulabs/domain';
 import type { Ravn, ResidentDeploymentProfile } from './domain/ravn';
 import type { Session } from './domain/session';
-import type { Trigger } from './domain/trigger';
+import type { CreatedTrigger, Trigger } from './domain/trigger';
 import type { Message } from './domain/message';
 
 // ---------------------------------------------------------------------------
@@ -124,6 +124,8 @@ export interface DeployResidentRequest {
   flockMemberId?: string;
   flockRole?: string;
   flockPeerId?: string;
+  /** The realm this resident is deployed for (Simple mode). */
+  realmId?: string;
 }
 
 export interface CreateResidentSessionRequest {
@@ -162,12 +164,14 @@ export interface ISessionStream {
   listSessions(): Promise<Session[]>;
   getSession(id: string, instanceId?: string, ravnId?: string): Promise<Session>;
   getMessages(sessionId: string, instanceId?: string, ravnId?: string): Promise<Message[]>;
+  /** Stop a Forge-backed ravn session (a flock session; residents use lifecycle commands). */
+  stopSession(sessionId: string, instanceId?: string): Promise<void>;
 }
 
 /** CRUD store for Triggers. */
 export interface ITriggerStore {
   listTriggers(): Promise<Trigger[]>;
-  createTrigger(t: Omit<Trigger, 'id' | 'createdAt'>): Promise<Trigger>;
+  createTrigger(t: Omit<Trigger, 'id' | 'createdAt'>): Promise<CreatedTrigger>;
   deleteTrigger(id: string): Promise<void>;
 }
 

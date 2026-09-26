@@ -165,7 +165,7 @@ class TestSkuldWsProxyTransientBlip:
     def test_transient_blip_on_running_pod_retains_port(self) -> None:
         from starlette.websockets import WebSocketDisconnect
 
-        reg = SkuldPortRegistry()
+        reg = SkuldPortRegistry(dev_identity=True)
         reg.register("sess-live", 9100)
 
         # Pod-authoritative hook: the pod is still RUNNING -> NOT confirmed dead.
@@ -193,7 +193,7 @@ class TestSkuldWsProxyTransientBlip:
     def test_genuinely_dead_pod_unregisters_and_closes_4410(self) -> None:
         from starlette.websockets import WebSocketDisconnect
 
-        reg = SkuldPortRegistry()
+        reg = SkuldPortRegistry(dev_identity=True)
         reg.register("sess-dead", 9200)
 
         # Pod-authoritative hook: the pod is gone -> CONFIRMED dead.
@@ -245,6 +245,17 @@ class TestPluginApiAppCreation:
 
         _create_plugin_api_app(LegacyPlugin(), base_url="http://platform.test:8080")
         assert called is True
+
+
+class TestRootServerDevIdentity:
+    """Only a mini-mode host trusts browser-asserted dev identity."""
+
+    def test_registry_trusts_no_dev_identity_by_default(self) -> None:
+        assert RootServer(registry=PluginRegistry()).skuld_registry.dev_identity is False
+
+    def test_mini_mode_threads_dev_identity_to_the_registry(self) -> None:
+        server = RootServer(registry=PluginRegistry(), dev_identity=True)
+        assert server.skuld_registry.dev_identity is True
 
 
 class TestGetSkuldRegistry:
@@ -559,7 +570,7 @@ class TestRootServerBuildApp:
 
     def test_skuld_http_proxy_session_not_found(self) -> None:
         registry = PluginRegistry()
-        server = RootServer(registry=registry)
+        server = RootServer(registry=registry, dev_identity=True)
         with patch.dict(os.environ, {"NIUU_NO_WEB": "true"}):
             app = server._build_app()
         client = TestClient(app)
@@ -583,7 +594,7 @@ class TestRootServerBuildApp:
         from starlette.websockets import WebSocketDisconnect
 
         registry = PluginRegistry()
-        server = RootServer(registry=registry)
+        server = RootServer(registry=registry, dev_identity=True)
 
         reconciled: list[str] = []
 
@@ -611,7 +622,7 @@ class TestRootServerBuildApp:
         from starlette.websockets import WebSocketDisconnect
 
         registry = PluginRegistry()
-        server = RootServer(registry=registry)
+        server = RootServer(registry=registry, dev_identity=True)
         server.skuld_registry.register("sess-dead", 9100)
 
         reconciled: list[str] = []
@@ -642,7 +653,7 @@ class TestRootServerBuildApp:
 
     def test_skuld_http_proxy_forwards_request(self) -> None:
         registry = PluginRegistry()
-        server = RootServer(registry=registry)
+        server = RootServer(registry=registry, dev_identity=True)
         server.skuld_registry.register("sess-1", 9100)
         with patch.dict(os.environ, {"NIUU_NO_WEB": "true"}):
             app = server._build_app()
@@ -665,7 +676,7 @@ class TestRootServerBuildApp:
 
     def test_skuld_http_proxy_routes_external_session_through_gateway(self) -> None:
         registry = PluginRegistry()
-        server = RootServer(registry=registry)
+        server = RootServer(registry=registry, dev_identity=True)
         target = SessionProxyTarget(
             service_url="http://forge-123--skuld.openshell.localhost:8080",
             connect_host="openshell.openshell.svc.cluster.local",
@@ -704,7 +715,7 @@ class TestRootServerBuildApp:
         import httpx
 
         registry = PluginRegistry()
-        server = RootServer(registry=registry)
+        server = RootServer(registry=registry, dev_identity=True)
         server.skuld_registry.register("sess-1", 9100)
         with patch.dict(os.environ, {"NIUU_NO_WEB": "true"}):
             app = server._build_app()
@@ -2363,7 +2374,7 @@ class TestSkuldWsProxy:
         from starlette.websockets import WebSocketDisconnect
 
         registry = PluginRegistry()
-        server = RootServer(registry=registry)
+        server = RootServer(registry=registry, dev_identity=True)
         with patch.dict(os.environ, {"NIUU_NO_WEB": "true"}):
             app = server._build_app()
         client = TestClient(app)

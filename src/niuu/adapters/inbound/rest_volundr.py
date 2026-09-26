@@ -36,7 +36,18 @@ from niuu.adapters.inbound.remote_urls import (
 from niuu.adapters.inbound.remote_urls import (
     forward_identity_headers as _forward_headers,
 )
+from niuu.adapters.inbound.remote_urls import (
+    forward_local_identity_headers as _forward_local_headers,
+)
+from niuu.adapters.inbound.source_health import (
+    instance_source_failures,
+    set_source_health_header,
+)
 from niuu.adapters.inbound.ws_forge_replay import forward_replay
+from niuu.adapters.outbound.guild_transport import (
+    GuildTransportError,
+    build_guild_httpx_client,
+)
 from niuu.domain.models import InstanceKind, Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
 
@@ -278,7 +289,13 @@ async def _request_remote(
     embedded_app: ASGIApp | None = None,
     timeout: float = 30.0,
 ) -> httpx.Response:
-    headers = _forward_headers(request)
+    embedded = _uses_embedded_transport(instance)
+    # An embedded target shares this process (ASGITransport, no network hop),
+    # so it is not a separate trust domain and gets the caller's full resolved
+    # identity, same as today. A non-embedded target is a genuinely remote
+    # Guild instance and gets only the bearer token — see
+    # niuu.adapters.inbound.remote_urls.forward_identity_headers.
+    headers = _forward_local_headers(request) if embedded else _forward_headers(request)
     if extra_headers:
         headers.update(extra_headers)
     request_kwargs: dict[str, Any] = {
@@ -289,7 +306,7 @@ async def _request_remote(
         request_kwargs["content"] = content_body
     elif json_body is not None:
         request_kwargs["json"] = json_body
-    if _uses_embedded_transport(instance):
+    if embedded:
         if embedded_app is None:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -307,14 +324,19 @@ async def _request_remote(
                 **request_kwargs,
             )
 
+    dial_url = base_url or instance.base_url
     try:
-        remote_url = build_remote_url(base_url or instance.base_url, remote_prefix, path)
+        remote_url = build_remote_url(dial_url, remote_prefix, path)
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(timeout, connect=min(timeout, 5.0)), follow_redirects=False
-    ) as client:
+    try:
+        client = await build_guild_httpx_client(
+            instance, dial_url=dial_url, timeout_seconds=timeout
+        )
+    except GuildTransportError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    async with client:
         response = await client.request(
             method,
             remote_url,
@@ -381,6 +403,96 @@ async def _sync_persona_to_instance(
             json_body=view.payload,
             embedded_app=embedded_app,
         )
+    _ensure_remote_success(synced)
+
+
+async def _sync_realm_to_instance(
+    instance: RegisteredInstance,
+    request: Request,
+    realm_id: object,
+    *,
+    embedded_app: ASGIApp | None,
+) -> None:
+    """Sync a realm from this host's local database onto a remote target.
+
+    Deploying a resident bound to a realm (realm_id in the create body)
+    forwards that id verbatim to the target instance, whose ResidentRuntime
+    FK requires a matching realms row on ITS OWN database. Realms otherwise
+    only exist wherever they were created (e.g. ymir), so without this a
+    resident deployed on a different instance (e.g. noatun, valhalla) fails
+    at create with "Realm not found" and is left half-made. This makes the
+    same realm identity (id + slug) exist on the target first — the same
+    "materialize the source of truth on the remote before launch" pattern
+    _sync_persona_to_instance uses for personas.
+
+    Raises on any failure: a realm_id was explicitly requested, so a resident
+    created without it actually being synced would silently drop the link
+    the caller asked for (see .claude/rules/no-fallbacks.md) — worse than
+    refusing the create.
+
+    This syncs the realm ROW, not its Mímir charter page (realms/<slug>/
+    charter.md, written by the create-realm wizard to whichever Mímir mount
+    it targeted). The deployed resident resolves that page for itself at
+    startup (environment.charter_mimir_page) and fails loudly if it cannot
+    read it — see resident_runtime_wiring.py's _resolve_environment_charter.
+    For that to succeed on a resident deployed on a DIFFERENT instance than
+    the one the realm was created on, the target instance's resident
+    deployment profile (resident.mimir.instances in its deployment.values)
+    must itself be configured with a Mímir mount that can read the SAME
+    underlying pages — either a Mímir shared/reachable across instances, or
+    an operator-configured mount pointing at the realm-owning instance's
+    Mímir. This function cannot discover or provision that network path; if
+    it is not configured, the resident's own charter check raises with a
+    precise "page does not exist" error naming the missing page, which is
+    the intended fail-loud outcome documented here rather than solved here.
+    """
+    raw_id = str(realm_id or "").strip()
+    if not raw_id:
+        return
+    if _uses_embedded_transport(instance):
+        return  # The target IS this host; the realm already lives here.
+
+    try:
+        parsed_id = UUID(raw_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Invalid realm id: {raw_id!r}",
+        ) from exc
+
+    realm_service = getattr(getattr(embedded_app, "state", None), "realm_service", None)
+    if realm_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                f"Cannot deploy a resident bound to realm {parsed_id}: this host has no "
+                "local realm service to read it from before syncing it to the target "
+                "instance."
+            ),
+        )
+    realm = await realm_service.get_realm(parsed_id)
+    if realm is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Realm not found: {parsed_id}",
+        )
+
+    synced = await _request_remote(
+        instance,
+        request,
+        method="PUT",
+        path=f"/realms/by-id/{parsed_id}",
+        remote_prefix="/api/v1",
+        json_body={
+            "slug": realm.slug,
+            "name": realm.name,
+            "sleipnir_domain": realm.sleipnir_domain,
+            "owner_id": realm.owner_id,
+            "instance_id": realm.instance_id,
+            "autonomy_profile": realm.autonomy_profile,
+        },
+        embedded_app=embedded_app,
+    )
     _ensure_remote_success(synced)
 
 
@@ -1206,6 +1318,8 @@ def create_volundr_router(
             ),
             reverse=True,
         )
+        if not selected:
+            set_source_health_header(response, instance_source_failures(instances, results))
         return sessions
 
     @router.get("/sessions/stream")
@@ -1233,24 +1347,38 @@ def create_volundr_router(
             else [await _resolve_target_instance(service, principal, selected)]
         )
         headers = _forward_headers(request)
-        broadcaster = getattr(getattr(embedded_forge_app, "state", None), "broadcaster", None)
-        if not fleet and _uses_embedded_transport(instances[0]) and broadcaster is None:
+        # The embedded Forge's principal-scoped stream, never its raw broadcaster:
+        # a subscriber only receives events for sessions it may list.
+        local_stream = getattr(
+            getattr(embedded_forge_app, "state", None), "session_event_stream", None
+        )
+        if not fleet and _uses_embedded_transport(instances[0]) and local_stream is None:
             raise HTTPException(status_code=503, detail="Session event stream unavailable")
+        if local_stream is not None and any(map(_uses_embedded_transport, instances)):
+            try:
+                local_stream.authorize(principal)
+            except PermissionError as exc:
+                raise HTTPException(status_code=401, detail=str(exc)) from exc
 
         async def events(instance: RegisteredInstance) -> Any:
             if _uses_embedded_transport(instance):
-                if broadcaster is None:
+                if local_stream is None:
                     raise RuntimeError("Session event stream unavailable")
-                async for event in broadcaster.subscribe():
+                async for event in local_stream.subscribe(principal):
                     yield event.type.value, _with_instance(event.data, instance)
             else:
                 url = build_remote_url(instance.base_url, "/api/v1/forge", "/sessions/stream")
-                async for name, payload in remote_events(
-                    url,
-                    headers,
+                # A GuildTransportError here (policy refusal or pin mismatch)
+                # is not caught specially: it propagates to merge_events'
+                # own per-source Exception handler, which already logs and
+                # retries this source exactly like any other stream failure.
+                client = await build_guild_httpx_client(
+                    instance,
+                    dial_url=instance.base_url,
                     timeout_seconds=forge_stream_remote_timeout_seconds,
                     connect_timeout_seconds=forge_stream_remote_connect_timeout_seconds,
-                ):
+                )
+                async for name, payload in remote_events(client, url, headers):
                     yield name, _with_instance(payload, instance)
 
         return StreamingResponse(

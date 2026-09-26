@@ -85,14 +85,41 @@ describe('useCreateRealm', () => {
       'createTrigger:event:realm-lexi-api',
       'createTrigger:cron:realm-lexi-api',
       'importProject:board-1:niuulabs/lexi-api',
-      'deploy:lexi-api:realm-lexi-api',
       'listMounts',
       'upsertPage:realms/lexi-api/charter.md@realm-lexi-api',
+      'deploy:lexi-api:realm-lexi-api:realm-1',
     ]);
     expect(Object.values(result.current.progress.states).every((state) => state === 'done')).toBe(
       true,
     );
     expect(result.current.progress.error).toBeNull();
+  });
+
+  it('scopes event-kind triggers to the draft repo, and cron-kind triggers to none', async () => {
+    const log = createCallLog();
+    const created: Array<{ kind: string; repo: string }> = [];
+    const capturingTriggers = {
+      ...fakeTriggers(log),
+      async createTrigger(request: { kind: string; repo?: string }) {
+        created.push({ kind: request.kind, repo: request.repo ?? '' });
+        return fakeTriggers(log).createTrigger(
+          request as Parameters<ReturnType<typeof fakeTriggers>['createTrigger']>[0],
+        );
+      },
+    };
+    const { result } = renderHook(() => useCreateRealm(), {
+      wrapper: wrap(services(log, { 'ravn.triggers': capturingTriggers })),
+    });
+
+    await act(async () => {
+      await result.current.run(draft);
+    });
+
+    expect(created).toEqual([
+      { kind: 'cron', repo: '' },
+      { kind: 'event', repo: draft.repo },
+      { kind: 'cron', repo: '' },
+    ]);
   });
 
   it('stops at the first failing step and says which one', async () => {
@@ -123,9 +150,65 @@ describe('useCreateRealm', () => {
     });
 
     expect(log.calls).toContain('createRealm:lexi-api');
-    expect(log.calls.at(-1)).toBe('deploy:lexi-api:realm-lexi-api');
+    expect(log.calls.at(-1)).toBe('deploy:lexi-api:realm-lexi-api:realm-1');
     expect(result.current.progress.failedStep?.id).toBe('resident');
     expect(result.current.progress.failedStep?.advancedPath).toBe('/ravn/ravens');
+  });
+
+  it('fails the jobs step when trigger execution is disabled for this deployment', async () => {
+    const log = createCallLog();
+    const { result } = renderHook(() => useCreateRealm(), {
+      wrapper: wrap(
+        services(log, { 'ravn.triggers': fakeTriggers(log, { executionEnabled: false }) }),
+      ),
+    });
+
+    await act(async () => {
+      await expect(result.current.run(draft)).rejects.toThrow(/nothing executes them/);
+    });
+
+    // The trigger was still created (nothing is rolled back) — only the
+    // recipe step is reported as failed, so an operator can see the
+    // half-finished state via the 'jobs' step's advancedPath.
+    expect(log.calls).toContain('createTrigger:cron:realm-lexi-api');
+    expect(result.current.progress.failedStep?.id).toBe('jobs');
+    expect(result.current.progress.failedStep?.advancedPath).toBe('/ravn');
+  });
+
+  it('surfaces a store-unavailable (503) trigger create as the jobs step failing clearly', async () => {
+    // The Ravn API's trigger_store/budget_ledger are opt-in
+    // (ravn.config.TriggerStoreConfig) — with neither configured, POST
+    // /triggers returns 503 with a remedy in `detail`. No special-casing is
+    // needed here: the generic step() error handler already turns any
+    // ApiClientError-shaped rejection (status + detail) into readable text.
+    const log = createCallLog();
+    const unavailable = {
+      ...fakeTriggers(log),
+      async createTrigger(request: { kind: string; personaName: string }) {
+        log.calls.push(`createTrigger:${request.kind}:${request.personaName}`);
+        const error = new Error('API request failed: 503') as Error & {
+          status: number;
+          detail: string;
+        };
+        error.status = 503;
+        error.detail = 'Ravn trigger persistence is unavailable';
+        throw error;
+      },
+    };
+    const { result } = renderHook(() => useCreateRealm(), {
+      wrapper: wrap(services(log, { 'ravn.triggers': unavailable })),
+    });
+
+    await act(async () => {
+      await expect(result.current.run(draft)).rejects.toThrow(/API request failed: 503/);
+    });
+
+    expect(result.current.progress.failedStep?.id).toBe('jobs');
+    // errorText() turns the ApiClientError-shaped rejection (status + detail)
+    // into the readable "HTTP 503 (<remedy>)" the UI actually displays.
+    expect(result.current.progress.error).toBe(
+      'HTTP 503 (Ravn trigger persistence is unavailable)',
+    );
   });
 
   it('refuses a draft that is missing a required field before calling anything', async () => {
@@ -156,9 +239,21 @@ describe('useCreateRealm', () => {
     expect(result.current.progress.failedStep?.id).toBe('charter');
   });
 
-  it('lists eleven steps, validate first and charter last', () => {
+  it('lists eleven steps, validate first and resident last', () => {
     expect(RECIPE_STEPS[0]?.id).toBe('validate');
-    expect(RECIPE_STEPS.at(-1)?.id).toBe('charter');
+    expect(RECIPE_STEPS.at(-1)?.id).toBe('resident');
     expect(RECIPE_STEPS).toHaveLength(11);
+  });
+
+  it('writes the charter to memory before starting the resident', () => {
+    const charterIndex = RECIPE_STEPS.findIndex((step) => step.id === 'charter');
+    const residentIndex = RECIPE_STEPS.findIndex((step) => step.id === 'resident');
+    // The resident resolves its charter from realm memory at startup and
+    // exits if that page is configured but missing (see
+    // resident_runtime_wiring.py's _resolve_environment_charter), and the
+    // local controller has no restart policy — so charter must be written
+    // first.
+    expect(charterIndex).toBeGreaterThanOrEqual(0);
+    expect(residentIndex).toBeGreaterThan(charterIndex);
   });
 });
