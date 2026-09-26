@@ -82,7 +82,7 @@ spec:
         runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
         fsGroup: {{ .Values.securityContext.fsGroup }}
       {{- include "skuld.imagePullSecrets" . | nindent 6 }}
-      {{- if or .Values.git.repoUrl .Values.homeVolume.enabled .Values.extraInitContainers }}
+      {{- if or .Values.git.repoUrl .Values.homeVolume.enabled .Values.extraInitContainers (and .Values.localServices.enabled .Values.persistence.enabled) }}
       initContainers:
         {{- if .Values.homeVolume.enabled }}
         - name: home-setup
@@ -273,9 +273,6 @@ spec:
                 fi
                 echo "Repository cloned successfully"
               fi
-              mkdir -p "$WORKSPACE/.services"
-              touch "$WORKSPACE/.services/nginx.conf"
-              echo "Ensured dynamic service nginx config exists"
           {{- if or .Values.homeVolume.enabled (and .Values.git.credentials.secretName (not .Values.git.credentials.tokenFile)) }}
           env:
             {{- if .Values.homeVolume.enabled }}
@@ -303,6 +300,27 @@ spec:
             {{- range .Values.extraVolumeMounts }}
             - {{- toYaml . | nindent 14 }}
             {{- end }}
+        {{- end }}
+        {{- if and .Values.localServices.enabled .Values.persistence.enabled }}
+        # nginx includes the devrunner-generated services config at startup.
+        # devrunner only writes it once its own (large) image is pulled, so
+        # without this empty file nginx crash-loops and delays pod readiness.
+        - name: services-setup
+          image: "{{ .Values.git.image.repository }}:{{ .Values.git.image.tag }}"
+          imagePullPolicy: {{ .Values.git.image.pullPolicy }}
+          securityContext:
+            runAsUser: {{ .Values.securityContext.runAsUser }}
+            allowPrivilegeEscalation: false
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              WORKSPACE="{{ include "skuld.workspacePath" . }}"
+              mkdir -p "$WORKSPACE/.services"
+              touch "$WORKSPACE/.services/nginx.conf"
+              echo "Ensured dynamic service nginx config exists"
+          volumeMounts:
+            - name: sessions
+              mountPath: {{ .Values.persistence.mountPath }}
         {{- end }}
         {{- range .Values.extraInitContainers }}
         - {{- toYaml . | nindent 10 }}

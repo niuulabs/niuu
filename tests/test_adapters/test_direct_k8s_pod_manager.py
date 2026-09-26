@@ -397,6 +397,25 @@ class TestManifests:
         mount_names = [m["name"] for m in skuld["volumeMounts"]]
         assert "home" in mount_names
 
+    def test_init_precreates_dynamic_nginx_include(
+        self,
+        pod_manager: DirectK8sPodManager,
+        sample_session: Session,
+    ) -> None:
+        """nginx must not wait on devrunner for the include it loads at startup."""
+        manifest = pod_manager._build_deployment_manifest(sample_session, make_spec())
+        init = manifest["spec"]["template"]["spec"]["initContainers"][0]
+        script = init["command"][2]
+        services_dir = f"/volundr/sessions/{sample_session.id}/workspace/.services"
+
+        assert init["name"] == "init-permissions"
+        assert f"mkdir -p {services_dir} || exit 1;" in script
+        assert f"touch {services_dir}/nginx.conf || exit 1;" in script
+        # Created as root before the chown hands the tree to the session user.
+        assert script.index("touch ") < script.index("chown -R 1000:1000 /volundr")
+        nginx_conf = pod_manager._build_nginx_configmap(sample_session)["data"]["nginx.conf"]
+        assert f"include {services_dir}/nginx.conf;" in nginx_conf
+
     def test_build_service_manifest(
         self,
         pod_manager: DirectK8sPodManager,

@@ -292,10 +292,35 @@ class TestDeploymentTemplate:
         """Test sessions volume is mounted by multiple containers."""
         assert deployment_yaml.count("name: sessions") >= 2
 
-    def test_git_clone_ensures_dynamic_nginx_include_exists(self, deployment_yaml):
-        """Test session bootstrap always pre-creates .services/nginx.conf."""
-        assert 'mkdir -p "$WORKSPACE/.services"' in deployment_yaml
-        assert 'touch "$WORKSPACE/.services/nginx.conf"' in deployment_yaml
+    @pytest.mark.parametrize("repo_url", ["", "https://github.com/org/repo"])
+    def test_services_setup_precreates_dynamic_nginx_include(self, tmp_path, repo_url):
+        """nginx must not wait on devrunner for the include it loads at startup."""
+        rendered = _render_skuld_chart(
+            tmp_path, {"session": {"id": "abc"}, "git": {"repoUrl": repo_url}}
+        )
+        pod_spec = _deployment_from_rendered(rendered)["spec"]["template"]["spec"]
+        init_containers = pod_spec["initContainers"]
+
+        assert init_containers[-1]["name"] == "services-setup"
+        script = init_containers[-1]["args"][0]
+        assert 'WORKSPACE="/volundr/sessions/abc/workspace"' in script
+        assert 'mkdir -p "$WORKSPACE/.services"' in script
+        assert 'touch "$WORKSPACE/.services/nginx.conf"' in script
+        assert init_containers[-1]["securityContext"] == {
+            "runAsUser": 1000,
+            "allowPrivilegeEscalation": False,
+        }
+        assert init_containers[-1]["volumeMounts"] == [
+            {"name": "sessions", "mountPath": "/volundr/sessions"}
+        ]
+        assert not any(".services" in " ".join(c.get("args", [])) for c in init_containers[:-1])
+
+    def test_services_setup_omitted_without_local_services(self, tmp_path):
+        """No nginx include is rendered, so there is nothing to pre-create."""
+        rendered = _render_skuld_chart(tmp_path, {"localServices": {"enabled": False}})
+        pod_spec = _deployment_from_rendered(rendered)["spec"]["template"]["spec"]
+
+        assert "services-setup" not in [c["name"] for c in pod_spec.get("initContainers", [])]
 
     def test_has_no_reh_container(self, deployment_yaml):
         """Test deployment no longer contains the retired REH container."""
@@ -369,9 +394,10 @@ class TestDeploymentTemplate:
         pod_spec = deployment["spec"]["template"]["spec"]
 
         assert [container["name"] for container in pod_spec["initContainers"]] == [
-            "write-ravn-cfg-coder"
+            "services-setup",
+            "write-ravn-cfg-coder",
         ]
-        assert pod_spec["initContainers"][0]["securityContext"] == {
+        assert pod_spec["initContainers"][1]["securityContext"] == {
             "runAsUser": 1000,
             "runAsGroup": 1000,
             "runAsNonRoot": True,
