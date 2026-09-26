@@ -137,5 +137,13 @@ def test_node_first_seen_handles_naive_updated_at():
     content = "## Timeline\n\n- 2020-01-01: Older. [Source: test]\n"
     graph = project_pages([page("a.md", content, updated_at=updated)])
     node = graph.nodes[0]
-    assert node.updated_at == updated.isoformat()
+    assert node.updated_at == "2026-03-01T00:00:00+00:00"
     assert node.first_seen == "2020-01-01T00:00:00+00:00"
+
+
+def test_node_dates_are_utc_qualified_without_timeline():
+    """A naive updated_at never reaches the client unqualified (it would read as local time)."""
+    graph = project_pages([page("a.md", "no timeline", updated_at=datetime(2026, 3, 1, 9, 30))])
+    node = graph.nodes[0]
+    assert node.updated_at == "2026-03-01T09:30:00+00:00"
+    assert node.first_seen == "2026-03-01T09:30:00+00:00"

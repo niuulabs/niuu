@@ -77,5 +77,12 @@ def extract_entry_dates(content: str) -> list[datetime]:
         if parsed is None:
             continue
         date_str, _rest = parsed
-        dates.append(datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=UTC))
+        try:
+            day = datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            # Shaped like a date but not one on the calendar (2026-02-30):
+            # the line carries no date, exactly like one without the prefix.
+            # Raising here would take the whole graph down for one typo.
+            continue
+        dates.append(day.replace(tzinfo=UTC))
     return dates

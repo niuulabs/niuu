@@ -58,3 +58,8 @@ def test_extract_entry_dates_empty_without_timeline_zone():
 def test_extract_entry_dates_ignores_frontmatter():
     content = "---\ntitle: Test\n---\n## Timeline\n\n- 2020-01-01: Entry. [Source: a]\n"
     assert extract_entry_dates(content) == [datetime(2020, 1, 1, tzinfo=UTC)]
+
+
+def test_extract_entry_dates_skips_impossible_calendar_dates():
+    content = "## Timeline\n\n- 2026-02-30: Typo. [Source: x]\n- 2026-01-02: Real. [Source: y]\n"
+    assert [d.date().isoformat() for d in extract_entry_dates(content)] == ["2026-01-02"]

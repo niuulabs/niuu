@@ -37,13 +37,12 @@ import json
 import logging
 import sys
 from datetime import UTC, datetime
-from typing import IO, Any
+from typing import IO, Any, Literal
 
 import yaml
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from mimir.config import LiveActivityConfig
 from mimir.live_activity import LiveActivityRecorder
 from mimir.router import WRITE_ROLES
 from niuu.domain.mimir import MimirSource, compute_content_hash
@@ -297,10 +296,9 @@ class MimirMcpServer:
             need their own recording, not just the REST routes'.
             ``mimir.app.create_app`` builds one recorder and passes it to
             both this server and ``MimirRouter`` so both surfaces land in
-            the same window. ``None`` (e.g. the ``python -m mimir mcp``
-            stdio entry point, which has no HTTP router to share one with)
-            builds a private recorder from ``LiveActivityConfig``'s own
-            defaults — never a second, hand-picked set of magic numbers.
+            the same window. ``None`` (the ``python -m mimir mcp`` stdio
+            entry point) records nothing: that process serves no
+            ``/activity/live`` route, so a window there could never be read.
     """
 
     def __init__(
@@ -316,10 +314,7 @@ class MimirMcpServer:
         self._name = name
         self._auth = auth
         self._auth_mode = auth_mode
-        self._live_activity = live_activity or LiveActivityRecorder(
-            buffer_size=LiveActivityConfig().buffer_size,
-            window_seconds=LiveActivityConfig().window_seconds,
-        )
+        self._live_activity = live_activity
 
     # ------------------------------------------------------------------
     # Public API
@@ -583,6 +578,15 @@ class MimirMcpServer:
         )
         return [{"type": "text", "text": json.dumps(items, indent=2)}]
 
+    async def _record_activity(
+        self, request: Request | None, kind: Literal["read", "write"], path: str
+    ) -> None:
+        """Record a successful read/write in the shared live window, when there is one."""
+        if self._live_activity is None:
+            return
+        actor = await self._actor(request)
+        self._live_activity.record(kind=kind, mount=self._name, path=path, actor=actor)
+
     async def _actor(self, request: Request | None) -> str | None:
         """Resolve the caller's user id for live-activity attribution.
 
@@ -610,9 +614,7 @@ class MimirMcpServer:
             page = await self._adapter.get_page(path)
         except FileNotFoundError:
             return [{"type": "text", "text": f"Page not found: {path}"}]
-        self._live_activity.record(
-            kind="read", mount=self._name, path=page.meta.path, actor=await self._actor(request)
-        )
+        await self._record_activity(request, "read", page.meta.path)
         result = {
             "path": page.meta.path,
             "title": page.meta.title,
@@ -637,9 +639,7 @@ class MimirMcpServer:
             full_content = f"---\n{fm_text}\n---\n\n{content}"
 
         await self._adapter.upsert_page(path, full_content)
-        self._live_activity.record(
-            kind="write", mount=self._name, path=path, actor=await self._actor(request)
-        )
+        await self._record_activity(request, "write", path)
 
         try:
             page = await self._adapter.get_page(path)

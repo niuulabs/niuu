@@ -637,6 +637,26 @@ class TestLiveActivity:
         (event,) = live_activity.list_since(None)
         assert event.actor is None
 
+    async def test_no_shared_window_records_nothing(self, tmp_path: Path) -> None:
+        """The stdio entry point passes no recorder: tool calls still succeed."""
+        server = MimirMcpServer(adapter=MarkdownMimirAdapter(root=tmp_path / "mimir"), name="t")
+        stdin = io.StringIO(
+            json.dumps(
+                _jsonrpc(
+                    "tools/call",
+                    {
+                        "name": "mimir_write",
+                        "arguments": {"path": "technical/solo.md", "content": "# S\nBody."},
+                    },
+                )
+            )
+            + "\n"
+        )
+        stdout = io.StringIO()
+        await server.run_stdio(stdin, stdout)
+        assert server._live_activity is None
+        assert '"error"' not in stdout.getvalue()
+
 
 # ---------------------------------------------------------------------------
 # stdio transport

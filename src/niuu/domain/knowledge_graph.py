@@ -75,17 +75,10 @@ def _as_utc(dt: datetime) -> datetime:
 
 
 def _first_seen(meta_updated_at: datetime, content: str) -> str:
-    """Earliest of the page's dated Timeline entries and its updated_at.
+    """Earliest of the page's dated Timeline entries and its updated_at, in UTC.
 
-    Ties, and pages with no dated entries, report updated_at's own
-    ISO-8601 string verbatim (not a UTC-normalised copy of it)."""
-    timeline_dates = extract_entry_dates(content)
-    if not timeline_dates:
-        return meta_updated_at.isoformat()
-    earliest = min(timeline_dates)
-    if earliest < _as_utc(meta_updated_at):
-        return earliest.isoformat()
-    return meta_updated_at.isoformat()
+    Always UTC-qualified so clients never read a naive timestamp as local time."""
+    return min([_as_utc(meta_updated_at), *extract_entry_dates(content)]).isoformat()
 
 
 def project_pages(pages: list[MimirPage]) -> KnowledgeGraph:
@@ -109,7 +102,7 @@ def project_pages(pages: list[MimirPage]) -> KnowledgeGraph:
                 kind=str(kind),
                 summary=meta.summary,
                 source_ids=meta.source_ids,
-                updated_at=meta.updated_at.isoformat(),
+                updated_at=_as_utc(meta.updated_at).isoformat(),
                 first_seen=_first_seen(meta.updated_at, page.content),
                 confidence=meta.confidence.value if meta.confidence else None,
             )
