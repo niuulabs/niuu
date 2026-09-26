@@ -144,3 +144,111 @@ async def test_shared_ip_does_not_reuse_another_hosts_tls_connection():
             with pytest.raises(httpx.ConnectError, match="certificate hostname mismatch"):
                 await client.get("https://second.example/metadata")
     assert tls_hosts == ["first.example", "second.example"]
+
+
+@pytest.mark.parametrize(
+    ("pattern", "normalized"),
+    [
+        ("*.Asgard.Niuu.World.", "*.asgard.niuu.world"),
+        (" mcp.cluster.local ", "mcp.cluster.local"),
+        ("tools", "tools"),
+    ],
+)
+def test_internal_host_patterns_are_normalized(pattern, normalized):
+    from volundr.domain.mcp_hosts import normalize_internal_host_pattern
+
+    assert normalize_internal_host_pattern(pattern) == normalized
+
+
+@pytest.mark.parametrize(
+    "pattern", ["", "*", "*.", "*.world", "a.*.world", "bad_host.example", "10.0.0.1"]
+)
+def test_broad_or_malformed_internal_host_patterns_fail_config(pattern):
+    from pydantic import ValidationError
+
+    from volundr.config import OAuthConfig
+
+    with pytest.raises(ValidationError, match="Internal MCP host|Invalid internal MCP host"):
+        OAuthConfig(mcp_internal_hosts=[pattern])
+
+
+def test_config_normalizes_internal_hosts():
+    from volundr.config import OAuthConfig
+
+    config = OAuthConfig(mcp_internal_hosts=["*.Asgard.Niuu.World"])
+    assert config.mcp_internal_hosts == ["*.asgard.niuu.world"]
+
+
+@pytest.mark.parametrize(
+    ("host", "internal"),
+    [
+        ("tools.asgard.niuu.world", True),
+        ("a.b.asgard.niuu.world.", True),
+        ("TOOLS.ASGARD.NIUU.WORLD", True),
+        ("asgard.niuu.world", False),
+        ("evilasgard.niuu.world", False),
+        ("asgard.niuu.world.evil.example", False),
+        ("mcp.cluster.local", True),
+        ("x.mcp.cluster.local", False),
+    ],
+)
+def test_internal_host_matching(host, internal):
+    from volundr.domain.mcp_hosts import is_internal_mcp_host
+
+    patterns = ["*.asgard.niuu.world", "mcp.cluster.local"]
+    assert is_internal_mcp_host(host, patterns) is internal
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ip", ["10.0.0.1", "100.64.0.9", "fd00::1"])
+async def test_allowlisted_host_may_resolve_privately_and_is_still_pinned(ip):
+    transport = PublicEndpointTransport(["*.asgard.niuu.world"])
+    observed = []
+
+    async def handle(request):
+        observed.append((request.url.host, request.extensions["sni_hostname"]))
+        return httpx.Response(200)
+
+    with (
+        patch("asyncio.get_running_loop") as loop,
+        patch.object(transport._transport, "handle_async_request", side_effect=handle),
+    ):
+        loop.return_value.getaddrinfo = AsyncMock(return_value=[(0, 0, 0, "", (ip, 443))])
+        await transport.handle_async_request(
+            httpx.Request("GET", "https://tools.asgard.niuu.world/mcp")
+        )
+    assert observed == [(ip, "tools.asgard.niuu.world")]
+    await transport.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ip", ["127.0.0.1", "169.254.169.254", "::1", "::ffff:127.0.0.1", "0.0.0.0", "64:ff9b::a00:1"]
+)
+async def test_allowlisted_host_still_refuses_loopback_link_local_and_translation(ip):
+    transport = PublicEndpointTransport(["*.asgard.niuu.world"])
+    with patch("asyncio.get_running_loop") as loop:
+        loop.return_value.getaddrinfo = AsyncMock(return_value=[(0, 0, 0, "", (ip, 443))])
+        with pytest.raises(MCPDiscoveryError, match="Internal MCP hosts"):
+            await transport.handle_async_request(
+                httpx.Request("GET", "https://tools.asgard.niuu.world/mcp")
+            )
+    await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_allowlist_does_not_admit_other_private_hosts():
+    transport = PublicEndpointTransport(["*.asgard.niuu.world"])
+    with patch("asyncio.get_running_loop") as loop:
+        loop.return_value.getaddrinfo = AsyncMock(return_value=[(0, 0, 0, "", ("10.0.0.1", 443))])
+        with pytest.raises(MCPDiscoveryError, match="mcp_internal_hosts"):
+            await transport.handle_async_request(
+                httpx.Request("GET", "https://asgard.niuu.world/mcp")
+            )
+    await transport.aclose()
+
+
+def test_discovery_reports_internal_urls():
+    discovery = MCPOAuthDiscovery(internal_hosts=["*.asgard.niuu.world"])
+    assert discovery.is_internal("https://auth.asgard.niuu.world/token")
+    assert not discovery.is_internal("https://auth.example/token")

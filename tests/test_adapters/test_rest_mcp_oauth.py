@@ -99,14 +99,20 @@ def setup(monkeypatch):
         lambda _: httpx.AsyncClient(transport=httpx.MockTransport(respond)),
     )
 
-    def replica(user="alice", tenant="team"):
+    def replica(user="alice", tenant="team", internal_hosts=()):
         app = FastAPI()
         app.dependency_overrides[extract_principal] = lambda: Principal(
             user_id=user, tenant_id=tenant, email="person@example.test", roles=[]
         )
         app.include_router(
             create_mcp_oauth_router(
-                OAuthConfig(redirect_base_url="https://niuu.example"), store, repository, lock
+                OAuthConfig(
+                    redirect_base_url="https://niuu.example",
+                    mcp_internal_hosts=list(internal_hosts),
+                ),
+                store,
+                repository,
+                lock,
             )
         )
         return TestClient(app)
@@ -230,3 +236,16 @@ def test_callback_access_logs_keep_status_but_drop_codes():
     assert _OAuthAccessFilter().filter(record)
     assert "secret" not in record.getMessage()
     assert "200" in record.getMessage()
+
+
+@pytest.mark.parametrize(
+    ("internal_hosts", "public_only"), [((), True), (("auth.example",), False)]
+)
+def test_engine_public_restriction_follows_internal_allowlist(setup, internal_hosts, public_only):
+    replica, store, _ = setup
+    response = replica(internal_hosts=internal_hosts).post(
+        "/mcp/connect", json={"server_url": "https://tools.example/mcp"}
+    )
+    assert response.status_code == 200, response.text
+    configured = store.configure_oauth_application.call_args.kwargs
+    assert configured["public_endpoints_only"] is public_only

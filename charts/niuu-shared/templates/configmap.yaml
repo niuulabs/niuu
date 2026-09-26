@@ -28,6 +28,7 @@ data:
       redirect_base_url: {{ .Values.oauth.redirectBaseUrl | default "" | quote }}
       mcp_request_timeout_seconds: {{ .Values.oauth.mcpRequestTimeoutSeconds }}
       mcp_state_ttl_seconds: {{ .Values.oauth.mcpStateTtlSeconds }}
+      mcp_internal_hosts: {{ .Values.oauth.mcpInternalHosts | default (list) | toJson }}
 
     cors:
       allowed_origins:

@@ -74,7 +74,10 @@ def create_mcp_oauth_router(
     credential_lock: CredentialRefreshLockPort | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/mcp", tags=["MCP integrations"], route_class=_MCPOAuthRoute)
-    discovery = MCPOAuthDiscovery(request_timeout=config.mcp_request_timeout_seconds)
+    discovery = MCPOAuthDiscovery(
+        request_timeout=config.mcp_request_timeout_seconds,
+        internal_hosts=config.mcp_internal_hosts,
+    )
     base = config.redirect_base_url.rstrip("/")
     callback = f"{base}/api/v1/integrations/oauth/mcp/callback"
     client_url = f"{base}/api/v1/integrations/oauth/mcp/client-metadata"
@@ -268,7 +271,12 @@ def create_mcp_oauth_router(
             authorize_url=str(metadata.authorization_endpoint),
             token_url=str(metadata.token_endpoint),
             token_endpoint_auth_method=method,
-            public_endpoints_only=True,
+            # The engine's own public-address check would refuse to refresh
+            # against an operator's internal issuer; the allowlist decides.
+            public_endpoints_only=not any(
+                discovery.is_internal(str(endpoint))
+                for endpoint in (metadata.authorization_endpoint, metadata.token_endpoint)
+            ),
         )
         pkce = PKCEParameters.generate()
         state = secrets.token_urlsafe(32)

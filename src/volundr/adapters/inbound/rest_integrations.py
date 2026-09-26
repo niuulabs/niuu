@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -519,6 +520,7 @@ def _build_integrations_router(
     credential_store: CredentialStorePort | None = None,
     credential_enrollment_service: CredentialEnrollmentService | None = None,
     oauth_clients: OAuthClientRegistry | None = None,
+    mcp_internal_hosts: Sequence[str] = (),
 ) -> APIRouter:
     """Create FastAPI router for integration management endpoints."""
     router = APIRouter(
@@ -1142,9 +1144,9 @@ def _build_integrations_router(
                 token = (values or {}).get(spec.token_field)
                 if not token:
                     raise ValueError("MCP access token missing")
-                await MCPOAuthDiscovery(request_timeout=PROBE_TIMEOUT_SECONDS).initialize(
-                    spec.url, {spec.auth_header: spec.auth_prefix + token}
-                )
+                await MCPOAuthDiscovery(
+                    request_timeout=PROBE_TIMEOUT_SECONDS, internal_hosts=mcp_internal_hosts
+                ).initialize(spec.url, {spec.auth_header: spec.auth_prefix + token})
             except Exception:
                 return IntegrationTestResult(
                     success=False,
@@ -1221,6 +1223,7 @@ def create_integrations_router(
     credential_store: CredentialStorePort | None = None,
     credential_enrollment_service: CredentialEnrollmentService | None = None,
     oauth_clients: OAuthClientRegistry | None = None,
+    mcp_internal_hosts: Sequence[str] = (),
 ) -> APIRouter:
     """Create the canonical shared integrations router."""
     return _build_integrations_router(
@@ -1231,6 +1234,7 @@ def create_integrations_router(
         credential_store=credential_store,
         credential_enrollment_service=credential_enrollment_service,
         oauth_clients=oauth_clients,
+        mcp_internal_hosts=mcp_internal_hosts,
     )
 
 
@@ -1242,6 +1246,7 @@ def create_canonical_integrations_router(
     credential_store: CredentialStorePort | None = None,
     credential_enrollment_service: CredentialEnrollmentService | None = None,
     oauth_clients: OAuthClientRegistry | None = None,
+    mcp_internal_hosts: Sequence[str] = (),
 ) -> APIRouter:
     """Backward-compatible alias for the canonical shared integrations router."""
     return create_integrations_router(
@@ -1252,4 +1257,5 @@ def create_canonical_integrations_router(
         credential_store=credential_store,
         credential_enrollment_service=credential_enrollment_service,
         oauth_clients=oauth_clients,
+        mcp_internal_hosts=mcp_internal_hosts,
     )
