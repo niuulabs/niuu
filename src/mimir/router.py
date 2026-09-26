@@ -54,6 +54,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from mimir.compiled_truth import CompiledTruthPage
 from mimir.compiled_truth import parse_page as parse_compiled_truth_page
+from mimir.config import LiveActivityConfig
+from mimir.live_activity import LiveActivityRecorder
 from mimir.ports.deployment import DeploymentRequest, KnowledgeDeploymentPort
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
 from niuu.domain.knowledge_graph import cross_mount_source_edges
@@ -245,6 +247,13 @@ class GraphNode(BaseModel):
     summary: str = ""
     mount: str = ""
     source_ids: list[str] = Field(default_factory=list)
+    #: ISO-8601 string of the page's MimirPageMeta.updated_at.
+    updated_at: str = ""
+    #: ISO-8601 string — earliest of the page's dated Timeline entries and
+    #: updated_at. Equals updated_at when the page has no dated entries.
+    first_seen: str = ""
+    #: The page's confidence frontmatter value, or None when it declares none.
+    confidence: str | None = None
 
 
 class GraphEdge(BaseModel):
@@ -450,6 +459,17 @@ class ActivityEventResponse(BaseModel):
     ravn: str
     message: str
     page: str | None = None
+
+
+class LiveActivityEventResponse(BaseModel):
+    """One entry in the bounded live read/write window (GET /activity/live)."""
+
+    id: str
+    timestamp: str
+    kind: Literal["read", "write"]
+    mount: str
+    path: str
+    actor: str | None = None
 
 
 class RavnBindingResponse(BaseModel):
@@ -1088,11 +1108,22 @@ class MimirRouter:
         *,
         auth: HeaderAuthenticationPort,
         auth_mode: str = "envoy",
+        live_activity: LiveActivityRecorder | None = None,
     ) -> None:
         self._owner_tenant = tenant_id
         self._auth = auth
         self._auth_mode = auth_mode
         self._public_url = public_url
+        # The composition root (mimir.app.create_app) builds this from the
+        # host's configured LiveActivityConfig and injects it here, sharing
+        # it with MimirMcpServer so MCP-originated reads/writes land in the
+        # same window. Tests that construct MimirRouter directly (no
+        # composition root) get a recorder built from LiveActivityConfig's
+        # own defaults — not a second, hand-picked set of magic numbers.
+        self._live_activity = live_activity or LiveActivityRecorder(
+            buffer_size=LiveActivityConfig().buffer_size,
+            window_seconds=LiveActivityConfig().window_seconds,
+        )
         self._tenant: ContextVar[str] = ContextVar("mimir_tenant", default="")
         self._deployed_mounts: ContextVar[list] = ContextVar("mimir_deployed_mounts", default=[])
         self._deployment = deployment
@@ -1120,6 +1151,36 @@ class MimirRouter:
             return await self._auth.validate_headers(dict(request.headers))
         except InvalidTokenError:
             return None
+
+    async def _record_activity(
+        self, request: Request, kind: Literal["read", "write"], mount: str, path: str
+    ) -> None:
+        """Record a live-activity event (GET /activity/live), attributed when possible.
+
+        Call only after the underlying read/write has already succeeded —
+        this is additive bookkeeping, never part of the request's
+        success/failure contract. ``_verified_principal`` covers three
+        concrete identity-adapter behaviours, and none of them can turn this
+        into an error path:
+
+        - ``EnvoyHeaderAuthenticationAdapter`` / JWKS with no or an invalid
+          credential: raises ``InvalidTokenError`` internally, which
+          ``_verified_principal`` already catches and turns into ``None`` —
+          so ``actor`` is ``None`` here, not an exception.
+        - ``AllowAllHeaderAuthenticationAdapter`` (``auth_mode: none`` /
+          local dev): always asserts a fixed principal, so ``actor`` is that
+          adapter's configured ``user_id`` (e.g. ``"dev-user"``) — never
+          ``None`` under this adapter.
+        - A real verified credential: ``actor`` is that principal's
+          ``user_id``.
+
+        There is no "no identity adapter" case to handle — ``auth`` is a
+        required constructor argument (see the class docstring); a route is
+        never reachable without one configured.
+        """
+        principal = await self._verified_principal(request)
+        actor = principal.user_id if principal is not None else None
+        self._live_activity.record(kind=kind, mount=mount, path=path, actor=actor)
 
     async def _require_deploy_auth(self, request: Request) -> None:
         """Require an authenticated tenant administrator (deploy/mount routes)."""
@@ -1628,6 +1689,7 @@ class MimirRouter:
 
         @router.get("/page", response_model=PageResponse)
         async def read_page(
+            request: Request,
             path: str = Query(),
             mount: str | None = Query(default=None),
         ) -> PageResponse:
@@ -1637,6 +1699,7 @@ class MimirRouter:
                 page = await port.get_page(path)
             except FileNotFoundError:
                 raise HTTPException(status_code=404, detail=f"Page not found: {path}")
+            await self._record_activity(request, "read", resolved_mount, page.meta.path)
             if mount is not None:
                 return _decorate_page(page, mounts=[resolved_mount])
             # Only this page's mounts are needed. Unscoped, this walked all 578
@@ -1739,7 +1802,9 @@ class MimirRouter:
             response_model=PageResponse,
             dependencies=[Depends(self._require_write_auth)],
         )
-        async def revise_belief_endpoint(request: ReviseBeliefRequest) -> PageResponse:
+        async def revise_belief_endpoint(
+            http_request: Request, request: ReviseBeliefRequest
+        ) -> PageResponse:
             """Belief revision with journey (NIU-1062): rewrite a compiled-truth
             fact while appending the old → new transition to the Timeline."""
             from mimir.learning import revise_belief
@@ -1755,6 +1820,7 @@ class MimirRouter:
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc))
             await adapter.upsert_page(request.path, revised)
+            await self._record_activity(http_request, "write", self._name, request.path)
             page = await adapter.get_page(request.path)
             return _decorate_page(page, mounts=[self._name])
 
@@ -2014,6 +2080,30 @@ class MimirRouter:
             events.sort(key=lambda event: event.timestamp, reverse=True)
             return events[:limit]
 
+        @router.get("/activity/live", response_model=list[LiveActivityEventResponse])
+        async def live_activity(
+            since: datetime | None = Query(default=None),
+        ) -> list[LiveActivityEventResponse]:
+            """Bounded in-memory read/write window for the 3D memory UI.
+
+            Distinct from ``GET /activity`` above: this is presence (who is
+            reading/writing right now, within ``live_activity.window_seconds``),
+            not the durable per-mount log. ``since`` is validated as an
+            ISO-8601 datetime by FastAPI/pydantic before this body runs — a
+            malformed value 422s rather than being silently ignored.
+            """
+            return [
+                LiveActivityEventResponse(
+                    id=event.id,
+                    timestamp=event.timestamp.isoformat(),
+                    kind=event.kind,
+                    mount=event.mount,
+                    path=event.path,
+                    actor=event.actor,
+                )
+                for event in self._live_activity.list_since(since)
+            ]
+
         @router.get("/instances/inspect")
         async def inspect_instances(mount: str | None = Query(default=None)) -> list[dict]:
             mounts = self._mount_definitions()
@@ -2256,21 +2346,25 @@ class MimirRouter:
 
         @router.put("/page", status_code=204)
         async def upsert_page(
+            http_request: Request,
             request: UpsertPageRequest,
             _auth: None = Depends(self._require_write_auth),
         ) -> None:
-            port, _ = self._resolve_port(request.mount)
+            port, resolved_mount = self._resolve_port(request.mount)
             await port.upsert_page(request.path, request.content)
+            await self._record_activity(http_request, "write", resolved_mount, request.path)
 
         @router.delete("/page", status_code=204)
         async def delete_page(
+            request: Request,
             path: str = Query(),
             mount: str | None = Query(default=None),
             _auth: None = Depends(self._require_write_auth),
         ) -> None:
-            port, _ = self._resolve_port(mount)
+            port, resolved_mount = self._resolve_port(mount)
             if not await port.delete_page(path):
                 raise HTTPException(status_code=404, detail=f"Page not found: {path}")
+            await self._record_activity(request, "write", resolved_mount, path)
 
         @router.post("/ingest", response_model=IngestResponse)
         async def ingest_source(

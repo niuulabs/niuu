@@ -12,7 +12,9 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter
+from mimir.live_activity import LiveActivityRecorder
 from mimir.mcp import MimirMcpServer
 
 # ---------------------------------------------------------------------------
@@ -38,6 +40,28 @@ def _jsonrpc(method: str, params: dict | None = None, req_id: int = 1) -> dict:
     if params is not None:
         msg["params"] = params
     return msg
+
+
+def _make_client_and_server(
+    tmp_path: Path, *, auth: EnvoyHeaderAuthenticationAdapter | None = None
+) -> tuple[TestClient, MimirMcpServer]:
+    """Like _make_client, but also returns the server so its shared
+
+    LiveActivityRecorder can be inspected directly (there is no HTTP route
+    exposing MCP-originated activity on its own — mimir.app.create_app
+    shares one recorder between MimirRouter and MimirMcpServer)."""
+    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    live_activity = LiveActivityRecorder(buffer_size=100, window_seconds=3600)
+    server = MimirMcpServer(
+        adapter=adapter,
+        name="test",
+        auth=auth,
+        auth_mode="envoy",
+        live_activity=live_activity,
+    )
+    app = FastAPI()
+    app.include_router(server.router(), prefix="/mcp")
+    return TestClient(app), server
 
 
 def _seed_page(tmp_path: Path) -> None:
@@ -492,6 +516,126 @@ class TestUnknownTool:
         )
         data = resp.json()
         assert data["error"]["code"] == -32603
+
+
+# ---------------------------------------------------------------------------
+# Live activity — MCP calls read/write self._adapter directly, bypassing
+# MimirRouter entirely, so they need their own recording (see mimir.mcp's
+# MimirMcpServer docstring on the live_activity constructor arg).
+# ---------------------------------------------------------------------------
+
+
+class TestLiveActivity:
+    def test_read_tool_records_activity_with_verified_actor(self, tmp_path: Path) -> None:
+        _seed_page(tmp_path)
+        client, server = _make_client_and_server(tmp_path, auth=EnvoyHeaderAuthenticationAdapter())
+        client.post(
+            "/mcp",
+            json=_jsonrpc(
+                "tools/call",
+                {"name": "mimir_read", "arguments": {"path": "technical/ravn.md"}},
+            ),
+            headers={"x-auth-user-id": "mcp-user"},
+        )
+        (event,) = server._live_activity.list_since(None)
+        assert event.kind == "read"
+        assert event.path == "technical/ravn.md"
+        assert event.mount == "test"
+        assert event.actor == "mcp-user"
+
+    def test_write_tool_records_activity(self, tmp_path: Path) -> None:
+        client, server = _make_client_and_server(tmp_path, auth=EnvoyHeaderAuthenticationAdapter())
+        client.post(
+            "/mcp",
+            json=_jsonrpc(
+                "tools/call",
+                {
+                    "name": "mimir_write",
+                    "arguments": {"path": "technical/new.md", "content": "# New\nBody."},
+                },
+            ),
+            headers={"x-auth-user-id": "mcp-writer"},
+        )
+        (event,) = server._live_activity.list_since(None)
+        assert event.kind == "write"
+        assert event.path == "technical/new.md"
+        assert event.actor == "mcp-writer"
+
+    def test_failed_read_is_not_recorded(self, tmp_path: Path) -> None:
+        client, server = _make_client_and_server(tmp_path)
+        client.post(
+            "/mcp",
+            json=_jsonrpc(
+                "tools/call",
+                {"name": "mimir_read", "arguments": {"path": "technical/missing.md"}},
+            ),
+        )
+        assert server._live_activity.list_since(None) == []
+
+    def test_actor_null_without_credential(self, tmp_path: Path) -> None:
+        client, server = _make_client_and_server(tmp_path, auth=EnvoyHeaderAuthenticationAdapter())
+        client.post(
+            "/mcp",
+            json=_jsonrpc(
+                "tools/call",
+                {
+                    "name": "mimir_write",
+                    "arguments": {"path": "technical/anon.md", "content": "# Anon\nBody."},
+                },
+            ),
+        )
+        (event,) = server._live_activity.list_since(None)
+        assert event.actor is None
+
+    def test_actor_null_when_no_identity_adapter_configured(self, tmp_path: Path) -> None:
+        """auth=None (this class's default, matching stdio/no-gate hosts):
+
+        _actor short-circuits without ever consulting headers."""
+        client, server = _make_client_and_server(tmp_path)
+        client.post(
+            "/mcp",
+            json=_jsonrpc(
+                "tools/call",
+                {
+                    "name": "mimir_write",
+                    "arguments": {"path": "technical/ungated.md", "content": "# X\nBody."},
+                },
+            ),
+            headers={"x-auth-user-id": "should-be-ignored"},
+        )
+        (event,) = server._live_activity.list_since(None)
+        assert event.actor is None
+
+    async def test_stdio_calls_are_never_attributed(self, tmp_path: Path) -> None:
+        """run_stdio never has an HTTP request, so recorded activity from it
+
+        is always unattributed — this is correct, not a gap (no headers
+        exist over stdio to attribute to)."""
+        adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+        live_activity = LiveActivityRecorder(buffer_size=10, window_seconds=3600)
+        server = MimirMcpServer(
+            adapter=adapter,
+            name="test",
+            auth=EnvoyHeaderAuthenticationAdapter(),
+            auth_mode="envoy",
+            live_activity=live_activity,
+        )
+        stdin = io.StringIO(
+            json.dumps(
+                _jsonrpc(
+                    "tools/call",
+                    {
+                        "name": "mimir_write",
+                        "arguments": {"path": "technical/stdio.md", "content": "# S\nBody."},
+                    },
+                )
+            )
+            + "\n"
+        )
+        stdout = io.StringIO()
+        await server.run_stdio(stdin, stdout)
+        (event,) = live_activity.list_since(None)
+        assert event.actor is None
 
 
 # ---------------------------------------------------------------------------

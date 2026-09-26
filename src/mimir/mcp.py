@@ -43,6 +43,8 @@ import yaml
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from mimir.config import LiveActivityConfig
+from mimir.live_activity import LiveActivityRecorder
 from mimir.router import WRITE_ROLES
 from niuu.domain.mimir import MimirSource, compute_content_hash
 from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
@@ -287,6 +289,18 @@ class MimirMcpServer:
             applies under ``"oidc"`` — see ``MimirRouter._require_write_auth``
             for why ``envoy``/``none`` keep their pre-existing (ungated)
             behaviour for now.
+        live_activity: Shared ``LiveActivityRecorder`` for ``GET
+            /mimir/activity/live`` (the 3D memory UI's presence window).
+            MCP clients (Claude Code, Codex, Cursor, ...) read/write pages
+            through ``mimir_read``/``mimir_write`` directly against
+            *adapter*, bypassing ``MimirRouter`` entirely — so those calls
+            need their own recording, not just the REST routes'.
+            ``mimir.app.create_app`` builds one recorder and passes it to
+            both this server and ``MimirRouter`` so both surfaces land in
+            the same window. ``None`` (e.g. the ``python -m mimir mcp``
+            stdio entry point, which has no HTTP router to share one with)
+            builds a private recorder from ``LiveActivityConfig``'s own
+            defaults — never a second, hand-picked set of magic numbers.
     """
 
     def __init__(
@@ -296,26 +310,43 @@ class MimirMcpServer:
         *,
         auth: HeaderAuthenticationPort | None = None,
         auth_mode: str = "envoy",
+        live_activity: LiveActivityRecorder | None = None,
     ) -> None:
         self._adapter = adapter
         self._name = name
         self._auth = auth
         self._auth_mode = auth_mode
+        self._live_activity = live_activity or LiveActivityRecorder(
+            buffer_size=LiveActivityConfig().buffer_size,
+            window_seconds=LiveActivityConfig().window_seconds,
+        )
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    async def handle(self, payload: dict[str, Any] | list[dict[str, Any]]) -> Any:
+    async def handle(
+        self,
+        payload: dict[str, Any] | list[dict[str, Any]],
+        request: Request | None = None,
+    ) -> Any:
         """Handle a JSON-RPC request or batch.
 
         Returns a single response dict, a list of responses (for batches),
         or ``None`` when the payload contains only notifications.
+
+        *request* is the inbound HTTP request when this came from
+        ``router()``'s endpoint — used only to attribute recorded live
+        activity to a verified caller. ``run_stdio`` never has one (there
+        are no HTTP headers over stdio), so activity it records is always
+        unattributed (``actor=None``), which is correct, not a gap.
         """
         if isinstance(payload, list):
-            responses = [r for item in payload if (r := await self._handle_one(item)) is not None]
+            responses = [
+                r for item in payload if (r := await self._handle_one(item, request)) is not None
+            ]
             return responses or None
-        return await self._handle_one(payload)
+        return await self._handle_one(payload, request)
 
     @staticmethod
     def _calls_a_write_tool(body: Any) -> bool:
@@ -379,7 +410,7 @@ class MimirMcpServer:
                         status_code=exc.status_code,
                     )
             try:
-                response = await server.handle(body)
+                response = await server.handle(body, request)
                 if response is None:
                     return JSONResponse(None, status_code=204)
                 return JSONResponse(response)
@@ -444,7 +475,9 @@ class MimirMcpServer:
     # Internal dispatch
     # ------------------------------------------------------------------
 
-    async def _handle_one(self, req: dict[str, Any]) -> dict[str, Any] | None:
+    async def _handle_one(
+        self, req: dict[str, Any], request: Request | None = None
+    ) -> dict[str, Any] | None:
         """Handle a single JSON-RPC message.
 
         Returns ``None`` for notifications (messages without an ``id``).
@@ -456,7 +489,7 @@ class MimirMcpServer:
             return None
 
         try:
-            result = await self._dispatch(method, req.get("params") or {})
+            result = await self._dispatch(method, req.get("params") or {}, request)
             return {"jsonrpc": "2.0", "id": req_id, "result": result}
         except _MethodNotFoundError:
             logger.info("Unknown MCP method requested: %s", _sanitize_log(method))
@@ -473,7 +506,9 @@ class MimirMcpServer:
                 "error": {"code": -32603, "message": "Internal error"},
             }
 
-    async def _dispatch(self, method: str, params: dict[str, Any]) -> Any:
+    async def _dispatch(
+        self, method: str, params: dict[str, Any], request: Request | None = None
+    ) -> Any:
         match method:
             case "initialize":
                 return {
@@ -486,7 +521,7 @@ class MimirMcpServer:
             case "tools/call":
                 name = params.get("name", "")
                 arguments = params.get("arguments") or {}
-                content = await self._call_tool(name, arguments)
+                content = await self._call_tool(name, arguments, request)
                 return {"content": content}
             case "ping":
                 return {}
@@ -494,14 +529,16 @@ class MimirMcpServer:
                 raise _MethodNotFoundError(f"Method not found: {method}")
         raise AssertionError("Unreachable _dispatch fallthrough")
 
-    async def _call_tool(self, name: str, arguments: dict[str, Any]) -> list[dict[str, Any]]:
+    async def _call_tool(
+        self, name: str, arguments: dict[str, Any], request: Request | None = None
+    ) -> list[dict[str, Any]]:
         match name:
             case "mimir_search":
                 return await self._tool_search(arguments)
             case "mimir_read":
-                return await self._tool_read(arguments)
+                return await self._tool_read(arguments, request)
             case "mimir_write":
-                return await self._tool_write(arguments)
+                return await self._tool_write(arguments, request)
             case "mimir_ingest":
                 return await self._tool_ingest(arguments)
             case "mimir_read_source":
@@ -546,12 +583,36 @@ class MimirMcpServer:
         )
         return [{"type": "text", "text": json.dumps(items, indent=2)}]
 
-    async def _tool_read(self, args: dict[str, Any]) -> list[dict[str, Any]]:
+    async def _actor(self, request: Request | None) -> str | None:
+        """Resolve the caller's user id for live-activity attribution.
+
+        Mirrors ``MimirRouter._record_activity``'s three cases: no *request*
+        (stdio, or an HTTP call this server was given none for) or no *auth*
+        configured -> ``None``; ``validate_headers`` raising
+        ``InvalidTokenError`` (no/invalid credential) -> ``None``; an
+        allow-all adapter always asserts a fixed principal -> its
+        ``user_id``, never ``None``. Never raises — an attribution failure
+        must not turn a successful read/write into a tool error.
+        """
+        if request is None or self._auth is None:
+            return None
+        try:
+            principal = await self._auth.validate_headers(dict(request.headers))
+        except InvalidTokenError:
+            return None
+        return principal.user_id
+
+    async def _tool_read(
+        self, args: dict[str, Any], request: Request | None = None
+    ) -> list[dict[str, Any]]:
         path: str = args["path"]
         try:
             page = await self._adapter.get_page(path)
         except FileNotFoundError:
             return [{"type": "text", "text": f"Page not found: {path}"}]
+        self._live_activity.record(
+            kind="read", mount=self._name, path=page.meta.path, actor=await self._actor(request)
+        )
         result = {
             "path": page.meta.path,
             "title": page.meta.title,
@@ -563,7 +624,9 @@ class MimirMcpServer:
         }
         return [{"type": "text", "text": json.dumps(result, indent=2)}]
 
-    async def _tool_write(self, args: dict[str, Any]) -> list[dict[str, Any]]:
+    async def _tool_write(
+        self, args: dict[str, Any], request: Request | None = None
+    ) -> list[dict[str, Any]]:
         path: str = args["path"]
         content: str = args["content"]
         frontmatter: dict[str, Any] | None = args.get("frontmatter")
@@ -574,6 +637,9 @@ class MimirMcpServer:
             full_content = f"---\n{fm_text}\n---\n\n{content}"
 
         await self._adapter.upsert_page(path, full_content)
+        self._live_activity.record(
+            kind="write", mount=self._name, path=path, actor=await self._actor(request)
+        )
 
         try:
             page = await self._adapter.get_page(path)

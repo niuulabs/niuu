@@ -848,6 +848,49 @@ def test_graph_has_nodes(client_with_page: TestClient) -> None:
     assert data["nodes"][0]["category"] == "technical"
 
 
+def test_graph_node_without_timeline_or_confidence(client_with_page: TestClient) -> None:
+    """No frontmatter confidence and no Timeline zone: first_seen == updated_at,
+
+    confidence is null (never invented, e.g. never defaulted to "medium")."""
+    resp = client_with_page.get("/mimir/graph")
+    node = resp.json()["nodes"][0]
+    assert node["confidence"] is None
+    assert node["updated_at"] != ""
+    assert node["first_seen"] == node["updated_at"]
+
+
+def test_graph_node_first_seen_from_older_timeline_entry(client: TestClient) -> None:
+    """first_seen is the earliest dated Timeline entry when older than updated_at,
+
+    and confidence reflects the page's frontmatter value."""
+    content = (
+        "---\n"
+        "confidence: high\n"
+        "---\n"
+        "# Old Page\n"
+        "A page with history.\n\n"
+        "## Compiled Truth\n\n"
+        "Some settled fact.\n\n"
+        "## Timeline\n\n"
+        "- 2020-01-01: The earliest thing happened. [Source: test]\n"
+        "- 2020-06-15: A later thing happened. [Source: test]\n"
+    )
+    put = client.put("/mimir/page", json={"path": "technical/old.md", "content": content})
+    assert put.status_code == 204
+
+    node = client.get("/mimir/graph").json()["nodes"][0]
+    assert node["confidence"] == "high"
+    assert node["first_seen"] == "2020-01-01T00:00:00+00:00"
+    assert node["first_seen"] != node["updated_at"]
+
+
+def test_graph_node_confidence_low(client: TestClient) -> None:
+    content = "---\nconfidence: low\n---\n# Shaky\nNot much evidence yet.\n"
+    client.put("/mimir/page", json={"path": "technical/shaky.md", "content": content})
+    node = client.get("/mimir/graph").json()["nodes"][0]
+    assert node["confidence"] == "low"
+
+
 # ---------------------------------------------------------------------------
 # PUT /mimir/page
 # ---------------------------------------------------------------------------
@@ -966,6 +1009,117 @@ def test_recent_writes_and_activity_include_real_events(composite_client: TestCl
     events = activity.json()
     assert any(event["kind"] == "write" for event in events)
     assert any(event["page"] == "projects/roadmap/shared.md" for event in events)
+
+
+# ---------------------------------------------------------------------------
+# GET /mimir/activity/live
+# ---------------------------------------------------------------------------
+
+
+def test_live_activity_records_read_with_verified_actor(client: TestClient) -> None:
+    client.put(
+        "/mimir/page",
+        json={"path": "technical/live.md", "content": "# Live\nSome content."},
+    )
+    client.get("/mimir/page", params={"path": "technical/live.md"})
+
+    events = client.get("/mimir/activity/live").json()
+    reads = [e for e in events if e["kind"] == "read" and e["path"] == "technical/live.md"]
+    assert len(reads) == 1
+    assert reads[0]["actor"] == "test-user"  # from _ADMIN_HEADERS x-auth-user-id
+    assert reads[0]["mount"] == "test"
+
+    writes = [e for e in events if e["kind"] == "write" and e["path"] == "technical/live.md"]
+    assert len(writes) == 1
+    assert writes[0]["actor"] == "test-user"
+
+    # Newest first.
+    assert events[0]["timestamp"] >= events[-1]["timestamp"]
+
+
+def test_live_activity_failed_read_is_not_recorded(client: TestClient) -> None:
+    resp = client.get("/mimir/page", params={"path": "technical/does-not-exist.md"})
+    assert resp.status_code == 404
+
+    events = client.get("/mimir/activity/live").json()
+    assert events == []
+
+
+def test_live_activity_delete_is_recorded_as_write(client: TestClient) -> None:
+    client.put(
+        "/mimir/page",
+        json={"path": "technical/deleteme.md", "content": "# Bye\nTemporary."},
+    )
+    resp = client.delete("/mimir/page", params={"path": "technical/deleteme.md"})
+    assert resp.status_code == 204
+
+    events = client.get("/mimir/activity/live").json()
+    deletes = [e for e in events if e["path"] == "technical/deleteme.md" and e["kind"] == "write"]
+    # One write from the PUT, one write from the DELETE.
+    assert len(deletes) == 2
+
+
+def test_live_activity_failed_delete_is_not_recorded(client: TestClient) -> None:
+    resp = client.delete("/mimir/page", params={"path": "technical/never-existed.md"})
+    assert resp.status_code == 404
+
+    events = client.get("/mimir/activity/live").json()
+    assert events == []
+
+
+def test_live_activity_actor_null_when_unauthenticated(tmp_path: Path) -> None:
+    """EnvoyHeaderAuthenticationAdapter with no x-auth-user-id header raises
+
+    InvalidTokenError internally; _verified_principal turns that into None,
+    so actor is null (auth_mode: envoy does not gate GET/PUT on identity)."""
+    app = _make_app(tmp_path)
+    anon = TestClient(app)  # no _ADMIN_HEADERS
+    anon.put(
+        "/mimir/page",
+        json={"path": "technical/anon.md", "content": "# Anon\nNo credential."},
+    )
+    anon.get("/mimir/page", params={"path": "technical/anon.md"})
+
+    events = anon.get("/mimir/activity/live").json()
+    assert events
+    assert all(e["actor"] is None for e in events)
+
+
+def test_live_activity_allow_all_adapter_always_attributes_dev_user(tmp_path: Path) -> None:
+    """AllowAllHeaderAuthenticationAdapter always asserts a fixed principal —
+
+    actor is that adapter's user_id, never null, even with no credential."""
+    app = _make_none_mode_registry_app(tmp_path)
+    anon = TestClient(app)
+    anon.put(
+        "/mimir/page",
+        json={"path": "technical/dev.md", "content": "# Dev\nLocal dev write."},
+    )
+    events = anon.get("/mimir/activity/live").json()
+    assert events
+    assert events[0]["actor"] == "dev-user"
+
+
+def test_live_activity_since_excludes_older_events(client: TestClient) -> None:
+    client.put(
+        "/mimir/page",
+        json={"path": "technical/first.md", "content": "# First\nBefore the cutoff."},
+    )
+    cutoff = client.get("/mimir/activity/live").json()[0]["timestamp"]
+    client.put(
+        "/mimir/page",
+        json={"path": "technical/second.md", "content": "# Second\nAfter the cutoff."},
+    )
+
+    events = client.get("/mimir/activity/live", params={"since": cutoff}).json()
+    paths = {e["path"] for e in events}
+    assert "technical/second.md" in paths
+    assert "technical/first.md" not in paths
+
+
+def test_live_activity_malformed_since_is_422(client: TestClient) -> None:
+    resp = client.get("/mimir/activity/live", params={"since": "not-a-timestamp"})
+    assert resp.status_code == 422
 
 
 def test_entities_and_page_sources_are_available(client_with_sourced_page: TestClient) -> None:

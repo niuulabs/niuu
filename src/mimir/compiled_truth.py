@@ -29,6 +29,9 @@ from niuu.domain.mimir import (
     PageConfidence,
     PageType,
 )
+from niuu.domain.timeline import TIMELINE_HEADING as _TIMELINE_HEADING
+from niuu.domain.timeline import extract_zone as _extract_zone
+from niuu.domain.timeline import parse_dated_entry as _parse_dated_entry
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -37,7 +40,6 @@ from niuu.domain.mimir import (
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n?", re.DOTALL)
 
 _COMPILED_TRUTH_HEADING = "## Compiled Truth"
-_TIMELINE_HEADING = "## Timeline"
 
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
 
@@ -109,18 +111,6 @@ def _parse_frontmatter(content: str) -> dict:
         return {}
 
 
-def _extract_zone(body: str, heading: str) -> str:
-    """Return the text that follows *heading* up to the next ``##`` heading."""
-    pattern = re.compile(
-        rf"^{re.escape(heading)}\s*\n(.*?)(?=^## |\Z)",
-        re.MULTILINE | re.DOTALL,
-    )
-    match = pattern.search(body)
-    if not match:
-        return ""
-    return match.group(1).rstrip()
-
-
 def _parse_timeline_entries(timeline_body: str) -> list[TimelineEntry]:
     """Parse individual timeline entries from the timeline zone body."""
     entries: list[TimelineEntry] = []
@@ -129,15 +119,14 @@ def _parse_timeline_entries(timeline_body: str) -> list[TimelineEntry]:
         if not stripped.startswith("- "):
             continue
         text = stripped[2:]
-        # Extract date
-        date_match = re.match(r"^(\d{4}-\d{2}-\d{2}): (.+)", text)
-        if not date_match:
+        # Extract date (shared with niuu.domain.timeline / niuu.domain.knowledge_graph)
+        parsed = _parse_dated_entry(line)
+        if parsed is None:
             entries.append(
                 TimelineEntry(raw=stripped, date="", description=text, source="", has_source=False)
             )
             continue
-        date = date_match.group(1)
-        rest = date_match.group(2)
+        date, rest = parsed
         source_match = re.search(r"\[Source: ([^\]]+)\]", rest)
         if source_match:
             source = source_match.group(1)
