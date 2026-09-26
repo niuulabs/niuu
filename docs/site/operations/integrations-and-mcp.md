@@ -114,7 +114,10 @@ unique-local, CGNAT) but are still pinned, TLS-verified, and refused on loopback
 link-local, multicast, or reserved addresses. Every other host keeps the public
 check. When an issuer's authorization or token endpoint is on the list, its OpenBao
 server definition is registered without `public_endpoints_only`, so the engine
-can refresh against it. Invalid or overly broad entries fail at startup.
+can refresh against it. Invalid or overly broad entries fail at startup. The
+check that the install's own client metadata document is publicly reachable
+ignores the list, even when the install's host matches it: an external
+authorization server must be able to fetch that document itself.
 
 Set `oauth.redirect_base_url` to the install's external HTTPS origin (Helm:
 `oauth.redirectBaseUrl`). Allow unauthenticated GETs to the MCP callback and client

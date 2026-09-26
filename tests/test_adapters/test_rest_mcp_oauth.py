@@ -249,3 +249,29 @@ def test_engine_public_restriction_follows_internal_allowlist(setup, internal_ho
     assert response.status_code == 200, response.text
     configured = store.configure_oauth_application.call_args.kwargs
     assert configured["public_endpoints_only"] is public_only
+
+
+def test_client_metadata_self_check_ignores_internal_allowlist(setup, monkeypatch):
+    replica, _, _ = setup
+    patched = MCPOAuthDiscovery.client
+    seen = []
+
+    def client(self):
+        http = patched(self)
+
+        async def record(request):
+            seen.append((request.url.path, self._internal_hosts))
+
+        http.event_hooks["request"].append(record)
+        return http
+
+    monkeypatch.setattr(MCPOAuthDiscovery, "client", client)
+    response = replica(internal_hosts=("niuu.example", "auth.example")).post(
+        "/mcp/connect", json={"server_url": "https://tools.example/mcp"}
+    )
+    assert response.status_code == 200, response.text
+    metadata_path = "/api/v1/integrations/oauth/mcp/client-metadata"
+    assert [hosts for path, hosts in seen if path == metadata_path] == [()]
+    assert [hosts for path, hosts in seen if path == "/register"] == [
+        ("niuu.example", "auth.example")
+    ]

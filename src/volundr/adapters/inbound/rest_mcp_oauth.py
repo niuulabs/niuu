@@ -78,6 +78,9 @@ def create_mcp_oauth_router(
         request_timeout=config.mcp_request_timeout_seconds,
         internal_hosts=config.mcp_internal_hosts,
     )
+    # Proves the client metadata document is reachable by any authorization
+    # server, so the internal-host allowlist must never satisfy it.
+    public_discovery = MCPOAuthDiscovery(request_timeout=config.mcp_request_timeout_seconds)
     base = config.redirect_base_url.rstrip("/")
     callback = f"{base}/api/v1/integrations/oauth/mcp/callback"
     client_url = f"{base}/api/v1/integrations/oauth/mcp/client-metadata"
@@ -101,7 +104,7 @@ def create_mcp_oauth_router(
         # Browser callbacks can work on a private install; CIMD cannot, because
         # the authorization server itself must fetch this document publicly.
         try:
-            async with discovery.client() as http:
+            async with public_discovery.client() as http:
                 response = await http.get(client_url)
             return response.status_code == 200 and response.json().get("client_id") == client_url
         except (ValueError, OSError, httpx.HTTPError):
