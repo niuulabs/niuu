@@ -4,7 +4,13 @@ import type { RecentWrite } from '../ports/IMountAdapter';
 import type { PageMeta, Page, SearchResult } from '../domain/page';
 import type { LintIssue, LintReport, DreamCycle, ActivityEvent } from '../domain/lint';
 import type { Source } from '../domain/source';
-import type { MimirStats, MimirGraph } from '../domain/api-types';
+import type {
+  MimirStats,
+  MimirGraph,
+  GraphNode,
+  GraphEdge,
+  LiveActivity,
+} from '../domain/api-types';
 import type { EmbeddingSearchResult } from '../ports/IEmbeddingStore';
 import type { EntityMeta } from '../domain/entity';
 import type { FactEvidence, RelatedPage, ReviseRequest } from '../domain/evidence';
@@ -15,6 +21,7 @@ import type { EvalReport, QueryStats } from '../domain/analytics';
 import type { DoctorCheck, DoctorReport, DoctorStatus } from '../domain/doctor';
 import { tallySeverity } from '../domain/lint';
 import { toPageMeta } from '../domain/page';
+import { generateMockMemoryGraph, generateMockLiveActivity } from './mockGraph';
 
 // ---------------------------------------------------------------------------
 // Seed data — Mounts
@@ -516,21 +523,107 @@ const ALL_PAGES = [...MOCK_PAGES, ...MOCK_ENTITY_PAGES];
 // Seed data — graph
 // ---------------------------------------------------------------------------
 
+/**
+ * The memory-kind leaf vocabulary `domain/memoryKinds.ts`'s `kindGroup()`
+ * recognises (its entity sub-type set plus its direct-group set). Not
+ * exported by that module — it only exports the grouping function and the
+ * legend metadata — so the mock generator keeps its own copy of the leaf
+ * values it needs to produce a representative spread.
+ */
+type MockKind =
+  | 'topic'
+  | 'person'
+  | 'project'
+  | 'concept'
+  | 'technology'
+  | 'organization'
+  | 'strategy'
+  | 'decision'
+  | 'directive'
+  | 'preference'
+  | 'goal'
+  | 'observation'
+  | 'thread';
+
+/**
+ * `EntityMeta['entityKind']` predates the memory-kind vocabulary and uses
+ * shorter/different leaf names for two of the six sub-types. Normalise them
+ * so hand-written entity pages colour correctly in the memory scene
+ * alongside the generated ones.
+ */
+function entityTypeToMemoryKind(entityType: string | undefined): MockKind {
+  switch (entityType) {
+    case 'org':
+      return 'organization';
+    case 'component':
+      return 'technology';
+    case 'person':
+    case 'project':
+    case 'concept':
+    case 'technology':
+    case 'organization':
+    case 'strategy':
+      return entityType;
+    default:
+      return 'concept';
+  }
+}
+
+function pageToMemoryKind(page: Page): MockKind {
+  if (page.type === 'entity') return entityTypeToMemoryKind(page.entityType);
+  switch (page.type) {
+    case 'decision':
+    case 'directive':
+    case 'preference':
+      return page.type;
+    case 'topic':
+    default:
+      return 'topic';
+  }
+}
+
+/** Fixed reference instant the curated mock timestamps are already anchored to. */
+const MOCK_GRAPH_NOW = Date.parse('2026-04-19T12:00:00Z');
+
+/** Target synthetic page count — keeps the total graph in the ~600-900 page range. */
+const MOCK_SYNTHETIC_PAGE_COUNT = 750;
+
+const REAL_GRAPH_NODES: GraphNode[] = ALL_PAGES.map((p) => ({
+  id: p.path,
+  title: p.title,
+  category: p.category,
+  path: p.path,
+  mount: p.mounts[0] ?? 'local',
+  kind: pageToMemoryKind(p),
+  updatedAt: p.updatedAt,
+  // The hand-written pages carry no separate "first observed" date; treating
+  // their last update as their birth is a reasonable simplification for a
+  // handful of hero pages that were authored once and refined since.
+  firstSeen: p.updatedAt,
+  confidence: p.confidence,
+}));
+
+const CURATED_GRAPH_EDGES: GraphEdge[] = [
+  { source: '/arch/overview', target: '/api/overview', type: 'explains' },
+  { source: '/infra/k8s', target: '/arch/overview', type: 'depends_on' },
+  { source: '/arch/overview', target: '/entities/hexagonal-arch', type: 'part_of' },
+  { source: '/entities/niuulabs', target: '/entities/ting', type: 'part_of' },
+  { source: '/entities/ting', target: '/arch/overview', type: 'depends_on' },
+  { source: '/api/overview', target: '/entities/asyncpg', type: 'depends_on' },
+  { source: '/entities/hexagonal-arch', target: '/entities/asyncpg', type: 'depends_on' },
+];
+
+const SYNTHETIC_GRAPH = generateMockMemoryGraph({
+  seed: 20260419,
+  count: MOCK_SYNTHETIC_PAGE_COUNT,
+  mounts: MOCK_MOUNTS.map((m) => m.name),
+  seedNodes: REAL_GRAPH_NODES,
+  now: MOCK_GRAPH_NOW,
+});
+
 const MOCK_GRAPH: MimirGraph = {
-  nodes: ALL_PAGES.map((p) => ({
-    id: p.path,
-    title: p.title,
-    category: p.category,
-  })),
-  edges: [
-    { source: '/arch/overview', target: '/api/overview' },
-    { source: '/infra/k8s', target: '/arch/overview' },
-    { source: '/arch/overview', target: '/entities/hexagonal-arch' },
-    { source: '/entities/niuulabs', target: '/entities/ting' },
-    { source: '/entities/ting', target: '/arch/overview' },
-    { source: '/api/overview', target: '/entities/asyncpg' },
-    { source: '/entities/hexagonal-arch', target: '/entities/asyncpg' },
-  ],
+  nodes: [...REAL_GRAPH_NODES, ...SYNTHETIC_GRAPH.nodes],
+  edges: [...CURATED_GRAPH_EDGES, ...SYNTHETIC_GRAPH.edges],
 };
 
 // ---------------------------------------------------------------------------
@@ -1457,15 +1550,23 @@ export function createMimirMockAdapter(): IMimirService {
         if (!options?.mountName) {
           return MOCK_GRAPH;
         }
-        const mountPages = new Set(
-          ALL_PAGES.filter((p) => p.mounts.includes(options.mountName!)).map((p) => p.path),
+        const mountNodeIds = new Set(
+          MOCK_GRAPH.nodes.filter((n) => n.mount === options.mountName).map((n) => n.id),
         );
         return {
-          nodes: MOCK_GRAPH.nodes.filter((n) => mountPages.has(n.id)),
+          nodes: MOCK_GRAPH.nodes.filter((n) => mountNodeIds.has(n.id)),
           edges: MOCK_GRAPH.edges.filter(
-            (e) => mountPages.has(e.source) && mountPages.has(e.target),
+            (e) => mountNodeIds.has(e.source) && mountNodeIds.has(e.target),
           ),
         };
+      },
+
+      async getLiveActivity(options): Promise<LiveActivity[]> {
+        const targets = MOCK_PAGES.slice(0, 6).map((p) => ({
+          mount: p.mounts[0] ?? 'local',
+          path: p.path,
+        }));
+        return generateMockLiveActivity(targets, Date.now(), options?.since);
       },
 
       async listEntities(options): Promise<EntityMeta[]> {

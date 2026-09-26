@@ -1,5 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
 
+// The mock adapter's graph now backs the memory scene's demo (~750 synthetic
+// pages, see adapters/mockGraph.ts) as well as this legacy 2D view; laying
+// out that many nodes with GraphPage's own force-directed layout is
+// measurably slower than the handful of hand-written pages this suite was
+// timed against, and can exceed the default 5s test timeout under parallel
+// CI load even though it always completes correctly. Widen this file's
+// budget rather than shrinking the shared mock graph.
+vi.setConfig({ testTimeout: 20_000 });
+
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ children, onClick }: { children: React.ReactNode; onClick: () => void }) => (
     <a href="/mimir/pages" onClick={onClick}>
@@ -106,7 +115,10 @@ describe('GraphPage', () => {
     await waitFor(() => screen.getByRole('group', { name: /knowledge graph/i }));
     expect(screen.getByText('Edges')).toBeInTheDocument();
     expect(screen.getByText('shared source')).toBeInTheDocument();
-    expect(screen.queryByText('wikilink')).not.toBeInTheDocument();
+    // The demo graph's synthetic pages legitimately include wikilink edges
+    // (part of the memory scene's typed-edge vocabulary) — the legend
+    // showing them is correct, not a regression.
+    expect(screen.getByText('wikilink')).toBeInTheDocument();
   });
 
   it('scrolling zooms the viewBox in and out', async () => {

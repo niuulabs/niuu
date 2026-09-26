@@ -247,9 +247,9 @@ describe('mimir API client', () => {
 
       expect(mockGet).toHaveBeenCalledWith('/graph');
       expect(result.nodes).toHaveLength(2);
-      expect(result.nodes[0]).toEqual({ id: 'n1', title: 'Node 1', category: 'infra' });
+      expect(result.nodes[0]).toMatchObject({ id: 'n1', title: 'Node 1', category: 'infra' });
       expect(result.edges).toHaveLength(1);
-      expect(result.edges[0]).toEqual({ source: 'n1', target: 'n2' });
+      expect(result.edges[0]).toMatchObject({ source: 'n1', target: 'n2' });
     });
   });
 

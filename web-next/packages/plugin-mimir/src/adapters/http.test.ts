@@ -685,6 +685,117 @@ describe('buildMimirHttpAdapter', () => {
       });
       expect(graph.edges[0]).toMatchObject({ source: '/infra/k8s', target: '/arch/overview' });
     });
+
+    it('maps kind, updatedAt, firstSeen, confidence, and edge type', async () => {
+      const rawGraph = {
+        nodes: [
+          {
+            id: 'local:/entities/person-karpathy',
+            title: 'Andrej Karpathy',
+            category: 'person',
+            kind: 'person',
+            updated_at: '2026-04-17T14:22:00Z',
+            first_seen: '2026-03-01T00:00:00Z',
+            confidence: 'high',
+          },
+          {
+            id: 'local:/arch/overview',
+            title: 'Architecture Overview',
+            category: 'arch',
+            kind: 'topic',
+            updated_at: '2026-04-18T10:00:00Z',
+            first_seen: '2026-02-01T00:00:00Z',
+            confidence: null,
+          },
+        ],
+        edges: [
+          {
+            source: 'local:/entities/person-karpathy',
+            target: 'local:/arch/overview',
+            type: 'contradicts',
+          },
+        ],
+      };
+      const client = makeClient({ get: vi.fn().mockResolvedValue(rawGraph) });
+      const graph = await buildMimirHttpAdapter(client).pages.getGraph();
+      expect(graph.nodes[0]).toMatchObject({
+        kind: 'person',
+        updatedAt: '2026-04-17T14:22:00Z',
+        firstSeen: '2026-03-01T00:00:00Z',
+        confidence: 'high',
+      });
+      expect(graph.nodes[1]).toMatchObject({ kind: 'topic', confidence: null });
+      expect(graph.edges[0]).toMatchObject({ type: 'contradicts' });
+    });
+
+    it('defaults missing confidence to null', async () => {
+      const rawGraph = {
+        nodes: [{ id: 'local:/x', title: 'X', category: 'x' }],
+        edges: [],
+      };
+      const client = makeClient({ get: vi.fn().mockResolvedValue(rawGraph) });
+      const graph = await buildMimirHttpAdapter(client).pages.getGraph();
+      expect(graph.nodes[0]?.confidence).toBeNull();
+    });
+  });
+
+  describe('pages.getLiveActivity', () => {
+    it('calls GET /activity/live without query string when no options', async () => {
+      const client = makeClient({ get: vi.fn().mockResolvedValue([]) });
+      await buildMimirHttpAdapter(client).pages.getLiveActivity();
+      expect(client.get).toHaveBeenCalledWith('/activity/live');
+    });
+
+    it('url-encodes the since param when provided', async () => {
+      const client = makeClient({ get: vi.fn().mockResolvedValue([]) });
+      await buildMimirHttpAdapter(client).pages.getLiveActivity({
+        since: '2026-04-19T09:00:00Z',
+      });
+      expect(client.get).toHaveBeenCalledWith(
+        `/activity/live?since=${encodeURIComponent('2026-04-19T09:00:00Z')}`,
+      );
+    });
+
+    it('maps snake_case raw activity to LiveActivity', async () => {
+      const raw = [
+        {
+          id: 'act-1',
+          timestamp: '2026-04-19T09:00:00Z',
+          kind: 'write',
+          mount: 'local',
+          path: '/arch/overview',
+          actor: 'ravn-fjolnir',
+        },
+        {
+          id: 'act-2',
+          timestamp: '2026-04-19T08:55:00Z',
+          kind: 'read',
+          mount: 'shared',
+          path: '/api/overview',
+          actor: null,
+        },
+      ];
+      const client = makeClient({ get: vi.fn().mockResolvedValue(raw) });
+      const activity = await buildMimirHttpAdapter(client).pages.getLiveActivity();
+      expect(activity).toEqual([
+        {
+          id: 'act-1',
+          timestamp: '2026-04-19T09:00:00Z',
+          kind: 'write',
+          mount: 'local',
+          path: '/arch/overview',
+          actor: 'ravn-fjolnir',
+        },
+        {
+          id: 'act-2',
+          timestamp: '2026-04-19T08:55:00Z',
+          kind: 'read',
+          mount: 'shared',
+          path: '/api/overview',
+          actor: null,
+        },
+      ]);
+    });
   });
 
   describe('mounts.getRecentWrites', () => {

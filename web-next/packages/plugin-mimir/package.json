@@ -1,7 +1,7 @@
 {
   "name": "@niuulabs/plugin-mimir",
   "version": "0.0.1",
-  "description": "M\u00edmir plugin \u2014 knowledge-base management for the Niuu platform",
+  "description": "Mímir plugin — knowledge-base management for the Niuu platform",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -37,13 +37,15 @@
     "@niuulabs/plugin-sdk": "workspace:*",
     "@niuulabs/query": "workspace:*",
     "@niuulabs/shell": "workspace:*",
-    "@niuulabs/ui": "workspace:*"
+    "@niuulabs/ui": "workspace:*",
+    "three": "^0.186.0"
   },
   "devDependencies": {
     "@niuulabs/design-tokens": "workspace:*",
     "@tanstack/react-query": "^5.102.8",
     "@tanstack/react-router": "^1.170.33",
     "@types/react": "^19.2.18",
+    "@types/three": "^0.185.4",
     "autoprefixer": "^10.5.5",
     "postcss": "^8.5.28",
     "postcss-import": "^17.0.0",

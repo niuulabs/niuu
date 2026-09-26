@@ -172,6 +172,37 @@
   --state-warn-bg: color-mix(in srgb, var(--state-warn) 15%, transparent);
   --state-err: var(--color-critical);
 
+  /* ── Memory kind palette (Mímir 3D memory scene) ───────
+   * Fixed hues for the memory graph's node-kind groups, proof
+   * (confidence) buckets, age buckets, and dispute ring. Like the
+   * --status-* direct-hue tokens above, these do NOT flex with the
+   * brand theme — group colours must stay distinguishable regardless
+   * of the active ramp. `palette.ts` reads these at runtime and the
+   * legend UI reads the same variables so swatches always match the
+   * scene exactly.
+   * ────────────────────────────────────────────────────── */
+  --color-memory-kind-topic: #38bdf8;
+  --color-memory-kind-entity: #a855f7;
+  --color-memory-kind-decision: #f59e0b;
+  --color-memory-kind-directive: #ef4444;
+  --color-memory-kind-preference: #22c55e;
+  --color-memory-kind-goal: #f97316;
+  --color-memory-kind-observation: #06b6d4;
+  --color-memory-kind-thread: #6366f1;
+  --color-memory-kind-page: #71717a;
+
+  --color-memory-proof-high: #22c55e;
+  --color-memory-proof-medium: #f59e0b;
+  --color-memory-proof-low: #f97316;
+  --color-memory-proof-none: #71717a;
+
+  --color-memory-age-today: #38bdf8;
+  --color-memory-age-this-week: #0ea5e9;
+  --color-memory-age-this-month: #6366f1;
+  --color-memory-age-older: #52525b;
+
+  --color-memory-dispute: #f59e0b;
+
   /* ── Tool categories ─────────────────────────────────── */
   --color-tool-search: var(--brand-200);
   --color-tool-web: var(--brand-300);

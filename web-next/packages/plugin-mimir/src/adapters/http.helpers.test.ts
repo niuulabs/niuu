@@ -101,6 +101,13 @@ describe('mimir http helpers', () => {
       title: 'Node',
       category: 'arch',
       inboundCount: 2,
+      path: undefined,
+      kind: undefined,
+      summary: undefined,
+      mount: undefined,
+      updatedAt: '',
+      firstSeen: '',
+      confidence: null,
     });
     expect(toGraphEdge({ source: 'a', target: 'b' })).toEqual({ source: 'a', target: 'b' });
     expect(

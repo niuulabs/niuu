@@ -78,6 +78,9 @@ interface RawGraphNode {
   kind?: string;
   summary?: string;
   mount?: string;
+  updated_at?: string;
+  first_seen?: string;
+  confidence?: string | null;
 }
 
 interface RawGraphEdge {
@@ -166,6 +169,9 @@ function toGraphNode(raw: RawGraphNode): GraphNode {
     kind: raw.kind,
     summary: raw.summary,
     mount: raw.mount,
+    updatedAt: raw.updated_at ?? '',
+    firstSeen: raw.first_seen ?? raw.updated_at ?? '',
+    confidence: raw.confidence ?? null,
   };
 }
 
