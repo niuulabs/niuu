@@ -5,9 +5,11 @@ from __future__ import annotations
 import posixpath
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from urllib.parse import unquote, urlsplit
 
 from niuu.domain.mimir import MimirPage
+from niuu.domain.timeline import extract_entry_dates
 
 # Typed relationship edges (NIU-1058), an additive FORMAT.md extension:
 #   - [[slug]] — rel: works_at — description
@@ -34,6 +36,14 @@ class KnowledgeNode:
     summary: str = ""
     mount: str = ""
     source_ids: list[str] = field(default_factory=list)
+    #: ISO-8601 string of the page's MimirPageMeta.updated_at.
+    updated_at: str = ""
+    #: ISO-8601 string — the earliest of the page's dated Timeline entries
+    #: and updated_at. Equals updated_at when the page has no dated entries.
+    first_seen: str = ""
+    #: The page's confidence frontmatter value ("high"/"medium"/"low"), or
+    #: None when the page declares none. Never invented.
+    confidence: str | None = None
 
 
 @dataclass
@@ -51,6 +61,31 @@ class KnowledgeGraph:
 
 def _key(path: str) -> str:
     return posixpath.normpath(unquote(path).strip().removesuffix(".md")).lstrip("/").casefold()
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """Normalise *dt* to a UTC-aware datetime for comparison.
+
+    A naive datetime is treated as already UTC (matches
+    ``niuu.domain.timeline.extract_entry_dates``, which builds Timeline-entry
+    dates as UTC midnight)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def _first_seen(meta_updated_at: datetime, content: str) -> str:
+    """Earliest of the page's dated Timeline entries and its updated_at.
+
+    Ties, and pages with no dated entries, report updated_at's own
+    ISO-8601 string verbatim (not a UTC-normalised copy of it)."""
+    timeline_dates = extract_entry_dates(content)
+    if not timeline_dates:
+        return meta_updated_at.isoformat()
+    earliest = min(timeline_dates)
+    if earliest < _as_utc(meta_updated_at):
+        return earliest.isoformat()
+    return meta_updated_at.isoformat()
 
 
 def project_pages(pages: list[MimirPage]) -> KnowledgeGraph:
@@ -74,6 +109,9 @@ def project_pages(pages: list[MimirPage]) -> KnowledgeGraph:
                 kind=str(kind),
                 summary=meta.summary,
                 source_ids=meta.source_ids,
+                updated_at=meta.updated_at.isoformat(),
+                first_seen=_first_seen(meta.updated_at, page.content),
+                confidence=meta.confidence.value if meta.confidence else None,
             )
         )
         for alias in {_key(meta.path), _key(posixpath.basename(meta.path)), _key(meta.title)}:
