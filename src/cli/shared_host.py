@@ -315,6 +315,7 @@ def create_app(
                     credential_store=credential_store,
                     credential_enrollment_service=credential_enrollment_service,
                     oauth_clients=oauth_clients,
+                    mcp_internal_hosts=loaded_settings.oauth.mcp_internal_hosts,
                 )
             )
             app.include_router(
@@ -326,6 +327,7 @@ def create_app(
                     credential_store=credential_store,
                     credential_enrollment_service=credential_enrollment_service,
                     oauth_clients=oauth_clients,
+                    mcp_internal_hosts=loaded_settings.oauth.mcp_internal_hosts,
                 )
             )
             app.include_router(

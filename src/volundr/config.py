@@ -46,6 +46,7 @@ from niuu.domain.delivery import AcceptancePolicy
 from niuu.domain.observability import ObservabilityConfig
 from ravn.config import LLMConfig, PersonaSourceConfig
 from volundr.compute.config import ComputeConfig
+from volundr.domain.mcp_hosts import normalize_internal_host_pattern
 from volundr.domain.model_gateway import MODEL_GATEWAY_TOKEN_ENV
 from volundr.domain.models import (
     IntegrationType,
@@ -1099,7 +1100,20 @@ class OAuthConfig(BaseModel):
     redirect_base_url: str = ""
     mcp_request_timeout_seconds: float = Field(default=15.0, gt=0)
     mcp_state_ttl_seconds: int = Field(default=600, gt=0)
+    mcp_internal_hosts: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Hostnames of your own MCP servers and their OAuth issuers that may resolve "
+            "to private addresses: exact names or '*.domain' suffixes, e.g. "
+            "'*.asgard.niuu.world'. Every other MCP host must resolve publicly."
+        ),
+    )
     clients: dict[str, OAuthClientConfig] = Field(default_factory=dict)
+
+    @field_validator("mcp_internal_hosts")
+    @classmethod
+    def _normalize_mcp_internal_hosts(cls, patterns: list[str]) -> list[str]:
+        return [normalize_internal_host_pattern(pattern) for pattern in patterns]
 
 
 class IntegrationDefinitionConfig(BaseModel):

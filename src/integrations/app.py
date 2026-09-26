@@ -140,6 +140,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     credential_store=credential_store,
                     credential_enrollment_service=credential_enrollment_service,
                     oauth_clients=oauth_clients,
+                    mcp_internal_hosts=settings.oauth.mcp_internal_hosts,
                 )
             )
             app.include_router(

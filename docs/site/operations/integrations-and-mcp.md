@@ -103,8 +103,18 @@ stdio servers continue to use catalog environment/file mappings.
 
 Discovered endpoints must resolve to public addresses. Discovery, token exchange,
 and engine refresh pin validated DNS results and reject private/special-use
-addresses and redirects. A publicly reachable self-hosted MCP endpoint works;
-private-only endpoints are not admitted by this discovery flow.
+addresses and redirects. A publicly reachable self-hosted MCP endpoint works.
+
+To run MCP servers on your own cluster, list their hostnames, and those of their
+OAuth issuers, in `oauth.mcp_internal_hosts` (Helm: `oauth.mcpInternalHosts`), for
+example `["*.asgard.niuu.world"]`. Entries are exact hostnames or `*.domain`
+suffixes; a suffix matches any subdomain but not the domain itself, and must name
+at least two labels. Listed hosts may resolve to private addresses (RFC 1918,
+unique-local, CGNAT) but are still pinned, TLS-verified, and refused on loopback,
+link-local, multicast, or reserved addresses. Every other host keeps the public
+check. When an issuer's authorization or token endpoint is on the list, its OpenBao
+server definition is registered without `public_endpoints_only`, so the engine
+can refresh against it. Invalid or overly broad entries fail at startup.
 
 Set `oauth.redirect_base_url` to the install's external HTTPS origin (Helm:
 `oauth.redirectBaseUrl`). Allow unauthenticated GETs to the MCP callback and client

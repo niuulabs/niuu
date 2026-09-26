@@ -1102,6 +1102,10 @@ oauth:
   redirectBaseUrl: ""
   mcpRequestTimeoutSeconds: 15
   mcpStateTtlSeconds: 600
+  # -- Hostnames of your own MCP servers and their OAuth issuers allowed to resolve
+  # to private addresses (exact names or "*.domain" suffixes, e.g. "*.asgard.niuu.world").
+  # Every other MCP host must resolve to public addresses.
+  mcpInternalHosts: []
   # -- Per-integration OAuth client credentials
   # clients:
   #   linear:

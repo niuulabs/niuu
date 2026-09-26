@@ -161,3 +161,69 @@ def test_replace_credential_validates_and_enforces_owner(tmp_path):
     )
     assert client.put(endpoint, json={"credential": {"token": "stolen"}}).status_code == 404
     assert asyncio.run(store.get_value("user", "owner-1", "github-work"))["token"] == "old-work"
+
+
+def test_mcp_connection_test_uses_internal_host_allowlist(tmp_path, monkeypatch) -> None:
+    import asyncio
+    from datetime import UTC, datetime
+
+    from volundr.adapters.outbound.mcp_oauth import MCPOAuthDiscovery
+    from volundr.domain.models import IntegrationConnection, IntegrationType, SecretType
+
+    url = "https://tools.asgard.niuu.world/mcp"
+    store = FileCredentialStore(base_dir=str(tmp_path))
+    repository = InMemoryIntegrationRepository()
+    now = datetime.now(UTC)
+    asyncio.run(
+        repository.save_connection(
+            IntegrationConnection(
+                id="mcp-1",
+                owner_id="owner-1",
+                integration_type=IntegrationType.MCP,
+                adapter="",
+                credential_name="mcp-mcp-1",
+                config={"mcp_url": url, "name": "Tools", "tenant_id": "t"},
+                enabled=True,
+                created_at=now,
+                updated_at=now,
+                slug="mcp",
+            )
+        )
+    )
+    asyncio.run(
+        store.store(
+            "user",
+            "owner-1",
+            "mcp-mcp-1",
+            SecretType.OAUTH_TOKEN,
+            {"access_token": "test-access"},
+            {"mcp_url": url, "tenant_id": "t"},
+        )
+    )
+    initialized = []
+
+    async def initialize(self, server_url, headers):
+        initialized.append((server_url, self._internal_hosts, headers))
+
+    monkeypatch.setattr(MCPOAuthDiscovery, "initialize", initialize)
+    integrations = IntegrationRegistry(
+        definitions_from_config([d.model_dump() for d in _default_integration_definitions()])
+    )
+    app = FastAPI()
+    app.include_router(
+        create_integrations_router(
+            repository,
+            TrackerFactory(store),
+            registry=integrations,
+            credential_store=store,
+            mcp_internal_hosts=["*.asgard.niuu.world"],
+        )
+    )
+    app.dependency_overrides[extract_principal] = lambda: Principal(
+        user_id="owner-1", tenant_id="t", email="o@example.test", roles=["volundr:developer"]
+    )
+
+    result = TestClient(app).post("/api/v1/integrations/mcp-1/test").json()
+
+    assert result["success"] is True, result
+    assert initialized == [(url, ("*.asgard.niuu.world",), {"Authorization": "Bearer test-access"})]

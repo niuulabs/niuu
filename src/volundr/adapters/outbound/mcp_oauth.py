@@ -2,6 +2,8 @@
 
 Discovery addresses are untrusted. Resolve and pin a public destination for
 every request, retain TLS hostname verification, and never follow redirects.
+Hosts on the operator's internal allowlist may instead resolve to private
+addresses, but never to loopback, link-local, or other special-use ranges.
 """
 
 from __future__ import annotations
@@ -9,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
+from collections.abc import Sequence
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlsplit
 
@@ -24,6 +27,16 @@ from mcp.client.auth.utils import (
 )
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.auth import OAuthMetadata, ProtectedResourceMetadata
+
+from volundr.domain.mcp_hosts import is_internal_mcp_host
+
+# Translation prefixes can smuggle any IPv4 destination through a NAT64/6to4
+# gateway, so they are refused for public and internal hosts alike.
+_PROHIBITED_TRANSLATION = (
+    ipaddress.ip_network("64:ff9b::/96"),
+    ipaddress.ip_network("64:ff9b:1::/48"),
+    ipaddress.ip_network("2002::/16"),
+)
 
 
 class MCPDiscoveryError(ValueError):
@@ -52,10 +65,32 @@ def validate_mcp_url(url: str) -> None:
         raise MCPDiscoveryError("Invalid MCP endpoint port") from exc
 
 
-class PublicEndpointTransport(httpx.AsyncBaseTransport):
-    """Pin DNS results to prevent discovery from accessing internal services."""
+def _internal_address_allowed(ip: str) -> bool:
+    address = ipaddress.ip_address(ip)
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    return not (
+        address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_unspecified
+        or address.is_reserved
+    )
 
-    def __init__(self) -> None:
+
+def _public_address_allowed(ip: str) -> bool:
+    return ipaddress.ip_address(ip).is_global
+
+
+class PublicEndpointTransport(httpx.AsyncBaseTransport):
+    """Pin DNS results to prevent discovery from accessing internal services.
+
+    ``internal_hosts`` are normalized patterns from ``oauth.mcp_internal_hosts``:
+    the operator's own servers, admitted on private addresses.
+    """
+
+    def __init__(self, internal_hosts: Sequence[str] = ()) -> None:
+        self._internal_hosts = tuple(internal_hosts)
         # Pool origins would be keyed by the pinned IP, not the TLS hostname.
         # Do not reuse a connection across two issuers that share an address.
         self._transport = httpx.AsyncHTTPTransport(limits=httpx.Limits(max_keepalive_connections=0))
@@ -66,17 +101,22 @@ class PublicEndpointTransport(httpx.AsyncBaseTransport):
             request.url.host, request.url.port or 443, type=socket.SOCK_STREAM
         )
         ips = [address[4][0] for address in addresses]
-        prohibited_translation = (
-            ipaddress.ip_network("64:ff9b::/96"),
-            ipaddress.ip_network("64:ff9b:1::/48"),
-            ipaddress.ip_network("2002::/16"),
-        )
+        internal = is_internal_mcp_host(request.url.host, self._internal_hosts)
+        allowed = _internal_address_allowed if internal else _public_address_allowed
         if not ips or any(
-            not ipaddress.ip_address(ip).is_global
-            or any(ipaddress.ip_address(ip) in network for network in prohibited_translation)
+            not allowed(ip)
+            or any(ipaddress.ip_address(ip) in network for network in _PROHIBITED_TRANSLATION)
             for ip in ips
         ):
-            raise MCPDiscoveryError("MCP authentication endpoints must resolve to public addresses")
+            if internal:
+                raise MCPDiscoveryError(
+                    "Internal MCP hosts must resolve to private addresses, "
+                    "not loopback, link-local, or special-use ones"
+                )
+            raise MCPDiscoveryError(
+                "MCP authentication endpoints must resolve to public addresses; "
+                "list your own internal servers in oauth.mcp_internal_hosts"
+            )
         original = request.url
         request.headers["Host"] = original.netloc.decode("ascii")
         request.extensions["sni_hostname"] = original.host
@@ -99,12 +139,19 @@ class MCPDiscovery:
 
 
 class MCPOAuthDiscovery:
-    def __init__(self, *, request_timeout: float = 15.0) -> None:
+    def __init__(
+        self, *, request_timeout: float = 15.0, internal_hosts: Sequence[str] = ()
+    ) -> None:
         self._timeout = request_timeout
+        self._internal_hosts = tuple(internal_hosts)
+
+    def is_internal(self, url: str) -> bool:
+        """Whether ``url`` is on the operator's internal-host allowlist."""
+        return is_internal_mcp_host(urlsplit(url).hostname or "", self._internal_hosts)
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
-            transport=PublicEndpointTransport(),
+            transport=PublicEndpointTransport(self._internal_hosts),
             timeout=self._timeout,
             follow_redirects=False,
             trust_env=False,

@@ -198,7 +198,10 @@ connection requires an authenticated platform user.
 
 Discovered endpoints are restricted to public HTTPS addresses. Both the platform
 and patched OpenBao plugin validate DNS at connection time, reject private and
-special-use addresses, and do not follow redirects. The plugin also retains the
+special-use addresses, and do not follow redirects. The operator-set
+`oauth.mcp_internal_hosts` allowlist is the one exception: its hosts may resolve
+to private (never loopback or link-local) addresses, and OpenBao refresh for an
+issuer on that list skips the plugin's public-address restriction. The plugin also retains the
 grant's RFC 8707 `resource` parameter during refresh. Set
 `mcp_resource_indicators: true` only when this plugin revision is deployed; the
 application refuses MCP OAuth enrollment with an unpatched engine.
