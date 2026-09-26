@@ -27,7 +27,14 @@ data:
                         typed_config:
                           "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
                           log_format:
-                            text_format: "[ENVOY] %REQ(:METHOD)% %REQ(:PATH)% %RESPONSE_CODE% %UPSTREAM_HOST% %RESPONSE_FLAGS%\n"
+                            # Never log the query string: browser WebSocket clients carry
+                            # their bearer as ?token=/?access_token= (no Authorization header).
+                            text_format_source:
+                              inline_string: "[ENVOY] %REQ(:METHOD)% %REQ_WITHOUT_QUERY(:PATH)% %RESPONSE_CODE% %UPSTREAM_HOST% %RESPONSE_FLAGS%\n"
+                            formatters:
+                              - name: envoy.formatter.req_without_query
+                                typed_config:
+                                  "@type": type.googleapis.com/envoy.extensions.formatter.req_without_query.v3.ReqWithoutQuery
                     route_config:
                       name: local_route
                       virtual_hosts:
