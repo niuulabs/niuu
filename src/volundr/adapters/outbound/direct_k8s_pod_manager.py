@@ -562,7 +562,13 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
         session: Session,
         spec: SessionSpec,
     ) -> list[dict[str, Any]]:
-        """Build init containers: permissions fix, optional home-setup, optional git clone."""
+        """Build init containers: permissions fix, optional home-setup, optional git clone.
+
+        The permissions step also pre-creates the empty devrunner services include:
+        nginx loads it at startup, and devrunner only writes it once its own image
+        has been pulled, so without it nginx crash-loops and delays readiness.
+        """
+        services_dir = shlex.quote(f"/volundr/sessions/{session.id}/workspace/.services")
         containers: list[dict[str, Any]] = [
             {
                 "name": "init-permissions",
@@ -571,6 +577,8 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
                     "sh",
                     "-c",
                     (
+                        f"mkdir -p {services_dir} || exit 1; "
+                        f"touch {services_dir}/nginx.conf || exit 1; "
                         "chown -R 1000:1000 /volundr 2>/tmp/chown.err || true; "
                         "if [ -s /tmp/chown.err ]; then "
                         "grep -Ev 'Invalid argument|No such file or directory|Stale file handle' "
