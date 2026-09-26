@@ -49,66 +49,47 @@ const AGE_VARS: Record<AgeBucket, string> = {
 
 const DISPUTE_VAR = '--color-memory-dispute';
 
-/**
- * Fallback hex values, matching `design-tokens/src/tokens.css` exactly.
- * Used only when a variable can't be resolved (no stylesheet loaded — e.g.
- * a bare jsdom test environment, or a consumer who forgot to import
- * `@niuulabs/design-tokens/tokens.css`) so the scene still renders in
- * recognisably distinct colours rather than invisible/transparent nodes.
- */
-const FALLBACK: MemoryPalette = {
-  kind: {
-    topic: '#38bdf8',
-    entity: '#a855f7',
-    decision: '#f59e0b',
-    directive: '#ef4444',
-    preference: '#22c55e',
-    goal: '#f97316',
-    observation: '#06b6d4',
-    thread: '#6366f1',
-    page: '#71717a',
-  },
-  proof: {
-    high: '#22c55e',
-    medium: '#f59e0b',
-    low: '#f97316',
-    none: '#71717a',
-  },
-  age: {
-    today: '#38bdf8',
-    'this-week': '#0ea5e9',
-    'this-month': '#6366f1',
-    older: '#52525b',
-  },
-  dispute: '#f59e0b',
-};
-
-function readVar(styles: CSSStyleDeclaration, name: string, fallback: string): string {
-  const value = styles.getPropertyValue(name)?.trim();
-  return value && value.length > 0 ? value : fallback;
-}
+/** Every custom property the palette reads, for installing them in tests and for the error below. */
+export const MEMORY_PALETTE_VARS: readonly string[] = [
+  ...Object.values(KIND_VARS),
+  ...Object.values(PROOF_VARS),
+  ...Object.values(AGE_VARS),
+  DISPUTE_VAR,
+];
 
 function mapRecord<K extends string>(
   vars: Record<K, string>,
-  fallback: Record<K, string>,
-  styles: CSSStyleDeclaration,
+  read: (name: string) => string,
 ): Record<K, string> {
-  const entries = (Object.keys(vars) as K[]).map(
-    (key) => [key, readVar(styles, vars[key], fallback[key])] as const,
-  );
+  const entries = (Object.keys(vars) as K[]).map((key) => [key, read(vars[key])] as const);
   return Object.fromEntries(entries) as Record<K, string>;
 }
 
-/** Read the memory palette from the computed styles of `el` (or its ancestors). */
+/**
+ * Read the memory palette from the computed styles of `el` (or its ancestors).
+ *
+ * Throws when any token is unresolved: a scene drawn in guessed colours would
+ * disagree with its own legend, so a missing stylesheet must be loud.
+ */
 export function memoryPalette(el: HTMLElement): MemoryPalette {
   const styles = getComputedStyle(el);
-  return {
-    kind: mapRecord(KIND_VARS, FALLBACK.kind, styles),
-    proof: mapRecord(PROOF_VARS, FALLBACK.proof, styles),
-    age: mapRecord(AGE_VARS, FALLBACK.age, styles),
-    dispute: readVar(styles, DISPUTE_VAR, FALLBACK.dispute),
+  const missing: string[] = [];
+  const read = (name: string): string => {
+    const value = styles.getPropertyValue(name).trim();
+    if (value.length === 0) missing.push(name);
+    return value;
   };
+  const palette: MemoryPalette = {
+    kind: mapRecord(KIND_VARS, read),
+    proof: mapRecord(PROOF_VARS, read),
+    age: mapRecord(AGE_VARS, read),
+    dispute: read(DISPUTE_VAR),
+  };
+  if (missing.length > 0) {
+    throw new Error(
+      `Memory colour tokens are not defined: ${missing.join(', ')}. ` +
+        'Import @niuulabs/design-tokens/tokens.css on the host page.',
+    );
+  }
+  return palette;
 }
-
-/** The palette `memoryPalette` falls back to when a token can't be resolved. */
-export const DEFAULT_MEMORY_PALETTE: MemoryPalette = FALLBACK;

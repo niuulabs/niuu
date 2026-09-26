@@ -2,7 +2,7 @@
  * Mimir HTTP-level domain types.
  *
  * Copied from web/src/modules/mimir/api/types.ts — these match the existing
- * Mimir HTTP API wire format (snake_case → camelCase mapping done in api/client.ts).
+ * Mimir HTTP API wire format (snake_case → camelCase mapping done in adapters/http.ts).
  */
 
 // ---------------------------------------------------------------------------
@@ -65,11 +65,12 @@ export interface GraphNode {
   id: string;
   title: string;
   category: string;
-  /** Original page path; id is opaque and may be mount-qualified. */
-  path?: string;
+  /** The page's path within its mount. The id is opaque (mount-qualified); match pages on (mount, path). */
+  path: string;
   kind?: string;
   summary?: string;
-  mount?: string;
+  /** The mount that serves the page. */
+  mount: string;
   /** Number of inbound edges -- set during graph processing. */
   inboundCount?: number;
   /** ISO-8601 time the page was last written. */

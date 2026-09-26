@@ -369,7 +369,7 @@ function generateNodes(options: GenerateMockGraphOptions): GraphNode[] {
 
 /** Group node indices by `${mount}:${kind-or-category}` for clustered linking. */
 function clusterKey(node: GraphNode): string {
-  return `${node.mount ?? 'default'}:${node.kind ?? node.category}`;
+  return `${node.mount}:${node.kind ?? node.category}`;
 }
 
 function buildClusters(allNodes: readonly GraphNode[]): Map<string, number[]> {

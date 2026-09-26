@@ -621,10 +621,33 @@ const SYNTHETIC_GRAPH = generateMockMemoryGraph({
   now: MOCK_GRAPH_NOW,
 });
 
-const MOCK_GRAPH: MimirGraph = {
+/** The mock graph keyed by page path — what the mock `/related` walk traverses. */
+const MOCK_PATH_GRAPH: MimirGraph = {
   nodes: [...REAL_GRAPH_NODES, ...SYNTHETIC_GRAPH.nodes],
   edges: [...CURATED_GRAPH_EDGES, ...SYNTHETIC_GRAPH.edges],
 };
+
+/**
+ * The same graph as `GET /graph` shapes it: node ids are opaque
+ * `<mount>:<path>` strings, so screens that confuse an id with a path break
+ * in the dev app exactly as they would against the real service.
+ */
+const MOCK_GRAPH: MimirGraph = (() => {
+  const idFor = new Map(
+    MOCK_PATH_GRAPH.nodes.map((node) => [
+      node.id,
+      `${encodeURIComponent(node.mount)}:${encodeURIComponent(node.path)}`,
+    ]),
+  );
+  return {
+    nodes: MOCK_PATH_GRAPH.nodes.map((node) => ({ ...node, id: idFor.get(node.id)! })),
+    edges: MOCK_PATH_GRAPH.edges.map((edge) => ({
+      ...edge,
+      source: idFor.get(edge.source)!,
+      target: idFor.get(edge.target)!,
+    })),
+  };
+})();
 
 // ---------------------------------------------------------------------------
 // Seed data — Evidence (GET /evidence) and link-graph relationships
@@ -731,7 +754,7 @@ function relatedFromGraph(path: string, depth: number, rel?: string): RelatedPag
   for (let hop = 1; hop <= Math.max(1, depth); hop += 1) {
     const next: string[] = [];
     for (const current of frontier) {
-      for (const edge of MOCK_GRAPH.edges) {
+      for (const edge of MOCK_PATH_GRAPH.edges) {
         const outward = edge.source === current;
         const inward = edge.target === current;
         if (!outward && !inward) continue;

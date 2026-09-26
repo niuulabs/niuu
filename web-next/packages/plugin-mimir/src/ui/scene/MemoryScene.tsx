@@ -17,11 +17,11 @@ import { relTime } from '@niuulabs/ui';
 import type { GraphNode } from '../../domain/api-types';
 import type { MemorySceneProps, SceneAnswer, SceneMarker, SceneQuestion } from './types';
 import { createWebGLRenderer, supportsWebGL, type Scene3DRenderer } from './webglRenderer';
-import { computeLayout, flattenTo2D, layoutPoints, mountOf, radiusForDegree } from './layout';
+import { computeLayout, flattenTo2D, layoutPoints, radiusForDegree } from './layout';
 import type { SceneLayout } from './layout';
 import { computeVisibility } from './visibility';
 import type { LitLevel, SceneVisibility } from './visibility';
-import { memoryPalette, DEFAULT_MEMORY_PALETTE } from './palette';
+import { memoryPalette } from './palette';
 import type { MemoryPalette } from './palette';
 import { nodeColour } from './colour';
 import { pickNearestNode, isDragGesture } from './picking';
@@ -66,7 +66,8 @@ interface LatestData {
   view: '2d' | '3d';
   colourBy: 'type' | 'proof' | 'age';
   maxDegree: number;
-  palette: MemoryPalette;
+  /** Read from the tokens once the container mounts; null before that. */
+  palette: MemoryPalette | null;
   nodeById: Map<string, GraphNode>;
   labelledIds: Set<string>;
   markerTargets: readonly SceneMarker[];
@@ -226,7 +227,7 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     view,
     colourBy,
     maxDegree,
-    palette: DEFAULT_MEMORY_PALETTE,
+    palette: null,
     nodeById,
     labelledIds,
     markerTargets,
@@ -581,6 +582,7 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     while (bag.rings.children.length > 0) bag.rings.remove(bag.rings.children[0]!);
 
     const palette = latestRef.current.palette;
+    if (!palette) return;
     const bgColour = new THREE.Color(0x000000);
     const now = Date.now();
 
@@ -595,14 +597,12 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
 
     visibleIds.forEach((id, i) => {
       const node = layout.nodes.get(id)!;
-      const graphNode = nodeById.get(id);
+      const graphNode = nodeById.get(id)!;
       const v = visibility.nodes.get(id)!;
       positions[i * 3] = node.position.x;
       positions[i * 3 + 1] = node.position.y;
       positions[i * 3 + 2] = node.position.z;
-      const colourHex = graphNode
-        ? nodeColour(graphNode, colourBy, palette, now)
-        : palette.kind.topic;
+      const colourHex = nodeColour(graphNode, colourBy, palette, now);
       const colour = new THREE.Color(colourHex);
       colours[i * 3] = colour.r;
       colours[i * 3 + 1] = colour.g;
@@ -858,7 +858,7 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
           >
             <div className="niuu-memory-hover-card-title">{hoveredNode.title}</div>
             <div className="niuu-memory-hover-card-meta">
-              {hoveredNode.kind ?? hoveredNode.category} · {mountOf(hoveredNode)} ·{' '}
+              {hoveredNode.kind ?? hoveredNode.category} · {hoveredNode.mount} ·{' '}
               {hoveredLayoutNode?.degree ?? 0} links · click to focus
             </div>
           </div>

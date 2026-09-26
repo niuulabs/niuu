@@ -16,20 +16,14 @@ export type {
 export { createWebGLRenderer, supportsWebGL } from './webglRenderer';
 export type { Scene3DRenderer, Scene3DRendererFactory } from './webglRenderer';
 
-export { memoryPalette, DEFAULT_MEMORY_PALETTE } from './palette';
+export { memoryPalette, MEMORY_PALETTE_VARS } from './palette';
 export type { MemoryPalette, ProofBucket, AgeBucket } from './palette';
 
 export { nodeColour, nodeKindGroup, proofBucket, ageBucket } from './colour';
 
 export { relationLabel, isContradictionRelation } from './relationLabel';
 
-export {
-  computeLayout,
-  computeLayoutUncached,
-  flattenTo2D,
-  mountOf,
-  radiusForDegree,
-} from './layout';
+export { computeLayout, computeLayoutUncached, flattenTo2D, radiusForDegree } from './layout';
 export type { SceneLayout, NodeLayout } from './layout';
 
 export { computeVisibility } from './visibility';

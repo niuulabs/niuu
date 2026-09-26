@@ -96,23 +96,34 @@ describe('mimir http helpers', () => {
       zones: [{ kind: 'assessment', text: 'Solid' }],
     });
 
-    expect(toGraphNode({ id: 'n1', title: 'Node', category: 'arch', inbound_count: 2 })).toEqual({
-      id: 'n1',
+    const rawNode = {
+      id: 'local:%2Farch',
+      title: 'Node',
+      category: 'arch',
+      path: '/arch',
+      mount: 'local',
+      inbound_count: 2,
+      updated_at: '2026-04-02T10:00:00+00:00',
+      first_seen: '2026-01-05T00:00:00+00:00',
+      confidence: 'high',
+    };
+    expect(toGraphNode(rawNode)).toEqual({
+      id: 'local:%2Farch',
       title: 'Node',
       category: 'arch',
       inboundCount: 2,
-      path: undefined,
+      path: '/arch',
       kind: undefined,
       summary: undefined,
-      mount: undefined,
-      updatedAt: '',
-      firstSeen: '',
-      confidence: null,
+      mount: 'local',
+      updatedAt: '2026-04-02T10:00:00+00:00',
+      firstSeen: '2026-01-05T00:00:00+00:00',
+      confidence: 'high',
     });
     expect(toGraphEdge({ source: 'a', target: 'b' })).toEqual({ source: 'a', target: 'b' });
     expect(
       toGraph({
-        nodes: [{ id: 'n1', title: 'Node', category: 'arch', inbound_count: 2 }],
+        nodes: [rawNode],
         edges: [{ source: 'a', target: 'b' }],
       }),
     ).toMatchObject({ nodes: [{ inboundCount: 2 }], edges: [{ source: 'a', target: 'b' }] });

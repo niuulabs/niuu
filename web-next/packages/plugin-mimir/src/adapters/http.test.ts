@@ -728,9 +728,20 @@ describe('buildMimirHttpAdapter', () => {
       expect(graph.edges[0]).toMatchObject({ type: 'contradicts' });
     });
 
-    it('defaults missing confidence to null', async () => {
+    it('passes a null confidence through as null', async () => {
       const rawGraph = {
-        nodes: [{ id: 'local:/x', title: 'X', category: 'x' }],
+        nodes: [
+          {
+            id: 'local:%2Fx',
+            title: 'X',
+            category: 'x',
+            path: '/x',
+            mount: 'local',
+            updated_at: '2026-04-02T10:00:00+00:00',
+            first_seen: '2026-04-02T10:00:00+00:00',
+            confidence: null,
+          },
+        ],
         edges: [],
       };
       const client = makeClient({ get: vi.fn().mockResolvedValue(rawGraph) });

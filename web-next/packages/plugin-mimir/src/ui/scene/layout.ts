@@ -16,7 +16,7 @@
  * when the graph prop hasn't actually changed.
  */
 
-import type { GraphNode, MimirGraph } from '../../domain/api-types';
+import type { MimirGraph } from '../../domain/api-types';
 import { LAYOUT } from './scene3dConfig';
 import { add, scale, subtract, type Vec3 } from './vec3';
 
@@ -56,20 +56,6 @@ function hashString(value: string): number {
     hash = Math.imul(hash, 0x01000193);
   }
   return hash >>> 0;
-}
-
-/**
- * A node's mount, for clustering purposes.
- *
- * Prefers the explicit `mount` field the adapters now populate; falls back
- * to a mount-qualified id's prefix for nodes that predate it, and finally
- * to a shared "default" bucket so an id/mount-less node still lays out
- * instead of throwing.
- */
-export function mountOf(node: Pick<GraphNode, 'id' | 'mount'>): string {
-  if (node.mount) return node.mount;
-  const colon = node.id.indexOf(':');
-  return colon === -1 ? 'default' : node.id.slice(0, colon);
 }
 
 /** A point on a Fibonacci sphere — an even 3D spread for any number of mounts. */
@@ -154,7 +140,7 @@ function forEachNearby(
 /** Compute the layout, ignoring the identity memo cache. Exported for tests/benchmarks. */
 export function computeLayoutUncached(graph: MimirGraph): SceneLayout {
   const nodeCount = graph.nodes.length;
-  const mounts = [...new Set(graph.nodes.map((n) => mountOf(n)))].sort();
+  const mounts = [...new Set(graph.nodes.map((n) => n.mount))].sort();
   const mountCentres = new Map(
     mounts.map((m, i) => [m, fibonacciSpherePoint(i, mounts.length, LAYOUT.MOUNT_RING_RADIUS)]),
   );
@@ -176,13 +162,13 @@ export function computeLayoutUncached(graph: MimirGraph): SceneLayout {
   // than a small one without an O(n²) filter per node.
   const clusterSize = new Map<string, number>();
   for (const node of graph.nodes) {
-    const mount = mountOf(node);
+    const mount = node.mount;
     clusterSize.set(mount, (clusterSize.get(mount) ?? 0) + 1);
   }
 
   graph.nodes.forEach((node, i) => {
     indexById.set(node.id, i);
-    const mount = mountOf(node);
+    const mount = node.mount;
     nodeMount[i] = mount;
     const centre = mountCentres.get(mount) ?? { x: 0, y: 0, z: 0 };
     const rng = mulberry32(hashString(node.id));

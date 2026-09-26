@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { proofBucket, ageBucket, nodeKindGroup, nodeColour } from './colour';
-import { DEFAULT_MEMORY_PALETTE } from './palette';
+import { TEST_PALETTE } from './test-helpers';
 
 const NOW = Date.parse('2026-04-19T12:00:00Z');
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -49,20 +49,14 @@ describe('nodeColour', () => {
   const node = { kind: 'person', confidence: 'high', updatedAt: new Date(NOW).toISOString() };
 
   it('colours by kind group under "type"', () => {
-    expect(nodeColour(node, 'type', DEFAULT_MEMORY_PALETTE, NOW)).toBe(
-      DEFAULT_MEMORY_PALETTE.kind.entity,
-    );
+    expect(nodeColour(node, 'type', TEST_PALETTE, NOW)).toBe(TEST_PALETTE.kind.entity);
   });
 
   it('colours by confidence under "proof"', () => {
-    expect(nodeColour(node, 'proof', DEFAULT_MEMORY_PALETTE, NOW)).toBe(
-      DEFAULT_MEMORY_PALETTE.proof.high,
-    );
+    expect(nodeColour(node, 'proof', TEST_PALETTE, NOW)).toBe(TEST_PALETTE.proof.high);
   });
 
   it('colours by recency under "age"', () => {
-    expect(nodeColour(node, 'age', DEFAULT_MEMORY_PALETTE, NOW)).toBe(
-      DEFAULT_MEMORY_PALETTE.age.today,
-    );
+    expect(nodeColour(node, 'age', TEST_PALETTE, NOW)).toBe(TEST_PALETTE.age.today);
   });
 });

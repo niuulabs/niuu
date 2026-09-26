@@ -3,11 +3,23 @@ import {
   computeLayout,
   computeLayoutUncached,
   flattenTo2D,
-  mountOf,
   radiusForDegree,
   layoutPoints,
 } from './layout';
 import type { MimirGraph } from '../../domain/api-types';
+
+function plainNode(id: string) {
+  return {
+    id,
+    title: id,
+    category: 'x',
+    path: `/${id}`,
+    mount: 'local',
+    updatedAt: '2026-04-01T00:00:00Z',
+    firstSeen: '2026-03-01T00:00:00Z',
+    confidence: null,
+  };
+}
 
 function syntheticGraph(nodeCount: number, edgeCount: number, mountCount = 4): MimirGraph {
   const mounts = Array.from({ length: mountCount }, (_, i) => `mount-${i}`);
@@ -16,6 +28,11 @@ function syntheticGraph(nodeCount: number, edgeCount: number, mountCount = 4): M
     title: `Node ${i}`,
     category: 'topic',
     kind: 'topic',
+    path: `/n${i}`,
+    mount: mounts[i % mountCount]!,
+    updatedAt: '2026-04-01T00:00:00Z',
+    firstSeen: '2026-03-01T00:00:00Z',
+    confidence: null,
   }));
   const edges = Array.from({ length: edgeCount }, (_, i) => ({
     source: nodes[i % nodeCount]!.id,
@@ -24,20 +41,6 @@ function syntheticGraph(nodeCount: number, edgeCount: number, mountCount = 4): M
   }));
   return { nodes, edges };
 }
-
-describe('mountOf', () => {
-  it('prefers the explicit mount field when present', () => {
-    expect(mountOf({ id: '/arch/overview', mount: 'shared' })).toBe('shared');
-  });
-
-  it('falls back to the mount prefix of a mount-qualified id', () => {
-    expect(mountOf({ id: 'local:/arch/overview', mount: undefined })).toBe('local');
-  });
-
-  it('falls back to "default" for an unqualified id with no mount field', () => {
-    expect(mountOf({ id: '/arch/overview', mount: undefined })).toBe('default');
-  });
-});
 
 describe('computeLayoutUncached', () => {
   it('produces one position per node', () => {
@@ -78,11 +81,7 @@ describe('computeLayoutUncached', () => {
 
   it('records degree from edge endpoints', () => {
     const graph: MimirGraph = {
-      nodes: [
-        { id: 'a', title: 'a', category: 'x' },
-        { id: 'b', title: 'b', category: 'x' },
-        { id: 'c', title: 'c', category: 'x' },
-      ],
+      nodes: [{ ...plainNode('a') }, { ...plainNode('b') }, { ...plainNode('c') }],
       edges: [
         { source: 'a', target: 'b' },
         { source: 'a', target: 'c' },

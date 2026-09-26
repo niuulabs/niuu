@@ -198,14 +198,14 @@ interface RawGraphNode {
   id: string;
   title: string;
   category: string;
-  path?: string;
+  path: string;
   kind?: string;
   summary?: string;
-  mount?: string;
+  mount: string;
   inbound_count?: number;
-  updated_at?: string;
-  first_seen?: string;
-  confidence?: string | null;
+  updated_at: string;
+  first_seen: string;
+  confidence: string | null;
 }
 
 interface RawGraphEdge {
@@ -613,13 +613,9 @@ export function toGraphNode(raw: RawGraphNode): GraphNode {
     summary: raw.summary,
     mount: raw.mount,
     inboundCount: raw.inbound_count,
-    // `updated_at`/`first_seen`/`confidence` are new wire fields the backend
-    // may not send on every mount yet. An empty `updatedAt` and a `firstSeen`
-    // that falls back to it are documented "unknown" states the scene's
-    // colour/replay logic already treats gracefully, not a fabricated date.
-    updatedAt: raw.updated_at ?? '',
-    firstSeen: raw.first_seen ?? raw.updated_at ?? '',
-    confidence: raw.confidence ?? null,
+    updatedAt: raw.updated_at,
+    firstSeen: raw.first_seen,
+    confidence: raw.confidence,
   };
 }
 

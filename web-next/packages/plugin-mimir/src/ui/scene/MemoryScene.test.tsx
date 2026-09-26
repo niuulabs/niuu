@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { MemoryScene } from './MemoryScene';
-import { createFakeRenderer } from './test-helpers';
+import { createFakeRenderer, installMemoryPaletteTokens } from './test-helpers';
 import type { MimirGraph } from '../../domain/api-types';
 import type { MemorySceneProps } from './types';
 
@@ -82,7 +82,10 @@ function baseProps(overrides: Partial<MemorySceneProps> = {}): MemorySceneProps 
   };
 }
 
+let uninstallPalette: () => void = () => {};
+
 beforeEach(() => {
+  uninstallPalette = installMemoryPaletteTokens();
   Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
     configurable: true,
     get: () => VIEWPORT.width,
@@ -97,6 +100,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  uninstallPalette();
 });
 
 describe('MemoryScene — unsupported WebGL', () => {
