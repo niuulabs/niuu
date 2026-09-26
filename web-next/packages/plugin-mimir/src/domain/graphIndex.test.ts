@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pyQuote, encodeNodeId, nodeIndex } from './graphIndex';
+import { pyQuote, encodeNodeId, nodeIndex, pagesPerMount } from './graphIndex';
 import type { GraphNode, MimirGraph } from './api-types';
 
 function node(overrides: Partial<GraphNode>): GraphNode {
@@ -65,5 +65,28 @@ describe('nodeIndex', () => {
     const idx = nodeIndex({ nodes: [bare], edges: [] });
     expect(idx.byId('bare')).toBe(bare);
     expect(idx.byMountPath('', '')).toBeUndefined();
+  });
+});
+
+describe('pagesPerMount', () => {
+  it('counts the graph pages on each mount, most first, ties by name', () => {
+    const graph: MimirGraph = {
+      nodes: [
+        node({ id: 'a:1', mount: 'shared' }),
+        node({ id: 'b:1', mount: 'local' }),
+        node({ id: 'a:2', mount: 'shared' }),
+        node({ id: 'c:1', mount: 'forge' }),
+      ],
+      edges: [],
+    };
+    expect(pagesPerMount(graph)).toEqual([
+      { mount: 'shared', pages: 2 },
+      { mount: 'forge', pages: 1 },
+      { mount: 'local', pages: 1 },
+    ]);
+  });
+
+  it('is empty for an empty graph', () => {
+    expect(pagesPerMount({ nodes: [], edges: [] })).toEqual([]);
   });
 });

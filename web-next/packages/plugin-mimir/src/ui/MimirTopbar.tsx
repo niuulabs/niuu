@@ -1,10 +1,12 @@
 /**
  * MimirTopbar — shell topbar-right slot for the Mímir plugin.
  *
- * Shows: active mount name · pages count · wardens count · lint count (red if > 0)
+ * Shows: active mount name · pages count · wardens count · lint count (red if > 0),
+ * on every Mímir route except the memory view.
  */
 
 import type { PluginCtx } from '@niuulabs/plugin-sdk';
+import { useRouterState } from '@tanstack/react-router';
 import { useActiveMount } from '../application/useActiveMount';
 import { useMimirPages } from './useMimirPages';
 import { useLint } from '../application/useLint';
@@ -15,7 +17,17 @@ interface MimirTopbarProps {
   ctx: PluginCtx;
 }
 
+/**
+ * The memory view (`/mimir`) carries its own counts in its panels, drawn from
+ * the graph it shows; the registry routes keep these instance stats.
+ */
 export function MimirTopbar({ ctx: _ctx }: MimirTopbarProps) {
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  if (pathname === '/mimir') return null;
+  return <MimirTopbarStats />;
+}
+
+function MimirTopbarStats() {
   const { activeMount, mountName } = useActiveMount();
 
   const { data: pages = [] } = useMimirPages(mountName ? { mountName } : undefined);

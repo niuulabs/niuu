@@ -33,7 +33,7 @@ export const CAMERA2D = {
 /** Layout — clustering and force simulation. */
 export const LAYOUT = {
   /** Radius of the circle mount centres are spread around. */
-  MOUNT_RING_RADIUS: 60,
+  MOUNT_RING_RADIUS: 70,
   /** Iterations of the repulsion/spring simulation. */
   ITERATIONS: 70,
   /** Spatial hash cell size, in world units — should be ~ the repulsion radius. */
@@ -45,7 +45,7 @@ export const LAYOUT = {
   /** Rest length of an edge spring. */
   SPRING_LENGTH: 5,
   /** Pull strength toward the node's mount centre. */
-  MOUNT_PULL: 0.02,
+  MOUNT_PULL: 0.06,
   /** Per-iteration velocity damping (0-1). */
   DAMPING: 0.85,
   /** Maximum displacement per iteration, to keep the simulation stable. */
@@ -56,8 +56,8 @@ export const LAYOUT = {
 
 /** Node sizing and appearance. */
 export const NODE3D = {
-  MIN_RADIUS: 0.35,
-  MAX_RADIUS: 1.6,
+  MIN_RADIUS: 0.5,
+  MAX_RADIUS: 2.4,
   /** Degree at/above which a node reaches MAX_RADIUS. */
   DEGREE_FOR_MAX_RADIUS: 24,
   DISPUTE_RING_SCALE: 1.6,

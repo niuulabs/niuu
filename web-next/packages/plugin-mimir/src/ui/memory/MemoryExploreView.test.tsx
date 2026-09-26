@@ -139,6 +139,12 @@ describe('MemoryExploreView', () => {
     expect(screen.queryByPlaceholderText('Ask what Niuu knows…')).not.toBeInTheDocument();
   });
 
+  it('replays to the end of the chosen day, not its first instant', async () => {
+    renderView({ asOf: '2026-03-10' });
+    await waitFor(() => expect(lastSceneProps).not.toBeNull());
+    expect(lastSceneProps?.asOf).toBe('2026-03-10T23:59:59.999Z');
+  });
+
   it('exits replay via the As-of "now" button', async () => {
     renderView({ asOf: '2026-03-10' });
     await waitFor(() => screen.getByRole('button', { name: 'Back to now' }));

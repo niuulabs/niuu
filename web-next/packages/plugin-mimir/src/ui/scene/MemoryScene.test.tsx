@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { act } from 'react';
 import { MemoryScene } from './MemoryScene';
+import { computeLayout } from './layout';
 import { createFakeRenderer, installMemoryPaletteTokens } from './test-helpers';
 import type { MimirGraph } from '../../domain/api-types';
 import type { MemorySceneProps } from './types';
+import type { Scene3DRenderer } from './webglRenderer';
 
 const VIEWPORT = { left: 0, top: 0, width: 800, height: 600 };
 
@@ -194,6 +197,80 @@ describe('MemoryScene — focus', () => {
     render(<MemoryScene {...baseProps({ focus: { nodeId: '/a', depth: 1 } })} />);
     expect(screen.getByTestId('memory-label-/a')).toBeInTheDocument();
     expect(screen.getByTestId('memory-label-/b')).toBeInTheDocument();
+  });
+
+  it('writes the relation on a lit typed link, and none at rest', () => {
+    const { rerender } = render(<MemoryScene {...baseProps()} />);
+    expect(screen.queryByText('depends on')).not.toBeInTheDocument();
+    rerender(<MemoryScene {...baseProps({ focus: { nodeId: '/a', depth: 1 } })} />);
+    expect(screen.getByText('depends on')).toHaveClass('niuu-memory-relation');
+  });
+});
+
+describe('MemoryScene — spotlight camera', () => {
+  /** Run queued animation frames by hand so camera easing can be observed. */
+  function manualFrames() {
+    let queue: FrameRequestCallback[] = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      queue.push(cb);
+      return queue.length;
+    });
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+    return (count: number) => {
+      for (let i = 0; i < count; i += 1) {
+        const run = queue;
+        queue = [];
+        act(() => run.forEach((cb) => cb(performance.now())));
+      }
+    };
+  }
+
+  function cameraDistanceTo(renderer: Scene3DRenderer, point: { x: number; y: number; z: number }) {
+    const calls = (renderer.render as ReturnType<typeof vi.fn>).mock.calls;
+    const camera = calls.at(-1)![1] as { position: { x: number; y: number; z: number } };
+    return Math.hypot(
+      camera.position.x - point.x,
+      camera.position.y - point.y,
+      camera.position.z - point.z,
+    );
+  }
+
+  it('flies in to frame a focused page and back out when focus clears', () => {
+    const step = manualFrames();
+    const renderer = createFakeRenderer();
+    const mounts = ['local', 'shared', 'platform'];
+    const nodes = Array.from({ length: 60 }, (_, i) => ({
+      id: `/n${i}`,
+      title: `Node ${i}`,
+      category: 'topic',
+      path: `/n${i}`,
+      mount: mounts[i % mounts.length]!,
+      kind: 'topic',
+      updatedAt: '2026-04-19T00:00:00Z',
+      firstSeen: '2026-04-18T00:00:00Z',
+      confidence: null,
+    }));
+    const edges = nodes
+      .slice(1)
+      .map((n, i) => ({ source: nodes[i]!.id, target: n.id, type: 'part_of' }));
+    const props = baseProps({ graph: { nodes, edges }, createRenderer: () => renderer });
+    const layout = computeLayout(props.graph);
+    const a = layout.nodes.get('/n30')!.position;
+    const b = layout.nodes.get('/n31')!.position;
+    const between = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 };
+
+    const { rerender } = render(<MemoryScene {...props} />);
+    step(2);
+    const atRest = cameraDistanceTo(renderer, between);
+
+    rerender(<MemoryScene {...props} focus={{ nodeId: '/n30', depth: 1 }} />);
+    step(120);
+    const focused = cameraDistanceTo(renderer, between);
+    expect(focused).toBeLessThan(atRest);
+
+    rerender(<MemoryScene {...props} focus={null} />);
+    step(120);
+    expect(cameraDistanceTo(renderer, between)).toBeGreaterThan(focused);
   });
 });
 

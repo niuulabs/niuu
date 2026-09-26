@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  endOfReplayDay,
   earliestFirstSeen,
   perDayHistogram,
   pagesKnownByDate,
@@ -51,5 +52,14 @@ describe('nodesFirstSeenOn', () => {
 describe('daysPerTick', () => {
   it('scales linearly with the speed multiplier', () => {
     for (const speed of REPLAY_SPEEDS) expect(daysPerTick(speed)).toBe(speed);
+  });
+});
+
+describe('endOfReplayDay', () => {
+  it('is the last millisecond of the UTC day, so pages born later that day still show', () => {
+    const end = endOfReplayDay('2026-02-18');
+    expect(end).toBe('2026-02-18T23:59:59.999Z');
+    expect(Date.parse('2026-02-18T22:14:00Z') <= Date.parse(end)).toBe(true);
+    expect(Date.parse('2026-02-19T00:00:00Z') <= Date.parse(end)).toBe(false);
   });
 });

@@ -1,8 +1,8 @@
 /**
  * MemoryExploreView — the navigable Memory scene at `/mimir`: Explore
  * (default) / Focus (a node is focused) / Ask (a question is asked) / Replay
- * (`asOf` is set). Composes the scene (`ui/scene/MemoryScene`, a stand-in —
- * see its top comment) with the panels in this directory.
+ * (`asOf` is set). Composes the 3D scene (`ui/scene/MemoryScene`) with the
+ * panels in this directory.
  *
  * Node ids are opaque, mount-qualified graph ids
  * (`domain/graphIndex.ts#encodeNodeId`), never page paths — every lookup
@@ -21,7 +21,6 @@ import { useLiveActivity } from '../../application/useLiveActivity';
 import { useQueryStats } from '../../application/useAnalytics';
 import { useLint } from '../../application/useLint';
 import { useMemoryAsk } from '../../application/useMemoryAsk';
-import { useMimirMounts } from '../useMimirMounts';
 import { useMimirPage } from '../useMimirPages';
 import { MemoryScene } from '../scene/MemoryScene';
 import type {
@@ -46,6 +45,7 @@ import { recentMarkers } from '../../domain/liveMarkers';
 import { nodeIndex } from '../../domain/graphIndex';
 import {
   earliestFirstSeen,
+  endOfReplayDay,
   perDayHistogram,
   daysPerTick,
   REPLAY_TICK_MS,
@@ -93,7 +93,6 @@ export function MemoryExploreView() {
   const replayMode = asOf !== null;
 
   const graphQuery = useMemoryGraph(mountName);
-  const mountsQuery = useMimirMounts();
   const liveActivityQuery = useLiveActivity();
   const queryStatsQuery = useQueryStats();
   const lintQuery = useLint(mountName);
@@ -269,7 +268,7 @@ export function MemoryExploreView() {
     setCamera({ kind: 'fly-to', nodeIds, key: Date.now() });
   }
 
-  if (graphQuery.isLoading || mountsQuery.isLoading) {
+  if (graphQuery.isLoading) {
     return <LoadingState label="loading memory…" />;
   }
 
@@ -277,7 +276,6 @@ export function MemoryExploreView() {
     return <ErrorState message={errorMessage(graphQuery.error, 'Memory could not be loaded.')} />;
   }
 
-  const mounts = mountsQuery.data ?? [];
   const isEmpty = graph.nodes.length === 0;
 
   return (
@@ -295,7 +293,7 @@ export function MemoryExploreView() {
           focus={focusId ? { nodeId: focusId, depth } : null}
           answers={askMode ? askResult.answers : []}
           path={tracedPath.length > 0 ? tracedPath : null}
-          asOf={asOf}
+          asOf={asOf === null ? null : endOfReplayDay(asOf)}
           markers={markers}
           questions={questions}
           disputedIds={disputedIds}
@@ -437,7 +435,6 @@ export function MemoryExploreView() {
             ) : (
               <ExplorePanel
                 graph={graph}
-                mounts={mounts}
                 liveActivity={liveActivityQuery.data}
                 liveActivityIsError={liveActivityQuery.isError}
                 onFocus={focusAndClearPath}

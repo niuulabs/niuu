@@ -22,6 +22,21 @@ async function openServiceDiagnostics(page: Page) {
   await expect(diagnostics).toHaveAttribute('open', '');
 }
 
+// First-launch setup is reported complete so the setup gate does not redirect
+// every Mímir route to the wizard (the mock setup service starts unfinished).
+test.beforeEach(async ({ page }) => {
+  await page.route('**/config*.json', async (route) => {
+    const response = await route.fetch();
+    const config = await response.json();
+    config.services.setup = { mode: 'http', baseUrl: '/api/v1/setup' };
+    config.services.integrations = { mode: 'http', baseUrl: '/api/v1/integrations' };
+    await route.fulfill({ json: config });
+  });
+  await page.route('**/api/v1/setup', (route) =>
+    route.fulfill({ json: { enabled: false, completed: true } }),
+  );
+});
+
 test('mimir rune is visible in the rail', async ({ page }) => {
   await page.goto('/mimir');
   const railButton = page.getByRole('button', { name: 'Mímir', exact: true });

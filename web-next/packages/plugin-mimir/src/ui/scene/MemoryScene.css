@@ -45,6 +45,19 @@
   pointer-events: none;
 }
 
+.niuu-memory-relation {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 0 4px;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  background: color-mix(in srgb, var(--color-bg-primary) 60%, transparent);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .niuu-memory-badge {
   position: absolute;
   top: 0;

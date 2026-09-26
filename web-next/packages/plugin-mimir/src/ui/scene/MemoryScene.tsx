@@ -42,6 +42,7 @@ import type { OrbitCamera } from './orbitCamera';
 import {
   CAMERA3D,
   CLICK_DRAG_THRESHOLD_PX,
+  FOG,
   HUB_LABEL_COUNT,
   NODE3D,
   PICK_RADIUS_PX,
@@ -56,8 +57,47 @@ const LIT_ALPHA: Record<LitLevel, number> = {
   'dim-strong': 0.12,
 };
 
+/**
+ * Edges are the scene's texture, not its subject: at rest they are a faint
+ * web behind the spheres, and only lit links (focus, answers, a traced path)
+ * are drawn bright enough to read.
+ */
+const EDGE_BRIGHTNESS: Record<LitLevel, number> = {
+  lit: 0.85,
+  normal: 0.045,
+  'dim-soft': 0.03,
+  'dim-strong': 0.015,
+};
+
+/** Sharper than this costs fill rate for no visible gain on a glowing point cloud. */
+const MAX_PIXEL_RATIO = 2;
+
+/**
+ * Device pixels per world unit at unit distance, for the current canvas: a
+ * sprite of world size w at distance d is w * scale / d pixels across, so
+ * spheres keep their true size relative to the layout at every zoom.
+ */
+function projectionScale(heightCss: number): number {
+  const ratio = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
+  return (heightCss * ratio) / (2 * Math.tan((CAMERA3D.FOV * Math.PI) / 360));
+}
+
+/** Node sprite size, in world units per unit of layout radius (the halo reaches well past the core). */
+const NODE_SPRITE_SCALE = 5;
+
 const PARTICLE_SPEED_PER_MS = 1 / 1400;
 const MAX_PARTICLES = 300;
+
+/** A lit link's relation, drawn at the link's midpoint. */
+interface EdgeLabelTarget {
+  key: string;
+  source: string;
+  target: string;
+  label: string;
+}
+
+/** Most relation labels drawn at once; beyond this a spotlight is a tangle, not a reading. */
+const MAX_EDGE_LABELS = 40;
 
 interface LatestData {
   graph: MemorySceneProps['graph'];
@@ -73,6 +113,7 @@ interface LatestData {
   markerTargets: readonly SceneMarker[];
   questionTargets: readonly SceneQuestion[];
   answerTargets: readonly SceneAnswer[];
+  edgeLabelTargets: readonly EdgeLabelTarget[];
   onSelectNode: MemorySceneProps['onSelectNode'];
   onBackgroundClick: MemorySceneProps['onBackgroundClick'];
 }
@@ -218,6 +259,23 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     () => answers.filter((a) => layout.nodes.has(a.nodeId)),
     [answers, layout],
   );
+  const edgeLabelTargets = useMemo<EdgeLabelTarget[]>(
+    () =>
+      visibility.edges
+        .filter((e) => e.visible && e.litLevel === 'lit' && e.label !== null)
+        .slice(0, MAX_EDGE_LABELS)
+        .map((e) => ({ key: e.key, source: e.source, target: e.target, label: e.label! })),
+    [visibility],
+  );
+  /** The pages a spotlight lights, as a stable key: the camera frames them when it changes. */
+  const spotlightKey = useMemo(() => {
+    if (!visibility.hasSpotlight) return '';
+    return [...visibility.nodes.entries()]
+      .filter(([, v]) => v.visible && v.litLevel === 'lit')
+      .map(([id]) => id)
+      .sort()
+      .join('\n');
+  }, [visibility]);
 
   // ---- refs the imperative code reads; always current, never captured stale ----
   const latestRef = useRef<LatestData>({
@@ -233,6 +291,7 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     markerTargets,
     questionTargets,
     answerTargets,
+    edgeLabelTargets,
     onSelectNode,
     onBackgroundClick,
   });
@@ -257,6 +316,8 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
   const markerElsRef = useRef(new Map<string, HTMLDivElement>());
   const questionElsRef = useRef(new Map<string, HTMLDivElement>());
   const badgeElsRef = useRef(new Map<string, HTMLDivElement>());
+  const edgeLabelElsRef = useRef(new Map<string, HTMLDivElement>());
+  const lastSpotlightKeyRef = useRef('');
   const hoverCardElRef = useRef<HTMLDivElement | null>(null);
 
   // Keep `latestRef` current every render — a layout effect (not a plain
@@ -277,6 +338,7 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
       markerTargets,
       questionTargets,
       answerTargets,
+      edgeLabelTargets,
       onSelectNode,
       onBackgroundClick,
     };
@@ -317,11 +379,15 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
       if (!el || !bag) return;
       const width = Math.max(1, el.clientWidth);
       const height = Math.max(1, el.clientHeight);
-      const ratio = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, 2);
+      const ratio = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
       bag.renderer.setPixelRatio(ratio);
       bag.renderer.setSize(width, height);
       bag.camera.aspect = width / height;
       bag.camera.updateProjectionMatrix();
+      const nodeMaterial = bag.nodePoints?.material as THREE.ShaderMaterial | undefined;
+      if (nodeMaterial?.uniforms.uProjScale) {
+        nodeMaterial.uniforms.uProjScale.value = projectionScale(height);
+      }
     };
     resize();
 
@@ -462,6 +528,7 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
         markerTargets: currentMarkers,
         questionTargets: currentQuestions,
         answerTargets: currentAnswers,
+        edgeLabelTargets: currentEdgeLabels,
       } = latestRef.current;
 
       // Labels — collision-avoided screen placement for hub/lit nodes.
@@ -483,6 +550,20 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
         if (p) {
           el.style.display = '';
           el.style.transform = `translate(${p.x - 9}px, ${p.y - 9}px)`;
+        } else {
+          el.style.display = 'none';
+        }
+      }
+
+      // Relation labels — at the midpoint of each lit link.
+      for (const edge of currentEdgeLabels) {
+        const a = screenById.get(edge.source);
+        const b = screenById.get(edge.target);
+        const el = edgeLabelElsRef.current.get(edge.key);
+        if (!el) continue;
+        if (a && b) {
+          el.style.display = '';
+          el.style.transform = `translate(-50%, -50%) translate(${(a.x + b.x) / 2}px, ${(a.y + b.y) / 2}px)`;
         } else {
           el.style.display = 'none';
         }
@@ -607,7 +688,9 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
       colours[i * 3] = colour.r;
       colours[i * 3 + 1] = colour.g;
       colours[i * 3 + 2] = colour.b;
-      sizes[i] = radiusForDegree(node.degree, NODE3D.MIN_RADIUS, NODE3D.MAX_RADIUS, maxDegree) * 6;
+      sizes[i] =
+        radiusForDegree(node.degree, NODE3D.MIN_RADIUS, NODE3D.MAX_RADIUS, maxDegree) *
+        NODE_SPRITE_SCALE;
       alphas[i] = LIT_ALPHA[v.litLevel];
       nodeIdByIndex.push(id);
 
@@ -626,9 +709,16 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     const nodeMaterial = new THREE.ShaderMaterial({
       transparent: true,
       depthWrite: false,
+      blending: THREE.AdditiveBlending,
       vertexShader: NODE_VERTEX_SHADER,
       fragmentShader: NODE_FRAGMENT_SHADER,
-      uniforms: { uPixelRatio: { value: 1 } },
+      uniforms: {
+        uProjScale: {
+          value: projectionScale(Math.max(1, containerRef.current?.clientHeight ?? 1)),
+        },
+        uFogNear: { value: view === '2d' ? Number.MAX_VALUE : FOG.NEAR },
+        uFogFar: { value: view === '2d' ? Number.MAX_VALUE : FOG.FAR },
+      },
     });
 
     const nodePoints = new THREE.Points(nodeGeometry, nodeMaterial);
@@ -648,7 +738,9 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
       const a = layout.nodes.get(edge.source);
       const b = layout.nodes.get(edge.target);
       if (!a || !b) continue;
-      const alpha = LIT_ALPHA[edge.litLevel];
+      const alpha = edge.contradiction
+        ? Math.max(EDGE_BRIGHTNESS[edge.litLevel], LIT_ALPHA['dim-soft'])
+        : EDGE_BRIGHTNESS[edge.litLevel];
       const baseHex = edge.contradiction ? palette.dispute : palette.kind.topic;
       const colour = dimColour(new THREE.Color(baseHex), bgColour, alpha);
       const target = edge.contradiction ? dashedPositions : solidPositions;
@@ -676,7 +768,12 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.Float32BufferAttribute(solidPositions, 3));
       geometry.setAttribute('color', new THREE.Float32BufferAttribute(solidColours, 3));
-      const material = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true });
+      const material = new THREE.LineBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
       const lines = new THREE.LineSegments(geometry, material);
       bag.scene.add(lines);
       bag.edgeLines = lines;
@@ -761,6 +858,27 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     destinationRef.current = destination;
   }, [camera, layout, view]);
 
+  // ---- a spotlight (focus, answers, traced path) frames the pages it lights ----
+  useEffect(() => {
+    if (spotlightKey === lastSpotlightKeyRef.current) return;
+    const bag = threeRef.current;
+    if (!bag) return;
+    const hadSpotlight = lastSpotlightKeyRef.current !== '';
+    lastSpotlightKeyRef.current = spotlightKey;
+    // Leaving a spotlight goes back to the whole of memory; entering one flies in.
+    if (spotlightKey === '' && !hadSpotlight) return;
+    const points =
+      spotlightKey === ''
+        ? layoutPoints(layout)
+        : spotlightKey
+            .split('\n')
+            .map((id) => layout.nodes.get(id)?.position)
+            .filter((p): p is Vec3 => Boolean(p));
+    let destination = fitOrbitCamera(points, bag.camera.aspect || 1, cameraStateRef.current);
+    if (view === '2d') destination = lockTo2D(destination);
+    destinationRef.current = destination;
+  }, [spotlightKey, layout, view]);
+
   if (unsupported) {
     return (
       <div
@@ -769,8 +887,8 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
         role="img"
         aria-label="Memory scene unavailable: this browser does not support WebGL"
       >
-        This browser can&apos;t render the 3D memory view (no WebGL support). Try a different
-        browser, or view Mímir pages from the list instead.
+        This browser can&apos;t render the 3D memory view (no WebGL support). Open Mímir in a
+        browser with WebGL enabled; Find a page and Ask still work from the panels.
       </div>
     );
   }
@@ -817,6 +935,20 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
             data-testid={`memory-answer-${answer.nodeId}`}
           >
             {answer.n}
+          </div>
+        ))}
+
+        {edgeLabelTargets.map((edge) => (
+          <div
+            key={edge.key}
+            ref={(el) => {
+              if (el) edgeLabelElsRef.current.set(edge.key, el);
+              else edgeLabelElsRef.current.delete(edge.key);
+            }}
+            className="niuu-memory-relation"
+            data-testid={`memory-relation-${edge.key}`}
+          >
+            {edge.label}
           </div>
         ))}
 
@@ -897,12 +1029,16 @@ const NODE_VERTEX_SHADER = `
   attribute vec3 aColor;
   varying vec3 vColor;
   varying float vAlpha;
-  uniform float uPixelRatio;
+  uniform float uProjScale;
+  uniform float uFogNear;
+  uniform float uFogFar;
   void main() {
     vColor = aColor;
-    vAlpha = aAlpha;
     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-    gl_PointSize = aSize * uPixelRatio * (300.0 / max(0.001, -mvPosition.z));
+    // Depth fog: far spheres fade toward the backdrop, never quite vanishing.
+    float fog = 1.0 - smoothstep(uFogNear, uFogFar, -mvPosition.z);
+    vAlpha = aAlpha * max(0.18, fog);
+    gl_PointSize = aSize * uProjScale / max(0.001, -mvPosition.z);
     gl_Position = projectionMatrix * mvPosition;
   }
 `;
@@ -911,10 +1047,13 @@ const NODE_FRAGMENT_SHADER = `
   varying vec3 vColor;
   varying float vAlpha;
   void main() {
-    vec2 uv = gl_PointCoord - vec2(0.5);
-    float d = length(uv);
-    float glow = smoothstep(0.5, 0.0, d);
-    if (glow <= 0.0) discard;
-    gl_FragColor = vec4(vColor, glow * vAlpha);
+    float d = length(gl_PointCoord - vec2(0.5));
+    if (d > 0.5) discard;
+    // A lit sphere: a solid core with a pale highlight, inside a soft halo.
+    float core = smoothstep(0.2, 0.14, d);
+    float highlight = smoothstep(0.1, 0.0, length(gl_PointCoord - vec2(0.44, 0.42)));
+    float halo = pow(1.0 - smoothstep(0.0, 0.5, d), 2.2) * 0.55;
+    vec3 colour = mix(vColor, vec3(1.0), highlight * 0.55);
+    gl_FragColor = vec4(colour, (core + halo) * vAlpha);
   }
 `;

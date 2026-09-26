@@ -4,7 +4,7 @@
  * now" live feed, and the "Add a source" ingest form.
  */
 import { useMemo, useRef, useState } from 'react';
-import type { Mount } from '@niuulabs/domain';
+import { pagesPerMount } from '../../domain/graphIndex';
 import { LoadingState, StateDot } from '@niuulabs/ui';
 import { topConnected } from '../../domain/graphDegree';
 import { describeLiveActivity } from '../../domain/liveActivityText';
@@ -16,16 +16,18 @@ const RIGHT_NOW_LIMIT = 3;
 
 export interface ExplorePanelProps {
   graph: MimirGraph;
-  mounts: Mount[];
   liveActivity: LiveActivity[] | undefined;
   liveActivityIsError: boolean;
   onFocus: (id: string) => void;
   onFlyToMount: (mountName: string) => void;
 }
 
+function counted(n: number, one: string, many: string): string {
+  return `${n.toLocaleString()} ${n === 1 ? one : many}`;
+}
+
 export function ExplorePanel({
   graph,
-  mounts,
   liveActivity,
   liveActivityIsError,
   onFocus,
@@ -41,6 +43,12 @@ export function ExplorePanel({
   }, [graph.nodes, query]);
 
   const mostConnected = useMemo(() => topConnected(graph, MOST_CONNECTED_LIMIT), [graph]);
+  const mounts = useMemo(() => pagesPerMount(graph), [graph]);
+  const statsLine = [
+    counted(graph.nodes.length, 'page', 'pages'),
+    counted(graph.edges.length, 'link', 'links'),
+    counted(mounts.length, 'instance', 'instances'),
+  ].join(' · ');
 
   const titleForPath = useMemo(() => {
     const byPath = new Map<string, string>();
@@ -65,17 +73,14 @@ export function ExplorePanel({
 
   return (
     <section
-      className="niuu:w-80 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:p-4 niuu:flex niuu:flex-col niuu:gap-4 niuu:overflow-y-auto"
+      className="niuu:w-80 niuu:max-h-full niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:p-4 niuu:flex niuu:flex-col niuu:gap-4 niuu:overflow-y-auto"
       aria-label="What Niuu knows"
     >
       <div>
         <h2 className="niuu:text-lg niuu:font-semibold niuu:text-text-primary niuu:m-0">
           What Niuu knows
         </h2>
-        <p className="niuu:text-xs niuu:text-text-muted niuu:m-0 niuu:mt-1">
-          {graph.nodes.length.toLocaleString()} pages · {graph.edges.length.toLocaleString()} links
-          · {mounts.length.toLocaleString()} instances
-        </p>
+        <p className="niuu:text-xs niuu:text-text-muted niuu:m-0 niuu:mt-1">{statsLine}</p>
       </div>
 
       {/* ── Find a page ─────────────────────────────────────────── */}
@@ -133,13 +138,13 @@ export function ExplorePanel({
           </h3>
           <ul className="niuu:flex niuu:flex-col niuu:gap-0.5 niuu:m-0 niuu:p-0 niuu:list-none">
             {mounts.map((m) => (
-              <li key={m.name}>
+              <li key={m.mount}>
                 <button
                   type="button"
-                  onClick={() => onFlyToMount(m.name)}
+                  onClick={() => onFlyToMount(m.mount)}
                   className="niuu:w-full niuu:flex niuu:items-center niuu:justify-between niuu:px-2 niuu:py-1 niuu:rounded-sm niuu:text-sm niuu:text-text-secondary niuu:hover:bg-bg-tertiary niuu:hover:text-text-primary"
                 >
-                  <span>{m.name}</span>
+                  <span>{m.mount}</span>
                   <span className="niuu:font-mono niuu:text-xs niuu:text-text-muted">
                     {m.pages.toLocaleString()}
                   </span>

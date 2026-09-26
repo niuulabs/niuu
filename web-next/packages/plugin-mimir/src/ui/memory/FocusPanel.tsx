@@ -87,7 +87,7 @@ export function FocusPanel({
 
   return (
     <section
-      className="niuu:w-96 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:p-4 niuu:flex niuu:flex-col niuu:gap-3 niuu:overflow-y-auto"
+      className="niuu:w-96 niuu:max-h-full niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:p-4 niuu:flex niuu:flex-col niuu:gap-3 niuu:overflow-y-auto"
       aria-label="Page inspector"
     >
       <nav aria-label="breadcrumb" className="niuu:text-xs niuu:text-text-muted">

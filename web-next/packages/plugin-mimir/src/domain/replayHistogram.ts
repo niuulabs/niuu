@@ -78,3 +78,11 @@ export function nodesFirstSeenOn<T extends Pick<GraphNode, 'firstSeen'>>(
 ): T[] {
   return nodes.filter((n) => toDateKey(n.firstSeen) === date);
 }
+
+/**
+ * The last instant of a replay day (`YYYY-MM-DD`, UTC). Replaying a day shows
+ * everything first seen by the end of it, matching `pagesKnownByDate`.
+ */
+export function endOfReplayDay(day: string): string {
+  return `${day}T23:59:59.999Z`;
+}

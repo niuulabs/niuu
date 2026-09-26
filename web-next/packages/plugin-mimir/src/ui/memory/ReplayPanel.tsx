@@ -21,7 +21,7 @@ export function ReplayPanel({ graph, asOf, onExitReplay, onFocus }: ReplayPanelP
 
   return (
     <section
-      className="niuu:w-80 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:p-4 niuu:flex niuu:flex-col niuu:gap-3"
+      className="niuu:w-80 niuu:max-h-full niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:p-4 niuu:flex niuu:flex-col niuu:gap-3 niuu:overflow-y-auto"
       aria-label="Replay"
     >
       <div className="niuu:flex niuu:items-center niuu:justify-between">

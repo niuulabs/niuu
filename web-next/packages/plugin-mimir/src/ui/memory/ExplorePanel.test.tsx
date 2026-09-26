@@ -5,7 +5,6 @@ import { renderWithMimir } from '../../testing/renderWithMimir';
 import {
   createFakeMimirService,
   FAKE_GRAPH,
-  FAKE_MOUNTS,
   FAKE_LIVE_ACTIVITY,
   fakeNodeId,
 } from '../../testing/fakeMimirService';
@@ -17,7 +16,6 @@ import { ExplorePanel } from './ExplorePanel';
 function setup(overrides: Partial<React.ComponentProps<typeof ExplorePanel>> = {}) {
   const props: React.ComponentProps<typeof ExplorePanel> = {
     graph: FAKE_GRAPH,
-    mounts: FAKE_MOUNTS,
     liveActivity: FAKE_LIVE_ACTIVITY,
     liveActivityIsError: false,
     onFocus: vi.fn(),
@@ -32,6 +30,27 @@ describe('ExplorePanel', () => {
   it('renders the stats line', () => {
     setup();
     expect(screen.getByText(/5 pages · 4 links · 2 instances/)).toBeInTheDocument();
+  });
+
+  it('uses the singular for one page, link and instance', () => {
+    const [first, second] = FAKE_GRAPH.nodes;
+    setup({
+      graph: {
+        nodes: [first!, { ...second!, mount: first!.mount }],
+        edges: [{ source: first!.id, target: second!.id, type: 'depends_on' }],
+      },
+    });
+    expect(screen.getByText(/2 pages · 1 link · 1 instance$/)).toBeInTheDocument();
+  });
+
+  it('counts fly-to pages per mount from the graph itself', () => {
+    setup();
+    const counts = new Map<string, number>();
+    for (const node of FAKE_GRAPH.nodes) counts.set(node.mount, (counts.get(node.mount) ?? 0) + 1);
+    for (const [mount, pages] of counts) {
+      const row = screen.getByRole('button', { name: new RegExp(`^${mount}\\s*${pages}$`) });
+      expect(row).toBeInTheDocument();
+    }
   });
 
   it('filters pages by title as the user types and focuses on Enter', async () => {
@@ -95,7 +114,6 @@ describe('ExplorePanel', () => {
     renderWithMimir(
       <ExplorePanel
         graph={FAKE_GRAPH}
-        mounts={FAKE_MOUNTS}
         liveActivity={FAKE_LIVE_ACTIVITY}
         liveActivityIsError={false}
         onFocus={vi.fn()}

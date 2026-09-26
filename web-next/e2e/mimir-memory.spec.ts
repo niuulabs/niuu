@@ -4,19 +4,9 @@ import { test, expect, type Page } from '@playwright/test';
  * e2e coverage for the Memory scene at `/mimir` — Explore (default) / Focus
  * (a node is focused) / Ask (a question is asked) / Replay (`asOf` is set).
  *
- * KNOWN BLOCKER (verified by source inspection, not a guess): as of this
- * writing neither shipped Mímir service adapter can serve this page.
- * `adapters/mock.ts`'s fixture graph nodes and `adapters/http.ts`'s
- * `RawGraphNode`/`toGraphNode` both omit `firstSeen`/`confidence` (the
- * `domain/replayHistogram.ts#earliestFirstSeen` call `MemoryExploreView`
- * makes on every render — not only in Replay mode — throws on the first
- * node's `undefined.firstSeen`), and `adapters/http.ts` does not implement
- * `IPageStore.getLiveActivity` at all (a `tsc --noEmit` on this package
- * reports both gaps directly). Both are pre-existing, out-of-scope adapter
- * work tracked separately from this scene's build — this spec exercises the
- * real, fixed scene and will pass once that adapter/backend work lands;
- * until then every test here fails at the same first render, not because of
- * a bug in the scene.
+ * The Mímir service runs against routed HTTP fixtures shaped exactly like the
+ * backend's responses, and first-launch setup is reported complete so the
+ * setup gate does not redirect away from the page under test.
  */
 
 const NOW = '2026-04-19T14:00:00Z';
@@ -75,12 +65,17 @@ const gatewayPage = {
 };
 
 async function setup(page: Page) {
-  await page.route('**/config.json', async (route) => {
+  await page.route('**/config*.json', async (route) => {
     const response = await route.fetch();
     const config = await response.json();
     config.services.mimir = { mode: 'http', baseUrl: '/memory-test-api' };
+    config.services.setup = { mode: 'http', baseUrl: '/api/v1/setup' };
+    config.services.integrations = { mode: 'http', baseUrl: '/api/v1/integrations' };
     await route.fulfill({ json: config });
   });
+  await page.route('**/api/v1/setup', (route) =>
+    route.fulfill({ json: { enabled: false, completed: true } }),
+  );
   await page.route('**/memory-test-api/**', (route) => route.fulfill({ json: [] }));
   await page.route('**/memory-test-api/mounts', (route) =>
     route.fulfill({
@@ -113,10 +108,15 @@ async function setup(page: Page) {
     route.fulfill({ json: { issues: [], pages_checked: 2 } }),
   );
   await page.route(
-    `**/memory-test-api/pages/${encodeURIComponent('/platform/gateway-routing')}*`,
+    (url) =>
+      url.pathname.endsWith('/memory-test-api/page') &&
+      url.searchParams.get('path') === '/platform/gateway-routing',
     (route) => route.fulfill({ json: gatewayPage }),
   );
   await page.route('**/memory-test-api/evidence*', (route) => route.fulfill({ json: [] }));
+  // Registered before the specific search below: Playwright runs the most
+  // recently registered matching route first.
+  await page.route('**/memory-test-api/search*', (route) => route.fulfill({ json: [] }));
   await page.route(`**/memory-test-api/search?q=${encodeURIComponent('gateway')}*`, (route) =>
     route.fulfill({
       json: [
@@ -128,11 +128,11 @@ async function setup(page: Page) {
           type: 'topic',
           confidence: 'high',
           score: 0.9,
+          mount: 'platform',
         },
       ],
     }),
   );
-  await page.route('**/memory-test-api/search*', (route) => route.fulfill({ json: [] }));
 }
 
 test.describe('Memory scene (/mimir)', () => {
@@ -142,7 +142,7 @@ test.describe('Memory scene (/mimir)', () => {
     await expect(page.getByRole('region', { name: 'What Niuu knows' })).toBeVisible({
       timeout: 10000,
     });
-    await expect(page.getByText(/2 pages · 1 links · 1 instances/)).toBeVisible();
+    await expect(page.getByText(/2 pages · 1 link · 1 instance/)).toBeVisible();
     await expect(page.getByRole('toolbar', { name: 'Scene controls' })).toBeVisible();
     await expect(page.getByRole('region', { name: 'Colour by' })).toBeVisible();
   });
@@ -191,7 +191,9 @@ test.describe('Memory scene (/mimir)', () => {
     await setup(page);
     await page.goto('/mimir');
     await page.getByRole('button', { name: 'Replay' }).click();
-    await expect(page.getByRole('region', { name: 'Replay' })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('region', { name: 'Replay', exact: true })).toBeVisible({
+      timeout: 10000,
+    });
     await expect(page.getByRole('region', { name: 'Replay timeline' })).toBeVisible();
     await page.getByRole('button', { name: 'Back to now' }).click();
     await expect(page.getByRole('region', { name: 'What Niuu knows' })).toBeVisible();

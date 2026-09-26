@@ -1,10 +1,20 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import { MimirTopbar } from './MimirTopbar';
 import { renderWithMimir } from '../testing/renderWithMimir';
 import { createMimirMockAdapter } from '../adapters/mock';
 import type { IMimirService } from '../ports';
 import type { PluginCtx } from '@niuulabs/plugin-sdk';
+
+let currentPathname = '/mimir/registry';
+
+vi.mock('@tanstack/react-router', () => ({
+  useRouterState: ({
+    select,
+  }: {
+    select: (state: { location: { pathname: string } }) => unknown;
+  }) => select({ location: { pathname: currentPathname } }),
+}));
 
 const mockCtx: PluginCtx = {
   tweaks: {},
@@ -15,6 +25,16 @@ const wrap = (ctx = mockCtx, service?: IMimirService) =>
   renderWithMimir(<MimirTopbar ctx={ctx} />, service, ctx);
 
 describe('MimirTopbar', () => {
+  beforeEach(() => {
+    currentPathname = '/mimir/registry';
+  });
+
+  it('renders nothing on the memory view, which shows its own counts', () => {
+    currentPathname = '/mimir';
+    const { container } = wrap();
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it('renders the mount label', () => {
     wrap();
     expect(screen.getByText('mount')).toBeInTheDocument();

@@ -43,3 +43,17 @@ export function nodeIndex(graph: MimirGraph): NodeIndex {
     byMountPath: (mount, path) => byMountPathMap.get(`${mount}${KEY_SEP}${path}`),
   };
 }
+
+export interface MountPageCount {
+  mount: string;
+  pages: number;
+}
+
+/** Pages per mount in the graph, most pages first (ties by name). */
+export function pagesPerMount(graph: MimirGraph): MountPageCount[] {
+  const counts = new Map<string, number>();
+  for (const node of graph.nodes) counts.set(node.mount, (counts.get(node.mount) ?? 0) + 1);
+  return [...counts.entries()]
+    .map(([mount, pages]) => ({ mount, pages }))
+    .sort((a, b) => b.pages - a.pages || a.mount.localeCompare(b.mount));
+}
