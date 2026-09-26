@@ -12,6 +12,9 @@ LABEL org.opencontainers.image.source="https://github.com/niuulabs/volundr"
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
+# CI passes the UTC date, so the registry layer cache cannot keep this upgrade
+# (and the security fixes it pulls) for more than a day.
+ARG OS_PACKAGES_REFRESH=
 # Install system dependencies: Node.js, PostgreSQL server, shells, inotify-tools
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     curl \

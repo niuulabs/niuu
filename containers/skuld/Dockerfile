@@ -60,6 +60,9 @@ LABEL org.opencontainers.image.source="https://github.com/niuulabs/volundr"
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
+# CI passes the UTC date, so the registry layer cache cannot keep this upgrade
+# (and the security fixes it pulls) for more than a day.
+ARG OS_PACKAGES_REFRESH=
 # Install runtime dependencies. The upgrade picks up base-image security
 # fixes (glibc, gnupg) published after the pinned digest was cut.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \

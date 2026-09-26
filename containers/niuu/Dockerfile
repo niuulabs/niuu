@@ -93,6 +93,9 @@ RUN --mount=type=bind,from=switchyard-wheel,source=/wheels,target=/wheels \
 FROM python:3.14-slim-trixie@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6
 
 
+# CI passes the UTC date, so the registry layer cache cannot keep this upgrade
+# (and the security fixes it pulls) for more than a day.
+ARG OS_PACKAGES_REFRESH=
 # git: the platform clones session workspaces before a sandbox container starts.
 # openssh-client: VM-backed sessions bootstrap and tunnel to their guest over SSH.
 # curl: fetches the docker CLI below.

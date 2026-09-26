@@ -6,6 +6,9 @@ USER root
 WORKDIR /app
 
 COPY --from=uv /uv /uvx /usr/local/bin/
+# CI passes the UTC date, so the registry layer cache cannot keep this upgrade
+# (and the security fixes it pulls) for more than a day.
+ARG OS_PACKAGES_REFRESH=
 # Refresh inherited runtime packages and the Python managed by uv.
 RUN apt-get update && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/* \

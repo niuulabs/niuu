@@ -65,6 +65,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Pick the OS package refresh date
+        id: os-refresh
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
@@ -72,6 +76,8 @@ jobs:
           file: ./containers/${{ matrix.container }}/Dockerfile
           push: true
           tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.container }}:${{ github.sha }}-${{ matrix.platform }}
+          build-args: |
+            OS_PACKAGES_REFRESH=${{ steps.os-refresh.outputs.date }}
           labels: |
             org.opencontainers.image.title=${{ matrix.container }}
             org.opencontainers.image.licenses=Apache-2.0
