@@ -37,6 +37,7 @@ from niuu.domain.model_runtime import (
 from niuu.domain.models import Principal
 from niuu.domain.tags import matches_tags
 from ravn.domain.persona_document import PortablePersonaSource
+from ting.config import DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS
 from ting.domain.flock_merge import build_flock_workload_config
 from ting.domain.models import (
     DispatcherState,
@@ -71,7 +72,6 @@ from ting.ports.workflow_repository import WorkflowRepository
 logger = logging.getLogger(__name__)
 
 _DEFAULT_WORKFLOW_SESSION_DEFINITION = "skuldCodex"
-_WORKFLOW_CLI_TURN_TIMEOUT_S = 120.0
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +128,7 @@ def _resolve_workflow_execution(
     fallback_model: str,
     requested_definition: str | None,
     session_definitions: dict[str, Any],
+    workflow_cli_turn_timeout_seconds: float,
     configured_models: list[Any] | None = None,
 ) -> tuple[str, str | None, list[dict[str, Any]]]:
     if not workflow_snapshot:
@@ -202,7 +203,7 @@ def _resolve_workflow_execution(
                 executor_kwargs: dict[str, Any] = {"transport_adapter": transport_adapter}
                 if transport_adapter == "skuld.transports.sdk.SDKTransport":
                     executor_kwargs["transport_kwargs"] = {
-                        "turn_timeout_s": _WORKFLOW_CLI_TURN_TIMEOUT_S
+                        "turn_timeout_s": workflow_cli_turn_timeout_seconds
                     }
                 elif transport_adapter == "skuld.transports.codex_ws.CodexWebSocketTransport":
                     executor_kwargs["transport_kwargs"] = {"skip_permissions": True}
@@ -489,6 +490,7 @@ class DispatchConfig:
     live_flock: object | None = field(default=None, repr=False)
     session_definitions: dict[str, Any] = field(default_factory=default_session_definitions)
     configured_models: list[Any] = field(default_factory=list)
+    workflow_cli_turn_timeout_seconds: float = DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS
 
     def __getattribute__(self, name: str) -> object:
         live = super().__getattribute__("live_flock")
@@ -1407,6 +1409,7 @@ class DispatchService:
                 fallback_model=effective_model,
                 requested_definition=workflow_definition,
                 session_definitions=self._config.session_definitions,
+                workflow_cli_turn_timeout_seconds=self._config.workflow_cli_turn_timeout_seconds,
                 configured_models=self._config.configured_models,
             )
             personas = copy.deepcopy(workflow_persona_overrides)

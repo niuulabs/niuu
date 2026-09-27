@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ting.config import Settings
+from ting.config import DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS, Settings
 
 CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "ting"
 TING_MIGRATIONS_DIR = Path(__file__).parent.parent.parent / "migrations" / "ting"
@@ -252,6 +252,31 @@ class TestConfigMapTemplate:
         # Untouched fields still come through as their real (non-zero) values.
         assert settings.watcher.reconnect_max_delay == 120.0
         assert settings.watcher.reconnect_backoff_multiplier == 2.0
+
+    def test_default_values_render_ting_default_workflow_cli_turn_timeout(self, tmp_path):
+        settings = Settings(**_config_from_rendered(_render_ting_chart(tmp_path, {})))
+
+        assert (
+            settings.dispatch.workflow_cli_turn_timeout_seconds
+            == DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS
+        )
+
+    def test_workflow_cli_turn_timeout_override_renders_into_settings(self, tmp_path):
+        rendered = _render_ting_chart(
+            tmp_path, {"dispatch": {"workflowCliTurnTimeoutSeconds": 900}}
+        )
+
+        settings = Settings(**_config_from_rendered(rendered))
+
+        assert settings.dispatch.workflow_cli_turn_timeout_seconds == 900.0
+
+    def test_workflow_cli_turn_timeout_zero_survives_rendering(self, tmp_path):
+        """0 turns the limit off; it must not become the default on the way."""
+        rendered = _render_ting_chart(tmp_path, {"dispatch": {"workflowCliTurnTimeoutSeconds": 0}})
+
+        settings = Settings(**_config_from_rendered(rendered))
+
+        assert settings.dispatch.workflow_cli_turn_timeout_seconds == 0.0
 
     def test_ci_values_render_a_config_ting_accepts(self, tmp_path):
         """The values the Helm smoke test installs with must load too."""

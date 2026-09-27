@@ -129,6 +129,8 @@ data:
       {{- if .Values.dispatch.dispatchPromptTemplate }}
       dispatch_prompt_template: {{ .Values.dispatch.dispatchPromptTemplate | quote }}
       {{- end }}
+      # No `| default`: 0 (no per-turn limit) must reach Ting as 0.
+      workflow_cli_turn_timeout_seconds: {{ .Values.dispatch.workflowCliTurnTimeoutSeconds }}
       {{- if and .Values.dispatch.inProcess .Values.dispatch.inProcess.llmConfig }}
       in_process:
         llm_config: {{ .Values.dispatch.inProcess.llmConfig | toJson }}

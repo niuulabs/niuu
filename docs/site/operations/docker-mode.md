@@ -401,6 +401,44 @@ server off (or picking vLLM or cloud-only in the wizard) stops seeding the
 provider; delete the stale **Model server** entry under Settings →
 Integrations so it leaves the launch dialogs.
 
+### Workflow personas on a slower model
+
+Ting limits how long a workflow persona that runs on Claude Code may spend
+on one turn, and a turn is the persona's whole agent loop for its task, every
+model call and tool call included, not a single request. The limit defaults
+to 120 seconds, which a hosted Claude model usually stays within and a model
+served on this host often does not. A persona that reaches it is interrupted,
+the session container's log shows
+`Claude SDK transport: turn timed out after 120.0s`, and the run can fail
+although the persona's work was going well.
+
+Raise it in the `config.yaml` under the data directory, which is the file
+`NIUU_CONFIG` names inside the platform container (not `~/.niuu/config.yaml`,
+which configures the CLI and the bundle). Create the file if it does not
+exist:
+
+```yaml
+dispatch:
+  workflow_cli_turn_timeout_seconds: 900   # seconds; 0 turns the limit off
+```
+
+A negative or non-numeric value keeps Ting from starting: the platform log
+shows the validation error naming the field, and `/health` answers 503 with
+`ting` under `failed_plugins`. Ting reads the file when it starts, so restart
+the platform container alone:
+
+```bash
+docker compose -p niuu restart niuu   # -p is docker.project_name, default niuu
+```
+
+That restarts only the platform; session containers keep running. Do not use
+`niuu down` and `niuu up` for this: `niuu down` also force-removes every
+session container, which kills the runs in flight (the data directory is
+kept). Runs launched after the restart get the new limit. The setting applies
+to Claude Code personas only; Codex personas get no per-turn limit from Ting.
+On Kubernetes, set `dispatch.workflowCliTurnTimeoutSeconds` in the Ting
+chart's values.
+
 ## Updating
 
 Change the image tags in `config.yaml` and run `niuu up` again. The bundle is
