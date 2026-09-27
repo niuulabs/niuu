@@ -305,6 +305,8 @@ spec:
             - name: sessions
               mountPath: {{ .Values.storage.sessions.mountPath | default "/volundr/sessions" }}
             {{- end }}
+            - name: preview-cache
+              mountPath: {{ .Values.previewCache.mountPath | default "/volundr/preview-cache" }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -476,6 +478,13 @@ spec:
           persistentVolumeClaim:
             claimName: {{ include "volundr.sessionsPvcName" . }}
         {{- end }}
+        - name: preview-cache
+          {{- if .Values.previewCache.sizeLimit }}
+          emptyDir:
+            sizeLimit: {{ .Values.previewCache.sizeLimit }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

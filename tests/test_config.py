@@ -188,6 +188,19 @@ class TestSettings:
         assert settings.guild_transport_connect_timeout_seconds == 2.0
         assert settings.guild_owner_probe_timeout_seconds == 30.0
 
+    def test_preview_cache_dir_defaults_to_mini_mode_home(self):
+        """Mini mode's writable HOME keeps working unchanged; Kubernetes must
+        override this (see charts/volundr previewCache.mountPath) because the
+        pod's root filesystem is read-only and HOME=/ there."""
+        settings = Settings()
+
+        assert settings.preview_cache_dir == "~/.niuu/preview-cache"
+
+    def test_preview_cache_dir_is_configurable(self):
+        settings = Settings(preview_cache_dir="/volundr/preview-cache")
+
+        assert settings.preview_cache_dir == "/volundr/preview-cache"
+
 
 class TestGitHubConfig:
     """Tests for GitHubConfig."""
@@ -1142,6 +1155,13 @@ def test_builtin_engine_descriptions_read_as_plain_language():
         assert definition.description, f"{key} has no description"
         for word in jargon:
             assert word not in definition.description, f"{key} description mentions {word!r}"
+
+
+def test_preview_cache_dir_env_alias(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PREVIEW_CACHE_DIR", "/volundr/preview-cache")
+    settings = Settings()
+    assert settings.preview_cache_dir == "/volundr/preview-cache"
 
 
 def test_runtime_routing_legacy_aliases(monkeypatch, tmp_path):

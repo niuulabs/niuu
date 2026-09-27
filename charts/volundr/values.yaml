@@ -181,6 +181,16 @@ storage:
     # -- Mount path inside session pods
     mountPath: /volundr/home
 
+# Tool-result image preview cache (config.preview_cache_dir). The root
+# filesystem is read-only, so this needs a writable mount; previews are
+# regenerable, so an emptyDir suffices.
+previewCache:
+  # -- Mount path for the tool-result image preview cache, rendered into
+  # config.yaml's preview_cache_dir
+  mountPath: /volundr/preview-cache
+  # -- Size limit for the preview cache emptyDir volume (leave empty/"" for no limit)
+  sizeLimit: 1Gi
+
 # Database configuration
 database:
   # -- Database name

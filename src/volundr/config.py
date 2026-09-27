@@ -2236,6 +2236,16 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("server_port", "NIUU_SERVER_PORT"),
         description="Port of the shared Niuu host used by local session brokers.",
     )
+    preview_cache_dir: str = Field(
+        default="~/.niuu/preview-cache",
+        validation_alias=AliasChoices("preview_cache_dir", "PREVIEW_CACHE_DIR"),
+        description=(
+            "Directory for generated tool-result image preview JPEGs (~ is "
+            "expanded). Must be writable; startup fails otherwise. Kubernetes pods "
+            "have a read-only root filesystem, so the chart points this at an "
+            "emptyDir mount (previewCache.mountPath)."
+        ),
+    )
     openshell_internal_gateway_url: str = Field(
         default="http://openshell.openshell.svc.cluster.local:8080",
         validation_alias=AliasChoices(

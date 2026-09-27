@@ -806,6 +806,70 @@ class TestConfigMapTemplate:
         ]
 
 
+class TestPreviewCacheStorage:
+    """Tests for the tool-result image preview cache mount.
+
+    The volundr container's root filesystem is read-only
+    (securityContext.readOnlyRootFilesystem), so config.preview_cache_dir must
+    always resolve to a writable emptyDir mount, never Settings.preview_cache_dir's
+    ~/.niuu mini-mode default (that resolves to /.niuu under the pod's HOME=/).
+    """
+
+    @staticmethod
+    def _render(*overrides: str) -> tuple[dict, dict]:
+        result = subprocess.run(
+            ["helm", "template", "test", str(CHART_DIR), *overrides],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        configmap = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+        deployment = next(doc for doc in documents if doc.get("kind") == "Deployment")
+        return configmap, deployment
+
+    def test_configmap_renders_preview_cache_dir_default(self):
+        configmap, _ = self._render()
+        config = yaml.safe_load(configmap["data"]["config.yaml"])
+
+        assert config["preview_cache_dir"] == "/volundr/preview-cache"
+
+    def test_configmap_renders_preview_cache_dir_override(self):
+        configmap, _ = self._render("--set", "previewCache.mountPath=/custom/preview")
+        config = yaml.safe_load(configmap["data"]["config.yaml"])
+
+        assert config["preview_cache_dir"] == "/custom/preview"
+
+    def test_deployment_mounts_preview_cache_emptydir_at_configured_path(self):
+        _, deployment = self._render()
+        containers = deployment["spec"]["template"]["spec"]["containers"]
+        volundr_container = next(c for c in containers if c["name"] == "volundr")
+        mount = next(m for m in volundr_container["volumeMounts"] if m["name"] == "preview-cache")
+        assert mount["mountPath"] == "/volundr/preview-cache"
+
+        volumes = deployment["spec"]["template"]["spec"]["volumes"]
+        volume = next(v for v in volumes if v["name"] == "preview-cache")
+        assert volume["emptyDir"]["sizeLimit"] == "1Gi"
+
+    def test_deployment_preview_cache_mount_path_follows_override(self):
+        _, deployment = self._render("--set", "previewCache.mountPath=/custom/preview")
+        containers = deployment["spec"]["template"]["spec"]["containers"]
+        volundr_container = next(c for c in containers if c["name"] == "volundr")
+        mount = next(m for m in volundr_container["volumeMounts"] if m["name"] == "preview-cache")
+        assert mount["mountPath"] == "/custom/preview"
+
+    def test_deployment_preview_cache_emptydir_has_no_size_limit_when_unset(self):
+        _, deployment = self._render("--set-string", "previewCache.sizeLimit=")
+        volumes = deployment["spec"]["template"]["spec"]["volumes"]
+        volume = next(v for v in volumes if v["name"] == "preview-cache")
+        assert volume["emptyDir"] == {}
+
+
 class TestHpaTemplate:
     """Tests for hpa.yaml template."""
 

@@ -11,7 +11,12 @@ from fastapi import FastAPI
 from niuu.domain.model_catalog import ManagedModel
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.config import Settings
-from volundr.main import _bootstrap_startup_schema, _load_bifrost_catalog, create_app
+from volundr.main import (
+    _bootstrap_startup_schema,
+    _ensure_preview_cache_dir_writable,
+    _load_bifrost_catalog,
+    create_app,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +57,35 @@ class TestCreateApp:
         """App has version."""
         app = create_app()
         assert app.version == "0.1.0"
+
+
+class TestEnsurePreviewCacheDirWritable:
+    """Startup must fail loudly, not on the first preview request, when the
+    configured preview_cache_dir cannot be written to (e.g. a Kubernetes pod's
+    read-only root filesystem with the mini-mode ~/.niuu default)."""
+
+    def test_creates_and_accepts_a_writable_directory(self, tmp_path):
+        target = tmp_path / "preview-cache"
+
+        _ensure_preview_cache_dir_writable(target)
+
+        assert target.is_dir()
+
+    def test_raises_with_remedy_when_directory_is_not_writable(self, tmp_path):
+        target = tmp_path / "readonly-preview-cache"
+        target.mkdir()
+        target.chmod(0o555)
+        try:
+            with pytest.raises(RuntimeError) as exc_info:
+                _ensure_preview_cache_dir_writable(target)
+        finally:
+            target.chmod(0o755)
+
+        message = str(exc_info.value)
+        assert str(target) in message
+        assert "is not writable" in message
+        assert "previewCache.mountPath" in message
+        assert "preview_cache_dir" in message
 
 
 class TestHealthCheck:

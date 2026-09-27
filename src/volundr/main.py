@@ -3,9 +3,11 @@
 import asyncio
 import inspect
 import logging
+import os
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
-from uuid import UUID
+from pathlib import Path
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -237,6 +239,23 @@ async def _bootstrap_startup_schema(settings: Settings) -> None:
         await apply_startup_migrations(conn, sql_files)
     finally:
         await conn.close()
+
+
+def _ensure_preview_cache_dir_writable(preview_cache_dir: Path) -> None:
+    """Fail startup, not the first thumbnail request, when the preview cache
+    directory cannot be created and written (e.g. a path on a read-only pod
+    root filesystem)."""
+    probe = preview_cache_dir / f".write-probe-{os.getpid()}-{uuid4().hex}"
+    try:
+        preview_cache_dir.mkdir(parents=True, exist_ok=True)
+        probe.write_text("probe", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        raise RuntimeError(
+            f"preview_cache_dir {preview_cache_dir} is not writable: {exc}. Mount a "
+            "writable volume there (chart: previewCache.mountPath) or point "
+            "preview_cache_dir at a writable path."
+        ) from exc
 
 
 async def _broadcast_periodic_updates(broadcaster: InMemoryEventBroadcaster) -> None:
@@ -536,6 +555,9 @@ def create_app(
             settings.integrations.module_manifest_files
         )
         await _bootstrap_startup_schema(settings)
+
+        preview_cache_root = Path(settings.preview_cache_dir).expanduser()
+        _ensure_preview_cache_dir_writable(preview_cache_root)
 
         async with (
             database_pool(settings.database) as pool,
@@ -1316,6 +1338,7 @@ def create_app(
                 prefix="/api/v1/forge",
                 server_public_host=settings.server_public_host,
                 openshell_internal_gateway_url=settings.openshell_internal_gateway_url,
+                preview_cache_dir=preview_cache_root,
                 project_service=project_service,
                 runtime_build=build_identity()
                 if pod_manager.runtime_backend == "process"

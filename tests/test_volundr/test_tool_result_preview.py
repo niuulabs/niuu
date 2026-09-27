@@ -653,3 +653,53 @@ async def test_multiple_images_use_separate_preview_cache_entries(tmp_path) -> N
             assert image.size == size
     assert client.get(path, params={"image_index": 2}).status_code == 404
     assert client.get(path, params={"image_index": -1}).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_router_builds_cache_from_preview_cache_dir_when_not_injected(
+    tmp_path,
+) -> None:
+    """create_router must build its PreviewCache from the passed `preview_cache_dir`
+    when the caller does not inject a PreviewCache directly — this is the wiring
+    volundr.main relies on to point production at the configured
+    Settings.preview_cache_dir instead of DEFAULT_PREVIEW_CACHE_DIR (a Kubernetes
+    pod's read-only root filesystem makes that default unwritable)."""
+    event_log = _CountingEventLog()
+    repository = InMemorySessionRepository()
+    session_service = SessionService(
+        repository=repository,
+        pod_manager=_RUNNING_POD_MANAGER,
+        validate_repos=False,
+    )
+    archive_service = SessionArchiveService(
+        session_service,
+        _NoWorkspaceStorage(),
+        FileSystemArchiveStore(),
+        event_log_repository=event_log,
+    )
+    cache_dir = tmp_path / "configured-preview-cache"
+
+    app = FastAPI()
+    app.include_router(
+        create_router(
+            session_service,
+            archive_service=archive_service,
+            preview_cache_dir=cache_dir,
+            session_participant_service=make_session_participant_service(session_service),
+        )
+    )
+
+    class _SettingsStub:
+        local_mounts = LocalMountsConfig()
+
+    app.state.settings = _SettingsStub()
+    app.state.admin_settings = {}
+    client = TestClient(app)
+
+    session = await _stopped_session(repository)
+    await event_log.append(_frames(session.id, {"tu-img": _image_envelope(320, 320)}))
+
+    resp = client.get(_PREVIEW_PATH.format(sid=session.id, tuid="tu-img"))
+
+    assert resp.status_code == 200
+    assert list(cache_dir.rglob("*.jpg")), "preview was not written under preview_cache_dir"

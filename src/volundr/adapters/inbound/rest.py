@@ -132,10 +132,10 @@ OPENSHELL_SERVICE_HOST_SUFFIX = ".openshell.localhost"
 # a short grace is correct: a no-ACK is reported as pending/accepted, never "sent".
 SEND_MESSAGE_ACK_GRACE_SECONDS = 3.0
 
-# Disk root for generated tool-result image previews. ~/.niuu is the platform's
-# durable local-state home (workspaces, forge-state.json), so previews survive
-# restarts by construction. Tests inject their own PreviewCache via create_router.
-_PREVIEW_CACHE_ROOT = FilePath("~/.niuu/preview-cache").expanduser()
+# Default disk root for generated tool-result image previews (the mini-mode
+# host's ~/.niuu tree). volundr.main passes Settings.preview_cache_dir instead;
+# tests inject their own PreviewCache or a tmp preview_cache_dir.
+DEFAULT_PREVIEW_CACHE_DIR = FilePath("~/.niuu/preview-cache").expanduser()
 
 # A tool_use_id's result is immutable — a regenerated preview is byte-equivalent —
 # so previews are safely long-lived cacheable at every layer (incl. URLSession).
@@ -1588,6 +1588,7 @@ def create_router(
     server_public_host: str = "127.0.0.1",
     openshell_internal_gateway_url: str = DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL,
     preview_cache: PreviewCache | None = None,
+    preview_cache_dir: FilePath | str = DEFAULT_PREVIEW_CACHE_DIR,
     project_service=None,
     runtime_build: dict | None = None,
     runtime_health_timeout: float = 3.0,
@@ -1598,7 +1599,7 @@ def create_router(
     """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
     router = APIRouter(prefix=prefix)
     if preview_cache is None:
-        preview_cache = PreviewCache(_PREVIEW_CACHE_ROOT)
+        preview_cache = PreviewCache(preview_cache_dir)
     event_stream = None
     if broadcaster is not None:
         if stats_service is None:

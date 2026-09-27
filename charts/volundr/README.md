@@ -177,6 +177,15 @@ Shared PersistentVolumeClaims mounted by the Volundr API deployment. These are s
 | `storage.home.size` | string | `"1Gi"` | Size of the home PVC (user config is small) |
 | `storage.home.mountPath` | string | `"/volundr/home"` | Mount path inside session pods |
 
+### Preview Cache
+
+Tool-result image preview JPEGs (`config.preview_cache_dir`), backed by an `emptyDir` volume rather than a PVC — previews are regenerable, not durable state. The volundr container's root filesystem is read-only, so this mount is required, not optional.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `previewCache.mountPath` | string | `"/volundr/preview-cache"` | Mount path for the tool-result image preview cache, rendered into `config.yaml`'s `preview_cache_dir` |
+| `previewCache.sizeLimit` | string | `"1Gi"` | Size limit for the preview cache emptyDir volume (leave empty/`""` for no limit) |
+
 ### Database
 
 | Key | Type | Default | Description |
