@@ -151,6 +151,17 @@ _COMPOSER_SUGGESTION_RE = re.compile(r'Try "[^"\n]*"')
 _WORKSPACE_TRUST_ROW_RE = re.compile(
     r"^\s*([❯>])?\s*(?:[1-9][.)]\s+)?(No, exit|Yes, I trust this folder)\s*$"
 )
+# Claude Code v2.1.282 wraps a long/multi-line pasted message in a
+# `<pasted_content id="...">...</pasted_content id="...">` reference chip before
+# handing it to the model — and echoes that SAME wrapped text back as the
+# `prompt` field of the UserPromptSubmit hook. The wrapper is a CLI-side
+# artifact around content we pasted verbatim, not part of the text itself, so
+# it must be stripped before comparing against the delivered message —
+# otherwise `_match_prompt_correlation` never matches on any paste that
+# triggers it, `_claude_native_session_id` is never captured, and every later
+# AskUserQuestion in the session fails `_question_native_identity` with
+# ControlRecoveryError("This question has no verifiable native tool identity").
+_PASTED_CONTENT_WRAPPER_RE = re.compile(r'</?pasted_content(?:\s+id="[^"]*")?>')
 
 
 def _replace_text_atomically(path: Path, text: str) -> None:
@@ -949,7 +960,9 @@ class TmuxInteractiveTransport(CLITransport):
     @staticmethod
     def _normalize_prompt(text: str) -> str:
         """Collapse whitespace so a delivered message matches the prompt Claude echoes
-        back via UserPromptSubmit (the REPL may reflow/trim it)."""
+        back via UserPromptSubmit (the REPL may reflow/trim it, and v2.1.282+ wraps a
+        long/multi-line paste in a `<pasted_content id="...">` reference chip)."""
+        text = _PASTED_CONTENT_WRAPPER_RE.sub("", text)
         return " ".join(text.split())
 
     def _match_prompt_correlation(self, prompt: str) -> tuple[str | None, str | None]:

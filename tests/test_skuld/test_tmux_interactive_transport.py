@@ -1774,6 +1774,55 @@ async def test_correlated_prompt_captures_claude_native_session_id(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_pasted_content_wrapped_prompt_still_correlates(tmp_path: Path) -> None:
+    """Regression from a live valhalla session (Smidja/Dvalin, skuld image
+    dev-1ae47c7a5, Claude Code CLI v2.1.282): a multi-line/long message delivered
+    via tmux paste is echoed back by ``UserPromptSubmit`` wrapped in that CLI
+    version's new ``<pasted_content id="...">...</pasted_content id="...">``
+    markup (visible in the session's own transcript jsonl), e.g.::
+
+        \\n\\n<pasted_content id="e274">\\nA highly detailed 1900s blacksmith
+        shop. ...\\nModel id: blacksmith-shop\\n</pasted_content id="e274">\\n
+
+    ``_match_prompt_correlation`` only collapses whitespace (``_normalize_prompt``)
+    before comparing against the exact text we pasted, so the wrapper tags make
+    the strings permanently unequal. ``_claude_native_session_id`` is then NEVER
+    captured for the rest of the session, so every later ``AskUserQuestion`` fails
+    ``_question_native_identity`` and answering it raises
+    ``ControlRecoveryError("This question has no verifiable native tool identity")``
+    (reproduced live: skuld-31d63b02-ea47-44e8-9357-220f5cdebc0f, request_id
+    tty-1-93075cc2). This must correlate exactly like an unwrapped echo does.
+    """
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    await _collect_events(transport)
+    await transport.start()
+    assert transport.session_id is None
+
+    delivered = (
+        "A highly detailed 1900s blacksmith shop. It will need to be detailed to "
+        "perfection with the idea of producting this as a craftman kit in the "
+        "future so interior and exterior details matter, construction realism "
+        "matters, so framing and such needs to be excellent.\n\n"
+        "Reference images for this model: "
+        "405e9b10-965d-4c24-9ecf-4b96be42d811.png (list_references / "
+        "get_reference).\n\nModel id: blacksmith-shop"
+    )
+    await transport.send_message(delivered, msg_id="m-1")
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": f'\n\n<pasted_content id="e274">\n{delivered}\n</pasted_content id="e274">\n',
+            "session_id": "f0ad66c4-6fc0-45fb-bbcb-16a59c278222",
+        }
+    )
+    assert transport.session_id == "f0ad66c4-6fc0-45fb-bbcb-16a59c278222", (
+        "a prompt echoed back wrapped in Claude Code v2.1.282's <pasted_content> "
+        "markup must still correlate to the message skuld delivered"
+    )
+    await transport.stop()
+
+
+@pytest.mark.asyncio
 async def test_turn_end_resolves_stale_prompt(tmp_path: Path) -> None:
     transport = FakeTmuxInteractiveTransport(str(tmp_path))
     events = await _collect_events(transport)
