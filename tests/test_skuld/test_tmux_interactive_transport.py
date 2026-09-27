@@ -366,6 +366,117 @@ async def test_paste_confirm_stops_after_composer_clears(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_composer_state_treats_v2_1_history_echo_as_clear(tmp_path: Path) -> None:
+    """Claude Code v2.1.x echoes the just-submitted turn back into the transcript with
+    the same '❯ ' prefix the live composer uses. A plain substring search over the
+    whole snapshot can't tell that echo apart from the message still sitting, unsent,
+    in the composer — it used to read the echo as 'still typed' and spin Enter retries
+    against a message Claude had already consumed (real incident: niuulabs/niuu,
+    session d8210020-fad6-4459-b55a-91a0d4a355f9, 2026-09-26 23:41 and 23:49 UTC:
+    'message may not have submitted' logged even though the pane already showed
+    Claude's reply). The row(s) after our text tail settle it: an assistant row here
+    proves Claude moved on."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    await transport.start()
+    transport.capture_stdout = "\n".join(["❯ hello there", "", "● Here's what I see next."])
+    target = transport._target_pane()  # noqa: SLF001 - direct unit test of the helper
+    state = await transport._composer_state("hello there", target)  # noqa: SLF001
+    assert state == "clear"
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_composer_state_still_holds_under_the_v2_1_idle_footer(tmp_path: Path) -> None:
+    """Guard against over-fixing the history-echo case above: the v2.1.x idle status
+    footer ('bypass permissions on (shift+tab to cycle) · ← for agents', replacing the
+    older '? for shortcuts') sits directly under the live composer even when nothing
+    has been submitted yet, and must not itself be mistaken for new turn activity."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    await transport.start()
+    transport.capture_stdout = "\n".join(
+        [
+            "❯ hello there",
+            "────────────────────────────────────────",
+            "⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
+        ]
+    )
+    target = transport._target_pane()  # noqa: SLF001
+    state = await transport._composer_state("hello there", target)  # noqa: SLF001
+    assert state == "holds"
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_paste_confirm_stops_when_message_is_echoed_in_v2_1_history(
+    tmp_path: Path,
+) -> None:
+    """End-to-end regression for the composer-echo false positive above: once Claude's
+    reply has rendered below our echoed text, the confirm loop must not press Enter
+    again."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    await _collect_events(transport)
+    await transport.start()
+
+    transport.capture_stdout = "\n".join(["❯ hello there", "", "● Here's what I see next."])
+    await transport.send_message("hello there")
+    await asyncio.sleep(1.0)  # past every backoff hop
+    enters = [
+        args
+        for args, _ in transport.commands
+        if args and args[0] == "send-keys" and args[-1] == "Enter"
+    ]
+    assert len(enters) == 1  # the submit Enter only — no false retries into history
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_question_page_matches_strips_v2_1_panel_border(tmp_path: Path) -> None:
+    """Claude Code v2.1.282 prefixes the active tab's question text with a dim '│ '
+    left-gutter in a multi-question AskUserQuestion (tabs across the top, one per
+    question, plus a Submit tab) — see the sanitised capture from niuulabs/niuu session
+    d8210020-fad6-4459-b55a-91a0d4a355f9 (request tty-1-03824702). Before the
+    `_strip_question_border` fix this stray glyph defeated the exact-text comparison in
+    `_question_page_matches`, so `_wait_question_screen` never saw the first page as
+    ready and answering failed forever with 'The live Claude menu does not match the
+    pending question state'."""
+    screen = "\n".join(
+        [
+            "←  ☐ Deck  ☐ Wall details  ☐ Roof & trim  ☐ Props  ✔ Submit  →",
+            "",
+            "│ How far should the deck wrap? Pick the option that best matches the photo.",
+            "",
+            "❯ 1. Front + right side (Recommended)",
+            "     Matches the photo: L-shaped deck, rails on the side runs.",
+            "  2. Front + both sides",
+            "  3. All four sides",
+            "  4. Type something.",
+            "────────────────────────────────────────────────────────────────────────",
+            "  5. Chat about this",
+            "",
+            "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+        ]
+    )
+    plan = {
+        "text": "How far should the deck wrap? Pick the option that best matches the photo.",
+        "labels": ["Front + right side (Recommended)", "Front + both sides", "All four sides"],
+        "multi": False,
+    }
+    assert TmuxInteractiveTransport._question_page_matches(screen, plan) is True  # noqa: SLF001
+    # And the older, non-tabbed rendering (no border) still matches — the strip is a
+    # a no-op when there's nothing to strip.
+    old_style = "\n".join(
+        [
+            "☐ Deck",
+            "How far should the deck wrap? Pick the option that best matches the photo.",
+            "❯ 1. Front + right side (Recommended)",
+            "  2. Front + both sides",
+            "  3. All four sides",
+        ]
+    )
+    assert TmuxInteractiveTransport._question_page_matches(old_style, plan) is True  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 async def test_terminal_controls_send_keys_input_and_resize(tmp_path: Path) -> None:
     transport = FakeTmuxInteractiveTransport(str(tmp_path))
     events = await _collect_events(transport)

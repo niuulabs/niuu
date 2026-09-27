@@ -2145,11 +2145,27 @@ class TmuxInteractiveTransport(CLITransport):
                 await self._wait_question_screen(
                     lambda screen: self._question_page_matches(screen, plans[0]), pane_id=pane_id
                 )
-            except ValueError:
+            except ValueError as exc:
                 result = await self._native_question_result(pending)
                 if result is not None:
+                    # The native question already resolved some other way (e.g. answered
+                    # directly in the terminal) — this answer is stale, not retryable.
                     await self._reject_native_question(request_id, result, pane_id=pane_id)
-                raise
+                    raise
+                # No keys were sent yet and the native question is still open: this
+                # mismatch is purely a *read* failure (our parser didn't recognize the
+                # live screen), so nothing about the pending question's state has
+                # changed. Per this module's recovery philosophy, `pending` is only
+                # ever escalated to `ControlRecoveryError` (answer_uncertain) once we
+                # start pressing keys — before that, the safe and correct choice is to
+                # leave the question pending and tell the caller plainly that the exact
+                # same answer can be retried, rather than raising an opaque internal
+                # message or silently dropping the question.
+                raise ValueError(
+                    "The live Claude menu does not match the pending question state; "
+                    "no keys were sent, so the question is still pending and this "
+                    "same answer can be retried"
+                ) from exc
             if self._pending_tty_prompts.get(request_id) is not pending:
                 raise ValueError("The native Claude question ended while its menu was rendering")
             result = await self._native_question_result(pending)
@@ -2402,6 +2418,19 @@ class TmuxInteractiveTransport(CLITransport):
             await asyncio.sleep(self._menu_poll_step_s)
 
     @staticmethod
+    def _strip_question_border(line: str) -> str:
+        """Claude Code v2.1.x prefixes the active tab's question text with a dim
+        "│ " gutter — the left border of that question's panel in a multi-question
+        AskUserQuestion (tabs across the top, one per question, plus a Submit tab).
+        It carries no content, but it defeats the exact-text comparison in
+        `_question_page_matches` below unless it's stripped first. A no-op on the
+        older, non-tabbed single-question rendering (and on any other row)."""
+        stripped = line.strip()
+        if stripped.startswith("│"):
+            stripped = stripped[1:].strip()
+        return stripped
+
+    @staticmethod
     def _question_page_matches(screen: str, plan: dict[str, Any]) -> bool:
         if not screen or "Review your answers" in screen:
             return False
@@ -2411,7 +2440,10 @@ class TmuxInteractiveTransport(CLITransport):
         first_row = next(
             (i for i, line in enumerate(lines) if _MENU_ROW_RE.match(line)), len(lines)
         )
-        if " ".join(plan["text"].split()) != " ".join(" ".join(lines[1:first_row]).split()):
+        body = " ".join(
+            TmuxInteractiveTransport._strip_question_border(line) for line in lines[1:first_row]
+        )
+        if " ".join(plan["text"].split()) != " ".join(body.split()):
             return False
         rows = TmuxInteractiveTransport._menu_rows(screen)
         labels = []
@@ -3487,7 +3519,20 @@ class TmuxInteractiveTransport(CLITransport):
     async def _composer_state(self, needle: str, target: str) -> str:
         """One bottom-of-pane observation: 'holds' when our text tail is still visible in
         the input region and no selection menu is open; 'menu' when a menu row is visible
-        (never press Enter into it); 'clear' otherwise (submitted / can't tell)."""
+        (never press Enter into it); 'clear' otherwise (submitted / can't tell).
+
+        Claude Code v2.1.x echoes the just-submitted turn back into the transcript with
+        the same "❯ " prefix the live composer uses (see `_is_prompt_row`), so our own
+        text tail can stay *visible* a few rows up long after the composer itself is
+        empty. A plain substring search over the whole snapshot can't tell "still typed"
+        from "already submitted and echoed back" apart — that used to spin Enter retries
+        against a message Claude had already consumed (composer-still-holds false
+        positive). The two are told apart by what renders *after* the row(s) our text
+        tail lives in: nothing but blank lines / dividers / the status footer means it's
+        still the live composer; anything that looks like new turn activity (an
+        assistant row, a tool-call summary, the thinking spinner) means Claude has moved
+        on and this occurrence is history, not the input box.
+        """
         snapshot = await self._run_tmux(
             "capture-pane", "-p", "-S", "-12", "-t", target, check=False
         )
@@ -3496,8 +3541,25 @@ class TmuxInteractiveTransport(CLITransport):
         rows = self._normalize_terminal_rows(snapshot.stdout)
         if any(_MENU_ROW_RE.match(row) for row in rows):
             return "menu"
-        joined = self._normalize_prompt(" ".join(rows))
-        return "holds" if needle in joined else "clear"
+        non_blank = [row for row in (self._normalize_prompt(r) for r in rows) if row]
+        if not non_blank:
+            return "clear"
+        joined = " ".join(non_blank)
+        pos = joined.rfind(needle)  # most recent (bottom-most) occurrence wins
+        if pos == -1:
+            return "clear"
+        end_offset = pos + len(needle)
+        cumulative = 0
+        end_row = len(non_blank) - 1
+        for idx, row in enumerate(non_blank):
+            cumulative += len(row)
+            if cumulative + idx >= end_offset:
+                end_row = idx
+                break
+        trailing = non_blank[end_row + 1 :]
+        if any(not self._is_terminal_chrome_row(row) for row in trailing):
+            return "clear"
+        return "holds"
 
     async def _send_key(self, key: str, *, pane_id: str | None = None) -> None:
         target = self._target_pane(pane_id)
@@ -3866,9 +3928,18 @@ class TmuxInteractiveTransport(CLITransport):
     def _is_terminal_chrome_row(stripped: str) -> bool:
         if stripped in {"?", "│", "╭", "╰"}:
             return True
-        if set(stripped) <= {"─"}:
+        # A row made up solely of box-drawing / rule characters (dividers, and the
+        # borders a boxed prompt or panel draws around itself) can never carry content
+        # on its own — see `_composer_state`, which relies on this to tell "nothing new
+        # rendered below our text" from "Claude answered", and would otherwise trip over
+        # a plain decorative border.
+        if stripped and set(stripped) <= set("─│╭╮╰╯"):
             return True
         if "for shortcuts" in stripped:
+            return True
+        # v2.1.x's idle status footer, e.g. "bypass permissions on (shift+tab to
+        # cycle) . for agents" — replaces "? for shortcuts" in some permission modes.
+        if "shift+tab to cycle" in stripped:
             return True
         if "esc to interrupt" in stripped:
             return True
