@@ -707,3 +707,32 @@ async def test_resume_cannot_replace_bound_conversation_with_wrong_thread(tmp_pa
         await transport.resume("requested")
     assert transport._thread_id == "original"
     transport._emit.assert_not_awaited()
+
+
+async def test_codex_question_accepts_positional_browser_answers(tmp_path):
+    """Niuu's chat UI and Smidja send ask_user_answer as [{"answer": …}, …] in question
+    order, without question_id; a multi-part Codex question must accept that."""
+    transport = CodexWebSocketTransport(workspace_dir=str(tmp_path))
+    transport._pending_user_inputs["req"] = (
+        7,
+        [{"id": "call_x:0", "question": "Deck?"}, {"id": "call_x:1", "question": "Roof?"}],
+    )
+    transport._send_rpc_response = AsyncMock()
+    transport._emit = AsyncMock()
+    await transport._answer_user_input("req", [{"answer": "Wrap"}, {"answer": ["Hip", "Gable"]}])
+    transport._send_rpc_response.assert_awaited_once_with(
+        7,
+        {"answers": {"call_x:0": {"answers": ["Wrap"]}, "call_x:1": {"answers": ["Hip", "Gable"]}}},
+    )
+    assert "req" not in transport._pending_user_inputs
+
+
+async def test_codex_question_positional_answers_need_one_per_question(tmp_path):
+    transport = CodexWebSocketTransport(workspace_dir=str(tmp_path))
+    transport._pending_user_inputs["req"] = (
+        7,
+        [{"id": "call_x:0", "question": "Deck?"}, {"id": "call_x:1", "question": "Roof?"}],
+    )
+    with pytest.raises(ValueError, match="Missing answer"):
+        await transport._answer_user_input("req", [{"answer": "Wrap"}])
+    assert "req" in transport._pending_user_inputs
