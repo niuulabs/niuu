@@ -2290,18 +2290,30 @@ class CodexWebSocketTransport(CLITransport):
         if not isinstance(answers, list) or not answers:
             raise ValueError("Codex question requires explicit answers")
         mapped = {}
-        for question in questions:
-            match = next(
-                (
-                    answer
-                    for answer in answers
-                    if isinstance(answer, dict)
-                    and (
-                        answer.get("question_id") == question["id"]
-                        or answer.get("question") in {question["id"], question["question"]}
-                    )
-                ),
-                None,
+        # Browsers (Niuu's own chat UI, Smidja) answer positionally, one {"answer": …}
+        # per question in the order they were asked, with no question_id. Accept that
+        # when no answer names its question and the counts match; labelled answers
+        # are still matched by question_id / question text.
+        positional = len(answers) == len(questions) and all(
+            isinstance(answer, dict) and "question_id" not in answer and "question" not in answer
+            for answer in answers
+        )
+        for index, question in enumerate(questions):
+            match = (
+                answers[index]
+                if positional
+                else next(
+                    (
+                        answer
+                        for answer in answers
+                        if isinstance(answer, dict)
+                        and (
+                            answer.get("question_id") == question["id"]
+                            or answer.get("question") in {question["id"], question["question"]}
+                        )
+                    ),
+                    None,
+                )
             )
             if match is None:
                 raise ValueError(f"Missing answer for Codex question {question['id']}")
