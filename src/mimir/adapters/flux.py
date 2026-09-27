@@ -1,6 +1,7 @@
 """Named knowledge services deployed through the cluster's Flux controller."""
 
 import base64
+import copy
 import hashlib
 from typing import Any
 
@@ -34,6 +35,8 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         source_namespace: str = "",
         in_cluster: bool = True,
         kube_context: str | None = None,
+        think_model: str = "",
+        gbrain_config: dict[str, Any] | None = None,
     ) -> None:
         self._namespace = namespace
         self._source_ref_kind = "HelmRepository"
@@ -54,6 +57,18 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         self.warden = warden
         self.in_cluster = in_cluster
         self.context = kube_context
+        # `<provider>:<model>` passed straight through to gbrain's `think` MCP
+        # tool call (GBrainMimirAdapter.query). Without this, gbrain's think
+        # ignores its own configured chat model and falls back to a hardcoded
+        # Anthropic default (NO_ANTHROPIC_API_KEY) — see
+        # ravn.adapters.mimir.gbrain.GBrainMimirAdapter.__init__.
+        self.think_model = think_model
+        # Additional gbrain chart `config` (config.json passthrough) applied
+        # to every tenant gbrain HelmRelease this target deploys — e.g.
+        # `provider_base_urls.<recipe>` to point a chat/think provider at an
+        # in-cluster gateway. Deliberately excludes credentials/storage
+        # settings, same contract as charts/gbrain/values.yaml's `config`.
+        self.gbrain_config = gbrain_config or {}
         self._client = None
         self._mount_ports = {}
 
@@ -200,7 +215,10 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
                 key += (hashlib.sha256(token.encode()).hexdigest(),)
                 if key not in self._mount_ports:
                     self._mount_ports[key] = GBrainMimirAdapter(
-                        mcp_url=url + "/mcp", api_token=token, query_expansion=False
+                        mcp_url=url + "/mcp",
+                        api_token=token,
+                        query_expansion=False,
+                        think_model=self.think_model,
                     )
             else:
                 if not authorization.startswith("Bearer "):
@@ -255,6 +273,8 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
                 dream=request.dream.model_dump(),
                 connection={"enabled": True},
             )
+            if self.gbrain_config:
+                values["config"] = copy.deepcopy(self.gbrain_config)
         else:
             if not self.envoy.get("enabled") or not self.envoy.get("jwt", {}).get("enabled"):
                 raise ValueError(
@@ -264,8 +284,6 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
             values["image"]["registry"] = ""
             values["config"] = {"name": request.name, "role": "shared"}
         if request.warden:
-            import copy
-
             warden = copy.deepcopy(self.warden)
             warden["enabled"] = True
             warden["spec"] = request.warden_overrides.apply(warden.get("spec", {}))
