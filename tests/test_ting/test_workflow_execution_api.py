@@ -8,6 +8,7 @@ import jwt
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import ting.api.workflow_execution_launch as execution_launch
 import ting.api.workflow_executions as execution_api
 from niuu.domain.services.token_scope import VALKYRIE_BUILD_TOKEN_USE
 from tests.test_ting.test_workflow_execution_service import (
@@ -728,9 +729,9 @@ def test_generic_launch_creates_execution_with_no_delivery_row(monkeypatch) -> N
             connection_id="conn-1",
         )
 
-    monkeypatch.setattr(execution_api, "launch_workflow_execution", launch)
+    monkeypatch.setattr(execution_launch, "launch_workflow_execution", launch)
     monkeypatch.setattr(
-        execution_api, "build_workflow_snapshot", lambda workflow, persona_source=None: {}
+        execution_launch, "build_workflow_snapshot", lambda workflow, persona_source=None: {}
     )
 
     app = FastAPI()
@@ -1072,7 +1073,7 @@ def test_launch_rejects_a_deadline_in_the_past() -> None:
 def test_launch_reports_a_conflicting_reservation(monkeypatch) -> None:
     workflow = _generic_workflow_definition()
     monkeypatch.setattr(
-        execution_api, "build_workflow_snapshot", lambda workflow, persona_source=None: {}
+        execution_launch, "build_workflow_snapshot", lambda workflow, persona_source=None: {}
     )
 
     class ConflictingRepo(InMemoryWorkflowRepository):
@@ -1109,7 +1110,7 @@ def test_launch_reports_a_conflicting_reservation(monkeypatch) -> None:
 def test_launch_is_idempotent_once_a_parent_session_is_already_attached(monkeypatch) -> None:
     workflow = _generic_workflow_definition()
     monkeypatch.setattr(
-        execution_api, "build_workflow_snapshot", lambda workflow, persona_source=None: {}
+        execution_launch, "build_workflow_snapshot", lambda workflow, persona_source=None: {}
     )
     already_launched = _execution(parent_session_id="already-there")
 
@@ -1154,7 +1155,7 @@ def test_launch_recovers_an_existing_tracked_session(monkeypatch) -> None:
     fixed_id = uuid4()
     monkeypatch.setattr(execution_api, "uuid4", lambda: fixed_id)
     monkeypatch.setattr(
-        execution_api, "build_workflow_snapshot", lambda workflow, persona_source=None: {}
+        execution_launch, "build_workflow_snapshot", lambda workflow, persona_source=None: {}
     )
     session_key = f"workflow:execution-{fixed_id.hex}"
 
@@ -1202,7 +1203,7 @@ def test_launch_holds_its_lease_when_not_yet_created_and_not_expired(monkeypatch
     fixed_id = uuid4()
     monkeypatch.setattr(execution_api, "uuid4", lambda: fixed_id)
     monkeypatch.setattr(
-        execution_api, "build_workflow_snapshot", lambda workflow, persona_source=None: {}
+        execution_launch, "build_workflow_snapshot", lambda workflow, persona_source=None: {}
     )
 
     class LeasedRepo(InMemoryWorkflowRepository):

@@ -97,6 +97,7 @@ from ting.api.tracker import (
 from ting.api.work import create_work_router, resolve_work_trackers
 from ting.api.workflow_executions import (
     create_workflow_executions_router,
+    resolve_optional_workflow_execution_repo,
     resolve_workflow_execution_repo,
     resolve_workflow_execution_service,
 )
@@ -1058,6 +1059,9 @@ def create_app(
                     return generic_workflow_execution_service
 
                 app.dependency_overrides[resolve_workflow_execution_repo] = (
+                    _resolve_generic_workflow_execution_repo
+                )
+                app.dependency_overrides[resolve_optional_workflow_execution_repo] = (
                     _resolve_generic_workflow_execution_repo
                 )
                 app.dependency_overrides[resolve_workflow_execution_service] = (
