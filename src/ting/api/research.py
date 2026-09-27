@@ -19,8 +19,16 @@ from niuu.domain.models import Principal
 from niuu.ports.mimir import MimirPort
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.dispatch import resolve_volundr_factory
+from ting.api.workflow_execution_launch import (
+    durable_parent_node_id,
+    launch_reserved_parent,
+    new_parent_execution,
+    parent_launch_body,
+)
+from ting.api.workflow_executions import resolve_optional_workflow_execution_repo
 from ting.api.workflows import (
     WorkflowLaunchBody,
+    WorkflowLaunchExecution,
     launch_workflow_execution,
     resolve_workflow_repo,
 )
@@ -31,18 +39,24 @@ from ting.domain.models import (
     WorkflowDefinition,
 )
 from ting.domain.utils import _session_name, _slugify
+from ting.domain.workflow_execution import ExecutionConflictError
 from ting.domain.workflow_snapshot import (
+    build_workflow_snapshot,
     workflow_artifact_paths_from_snapshot,
     workflow_mimir_from_snapshot,
 )
 from ting.ports.event_bus import TingEvent
 from ting.ports.volundr import VolundrFactory
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
+from ting.ports.workflow_execution import WorkflowExecutionRepository
 from ting.ports.workflow_repository import WorkflowRepository
 
 _DEFAULT_RESEARCH_WORKFLOW_NAME = "Research Campaign"
 _RESEARCH_SURFACE = "ting.research"
 _A2A_SURFACE = "a2a"
+#: Campaign metadata key linking a campaign to the durable execution that
+#: coordinates its subworkflow fan-out (``/workflow-executions/{id}``).
+_WORKFLOW_EXECUTION_ID_KEY = "workflow_execution_id"
 # How a workflow declares it is research work. The graph is the authority on
 # kind; metadata.surface only records where a launch came from.
 _RESEARCH_TAG = "research"
@@ -247,6 +261,9 @@ def create_research_router() -> APIRouter:
         workflow_repo: WorkflowRepository = Depends(resolve_workflow_repo),
         campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
         volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
+        execution_repo: WorkflowExecutionRepository | None = Depends(
+            resolve_optional_workflow_execution_repo
+        ),
     ) -> ResearchCampaignResponse:
         workflow = await _resolve_research_workflow(
             repo=workflow_repo,
@@ -257,32 +274,58 @@ def create_research_router() -> APIRouter:
         initiative_prompt = _build_campaign_prompt(body)
         campaign_name = _campaign_name(body)
         session_name = _session_name(campaign_name) or "research-campaign"
-        launch = WorkflowLaunchBody(
-            prompt=initiative_prompt,
-            sessionName=session_name,
-            repo=body.repo,
-            branch=body.branch,
-            connectionId=body.connection_id,
-            model=body.model,
-            definition=body.definition,
-            workflowVersion=workflow.version,
-            gateAutoForwardAfter=body.gate_auto_forward_after,
-        )
-        execution = await launch_workflow_execution(
+        campaign_id = uuid4()
+        try:
+            workflow_snapshot = build_workflow_snapshot(
+                workflow, persona_source=getattr(request.app.state, "persona_source", None)
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        workflow_execution_id: str | None = None
+        durable = await _durable_research_launch(
             request=request,
+            body=body,
             workflow=workflow,
-            launch=launch,
-            volundr_factory=volundr_factory,
+            workflow_snapshot=workflow_snapshot,
+            campaign_id=campaign_id,
+            campaign_name=campaign_name,
+            session_name=session_name,
+            prompt=initiative_prompt,
             principal=principal,
             bearer_token=bearer_token,
+            execution_repo=execution_repo,
+            volundr_factory=volundr_factory,
         )
+        if durable is not None:
+            execution, workflow_execution_id = durable
+        else:
+            launch = WorkflowLaunchBody(
+                prompt=initiative_prompt,
+                sessionName=session_name,
+                repo=body.repo,
+                branch=body.branch,
+                connectionId=body.connection_id,
+                model=body.model,
+                definition=body.definition,
+                workflowVersion=workflow.version,
+                gateAutoForwardAfter=body.gate_auto_forward_after,
+            )
+            execution = await launch_workflow_execution(
+                request=request,
+                workflow=workflow,
+                launch=launch,
+                volundr_factory=volundr_factory,
+                principal=principal,
+                bearer_token=bearer_token,
+                pinned_workflow_snapshot=workflow_snapshot,
+            )
 
         slug = await _reserve_slug(campaign_repo, execution.slug)
         now = datetime.now(UTC)
         stage_state = _initial_stage_state(execution.workflow_snapshot, now)
         campaign = WorkflowCampaign(
             tenant_id=principal.tenant_id,
-            id=uuid4(),
+            id=campaign_id,
             slug=slug,
             name=campaign_name,
             owner_id=principal.user_id,
@@ -308,6 +351,11 @@ def create_research_router() -> APIRouter:
                 "branch": body.branch,
                 "connection_id": body.connection_id,
                 "cluster_name": execution.session.cluster_name,
+                **(
+                    {_WORKFLOW_EXECUTION_ID_KEY: workflow_execution_id}
+                    if workflow_execution_id
+                    else {}
+                ),
             },
             created_at=now,
             updated_at=now,
@@ -524,6 +572,89 @@ def create_research_router() -> APIRouter:
         )
 
     return router
+
+
+async def _durable_research_launch(
+    *,
+    request: Request,
+    body: ResearchCampaignCreateBody,
+    workflow: WorkflowDefinition,
+    workflow_snapshot: dict[str, Any],
+    campaign_id: UUID,
+    campaign_name: str,
+    session_name: str,
+    prompt: str,
+    principal: Principal,
+    bearer_token: str | None,
+    execution_repo: WorkflowExecutionRepository | None,
+    volundr_factory: VolundrFactory,
+) -> tuple[WorkflowLaunchExecution, str] | None:
+    """Launch a research workflow that fans out as a durable parent execution.
+
+    Returns ``None`` when the workflow needs no durable execution, so the
+    caller keeps the plain launch. Otherwise reserves a ``WorkflowExecution``
+    and spawns the parent through the same trusted path
+    ``POST /workflow-executions`` uses — without it the coordinator persona's
+    ``workflow_execution_*`` tools have no owner-bound runtime context and its
+    Ravn crashes the moment the frame stage hands over.
+
+    The parent keeps the campaign's own session name, so the launch slug —
+    and with it the ``research/campaigns/<slug>/`` Mímir prefix the workflow
+    writes to and the campaign slug callers address — is unchanged.
+    """
+    parent_node_id = durable_parent_node_id(workflow, workflow_snapshot)
+    if parent_node_id is None:
+        return None
+    if execution_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "This research workflow fans out through durable workflow executions, "
+                "which are not enabled here (Ting workflow_execution.enabled)"
+            ),
+        )
+    execution = new_parent_execution(
+        request=request,
+        principal=principal,
+        workflow=workflow,
+        execution_id=uuid4(),
+        workflow_snapshot=workflow_snapshot,
+        parent_node_id=parent_node_id,
+        prompt=prompt,
+        name=campaign_name,
+        # One execution per campaign: the campaign id is fresh per request, so
+        # this key never replays an earlier launch.
+        launch_key=f"{_RESEARCH_SURFACE}:{campaign_id}",
+        launch_request=body.model_dump(mode="json", by_alias=True),
+    )
+    try:
+        reserved, _ = await execution_repo.reserve_parent_launch(execution)
+    except ExecutionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    launch = parent_launch_body(
+        reserved,
+        request=request,
+        prompt=prompt,
+        session_name=session_name,
+        model=body.model,
+        connection_id=body.connection_id,
+        repo=body.repo,
+        branch=body.branch,
+        definition=body.definition,
+        workflow_version=workflow.version,
+        gate_auto_forward_after=body.gate_auto_forward_after,
+    )
+    launched, _ = await launch_reserved_parent(
+        request=request,
+        workflow=workflow,
+        reserved=reserved,
+        launch=launch,
+        execution_repo=execution_repo,
+        volundr_factory=volundr_factory,
+        principal=principal,
+        bearer_token=bearer_token,
+    )
+    return launched, str(reserved.id)
 
 
 async def _resolve_research_workflow(

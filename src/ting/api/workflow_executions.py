@@ -16,25 +16,27 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from niuu.domain.agent_directory import configured_agent_id
 from niuu.domain.models import Principal
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
-from ting.api.a2a_identity import local_agent_card_url
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.workflow_execution_auth import (
     assert_coordinator_claims,
     assert_parent_workload_claims_if_scoped,
     owned_execution,
     require_coordinate_scope,
-    resolve_launch_expansion_policy,
 )
-from ting.api.workflows import WorkflowLaunchBody, launch_workflow_execution, resolve_workflow_repo
+from ting.api.workflow_execution_launch import (
+    launch_reserved_parent,
+    new_parent_execution,
+    parent_launch_body,
+    parent_session_key,
+    template_descriptions,
+)
+from ting.api.workflows import resolve_workflow_repo
 from ting.domain.services.workflow_execution import WorkflowExecutionService
 from ting.domain.services.workflow_wait import WorkflowWaitService
 from ting.domain.workflow_continuation_events import wait_node_conditions
-from ting.domain.workflow_document import workflow_document_revision
 from ting.domain.workflow_execution import (
-    ExecutionBudget,
     ExecutionConflictError,
     ExpansionPolicy,
     WorkflowChildExecution,
@@ -49,7 +51,6 @@ from ting.domain.workflow_execution_trace import (
     public_trace_graph,
     workflow_event_sources,
 )
-from ting.domain.workflow_snapshot import build_workflow_snapshot
 from ting.ports.volundr import PublicSessionLogPage, VolundrFactory
 from ting.ports.workflow_execution import WorkflowExecutionRepository
 from ting.ports.workflow_repository import WorkflowRepository
@@ -120,6 +121,15 @@ async def resolve_workflow_execution_repo() -> WorkflowExecutionRepository:
     raise HTTPException(status_code=503, detail="Workflow execution repository not configured")
 
 
+async def resolve_optional_workflow_execution_repo() -> WorkflowExecutionRepository | None:
+    """The generic execution repository, or ``None`` where it is not configured.
+
+    For routes that launch a durable parent only when the chosen workflow
+    needs one (research campaigns) and must keep working without it otherwise.
+    """
+    return None
+
+
 async def resolve_workflow_execution_service() -> WorkflowExecutionService:
     raise HTTPException(status_code=503, detail="Workflow execution service not configured")
 
@@ -164,51 +174,21 @@ def create_workflow_executions_router() -> APIRouter:
             raise HTTPException(status_code=404, detail="Workflow not found")
         if workflow.schema_version < 2:
             raise HTTPException(status_code=422, detail="Workflow requires schema v2")
-        try:
-            node, policy = resolve_launch_expansion_policy(workflow, body.parent_node_id)
-        except WorkflowExecutionError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         settings = request.app.state.settings.workflow_execution
-        now = datetime.now(UTC)
-        deadline = body.deadline or now + timedelta(seconds=settings.default_deadline_seconds)
-        if deadline.tzinfo is None:
-            raise HTTPException(status_code=422, detail="deadline must include a timezone")
-        if deadline <= now:
-            raise HTTPException(status_code=422, detail="deadline must be in the future")
-        execution_id = uuid4()
-        revision = workflow_document_revision(workflow)
-        launch_digest = digest_json(
-            {
-                "workflowId": str(body.workflow_id),
-                "workflowDigest": revision,
-                "request": body.model_dump(mode="json", by_alias=True),
-            }
-        )
-        execution = WorkflowExecution(
-            id=execution_id,
-            name=body.name or workflow.name,
+        execution = new_parent_execution(
+            request=request,
+            principal=principal,
+            workflow=workflow,
+            execution_id=uuid4(),
+            parent_node_id=body.parent_node_id,
             prompt=body.prompt,
-            owner_id=principal.user_id,
-            tenant_id=principal.tenant_id,
-            workflow_id=workflow.id,
-            workflow_revision=workflow.revision or revision,
-            workflow_digest=revision,
-            workflow_snapshot=build_workflow_snapshot(
-                workflow, persona_source=getattr(request.app.state, "persona_source", None)
-            ),
-            parent_session_id="",
-            parent_node_id=str(node["id"]),
-            connection_id="",
-            policy=policy,
-            budget=ExecutionBudget(total_units=body.budget_units or settings.default_budget_units),
-            deadline=deadline,
-            input=body.input,
+            name=body.name or workflow.name,
             launch_key=launch_key,
-            launch_digest=launch_digest,
-            suspension_reason="launching_parent",
-            created_at=now,
-            updated_at=now,
+            launch_request=body.model_dump(mode="json", by_alias=True),
+            input=body.input,
+            budget_units=body.budget_units,
+            deadline=body.deadline,
         )
         try:
             reserved, created = await execution_repo.reserve_parent_launch(execution)
@@ -217,7 +197,7 @@ def create_workflow_executions_router() -> APIRouter:
         if reserved.parent_session_id:
             return await _detail(execution_repo, reserved)
 
-        session_key = f"workflow:execution-{reserved.id.hex}"
+        session_key = parent_session_key(reserved.id)
         target_adapter = await _target_adapter(volundr_factory, principal, body.connection_id)
         sessions = await target_adapter.list_sessions(
             auth_token=bearer_token,
@@ -239,69 +219,23 @@ def create_workflow_executions_router() -> APIRouter:
         ):
             return await _detail(execution_repo, reserved)
 
-        api_base_url = request.app.state.settings.a2a.public_base_url.rstrip("/") or str(
-            request.base_url
-        ).rstrip("/")
-        card_url = local_agent_card_url(
-            public_base_url=request.app.state.settings.a2a.public_base_url,
-            request_base_url=str(request.base_url),
-        )
-        local_agent_id = configured_agent_id(card_url)
-        launch = WorkflowLaunchBody(
+        launch = parent_launch_body(
+            reserved,
+            request=request,
             prompt=body.prompt,
-            sessionName=f"workflow-execution-{reserved.id.hex}",
+            session_name=f"workflow-execution-{reserved.id.hex}",
             model=body.model,
-            connectionId=body.connection_id,
-            context={
-                "workflow_execution": {
-                    "campaign_id": str(reserved.id),
-                    "execution_id": str(reserved.id),
-                    "parent_node_id": reserved.parent_node_id,
-                    "coordinator_id": reserved.policy.coordinator_id,
-                    "deadline": reserved.deadline.isoformat(),
-                    "budget": {
-                        "total_units": reserved.budget.total_units,
-                        "reserved_units": reserved.budget.reserved_units,
-                        "spent_units": reserved.budget.spent_units,
-                        "available_units": reserved.budget.available_units,
-                    },
-                    "current_generation": reserved.current_generation,
-                    "workflow": {
-                        "id": str(reserved.workflow_id),
-                        "revision": reserved.workflow_revision,
-                        "digest": reserved.workflow_digest,
-                    },
-                    "templates": _launch_template_context(
-                        reserved, agent_id=local_agent_id, card_url=card_url
-                    ),
-                }
-            },
-            provenance={
-                "surface": "workflow_execution",
-                "workflow_execution_id": str(reserved.id),
-                "workflow_execution": {
-                    "base_url": api_base_url,
-                    "execution_id": str(reserved.id),
-                    "parent_node_id": reserved.parent_node_id,
-                    "parent_session_key": session_key,
-                    "coordinator_id": reserved.policy.coordinator_id,
-                },
-            },
+            connection_id=body.connection_id,
         )
-        launched = await launch_workflow_execution(
+        _, saved = await launch_reserved_parent(
             request=request,
             workflow=workflow,
-            pinned_workflow_snapshot=reserved.workflow_snapshot,
+            reserved=reserved,
             launch=launch,
+            execution_repo=execution_repo,
             volundr_factory=volundr_factory,
             principal=principal,
             bearer_token=bearer_token,
-            trusted_workflow_execution=True,
-        )
-        saved = await execution_repo.attach_parent_session(
-            reserved.id,
-            session_id=launched.session.id,
-            connection_id=launched.connection_id or "",
         )
         return await _detail(execution_repo, saved)
 
@@ -821,53 +755,8 @@ def _execution_json(execution: WorkflowExecution) -> dict[str, Any]:
         "updatedAt": execution.updated_at,
         "completedAt": execution.completed_at,
         "declaredChildren": _declared_children(execution),
-        "templates": _template_descriptions(execution),
+        "templates": template_descriptions(execution),
     }
-
-
-def _launch_template_context(
-    execution: WorkflowExecution, *, agent_id: str, card_url: str
-) -> dict[str, Any]:
-    """Give the coordinator each named template's identity and A2A skill id.
-
-    A node offering several templates hands the coordinator one entry per
-    template so it can pick the right `skillId` for whichever `template` name
-    it proposes for a child — see `_template_descriptions` for the read-only
-    projection used once the execution already exists.
-    """
-    descriptions = _template_descriptions(execution)
-    return {
-        name: {
-            "alias": template.dependency_alias,
-            "template_id": str(template.id),
-            "template_revision": template.revision,
-            "template_digest": template.digest,
-            "agent_id": agent_id,
-            "skill_id": str(template.id),
-            "agent_card_url": card_url,
-            "description": descriptions.get(name, {}).get("description", ""),
-        }
-        for name, template in execution.policy.templates.items()
-    }
-
-
-def _template_descriptions(execution: WorkflowExecution) -> dict[str, dict[str, Any]]:
-    """Project each named template's identity and its child workflow's own description."""
-    snapshot = execution.workflow_snapshot
-    definitions = snapshot.get("workflow_definitions") if isinstance(snapshot, dict) else None
-    definitions = definitions if isinstance(definitions, dict) else {}
-    result: dict[str, dict[str, Any]] = {}
-    for name, template in execution.policy.templates.items():
-        aggregate = definitions.get(template.dependency_alias)
-        document = aggregate.get("document") if isinstance(aggregate, dict) else None
-        description = str(document.get("description") or "") if isinstance(document, dict) else ""
-        result[name] = {
-            "templateId": str(template.id),
-            "templateRevision": template.revision,
-            "templateDigest": template.digest,
-            "description": description,
-        }
-    return result
 
 
 def _declared_children(execution: WorkflowExecution) -> list[dict[str, Any]] | None:
