@@ -30,6 +30,7 @@ except ImportError:
 from mimir.connections import normalize_mimir_workload_config, resolve_mimir_registry_refs
 from niuu.config_models import default_session_definitions
 from niuu.domain.model_runtime import (
+    is_self_hosted_model,
     session_definition_for_model,
     transport_adapter_for_session_definition,
     validate_session_definition_for_models,
@@ -83,6 +84,16 @@ _READY_STATUS_TYPES = {"unstarted"}
 _ACTIVE_SESSION_STATUSES = {"running", "starting", "creating"}
 _COMPLETED_LINEAR_STATES = {"completed", "cancelled"}
 _CLI_TRANSPORT_EXECUTOR = "ravn.adapters.executors.cli.CliTransportExecutor"
+# CLI transports that call their vendor's API unless pointed at the session's
+# model gateway, which is then how they serve a self-hosted model. OpenCode and
+# PI reach such a model through their own provider configuration instead.
+_MODEL_GATEWAY_TRANSPORTS = frozenset(
+    {
+        "skuld.transports.sdk.SDKTransport",
+        "skuld.transports.tmux_interactive.TmuxInteractiveTransport",
+        "skuld.transports.codex_ws.CodexWebSocketTransport",
+    }
+)
 
 
 def _sanitize_log(value: object) -> str:
@@ -206,6 +217,13 @@ def _resolve_workflow_execution(
                     }
                 elif transport_adapter == "skuld.transports.codex_ws.CodexWebSocketTransport":
                     executor_kwargs["transport_kwargs"] = {"skip_permissions": True}
+                if transport_adapter in _MODEL_GATEWAY_TRANSPORTS and is_self_hosted_model(
+                    model, configured_models=configured_models
+                ):
+                    # Only the persona can say its model is self-hosted: the
+                    # session carries the gateway address whatever its personas
+                    # run, and a cloud persona must keep its vendor's API.
+                    executor_kwargs["model_gateway"] = True
                 runtime_persona["executor"] = {
                     "adapter": _CLI_TRANSPORT_EXECUTOR,
                     "kwargs": executor_kwargs,

@@ -46,6 +46,7 @@ from ravn.cli.commands import (
 from ravn.cli.flock import NodeDef, _write_node_config
 from ravn.config import Settings
 from ravn.domain.models import (
+    Session,
     StreamEvent,
     StreamEventType,
     TokenUsage,
@@ -370,6 +371,67 @@ class TestCliTransportHelpers:
             "approval_policy": "never",
             "sandbox": "workspace-write",
         }
+
+    _SESSION_GATEWAY_ENV = {
+        "SKULD__MODEL_GATEWAY__URL": "http://gateway.test/api/v1/bifrost",
+        "SKULD__MODEL_GATEWAY__TOKEN": "gateway-token",
+    }
+
+    @staticmethod
+    def _cli_persona(**executor_kwargs: object) -> PersonaConfig:
+        return PersonaConfig(
+            name="coder",
+            system_prompt_template="hi",
+            executor=PersonaExecutorConfig(
+                adapter="ravn.adapters.executors.cli.CliTransportExecutor",
+                kwargs={
+                    # Answers with the route it was built for.
+                    "transport_adapter": "tests.test_ravn.test_executor_cli.FakeGatewayTransport",
+                    **executor_kwargs,
+                },
+            ),
+        )
+
+    @staticmethod
+    async def _turn_response(persona: PersonaConfig, model: str) -> str:
+        agent = _build_executor(persona).build(
+            channel=AsyncMock(),
+            system_prompt="hi",
+            session=Session(),
+            model=model,
+            persona=persona.name,
+            permission_mode="workspace_write",
+            tools=[],
+            mcp_servers=[],
+        )
+        return (await agent.run_turn("go")).response
+
+    async def test_build_executor_gives_a_gateway_persona_the_session_gateway(self) -> None:
+        persona = self._cli_persona(model_gateway=True)
+
+        with patch.dict(os.environ, self._SESSION_GATEWAY_ENV, clear=False):
+            response = await self._turn_response(persona, "qwen-coder")
+
+        assert response == "qwen-coder via http://gateway.test/api/v1/bifrost with gateway-token"
+
+    async def test_build_executor_keeps_a_cloud_persona_off_the_session_gateway(self) -> None:
+        """Every session with the model server carries the gateway env, whatever
+        its personas run; its presence alone must not reroute a cloud persona."""
+        persona = self._cli_persona()
+
+        with patch.dict(os.environ, self._SESSION_GATEWAY_ENV, clear=False):
+            response = await self._turn_response(persona, "claude-sonnet-4-6")
+
+        assert response == "claude-sonnet-4-6 via vendor"
+
+    async def test_build_executor_gateway_persona_without_a_session_gateway_fails(self) -> None:
+        persona = self._cli_persona(model_gateway=True)
+
+        with patch.dict(os.environ, {}, clear=False):
+            for name in self._SESSION_GATEWAY_ENV:
+                os.environ.pop(name, None)
+            with pytest.raises(ValueError, match="no gateway URL"):
+                await self._turn_response(persona, "qwen-coder")
 
     def test_uses_cli_transport_executor_prefers_persona_executor(self) -> None:
         persona = PersonaConfig(

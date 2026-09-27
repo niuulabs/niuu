@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1140,3 +1140,153 @@ def test_cli_executor_requires_permission_mode() -> None:
             tools=[DummyTool()],
             mcp_servers=[],
         )
+
+
+_SDK = "skuld.transports.sdk.SDKTransport"
+_CODEX_WS = "skuld.transports.codex_ws.CodexWebSocketTransport"
+_FAKE_GATEWAY = "tests.test_ravn.test_executor_cli.FakeGatewayTransport"
+_GATEWAY_URL = "http://gateway.test/api/v1/bifrost"
+_GATEWAY_TOKEN = "gateway-token"
+_SELF_HOSTED_MODEL = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+
+
+class FakeGatewayTransport(FakeStatelessTransport):
+    """Answers with the route it was built for, taking the gateway as the
+    Claude and Codex transports do."""
+
+    def __init__(
+        self,
+        workspace_dir: str,
+        *,
+        model: str = "",
+        model_gateway_url: str = "",
+        model_gateway_token: str = "",
+    ) -> None:
+        super().__init__(workspace_dir, model=model)
+        self._route = (
+            f"{model_gateway_url} with {model_gateway_token}" if model_gateway_url else "vendor"
+        )
+
+    async def send_message(self, content: str) -> None:
+        self._last_result = {
+            "type": "result",
+            "result": f"{self.model} via {self._route}",
+            "stop_reason": "end_turn",
+            "modelUsage": {},
+        }
+        await self._emit(self._last_result)
+
+
+def _build_coder(executor: CliTransportExecutor, model: str) -> CliTransportAgent:
+    return executor.build(
+        channel=_CollectingChannel(),
+        system_prompt="Implement the requested change.",
+        session=Session(),
+        model=model,
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-coder",
+        persona="coder",
+        workspace_dir="/tmp/workspace",
+        permission_mode="workspace_write",
+        tools=[],
+        mcp_servers=[],
+    )
+
+
+async def test_cli_executor_routes_a_gateway_persona_through_the_session_gateway() -> None:
+    executor = CliTransportExecutor(
+        transport_adapter=_FAKE_GATEWAY,
+        model_gateway=True,
+        model_gateway_url=f" {_GATEWAY_URL} ",
+        model_gateway_token=_GATEWAY_TOKEN,
+    )
+
+    result = await _build_coder(executor, _SELF_HOSTED_MODEL).run_turn("Implement it")
+
+    assert result.response == f"{_SELF_HOSTED_MODEL} via {_GATEWAY_URL} with {_GATEWAY_TOKEN}"
+
+
+async def test_cli_executor_cloud_persona_ignores_the_session_gateway() -> None:
+    """The session carries the gateway whatever its personas run; a cloud
+    persona still reaches its vendor with its own credential."""
+    executor = CliTransportExecutor(
+        transport_adapter=_FAKE_GATEWAY,
+        model_gateway_url=_GATEWAY_URL,
+        model_gateway_token=_GATEWAY_TOKEN,
+    )
+
+    result = await _build_coder(executor, "claude-sonnet-4-6").run_turn("Review it")
+
+    assert result.response == "claude-sonnet-4-6 via vendor"
+
+
+def test_cli_executor_gateway_persona_spawns_claude_against_the_gateway() -> None:
+    executor = CliTransportExecutor(
+        transport_adapter=_SDK,
+        model_gateway=True,
+        model_gateway_url=_GATEWAY_URL,
+        model_gateway_token=_GATEWAY_TOKEN,
+    )
+
+    # The real Claude transport, short of spawning the CLI.
+    transport = _build_coder(executor, _SELF_HOSTED_MODEL)._create_transport()
+    with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
+        env = transport._spawn_env()
+
+    assert env["ANTHROPIC_BASE_URL"] == _GATEWAY_URL
+    assert env["ANTHROPIC_AUTH_TOKEN"] == _GATEWAY_TOKEN
+
+
+def test_cli_executor_gateway_persona_points_codex_at_the_gateway() -> None:
+    from skuld.transports.codex_ws import codex_gateway_overrides
+
+    executor = CliTransportExecutor(
+        transport_adapter=_CODEX_WS,
+        model_gateway=True,
+        model_gateway_url=_GATEWAY_URL,
+        model_gateway_token=_GATEWAY_TOKEN,
+    )
+
+    # The real Codex transport, short of spawning the app-server.
+    transport = _build_coder(executor, _SELF_HOSTED_MODEL)._create_transport()
+
+    assert transport._gateway_overrides == codex_gateway_overrides(_GATEWAY_URL)
+    assert transport._model_gateway_token == _GATEWAY_TOKEN
+
+
+@pytest.mark.parametrize(
+    ("url", "token", "match"),
+    [
+        ("", "", "no gateway URL"),
+        ("  ", _GATEWAY_TOKEN, "no gateway URL"),
+        (_GATEWAY_URL, " ", "gateway token is blank"),
+    ],
+)
+def test_cli_executor_refuses_a_gateway_persona_without_a_usable_gateway(
+    url: str, token: str, match: str
+) -> None:
+    """Never the subscription or the vendor API in place of the gateway."""
+    executor = CliTransportExecutor(
+        transport_adapter=_SDK,
+        model_gateway=True,
+        model_gateway_url=url,
+        model_gateway_token=token,
+    )
+
+    with pytest.raises(ValueError, match=match):
+        _build_coder(executor, _SELF_HOSTED_MODEL)
+
+
+def test_cli_executor_refuses_a_gateway_persona_on_a_transport_without_gateway_support() -> None:
+    """A hand-written binding cannot quietly drop the gateway on a transport
+    that would then call its vendor."""
+    executor = CliTransportExecutor(
+        transport_adapter="tests.test_ravn.test_executor_cli.FakeResumableTransport",
+        model_gateway=True,
+        model_gateway_url=_GATEWAY_URL,
+        model_gateway_token=_GATEWAY_TOKEN,
+    )
+
+    with pytest.raises(ValueError, match="FakeResumableTransport cannot be routed through one"):
+        _build_coder(executor, _SELF_HOSTED_MODEL)

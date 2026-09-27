@@ -21,6 +21,9 @@ import yaml
 from bifrost.config import ManagedModelConfig
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
 from niuu.config_models import default_session_definitions
+from niuu.domain.model_catalog import ManagedModelProvider
+from ravn.adapters.executors.cli import CliTransportAgent, CliTransportExecutor
+from ravn.domain.models import Session
 from ting.domain.models import (
     Saga,
     SagaStatus,
@@ -446,6 +449,177 @@ class TestBuildSpawnRequestFlockEnabled:
                 "transport_kwargs": {"skip_permissions": True},
             },
         }
+
+    @staticmethod
+    def _two_stage_snapshot(coder_model: str, reviewer_model: str) -> dict:
+        return {
+            "workflow_id": str(uuid4()),
+            "name": "Two Stage Run",
+            "version": "1.0.0",
+            "graph": {
+                "nodes": [
+                    {
+                        "id": "stage-coder",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "coder", "model": coder_model}],
+                    },
+                    {
+                        "id": "stage-reviewer",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "reviewer", "model": reviewer_model}],
+                    },
+                ]
+            },
+        }
+
+    def _workflow_personas(
+        self,
+        config: DispatchConfig,
+        snapshot: dict,
+        session_definition: str | None = None,
+    ) -> list[dict]:
+        saga = _make_saga()
+        item = DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo-a")
+        svc = MagicMock()
+        svc._config = config
+        svc._flow_provider = None
+        req = DispatchService._build_spawn_request(
+            svc,
+            item=item,
+            saga=saga,
+            issue=_make_issue(),
+            effective_model="claude-sonnet-4-6",
+            effective_prompt="",
+            integration_ids=[],
+            session_definition=session_definition,
+            workflow_snapshot=snapshot,
+        )
+        return req.workload_config["personas"]
+
+    @staticmethod
+    def _build_persona(persona: dict) -> CliTransportAgent:
+        """Build the persona's bound executor the way its flock daemon does."""
+        return CliTransportExecutor(**persona["executor"]["kwargs"]).build(
+            channel=MagicMock(),
+            system_prompt="",
+            session=Session(),
+            model=persona["llm"]["model"],
+            persona=persona["name"],
+            permission_mode="workspace_write",
+            tools=[],
+            mcp_servers=[],
+        )
+
+    def test_self_hosted_persona_is_routed_through_the_model_gateway(self) -> None:
+        """A self-hosted model is only reachable through the session's model
+        gateway; the cloud persona beside it keeps its vendor's own API."""
+        config = _make_flock_config(
+            configured_models=[
+                ManagedModelConfig(id="claude-sonnet-4-6", name="Sonnet", vendor="anthropic"),
+                ManagedModelConfig(
+                    id="Qwen/Qwen3-Coder-30B-A3B-Instruct", name="Qwen Coder", vendor="local"
+                ),
+            ],
+        )
+
+        personas = self._workflow_personas(
+            config,
+            self._two_stage_snapshot("Qwen/Qwen3-Coder-30B-A3B-Instruct", "claude-sonnet-4-6"),
+        )
+
+        coder, reviewer = personas
+        assert coder["llm"]["model"] == "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+        assert coder["executor"]["kwargs"] == {
+            "transport_adapter": "skuld.transports.sdk.SDKTransport",
+            "transport_kwargs": {"turn_timeout_s": 120.0},
+            "model_gateway": True,
+        }
+        assert reviewer["llm"]["model"] == "claude-sonnet-4-6"
+        assert reviewer["executor"]["kwargs"] == {
+            "transport_adapter": "skuld.transports.sdk.SDKTransport",
+            "transport_kwargs": {"turn_timeout_s": 120.0},
+        }
+
+    @pytest.mark.parametrize(
+        ("session_definition", "transport_adapter"),
+        [
+            (None, "skuld.transports.codex_ws.CodexWebSocketTransport"),
+            (
+                "skuldClaudeInteractive",
+                "skuld.transports.tmux_interactive.TmuxInteractiveTransport",
+            ),
+        ],
+    )
+    def test_self_hosted_personas_on_gateway_transports_are_routed_through_it(
+        self, session_definition: str | None, transport_adapter: str
+    ) -> None:
+        config = _make_flock_config(
+            configured_models=[
+                ManagedModelConfig(id="qwen-coder", name="Qwen Coder", vendor="vllm"),
+                ManagedModelConfig(
+                    id="qwen-reviewer",
+                    name="Qwen Reviewer",
+                    vendor="",
+                    provider=ManagedModelProvider.LOCAL,
+                ),
+            ],
+        )
+
+        personas = self._workflow_personas(
+            config,
+            self._two_stage_snapshot("qwen-coder", "qwen-reviewer"),
+            session_definition=session_definition,
+        )
+
+        for persona in personas:
+            assert persona["executor"]["kwargs"]["transport_adapter"] == transport_adapter
+            assert persona["executor"]["kwargs"]["model_gateway"] is True
+
+    def test_self_hosted_persona_pinned_to_opencode_keeps_its_own_provider(self) -> None:
+        """OpenCode reaches a self-hosted model through its own provider
+        configuration, so its persona is not bound to the gateway."""
+        config = _make_flock_config(
+            configured_models=[
+                ManagedModelConfig(id="claude-sonnet-4-6", name="Sonnet", vendor="anthropic"),
+                ManagedModelConfig(
+                    id="llama3.2:latest",
+                    name="Llama 3.2",
+                    vendor="local",
+                    provider=ManagedModelProvider.LOCAL,
+                    session_definition="skuldOpenCode",
+                ),
+            ],
+        )
+
+        coder, reviewer = self._workflow_personas(
+            config, self._two_stage_snapshot("llama3.2:latest", "claude-sonnet-4-6")
+        )
+
+        assert coder["executor"]["kwargs"] == {
+            "transport_adapter": "skuld.transports.opencode.OpenCodeHttpTransport"
+        }
+        assert "model_gateway" not in reviewer["executor"]["kwargs"]
+        self._build_persona(coder)
+        self._build_persona(reviewer)
+
+    def test_self_hosted_personas_on_pi_keep_their_own_provider(self) -> None:
+        config = _make_flock_config(
+            configured_models=[
+                ManagedModelConfig(id="qwen-coder", name="Qwen Coder", vendor="local"),
+            ],
+        )
+
+        personas = self._workflow_personas(
+            config,
+            self._two_stage_snapshot("qwen-coder", "qwen-coder"),
+            session_definition="skuldPi",
+        )
+
+        for persona in personas:
+            assert persona["executor"]["kwargs"] == {
+                "transport_adapter": "skuld.transports.pi.PiRpcTransport"
+            }
+            self._build_persona(persona)
 
     def test_workload_config_resolves_registry_backed_mimir_resources(self, tmp_path: Path) -> None:
         registry_path = tmp_path / ".mimir-registry.json"

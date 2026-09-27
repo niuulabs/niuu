@@ -4144,6 +4144,30 @@ class RuntimeExecutorConfig(_LegacyAliasSettings):
         ),
         description="Constructor kwargs for the Codex auth provider.",
     )
+    # The session's model gateway, read from the same env Skuld's own
+    # transport reads. It is the address only: a session carries it whatever
+    # its personas run, so it routes nothing by itself. A persona uses it only
+    # when its executor binding asks for the gateway (a self-hosted model).
+    model_gateway_url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "model_gateway_url",
+            "SKULD__MODEL_GATEWAY__URL",
+        ),
+        description=(
+            "Model gateway base URL for personas whose executor binding sets "
+            "model_gateway. Empty means this runtime has no gateway, and such a "
+            "persona cannot run."
+        ),
+    )
+    model_gateway_token: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "model_gateway_token",
+            "SKULD__MODEL_GATEWAY__TOKEN",
+        ),
+        description="Bearer token presented to the model gateway alongside model_gateway_url.",
+    )
 
 
 class _ValkyrieTelemetryEnvSource(EnvSettingsSource):
