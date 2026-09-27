@@ -573,6 +573,52 @@ async def test_delayed_first_native_page_is_waited_for_before_keys(native_bridge
     assert _send_keys(transport) == ["2"] and receipts(events)[0]["accepted"] is True
 
 
+async def test_v2_1_panel_border_first_page_is_recognized(native_bridge):
+    """Claude Code v2.1.282 prefixes the active tab's question text with a dim '│ '
+    left-gutter in a multi-question AskUserQuestion (tabs across the top, one per
+    question, plus a Submit tab) — see the sanitised capture from niuulabs/niuu session
+    d8210020-fad6-4459-b55a-91a0d4a355f9 (request tty-1-03824702). Before the
+    `_strip_question_border` fix in tmux_interactive.py, that stray glyph defeated
+    `_question_page_matches`'s exact-text comparison, so `_wait_question_screen` never
+    saw the first page as ready and answering failed forever with 'The live Claude
+    menu does not match the pending question state'."""
+    transport, events = native_bridge
+    transport.capture_stdout = (
+        "←  ☐ Label  ✔ Submit  →\n\n│ Which label should be written?\n\n❯ 1. Blue\n  2. Amber\n"
+    )
+    rid = await transport.surface()
+    transport.steps.append(("1", "❯\n"))
+    transport.consumed = {"answers": {SINGLE[0]["question"]: "Blue"}}
+    await transport.send_control("ask_user_answer", request_id=rid, answers=[{"answer": "Blue"}])
+    assert _send_keys(transport) == ["1"] and receipts(events)[0]["accepted"] is True
+
+
+async def test_first_page_mismatch_keeps_question_pending_with_retryable_error(native_bridge):
+    """A first-page mismatch before any keys are pressed is a *read* failure, not proof
+    Claude rejected the answer — the question must stay open so the exact same answer
+    can be retried (e.g. once a display-parsing bug like the one above is fixed).
+    Escalating to `ControlRecoveryError` (the 'go inspect the native session' signal)
+    is reserved for once keys have actually been pressed; see
+    `_answer_tty_prompt_locked` in tmux_interactive.py. Real incident: niuulabs/niuu
+    session d8210020-fad6-4459-b55a-91a0d4a355f9, request tty-1-03824702 — the same
+    answer was replayed twice (23:55:18 and 23:55:52 UTC) and failed both times with
+    the bare, non-actionable 'does not match the pending question state' error."""
+    transport, events = native_bridge
+    transport.capture_stdout = (
+        "☐ Label\nSomething the parser never recognizes\n❯ 1. Blue\n  2. Amber\n"
+    )
+    rid = await transport.surface()
+
+    with pytest.raises(ValueError, match="still pending and this same answer can be retried"):
+        await transport.send_control(
+            "ask_user_answer", request_id=rid, answers=[{"answer": "Blue"}]
+        )
+    assert rid in transport._pending_tty_prompts
+    assert not transport._pending_tty_prompts[rid].get("answer_uncertain")
+    assert not transport.steps and not transport.loaded_buffers  # no keys were ever pressed
+    assert not receipts(events)
+
+
 @pytest.mark.parametrize(
     "answer",
     [
