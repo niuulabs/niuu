@@ -17,7 +17,10 @@ import contextvars
 import inspect
 import json
 import logging
+import os
 import re
+import tempfile
+import threading
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
@@ -1390,6 +1393,13 @@ class DriveLoop:
         self._active_agents: dict[str, object] = {}
         self._semaphore = asyncio.Semaphore(config.max_concurrent_tasks)
         self._journal_path = Path(config.queue_journal_path).expanduser()
+        # Journal writes happen both synchronously on the event loop and from a
+        # worker thread (`_persist_queue_off_loop`). The lock serializes them,
+        # and the generation counter stops an older snapshot finishing late in
+        # the worker thread from overwriting a newer one written on the loop.
+        self._journal_write_lock = threading.Lock()
+        self._journal_generation = 0
+        self._journal_written_generation = 0
         self._workflow_event_dedupe_limit = config.workflow_event_dedupe_max_entries
         self._workflow_cycle_limit = config.workflow_cycle_max_entries
         self._source_id = "drive_loop"
@@ -2585,6 +2595,17 @@ class DriveLoop:
 
     async def run(self) -> None:
         """Start all three internal loops and run until cancelled."""
+        # Create the journal directory before any trigger or mesh delivery can
+        # enqueue work. Each write also ensures it, so this is belt and braces
+        # for the first event arriving right after start.
+        try:
+            self._journal_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning(
+                "drive_loop: could not create queue journal directory %s: %s",
+                self._journal_path.parent,
+                exc,
+            )
         if self._resident_budget is not None:
             await self._seed_budget_from_ledger()
         if self._resume:
@@ -5040,7 +5061,12 @@ class DriveLoop:
         except Exception as exc:
             logger.warning("drive_loop: failed to persist queue journal: %s", exc)
             return False
-        return self._write_journal_snapshot(serialized)
+        return self._write_journal_snapshot(serialized, self._next_journal_generation())
+
+    def _next_journal_generation(self) -> int:
+        """Stamp a snapshot taken on the event loop with its ordering."""
+        self._journal_generation += 1
+        return self._journal_generation
 
     def _serialize_journal_snapshot(self) -> str:
         """Render current queue/ledger state to journal JSON text.
@@ -5067,17 +5093,43 @@ class DriveLoop:
             ]
         return json.dumps(journal, indent=2)
 
-    def _write_journal_snapshot(self, serialized: str) -> bool:
-        """Write an already-serialized journal snapshot to disk atomically."""
-        try:
-            self._journal_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary_path = self._journal_path.with_suffix(f"{self._journal_path.suffix}.tmp")
-            temporary_path.write_text(serialized)
-            temporary_path.replace(self._journal_path)
-            return True
-        except Exception as exc:
-            logger.warning("drive_loop: failed to persist queue journal: %s", exc)
-            return False
+    def _write_journal_snapshot(self, serialized: str, generation: int | None = None) -> bool:
+        """Write an already-serialized journal snapshot to disk atomically.
+
+        Safe to call concurrently from the event loop and a worker thread.
+        Every write goes through its own uniquely named temporary file in the
+        journal directory (a shared ``queue.json.tmp`` let one writer rename
+        away the other's file, failing the second ``replace`` with ENOENT),
+        and the writes are serialized under a lock. A snapshot older than the
+        last one written is skipped and counts as persisted: the newer
+        snapshot was taken later on the event loop, so it already contains
+        every mutation the older one carried.
+        """
+        with self._journal_write_lock:
+            if generation is not None and generation <= self._journal_written_generation:
+                return True
+            temporary_path: Path | None = None
+            try:
+                directory = self._journal_path.parent
+                directory.mkdir(parents=True, exist_ok=True)
+                fd, temporary_name = tempfile.mkstemp(
+                    dir=directory, prefix=f".{self._journal_path.name}.", suffix=".tmp"
+                )
+                temporary_path = Path(temporary_name)
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(serialized)
+                os.replace(temporary_path, self._journal_path)
+                temporary_path = None
+                if generation is not None:
+                    self._journal_written_generation = generation
+                return True
+            except Exception as exc:
+                logger.warning("drive_loop: failed to persist queue journal: %s", exc)
+                return False
+            finally:
+                if temporary_path is not None:
+                    with suppress(OSError):
+                        temporary_path.unlink()
 
     async def _persist_queue_off_loop(self) -> bool:
         """Persist the journal without blocking the event loop.
@@ -5094,7 +5146,8 @@ class DriveLoop:
         except Exception as exc:
             logger.warning("drive_loop: failed to persist queue journal: %s", exc)
             return False
-        return await asyncio.to_thread(self._write_journal_snapshot, serialized)
+        generation = self._next_journal_generation()
+        return await asyncio.to_thread(self._write_journal_snapshot, serialized, generation)
 
     @staticmethod
     def _task_journal_record(task: AgentTask) -> dict[str, object]:

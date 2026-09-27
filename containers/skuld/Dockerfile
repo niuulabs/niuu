@@ -78,7 +78,9 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 ARG OS_PACKAGES_REFRESH=
 # Install runtime dependencies. The upgrade picks up base-image security
 # fixes (glibc, gnupg) published after the pinned digest was cut.
+# bubblewrap: Codex looks for bwrap on PATH at startup for its Linux sandbox.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+    bubblewrap \
     curl \
     ca-certificates \
     git \
@@ -175,7 +177,8 @@ RUN --network=none --mount=type=bind,from=project,source=/dist,target=/tmp/dist 
     uv pip install --python /opt/venv/bin/python --no-deps --no-cache --offline /tmp/dist/*.whl
 
 # Fail the image build if an advertised CLI is missing or cannot execute.
-RUN claude --version && codex --version && opencode --version && grok --version && pi --version && muse --version
+RUN claude --version && codex --version && opencode --version && grok --version && pi --version && muse --version \
+    && bwrap --version
 
 # Switch to non-root user
 USER skuld
