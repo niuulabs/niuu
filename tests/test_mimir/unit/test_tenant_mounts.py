@@ -227,6 +227,46 @@ async def test_ready_gbrain_is_discovered_with_its_own_native_secret():
     )
 
 
+@pytest.mark.asyncio
+async def test_gbrain_mount_is_given_the_configured_think_model():
+    import base64
+    from types import SimpleNamespace
+
+    adapter = FluxKnowledgeDeploymentAdapter(
+        namespace="knowledge",
+        source_name="niuu",
+        chart_versions={},
+        images={},
+        think_model="deepseek:deepseek-v4-flash-0731",
+    )
+    adapter.list_deployments = AsyncMock(
+        return_value={
+            "releases": [
+                {
+                    "name": "brain",
+                    "release_name": "brain-tenant",
+                    "backend": "gbrain",
+                    "ready": True,
+                }
+            ]
+        }
+    )
+    service = SimpleNamespace(
+        metadata=SimpleNamespace(
+            name="brain-tenant-gbrain", labels={"app.kubernetes.io/name": "gbrain"}
+        ),
+        spec=SimpleNamespace(ports=[SimpleNamespace(port=3131)]),
+    )
+    core = AsyncMock()
+    core.list_namespaced_service.return_value = SimpleNamespace(items=[service])
+    core.read_namespaced_secret.return_value = SimpleNamespace(
+        data={"token": base64.b64encode(b"native-secret").decode()}
+    )
+    with patch("kubernetes_asyncio.client.CoreV1Api", return_value=core):
+        mounts = await adapter.discover_mounts("a")
+    assert mounts[0]["port"]._think_model == "deepseek:deepseek-v4-flash-0731"
+
+
 def test_session_proxy_mount_keeps_workload_identity():
     from ravn.cli.runtime_builders import _build_mimir
     from ravn.config import Settings

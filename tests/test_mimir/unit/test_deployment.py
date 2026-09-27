@@ -159,6 +159,42 @@ async def test_flux_uses_operator_credentials_and_attaches_warden():
     assert values["config"]["name"] == "research"
 
 
+@pytest.mark.asyncio
+async def test_gbrain_config_is_applied_to_new_tenant_releases_only():
+    a = adapter()
+    a.gbrain_config = {
+        "provider_base_urls": {
+            "deepseek": "http://niuu-bifrost-internal.volundr.svc.cluster.local/api/v1/bifrost/v1"
+        },
+        "deepseek_api_key": "unused-bifrost-open-mode",
+    }
+    api = AsyncMock()
+    api.create_namespaced_custom_object.side_effect = lambda *args: args[-1]
+    a._get_api = AsyncMock(return_value=api)
+
+    await a.deploy(DeploymentRequest(tenant_id="tenant-a", name="research", backend="gbrain"))
+    values = api.create_namespaced_custom_object.call_args.args[-1]["spec"]["values"]
+    assert values["config"] == a.gbrain_config
+    # Mutating the returned values must not corrupt the adapter's own copy.
+    values["config"]["deepseek_api_key"] = "tampered"
+    assert a.gbrain_config["deepseek_api_key"] == "unused-bifrost-open-mode"
+
+    await a.deploy(DeploymentRequest(tenant_id="tenant-a", name="notes", backend="mimir"))
+    values = api.create_namespaced_custom_object.call_args.args[-1]["spec"]["values"]
+    assert values["config"] == {"name": "notes", "role": "shared"}
+
+
+@pytest.mark.asyncio
+async def test_no_gbrain_config_means_no_config_values_key():
+    a = adapter()
+    api = AsyncMock()
+    api.create_namespaced_custom_object.side_effect = lambda *args: args[-1]
+    a._get_api = AsyncMock(return_value=api)
+    await a.deploy(DeploymentRequest(tenant_id="tenant-a", name="research", backend="gbrain"))
+    values = api.create_namespaced_custom_object.call_args.args[-1]["spec"]["values"]
+    assert "config" not in values
+
+
 @pytest.mark.parametrize(
     "backend, options",
     [
