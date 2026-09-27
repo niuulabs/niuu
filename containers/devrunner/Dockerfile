@@ -16,7 +16,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 # (and the security fixes it pulls) for more than a day.
 ARG OS_PACKAGES_REFRESH=
 # Install system dependencies: Node.js, PostgreSQL server, shells, inotify-tools
+# bubblewrap: Codex looks for bwrap on PATH at startup for its Linux sandbox.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+    bubblewrap \
     curl \
     ca-certificates \
     gnupg \
@@ -133,7 +135,8 @@ RUN chmod +x /usr/local/bin/devrunner /usr/local/bin/restricted-shell /usr/local
 COPY containers/skuld/install-muse.sh /tmp/install-muse.sh
 RUN sh /tmp/install-muse.sh "$TARGETARCH" && rm /tmp/install-muse.sh
 
-RUN claude --version && codex --version && opencode --version && grok --version && pi --version && muse --version
+RUN claude --version && codex --version && opencode --version && grok --version && pi --version && muse --version \
+    && bwrap --version
 
 # Switch to non-root user
 USER devrunner

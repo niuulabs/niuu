@@ -61,3 +61,11 @@ def test_openshell_image_installs_locked_agent_clis() -> None:
     assert "/usr/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex" in dockerfile
     for cli in ("claude", "opencode", "grok"):
         assert f"node_modules/.bin/{cli} /usr/local/bin/{cli}" in dockerfile
+
+
+def test_cli_runtime_images_install_bubblewrap() -> None:
+    """Codex expects bwrap on PATH; the build must fail if it goes missing."""
+    for dockerfile_path in ("containers/skuld/Dockerfile", "containers/devrunner/Dockerfile"):
+        dockerfile = (REPO_ROOT / dockerfile_path).read_text()
+        assert "    bubblewrap \\\n" in dockerfile
+        assert "&& bwrap --version" in dockerfile
