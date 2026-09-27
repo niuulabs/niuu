@@ -135,7 +135,17 @@ def build_openapi_app() -> FastAPI:
     mock = MagicMock()
 
     app.include_router(
-        create_router(mock, mock, mock, mock, mock, mock, mock, external_session_service=mock)
+        create_router(
+            mock,
+            mock,
+            mock,
+            mock,
+            mock,
+            mock,
+            mock,
+            external_session_service=mock,
+            session_participant_service=mock,
+        )
     )
     app.include_router(create_launch_specs_router(mock, mock))
     app.include_router(create_resources_router(mock))
