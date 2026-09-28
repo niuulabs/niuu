@@ -2,7 +2,7 @@
   "name": "niuu-web",
   "private": true,
   "version": "0.0.0",
-  "description": "Niuu web \u2014 composable plugin-based UI for the Niuu platform",
+  "description": "Niuu web — composable plugin-based UI for the Niuu platform",
   "type": "module",
   "packageManager": "pnpm@9.12.0",
   "engines": {
