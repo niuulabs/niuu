@@ -51,7 +51,11 @@ def document(image: str, evidence: dict, scan: dict, manifest: dict) -> dict:
                 for location in artifact["locations"]
                 if location["annotations"]["evidence"] == "primary"
             }
-            if locations != {evidence["executable"]}:
+            all_locations = {location["path"] for location in artifact["locations"]}
+            if (
+                evidence["executable"] not in locations
+                or not all_locations <= {evidence["executable"], evidence["library"]}
+            ):
                 raise ValueError("Grype found a Python runtime that was not verified")
             if not artifact["purl"]:
                 raise ValueError(

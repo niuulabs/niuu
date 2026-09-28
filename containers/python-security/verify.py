@@ -104,7 +104,12 @@ def verify(manifest: dict) -> dict:
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(BackportRegressionTests)
     if not unittest.TextTestRunner(stream=sys.stderr).run(suite).wasSuccessful():
         raise RuntimeError("Installed Python security regression tests failed")
+    library = Path(sysconfig.get_config_var("LIBDIR")) / sysconfig.get_config_var("LDLIBRARY")
+    library = library.resolve(strict=True)
+    if not library.is_file():
+        raise RuntimeError("Python shared library is not a regular file")
     return {
+        "library": str(library),
         "python_version": manifest["python_version"],
         "files": actual,
         "cves": manifest["cves"],

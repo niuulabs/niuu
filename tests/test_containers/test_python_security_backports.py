@@ -61,6 +61,7 @@ def vex_inputs():
         "files": {name: item["patched"] for name, item in manifest["files"].items()},
         "cves": manifest["cves"],
         "executable": "/usr/local/bin/python3.14",
+        "library": "/usr/local/lib/libpython3.14.so.1.0",
         "image": image,
         "patches": [item["commit"] for item in manifest["patches"]],
     }
@@ -92,7 +93,10 @@ def vex_inputs():
     return image, evidence, scan, manifest
 
 
-def test_vex_is_limited_to_verified_image_component_and_six_cves(vex_inputs):
+@pytest.mark.parametrize("library_evidence", ["primary", "supporting"])
+def test_vex_is_limited_to_verified_image_component_and_six_cves(vex_inputs, library_evidence):
+    for match in vex_inputs[2]["matches"]:
+        match["artifact"]["locations"][1]["annotations"]["evidence"] = library_evidence
     result = load("vex").document(*vex_inputs)
     image, _, _, manifest = vex_inputs
     assert {s["vulnerability"]["name"] for s in result["statements"]} == set(manifest["cves"])
@@ -115,6 +119,7 @@ def test_vex_is_limited_to_verified_image_component_and_six_cves(vex_inputs):
         "extra_runtime",
         "no_primary",
         "unknown",
+        "library",
     ],
 )
 def test_vex_rejects_unverified_evidence(vex_inputs, invalid):
@@ -135,6 +140,8 @@ def test_vex_rejects_unverified_evidence(vex_inputs, invalid):
         scan["matches"][0]["artifact"]["locations"].append(
             {"path": "/other/python3.14", "annotations": {"evidence": "primary"}}
         )
+    elif invalid == "library":
+        scan["matches"][0]["artifact"]["locations"][1]["path"] = "/other/libpython3.14.so.1.0"
     elif invalid == "unknown":
         scan["matches"][0]["artifact"]["locations"][0].pop("annotations")
     elif invalid == "no_primary":
