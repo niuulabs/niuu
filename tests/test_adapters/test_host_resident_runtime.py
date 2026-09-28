@@ -740,11 +740,17 @@ async def test_stop_does_not_wait_forever_on_an_escaped_descendant(
     runtime = runtime.model_copy(update={"backend_ref": deployed.backend_ref})
     messages = await _log_messages(controller, runtime, "ravn escaped")
     escaped = int(next(m for m in messages if "ravn escaped" in m).rsplit(" ", 1)[1])
+    processes = controller._residents[runtime.id].processes
+    output_pipes = [
+        item.process._transport.get_pipe_transport(1).get_extra_info("pipe") for item in processes
+    ]
     try:
         await controller.suspend(runtime)
 
         assert "left its process group" in caplog.text
         assert _alive(escaped)
+        assert all(item.output.done() for item in processes)
+        assert all(pipe.closed for pipe in output_pipes)
     finally:
         os.kill(escaped, signal.SIGKILL)
 

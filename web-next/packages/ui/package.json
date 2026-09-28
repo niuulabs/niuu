@@ -39,7 +39,7 @@
     "clsx": "^2.1.1",
     "dompurify": "^3",
     "katex": "^0.18",
-    "lucide-react": "^1.47.0",
+    "lucide-react": "^1.48.0",
     "mermaid": "^12",
     "react-markdown": "^10",
     "rehype-katex": "^7",
