@@ -207,6 +207,14 @@ def project_ravn_event(event: RavnEvent, *, persona: str = "") -> list[dict[str,
         )
         if event.type == RavnEventType.ERROR and event.payload.get("failure_kind"):
             projected["failureKind"] = str(event.payload["failure_kind"])
+        if event.type == RavnEventType.ERROR:
+            # Which workflow node failed, so the room can attribute the
+            # failure to a stage rather than only to a peer.
+            projected["metadata"] = {
+                key: str(event.payload[key])
+                for key in ("workflow_node_id", "persona", "failure_kind")
+                if event.payload.get(key)
+            }
         return [projected]
 
     if event.type == RavnEventType.HELP_NEEDED:

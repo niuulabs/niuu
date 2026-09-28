@@ -32,6 +32,14 @@ from ting.api.workflows import (
     launch_workflow_execution,
     resolve_workflow_repo,
 )
+from ting.domain.campaign_stages import (
+    FAILURE_ERROR_KEY,
+    FAILURE_STAGE_KEY,
+    WorkflowStage,
+    record_runtime_failure,
+    render_stage_state,
+    workflow_stages,
+)
 from ting.domain.models import (
     CampaignStageState,
     WorkflowCampaign,
@@ -39,7 +47,12 @@ from ting.domain.models import (
     WorkflowDefinition,
 )
 from ting.domain.utils import _session_name, _slugify
-from ting.domain.workflow_execution import ExecutionConflictError
+from ting.domain.workflow_execution import (
+    CHILDREN_JOINED_SUSPENSION_REASON,
+    ExecutionConflictError,
+    ExecutionState,
+    WorkflowExecution,
+)
 from ting.domain.workflow_snapshot import (
     build_workflow_snapshot,
     workflow_artifact_paths_from_snapshot,
@@ -374,6 +387,9 @@ def create_research_router() -> APIRouter:
         principal: Principal = Depends(extract_principal),
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
         volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
+        execution_repo: WorkflowExecutionRepository | None = Depends(
+            resolve_optional_workflow_execution_repo
+        ),
     ) -> ResearchCampaignDetailResponse:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
         if campaign is None or not _is_research_campaign(campaign):
@@ -413,6 +429,9 @@ def create_research_router() -> APIRouter:
                 artifacts,
                 refreshed.status,
                 refreshed.stage_state,
+                slug=_artifact_slug(refreshed),
+                execution=await _campaign_execution(refreshed, execution_repo, principal),
+                metadata=refreshed.metadata,
             )
             if stage_state != refreshed.stage_state or (
                 stage_state and stage_state[0].stage_id != refreshed.active_stage_id
@@ -657,6 +676,32 @@ async def _durable_research_launch(
     return launched, str(reserved.id)
 
 
+async def _campaign_execution(
+    campaign: WorkflowCampaign,
+    execution_repo: WorkflowExecutionRepository | None,
+    principal: Principal,
+) -> WorkflowExecution | None:
+    """The durable execution coordinating a campaign's fan-out, when it has one."""
+    raw_id = str(campaign.metadata.get(_WORKFLOW_EXECUTION_ID_KEY) or "").strip()
+    if execution_repo is None or not raw_id:
+        return None
+    try:
+        return await execution_repo.get(
+            UUID(raw_id),
+            owner_id=principal.user_id,
+            tenant_id=principal.tenant_id,
+        )
+    except Exception:
+        # Stage evidence only; the campaign detail must not fail without it.
+        logger.warning(
+            "Could not read workflow execution %s for research campaign %s",
+            raw_id,
+            campaign.slug,
+            exc_info=True,
+        )
+        return None
+
+
 async def _resolve_research_workflow(
     *,
     repo: WorkflowRepository,
@@ -805,13 +850,13 @@ def _build_campaign_prompt(body: ResearchCampaignCreateBody) -> str:
 
 
 def _initial_stage_state(snapshot: dict[str, Any], now: datetime) -> list[CampaignStageState]:
-    stages = _workflow_stages(snapshot)
+    stages = workflow_stages(snapshot)
     result: list[CampaignStageState] = []
     for index, stage in enumerate(stages):
         result.append(
             CampaignStageState(
-                stage_id=stage["id"],
-                label=stage["label"],
+                stage_id=stage.id,
+                label=stage.label,
                 status="active" if index == 0 else "pending",
                 started_at=now if index == 0 else None,
             )
@@ -845,9 +890,28 @@ async def _refresh_campaign_runtime(
         return campaign
     if session is None:
         return campaign
-    next_status = _campaign_status_from_session(session.status, fallback=campaign.status)
-    next_completed_at = campaign.completed_at
     now = datetime.now(UTC)
+    metadata = campaign.metadata
+    stage_state = campaign.stage_state
+    active_stage_id = campaign.active_stage_id
+    activity_state = str(getattr(session, "activity_state", "") or "").strip().lower()
+    if activity_state == "error" and campaign.status not in _TERMINAL_CAMPAIGN_STATUSES:
+        # A stage's runtime failed (Skuld reports a peer error as activity
+        # state "error") while the pod itself keeps running. The session
+        # status alone would keep this campaign "running" forever.
+        next_status = WorkflowCampaignStatus.FAILED
+        metadata, stage_state, active_stage_id = record_runtime_failure(
+            campaign, getattr(session, "activity_metadata", {}) or {}, now=now
+        )
+    elif campaign.status in _TERMINAL_CAMPAIGN_STATUSES:
+        # A finished or failed campaign keeps its outcome while its pod winds
+        # down or lingers: a still-"running" session is not new progress, and
+        # the "stopped" session a failed campaign's cleanup leaves behind is
+        # not a completion.
+        next_status = campaign.status
+    else:
+        next_status = _campaign_status_from_session(session.status, fallback=campaign.status)
+    next_completed_at = campaign.completed_at
     if next_status == WorkflowCampaignStatus.COMPLETED and campaign.completed_at is None:
         next_completed_at = now
     if next_status == campaign.status and session.name == campaign.session_name:
@@ -857,6 +921,9 @@ async def _refresh_campaign_runtime(
             **campaign.__dict__,
             "session_name": session.name,
             "status": next_status,
+            "metadata": metadata,
+            "stage_state": stage_state,
+            "active_stage_id": active_stage_id,
             "updated_at": now,
             "last_activity_at": now,
             "completed_at": next_completed_at,
@@ -870,6 +937,11 @@ async def _refresh_campaign_runtime(
         event_name = "workflow.campaign.failed"
     await _emit_campaign_event(request, event_name, saved)
     return saved
+
+
+_TERMINAL_CAMPAIGN_STATUSES = frozenset(
+    {WorkflowCampaignStatus.COMPLETED, WorkflowCampaignStatus.FAILED}
+)
 
 
 async def _resolve_campaign_volundr_adapter(
@@ -1188,19 +1260,79 @@ def _title_from_path(path: str) -> str:
 
 
 def _workflow_stages(snapshot: dict[str, Any]) -> list[dict[str, str]]:
-    graph = snapshot.get("graph") if isinstance(snapshot, dict) else None
-    nodes = graph.get("nodes") if isinstance(graph, dict) else []
-    stages: list[dict[str, str]] = []
-    for node in nodes or []:
-        if not isinstance(node, dict) or node.get("kind") != "stage":
+    """Stage ids and labels in graph order (spec campaigns derive by stage id)."""
+    return [{"id": stage.id, "label": stage.label} for stage in workflow_stages(snapshot)]
+
+
+#: Artifact kinds each kind of research stage writes, keyed by a fragment of
+#: the stage's stable identifiers (node id, persona ids, produced events) or —
+#: only as a fallback — of its display label. Order matters twice: a stage
+#: takes the first rule it matches, and a kind is credited to the first stage
+#: (in graph order) that claims it, so an analysis stage's ``analysis.md`` is
+#: never read as proof that a later synthesis stage finished.
+_STAGE_ARTIFACT_RULES: tuple[tuple[tuple[str, ...], frozenset[str]], ...] = (
+    (("frame",), frozenset({"brief", "plan"})),
+    (("analy",), frozenset({"analysis", "sources"})),
+    (("explor", "evidence"), frozenset({"note", "sources"})),
+    (("challeng", "critique", "skeptic"), frozenset({"critique"})),
+    (("synth",), frozenset({"analysis", "final"})),
+    (("curat",), frozenset({"learnings", "followups"})),
+    (("publish",), frozenset({"manifest"})),
+)
+
+
+def _artifact_rule(texts: tuple[str, ...]) -> frozenset[str] | None:
+    lowered = [text.lower() for text in texts if text]
+    for fragments, kinds in _STAGE_ARTIFACT_RULES:
+        if any(fragment in text for fragment in fragments for text in lowered):
+            return kinds
+    return None
+
+
+def _stage_artifact_claims(stages: list[WorkflowStage]) -> dict[str, frozenset[str]]:
+    """Credit each artifact kind to exactly one stage.
+
+    Stages that declare their own evidence (artifact paths, a dispatched
+    subworkflow) claim no kinds. The rest match on stable identifiers first;
+    a stage none of whose identifiers match falls back to its label.
+    """
+    claimed: set[str] = set()
+    claims: dict[str, frozenset[str]] = {}
+    unmatched: list[WorkflowStage] = []
+    for stage in stages:
+        if stage.artifact_paths or stage.dispatches_subworkflows:
             continue
-        stages.append(
-            {
-                "id": str(node.get("id") or ""),
-                "label": str(node.get("label") or node.get("id") or "Stage"),
-            }
-        )
-    return stages
+        kinds = _artifact_rule(stage.tokens)
+        if kinds is None:
+            unmatched.append(stage)
+            continue
+        claims[stage.id] = kinds - claimed
+        claimed |= kinds
+    for stage in unmatched:
+        kinds = _artifact_rule((stage.label,))
+        if kinds is None:
+            continue
+        claims[stage.id] = kinds - claimed
+        claimed |= kinds
+    return claims
+
+
+def _subworkflow_joined(
+    stage: WorkflowStage,
+    execution: WorkflowExecution | None,
+) -> bool:
+    """True once the durable fan-out a stage dispatched has joined.
+
+    The parent execution records the join as it resumes the parent session
+    with the subworkflow's joined event (``research.threads.joined`` for the
+    research graphs); a completed execution has necessarily joined too.
+    """
+    if execution is None or execution.parent_node_id not in stage.dispatches_subworkflows:
+        return False
+    return (
+        execution.suspension_reason == CHILDREN_JOINED_SUSPENSION_REASON
+        or execution.state == ExecutionState.COMPLETED
+    )
 
 
 def _derive_stage_state(
@@ -1208,91 +1340,51 @@ def _derive_stage_state(
     artifacts: list[CampaignArtifactResponse],
     status: WorkflowCampaignStatus,
     previous: list[CampaignStageState],
+    *,
+    slug: str = "",
+    execution: WorkflowExecution | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> list[CampaignStageState]:
-    stages = _workflow_stages(snapshot)
-    previous_map = {stage.stage_id: stage for stage in previous}
+    """Derive stage progress from the evidence each stage leaves behind.
+
+    Per stage, strongest evidence first:
+
+    1. ``artifactPaths`` declared on the stage node — all must exist;
+    2. a stage that dispatches a subworkflow — its children have joined;
+    3. the artifact kinds the stage is credited with (see
+       :func:`_stage_artifact_claims`) — any one exists.
+
+    A stage that finished proves its upstream stages finished (closed in
+    :func:`render_stage_state`), and a failed campaign marks the stage the
+    runtime attributed the failure to.
+    """
+    stages = workflow_stages(snapshot)
     available_kinds = {artifact.kind for artifact in artifacts if artifact.kind}
-    now = datetime.now(UTC)
-    derived: list[CampaignStageState] = []
-    first_incomplete: int | None = None
-
-    for index, stage in enumerate(stages):
-        requirement_met = _stage_requirement_met(stage["label"], available_kinds, status)
-        prior = previous_map.get(stage["id"])
-        if requirement_met:
-            derived.append(
-                CampaignStageState(
-                    stage_id=stage["id"],
-                    label=stage["label"],
-                    status="complete",
-                    started_at=prior.started_at if prior else None,
-                    completed_at=(prior.completed_at if prior and prior.completed_at else now),
-                    reason=prior.reason if prior else None,
-                )
-            )
-            continue
-        if first_incomplete is None:
-            first_incomplete = index
-        derived.append(
-            CampaignStageState(
-                stage_id=stage["id"],
-                label=stage["label"],
-                status="pending",
-                started_at=prior.started_at if prior else None,
-                completed_at=prior.completed_at if prior else None,
-                reason=prior.reason if prior else None,
-            )
-        )
-
-    if first_incomplete is not None:
-        current = derived[first_incomplete]
-        current_status = "active"
-        if status == WorkflowCampaignStatus.BLOCKED:
-            current_status = "blocked"
-        elif status == WorkflowCampaignStatus.FAILED:
-            current_status = "failed"
-        derived[first_incomplete] = CampaignStageState(
-            stage_id=current.stage_id,
-            label=current.label,
-            status=current_status,
-            started_at=current.started_at or now,
-            completed_at=current.completed_at,
-            reason=current.reason,
-        )
-    elif derived and status == WorkflowCampaignStatus.COMPLETED:
-        last = derived[-1]
-        derived[-1] = CampaignStageState(
-            stage_id=last.stage_id,
-            label=last.label,
-            status="complete",
-            started_at=last.started_at,
-            completed_at=last.completed_at or now,
-            reason=last.reason,
-        )
-    return derived
-
-
-def _stage_requirement_met(
-    label: str,
-    kinds: set[str | None],
-    status: WorkflowCampaignStatus,
-) -> bool:
-    lowered = label.lower()
-    if "frame" in lowered:
-        return "brief" in kinds or "plan" in kinds
-    if "explore" in lowered or "evidence" in lowered:
-        return "note" in kinds or "sources" in kinds
-    if "challenge" in lowered or "critique" in lowered:
-        return "critique" in kinds
-    if "synth" in lowered:
-        return "analysis" in kinds or "final" in kinds
-    if "curate" in lowered:
-        return "learnings" in kinds or "followups" in kinds
-    if "publish" in lowered:
-        return "manifest" in kinds
-    if "complete" in lowered:
-        return status == WorkflowCampaignStatus.COMPLETED
-    return False
+    available_paths = {artifact.path for artifact in artifacts}
+    claims = _stage_artifact_claims(stages)
+    completed: set[str] = set()
+    for stage in stages:
+        if stage.artifact_paths:
+            required = {path.replace("{slug}", slug) for path in stage.artifact_paths}
+            met = bool(slug) and required <= available_paths
+        elif stage.dispatches_subworkflows:
+            met = _subworkflow_joined(stage, execution)
+        else:
+            met = bool(claims.get(stage.id, frozenset()) & available_kinds)
+            if not met and status == WorkflowCampaignStatus.COMPLETED:
+                met = "complete" in stage.label.lower()
+        if met:
+            completed.add(stage.id)
+    campaign_metadata = metadata or {}
+    return render_stage_state(
+        stages,
+        completed,
+        status=status,
+        previous=previous,
+        now=datetime.now(UTC),
+        failed_stage_id=str(campaign_metadata.get(FAILURE_STAGE_KEY) or "") or None,
+        failure_reason=str(campaign_metadata.get(FAILURE_ERROR_KEY) or "") or None,
+    )
 
 
 def _active_stage_id(stage_state: list[CampaignStageState]) -> str | None:

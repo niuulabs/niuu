@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import pytest
 
-from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
+from ting.domain.models import CampaignStageState, WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.workflow_campaign_lifecycle import TERMINAL_SESSION_STOPPED_KEY
 from ting.domain.services.workflow_campaign_projector import (
     WorkflowCampaignProjector,
@@ -621,3 +621,111 @@ class TestConnectionAffinity:
 
         assert factory.connection_calls == []
         assert factory.primary_calls == 1
+
+
+def _staged_campaign() -> WorkflowCampaign:
+    """A running campaign on a two-stage graph, framed and now coordinating."""
+    return replace(
+        _campaign(),
+        workflow_snapshot={
+            "graph": {
+                "nodes": [
+                    {
+                        "id": "research-frame",
+                        "kind": "stage",
+                        "label": "Frame the inquiry",
+                        "stageMembers": [{"personaId": "research-framer"}],
+                    },
+                    {
+                        "id": "research-coordinate",
+                        "kind": "stage",
+                        "label": "Define and dispatch exploration threads",
+                        "stageMembers": [{"personaId": "kvm-research-coordinator"}],
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "research-frame", "target": "research-coordinate"}
+                ],
+            }
+        },
+        active_stage_id="research-coordinate",
+        stage_state=[
+            CampaignStageState(
+                stage_id="research-frame", label="Frame the inquiry", status="complete"
+            ),
+            CampaignStageState(
+                stage_id="research-coordinate",
+                label="Define and dispatch exploration threads",
+                status="active",
+            ),
+        ],
+    )
+
+
+_SETUP_CRASH = (
+    "RuntimeError: Persona requires durable workflow execution tools, but an "
+    "owner-bound workflow_execution runtime context is not configured"
+)
+
+
+@pytest.mark.asyncio
+async def test_peer_failure_fails_the_campaign_and_records_the_failed_stage() -> None:
+    """A stage whose Ravn crashed fails the campaign and says which stage and why."""
+    adapter = _Adapter()
+    campaign = _staged_campaign()
+    projector, repo, event_bus = _projector(adapter)
+    repo.get_active_campaign_by_session.return_value = campaign
+
+    await projector.handle_activity(
+        ActivityEvent(
+            session_id=campaign.session_id,
+            state="error",
+            metadata={
+                "failure_source": "ravn_flock",
+                "failure_peer_id": "flock-kvm-research-coordinator",
+                "failure_persona": "kvm-research-coordinator",
+                "failure_workflow_node_id": "research-coordinate",
+                "failure_task_id": "event_research_coordinate_fe4ae2efb1c879c7",
+                "error": _SETUP_CRASH,
+            },
+            owner_id=campaign.owner_id,
+        ),
+        campaign.owner_id,
+    )
+
+    failed = repo.save_campaign.await_args_list[0].args[0]
+    assert failed.status == WorkflowCampaignStatus.FAILED
+    assert failed.metadata["failure_error"] == _SETUP_CRASH
+    assert failed.metadata["failure_stage_id"] == "research-coordinate"
+    assert failed.metadata["failure_task_id"] == "event_research_coordinate_fe4ae2efb1c879c7"
+    assert failed.active_stage_id == "research-coordinate"
+    assert [(stage.stage_id, stage.status) for stage in failed.stage_state] == [
+        ("research-frame", "complete"),
+        ("research-coordinate", "failed"),
+    ]
+    assert failed.stage_state[1].reason == _SETUP_CRASH
+    emitted = event_bus.emit.await_args_list[0].args[0]
+    assert emitted.event == "workflow.campaign.failed"
+    assert emitted.data["error"] == _SETUP_CRASH
+    assert emitted.data["failed_stage_id"] == "research-coordinate"
+
+
+@pytest.mark.asyncio
+async def test_reconnect_attributes_a_missed_peer_failure_by_persona() -> None:
+    adapter = _Adapter(
+        session_status="running",
+        activity_state="error",
+        activity_metadata={
+            "failure_source": "ravn_flock",
+            "failure_persona": "kvm-research-coordinator",
+            "error": _SETUP_CRASH,
+        },
+    )
+    projector, repo, _ = _projector(adapter)
+
+    await projector._refresh_campaign(_staged_campaign())
+
+    failed = repo.save_campaign.await_args_list[0].args[0]
+    assert failed.status == WorkflowCampaignStatus.FAILED
+    assert failed.metadata["failure_stage_id"] == "research-coordinate"
+    assert failed.stage_state[1].status == "failed"

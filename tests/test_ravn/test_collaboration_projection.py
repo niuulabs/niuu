@@ -68,6 +68,27 @@ def test_error_projection_preserves_failure_kind() -> None:
     assert projected["failureKind"] == "LLMError"
 
 
+def test_error_projection_names_the_failing_workflow_node() -> None:
+    event = RavnEvent.error(
+        source="ravn-1",
+        message="RuntimeError: Persona requires durable workflow execution tools",
+        correlation_id="task-1",
+        session_id="session-1",
+        failure_kind="RuntimeError",
+    )
+    event.payload["workflow_node_id"] = "research-coordinate"
+    event.payload["persona"] = "research-coordinator"
+
+    projected = project_ravn_event(event)[0]
+
+    assert projected["error"] is True
+    assert projected["metadata"] == {
+        "workflow_node_id": "research-coordinate",
+        "persona": "research-coordinator",
+        "failure_kind": "RuntimeError",
+    }
+
+
 def test_tool_projection_exposes_activity_and_delegation_without_skuld_logic() -> None:
     projected = project_ravn_event(
         _event(

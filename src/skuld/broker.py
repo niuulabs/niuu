@@ -2991,6 +2991,21 @@ class Broker(
             "failure_persona": persona,
             "error": error,
         }
+        # The workflow node and task the peer was running when it failed, so
+        # Ting can record which stage failed rather than only which peer.
+        frame_metadata = frame.get("metadata")
+        if isinstance(frame_metadata, dict):
+            node_id = str(frame_metadata.get("workflow_node_id") or "").strip()
+            if node_id:
+                extra_metadata["failure_workflow_node_id"] = node_id
+            if not persona:
+                extra_metadata["failure_persona"] = str(frame_metadata.get("persona") or "").strip()
+            failure_kind = str(frame_metadata.get("failure_kind") or "").strip()
+            if failure_kind:
+                extra_metadata["failure_kind"] = failure_kind
+        task_id = str(frame.get("task_id") or "").strip()
+        if task_id:
+            extra_metadata["failure_task_id"] = task_id
 
         if await self._report_activity_state("error", extra_metadata=extra_metadata):
             self._flock_failure_reported = True

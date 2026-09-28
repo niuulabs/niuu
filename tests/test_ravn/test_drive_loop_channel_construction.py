@@ -7,6 +7,7 @@ correctly when mesh is not available.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -596,3 +597,90 @@ Determine whether the observations require action.
 
         published_topics = [call.kwargs.get("topic") for call in dl._mesh.publish.await_args_list]
         assert "code.changed" not in published_topics
+
+
+class TestDriveLoopSetupFailure:
+    """A task that dies before its model turn must still report a terminal failure.
+
+    Seen live: a research coordinator whose persona needs durable workflow
+    execution tools raised while its agent was being built. The exception
+    escaped as "crashed before completion handling", nothing was published,
+    and the workflow campaign stayed "running" for hours with nothing running.
+    """
+
+    @staticmethod
+    def _failing_loop() -> DriveLoop:
+        dl, _ = _make_drive_loop_with_mesh(cascade_enabled=False)
+
+        def _agent_factory(channel, task_id, persona, triggered_by):
+            raise RuntimeError(
+                "Persona requires durable workflow execution tools, but an owner-bound "
+                "workflow_execution runtime context is not configured"
+            )
+
+        dl._agent_factory = _agent_factory
+        dl._mesh = AsyncMock()
+        dl._sleipnir_publisher = AsyncMock()
+        return dl
+
+    @staticmethod
+    def _coordinator_task() -> AgentTask:
+        return AgentTask(
+            task_id="event_research_coordinate_fe4ae2efb1c879c7",
+            title="Handle mesh:outcome:research.framed",
+            initiative_context="framed",
+            triggered_by="mesh:outcome:research.framed",
+            output_mode=OutputMode.AMBIENT,
+            persona="research-coordinator",
+            workflow_node_id="research-coordinate",
+        )
+
+    @pytest.mark.asyncio
+    async def test_setup_failure_publishes_error_naming_the_workflow_node(self):
+        dl = self._failing_loop()
+
+        outcome = await dl._run_task(self._coordinator_task())
+        await asyncio.sleep(0)  # MeshActivityChannel publishes detached
+        await asyncio.sleep(0)
+
+        assert outcome == "error"
+        activity = [
+            call.args[0]
+            for call in dl._mesh.publish.await_args_list
+            if call.kwargs.get("topic") == "activity.ravn-peer"
+        ]
+        error = next(event for event in activity if event.type == "error")
+        assert "durable workflow execution tools" in error.payload["message"]
+        assert error.payload["failure_kind"] == "RuntimeError"
+        assert error.payload["workflow_node_id"] == "research-coordinate"
+        assert error.payload["persona"] == "research-coordinator"
+        complete = next(event for event in activity if event.type == "task_complete")
+        assert complete.payload["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_setup_failure_emits_task_completed_error(self):
+        dl = self._failing_loop()
+
+        await dl._run_task(self._coordinator_task())
+
+        published = [call.args[0] for call in dl._sleipnir_publisher.publish.await_args_list]
+        completed = [event for event in published if event.event_type == "ravn.task.completed"]
+        assert len(completed) == 1
+        assert completed[0].payload["outcome"] == "error"
+        assert completed[0].payload["workflow_node_id"] == "research-coordinate"
+
+    @pytest.mark.asyncio
+    async def test_setup_failure_no_longer_escapes_as_a_crash(self, caplog):
+        dl = self._failing_loop()
+        task = self._coordinator_task()
+
+        with caplog.at_level(logging.ERROR, logger="ravn.drive_loop"):
+            finished = asyncio.create_task(dl._run_task(task))
+            await asyncio.gather(finished, return_exceptions=True)
+            dl._on_task_done(task.task_id, finished)
+
+        assert finished.result() == "error"
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("failed during setup: RuntimeError" in message for message in messages)
+        assert not any("crashed before completion handling" in message for message in messages)
