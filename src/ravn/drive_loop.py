@@ -2749,6 +2749,106 @@ class DriveLoop:
             root_correlation_id=root_corr,
         )
 
+    def _external_task_channel(self, task: AgentTask) -> ChannelPort | None:
+        """Return the outward channel a task's live events travel on, if any.
+
+        Ambient work speaks on the mesh activity topic; presented work goes to
+        Skuld when attached, else to the mesh. Silent work has no outward
+        channel.
+        """
+        peer_id = self._settings.mesh.own_peer_id if self._settings.mesh.enabled else ""
+        if task.output_mode == OutputMode.AMBIENT:
+            if self._mesh is not None and peer_id:
+                return self._wrap_activity_channel(MeshActivityChannel(self._mesh, peer_id), task)
+            return None
+        if task.output_mode in {
+            OutputMode.PRESENT,
+            OutputMode.URGENT,
+            OutputMode.SURFACE,
+        }:
+            if self._skuld_channel is not None:
+                self._skuld_channel._persona = task.persona
+                return self._wrap_activity_channel(self._skuld_channel, task)
+            if self._mesh is not None and peer_id:
+                return self._wrap_activity_channel(MeshActivityChannel(self._mesh, peer_id), task)
+        return None
+
+    def _task_error_event(self, task: AgentTask, exc: Exception) -> RavnEvent:
+        """Build the terminal error event for a failed task.
+
+        Carries the workflow node the task was running so whoever turns the
+        error into a workflow failure can say which stage failed.
+        """
+        event = RavnEvent.error(
+            source=self._source_id,
+            message=self._format_task_error(task, exc),
+            correlation_id=task.task_id,
+            session_id=task.session_id or task.task_id,
+            task_id=task.task_id,
+            failure_kind=type(exc).__name__,
+        )
+        if task.workflow_node_id:
+            event.payload["workflow_node_id"] = task.workflow_node_id
+        if task.persona:
+            event.payload["persona"] = task.persona
+        return event
+
+    async def _report_task_failure(
+        self,
+        task: AgentTask,
+        exc: Exception,
+        *,
+        channel: ChannelPort | None = None,
+    ) -> None:
+        """Publish a task failure that happened outside the model turn.
+
+        Mirrors what a failed turn publishes — the error on the task's live
+        channel (Skuld turns a peer error into a failed workflow), a failed
+        ``TASK_COMPLETE``, and ``ravn.task.completed`` with outcome ``error``
+        — so a task that dies during setup is as visible as one whose model
+        call failed. Best-effort: reporting must never raise.
+        """
+        reason = f"{type(exc).__name__}: {exc}"
+        try:
+            self._result_store.set_failure(task.task_id, reason)
+        except Exception:
+            logger.warning("drive_loop: could not record task failure", exc_info=True)
+        target = channel if channel is not None else self._external_task_channel(task)
+        if target is not None:
+            try:
+                await target.emit(self._task_error_event(task, exc))
+                await target.emit(
+                    RavnEvent.task_complete(
+                        source=self._source_id,
+                        success=False,
+                        correlation_id=task.task_id,
+                        session_id=task.session_id or task.task_id,
+                        task_id=task.task_id,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "drive_loop: failed to publish failure of task %s",
+                    task.task_id,
+                    exc_info=True,
+                )
+        try:
+            await self._event_publisher.publish(
+                RavnEvent(
+                    type=RavnEventType.TASK_COMPLETE,
+                    source=self._source_id,
+                    payload={"task_id": task.task_id, "success": False, "error": reason},
+                    timestamp=datetime.now(UTC),
+                    urgency=0.7,
+                    correlation_id=task.task_id,
+                    session_id=task.session_id,
+                    task_id=task.task_id,
+                )
+            )
+        except Exception:
+            logger.warning("drive_loop: failed to publish TASK_COMPLETE", exc_info=True)
+        await self._emit_sleipnir_task_completed(task, "error")
+
     def _retrieval_reflex_injector(self) -> ReflexInjector | None:
         """Lazily build the retrieval reflex injector from mimir.reflex config."""
         if self._reflex_initialised:
@@ -2940,6 +3040,10 @@ class DriveLoop:
             await self._emit_sleipnir_task_dropped(task, reason="budget_cap_reached")
             return "budget_dropped"
 
+        # The channel the task would have spoken on, kept outside the setup
+        # ``try`` so a setup failure can still be reported on it.
+        setup_channel: ChannelPort | None = None
+        setup_agent: object | None = None
         try:
             telemetry.event(
                 "ravn.task.lifecycle",
@@ -2949,26 +3053,8 @@ class DriveLoop:
             # Residents with cascade enabled already capture bounded activity;
             # do not change channel behaviour merely to feed the HUD.
             capture_channel: CaptureChannel | None = None
-            peer_id = self._settings.mesh.own_peer_id if self._settings.mesh.enabled else ""
             logger.info("drive_loop: task %s setting up channels", task.task_id)
-            external_channel: ChannelPort | None = None
-            if task.output_mode == OutputMode.AMBIENT:
-                if self._mesh is not None and peer_id:
-                    external_channel = self._wrap_activity_channel(
-                        MeshActivityChannel(self._mesh, peer_id), task
-                    )
-            elif task.output_mode in {
-                OutputMode.PRESENT,
-                OutputMode.URGENT,
-                OutputMode.SURFACE,
-            }:
-                if self._skuld_channel is not None:
-                    self._skuld_channel._persona = task.persona
-                    external_channel = self._wrap_activity_channel(self._skuld_channel, task)
-                elif self._mesh is not None and peer_id:
-                    external_channel = self._wrap_activity_channel(
-                        MeshActivityChannel(self._mesh, peer_id), task
-                    )
+            external_channel = self._external_task_channel(task)
 
             if self._settings.cascade.enabled:
                 http_config = self._settings.gateway.channels.http
@@ -2995,8 +3081,10 @@ class DriveLoop:
                     channel = capture_channel
             else:
                 channel = external_channel or SilentChannel()
+            setup_channel = channel
             logger.info("drive_loop: task %s building agent", task.task_id)
             agent = self._agent_factory(channel, task.task_id, task.persona, task.triggered_by)
+            setup_agent = agent
             telemetry.event(
                 "ravn.task.lifecycle",
                 attributes={
@@ -3050,8 +3138,41 @@ class DriveLoop:
             )
             logger.info("drive_loop: task %s setup complete", task.task_id)
         except Exception as exc:
-            logger.error("drive_loop: task %s failed during setup: %s", task.task_id, exc)
-            raise
+            logger.error(
+                "drive_loop: task %s failed during setup: %s: %s",
+                task.task_id,
+                type(exc).__name__,
+                exc,
+            )
+            telemetry.event(
+                "ravn.task.lifecycle",
+                attributes={
+                    "ravn.task.phase": "setup_failed",
+                    "error.type": type(exc).__name__,
+                },
+                content=str(exc),
+            )
+            # A task that cannot even be set up (e.g. a persona whose required
+            # runtime context is missing) is a terminal failure of this turn.
+            # Report it exactly like a failed model turn so Skuld marks the
+            # workflow failed; re-raising left it logged as "crashed before
+            # completion handling" and nothing downstream ever heard of it.
+            await self._report_task_failure(task, exc, channel=setup_channel)
+            if self._resident_runtime is not None:
+                release = getattr(self._resident_runtime, "release_failed_task", None)
+                if release is not None:
+                    release(task)
+            close_agent = getattr(setup_agent, "close", None)
+            if close_agent is not None and inspect.iscoroutinefunction(close_agent):
+                try:
+                    await close_agent()
+                except Exception:
+                    logger.warning(
+                        "drive_loop: failed to close agent for task %s",
+                        task.task_id,
+                        exc_info=True,
+                    )
+            return "error"
 
         logger.info(
             "drive_loop: executing task %s (%r) triggered_by=%r",
@@ -3282,16 +3403,7 @@ class DriveLoop:
                     task.task_id,
                     f"{type(exc).__name__}: {exc}",
                 )
-                await channel.emit(
-                    RavnEvent.error(
-                        source=self._source_id,
-                        message=self._format_task_error(task, exc),
-                        correlation_id=task.task_id,
-                        session_id=task.session_id or task.task_id,
-                        task_id=task.task_id,
-                        failure_kind=type(exc).__name__,
-                    )
-                )
+                await channel.emit(self._task_error_event(task, exc))
 
             if success:
                 success = await self._emit_mesh_outcome_event(

@@ -7,7 +7,8 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 from niuu.domain.models import Principal
-from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
+from ting.domain.campaign_stages import FAILURE_STAGE_KEY, record_runtime_failure
+from ting.domain.models import CampaignStageState, WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.workflow_campaign_lifecycle import (
     stop_terminal_campaign_session,
     terminal_session_cleanup_needed,
@@ -93,11 +94,7 @@ class WorkflowCampaignProjector:
             error = str(event.metadata.get("error") or event.metadata.get("message") or "").strip()
             if not error:
                 error = f"Session {event.session_status or event.state or 'failed'}"
-            await self._save_transition(
-                campaign,
-                WorkflowCampaignStatus.FAILED,
-                failure_error=error,
-            )
+            await self._save_failure(campaign, {**event.metadata, "error": error})
         elif delivery is not None:
             await self._save_transition(
                 campaign,
@@ -208,16 +205,13 @@ class WorkflowCampaignProjector:
         ):
             next_status = WorkflowCampaignStatus.BLOCKED
 
-        failure_error = ""
         if next_status == WorkflowCampaignStatus.FAILED:
-            failure_error = str(
-                activity_metadata.get("error") or activity_metadata.get("message") or ""
-            ).strip()
+            await self._save_failure(campaign, activity_metadata, session_name=session.name)
+            return
         await self._save_transition(
             campaign,
             next_status,
             session_name=session.name,
-            failure_error=failure_error,
             metadata=_with_delivery(campaign, activity_metadata),
         )
 
@@ -278,6 +272,26 @@ class WorkflowCampaignProjector:
             )
             return False
 
+    async def _save_failure(
+        self,
+        campaign: WorkflowCampaign,
+        activity_metadata: dict,
+        *,
+        session_name: str | None = None,
+    ) -> None:
+        """Fail a campaign, recording the error and the stage it failed in."""
+        metadata, stage_state, active_stage_id = record_runtime_failure(
+            campaign, activity_metadata, now=datetime.now(UTC)
+        )
+        await self._save_transition(
+            campaign,
+            WorkflowCampaignStatus.FAILED,
+            session_name=session_name,
+            metadata=metadata,
+            stage_state=stage_state,
+            active_stage_id=active_stage_id,
+        )
+
     async def _save_transition(
         self,
         campaign: WorkflowCampaign,
@@ -286,6 +300,7 @@ class WorkflowCampaignProjector:
         session_name: str | None = None,
         failure_error: str = "",
         metadata: dict | None = None,
+        stage_state: list[CampaignStageState] | None = None,
         active_stage_id: str | None = None,
         force: bool = False,
     ) -> None:
@@ -303,6 +318,7 @@ class WorkflowCampaignProjector:
                 session_name=resolved_name,
                 status=next_status,
                 metadata=resolved_metadata,
+                stage_state=stage_state if stage_state is not None else campaign.stage_state,
                 active_stage_id=(
                     active_stage_id if active_stage_id is not None else campaign.active_stage_id
                 ),
@@ -337,6 +353,12 @@ class WorkflowCampaignProjector:
                         **(
                             {"error": str(saved.metadata["failure_error"])}
                             if saved.metadata.get("failure_error")
+                            else {}
+                        ),
+                        **(
+                            {"failed_stage_id": str(saved.metadata[FAILURE_STAGE_KEY])}
+                            if next_status == WorkflowCampaignStatus.FAILED
+                            and saved.metadata.get(FAILURE_STAGE_KEY)
                             else {}
                         ),
                     },

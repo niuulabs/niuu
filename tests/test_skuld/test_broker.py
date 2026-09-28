@@ -1791,6 +1791,46 @@ class TestBroker:
         )
 
     @pytest.mark.asyncio
+    async def test_peer_error_failure_names_the_failing_workflow_node(self, test_broker):
+        """A peer that dies during setup reports its node, so Ting can fail that stage."""
+        test_broker._room_bridge = MagicMock()
+        test_broker._room_bridge.participants = {}
+        test_broker._report_activity_state = AsyncMock(return_value=True)
+        test_broker._finish_trace_span = AsyncMock()
+        test_broker._is_room_only_workflow_session = MagicMock(return_value=True)
+
+        error = (
+            "RuntimeError: Persona requires durable workflow execution tools, but an "
+            "owner-bound workflow_execution runtime context is not configured"
+        )
+        await test_broker._observe_room_peer_event(
+            "flock-kvm-research-coordinator",
+            "error",
+            {
+                "task_id": "event_research_coordinate_fe4ae2efb1c879c7",
+                "data": error,
+                "metadata": {
+                    "workflow_node_id": "research-coordinate",
+                    "persona": "kvm-research-coordinator",
+                    "failure_kind": "RuntimeError",
+                },
+            },
+        )
+
+        test_broker._report_activity_state.assert_awaited_once_with(
+            "error",
+            extra_metadata={
+                "failure_source": "ravn_flock",
+                "failure_peer_id": "flock-kvm-research-coordinator",
+                "failure_persona": "kvm-research-coordinator",
+                "error": error,
+                "failure_workflow_node_id": "research-coordinate",
+                "failure_kind": "RuntimeError",
+                "failure_task_id": "event_research_coordinate_fe4ae2efb1c879c7",
+            },
+        )
+
+    @pytest.mark.asyncio
     async def test_peer_git_checkpoint_signals_increment_artifacts(self, test_broker):
         test_broker._room_bridge = MagicMock()
 
