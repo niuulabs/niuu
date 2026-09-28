@@ -1,4 +1,4 @@
-FROM node:22-slim@sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9 AS fetch
+FROM node:22-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS fetch
 
 LABEL org.opencontainers.image.title="vscode-reh"
 LABEL org.opencontainers.image.description="VS Code Remote Extension Host server for Skuld session pods"
@@ -36,7 +36,7 @@ RUN chmod +x ./download-reh.sh && \
 # ---------------------------------------------------------------------------
 # Runtime — minimal image with just the REH binary
 # ---------------------------------------------------------------------------
-FROM ubuntu:24.04@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c
+FROM ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3
 
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
