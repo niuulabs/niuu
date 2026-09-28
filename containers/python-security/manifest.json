@@ -1,0 +1,68 @@
+{
+  "python_version": "3.14.7",
+  "source_sha256": "23794c71dc5aa636ef2f6774270c3d48f755afaaa474fd3e0d49de8292b69dbb",
+  "patches": [
+    {
+      "commit": "b234a2b67539f787e191d2ef19a7cbdce32874e7",
+      "sha256": "606aa1bd8124cb0d777744dfe1a89d1ba983638115372cc508f4ed4a154f3abf"
+    },
+    {
+      "commit": "1e54caa096678a38afcabecabb1ff72400dd6bae",
+      "sha256": "2da4d53aff7fbbfe0f96407fa1155a8ef2dbfe61cc2d480ab760d4b3703cf512"
+    },
+    {
+      "commit": "a0d023fbd23773e24b35d8368789470e22cda5d8",
+      "sha256": "9b36c1556c675de473544f1dac0857e3965dbc1a0fbd99c7e33b0f7850615480"
+    },
+    {
+      "commit": "31980e84b9a708424a0a1dfecde3fc991e313f89",
+      "sha256": "2218c13228c584b1977a1532c019b5fff665e6175057d2fbc129d78f547cdc11"
+    },
+    {
+      "commit": "9d167992b59cf5e23c66b9ed742b13f5925f7d70",
+      "sha256": "7d7a9e390fdbf50f089eb89b44dfde1eb724af8ace861fc72cd798ecb4f16988"
+    },
+    {
+      "commit": "16dea1e887ec7dfbed735beedd476b21dcc91a79",
+      "sha256": "bb5a3720da1ca65a9707a398b3e5b4007a4c8c697a4165ba9ca03412bb004fc4"
+    },
+    {
+      "commit": "fb2f0bbc3b35264f09cc2cb2934b7987527a6bc2",
+      "sha256": "49e6ab509b0c9f95da75c8d66356a8764f98cf263756e7a3cd8c1358756d8172"
+    },
+    {
+      "commit": "d9565e54b1fc6d63c5be9afd58114499128fa57b",
+      "sha256": "ede4540f744d6c6fdf5d1a8f299f1f78461433013a6e2333ea170340dc631ffd"
+    }
+  ],
+  "files": {
+    "poplib.py": {
+      "original": "527e714523264093910a0a0b1a55c6583f952835c89061537fc40ad98c347056",
+      "patched": "a6ffff188814b56d95b043c31d9e0dfee51ac6d6e92afe74ab070cb6136b076f"
+    },
+    "stringprep.py": {
+      "original": "60b6c83581093029312efb6670b11c540090b3f78bcf72264467b494f02f21a5",
+      "patched": "52618dbafb21fac84147d4241a364b08d1f0d803806cb86e4fcb921c200c754d"
+    },
+    "urllib/request.py": {
+      "original": "f3464032de00c1fbc839f4657577065ea6efb30d99e5a86e204b1aefdcb77430",
+      "patched": "48fcaa1b047f09f53abf37a36184686a96d56ddaacc63ae6f9ebe9db1827f784"
+    },
+    "zipfile/__init__.py": {
+      "original": "adb6f48ee990b42cabfc665d910992c5a30cee31d5d50d846e18e0e45c6a3f31",
+      "patched": "0e39a3dce18037f350f4d65dfc684c03a68d91bd75fcb1b03568e4d032b296a2"
+    },
+    "tarfile.py": {
+      "original": "3c8d585a77d7d376aea66e5e11a4d53c2605100d4c05a71b5385ed54bc526f51",
+      "patched": "1390f6ad4683892ca2ca2a8dc60db44419cbcf3aea0043626095e960b18dff72"
+    }
+  },
+  "cves": [
+    "CVE-2025-15367",
+    "CVE-2026-17084",
+    "CVE-2026-15806",
+    "CVE-2026-15310",
+    "CVE-2026-19672",
+    "CVE-2026-87910"
+  ]
+}

@@ -92,13 +92,13 @@ jobs:
               web_changed = matches(r"^web-next/")
               helm_changed = matches(r"^charts/")
               container_triggers = {
-                  "agent": r"^containers/agent/|^(src/|pyproject\.toml$|uv\.lock$)",
+                  "agent": r"^containers/(agent|python-security)/|^(src/|pyproject\.toml$|uv\.lock$)",
                   "skuld": r"^containers/skuld/|^(src/|pyproject\.toml$|uv\.lock$)",
-                  "openshell": r"^containers/openshell/|^(src/|pyproject\.toml$|uv\.lock$)",
-                  "devrunner": r"^containers/devrunner/",
+                  "openshell": r"^containers/(openshell|python-security)/|^(src/|pyproject\.toml$|uv\.lock$)",
+                  "devrunner": r"^containers/(devrunner|python-security)/",
                   "gbrain": r"^containers/gbrain/",
                   "niuu-web": r"^containers/niuu-web/|^web-next/",
-                  "niuu": r"^containers/niuu/|^tests/(container/|test_bifrost/|conftest\.py$|__init__\.py$)|^(src/|pyproject\.toml$|uv\.lock$|examples/bifrost-pi\.yaml$)",
+                  "niuu": r"^containers/(niuu|python-security)/|^tests/(container/|test_bifrost/|conftest\.py$|__init__\.py$)|^(src/|pyproject\.toml$|uv\.lock$|examples/bifrost-pi\.yaml$)",
               }
               container_names = [
                   name for name, pattern in container_triggers.items() if matches(pattern)

@@ -16,10 +16,12 @@ No alerts were dismissed or scanning rules disabled.
 GitHub must rebuild and scan the merged images before the container alerts can
 be confirmed closed. The local environment has no running Docker daemon.
 
-## Upstream Python blockers
+## Python stdlib backports
 
-These 16 alerts remain unresolved; no prerelease runtime migration or local
-CPython fork was introduced to hide them.
+The following 16 version-based alerts represent four CVEs across four images.
+A stable release upgrade could not resolve them, so the follow-up remediation
+backports the upstream fixes into Python 3.14.7 without changing its ABI or
+reported version.
 
 | CVE | niuu | agent | devrunner | openshell |
 | --- | --- | --- | --- | --- |
@@ -28,19 +30,23 @@ CPython fork was introduced to hide them.
 | CVE-2025-15367 | 2488 | 2544 | 2602 | 2652 |
 | CVE-2026-15310 | 2489 | 2545 | 2629 | 2653 |
 
-The images contain Python 3.14.7. The published vulnerability records name
-3.15.0rc2 as the fixed version for the three 2026 CVEs, and 3.15.0a6 for
-CVE-2025-15367. Python 3.14.8 is not released as of this inventory. The 3.14
-branch has upstream patches for the three 2026 issues, but those are not yet
-in the stable runtime being distributed.
+The implementation in `containers/python-security/` checks the original and
+patched module hashes, applies eight exact upstream patches (including the ZIP
+compatibility follow-up), runs the six affected CPython test suites, and
+installs only five patched stdlib modules in niuu, agent, devrunner and openshell.
+The patch inventory and behavioral compatibility details are documented there.
 
-Switching to an older Debian runtime does not eliminate all four findings:
-[Debian's CVE-2025-15367 tracker](https://security-tracker.debian.org/tracker/CVE-2025-15367)
-explicitly records that the POP3 command-validation change was not backported
-to older Python releases because of compatibility concerns. Both maintained
-3.13 and 3.14 packages are still marked vulnerable. A production migration
-to a release candidate requires a separate runtime compatibility decision;
-it is not an appropriate automatic dependency patch.
+Local proof: all patches apply cleanly to the checksum-pinned 3.14.7 source;
+1,651 upstream tests pass (29 skipped). The runtime exploit regressions fail on
+the unpatched interpreter and pass after installation. Image builds run the
+same tests before publication.
+
+Grype still sees the real 3.14.7 version. Scan jobs verify hashes and exploit
+regressions inside the exact image digest, without networking, before issuing
+OpenVEX `fixed` statements limited to the six verified CVEs and that verified Python
+component. Raw and filtered scan reports, verification evidence and VEX are
+retained together. No finding is waived based merely on its version or assumed
+lack of exposure; no failed verification can produce a fixed statement.
 
 Upstream records:
 
@@ -48,3 +54,12 @@ Upstream records:
 - [CVE-2026-15806: HTTPPasswordMgr credential scope](https://github.com/advisories/GHSA-2v69-2w5x-455j)
 - [CVE-2025-15367: POP3 command injection](https://github.com/advisories/GHSA-g82h-mgfp-jx8g)
 - [CVE-2026-15310: unbounded ZIP decompression](https://github.com/advisories/GHSA-xj79-6hh5-9w6q)
+
+Two further medium-severity tarfile flaws were discovered in unfiltered Grype
+output: CVE-2026-19672 (empty directories outside an extraction destination,
+CVSS 6.3) and CVE-2026-87910 (link fallback ignores a filter rejection, CVSS 5.7).
+The same backport bundle fixes both, with their upstream tarfile regression
+suite and installed-runtime regression checks. Raw scanner output is now retained
+without `--only-fixed`; actionable SARIF retains that pre-existing policy.
+The OpenVEX document records all six verified fixes. These image changes do not
+update Python on external SSH VM hosts.
