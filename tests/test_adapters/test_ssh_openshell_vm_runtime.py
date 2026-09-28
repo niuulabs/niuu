@@ -908,7 +908,10 @@ def test_stop_waits_for_authoritative_absence_before_provider_cleanup(tmp_path: 
         " sys.exit(0)\n"
         "if args[:2]==['sandbox','list']:\n"
         " n=int(count.read_text()) if count.exists() else 0\n"
-        " count.write_text(str(n+1))\n"
+        # Timeout may kill this fake CLI mid-write; preserve the previous count.
+        " pending=count.with_suffix('.tmp')\n"
+        " pending.write_text(str(n+1))\n"
+        " pending.replace(count)\n"
         " if mode=='stuck-inventory' or (n==0 and mode=='inventory-timeout'): time.sleep(10)\n"
         " if n==0 and mode=='transport':\n"
         "  print('connection refused sensitive',file=sys.stderr); sys.exit(1)\n"
