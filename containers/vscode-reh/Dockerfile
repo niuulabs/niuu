@@ -1,4 +1,4 @@
-FROM node:22-slim@sha256:80fdb3f57c815e1b638d221f30a826823467c4a56c8f6a8d7aa091cd9b1675ea AS fetch
+FROM node:22-slim@sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9 AS fetch
 
 LABEL org.opencontainers.image.title="vscode-reh"
 LABEL org.opencontainers.image.description="VS Code Remote Extension Host server for Skuld session pods"
