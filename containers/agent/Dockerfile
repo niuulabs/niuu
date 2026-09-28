@@ -1,3 +1,9 @@
+# Security fixes awaiting stable CPython releases; no interpreter ABI changes.
+FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm@sha256:9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f AS python-security
+COPY containers/python-security/ /security/
+RUN apt-get update && apt-get install -y --no-install-recommends patch \
+    && python /security/build.py
+
 FROM python:3.14-slim-bookworm@sha256:9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f AS builder
 
 ARG TARGETARCH
@@ -31,6 +37,10 @@ COPY vendor/ /app/vendor/
 RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats
 
 FROM python:3.14-slim-bookworm@sha256:9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f
+
+RUN --mount=type=bind,from=python-security,source=/patched-stdlib,target=/patched-stdlib \
+    --mount=type=bind,source=containers/python-security,target=/security \
+    python /security/install.py /patched-stdlib && python /security/verify.py
 
 # CI passes the UTC date, so the registry layer cache cannot keep this upgrade
 # (and the security fixes it pulls) for more than a day.

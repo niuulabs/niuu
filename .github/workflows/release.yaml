@@ -223,7 +223,7 @@ jobs:
 
       - name: Install Grype
         env:
-          GRYPE_VERSION: "0.87.0"
+          GRYPE_VERSION: "0.118.0"
         run: |
           set -euo pipefail
 
@@ -249,11 +249,20 @@ jobs:
           grype version
 
       - name: Scan container with Grype
-        run: |
-          grype "${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.container }}:${{ needs.version.outputs.version }}" \
-            --only-fixed \
-            --fail-on critical \
-            -o sarif > "grype-${{ matrix.container }}.sarif"
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.container }}:${{ needs.version.outputs.version }}
+          CONTAINER: ${{ matrix.container }}
+        run: bash containers/python-security/scan.sh "$IMAGE" "$CONTAINER"
+
+      - name: Preserve scan and backport evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: security-evidence-${{ matrix.container }}
+          path: |
+            grype-${{ matrix.container }}-*.json
+            python-security-${{ matrix.container }}*.json
+          retention-days: 30
 
       - name: Detect Grype results
         id: sarif

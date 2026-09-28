@@ -1,3 +1,9 @@
+# Security fixes awaiting stable CPython releases; no interpreter ABI changes.
+FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm@sha256:9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f AS python-security
+COPY containers/python-security/ /security/
+RUN apt-get update && apt-get install -y --no-install-recommends patch \
+    && python /security/build.py
+
 FROM ghcr.io/astral-sh/uv:0.12.13@sha256:b485bd65cc2cf1c9a93b3554012c9c3778cf7b1b5fd3d3096ce9e1226c97e1e6 AS uv
 
 FROM ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:aeef1c63f00e2913ea002ccb3aaf925f338b5c5d70e63576f0d95c16a138044e AS base
@@ -20,6 +26,10 @@ RUN apt-get update && apt-get upgrade -y \
     && sed -i 's/3.14.3/3.14.7/g' /sandbox/.venv/pyvenv.cfg \
     && UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python uv python uninstall 3.14.3 \
     && uv pip install --python /sandbox/.venv/bin/python pip==26.2.1
+
+RUN --mount=type=bind,from=python-security,source=/patched-stdlib,target=/patched-stdlib \
+    --mount=type=bind,source=containers/python-security,target=/security \
+    python /security/install.py /patched-stdlib && python /security/verify.py
 
 COPY containers/node/npm-bootstrap/package.json containers/node/npm-bootstrap/package-lock.json /opt/npm-bootstrap/
 RUN cd /opt/npm-bootstrap && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
