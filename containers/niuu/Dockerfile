@@ -1,6 +1,6 @@
 # Compose's published v5.5.1 binary embeds vulnerable containerd v2.3.4.
 # Build the same release with the patched module until upstream ships it.
-FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine3.23@sha256:a8fa79c5bd40d880b52bd3b6d7669ecdcfd00e85facdd427d279efb5ddd79cb1 AS compose-build
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine3.23@sha256:0908ac9b9319e09d7c238aabe914e0395c51d63c4e3d0ae8c554fda9158a5769 AS compose-build
 ARG TARGETARCH
 WORKDIR /src
 RUN wget -q https://github.com/docker/compose/archive/refs/tags/v5.5.1.tar.gz -O /tmp/compose.tar.gz \
