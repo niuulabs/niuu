@@ -3,9 +3,9 @@
   "private": true,
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.282",
-    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.87.1",
     "@openai/codex": "0.157.0",
-    "@xai-official/grok": "1.0.30",
-    "opencode-ai": "1.18.30"
+    "@xai-official/grok": "1.0.41",
+    "opencode-ai": "1.18.32"
   }
 }
