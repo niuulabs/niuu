@@ -429,7 +429,7 @@ class TestContentToOpenaiText:
 
     def test_list_of_text_blocks(self):
         blocks = [TextBlock(text="foo"), TextBlock(text="bar")]
-        assert _content_to_openai_text(blocks) == "foobar"
+        assert _content_to_openai_text(blocks) == "foo\nbar"
 
     def test_non_text_blocks_skipped(self):
         blocks = [
@@ -437,7 +437,7 @@ class TestContentToOpenaiText:
             ToolUseBlock(id="t1", name="my_tool", input={}),
             TextBlock(text="after"),
         ]
-        assert _content_to_openai_text(blocks) == "beforeafter"
+        assert _content_to_openai_text(blocks) == "before\nafter"
 
 
 class TestMessageToOpenai:
@@ -505,8 +505,8 @@ class TestAnthropicToOpenaiEdgeCases:
             model="gpt-4o",
             max_tokens=100,
             messages=[Message(role="user", content="hi")],
-            system=[TextBlock(text="You are"), TextBlock(text=" helpful.")],
+            system=[TextBlock(text="You are"), TextBlock(text="helpful.")],
         )
         payload = anthropic_to_openai(req, "gpt-4o")
         assert payload["messages"][0]["role"] == "system"
-        assert payload["messages"][0]["content"] == "You are helpful."
+        assert payload["messages"][0]["content"] == "You are\nhelpful."

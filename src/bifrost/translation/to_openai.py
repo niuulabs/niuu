@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from typing import Any
 
 from bifrost.translation.models import (
@@ -18,15 +19,20 @@ from bifrost.translation.models import (
 )
 
 
+def _join_text(parts: Iterable[str]) -> str:
+    """Join text blocks into one string, a line apart, as vLLM flattens text parts.
+
+    Joining them bare would run each block into the next, e.g. a user's prompt
+    into a system note the client sent after it.
+    """
+    return "\n".join(part for part in parts if part)
+
+
 def _content_to_openai_text(content: str | list[ContentBlock]) -> str:
     """Flatten Anthropic message content to a plain string for OpenAI."""
     if isinstance(content, str):
         return content
-    parts: list[str] = []
-    for block in content:
-        if isinstance(block, TextBlock):
-            parts.append(block.text)
-    return "".join(parts)
+    return _join_text(block.text for block in content if isinstance(block, TextBlock))
 
 
 def _extract_tool_calls(content: list[ContentBlock]) -> list[dict[str, Any]]:
@@ -50,7 +56,10 @@ def _extract_tool_calls(content: list[ContentBlock]) -> list[dict[str, Any]]:
 def _message_to_openai(msg: Message) -> list[dict[str, Any]]:
     """Convert a single Anthropic message to one or more OpenAI messages.
 
-    Tool-result blocks in a user message become separate ``tool`` role messages.
+    Tool-result blocks in a user message become separate ``tool`` role messages,
+    emitted first so they directly follow the assistant message whose
+    ``tool_calls`` they answer; the message's other content follows them as a
+    user message.
     """
     if isinstance(msg.content, str):
         return [{"role": msg.role, "content": msg.content}]
@@ -92,22 +101,21 @@ def _message_to_openai(msg: Message) -> list[dict[str, Any]]:
             reasoning_parts.append(block.thinking)
 
     if tool_result_messages:
-        result: list[dict[str, Any]] = []
-        text = "".join(text_parts)
-        if multimodal:
-            result.append(
-                {
-                    "role": msg.role,
-                    "content": (
-                        multimodal if any(isinstance(b, ImageBlock) for b in msg.content) else text
-                    ),
-                }
-            )
-        result.extend(tool_result_messages)
-        return result
+        if not multimodal:
+            return tool_result_messages
+        text = _join_text(text_parts)
+        return [
+            *tool_result_messages,
+            {
+                "role": msg.role,
+                "content": (
+                    multimodal if any(isinstance(b, ImageBlock) for b in msg.content) else text
+                ),
+            },
+        ]
 
     out: dict[str, Any] = {"role": msg.role}
-    text = "".join(text_parts)
+    text = _join_text(text_parts)
     if text:
         out["content"] = text
     if any(isinstance(b, ImageBlock) for b in msg.content):
@@ -164,7 +172,7 @@ def anthropic_to_openai(request: AnthropicRequest, model: str) -> dict[str, Any]
         if isinstance(request.system, str):
             system_text = request.system
         else:
-            system_text = "".join(b.text for b in request.system)
+            system_text = _join_text(b.text for b in request.system)
         if system_text:
             messages.append({"role": "system", "content": system_text})
 

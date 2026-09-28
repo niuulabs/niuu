@@ -13,8 +13,12 @@ Supported conditions
 * ``agent_budget_pct``      — numeric comparison on remaining budget % (e.g. ``'>= 80'``).
 * ``provider``              — resolved primary provider name equals this value.
 * ``has_tools``             — request includes tool definitions (bool).
-* ``content_matches``       — regex applied to full concatenated message content.
-* ``system_prompt_matches`` — regex applied to the system prompt text.
+* ``content_matches``       — regex applied to full concatenated message content,
+                              including the text of ``role: system`` messages sent
+                              after the conversation's first turn.
+* ``system_prompt_matches`` — regex applied to the system prompt text: the top-level
+                              ``system`` plus any ``role: system`` messages that open
+                              the conversation.
 * ``message_count``         — numeric comparison on the number of messages.
 * ``has_image``             — request contains image blocks (bool).
 * ``agent_id``              — fnmatch pattern on the X-Ravn-Agent-Id header (e.g. ``'reviewer*'``).
