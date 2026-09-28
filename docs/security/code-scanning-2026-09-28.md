@@ -31,19 +31,19 @@ reported version.
 | CVE-2026-15310 | 2489 | 2545 | 2629 | 2653 |
 
 The implementation in `containers/python-security/` checks the original and
-patched module hashes, applies five exact upstream patches (including the ZIP
-compatibility follow-up), runs the five affected CPython test suites, and
-installs only four patched stdlib modules in niuu, agent, devrunner and openshell.
+patched module hashes, applies eight exact upstream patches (including the ZIP
+compatibility follow-up), runs the six affected CPython test suites, and
+installs only five patched stdlib modules in niuu, agent, devrunner and openshell.
 The patch inventory and behavioral compatibility details are documented there.
 
 Local proof: all patches apply cleanly to the checksum-pinned 3.14.7 source;
-893 upstream tests pass (24 skipped). The runtime exploit regressions fail on
+1,651 upstream tests pass (29 skipped). The runtime exploit regressions fail on
 the unpatched interpreter and pass after installation. Image builds run the
 same tests before publication.
 
 Grype still sees the real 3.14.7 version. Scan jobs verify hashes and exploit
 regressions inside the exact image digest, without networking, before issuing
-OpenVEX `fixed` statements limited to these four CVEs and that verified Python
+OpenVEX `fixed` statements limited to the six verified CVEs and that verified Python
 component. Raw and filtered scan reports, verification evidence and VEX are
 retained together. No finding is waived based merely on its version or assumed
 lack of exposure; no failed verification can produce a fixed statement.
@@ -54,3 +54,12 @@ Upstream records:
 - [CVE-2026-15806: HTTPPasswordMgr credential scope](https://github.com/advisories/GHSA-2v69-2w5x-455j)
 - [CVE-2025-15367: POP3 command injection](https://github.com/advisories/GHSA-g82h-mgfp-jx8g)
 - [CVE-2026-15310: unbounded ZIP decompression](https://github.com/advisories/GHSA-xj79-6hh5-9w6q)
+
+Two further medium-severity tarfile flaws were discovered in unfiltered Grype
+output: CVE-2026-19672 (empty directories outside an extraction destination,
+CVSS 6.3) and CVE-2026-87910 (link fallback ignores a filter rejection, CVSS 5.7).
+The same backport bundle fixes both, with their upstream tarfile regression
+suite and installed-runtime regression checks. Raw scanner output is now retained
+without `--only-fixed`; actionable SARIF retains that pre-existing policy.
+The OpenVEX document records all six verified fixes. These image changes do not
+update Python on external SSH VM hosts.

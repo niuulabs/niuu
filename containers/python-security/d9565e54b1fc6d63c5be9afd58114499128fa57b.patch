@@ -1,0 +1,46 @@
+From d9565e54b1fc6d63c5be9afd58114499128fa57b Mon Sep 17 00:00:00 2001
+From: Petr Viktorin <encukou@gmail.com>
+Date: Fri, 11 Sep 2026 19:54:41 +0200
+Subject: [PATCH] gh-157265: Adjust test for Windows (GH-157334)
+
+gh-157266: Adjust test for Windows
+
+On Windows (no symlinks, no hardlinks), the behaviour is
+the same as without the fix in GH-157266:
+- a/t/dummy is extracted
+- b/ is extracted
+- c/ is *not* created (the target, a/t, is not in the archive)
+- c/escape: c/ is created; escape is skipped (target,
+   c/../../link_here, is not in archive)
+- c is not recreated as a directory
+- boom is not created (target is c/escape, which falls back to
+  ..\..\link_here, which does not exist in archive)
+---
+ Lib/test/test_tarfile.py | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/Lib/test/test_tarfile.py b/Lib/test/test_tarfile.py
+index 598179983a7cbc5..55f052d0504d67b 100644
+--- a/Lib/test/test_tarfile.py
++++ b/Lib/test/test_tarfile.py
+@@ -4621,15 +4621,15 @@ def test_sneaky_hardlink_fallback(self):
+         for filter in 'tar', 'fully_trusted':
+             with self.subTest(filter), self.check_context(arc.open(), filter):
+                 if not os_helper.can_symlink():
+-                    if filter == 'tar':
++                    if filter == 'fully_trusted' or sys.platform == "win32":
++                        self.expect_file("a/t/dummy")
++                        self.expect_file("b/")
++                        self.expect_file("c/")
++                    else:
+                         self.expect_exception(
+                             tarfile.LinkFallbackError,
+                             "link 'boom' would be extracted as a copy of "
+                             + "'c/escape', which was rejected")
+-                    else:
+-                        self.expect_file("a/t/dummy")
+-                        self.expect_file("b/")
+-                        self.expect_file("c/")
+                 else:
+                     self.expect_file("a/t/dummy")
+                     self.expect_file("b/")

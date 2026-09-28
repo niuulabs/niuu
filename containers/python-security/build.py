@@ -1,4 +1,4 @@
-"""Build and test the four stdlib backports from checksum-pinned upstream inputs."""
+"""Build and test the five stdlib backports from checksum-pinned upstream inputs."""
 
 import hashlib
 import io
@@ -43,6 +43,7 @@ subprocess.run(
         "test_zipfile",
         "test_codecs",
         "test_unicodedata",
+        "test_tarfile",
     ],
     cwd=source_dir,
     env={**os.environ, "PYTHONPATH": str(source_dir / "Lib")},

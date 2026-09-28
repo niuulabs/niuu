@@ -11,7 +11,7 @@ case "$container_name" in
     docker run --rm --network none --read-only --entrypoint python \
       -v "$security_dir:/security:ro" "$image_digest" \
       -B /security/verify.py "$image_digest" > "python-security-$container_name.json"
-    grype "$image_digest" --only-fixed -o "json=grype-$container_name-raw.json"
+    grype "$image_digest" -o "json=grype-$container_name-raw.json"
     python3 "$security_dir/vex.py" "$image_digest" \
       "python-security-$container_name.json" "grype-$container_name-raw.json" \
       > "python-security-$container_name.vex.json"
@@ -20,7 +20,8 @@ case "$container_name" in
       -o "json=grype-$container_name-filtered.json" -o "sarif=grype-$container_name.sarif"
     ;;
   *)
+    grype "$image_reference" -o "json=grype-$container_name-raw.json"
     grype "$image_reference" --only-fixed --fail-on critical \
-      -o "json=grype-$container_name-raw.json" -o "sarif=grype-$container_name.sarif"
+      -o "json=grype-$container_name-filtered.json" -o "sarif=grype-$container_name.sarif"
     ;;
 esac

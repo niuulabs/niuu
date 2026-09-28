@@ -6,6 +6,7 @@ import json
 import poplib
 import sys
 import sysconfig
+import tarfile
 import unittest
 import urllib.request
 import zipfile
@@ -65,6 +66,30 @@ class BackportRegressionTests(unittest.TestCase):
                     self.assertLessEqual(len(member._read1(100)), member.MIN_READ_SIZE)
                 with zipfile.ZipFile(buffer) as archive, archive.open("workflow.yaml") as member:
                     self.assertEqual(member.read(), payload)
+
+    def test_tar_filters_normalize_leave_and_return_paths(self):
+        member = tarfile.TarInfo("../outside/../destination/sub/file")
+        for filter_function in (tarfile.tar_filter, tarfile.data_filter):
+            with self.subTest(filter=filter_function.__name__):
+                filtered = filter_function(member, "/backport-test/destination")
+                self.assertEqual(filtered.name, "../destination/sub/file")
+
+    def test_tar_link_fallback_honors_filter_rejection(self):
+        with tarfile.TarFile(fileobj=io.BytesIO(), mode="w") as archive:
+            link = tarfile.TarInfo("link")
+            link.type = tarfile.LNKTYPE
+            link._link_target = "/backport-test/missing-target"
+            target = tarfile.TarInfo("target")
+            archive._find_link_target = Mock(return_value=target)
+            archive._extract_member = Mock()
+            filter_function = Mock(
+                side_effect=lambda member, _: None if member.name == "link" else member
+            )
+            archive.makelink_with_filter(
+                link, "/backport-test/link", filter_function, "/backport-test"
+            )
+            archive._extract_member.assert_not_called()
+            self.assertEqual(filter_function.call_count, 1)
 
 
 def verify(manifest: dict) -> dict:

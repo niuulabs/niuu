@@ -83,11 +83,11 @@ def vex_inputs():
     return image, evidence, scan, manifest
 
 
-def test_vex_is_limited_to_verified_image_component_and_four_cves(vex_inputs):
+def test_vex_is_limited_to_verified_image_component_and_six_cves(vex_inputs):
     result = load("vex").document(*vex_inputs)
     image, _, _, manifest = vex_inputs
     assert {s["vulnerability"]["name"] for s in result["statements"]} == set(manifest["cves"])
-    assert len(result["statements"]) == 4
+    assert len(result["statements"]) == 6
     for statement in result["statements"]:
         assert statement["status"] == "fixed"
         assert image.split("@", 1)[1] in statement["products"][0]["@id"]
