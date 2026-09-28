@@ -1,3 +1,16 @@
+# Compose's published v5.5.1 binary embeds vulnerable containerd v2.3.4.
+# Build the same release with the patched module until upstream ships it.
+FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine3.23@sha256:a8fa79c5bd40d880b52bd3b6d7669ecdcfd00e85facdd427d279efb5ddd79cb1 AS compose-build
+ARG TARGETARCH
+WORKDIR /src
+RUN wget -q https://github.com/docker/compose/archive/refs/tags/v5.5.1.tar.gz -O /tmp/compose.tar.gz \
+    && echo "311077662698fd8e34769a894f9d5240befb1730990efa8ed58e0fa8725d2d84  /tmp/compose.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/compose.tar.gz --strip-components=1 \
+    && go get github.com/containerd/containerd/v2@v2.3.6 \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -tags e2e \
+        -ldflags '-w -X github.com/docker/compose/v5/internal.Version=v5.5.1-niuu.1' \
+        -o /out/docker-compose ./cmd
+
 # BuildKit keeps the native wheel in its existing per-platform CI cache.
 # Only the installed Python environment reaches the final image.
 FROM rust:1.96.1-slim-trixie@sha256:31ee7fc65186be7e0e0ccb3f2ca305f14e4739e7642a1ae65753aa5d7b874523 AS rust-toolchain
@@ -109,7 +122,6 @@ RUN apt-get update && apt-get upgrade -y \
 # scripts/install.sh), and `niuu up` drives `docker compose`.
 ARG TARGETARCH
 ARG DOCKER_CLI_VERSION=29.8.0
-ARG COMPOSE_VERSION=v5.5.1
 RUN set -eu; \
     case "$TARGETARCH" in \
       amd64) arch=x86_64 ;; \
@@ -121,12 +133,9 @@ RUN set -eu; \
       "https://download.docker.com/linux/static/stable/${arch}/docker-${DOCKER_CLI_VERSION}.tgz"; \
     tar -xzf /tmp/docker.tgz -C /usr/local/bin --strip-components=1 docker/docker; \
     rm /tmp/docker.tgz; \
-    mkdir -p /usr/local/lib/docker/cli-plugins; \
-    curl -fsSL --retry 3 --retry-all-errors \
-      -o /usr/local/lib/docker/cli-plugins/docker-compose \
-      "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-${arch}"; \
-    chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose; \
-    docker --version; docker compose version
+    docker --version
+COPY --from=compose-build /out/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
+RUN docker compose version
 
 # GitHub CLI (gh): the platform's git workflow reads PR status with it.
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \

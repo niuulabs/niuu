@@ -545,6 +545,7 @@ class TestAppLevelOidcGate:
         with TestClient(self._app(tmp_path)) as client:
             resp = client.get("/mimir/stats", headers={"authorization": "Bearer not-a-jwt"})
             assert resp.status_code == 401
+            assert resp.json() == {"detail": "Invalid or missing bearer token"}
 
     @respx.mock
     def test_valid_token_stats_read_succeeds(self, tmp_path: Path) -> None:

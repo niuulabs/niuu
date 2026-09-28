@@ -302,7 +302,7 @@ async def _enforce_room_role(request: Request, call_next):
         effective_role = await _effective_room_role(request)
     except RoomRoleResolutionError as exc:
         logger.error("Room role resolution failed: %s", exc)
-        return JSONResponse({"detail": str(exc)}, status_code=503)
+        return JSONResponse({"detail": "Room role resolution unavailable"}, status_code=503)
     # Cached for the route handler (see _room_role_from_state): resolving a
     # second time mid-request could legitimately get a DIFFERENT answer once
     # "remote" mode's short cache TTL expires between the two calls, which
