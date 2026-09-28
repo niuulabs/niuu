@@ -40,7 +40,17 @@ def document(image: str, evidence: dict, scan: dict, manifest: dict) -> dict:
                 or artifact["version"] != manifest["python_version"]
             ):
                 continue
-            locations = {location["path"] for location in artifact["locations"]}
+            # Syft records the interpreter as primary and libpython as supporting.
+            if any(
+                location.get("annotations", {}).get("evidence") not in {"primary", "supporting"}
+                for location in artifact["locations"]
+            ):
+                raise ValueError("Grype reported unclassified Python runtime evidence")
+            locations = {
+                location["path"]
+                for location in artifact["locations"]
+                if location["annotations"]["evidence"] == "primary"
+            }
             if locations != {evidence["executable"]}:
                 raise ValueError("Grype found a Python runtime that was not verified")
             if not artifact["purl"]:

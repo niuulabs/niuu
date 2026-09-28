@@ -74,7 +74,16 @@ def vex_inputs():
                     "type": "binary",
                     "version": "3.14.7",
                     "purl": "pkg:generic/python@3.14.7",
-                    "locations": [{"path": "/usr/local/bin/python3.14"}],
+                    "locations": [
+                        {
+                            "path": "/usr/local/bin/python3.14",
+                            "annotations": {"evidence": "primary"},
+                        },
+                        {
+                            "path": "/usr/local/lib/libpython3.14.so.1.0",
+                            "annotations": {"evidence": "supporting"},
+                        },
+                    ],
                 },
             }
             for cve in [*manifest["cves"], "CVE-2099-99999"]
@@ -94,7 +103,20 @@ def test_vex_is_limited_to_verified_image_component_and_six_cves(vex_inputs):
         assert statement["products"][0]["subcomponents"] == [{"@id": "pkg:generic/python@3.14.7"}]
 
 
-@pytest.mark.parametrize("invalid", ["digest", "hash", "version", "cves", "scan", "runtime"])
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "digest",
+        "hash",
+        "version",
+        "cves",
+        "scan",
+        "runtime",
+        "extra_runtime",
+        "no_primary",
+        "unknown",
+    ],
+)
 def test_vex_rejects_unverified_evidence(vex_inputs, invalid):
     image, evidence, scan, manifest = vex_inputs
     if invalid == "digest":
@@ -109,5 +131,13 @@ def test_vex_rejects_unverified_evidence(vex_inputs, invalid):
         scan["source"]["target"]["repoDigests"] = []
     elif invalid == "runtime":
         scan["matches"][0]["artifact"]["locations"] = [{"path": "/other/python3.14"}]
+    elif invalid == "extra_runtime":
+        scan["matches"][0]["artifact"]["locations"].append(
+            {"path": "/other/python3.14", "annotations": {"evidence": "primary"}}
+        )
+    elif invalid == "unknown":
+        scan["matches"][0]["artifact"]["locations"][0].pop("annotations")
+    elif invalid == "no_primary":
+        scan["matches"][0]["artifact"]["locations"].pop(0)
     with pytest.raises(ValueError):
         load("vex").document(image, evidence, scan, manifest)
