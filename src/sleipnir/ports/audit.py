@@ -22,6 +22,7 @@ class AuditQuery:
     :param to_ts: Return events at or before this timestamp (inclusive).
     :param correlation_id: Filter to events with this exact correlation ID.
     :param source: Filter to events from this exact source identifier.
+    :param service: Exact source component before the first colon.
     :param limit: Maximum number of events to return.
     """
 
@@ -31,6 +32,7 @@ class AuditQuery:
     correlation_id: str | None = None
     source: str | None = None
     limit: int = field(default=DEFAULT_QUERY_LIMIT)
+    service: str | None = None
 
 
 class AuditRepository(ABC):

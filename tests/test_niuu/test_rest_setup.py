@@ -427,10 +427,8 @@ class TestStackRoutes:
         assert "not serving" in not_ready.json()["detail"]
         stack.fail_with = None
 
-        assert (
-            client.delete("/api/v1/niuu/setup/stack", headers=HEADERS).json()["hasStagedChanges"]
-            is False
-        )
+        response = client.delete("/api/v1/niuu/setup/stack", headers=HEADERS)
+        assert response.json()["hasStagedChanges"] is False
         assert client.post("/api/v1/niuu/setup/stack/apply", headers=HEADERS).status_code == 422
 
     def test_stack_requires_admin_and_reports_missing_files(self, tmp_path: Path) -> None:
@@ -443,7 +441,8 @@ class TestStackRoutes:
             ).status_code
             == 403
         )
-        assert viewer.delete("/api/v1/niuu/setup/stack", headers=HEADERS).status_code == 403
+        response = viewer.delete("/api/v1/niuu/setup/stack", headers=HEADERS)
+        assert response.status_code == 403
         assert viewer.post("/api/v1/niuu/setup/stack/apply", headers=HEADERS).status_code == 403
         stack.fail_with = FileNotFoundError("stack.yaml is missing; `niuu up` writes it")
         response = viewer.get("/api/v1/niuu/setup/stack", headers=HEADERS)

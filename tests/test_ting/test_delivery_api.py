@@ -17,7 +17,6 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-import ting.delivery.api as delivery_api
 from niuu.domain.agent_directory import configured_agent_id
 from niuu.domain.delivery import (
     IntegrationCandidateInspection,
@@ -40,6 +39,7 @@ from ting.api.workflow_executions import (
     resolve_workflow_execution_service,
 )
 from ting.api.workflows import _build_workflow_initiative_context, resolve_workflow_repo
+from ting.delivery import api as delivery_api
 from ting.delivery.api import (
     create_delivery_executions_router,
     resolve_delivery_execution_repo,
@@ -1317,7 +1317,7 @@ def test_launch_returns_existing_detail_when_parent_session_already_attached() -
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
 
-    import ting.delivery.api as delivery_api_module
+    from ting.delivery import api as delivery_api_module
 
     original_launch = delivery_api_module.launch_workflow_execution
     delivery_api_module.launch_workflow_execution = duplicate_launch
@@ -1386,7 +1386,7 @@ def test_launch_returns_existing_detail_when_within_lease_and_unrecovered() -> N
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
     app.dependency_overrides[resolve_volundr_factory] = lambda: Factory()
 
-    import ting.delivery.api as delivery_api_module
+    from ting.delivery import api as delivery_api_module
 
     original_launch = delivery_api_module.launch_workflow_execution
     delivery_api_module.launch_workflow_execution = duplicate_launch

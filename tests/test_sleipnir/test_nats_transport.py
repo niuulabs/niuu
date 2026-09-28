@@ -456,7 +456,6 @@ async def test_publisher_start_creates_stream_when_missing(mock_nats):
 
 async def test_publisher_ensure_stream_logs_debug_on_stream_info_failure(mock_nats, caplog):
     """stream_info failure is logged at DEBUG before attempting creation."""
-    import logging
 
     mock_module, client, js, _ = mock_nats
     js.stream_info.side_effect = Exception("not found")
@@ -2125,7 +2124,6 @@ async def test_watchdog_recovers_lost_consumer_in_the_background(mock_nats):
 
 
 async def test_unsubscribe_cancels_the_watchdog_task(mock_nats):
-    mock_module, client, js, nats_sub = mock_nats
     sub = NatsSubscriber()
     await sub.start()
     handle = await sub.subscribe(["test.*"], AsyncMock())
@@ -2743,7 +2741,6 @@ async def test_healthy_check_resets_consecutive_failures(mock_nats):
 
 
 async def test_watch_consumers_applies_the_configured_jitter(mock_nats, monkeypatch):
-    mock_module, client, js, nats_sub = mock_nats
     calls: list[tuple[float, float]] = []
 
     def _tracking_uniform(a: float, b: float) -> float:

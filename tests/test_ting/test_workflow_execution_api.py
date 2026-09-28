@@ -9,7 +9,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import ting.api.workflow_execution_launch as execution_launch
-import ting.api.workflow_executions as execution_api
 from niuu.domain.services.token_scope import VALKYRIE_BUILD_TOKEN_USE
 from tests.test_ting.test_workflow_execution_service import (
     InMemoryWorkflowRepository,
@@ -18,6 +17,7 @@ from tests.test_ting.test_workflow_execution_service import (
     _proposal,
     _service,
 )
+from ting.api import workflow_executions as execution_api
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.workflow_executions import (
     create_workflow_executions_router,

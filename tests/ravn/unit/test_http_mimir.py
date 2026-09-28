@@ -12,7 +12,6 @@ import pytest
 import respx
 from httpx import Response
 
-import ravn.adapters.mimir.http as http_module
 from niuu.domain.mimir import (
     MimirLintReport,
     MimirSource,
@@ -20,6 +19,7 @@ from niuu.domain.mimir import (
     ThreadState,
     compute_content_hash,
 )
+from ravn.adapters.mimir import http as http_module
 from ravn.adapters.mimir.http import HttpMimirAdapter
 from ravn.domain.exceptions import ConfigurationError
 from ravn.domain.mimir import MimirAuth

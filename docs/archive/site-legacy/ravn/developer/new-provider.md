@@ -204,9 +204,9 @@ def adapter():
 
 class TestMyProviderAdapter:
     @pytest.mark.asyncio
-    async def test_complete(self, adapter):
+    async def test_generate(self, adapter):
         messages = [Message(role="user", content="hello")]
-        response = await adapter.complete(messages)
+        response = await adapter.generate(messages)
         assert response.content
         assert response.usage.input_tokens > 0
 
@@ -222,6 +222,6 @@ class TestMyProviderAdapter:
     async def test_tool_calls(self, adapter):
         messages = [Message(role="user", content="read /tmp/test")]
         tools = [{"name": "read_file", "description": "Read", "input_schema": {...}}]
-        response = await adapter.complete(messages, tools=tools)
+        response = await adapter.generate(messages, tools=tools)
         # Verify tool calls are properly formatted
 ```

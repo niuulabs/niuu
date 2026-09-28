@@ -178,7 +178,7 @@ class TestRoomRoleRevalidationLoop:
         fake_time = [1_000_000.0]
         monkeypatch.setattr(asyncio, "sleep", AsyncMock())
 
-        import skuld.websocket_lifecycle as wl_module
+        from skuld import websocket_lifecycle as wl_module
 
         monkeypatch.setattr(wl_module.time, "monotonic", lambda: fake_time[0])
 

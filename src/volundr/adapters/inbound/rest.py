@@ -3236,7 +3236,6 @@ def create_router(
 
         # Keep the caller's identity across a timeout/retry. The broker atomically
         # claims it in durable storage before dispatching to the native process.
-        import re
 
         req_id = body.get("request_id") or str(uuid4())
         if not isinstance(req_id, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", req_id):

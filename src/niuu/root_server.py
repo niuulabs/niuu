@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 import uvicorn
 from fastapi import FastAPI
 
-import niuu.app as _app
+from niuu import app as _app
 from niuu.app import (
     DEFAULT_HOST_PROFILE,
     SkuldPortRegistry,

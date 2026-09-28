@@ -146,12 +146,14 @@ class EnvoyHeaderIdentityAdapter(EnvoyHeaderAuthenticationAdapter, IdentityPort)
         self._user_repository = user_repository
         self._storage = storage
         self._tenant_service = tenant_service
-        self._user_id_header = user_id_header
-        self._email_header = email_header
-        self._tenant_header = tenant_header
-        self._roles_header = roles_header
-        self._default_tenant_id = default_tenant_id
-        self._role_mapping = role_mapping
+        super().__init__(
+            user_id_header=user_id_header,
+            email_header=email_header,
+            tenant_header=tenant_header,
+            roles_header=roles_header,
+            default_tenant_id=default_tenant_id,
+            role_mapping=role_mapping,
+        )
 
     async def validate_headers(self, headers: dict[str, str]) -> Principal:
         principal = await super().validate_headers(headers)

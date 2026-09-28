@@ -7,26 +7,6 @@ from typing import Any
 
 from .models import ResidentInboxClassification, ResidentInboxSignal
 
-_MEMORY_CLASSIFICATIONS = {
-    ResidentInboxClassification.FACT.value,
-    ResidentInboxClassification.PREFERENCE.value,
-    ResidentInboxClassification.POLICY.value,
-    ResidentInboxClassification.APPROVAL.value,
-    ResidentInboxClassification.DENIAL.value,
-    ResidentInboxClassification.CORRECTION.value,
-    ResidentInboxClassification.RISK.value,
-    ResidentInboxClassification.STATUS_UPDATE.value,
-}
-
-_WORK_CLASSIFICATIONS = {
-    ResidentInboxClassification.TASK_REQUEST.value,
-    ResidentInboxClassification.IDEA.value,
-    ResidentInboxClassification.SOURCE_EVIDENCE.value,
-    ResidentInboxClassification.URL_REFERENCE.value,
-    ResidentInboxClassification.FILE_REFERENCE.value,
-    ResidentInboxClassification.PHYSICAL_OBSERVATION.value,
-}
-
 
 def classify_inbox_signal(signal: ResidentInboxSignal) -> tuple[str, float, str]:
     return classify_text(signal.summary, payload=signal.payload)

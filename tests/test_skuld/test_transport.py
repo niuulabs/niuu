@@ -269,8 +269,10 @@ class TestSubprocessTransport:
         )
         mock_subprocess = self._mock_process(
             stdout_lines=[
-                b'{"type": "system", "subtype": "init", "mcp_servers": '
-                b'[{"name": "ravn-tools", "status": "connected"}]}\n',
+                (
+                    b'{"type": "system", "subtype": "init", "mcp_servers": '
+                    b'[{"name": "ravn-tools", "status": "connected"}]}\n'
+                ),
                 b'{"type": "result", "result": "Done"}\n',
             ]
         )

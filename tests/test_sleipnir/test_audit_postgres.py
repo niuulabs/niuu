@@ -345,3 +345,13 @@ async def test_postgres_query_complex_pattern_truncates_to_limit():
 
     results = await repo.query(AuditQuery(event_type_pattern="ravn.*.complete", limit=5))
     assert len(results) == 5
+
+
+def test_build_query_service_is_parameterized_before_limit():
+    service = "ravn%_' OR TRUE --"
+    sql, params = _build_query(AuditQuery(source="ravn:agent", service=service, limit=2))
+    assert "source = $1" in sql
+    assert "split_part(source, ':', 1) = $2" in sql
+    assert "LIMIT $3" in sql
+    assert service not in sql
+    assert params == ["ravn:agent", service, 2]

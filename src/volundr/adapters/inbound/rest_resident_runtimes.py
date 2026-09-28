@@ -306,6 +306,7 @@ def create_resident_runtimes_router(service: ResidentRuntimeService) -> APIRoute
         try:
             await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         except WebSocketDisconnect:
+            # Browser disconnect ends the relay; both tasks are cleaned up below.
             pass
         finally:
             for task in tasks:
@@ -356,6 +357,7 @@ def create_resident_runtimes_router(service: ResidentRuntimeService) -> APIRoute
         try:
             await service.delete(principal, runtime_id)
         except ResidentRuntimeNotFoundError:
+            # DELETE is idempotent when the resident has already been removed.
             pass
         except Exception as exc:
             raise _resident_error(exc) from exc

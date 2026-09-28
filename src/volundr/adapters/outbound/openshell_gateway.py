@@ -1579,9 +1579,6 @@ class OpenShellGatewayPodManager(
             raise RuntimeError("OpenClaw residents require the configured credential store")
         if runtime.engine is ResidentEngine.HERMES and self._credential_store is None:
             raise RuntimeError("Hermes residents require the configured credential store")
-        credential_context = OpenShellCredentialContext(
-            files={}, providers=(), environment={}, process_environment={}
-        )
         grants: tuple[OpenShellProviderGrant, ...] = ()
         sandbox = await asyncio.to_thread(self._client.get_sandbox, sandbox_name)
         if sandbox is not None:

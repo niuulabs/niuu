@@ -31,7 +31,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from PIL import Image
 
-import skuld.tool_result_preview as trp_mod
+from skuld import tool_result_preview as trp_mod
 from skuld.tool_result_preview import (
     PreviewCache,
     extract_image_bytes,

@@ -142,6 +142,10 @@ class SqliteAuditRepository(AuditRepository):
             sql += " AND source = ?"
             params.append(q.source)
 
+        if q.service is not None:
+            sql += " AND substr(source, 1, instr(source || ':', ':') - 1) = ?"
+            params.append(q.service)
+
         # Over-fetch when pattern filtering to ensure we return q.limit results.
         fetch_limit = q.limit if not q.event_type_pattern else q.limit * 10
         sql += " ORDER BY timestamp DESC LIMIT ?"

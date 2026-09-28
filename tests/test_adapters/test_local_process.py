@@ -16,8 +16,8 @@ from uuid import uuid4
 import pytest
 import yaml
 
-import volundr.adapters.outbound.local_process as local_process_mod
 from niuu.mesh.ipc import skuld_mesh_addresses
+from volundr.adapters.outbound import local_process as local_process_mod
 from volundr.adapters.outbound.local_process import (
     DEFAULT_CLAUDE_BINARY,
     DEFAULT_MAX_CONCURRENT,

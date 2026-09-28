@@ -855,6 +855,7 @@ class MuseMSPTransport(CLITransport):
                 except Exception as exc:
                     logger.exception("Muse MSP frame handling failed: %r (%s)", exc, raw[:200])
         except asyncio.CancelledError:
+            # Cancellation stops the reader and runs host-exit cleanup in finally.
             pass
         except Exception as exc:
             logger.exception("Muse MSP reader loop error: %r", exc)

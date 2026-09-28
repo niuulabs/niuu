@@ -208,6 +208,7 @@ class OpenClawGateway:
         try:
             await conn.run()
         except WebSocketDisconnect:
+            # Peer disconnect is the normal end of this connection.
             pass
         except Exception:
             logger.exception("OpenClaw shim connection failed")

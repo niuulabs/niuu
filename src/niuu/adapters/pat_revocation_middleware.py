@@ -211,6 +211,7 @@ class PATRevocationMiddleware:
                     try:
                         await asyncio.wait_for(closing.wait(), timeout=delay)
                     except TimeoutError:
+                        # The deadline triggers the next expiry and revocation check.
                         pass
                     if closed or not await valid():
                         break

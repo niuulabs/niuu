@@ -1723,11 +1723,11 @@ class TingPlanTool(TingWorkflowTool):
                 case "spawn":
                     return await self._spawn(client, input)
                 case "list":
-                    return await self._list(client)
+                    return await self._list_campaigns(client)
                 case "status":
-                    return await self._get(client, input, "")
+                    return await self._get_campaign(client, input, "")
                 case "draft":
-                    return await self._get(client, input, "/draft")
+                    return await self._get_campaign(client, input, "/draft")
                 case "feedback":
                     return await self._feedback(client, input)
                 case "cancel":
@@ -1766,7 +1766,7 @@ class TingPlanTool(TingWorkflowTool):
         except Exception as exc:
             return _err(f"Failed to spawn planning session: {exc}")
 
-    async def _list(self, client: httpx.AsyncClient) -> ToolResult:
+    async def _list_campaigns(self, client: httpx.AsyncClient) -> ToolResult:
         try:
             resp = await client.get(_TING_PLAN_PATH)
             resp.raise_for_status()
@@ -1774,7 +1774,9 @@ class TingPlanTool(TingWorkflowTool):
         except Exception as exc:
             return _err(f"Failed to list planning sessions: {exc}")
 
-    async def _get(self, client: httpx.AsyncClient, input: dict, suffix: str) -> ToolResult:
+    async def _get_campaign(
+        self, client: httpx.AsyncClient, input: dict, suffix: str
+    ) -> ToolResult:
         slug = str(input.get("slug") or "").strip()
         if not slug:
             return _err("slug is required")
@@ -1930,11 +1932,11 @@ class TingSpecTool(TingWorkflowTool):
                 case "launch" | "create":
                     return await self._launch(client, input)
                 case "list":
-                    return await self._list(client)
+                    return await self._list_campaigns(client)
                 case "status":
-                    return await self._get(client, input, "")
+                    return await self._get_campaign(client, input, "")
                 case "artifacts":
-                    return await self._get(client, input, "/artifacts")
+                    return await self._get_campaign(client, input, "/artifacts")
                 case "artifact":
                     return await self._artifact(client, input)
                 case "review":
@@ -1983,7 +1985,7 @@ class TingSpecTool(TingWorkflowTool):
         except Exception as exc:
             return _err(f"Failed to launch spec campaign: {exc}")
 
-    async def _list(self, client: httpx.AsyncClient) -> ToolResult:
+    async def _list_campaigns(self, client: httpx.AsyncClient) -> ToolResult:
         try:
             resp = await client.get(_TING_SPECS_PATH)
             resp.raise_for_status()
@@ -1991,7 +1993,9 @@ class TingSpecTool(TingWorkflowTool):
         except Exception as exc:
             return _err(f"Failed to list spec campaigns: {exc}")
 
-    async def _get(self, client: httpx.AsyncClient, input: dict, suffix: str) -> ToolResult:
+    async def _get_campaign(
+        self, client: httpx.AsyncClient, input: dict, suffix: str
+    ) -> ToolResult:
         slug = str(input.get("slug") or "").strip()
         if not slug:
             return _err("slug is required")

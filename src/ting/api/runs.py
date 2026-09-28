@@ -86,7 +86,6 @@ async def _authorize_tracker_run(request: Request, principal: Principal, tracker
     # Tracker UUIDs and imported local saga UUIDs need not be the same.
     # Ambiguous registrations never establish authority for a mutation.
     saga = matches[0] if len(matches) == 1 else None
-    action = request.path_params.get("action")
     if request.method in ("GET", "HEAD"):
         action = "read"
     else:

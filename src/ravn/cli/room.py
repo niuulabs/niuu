@@ -900,6 +900,7 @@ def _await_member_registration(room_def: RoomDef, handle: str, pid: int) -> bool
                 if handle in peers:
                     return True
         except httpx.HTTPError:
+            # The member may still be starting; retry only until the startup deadline.
             pass
         time.sleep(_STARTUP_POLL_INTERVAL_S)
     return False

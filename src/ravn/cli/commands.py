@@ -27,13 +27,17 @@ from ravn.cli.mcp_runtime import (  # noqa: F401
 from ravn.config import ProjectConfig, Settings
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.models import (
-    AgentTask,
+    AgentTask as AgentTask,
+)
+from ravn.domain.models import (
     Message,
-    OutputMode,
     Session,
     TodoItem,
     TodoStatus,
     TokenUsage,
+)
+from ravn.domain.models import (
+    OutputMode as OutputMode,
 )
 from ravn.domain.profile import RavnProfile
 from ravn.ports.checkpoint import CheckpointPort
@@ -52,8 +56,6 @@ from ravn.workflow_runtime import (  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
-# Extracted runtime wrappers resolve these legacy module globals at call time.
-_RUNTIME_MODEL_EXPORTS = (AgentTask, OutputMode)
 
 app = typer.Typer(
     name="ravn",
@@ -1074,7 +1076,6 @@ def inbox_migrate(
     before its original file is removed, so an interrupted run simply resumes.
     Reports counts so the operator can reconcile before and after.
     """
-    import asyncio  # noqa: PLC0415
 
     from ravn.resident_inbox import LocalResidentInbox  # noqa: PLC0415
 
@@ -1109,7 +1110,6 @@ def memory_backfill_embeddings(
     each batch commits before the next is fetched, so a run interrupted or
     refused partway can simply be run again.
     """
-    import asyncio  # noqa: PLC0415
 
     if config:
         os.environ["RAVN_CONFIG"] = config

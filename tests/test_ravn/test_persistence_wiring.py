@@ -108,7 +108,7 @@ class TestBuildResidentBudget:
             def __init__(self, **kwargs):
                 seen_kwargs.update(kwargs)
 
-        import ravn.api.persistence_wiring as wiring_module
+        from ravn.api import persistence_wiring as wiring_module
 
         original_import_class = wiring_module.import_class
         wiring_module.import_class = lambda path: _RecordingReporter  # noqa: ARG005
@@ -131,7 +131,7 @@ class TestBuildResidentBudget:
             def __init__(self, **kwargs):
                 seen_kwargs.update(kwargs)
 
-        import ravn.api.persistence_wiring as wiring_module
+        from ravn.api import persistence_wiring as wiring_module
 
         original_import_class = wiring_module.import_class
         wiring_module.import_class = lambda path: _RecordingReporter  # noqa: ARG005

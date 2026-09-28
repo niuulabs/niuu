@@ -373,6 +373,7 @@ def create_ravn_session_proxy_router(
             try:
                 await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             except WebSocketDisconnect:
+                # Browser disconnect ends the relay; both tasks are cleaned up below.
                 pass
             finally:
                 for task in tasks:

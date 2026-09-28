@@ -485,6 +485,7 @@ class GrokACPTransport(CLITransport):
                 logger.debug("Grok ACP unhandled message: %s", str(data)[:200])
 
         except asyncio.CancelledError:
+            # Cancellation stops the reader and fails pending requests in finally.
             pass
         except Exception as exc:
             logger.exception("Grok ACP reader loop error: %r", exc)

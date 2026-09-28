@@ -7,7 +7,7 @@ import json
 import secrets
 from contextlib import suppress
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NoReturn
 from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -147,7 +147,7 @@ class _HermesAPI:
                     yield event
 
     @staticmethod
-    def _raise_response_error(response: httpx.Response) -> None:
+    def _raise_response_error(response: httpx.Response) -> NoReturn:
         try:
             payload = response.json()
         except ValueError:
@@ -243,11 +243,8 @@ class HermesChatConnection(ResidentChatConnection):
     async def _consume_run(self, run_id: str) -> None:
         terminal = False
         try:
-            try:
-                async for event in self._api.stream_run(run_id):
-                    terminal = await self._enqueue_event(run_id, event) or terminal
-            except httpx.TransportError:
-                pass
+            async for event in self._api.stream_run(run_id):
+                terminal = await self._enqueue_event(run_id, event) or terminal
             if terminal:
                 return
             while True:

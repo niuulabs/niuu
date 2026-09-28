@@ -62,7 +62,7 @@ async def test_relay_uses_participant_declared_subscriptions_and_neutral_evidenc
     notify = AsyncMock()
     relay = ObservationRelay(
         subscriber,
-        participant=lambda: _participant(),
+        participant=_participant,
         patterns=["research.*"],
         send_directed=send,
         broadcast_notification=notify,
@@ -88,7 +88,7 @@ async def test_relay_ignores_unsubscribed_mesh_and_self_origin_events() -> None:
     send = AsyncMock(return_value="message-1")
     relay = ObservationRelay(
         subscriber,
-        participant=lambda: _participant(),
+        participant=_participant,
         patterns=["*"],
         send_directed=send,
         broadcast_notification=AsyncMock(),

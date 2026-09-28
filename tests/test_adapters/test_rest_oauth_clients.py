@@ -129,12 +129,10 @@ def test_a_second_account_registers_its_own_application(tmp_path) -> None:
         if row["slug"] == "github"
     ]
     assert apps == [("default", "Iv1.personal"), ("niuu-org", "Iv1.org")]
-    assert (
-        client.delete("/api/v1/integrations/oauth-clients/github?app=niuu-org").status_code == 204
-    )
-    assert (
-        client.delete("/api/v1/integrations/oauth-clients/github?app=niuu-org").status_code == 404
-    )
+    response = client.delete("/api/v1/integrations/oauth-clients/github?app=niuu-org")
+    assert response.status_code == 204
+    response = client.delete("/api/v1/integrations/oauth-clients/github?app=niuu-org")
+    assert response.status_code == 404
     assert _catalog_entry(client, "github")["sign_in_available"] is True
 
 
@@ -164,9 +162,11 @@ def test_registration_is_refused_for_non_oauth_integrations_and_empty_ids(tmp_pa
 def test_removal_forgets_registered_applications_only(tmp_path) -> None:
     client = _client(tmp_path)
     client.put("/api/v1/integrations/oauth-clients/github", json={"client_id": "Iv1.mine"})
-    assert client.delete("/api/v1/integrations/oauth-clients/github").status_code == 204
+    response = client.delete("/api/v1/integrations/oauth-clients/github")
+    assert response.status_code == 204
     assert _catalog_entry(client, "github")["sign_in_needs_app"] is True
-    assert client.delete("/api/v1/integrations/oauth-clients/gitlab").status_code == 404
+    response = client.delete("/api/v1/integrations/oauth-clients/gitlab")
+    assert response.status_code == 404
 
 
 def test_without_a_registry_the_routes_say_so(tmp_path) -> None:

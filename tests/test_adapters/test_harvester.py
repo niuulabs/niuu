@@ -134,8 +134,10 @@ async def test_real_api_shape_idempotency_inventory_and_cleanup(provider, api):
     assert await provider.create(request) == machine
     assert len([r for r in api.requests if r.method == "POST"]) == 3
     assert await provider.list() == [machine]
-    assert await provider.delete(request.allocation_id)
-    assert await provider.delete(request.allocation_id)
+    deleted = await provider.delete(request.allocation_id)
+    assert deleted
+    deleted = await provider.delete(request.allocation_id)
+    assert deleted
     assert not api.objects
     await provider.close()
 
@@ -148,7 +150,8 @@ async def test_partial_create_is_discoverable_and_removable(provider, api):
     assert "private-body" not in str(exc.value)
     assert len(api.objects) == 2
     assert (await provider.list())[0].allocation_id == request.allocation_id
-    assert await provider.delete(request.allocation_id)
+    deleted = await provider.delete(request.allocation_id)
+    assert deleted
     assert not api.objects
     await provider.close()
 
@@ -195,17 +198,20 @@ async def test_delete_waits_for_vm_and_guest_before_erasing_disk(provider, api):
     request = MachineRequest(allocation_id=uuid4(), profile="small")
     await provider.create(request)
     api.delay_delete = True
-    assert not await provider.delete(request.allocation_id)
+    deleted = await provider.delete(request.allocation_id)
+    assert not deleted
     assert len(api.objects) == 3
     vm_path = next(k for k in api.objects if "/virtualmachines/" in k)
     vm = api.objects.pop(vm_path)
     vmi_path = vm_path.replace("/virtualmachines/", "/virtualmachineinstances/")
     api.objects[vmi_path] = vm
-    assert not await provider.delete(request.allocation_id)
+    deleted = await provider.delete(request.allocation_id)
+    assert not deleted
     assert len(api.objects) == 3
     api.objects.pop(vmi_path)
     api.delay_delete = False
-    assert await provider.delete(request.allocation_id)
+    deleted = await provider.delete(request.allocation_id)
+    assert deleted
     await provider.close()
 
 

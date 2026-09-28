@@ -36,8 +36,10 @@ def main():
                     "-d",
                     "postgres",
                     "-Atc",
-                    "SELECT 6 * 7; SELECT to_tsvector('english', 'packaging tests') "
-                    "@@ plainto_tsquery('english', 'test');",
+                    (
+                        "SELECT 6 * 7; SELECT to_tsvector('english', 'packaging tests') "
+                        "@@ plainto_tsquery('english', 'test');"
+                    ),
                 ],
                 text=True,
             )
