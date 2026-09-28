@@ -42,7 +42,7 @@ jobs:
       PROVIDERS: ${{ inputs.providers }}
       EXTENDED: ${{ inputs.extended }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
       - name: Install project environment
         run: uv sync --frozen --all-extras --dev
       - name: Drive real sessions

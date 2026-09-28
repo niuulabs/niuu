@@ -58,6 +58,11 @@ updates:
         patterns:
           - "*"
 
+    ignore:
+      # npm 12 blocks dependency lifecycle scripts required by the runtime CLIs.
+      - dependency-name: "npm"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: docker
     directories:
       - /containers/niuu
@@ -80,6 +85,8 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      # Keep Ubuntu on the selected LTS series; interim minor releases expire.
       - dependency-name: ubuntu
         update-types:
           - version-update:semver-major
+          - version-update:semver-minor
