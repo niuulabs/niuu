@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 import urllib.request
 from pathlib import Path
@@ -32,7 +33,7 @@ for item in manifest["patches"]:
     )
 subprocess.run(
     [
-        "python",
+        sys.executable,
         "-m",
         "test",
         "-j",
@@ -51,6 +52,6 @@ for name, hashes in manifest["files"].items():
     source_file = source_dir / "Lib" / name
     if hashlib.sha256(source_file.read_bytes()).hexdigest() != hashes["patched"]:
         raise RuntimeError(f"Patched stdlib checksum mismatch: {name}")
-    destination = Path("/patched-stdlib") / name
+    destination = Path(sys.argv[1]) / name
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source_file, destination)
