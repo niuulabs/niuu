@@ -8,6 +8,7 @@ from bifrost.config import ManagedModelConfig
 from niuu.domain.model_catalog import ManagedModelProvider, ManagedModelTier
 from niuu.domain.model_runtime import (
     infer_model_vendor,
+    is_self_hosted_model,
     normalize_model_vendor,
     resolve_session_definition_for_models,
     session_definition_for_model,
@@ -80,6 +81,39 @@ def test_vendor_for_model_prefers_configured_model_metadata() -> None:
     assert vendor_for_model("llama3.2:latest", configured_models=_configured_models()) == "local"
     assert vendor_for_model("claude-opus-4-6") == "anthropic"
     assert vendor_for_model("") == ""
+
+
+def test_is_self_hosted_model_reads_vendor_or_provider_kind() -> None:
+    models = [
+        *_configured_models(),
+        ManagedModelConfig(
+            id="qwen-coder",
+            name="Qwen Coder",
+            vendor="",
+            provider=ManagedModelProvider.LOCAL,
+        ),
+        ManagedModelConfig(
+            id="served-gpt",
+            name="Self-served GPT",
+            vendor="openai",
+            provider=ManagedModelProvider.LOCAL,
+        ),
+        ManagedModelConfig(id="vllm-model", name="vLLM model", vendor="vllm"),
+    ]
+
+    assert is_self_hosted_model("llama3.2:latest", configured_models=models)
+    assert is_self_hosted_model("qwen-coder", configured_models=models)
+    assert is_self_hosted_model("served-gpt", configured_models=models)
+    assert is_self_hosted_model("vllm-model", configured_models=models)
+    assert not is_self_hosted_model("claude-sonnet-4-6", configured_models=models)
+    assert not is_self_hosted_model("gpt-5.5", configured_models=models)
+
+
+def test_is_self_hosted_model_judges_an_uncatalogued_model_by_its_id() -> None:
+    assert is_self_hosted_model("qwen3:32b")
+    assert not is_self_hosted_model("claude-opus-4-6")
+    assert not is_self_hosted_model("mystery-model")
+    assert not is_self_hosted_model("")
 
 
 def test_session_definition_for_model_requires_explicit_model() -> None:

@@ -405,6 +405,12 @@ def _build_executor(
                     **runtime_kwargs,
                     **(configured_kwargs or {}),
                 }
+            if kwargs.get("model_gateway"):
+                # The persona asked for the gateway; the session supplies where
+                # it is. The executor refuses to build if it has none.
+                runtime = loaded_settings.runtime_executor
+                kwargs["model_gateway_url"] = runtime.model_gateway_url
+                kwargs["model_gateway_token"] = runtime.model_gateway_token
     else:
         runtime_transport_adapter = loaded_settings.runtime_executor.transport_adapter.strip()
         if runtime_transport_adapter:

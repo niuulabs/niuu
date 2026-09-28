@@ -395,6 +395,16 @@ seeds this connection where the bifrost plugin is enabled, which `auth.mode:
 oidc` hosts cannot do yet (see `CLISettings._OIDC_UNCOVERED_PLUGINS`), so the
 sentinel is never sent under `oidc`.
 
+In Docker mode a Ting workflow decides this per stage, not per session: Ting
+marks each persona that runs a self-hosted model (catalogue vendor or provider
+`local`) on Claude Code or Codex (`model_gateway: true` in its executor
+binding), and that persona's own CLI is routed through the session's gateway.
+A persona on a cloud model in the same workflow keeps its vendor's API even
+though the session carries the gateway variables, and OpenCode and PI personas
+keep their own provider configuration. A marked persona in a session without
+the gateway variables fails with an error naming the persona and model instead
+of calling the vendor.
+
 A server that stops serving a model fails the session's first turn with the
 gateway's error, not a silent fallback to a cloud model. Switching the
 server off (or picking vLLM or cloud-only in the wizard) stops seeding the

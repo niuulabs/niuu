@@ -66,6 +66,46 @@ def _supports_read_only_mcp_boundary(cls: type[CLITransport]) -> bool:
     return {"read_only_mcp_only", "allowed_mcp_tools"}.issubset(parameters)
 
 
+def _model_gateway_transport_kwargs(
+    cls: type[CLITransport],
+    *,
+    url: str,
+    token: str,
+    persona: str,
+    model: str,
+) -> dict[str, str]:
+    """Return the kwargs that point *cls* at the session's model gateway, or raise.
+
+    A persona bound to the gateway has no other route to its model: without the
+    gateway its CLI would call the vendor's own API with a model that vendor
+    does not serve.
+    """
+    subject = (
+        f"Persona {persona!r} (model {model!r}) must reach its model through the model gateway"
+    )
+    if not url.strip():
+        raise ValueError(
+            f"{subject}, but this runtime has no gateway URL (SKULD__MODEL_GATEWAY__URL, "
+            "read as runtime_executor.model_gateway_url). A Docker-mode session receives "
+            "it, with SKULD__MODEL_GATEWAY__TOKEN, from the Model server integration; a "
+            "runtime that does not receive it cannot run this persona, so give the "
+            "persona a cloud model there."
+        )
+    if not token.strip():
+        raise ValueError(
+            f"{subject} at {url.strip()!r}, but the gateway token is blank; the CLI "
+            "would present no credential, or the host's own login, to the gateway. "
+            "Set SKULD__MODEL_GATEWAY__TOKEN (runtime_executor.model_gateway_token)."
+        )
+    if not {"model_gateway_url", "model_gateway_token"}.issubset(inspect.signature(cls).parameters):
+        raise ValueError(
+            f"{subject}, but CLI transport {cls.__module__}.{cls.__name__} cannot be "
+            "routed through one; select a transport that accepts model_gateway_url "
+            "and model_gateway_token"
+        )
+    return {"model_gateway_url": url.strip(), "model_gateway_token": token}
+
+
 def _sum_model_usage(raw: dict | None) -> TokenUsage:
     """Convert transport ``modelUsage`` payloads into ``TokenUsage``."""
     if not isinstance(raw, dict):
@@ -737,9 +777,17 @@ class CliTransportExecutor(ExecutorPort):
         transport_adapter: str = "skuld.transports.subprocess.SubprocessTransport",
         transport_kwargs: dict[str, Any] | None = None,
         ravn_tool_mcp_timeout_seconds: float = 3600.0,
+        model_gateway: bool = False,
+        model_gateway_url: str = "",
+        model_gateway_token: str = "",
     ) -> None:
         self._transport_adapter = transport_adapter
         self._transport_kwargs = dict(transport_kwargs or {})
+        # Set per persona by the workflow that bound it; the URL and token are
+        # the session's gateway and are used only when this persona asks.
+        self._model_gateway = model_gateway
+        self._model_gateway_url = model_gateway_url
+        self._model_gateway_token = model_gateway_token
         self._ravn_tool_mcp_timeout_seconds = max(
             1.0,
             float(ravn_tool_mcp_timeout_seconds),
@@ -780,6 +828,16 @@ class CliTransportExecutor(ExecutorPort):
                 trace_carrier=get_observability().inject(),
             )
         transport_kwargs.update(self._transport_kwargs)
+        if self._model_gateway:
+            transport_kwargs.update(
+                _model_gateway_transport_kwargs(
+                    self._binding.cls,
+                    url=self._model_gateway_url,
+                    token=self._model_gateway_token,
+                    persona=str(kwargs.get("persona", "")),
+                    model=str(kwargs.get("model", "")),
+                )
+            )
         if read_only:
             # The generated server is the complete filtered ToolPort registry
             # for this persona.  Rebuild it after transport overrides so an

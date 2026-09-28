@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from niuu.config_models import SessionDefinitionConfig
 
+# The vendor, and provider kind, of a model served on the platform's own hardware.
+_SELF_HOSTED = "local"
+
 
 def _model_field(model_config: Any | None, field_name: str) -> str:
     return str(getattr(model_config, field_name, "") or "").strip()
@@ -72,6 +75,23 @@ def vendor_for_model(
             return vendor
 
     return infer_model_vendor(normalized_model)
+
+
+def is_self_hosted_model(
+    model_id: str,
+    *,
+    configured_models: Iterable[Any] | None = None,
+) -> bool:
+    """Return whether *model_id* is served on the platform's own hardware.
+
+    The catalogue says so through either field: a ``local`` vendor (or an alias
+    of it) or a ``local`` provider kind, whatever the vendor. A model the
+    catalogue does not list is judged by its id, as :func:`vendor_for_model` does.
+    """
+    if vendor_for_model(model_id, configured_models=configured_models) == _SELF_HOSTED:
+        return True
+    config = _find_model_config(model_id, configured_models=configured_models)
+    return normalize_model_vendor(_model_field(config, "provider")) == _SELF_HOSTED
 
 
 def session_definition_for_model(
