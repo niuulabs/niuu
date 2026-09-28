@@ -32,7 +32,6 @@ from ting.system_workflows import (
 _REVIEWER_PORTABLE = portable_persona_from_config(
     PersonaConfig(name="reviewer", system_prompt_template="Review the work under test.")
 )
-_PERSONA_DIGEST = _REVIEWER_PORTABLE.digest
 
 
 def _persona_dependency() -> dict:

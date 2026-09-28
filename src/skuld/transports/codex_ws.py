@@ -2630,6 +2630,7 @@ class CodexWebSocketTransport(CLITransport):
             try:
                 self._pending_prompt_correlations.remove((msg_id, request_id))
             except ValueError:
+                # A turn/started event may already have consumed this correlation.
                 pass
             raise
 

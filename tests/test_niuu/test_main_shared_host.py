@@ -203,7 +203,7 @@ def test_create_app_mounts_shared_identity_features_and_personas(
         assert "/api/v1/tracker/repo-mappings" in paths
         assert "/api/v1/niuu/instances" not in paths
         assert "/api/v1/forge/sessions" not in paths
-        app.dependency_overrides[niuu_main.extract_principal] = lambda: object()
+        app.dependency_overrides[niuu_main.extract_principal] = object
         app.state.realm_service.list_realms = AsyncMock(return_value=[])
         response = client.get("/api/v1/realms")
         assert response.status_code == 200

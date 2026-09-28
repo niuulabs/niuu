@@ -269,6 +269,7 @@ class CLICommandTransport(SleipnirSubscriber):
                 try:
                     proc.kill()
                 except ProcessLookupError:
+                    # The process exited before the timeout kill reached it.
                     pass
             await proc.communicate()
             logger.warning(
@@ -284,6 +285,7 @@ class CLICommandTransport(SleipnirSubscriber):
                 try:
                     proc.kill()
                 except ProcessLookupError:
+                    # The process exited before the cancellation kill reached it.
                     pass
             await proc.communicate()
             raise

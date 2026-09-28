@@ -507,7 +507,7 @@ async def test_cli_transport_agent_records_durable_tool_metrics(monkeypatch) -> 
     from opentelemetry.sdk.metrics.export import InMemoryMetricReader
     from opentelemetry.sdk.trace import TracerProvider
 
-    import niuu.observability as observability_module
+    from niuu import observability as observability_module
     from niuu.observability import Observability
 
     metric_reader = InMemoryMetricReader()
@@ -811,7 +811,7 @@ def test_cli_executor_adds_ravn_tools_mcp_server_when_tools_are_preloaded() -> N
 
 
 def test_cli_executor_propagates_active_trace_to_ravn_tool_mcp(monkeypatch) -> None:
-    import ravn.adapters.executors.cli as cli_module
+    from ravn.adapters.executors import cli as cli_module
 
     telemetry = MagicMock()
     telemetry.inject.return_value = {

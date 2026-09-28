@@ -59,10 +59,8 @@ async def test_remote_discovery_is_stable_and_leaves_checkout_unchanged(repo, tm
     )
     assert (await workspace.discover(str(clone))).id == first.id
     assert not (repo / "project.json").exists()
-    assert (
-        subprocess.check_output(["git", "-C", str(repo), "status", "--porcelain"]).strip()
-        == b"?? unrelated.txt"
-    )
+    status = subprocess.check_output(["git", "-C", str(repo), "status", "--porcelain"])
+    assert status.strip() == b"?? unrelated.txt"
 
 
 async def test_manifest_identity_and_existing_repository_url_are_preserved(repo):

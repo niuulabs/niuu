@@ -593,7 +593,7 @@ function observationEntries(value){
 function prettyPayload(value){
   const text=String(value||"").trim();
   if(!text) return "";
-  try{return JSON.stringify(JSON.parse(text),null,2)}
+  try{return JSON.stringify(JSON.parse(text),null,2);}
   catch{
     let formatted="", indent=0, inString=false, escaped=false;
     const pad=()=> "  ".repeat(Math.max(0,indent));
@@ -1115,7 +1115,7 @@ async function poll(){
     const text=await r.text();
     lastSuccess=Date.now();
     document.getElementById("live").hidden=false;
-    if(text===lastSeen){freshness();return}
+    if(text===lastSeen){freshness();return;}
     lastSeen=text;
     const next=JSON.parse(text);
     const list=Array.isArray(next.residents)&&next.residents.length?next.residents:[next];

@@ -1582,6 +1582,7 @@ class TmuxInteractiveTransport(CLITransport):
             try:
                 self._active_subagent_stack.remove(tool_use_id)
             except ValueError:
+                # The task may have completed before it entered the active stack.
                 pass
         result = payload.get("tool_response")
         if result is None:

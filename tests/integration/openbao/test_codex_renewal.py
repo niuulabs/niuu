@@ -151,6 +151,7 @@ def engine(tmp_path, request):
                     if client.get("/v1/sys/health").status_code == 200:
                         break
                 except httpx.RequestError:
+                    # The test server may still be starting; retry within the readiness budget.
                     pass
                 time.sleep(0.1)
             else:

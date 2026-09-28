@@ -298,7 +298,6 @@ def test_config_validation():
 
 
 async def test_cancel_before_guest_control_releases_without_touching_archive(setup):
-    import asyncio
 
     manager, _, repository, provider, runtime, _, session = setup
     entered = asyncio.Event()
@@ -323,7 +322,6 @@ async def test_cancel_before_guest_control_releases_without_touching_archive(set
 
 
 async def test_reconcile_resumes_cancelled_start_without_new_allocation(setup):
-    import asyncio
 
     manager, service, repository, provider, runtime, store, session = setup
     runtime.start.side_effect = asyncio.CancelledError
@@ -385,7 +383,6 @@ async def test_background_recovery_preserves_only_explicit_safe_runtime_stage(se
 
 
 async def test_stop_cancels_recovery_before_guest_data_is_touched(setup):
-    import asyncio
 
     manager, service, repository, provider, runtime, store, session = setup
     lease = await service.acquire(

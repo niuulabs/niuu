@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import ravn.cli.commands as commands_mod
 from ravn.adapters.realm.client import BuildGrant
 from ravn.adapters.tools.build_tool import attach_build_tool
+from ravn.cli import commands as commands_mod
 from ravn.cli.commands import (
     _attach_agent_build_tool,
     _build_tool_build_backend,

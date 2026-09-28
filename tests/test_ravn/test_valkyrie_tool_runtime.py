@@ -14,11 +14,11 @@ from typing import Any
 import pytest
 
 import ravn.adapters.tools.terminal_docker as terminal_docker
-import ravn.valkyrie_evolution.learned_tools as learned_tools_mod
-import ravn.valkyrie_evolution.tool_runtime as tool_runtime_mod
 from ravn.adapters.skill.file_registry import FileSkillRegistry
 from ravn.odin.review import ReviewItem, ReviewKind, ReviewStatus, review_decided_event
 from ravn.skills.management import SkillManagementRegistry
+from ravn.valkyrie_evolution import learned_tools as learned_tools_mod
+from ravn.valkyrie_evolution import tool_runtime as tool_runtime_mod
 from ravn.valkyrie_evolution.learned_tools import (
     NETWORK_ALLOWED_DOCKER_NETWORK,
     NETWORK_DENIED_DOCKER_NETWORK,

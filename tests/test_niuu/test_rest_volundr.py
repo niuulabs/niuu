@@ -1523,7 +1523,6 @@ def test_send_preserves_pending_http_status_and_client_request_identity() -> Non
     )
     assert response.status_code == 202
     assert response.json() == payload
-    import json
 
     assert json.loads(route.calls.last.request.content)["request_id"] == "client-1"
 
@@ -2026,6 +2025,4 @@ def test_read_state_is_forwarded_to_owning_instance(method, status_code):
     assert route.calls[0].request.headers["authorization"] == "Bearer test-token"
     assert "x-auth-user-id" not in route.calls[0].request.headers
     if method == "PATCH":
-        import json
-
         assert json.loads(route.calls[0].request.content) == body

@@ -42,6 +42,7 @@ def _terminate_if_alive(process):
         process.terminate()
         process.wait(timeout=15)
     except ProcessLookupError:
+        # The process exited between poll() and terminate().
         pass
 
 
@@ -87,6 +88,7 @@ def _wait_http(url, process, log_path):
             if response.status_code == 200:
                 return response.json()
         except httpx.TransportError:
+            # The API may not be listening yet; the readiness deadline remains enforced.
             pass
         time.sleep(0.05)
     raise AssertionError(f"Readiness deadline exceeded: {url}")
@@ -263,6 +265,7 @@ def test_full_api_restart_preserves_processes_turn_and_proxy_reconnect(tmp_path,
                     if _identity(gateway_pid) == owned[gateway_pid]:
                         os.kill(gateway_pid, signal.SIGTERM)
                 except (FileNotFoundError, ProcessLookupError, AssertionError):
+                    # The owned process already exited or its PID was reused.
                     pass
             deadline = time.monotonic() + 8
             while time.monotonic() < deadline:
@@ -276,4 +279,5 @@ def test_full_api_restart_preserves_processes_turn_and_proxy_reconnect(tmp_path,
                     if _identity(pid) == original:
                         os.kill(pid, signal.SIGKILL)
                 except (FileNotFoundError, ProcessLookupError, AssertionError):
+                    # The owned process already exited or its PID was reused.
                     pass

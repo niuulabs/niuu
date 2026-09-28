@@ -8,7 +8,6 @@ passes its own ``extract_principal`` auth dependency.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from uuid import UUID
@@ -18,8 +17,6 @@ from pydantic import BaseModel, Field
 
 from niuu.domain.models import Capability, Principal, Realm, TrustGrant
 from niuu.domain.services.realm import RealmService
-
-logger = logging.getLogger(__name__)
 
 # Role that may upsert a realm at a caller-supplied id (PUT /realms/{id}),
 # bypassing the owner check below. Matches the convention used across

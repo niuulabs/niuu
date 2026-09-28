@@ -14,7 +14,7 @@ from typing import Any
 import nats.js.api as js_api
 import pytest
 
-import ravn.adapters.environment_signals_nats as signals_nats
+from ravn.adapters import environment_signals_nats as signals_nats
 from ravn.adapters.environment_signals_nats import (
     NatsJetStreamSignalAdapter,
     _sanitize_durable,

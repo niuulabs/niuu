@@ -223,7 +223,7 @@ def test_build_instance_probe_honours_a_different_configured_adapter_class() -> 
             self.timeout_seconds = timeout_seconds
             self.health_paths = health_paths or {}
 
-    import niuu.config as niuu_config_module
+    from niuu import config as niuu_config_module
 
     setattr(niuu_config_module, "_StubProbeForTest", _StubProbe)
     try:

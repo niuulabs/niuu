@@ -866,6 +866,33 @@ class TestBroker:
         restarted_publish.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("marker", ["not valid JSON", "directory"])
+    async def test_unreadable_workflow_acknowledgment_does_not_repeat_kickoff(
+        self, tmp_path, marker
+    ):
+        settings = SkuldSettings(
+            session={"id": "wf-unreadable", "workspace_dir": str(tmp_path)},
+            workflow_trigger={
+                "enabled": True,
+                "node_id": "trigger-1",
+                "event_type": "code.requested",
+            },
+        )
+        broker = Broker(settings=settings)
+        marker_path = tmp_path / ".skuld" / "workflow_kickoff_wf-unreadable.json"
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        if marker == "directory":
+            marker_path.mkdir()
+            expected = OSError
+        else:
+            marker_path.write_text(marker)
+            expected = ValueError
+        with patch.object(broker, "_publish_workflow_trigger", new=AsyncMock()) as publish:
+            with pytest.raises(expected):
+                await broker._run_workflow_trigger_task()
+        publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_restored_terminal_outcome_skips_workflow_prompt_and_kickoff(self, tmp_path):
         settings = SkuldSettings(
             session={

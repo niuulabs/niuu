@@ -147,6 +147,7 @@ class BashTool(ToolPort):
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
                 except ProcessLookupError:
+                    # The process group exited before the timeout kill reached it.
                     pass
                 await proc.communicate()
                 output = self._build_output(b"", warnings)

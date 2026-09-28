@@ -1409,9 +1409,11 @@ class ResidentRuntime:
         now = datetime.now(UTC)
         context_lines = [
             "Resident home turn over durable, unconsumed observations.",
-            "Judge what these observations mean. Retrieve full evidence only when it can "
-            "improve the judgment. Investigate, research, collaborate, ask the operator, "
-            "act, schedule a recheck, or stop as appropriate.",
+            (
+                "Judge what these observations mean. Retrieve full evidence only when it can "
+                "improve the judgment. Investigate, research, collaborate, ask the operator, "
+                "act, schedule a recheck, or stop as appropriate."
+            ),
             "",
         ]
         if self._resident_personality or self._charter:
@@ -1516,8 +1518,10 @@ class ResidentRuntime:
         telemetry = get_observability()
         case_id = f"resident-stewardship-{now.strftime('%Y%m%dT%H%M%SZ')}"
         context_lines = [
-            "Resident stewardship turn. No new observation prompted this; the "
-            "environment has simply gone unexamined for a while.",
+            (
+                "Resident stewardship turn. No new observation prompted this; the "
+                "environment has simply gone unexamined for a while."
+            ),
             "",
             f"Time since the resident last recorded working state: {_duration(quiet_seconds)}.",
             f"Last examined: {last_examined or 'never — this is the first stewardship turn'}.",

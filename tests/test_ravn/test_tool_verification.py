@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 from typing import Any
 
-import ravn.valkyrie_evolution.tool_verification as verify_mod
+from ravn.valkyrie_evolution import tool_verification as verify_mod
 from ravn.valkyrie_evolution.tool_verification import (
     VerificationResult,
     _module_name_for_tool,

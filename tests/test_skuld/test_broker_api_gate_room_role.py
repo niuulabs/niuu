@@ -73,7 +73,7 @@ async def test_case_insensitive_role_matching():
     fake_broker = SimpleNamespace(
         resolve_workflow_gate=AsyncMock(return_value={"id": "gate-1", "status": "resolved"})
     )
-    import skuld.broker_api as broker_api_module
+    from skuld import broker_api as broker_api_module
 
     original = broker_api_module.broker
     broker_api_module.broker = fake_broker

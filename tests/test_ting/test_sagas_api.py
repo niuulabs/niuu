@@ -13,7 +13,6 @@ import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
-import ting.api.sagas as sagas_api
 from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from niuu.domain.models import (
     InstanceKind,
@@ -21,6 +20,7 @@ from niuu.domain.models import (
     Principal,
     RegisteredInstance,
 )
+from ting.api import sagas as sagas_api
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.phases import create_saga_phases_router
 from ting.api.research import resolve_workflow_campaign_repo

@@ -1650,7 +1650,8 @@ class Broker(
             if json.loads(marker_path.read_text(encoding="utf-8")) == marker:
                 logger.info("Workflow kickoff already acknowledged — skipping restart dispatch")
                 return
-        except (FileNotFoundError, OSError, ValueError):
+        except FileNotFoundError:
+            # No acknowledgment exists before the first successful kickoff.
             pass
         telemetry = get_observability()
         workflow_name = (
@@ -5730,7 +5731,7 @@ broker = Broker(
 
 # API imports remain late because they bind the completed Broker instance.
 # isort: off
-import skuld.broker_api as _broker_api  # noqa: E402
+from skuld import broker_api as _broker_api  # noqa: E402
 from skuld.broker_api import (  # noqa: E402, F401
     lifespan,
     health,

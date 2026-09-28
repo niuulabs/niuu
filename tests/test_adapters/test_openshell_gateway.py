@@ -62,7 +62,7 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
     grpc_mod.secure_channel = lambda _endpoint, _credentials: types.SimpleNamespace(
         close=lambda: None
     )
-    grpc_mod.ssl_channel_credentials = lambda: object()
+    grpc_mod.ssl_channel_credentials = object
 
     google_mod = types.ModuleType("google")
     protobuf_mod = types.ModuleType("google.protobuf")

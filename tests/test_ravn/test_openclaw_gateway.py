@@ -82,7 +82,7 @@ async def running_shim(
     tick_seconds: float | None = None,
 ):
     """Boot the shim on an ephemeral port and yield its URL."""
-    import ravn.adapters.channels.gateway_openclaw as mod
+    from ravn.adapters.channels import gateway_openclaw as mod
 
     stub = stub or StubRavnGateway(script=plain_turn())
 

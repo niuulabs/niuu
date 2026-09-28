@@ -110,6 +110,7 @@ def _wait_gateway_ready(port: int, gateway: subprocess.Popen, timeout: float = 3
                 if json.loads(response.read()).get("ready") is True:
                     return
         except (OSError, ValueError):
+            # Startup may still be in progress; the bounded readiness loop will retry.
             pass
         time.sleep(0.1)
     raise TimeoutError(f"gateway did not become ready within {timeout}s")

@@ -1756,6 +1756,7 @@ def create_app(
                 try:
                     await background_task
                 except asyncio.CancelledError:
+                    # The reconciliation task was explicitly cancelled above during shutdown.
                     pass  # Expected: task cancellation during shutdown
                 if liveness_task is not None:
                     liveness_task.cancel()

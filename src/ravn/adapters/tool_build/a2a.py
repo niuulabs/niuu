@@ -634,8 +634,6 @@ class A2AToolBuildBackend(ToolBuildBackend):
                 raise ToolBuildError(
                     "A2A gate continuation requires gateDecision=approve or request_changes"
                 )
-            if decision == "request_changes" and not answer:
-                raise ToolBuildError("A2A gate change request requires review notes")
 
         payload = continuation.get("input_payload")
         payload = dict(payload) if isinstance(payload, dict) else {}

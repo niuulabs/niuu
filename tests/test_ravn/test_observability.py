@@ -108,11 +108,11 @@ async def test_learned_tool_lifecycle_has_explicit_trace_spans(
 ) -> None:
     from contextlib import contextmanager
 
-    import ravn.adapters.tools.build_tool as build_tool_module
-    import ravn.adapters.tools.learned_tool_run as learned_tool_module
-    import ravn.adapters.tools.skill_tools as skill_tools_module
     from ravn.adapters.permission.allow_deny import AllowAllPermission
     from ravn.adapters.skill.file_registry import FileSkillRegistry
+    from ravn.adapters.tools import build_tool as build_tool_module
+    from ravn.adapters.tools import learned_tool_run as learned_tool_module
+    from ravn.adapters.tools import skill_tools as skill_tools_module
     from ravn.adapters.tools.build_tool import BuildTool
     from ravn.adapters.tools.learned_tool_run import LearnedToolRunTool
     from ravn.adapters.tools.skill_tools import SkillManageTool

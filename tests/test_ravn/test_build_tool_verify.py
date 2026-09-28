@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-import ravn.adapters.tools.build_tool as build_tool_mod
+from ravn.adapters.tools import build_tool as build_tool_mod
 from ravn.adapters.tools.build_tool import DEFAULT_MAX_REPAIR_ATTEMPTS, BuildTool
 from ravn.ports.tool_build_backend import (
     ToolBuildInputRequiredError,

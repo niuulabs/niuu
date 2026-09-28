@@ -3140,6 +3140,7 @@ class TestSteadyStateTelemetryRefresh:
         try:
             await task
         except asyncio.CancelledError:
+            # The test explicitly cancelled the heartbeat task above.
             pass
 
         assert calls, "heartbeat did not re-state registered gauges"

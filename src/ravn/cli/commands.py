@@ -1074,7 +1074,6 @@ def inbox_migrate(
     before its original file is removed, so an interrupted run simply resumes.
     Reports counts so the operator can reconcile before and after.
     """
-    import asyncio  # noqa: PLC0415
 
     from ravn.resident_inbox import LocalResidentInbox  # noqa: PLC0415
 
@@ -1109,7 +1108,6 @@ def memory_backfill_embeddings(
     each batch commits before the next is fetched, so a run interrupted or
     refused partway can simply be run again.
     """
-    import asyncio  # noqa: PLC0415
 
     if config:
         os.environ["RAVN_CONFIG"] = config

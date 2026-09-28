@@ -772,7 +772,6 @@ class VmPodManager(PodManager):
                         ):
                             raise
                     await asyncio.sleep(self._poll)
-            return True
 
     async def _finish_stop(self, lease):
         if self._pool_service:

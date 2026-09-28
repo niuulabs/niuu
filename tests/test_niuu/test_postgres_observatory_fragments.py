@@ -140,7 +140,9 @@ async def test_delete_reports_whether_a_row_was_removed() -> None:
     repository = PostgresObservatoryFragmentRepository(pool)  # type: ignore[arg-type]
 
     pool.execute_result = "DELETE 1"
-    assert await repository.delete("spark-1") is True
+    deleted = await repository.delete("spark-1")
+    assert deleted is True
 
     pool.execute_result = "DELETE 0"
-    assert await repository.delete("never-seen") is False
+    deleted = await repository.delete("never-seen")
+    assert deleted is False

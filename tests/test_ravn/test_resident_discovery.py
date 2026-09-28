@@ -192,7 +192,7 @@ class TestKubernetesListingPlumbing:
     """Shared deployment-listing behavior (no client library installed)."""
 
     async def test_no_token_mounted_returns_empty(self, tmp_path, monkeypatch) -> None:
-        import ravn.adapters.kubernetes_deployments as kd
+        from ravn.adapters import kubernetes_deployments as kd
 
         monkeypatch.setattr(kd, "_SERVICE_ACCOUNT_ROOT", tmp_path)
         adapter = KubernetesResidentDiscoveryAdapter(namespace="volundr")
@@ -201,7 +201,7 @@ class TestKubernetesListingPlumbing:
 
     @respx.mock
     async def test_incluster_rest_listing_maps_residents(self, tmp_path, monkeypatch) -> None:
-        import ravn.adapters.kubernetes_deployments as kd
+        from ravn.adapters import kubernetes_deployments as kd
 
         (tmp_path / "token").write_text("sa-token", encoding="utf-8")
         monkeypatch.setattr(kd, "_SERVICE_ACCOUNT_ROOT", tmp_path)
@@ -255,7 +255,7 @@ class TestKubernetesListingPlumbing:
     async def test_incluster_rest_all_namespaces_error_returns_empty(
         self, tmp_path, monkeypatch
     ) -> None:
-        import ravn.adapters.kubernetes_deployments as kd
+        from ravn.adapters import kubernetes_deployments as kd
 
         (tmp_path / "token").write_text("sa-token", encoding="utf-8")
         monkeypatch.setattr(kd, "_SERVICE_ACCOUNT_ROOT", tmp_path)
