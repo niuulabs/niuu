@@ -111,6 +111,65 @@ ToolChoice = ToolChoiceAuto | ToolChoiceAny | ToolChoiceTool
 # ---------------------------------------------------------------------------
 
 
+def _has_role(message: Any, role: str) -> bool:
+    return isinstance(message, dict) and message.get("role") == role
+
+
+def _is_user_turn(message: Any) -> bool:
+    return _has_role(message, "user") and isinstance(message.get("content"), str | list)
+
+
+def _system_block_text(block: Any) -> str:
+    if not (isinstance(block, dict) and block.get("type") == "text"):
+        raise ValueError("a role: system message may hold only text blocks")
+    text = block.get("text")
+    if not isinstance(text, str):
+        raise ValueError("a text block in a role: system message needs a string text")
+    return text
+
+
+def _system_text_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the non-empty texts of a ``role: system`` message as plain text blocks.
+
+    Raises:
+        ValueError: The content is neither a string nor a list of text blocks.
+    """
+    content = message.get("content")
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    if not isinstance(content, list):
+        raise ValueError("a role: system message's content must be a string or a list of blocks")
+    texts = [_system_block_text(block) for block in content]
+    return [{"type": "text", "text": text} for text in texts if text]
+
+
+def _content_blocks(content: str | list[Any]) -> list[Any]:
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    return list(content)
+
+
+def _block_type(block: Any) -> Any:
+    if isinstance(block, dict):
+        return block.get("type")
+    return getattr(block, "type", None)
+
+
+def _insert_after_tool_results(
+    turn: dict[str, Any], blocks: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Put *blocks* at the head of a user turn, behind the ``tool_result`` blocks that lead it."""
+    content = _content_blocks(turn["content"])
+    at = 0
+    while at < len(content) and _block_type(content[at]) == "tool_result":
+        at += 1
+    return {**turn, "content": [*content[:at], *blocks, *content[at:]]}
+
+
+def _append_to_turn(turn: dict[str, Any], blocks: list[dict[str, Any]]) -> dict[str, Any]:
+    return {**turn, "content": [*_content_blocks(turn["content"]), *blocks]}
+
+
 class AnthropicRequest(BaseModel):
     _routed_provider: str | None = PrivateAttr(default=None)
     _routing_prepared: bool = PrivateAttr(default=False)
@@ -119,40 +178,62 @@ class AnthropicRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _fold_system_messages(cls, data: Any) -> Any:
-        """Accept ``role: system`` messages by moving them into ``system``.
+        """Accept ``role: system`` messages, which the Anthropic API keeps out of ``messages``.
 
-        The Anthropic API keeps the system prompt out of ``messages``, but
-        clients written against OpenAI-style APIs (and Claude Code itself, once
-        pointed at a custom base URL) put instructions there. Rejecting the
-        turn would break every such client; folding keeps the instructions.
+        Clients written against OpenAI-style APIs, and Claude Code once pointed
+        at a custom base URL, put instructions there; rejecting the turn would
+        break every such client. A system message must hold a string or a list
+        of text blocks, or the request fails validation. Its text stays where
+        the message stood, as plain text blocks without ``cache_control``:
+
+        - before any other message: appended to ``system``;
+        - after a user turn: appended to that turn;
+        - after an assistant turn: put at the head of the next user turn, behind
+          its ``tool_result`` blocks, or, when an assistant turn or the end of
+          the conversation comes next, sent as a user turn of its own.
+
+        A system message with empty text is dropped. Only those that open the
+        conversation join ``system``: Claude Code sends one after every tool
+        result, and hoisting those would change the head of every request as
+        the conversation grows, so no provider's prefix cache could reuse the
+        turns before it.
         """
         if not isinstance(data, dict) or not isinstance(data.get("messages"), list):
             return data
-        system_texts: list[str] = []
+        if not any(_has_role(message, "system") for message in data["messages"]):
+            return data
+        leading: list[dict[str, Any]] = []
+        pending: list[dict[str, Any]] = []
         kept: list[Any] = []
         for message in data["messages"]:
-            if not (isinstance(message, dict) and message.get("role") == "system"):
+            if not _has_role(message, "system"):
+                if pending and _is_user_turn(message):
+                    message = _insert_after_tool_results(message, pending)
+                elif pending:
+                    kept.append({"role": "user", "content": pending})
+                pending = []
                 kept.append(message)
                 continue
-            content = message.get("content")
-            if isinstance(content, str):
-                system_texts.append(content)
-            elif isinstance(content, list):
-                system_texts.extend(
-                    str(block.get("text", ""))
-                    for block in content
-                    if isinstance(block, dict) and block.get("type") == "text"
-                )
-        if not system_texts:
-            return data
-        blocks: list[Any] = []
+            blocks = _system_text_blocks(message)
+            if not blocks:
+                continue
+            if not kept:
+                leading.extend(blocks)
+            elif _is_user_turn(kept[-1]):
+                kept[-1] = _append_to_turn(kept[-1], blocks)
+            else:
+                pending.extend(blocks)
+        if pending:
+            kept.append({"role": "user", "content": pending})
+        if not leading:
+            return {**data, "messages": kept}
+        system: list[Any] = []
         existing = data.get("system")
         if isinstance(existing, str) and existing:
-            blocks.append({"type": "text", "text": existing})
+            system.append({"type": "text", "text": existing})
         elif isinstance(existing, list):
-            blocks.extend(existing)
-        blocks.extend({"type": "text", "text": text} for text in system_texts if text)
-        return {**data, "messages": kept, "system": blocks}
+            system.extend(existing)
+        return {**data, "messages": kept, "system": [*system, *leading]}
 
     model: str
     max_tokens: int = 1024
