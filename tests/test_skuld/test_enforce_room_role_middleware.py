@@ -278,6 +278,7 @@ class TestEnforceRoomRoleMiddlewareRemoteMode:
             _remote_request(identity_headers={"x-auth-user-id": "bob"}), _call_next_ok
         )
         assert response.status_code == 503
+        assert response.body == b'{"detail":"Room role resolution unavailable"}'
 
     async def test_sufficient_role_passes_through(self, monkeypatch):
         _set_remote_room_role_source(monkeypatch, _FakeResolver("owner"))
