@@ -291,3 +291,17 @@ async def test_query_naive_timestamp_gets_utc(repo):
 
     results = await repo.query(AuditQuery())
     assert results[0].timestamp.tzinfo is not None
+
+
+@pytest.mark.parametrize("service", ["ravn", "Ravn", "ravn%_'"])
+async def test_service_filter_is_exact_and_precedes_limit(repo, service):
+    await repo.append(make_event(event_id="bare", source=service, timestamp=_ts(0)))
+    await repo.append(
+        make_event(event_id="nested", source=f"{service}:agent:tool", timestamp=_ts(1))
+    )
+    await repo.append(make_event(event_id="other", source=f"{service}x:agent", timestamp=_ts(2)))
+
+    results = await repo.query(AuditQuery(service=service, limit=2))
+    assert [event.event_id for event in results] == ["nested", "bare"]
+    results = await repo.query(AuditQuery(service=service, source=service, limit=1))
+    assert [event.event_id for event in results] == ["bare"]

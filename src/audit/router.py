@@ -150,12 +150,10 @@ def _build_audit_router(
             to_ts=to,
             correlation_id=correlation_id,
             source=source,
-            limit=_MAX_LIMIT if service else limit,
+            service=service or None,
+            limit=limit,
         )
         events = await repository.query(q)
-        if service:
-            events = [event for event in events if event.source.split(":", 1)[0] == service]
-        events = events[:limit]
         return [AuditEventResponse.from_event(e) for e in events]
 
     return router
