@@ -800,6 +800,7 @@ async def launch_workflow_execution(
             fallback_model=launch.model or settings.dispatch.default_model,
             requested_definition=launch.definition or _DEFAULT_WORKFLOW_LAUNCH_DEFINITION,
             session_definitions=settings.session_definitions,
+            workflow_cli_turn_timeout_seconds=settings.dispatch.workflow_cli_turn_timeout_seconds,
             configured_models=list(settings.bifrost.models),
         )
     except ValueError as exc:

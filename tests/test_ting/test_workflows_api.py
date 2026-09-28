@@ -1504,6 +1504,65 @@ class TestWorkflowCatalogAPI:
         assert campaign.workflow_snapshot["workflow_revision"].startswith("sha256:")
         assert campaign.metadata["surface"] == "ting.workflow-launch"
 
+    def _launch_claude_workflow_executor(self, settings: Settings) -> dict:
+        workflow = _make_research_workflow()
+        graph = json.loads(json.dumps(workflow.graph))
+        graph["nodes"][2]["stageMembers"][0]["model"] = "claude-sonnet-4-6"
+        workflow = replace(workflow, graph=graph)
+        adapter = RecordingVolundrPort()
+        client = _make_client(
+            InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([adapter]),
+            settings=settings,
+        )
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={
+                "prompt": "Frame the question.",
+                "repo": "https://github.com/niuulabs/volundr.git",
+                "branch": "feat/research",
+                "model": "claude-sonnet-4-6",
+            },
+        )
+
+        assert response.status_code == 201, response.text
+        [spawn] = adapter.requests
+        [persona] = spawn.workload_config["personas"]
+        return persona["executor"]["kwargs"]
+
+    def test_launch_gives_claude_personas_the_configured_turn_timeout(self) -> None:
+        settings = Settings(
+            auth=AuthConfig(allow_anonymous_dev=False),
+            dispatch={"workflow_cli_turn_timeout_seconds": 900},
+        )
+
+        assert self._launch_claude_workflow_executor(settings) == {
+            "transport_adapter": "skuld.transports.sdk.SDKTransport",
+            "transport_kwargs": {"turn_timeout_s": 900.0},
+        }
+
+    def test_launch_passes_a_zero_turn_timeout_through_unchanged(self) -> None:
+        """0 turns the limit off; it must not be replaced by the default."""
+        settings = Settings(
+            auth=AuthConfig(allow_anonymous_dev=False),
+            dispatch={"workflow_cli_turn_timeout_seconds": 0},
+        )
+
+        assert self._launch_claude_workflow_executor(settings) == {
+            "transport_adapter": "skuld.transports.sdk.SDKTransport",
+            "transport_kwargs": {"turn_timeout_s": 0.0},
+        }
+
+    def test_launch_gives_claude_personas_the_default_turn_timeout(self) -> None:
+        settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
+
+        assert self._launch_claude_workflow_executor(settings) == {
+            "transport_adapter": "skuld.transports.sdk.SDKTransport",
+            "transport_kwargs": {"turn_timeout_s": 120.0},
+        }
+
     def test_launch_historical_version_uses_its_graph_and_dependency_closure(self) -> None:
         old = _make_research_workflow()
         child = _make_workflow(name="Historical Child")

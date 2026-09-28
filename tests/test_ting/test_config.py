@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 
 from ting.config import (
+    DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS,
     DatabaseConfig,
+    DispatchConfig,
     LoggingConfig,
     Settings,
     WorkflowExecutionConfig,
@@ -94,6 +96,36 @@ class TestSettings:
 
         with pytest.raises(ValueError, match=field):
             Settings()
+
+
+class TestWorkflowCliTurnTimeout:
+    """``dispatch.workflow_cli_turn_timeout_seconds`` bounds a Claude Code persona's turn."""
+
+    def test_defaults_to_120_seconds(self) -> None:
+        assert DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS == 120.0
+        assert DispatchConfig().workflow_cli_turn_timeout_seconds == 120.0
+        assert Settings().dispatch.workflow_cli_turn_timeout_seconds == 120.0
+
+    def test_config_file_shape_sets_it(self) -> None:
+        settings = Settings(dispatch={"workflow_cli_turn_timeout_seconds": 900})
+
+        assert settings.dispatch.workflow_cli_turn_timeout_seconds == 900.0
+
+    def test_environment_sets_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DISPATCH__WORKFLOW_CLI_TURN_TIMEOUT_SECONDS", "1800")
+
+        assert Settings().dispatch.workflow_cli_turn_timeout_seconds == 1800.0
+
+    def test_zero_turns_the_limit_off_and_is_accepted(self) -> None:
+        assert (
+            DispatchConfig(workflow_cli_turn_timeout_seconds=0).workflow_cli_turn_timeout_seconds
+            == 0.0
+        )
+
+    @pytest.mark.parametrize("value", [-1, -0.5, "nan", "inf", "-inf", "ten minutes"])
+    def test_negative_non_finite_or_non_numeric_values_fail_loudly(self, value: object) -> None:
+        with pytest.raises(ValueError, match="workflow_cli_turn_timeout_seconds"):
+            DispatchConfig(workflow_cli_turn_timeout_seconds=value)
 
 
 class TestWorkflowExecutionConfig:

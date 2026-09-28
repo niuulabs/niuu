@@ -50,6 +50,10 @@ def _config_paths() -> list[Path]:
 CONFIG_PATHS = _config_paths()
 BUNDLED_FLOCK_FLOWS_PATH = (Path(__file__).parent / "flock_flows.yaml").resolve()
 
+# Default for ``dispatch.workflow_cli_turn_timeout_seconds``; the dispatch service's
+# own config defaults to the same value.
+DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS = 120.0
+
 
 class DatabaseConfig(BaseModel):
     """PostgreSQL database configuration."""
@@ -436,6 +440,19 @@ class DispatchConfig(BaseModel):
             "this config is not consulted — the API/UI is the source of truth. "
             "Set this to true in solo-dev setups so newly-spawned owners "
             "auto-pick the next ready issue after a phase gate unlocks."
+        ),
+    )
+    workflow_cli_turn_timeout_seconds: float = Field(
+        default=DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS,
+        ge=0.0,
+        allow_inf_nan=False,
+        description=(
+            "Seconds a workflow persona running on Claude Code (the Agent SDK "
+            "transport) may spend on one turn. A turn is the persona's whole "
+            "agent loop for a task, every model and tool call included, so a "
+            "slow model needs a larger value. A turn that reaches the limit is "
+            "interrupted. 0 turns the limit off. Codex personas get no per-turn "
+            "limit from this setting."
         ),
     )
     flock: FlockConfig = Field(default_factory=FlockConfig)

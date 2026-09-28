@@ -190,6 +190,11 @@ dispatch:
   # {repo}, {feature_branch}, {run_branch}.
   # Leave empty to use the built-in default from config.py.
   dispatchPromptTemplate: ""
+  # -- Seconds a workflow persona running on Claude Code may spend on one
+  # turn: its whole agent loop for a task, every model and tool call
+  # included. A turn that reaches it is interrupted. Raise it for slow or
+  # self-hosted models; 0 turns the limit off. Codex personas are not limited.
+  workflowCliTurnTimeoutSeconds: 120.0
 
 # Planner configuration
 planner:

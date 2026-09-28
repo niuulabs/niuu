@@ -1401,6 +1401,71 @@ class TestBuildSpawnRequestPersonaOverrides:
             }
         ]
 
+    @pytest.mark.parametrize("turn_timeout_s", [900.0, 0.0])
+    def test_workflow_snapshot_gives_claude_personas_the_configured_turn_timeout(
+        self, turn_timeout_s: float
+    ):
+        config = DispatchConfig(
+            flock_enabled=False,
+            flock_default_personas=[],
+            workflow_cli_turn_timeout_seconds=turn_timeout_s,
+        )
+        saga = self._make_saga()
+        issue = self._make_issue()
+        workflow_snapshot = {
+            "workflow_id": str(uuid4()),
+            "name": "Mixed Flow",
+            "version": "1.0.0",
+            "graph": {
+                "nodes": [
+                    {
+                        "id": "stage-1",
+                        "kind": "stage",
+                        "label": "Implement",
+                        "stageMembers": [
+                            {"personaId": "coder", "model": "claude-sonnet-4-6", "budget": 40}
+                        ],
+                    },
+                    {
+                        "id": "stage-2",
+                        "kind": "stage",
+                        "label": "Review",
+                        "stageMembers": [
+                            {"personaId": "reviewer", "model": "gpt-5.5", "budget": 25}
+                        ],
+                    },
+                ]
+            },
+        }
+
+        svc = MagicMock()
+        svc._config = config
+        svc._flow_provider = None
+        item = DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo")
+        req = DispatchService._build_spawn_request(
+            svc,
+            item=item,
+            saga=saga,
+            issue=issue,
+            effective_model="claude-sonnet-4-6",
+            effective_prompt="",
+            integration_ids=[],
+            workflow_snapshot=workflow_snapshot,
+        )
+
+        executors = {
+            persona["name"]: persona["executor"]["kwargs"]
+            for persona in req.workload_config["personas"]
+        }
+        assert executors["coder"] == {
+            "transport_adapter": "skuld.transports.sdk.SDKTransport",
+            "transport_kwargs": {"turn_timeout_s": turn_timeout_s},
+        }
+        assert executors["reviewer"] == {
+            "transport_adapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
+            "transport_kwargs": {"skip_permissions": True},
+        }
+
     def test_workflow_snapshot_ignores_incompatible_default_session_definition(self):
         config = DispatchConfig(
             flock_enabled=False,

@@ -167,6 +167,20 @@ def _use_local_volundr_factory(settings: Settings) -> bool:
     return settings.auth.allow_anonymous_dev and not settings.volundr.use_connection_factory_in_dev
 
 
+def _dispatch_service_config(settings: Settings) -> DispatchServiceConfig:
+    """Map the dispatch settings onto the dispatch service's config."""
+    return DispatchServiceConfig(
+        default_system_prompt=settings.dispatch.default_system_prompt,
+        default_model=settings.dispatch.default_model,
+        default_session_definition=settings.dispatch.default_session_definition,
+        dispatch_prompt_template=settings.dispatch.dispatch_prompt_template,
+        session_definitions=settings.session_definitions,
+        configured_models=list(settings.bifrost.models),
+        workflow_cli_turn_timeout_seconds=settings.dispatch.workflow_cli_turn_timeout_seconds,
+        live_flock=settings.dispatch.flock,
+    )
+
+
 def _workflow_execution_token_issuer(
     settings: Settings,
     workload_identity_service: WorkloadTokenIssuer,
@@ -1134,15 +1148,7 @@ def create_app(
                 volundr_factory=app.state.volundr_factory,
                 saga_repo=saga_repo,
                 dispatcher_repo=dispatcher_repo,
-                config=DispatchServiceConfig(
-                    default_system_prompt=settings.dispatch.default_system_prompt,
-                    default_model=settings.dispatch.default_model,
-                    default_session_definition=settings.dispatch.default_session_definition,
-                    dispatch_prompt_template=settings.dispatch.dispatch_prompt_template,
-                    session_definitions=settings.session_definitions,
-                    configured_models=list(settings.bifrost.models),
-                    live_flock=settings.dispatch.flock,
-                ),
+                config=_dispatch_service_config(settings),
                 sleipnir_publisher=sleipnir_bus,
                 flow_provider=flow_provider,
                 workflow_repo=workflow_repo,
