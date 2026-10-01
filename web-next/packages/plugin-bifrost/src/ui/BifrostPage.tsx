@@ -86,7 +86,7 @@ function HealthPill({ state }: { state: BifrostProvider['state'] }) {
 
   return (
     <span
-      className={`niuu:inline-flex niuu:items-center niuu:gap-1.5 niuu:rounded-full niuu:px-2.5 niuu:py-1 niuu:text-[11px] niuu:font-medium ${healthTone(state)}`}
+      className={`bf-health-pill niuu:inline-flex niuu:items-center niuu:gap-1.5 niuu:rounded-full niuu:px-2.5 niuu:py-1 niuu:text-[11px] niuu:font-medium ${healthTone(state)}`}
     >
       <StateDot state={dotState} />
       {state}

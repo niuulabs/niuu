@@ -584,3 +584,28 @@ describe('TopologyScene3D', () => {
     expect(supportsWebGL()).toBe(false);
   });
 });
+
+it('switches the backdrop in place and restores the original dark scene', async () => {
+  const root = document.documentElement;
+  root.dataset.theme = 'ice';
+  root.style.setProperty('--color-bg-primary', '#f7f7f7');
+  root.style.setProperty('--color-text-secondary', '#525252');
+  renderScene();
+  const first = renders.at(-1)!;
+  const original = first.scene.background;
+  await act(async () => {
+    root.dataset.theme = 'light';
+  });
+  runFrames(2);
+  expect((first.scene.background as import('three').Color).getHexString()).toBe('f7f7f7');
+  expect(renders.at(-1)!.camera).toBe(first.camera);
+  expect(disposals).toBe(0);
+  await act(async () => {
+    root.dataset.theme = 'ice';
+  });
+  expect(first.scene.background).toBe(original);
+  cleanup();
+  delete root.dataset.theme;
+  root.style.removeProperty('--color-bg-primary');
+  root.style.removeProperty('--color-text-secondary');
+});

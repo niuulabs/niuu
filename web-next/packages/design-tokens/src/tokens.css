@@ -181,6 +181,7 @@
    * legend UI reads the same variables so swatches always match the
    * scene exactly.
    * ────────────────────────────────────────────────────── */
+  --color-memory-background: #000000;
   --color-memory-kind-topic: #38bdf8;
   --color-memory-kind-entity: #a855f7;
   --color-memory-kind-decision: #f59e0b;
@@ -494,4 +495,140 @@ kbd {
   --ops-text-body: var(--color-text-secondary);
   --ops-text-muted: var(--color-text-muted);
   --ops-text-faint: var(--color-text-faint);
+}
+
+[data-theme='light'] {
+  --color-text-tertiary: var(--color-text-muted);
+  --color-accent: var(--color-brand);
+  --light-panel: var(--color-bg-secondary);
+  --light-border: var(--color-border);
+  --light-accent: var(--color-brand);
+  --color-memory-background: var(--color-bg-primary);
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --radius-lg: 0.625rem;
+  color-scheme: light;
+
+  /* cho.sh-inspired neutral surfaces and restrained emerald accents.
+   * Low-number brand tokens also serve as foregrounds in legacy plugins. */
+  --brand-100: #064e3b;
+  --brand-200: #065f46;
+  --brand-300: #047857;
+  --brand-400: #047857;
+  --brand-500: #047857;
+  --brand-600: #047857;
+  --brand-700: #065f46;
+  --brand-800: #064e3b;
+  --brand-900: #022c22;
+  --color-brand: var(--brand-500);
+
+  --color-bg-primary: #f7f7f7;
+  --color-bg-secondary: #ffffff;
+  --color-bg-tertiary: #f7f7f7;
+  --color-bg-elevated: #ebebeb;
+  --color-text-primary: #171717;
+  --color-text-secondary: #525252;
+  --color-text-muted: #666666;
+  --color-text-faint: #737373;
+  --color-border: #d4d4d4;
+  --color-border-subtle: #ebebeb;
+  --color-code-surface: var(--color-bg-secondary);
+  --color-panel-quiet: var(--color-bg-tertiary);
+  --color-border-quiet: var(--color-border-subtle);
+  --color-selection-surface: color-mix(in srgb, var(--color-brand) 8%, white);
+  --color-selection-edge: color-mix(in srgb, var(--color-brand) 35%, white);
+  --color-sent-surface: color-mix(in srgb, var(--color-brand) 8%, white);
+  --color-emphasis: var(--color-accent-amber);
+  --color-accent-fill: var(--color-brand);
+  --color-accent-on-fill: #ffffff;
+
+  --color-warning: var(--color-accent-amber);
+  --color-danger: var(--color-critical);
+  --color-accent-emerald: var(--status-healthy);
+  --color-critical: #b91c1c;
+  --color-critical-fg: #b91c1c;
+  --color-gate: #7e22ce;
+  --color-gate-fg: #6d28d9;
+  --color-accent-spring: #4d7c0f;
+  --color-accent-teal: #0f766e;
+  --color-accent-amber: #b45309;
+  --color-accent-violet: #6d28d9;
+  --color-delta-up: #047857;
+  --state-ok: #047857;
+  --state-warn: #b45309;
+
+  /* Keep status and identity hues readable on pale badges and controls. */
+  --status-emerald: #047857;
+  --status-green: #15803d;
+  --status-amber: #92400e;
+  --status-orange: #9a3412;
+  --status-red: #b91c1c;
+  --status-cyan: #0e7490;
+  --status-indigo: #4338ca;
+  --status-purple: #7e22ce;
+  --color-harness-claude: #9a3412;
+  --color-harness-codex: #1d4ed8;
+
+  --status-healthy: #047857;
+  --status-running: #0369a1;
+  --status-observing: #0369a1;
+  --status-merged: #047857;
+  --status-attention: #b45309;
+  --status-review: #b45309;
+  --status-queued: var(--color-text-secondary);
+  --status-processing: #075985;
+  --status-deciding: #075985;
+
+  --shadow-sm: 0 1px 1px rgb(0 0 0 / 0.05);
+  --shadow-md: 0 1px 1px rgb(0 0 0 / 0.04), 0 4px 4px rgb(0 0 0 / 0.02);
+  --shadow-lg: 0 4px 8px rgb(0 0 0 / 0.04), 0 16px 32px rgb(0 0 0 / 0.06);
+  --ice-panel: color-mix(in srgb, var(--color-bg-secondary) 92%, transparent);
+  --ice-glow: var(--shadow-sm);
+
+  --ops-surface-1: var(--color-bg-secondary);
+  --ops-surface-2: var(--color-bg-primary);
+  --ops-surface-3: var(--color-bg-tertiary);
+  --ops-surface-accent: var(--color-bg-tertiary);
+  --ops-surface-ink: var(--color-bg-primary);
+  --ops-border-1: var(--color-border-subtle);
+  --ops-border-2: var(--color-border);
+  --ops-border-strong: var(--color-brand);
+  --ops-border-soft: var(--color-border-subtle);
+  --ops-fill-muted: var(--color-bg-elevated);
+  --ops-fill-brand: var(--color-brand);
+  --ops-text-strong: var(--color-text-primary);
+  --ops-text-body: var(--color-text-secondary);
+  --ops-text-muted: var(--color-text-muted);
+  --ops-text-faint: var(--color-text-faint);
+  --bg-primary: var(--color-bg-primary);
+  --bg-secondary: var(--color-bg-secondary);
+  --text-primary: var(--color-text-primary);
+  --text-secondary: var(--color-text-secondary);
+  --text-faint: var(--color-text-faint);
+  --border-subtle: var(--color-border-subtle);
+}
+
+/* Shiki emits both palettes so syntax colors can switch without re-highlighting. */
+[data-theme='light'] .shiki,
+[data-theme='light'] .shiki span,
+[data-theme='light'] .niuu-chat-md-codeblock-pre span[style] {
+  color: var(--shiki-light) !important;
+  background-color: var(--shiki-light-bg) !important;
+}
+
+/* Legacy pastel text utilities are used by log, status, and session badges. */
+[data-theme='light'] :is(.niuu\:text-amber-300, .niuu\:text-amber-200, .niuu\:text-amber-200\/80) {
+  color: var(--status-amber);
+}
+[data-theme='light']
+  :is(.niuu\:text-emerald-200, .niuu\:text-emerald-300, .niuu\:text-emerald-400) {
+  color: var(--status-emerald);
+}
+[data-theme='light'] :is(.niuu\:text-violet-200, .niuu\:text-purple-300, .niuu\:text-violet-300) {
+  color: var(--status-purple);
+}
+[data-theme='light'] :is(.niuu\:text-rose-200, .niuu\:text-rose-300) {
+  color: var(--status-red);
+}
+[data-theme='light'] :is(.niuu\:text-sky-100, .niuu\:text-sky-200, .niuu\:text-sky-300) {
+  color: var(--status-running);
 }

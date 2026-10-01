@@ -274,7 +274,7 @@ describe('Shell', () => {
 
     expect(screen.queryByText('secondary description')).not.toBeInTheDocument();
     expect(screen.queryByTestId('ui-mode-switch')).not.toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: 'Color theme' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Color theme' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Open command palette' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Disconnect' })).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Open application menu' })).not.toBeInTheDocument();
@@ -518,14 +518,15 @@ describe('Shell', () => {
     expect(screen.getByTestId('rail-item-alpha')).toBeInTheDocument();
   });
 
-  it('switches the color theme from the topbar select', async () => {
+  it('switches the color theme from the topbar button', async () => {
     wrap(<Shell plugins={[pluginA]} _testHistory={memHistory('/alpha')} />);
     await waitFor(() => {
       expect(screen.getByTestId('alpha-content')).toBeInTheDocument();
     });
 
-    const select = screen.getByRole('combobox', { name: 'Color theme' });
-    fireEvent.change(select, { target: { value: 'amber' } });
+    const select = screen.getByRole('button', { name: 'Color theme' });
+    fireEvent.click(select);
+    fireEvent.click(screen.getByRole('button', { name: 'Amber', exact: true }));
 
     await waitFor(() => {
       expect(document.querySelector('.niuu-shell')).toHaveAttribute('data-theme', 'amber');

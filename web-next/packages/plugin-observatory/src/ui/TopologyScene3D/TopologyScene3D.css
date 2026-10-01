@@ -75,3 +75,13 @@
   color: var(--color-text-primary);
   font-weight: 600;
 }
+
+/* Light palette: retain the original dark surfaces in all other themes. */
+[data-theme='light'] .topology-scene3d {
+  background: var(--color-bg-secondary);
+}
+[data-theme='light'] .topology-scene3d__hint {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+  color: var(--color-brand);
+}

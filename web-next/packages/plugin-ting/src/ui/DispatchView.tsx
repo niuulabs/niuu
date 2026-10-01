@@ -172,7 +172,7 @@ function PendingDispatchBar({
 
   return (
     <div
-      className="niuu:border-b niuu:border-brand/20 niuu:bg-[linear-gradient(180deg,rgba(56,189,248,0.08),rgba(21,26,32,0.96))] niuu:px-4 niuu:py-3"
+      className="ting-dispatch__active-batch niuu:border-b niuu:border-brand/20 niuu:bg-[linear-gradient(180deg,rgba(56,189,248,0.08),rgba(21,26,32,0.96))] niuu:px-4 niuu:py-3"
       role="status"
       aria-live="polite"
     >

@@ -1350,3 +1350,317 @@
     width: 100vw;
   }
 }
+
+/* Light palette overrides; the existing themes retain their original colors. */
+[data-theme='light'] .ting-research-detail {
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .ting-research-detail__loading,
+[data-theme='light'] .ting-research-detail__error,
+[data-theme='light'] .ting-research-detail__ticker-message,
+[data-theme='light'] .ting-research-detail__crumb-separator,
+[data-theme='light'] .ting-research-detail__crumb-slug,
+[data-theme='light'] .ting-research-detail__crumb-state,
+[data-theme='light'] .ting-research-detail__meta-line,
+[data-theme='light'] .ting-research-detail__section-meta,
+[data-theme='light'] .ting-research-detail__view-label,
+[data-theme='light'] .ting-research-detail__question,
+[data-theme='light'] .ting-research-detail__hero-note,
+[data-theme='light'] .ting-research-detail__hero-meta-label,
+[data-theme='light'] .ting-research-detail__popover-meta,
+[data-theme='light'] .ting-research-detail__section-caret,
+[data-theme='light'] .ting-research-detail__critique-against,
+[data-theme='light'] .ting-research-detail__memory-details summary,
+[data-theme='light'] .ting-research-detail__drawer-close,
+[data-theme='light'] .ting-research-detail__drawer-slug,
+[data-theme='light'] .ting-research-detail__drawer-tabs button,
+[data-theme='light'] .ting-research-detail__operator-tabs button,
+[data-theme='light'] .ting-research-detail__drawer-file-path,
+[data-theme='light'] .ting-research-detail__master-quality,
+[data-theme='light'] .ting-research-detail__drawer-meta-card span,
+[data-theme='light'] .ting-research-detail__activity-top {
+  color: var(--color-text-muted);
+}
+[data-theme='light'] .ting-research-detail__error {
+  color: var(--color-critical);
+}
+[data-theme='light'] .ting-research-detail__state-strip {
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-secondary);
+}
+[data-theme='light'] .ting-research-detail__tick {
+  background: var(--color-bg-tertiary);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+}
+[data-theme='light'] .ting-research-detail__tick.is-complete {
+  background: var(--status-merged);
+}
+[data-theme='light'] .ting-research-detail__tick.is-active {
+  background: var(--color-brand);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--color-brand) 48%, transparent);
+}
+[data-theme='light'] .ting-research-detail__tick.is-blocked {
+  background: color-mix(in srgb, var(--color-accent-amber) 92%, transparent);
+}
+[data-theme='light'] .ting-research-detail__tick.is-failed {
+  background: color-mix(in srgb, var(--color-critical) 92%, transparent);
+}
+[data-theme='light'] .ting-research-detail__ticker,
+[data-theme='light'] .ting-research-detail__confidence-text,
+[data-theme='light'] .ting-research-detail__crumb-link {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .ting-research-detail__ticker-persona,
+[data-theme='light'] .ting-research-detail__title,
+[data-theme='light'] .ting-research-detail__hero-heading,
+[data-theme='light'] .ting-research-detail__hero-paragraph,
+[data-theme='light'] .ting-research-detail__markdown-p,
+[data-theme='light'] .ting-research-detail__lf-body,
+[data-theme='light'] .ting-research-detail__annotation-body,
+[data-theme='light'] .ting-research-detail__drawer-quote,
+[data-theme='light'] .ting-research-detail__activity-body,
+[data-theme='light'] .ting-research-detail__hero-meta-value,
+[data-theme='light'] .ting-research-detail__popover-quote,
+[data-theme='light'] .ting-research-detail__annotation-title,
+[data-theme='light'] .ting-research-detail__lf-title,
+[data-theme='light'] .ting-research-detail__memory-title,
+[data-theme='light'] .ting-research-detail__drawer-detail-title,
+[data-theme='light'] .ting-research-detail__drawer-title,
+[data-theme='light'] .ting-research-detail__section-toggle,
+[data-theme='light'] .ting-research-detail__critique-note,
+[data-theme='light'] .ting-research-detail__drawer-meta-card strong,
+[data-theme='light'] .ting-research-detail__drawer-linked-item {
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .ting-research-detail__live-dot {
+  background: color-mix(in srgb, var(--color-brand) 98%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--color-brand) 52%, transparent);
+}
+[data-theme='light'] .ting-research-detail__live-dot.is-idle {
+  background: var(--status-idle);
+}
+[data-theme='light'] .ting-research-detail__confidence-bar,
+[data-theme='light'] .ting-research-detail__quality-dot {
+  background: var(--color-bg-tertiary);
+}
+[data-theme='light'] .ting-research-detail__confidence-fill {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-brand) 94%, transparent),
+    var(--color-brand)
+  );
+}
+[data-theme='light'] .ting-research-detail__run-chip,
+[data-theme='light'] .ting-research-detail__operator-button,
+[data-theme='light'] .ting-research-detail__files-chip,
+[data-theme='light'] .ting-research-detail__section-action,
+[data-theme='light'] .ting-research-detail__ghost-button,
+[data-theme='light'] .ting-research-detail__primary-button,
+[data-theme='light'] .ting-research-detail__drawer-actions button,
+[data-theme='light'] .ting-research-detail__operator-actions button,
+[data-theme='light'] .ting-research-detail__annotation-action,
+[data-theme='light'] .ting-research-detail__popover-actions button,
+[data-theme='light'] .ting-research-detail__lf-action {
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .ting-research-detail__operator-button,
+[data-theme='light'] .ting-research-detail__files-chip,
+[data-theme='light'] .ting-research-detail__primary-button,
+[data-theme='light'] .ting-research-detail__segmented button.is-active {
+  border-color: color-mix(in srgb, var(--color-brand) 56%, transparent);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .ting-research-detail__files-chip.is-danger,
+[data-theme='light'] .ting-research-detail__ghost-button.is-danger,
+[data-theme='light'] .ting-research-detail__primary-button.is-danger,
+[data-theme='light'] .ting-research-detail__operator-actions button.is-danger {
+  border-color: color-mix(in srgb, var(--color-critical) 38%, transparent);
+  background: color-mix(in srgb, var(--color-critical) 12%, transparent);
+  color: var(--color-critical);
+}
+[data-theme='light'] .ting-research-detail__state-dot {
+  background: var(--color-bg-elevated);
+}
+[data-theme='light'] .ting-research-detail__state-dot.is-brand {
+  background: color-mix(in srgb, var(--color-brand) 98%, transparent);
+  box-shadow: 0 0 11px color-mix(in srgb, var(--color-brand) 44%, transparent);
+}
+[data-theme='light'] .ting-research-detail__state-dot.is-amber {
+  background: color-mix(in srgb, var(--color-accent-amber) 98%, transparent);
+}
+[data-theme='light'] .ting-research-detail__state-dot.is-rose {
+  background: color-mix(in srgb, var(--color-critical) 98%, transparent);
+}
+[data-theme='light'] .ting-research-detail__mode-pill {
+  border: 1px solid color-mix(in srgb, var(--color-gate) 42%, transparent);
+  background: color-mix(in srgb, var(--color-gate) 12%, transparent);
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .ting-research-detail__segmented {
+  border: 1px solid var(--color-border);
+}
+[data-theme='light'] .ting-research-detail__segmented button,
+[data-theme='light'] .ting-research-detail__table-head {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-muted);
+}
+[data-theme='light'] .ting-research-detail__hero-card {
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-secondary);
+  box-shadow: 0 22px 64px color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+}
+[data-theme='light'] .ting-research-detail__hero-card.is-running,
+[data-theme='light'] .ting-research-detail__hero-card.is-review {
+  border-color: var(--color-border);
+}
+[data-theme='light'] .ting-research-detail__hero-card.is-published {
+  border-color: color-mix(in srgb, var(--color-brand) 30%, transparent);
+}
+[data-theme='light'] .ting-research-detail__hero-card.is-blocked {
+  border-color: color-mix(in srgb, var(--color-accent-amber) 48%, transparent);
+}
+[data-theme='light'] .ting-research-detail__hero-card.is-failed {
+  border-color: color-mix(in srgb, var(--color-critical) 52%, transparent);
+}
+[data-theme='light'] .ting-research-detail__hero-eyebrow,
+[data-theme='light'] .ting-research-detail__hero-meta-value.is-stage,
+[data-theme='light'] .ting-research-detail__popover-eyebrow,
+[data-theme='light'] .ting-research-detail__row-open,
+[data-theme='light'] .ting-research-detail__lf-heading,
+[data-theme='light'] .ting-research-detail__memory-heading,
+[data-theme='light'] .ting-research-detail__markdown-table th,
+[data-theme='light'] .ting-research-detail__markdown-link,
+[data-theme='light'] .ting-research-detail__master-citation {
+  color: var(--color-brand);
+}
+[data-theme='light'] .ting-research-detail__challenge-callout {
+  border: 1px solid color-mix(in srgb, var(--color-accent-amber) 42%, transparent);
+  background: var(--color-bg-tertiary);
+}
+[data-theme='light'] .ting-research-detail__challenge-title,
+[data-theme='light'] .ting-research-detail__challenge-callout li {
+  color: var(--color-accent-amber);
+}
+[data-theme='light'] .ting-research-detail__popover {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+  box-shadow: 0 18px 42px color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+}
+[data-theme='light'] .ting-research-detail__popover.is-critique {
+  border-color: color-mix(in srgb, var(--color-critical) 36%, transparent);
+}
+[data-theme='light'] .ting-research-detail__annotation-card,
+[data-theme='light'] .ting-research-detail__critique-card,
+[data-theme='light'] .ting-research-detail__lf-card,
+[data-theme='light'] .ting-research-detail__memory-card,
+[data-theme='light'] .ting-research-detail__drawer-meta-card,
+[data-theme='light'] .ting-research-detail__drawer-linked-item,
+[data-theme='light'] .ting-research-detail__activity-item,
+[data-theme='light'] .ting-research-detail__operator-grid div {
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-secondary);
+}
+[data-theme='light'] .ting-research-detail__annotation-body,
+[data-theme='light'] .ting-research-detail__lf-body {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .ting-research-detail__section {
+  border-top: 1px solid var(--color-border);
+}
+[data-theme='light'] .ting-research-detail__table,
+[data-theme='light'] .ting-research-detail__severity-pill,
+[data-theme='light'] .ting-research-detail__markdown-table th,
+[data-theme='light'] .ting-research-detail__markdown-table td {
+  border: 1px solid var(--color-border-subtle);
+}
+[data-theme='light'] .ting-research-detail__table-row {
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .ting-research-detail__mono-pill,
+[data-theme='light'] .ting-research-detail__citation {
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .ting-research-detail__quality-dot.is-filled {
+  background: color-mix(in srgb, var(--color-brand) 98%, transparent);
+}
+[data-theme='light'] .ting-research-detail__severity-pill.is-high {
+  color: var(--color-critical);
+  border-color: color-mix(in srgb, var(--color-critical) 48%, transparent);
+  background: color-mix(in srgb, var(--color-critical) 12%, transparent);
+}
+[data-theme='light'] .ting-research-detail__severity-pill.is-med {
+  color: var(--color-accent-amber);
+  border-color: color-mix(in srgb, var(--color-accent-amber) 46%, transparent);
+  background: color-mix(in srgb, var(--color-accent-amber) 12%, transparent);
+}
+[data-theme='light'] .ting-research-detail__severity-pill.is-low {
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+}
+[data-theme='light'] .ting-research-detail__memory-card.is-published {
+  border-color: color-mix(in srgb, var(--color-brand) 38%, transparent);
+  background: color-mix(in srgb, var(--color-brand) 12%, transparent);
+}
+[data-theme='light'] .ting-research-detail__inline-code {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .ting-research-detail__citation.is-critique {
+  background: color-mix(in srgb, var(--color-critical) 12%, transparent);
+  color: var(--color-critical);
+  border-color: color-mix(in srgb, var(--color-critical) 38%, transparent);
+}
+[data-theme='light'] .ting-research-detail__citation.is-active {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-brand) 56%, transparent),
+    0 0 12px color-mix(in srgb, var(--color-brand) 24%, transparent);
+}
+[data-theme='light'] .ting-research-detail__drawer {
+  background: var(--color-bg-secondary);
+  box-shadow: -18px 0 48px color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+}
+[data-theme='light'] .ting-research-detail__drawer-header,
+[data-theme='light'] .ting-research-detail__drawer-tabs,
+[data-theme='light'] .ting-research-detail__operator-tabs,
+[data-theme='light'] .ting-research-detail__chip-strip,
+[data-theme='light'] .ting-research-detail__drawer-master {
+  border-bottom: 1px solid var(--color-border);
+}
+[data-theme='light'] .ting-research-detail__drawer-tabs button.is-active,
+[data-theme='light'] .ting-research-detail__operator-tabs button.is-active {
+  color: var(--color-text-primary);
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--color-brand) 98%, transparent);
+}
+[data-theme='light'] .ting-research-detail__file-chip {
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .ting-research-detail__file-chip.is-active,
+[data-theme='light'] .ting-research-detail__file-chip.is-published {
+  border-color: color-mix(in srgb, var(--color-brand) 44%, transparent);
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .ting-research-detail__master-row {
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .ting-research-detail__master-row.is-active {
+  background: var(--color-bg-tertiary);
+}
+[data-theme='light'] .ting-research-detail__operator-actions button.is-danger {
+  border-color: color-mix(in srgb, var(--color-critical) 38%, transparent);
+  color: var(--color-critical);
+  background: color-mix(in srgb, var(--color-critical) 12%, transparent);
+}
+[data-theme='light'] .ting-research-detail__hero-side {
+  border-top: 1px solid var(--color-border-subtle);
+}

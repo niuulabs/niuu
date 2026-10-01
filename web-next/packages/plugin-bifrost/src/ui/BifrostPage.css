@@ -258,3 +258,7 @@
     grid-template-columns: 1fr;
   }
 }
+
+[data-theme='light'] .bf-health-pill {
+  background: transparent;
+}

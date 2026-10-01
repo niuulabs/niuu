@@ -556,6 +556,24 @@ export function TopologyCanvas({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    let lightPalette: { background: string; text: string } | undefined;
+    const updateTheme = () => {
+      const styles = getComputedStyle(canvas);
+      lightPalette =
+        canvas.closest('[data-theme]')?.getAttribute('data-theme') === 'light'
+          ? {
+              background: styles.getPropertyValue('--color-bg-primary').trim(),
+              text: styles.getPropertyValue('--color-text-secondary').trim(),
+            }
+          : undefined;
+    };
+    updateTheme();
+    const themeObserver = new MutationObserver(updateTheme);
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+      subtree: true,
+    });
     let cancelled = false;
     let rafId = 0;
     // The moment the stage was held at. Stilling by freezing the clock rather
@@ -599,8 +617,8 @@ export function TopologyCanvas({
 
       // Background gradient
       const bg = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.7);
-      bg.addColorStop(0, CANVAS.BACKDROP_CENTRE);
-      bg.addColorStop(1, CANVAS.BACKDROP_EDGE);
+      bg.addColorStop(0, lightPalette?.background ?? CANVAS.BACKDROP_CENTRE);
+      bg.addColorStop(1, lightPalette?.background ?? CANVAS.BACKDROP_EDGE);
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, w, h);
 
@@ -628,7 +646,7 @@ export function TopologyCanvas({
           return DIMMED_ALPHA;
         };
 
-        drawZones(ctx, topo.nodes, pos, now, cam.zoom);
+        drawZones(ctx, topo.nodes, pos, now, cam.zoom, lightPalette?.text);
 
         // Only the mesh being engaged with is marked; pulsing several at once
         // would put half the canvas in motion and say nothing.
@@ -665,6 +683,7 @@ export function TopologyCanvas({
           drawNode(ctx, node, p, node.id === hoveredId, cam.zoom, {
             now,
             style: resolveStyle(node),
+            labelColor: lightPalette?.text,
             alpha: alphaForNode(node),
             selected: node.id === sel,
             reducedMotion,
@@ -701,6 +720,7 @@ export function TopologyCanvas({
             h,
             CANVAS.WORLD_W,
             CANVAS.WORLD_H,
+            lightPalette,
           );
         }
       }
@@ -711,6 +731,7 @@ export function TopologyCanvas({
     rafId = requestAnimationFrame(render);
     return () => {
       cancelled = true;
+      themeObserver.disconnect();
       cancelAnimationFrame(rafId);
     };
   }, [reducedMotion, showMinimap, syncCamera]);
@@ -731,26 +752,7 @@ export function TopologyCanvas({
       />
 
       {/* Camera controls — vertical pill stack, top-right (web2 parity) */}
-      <div
-        data-testid="camera-controls"
-        style={{
-          position: 'absolute',
-          top: 12,
-          right: 12,
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          background: 'rgba(9,9,11,0.82)',
-          border: '1px solid rgba(147,197,253,0.2)',
-          borderRadius: 8,
-          fontFamily: 'var(--font-mono, monospace)',
-          fontSize: 11,
-          color: 'rgba(186,230,253,0.8)',
-          userSelect: 'none',
-          overflow: 'hidden',
-          zIndex: 40,
-        }}
-      >
+      <div data-testid="camera-controls" className="camera-controls">
         <button aria-label="Zoom in" onClick={zoomIn} className="camera-btn">
           +
         </button>

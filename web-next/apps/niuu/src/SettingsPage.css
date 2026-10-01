@@ -744,3 +744,133 @@
 .settings-login__code .settings-shell__save-button {
   justify-self: start;
 }
+
+/* Light palette for settings labels, fields, and selection states. */
+[data-theme='light'] .settings-shell,
+[data-theme='light'] .settings-shell__panel-badge {
+  border: 1px solid var(--color-border);
+}
+[data-theme='light'] .settings-shell__sidebar {
+  border-color: var(--color-border);
+}
+[data-theme='light'] .settings-shell__sidebar-header,
+[data-theme='light'] .settings-shell__provider-group,
+[data-theme='light'] .settings-shell__panel-header,
+[data-theme='light'] .settings-field {
+  border-bottom: 1px solid var(--color-border);
+}
+[data-theme='light'] .settings-shell__sidebar-eyebrow,
+[data-theme='light'] .settings-shell__kicker,
+[data-theme='light'] .settings-shell__panel-topline,
+[data-theme='light'] .settings-shell__sidebar-count,
+[data-theme='light'] .settings-shell__provider-count,
+[data-theme='light'] .settings-shell__provider-subtitle,
+[data-theme='light'] .settings-shell__panel-copy,
+[data-theme='light'] .settings-field__description,
+[data-theme='light'] .settings-shell__endpoint-note,
+[data-theme='light'] .settings-shell__status,
+[data-theme='light'] .settings-field__control::placeholder,
+[data-theme='light'] .settings-field__textarea::placeholder,
+[data-theme='light'] .settings-field__select-caret,
+[data-theme='light'] .settings-resource__copy,
+[data-theme='light'] .settings-resource__row-meta,
+[data-theme='light'] .settings-resource__catalog-meta {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .settings-shell__provider-group--active,
+[data-theme='light'] .settings-shell__save-button--secondary {
+  background: var(--color-selection-surface);
+}
+[data-theme='light'] .settings-shell__provider-title,
+[data-theme='light'] .settings-shell__section-link,
+[data-theme='light'] .settings-shell__provider-empty,
+[data-theme='light'] .settings-shell__panel-code,
+[data-theme='light'] .settings-shell__panel-heading,
+[data-theme='light'] .settings-shell__panel-title,
+[data-theme='light'] .settings-field__label,
+[data-theme='light'] .settings-field__value,
+[data-theme='light'] .settings-checkbox__label,
+[data-theme='light'] .settings-resource__title,
+[data-theme='light'] .settings-resource__composer-label,
+[data-theme='light'] .settings-resource__group-label,
+[data-theme='light'] .settings-resource__required,
+[data-theme='light'] .settings-resource__callout-title,
+[data-theme='light'] .settings-resource__secret,
+[data-theme='light'] .settings-resource__catalog-title,
+[data-theme='light'] .settings-resource__row-title,
+[data-theme='light'] .settings-resource__empty {
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .settings-shell__section-link:hover {
+  background: var(--color-bg-secondary);
+  color: var(--color-brand);
+}
+[data-theme='light'] .settings-shell__section-link--active {
+  background: var(--color-selection-surface);
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .settings-shell__section-link-mark {
+  color: var(--color-brand);
+}
+[data-theme='light'] .settings-shell__panel-badge--editable,
+[data-theme='light'] .settings-shell__panel-badge--readonly {
+  color: var(--color-brand);
+  background: var(--color-bg-secondary);
+}
+[data-theme='light'] .settings-interface__control {
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .settings-field__control,
+[data-theme='light'] .settings-field__textarea {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .settings-field__control:focus,
+[data-theme='light'] .settings-field__textarea:focus,
+[data-theme='light'] .settings-checkbox__input:focus + .settings-checkbox__box {
+  border-color: var(--color-brand);
+}
+[data-theme='light'] .settings-checkbox__box,
+[data-theme='light'] .settings-resource__callout,
+[data-theme='light'] .settings-resource__catalog-card {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+}
+[data-theme='light'] .settings-checkbox__box--checked {
+  background: var(--color-selection-surface);
+  border-color: var(--color-border);
+  color: var(--color-brand);
+}
+[data-theme='light'] .settings-shell__save-button {
+  border: 1px solid var(--color-border);
+  background: var(--color-selection-surface);
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .settings-shell__status--success,
+[data-theme='light'] .settings-resource__row-note {
+  color: var(--status-healthy);
+}
+[data-theme='light'] .settings-shell__status--error {
+  color: var(--color-critical);
+}
+[data-theme='light'] .settings-resource,
+[data-theme='light'] .settings-resource__row,
+[data-theme='light'] .settings-resource__empty {
+  border-top: 1px solid var(--color-border);
+}
+[data-theme='light'] .settings-resource__catalog-card:hover {
+  border-color: var(--color-border);
+  background: var(--color-bg-secondary);
+}
+[data-theme='light'] .settings-resource__catalog-card--active {
+  border-color: var(--color-border);
+  background: var(--color-selection-surface);
+}
+[data-theme='light'] .settings-resource__row-action {
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+}

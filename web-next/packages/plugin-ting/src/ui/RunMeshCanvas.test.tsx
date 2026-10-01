@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import { RunMeshCanvas } from './RunMeshCanvas';
 import type { Saga, Phase, Run } from '../domain/saga';
 
@@ -118,5 +118,42 @@ describe('RunMeshCanvas', () => {
     });
     render(<RunMeshCanvas sagas={[saga]} phases={[[phase]]} />);
     expect(screen.getByLabelText('Live run mesh visualization')).toBeInTheDocument();
+  });
+});
+
+describe('RunMeshCanvas theme changes', () => {
+  it('updates the mesh accent in Light and restores dark colors without remounting', async () => {
+    const ctx = document.createElement('canvas').getContext('2d')!;
+    const contextSpy = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctx);
+    const style = document.createElement('div').style;
+    style.setProperty('--color-brand', '#047857');
+    const styleSpy = vi.spyOn(window, 'getComputedStyle').mockReturnValue(style);
+    let frame: FrameRequestCallback | undefined;
+    const frameSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frame = callback;
+      return 1;
+    });
+    const previousTheme = document.documentElement.getAttribute('data-theme');
+    const view = render(<RunMeshCanvas sagas={[makeSaga()]} phases={[[makePhase()]]} />);
+    try {
+      expect(ctx.strokeStyle).toBe('rgba(147,197,253,0.18)');
+      await act(async () => {
+        document.documentElement.setAttribute('data-theme', 'light');
+      });
+      act(() => frame?.(0));
+      expect(ctx.strokeStyle).toBe('color-mix(in srgb, #047857 30%, transparent)');
+      await act(async () => {
+        document.documentElement.setAttribute('data-theme', 'ice');
+      });
+      act(() => frame?.(0));
+      expect(ctx.strokeStyle).toBe('rgba(147,197,253,0.18)');
+    } finally {
+      view.unmount();
+      if (previousTheme === null) document.documentElement.removeAttribute('data-theme');
+      else document.documentElement.setAttribute('data-theme', previousTheme);
+      contextSpy.mockRestore();
+      styleSpy.mockRestore();
+      frameSpy.mockRestore();
+    }
   });
 });

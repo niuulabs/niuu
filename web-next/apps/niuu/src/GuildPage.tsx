@@ -1,3 +1,4 @@
+import './GuildPage.css';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouterState } from '@tanstack/react-router';
@@ -518,7 +519,7 @@ function InstanceCard({
       className={cn(
         'niuu:group niuu:flex niuu:h-full niuu:flex-col niuu:rounded-[18px] niuu:border niuu:bg-bg-secondary niuu:p-4 niuu:text-left niuu:transition-colors',
         selected
-          ? 'niuu:border-brand/45 niuu:bg-[#111b24] niuu:shadow-[0_0_0_1px_rgba(83,194,255,0.12)]'
+          ? 'guild-choice--selected niuu:border-brand/45 niuu:bg-[#111b24] niuu:shadow-[0_0_0_1px_rgba(83,194,255,0.12)]'
           : 'niuu:border-border-subtle niuu:hover:border-white/16',
       )}
       data-testid={`guild-instance-card-${instance.slug}`}
@@ -534,7 +535,7 @@ function InstanceCard({
               {instance.name}
             </h3>
             {instance.isDefault ? (
-              <span className="niuu:rounded-md niuu:bg-brand/12 niuu:px-1.5 niuu:py-0.5 niuu:font-mono niuu:text-[9px] niuu:uppercase niuu:tracking-[0.16em] niuu:text-brand">
+              <span className="guild-label niuu:rounded-md niuu:bg-brand/12 niuu:px-1.5 niuu:py-0.5 niuu:font-mono niuu:text-[9px] niuu:uppercase niuu:tracking-[0.16em] niuu:text-brand">
                 default
               </span>
             ) : null}
@@ -555,6 +556,7 @@ function InstanceCard({
         <span
           className={cn(
             'niuu:inline-flex niuu:items-center niuu:gap-1.5 niuu:rounded-full niuu:border niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.14em]',
+            'guild-label',
             scope.tone,
           )}
         >
@@ -587,7 +589,7 @@ function InstanceCard({
         {inferCapabilities(instance).map((capability) => (
           <span
             key={`${instance.id}-${capability}`}
-            className="niuu:rounded-md niuu:bg-bg-elevated niuu:px-1.5 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:text-text-muted"
+            className="guild-label niuu:rounded-md niuu:bg-bg-elevated niuu:px-1.5 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:text-text-muted"
           >
             {capability}
           </span>
@@ -759,7 +761,7 @@ function GuildDetailRail({
             {inferCapabilities(instance).map((capability) => (
               <span
                 key={`${instance.id}-${capability}`}
-                className="niuu:rounded-md niuu:bg-bg-elevated niuu:px-1.5 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:text-text-secondary"
+                className="guild-label niuu:rounded-md niuu:bg-bg-elevated niuu:px-1.5 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:text-text-secondary"
               >
                 {capability}
               </span>
@@ -784,6 +786,7 @@ function GuildDetailRail({
                   <div
                     className={cn(
                       'niuu:inline-flex niuu:rounded-full niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[9px] niuu:uppercase niuu:tracking-[0.14em]',
+                      'guild-label',
                       event.tone,
                     )}
                   >
@@ -940,11 +943,11 @@ function RegisterWizard({
                       className={cn(
                         'niuu:flex niuu:items-center niuu:gap-4 niuu:rounded-[12px] niuu:border niuu:bg-bg-tertiary niuu:p-4 niuu:text-left niuu:transition-colors',
                         selected
-                          ? 'niuu:border-brand niuu:bg-[#1d2832]'
+                          ? 'guild-choice--selected niuu:border-brand niuu:bg-[#1d2832]'
                           : 'niuu:border-transparent niuu:hover:border-white/10',
                       )}
                     >
-                      <div className="niuu:flex niuu:h-11 niuu:w-11 niuu:items-center niuu:justify-center niuu:rounded-[10px] niuu:border niuu:border-white/15 niuu:bg-[#22303b]">
+                      <div className="guild-choice-icon niuu:flex niuu:h-11 niuu:w-11 niuu:items-center niuu:justify-center niuu:rounded-[10px] niuu:border niuu:border-white/15 niuu:bg-[#22303b]">
                         <Rune glyph={option.rune} size={18} className="niuu:text-brand" />
                       </div>
                       <div className="niuu:min-w-0">
@@ -1228,7 +1231,7 @@ function RegisterWizard({
                         className={cn(
                           'niuu:rounded-[12px] niuu:border niuu:bg-bg-tertiary niuu:p-4 niuu:text-left niuu:transition-colors',
                           wizard.visibility === option.value
-                            ? 'niuu:border-brand niuu:bg-[#1d2832]'
+                            ? 'guild-choice--selected niuu:border-brand niuu:bg-[#1d2832]'
                             : 'niuu:border-transparent niuu:hover:border-white/10',
                           disabled && 'niuu:cursor-not-allowed niuu:opacity-40',
                         )}

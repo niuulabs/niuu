@@ -112,6 +112,22 @@ describe('drawStars', () => {
 // ── drawZones ─────────────────────────────────────────────────────────────────
 
 describe('drawZones', () => {
+  it('uses the theme text color for structural labels when provided', () => {
+    const ctx = makeCtxMock();
+    const labelColors: string[] = [];
+    ctx.fillText = vi.fn(() => labelColors.push(ctx.fillStyle));
+    drawZones(
+      ctx as unknown as CanvasRenderingContext2D,
+      NODES,
+      POSITIONS,
+      0,
+      DETAIL_ZOOM,
+      '#525252',
+    );
+    expect(labelColors.length).toBeGreaterThan(0);
+    expect(labelColors.every((color) => color === '#525252')).toBe(true);
+  });
+
   it('does not throw with realm and cluster nodes', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     expect(() => drawZones(ctx, NODES, POSITIONS, 0, DETAIL_ZOOM)).not.toThrow();
