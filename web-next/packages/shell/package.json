@@ -28,7 +28,8 @@
   },
   "peerDependencies": {
     "@tanstack/react-router": "^1.170.39",
-    "react": "^19.3.0"
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   },
   "dependencies": {
     "@niuulabs/plugin-sdk": "workspace:*",
@@ -45,6 +46,8 @@
     "react": "^19.3.0",
     "tailwindcss": "^4.3.3",
     "tsup": "^8.3.5",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "react-dom": "^19.3.0",
+    "@types/react-dom": "^19.3.0"
   }
 }

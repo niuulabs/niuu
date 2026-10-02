@@ -84,22 +84,22 @@ const SESSION_STATE_ORDER: Record<SessionState, number> = {
 };
 
 const PANEL_SURFACE_STYLE = {
-  backgroundColor: '#1b1b20',
-  borderColor: 'rgba(90, 94, 107, 0.72)',
+  backgroundColor: 'var(--light-panel, #1b1b20)',
+  borderColor: 'var(--light-border, rgba(90, 94, 107, 0.72))',
 } as const;
 
 const NODE_SURFACE_STYLE = {
-  backgroundColor: '#111216',
-  borderColor: 'rgba(90, 94, 107, 0.68)',
+  backgroundColor: 'var(--light-panel, #111216)',
+  borderColor: 'var(--light-border, rgba(90, 94, 107, 0.68))',
 } as const;
 
 const PRIMARY_BADGE_STYLE = {
-  backgroundColor: 'rgba(58, 155, 228, 0.16)',
-  color: '#8fd8ff',
+  backgroundColor: 'var(--volundr-label-background, rgba(58, 155, 228, 0.16))',
+  color: 'var(--light-accent, #8fd8ff)',
 } as const;
 
 const STATUS_PILL_STYLE = {
-  backgroundColor: '#141922',
+  backgroundColor: 'var(--volundr-label-background, #141922)',
 } as const;
 
 const FORGE_BUTTON_STYLE = {

@@ -843,3 +843,36 @@
   margin-top: var(--space-2);
   color: var(--color-brand);
 }
+
+/* Informational badges stay transparent and readable on the Light palette. */
+[data-theme='light'] .vol-forge__kind,
+[data-theme='light'] .vol-forge__launch-default {
+  background: transparent;
+}
+[data-theme='light'] .vol-forge__kind--primary,
+[data-theme='light'] .vol-forge__launch-default {
+  color: var(--status-running);
+}
+[data-theme='light'] .vol-forge__kind--gpu {
+  color: var(--color-accent-violet);
+}
+[data-theme='light'] .vol-forge__kind--edge {
+  color: var(--status-healthy);
+}
+[data-theme='light'] .vol-forge__kind--local {
+  color: var(--color-gate);
+}
+[data-theme='light'] .vol-forge__kind--observ {
+  color: var(--status-processing);
+}
+[data-theme='light'] .vol-forge__kind--media {
+  color: var(--color-accent-amber);
+}
+
+[data-theme='light'] .vol-forge__panel-title--critical h2 {
+  color: var(--color-critical);
+}
+
+[data-theme='light'] .vol-forge__error-message {
+  color: var(--color-critical);
+}

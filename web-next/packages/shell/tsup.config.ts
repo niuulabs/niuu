@@ -7,7 +7,13 @@ export default defineConfig({
   dts: true,
   sourcemap: true,
   clean: true,
-  external: ['react', '@tanstack/react-router', '@niuulabs/ui', '@niuulabs/plugin-sdk'],
+  external: [
+    'react-dom',
+    'react',
+    '@tanstack/react-router',
+    '@niuulabs/ui',
+    '@niuulabs/plugin-sdk',
+  ],
   onSuccess: async () => {
     execSync('postcss src/styles.css -o dist/styles.css', {
       stdio: 'inherit',

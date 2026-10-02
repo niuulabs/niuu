@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { act } from 'react';
+import { NormalBlending, AdditiveBlending, Points, ShaderMaterial } from 'three';
 import { MemoryScene } from './MemoryScene';
 import { computeLayout } from './layout';
 import { createFakeRenderer, installMemoryPaletteTokens } from './test-helpers';
@@ -604,4 +605,38 @@ describe('MemoryScene — resize and visibility', () => {
       });
     }
   });
+});
+
+it('updates the canvas background on a theme change without replacing the camera or renderer', async () => {
+  document.documentElement.style.setProperty('--color-memory-background', '#000000');
+  const renderer = createFakeRenderer();
+  const createRenderer = vi.fn(() => renderer);
+  render(<MemoryScene {...baseProps({ createRenderer })} />);
+  const first = vi.mocked(renderer.render).mock.calls.at(-1)!;
+  const scene = first[0] as import('three').Scene;
+  expect((scene.background as import('three').Color).getHexString()).toBe('000000');
+  await act(async () => {
+    document.documentElement.style.setProperty('--color-memory-background', '#f7f7f7');
+    document.documentElement.dataset.theme = 'light';
+  });
+  expect((scene.background as import('three').Color).getHexString()).toBe('f7f7f7');
+  expect(
+    (scene.children.find((child) => child instanceof Points) as Points).material,
+  ).toBeInstanceOf(ShaderMaterial);
+  expect(
+    ((scene.children.find((child) => child instanceof Points) as Points).material as ShaderMaterial)
+      .blending,
+  ).toBe(NormalBlending);
+  expect(createRenderer).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(renderer.render).mock.calls.at(-1)![1]).toBe(first[1]);
+  await act(async () => {
+    document.documentElement.style.setProperty('--color-memory-background', '#000000');
+    document.documentElement.dataset.theme = 'ice';
+  });
+  expect((scene.background as import('three').Color).getHexString()).toBe('000000');
+  expect(
+    ((scene.children.find((child) => child instanceof Points) as Points).material as ShaderMaterial)
+      .blending,
+  ).toBe(AdditiveBlending);
+  delete document.documentElement.dataset.theme;
 });

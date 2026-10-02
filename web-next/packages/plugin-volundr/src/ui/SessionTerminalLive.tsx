@@ -1,3 +1,4 @@
+import { syncTerminalTheme } from './Terminal/syncTerminalTheme';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getAuthHeaders } from '@niuulabs/query';
 import { cn, ErrorState, LoadingState } from '@niuulabs/ui';
@@ -35,6 +36,7 @@ interface ServerSession {
 interface TerminalInstance {
   term: XTerm;
   fitAddon: FitAddon;
+  stopThemeSync: () => void;
 }
 
 const CLI_OPTIONS = [
@@ -319,6 +321,7 @@ function SessionTerminalConnection({ url, readOnly = false }: SessionTerminalLiv
       term.loadAddon(fitAddon);
       term.loadAddon(webLinksAddon);
       term.open(container);
+      const stopThemeSync = syncTerminalTheme(term, container);
 
       try {
         fitAddon.fit();
@@ -326,7 +329,7 @@ function SessionTerminalConnection({ url, readOnly = false }: SessionTerminalLiv
         // Container might not be visible yet.
       }
 
-      instanceRefs.current.set(tabId, { term, fitAddon });
+      instanceRefs.current.set(tabId, { term, fitAddon, stopThemeSync });
     },
     [fontReady, readOnly],
   );
@@ -347,6 +350,7 @@ function SessionTerminalConnection({ url, readOnly = false }: SessionTerminalLiv
 
     return () => {
       for (const instance of instances.values()) {
+        instance.stopThemeSync();
         instance.term.dispose();
       }
       instances.clear();
@@ -484,6 +488,7 @@ function SessionTerminalConnection({ url, readOnly = false }: SessionTerminalLiv
 
         const instance = instanceRefs.current.get(tabId);
         if (instance) {
+          instance.stopThemeSync();
           instance.term.dispose();
           instanceRefs.current.delete(tabId);
         }

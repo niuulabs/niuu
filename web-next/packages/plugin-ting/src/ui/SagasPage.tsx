@@ -709,7 +709,7 @@ function SagasPageContent() {
                                 </span>
                               )}
                               {!imported && (slugConflict || needsSourceSuffix) && (
-                                <span className="niuu:rounded niuu:bg-amber-500/15 niuu:px-2 niuu:py-0.5 niuu:text-[11px] niuu:font-mono niuu:text-amber-300">
+                                <span className="ting-sagas__import-warning niuu:rounded niuu:bg-amber-500/15 niuu:px-2 niuu:py-0.5 niuu:text-[11px] niuu:font-mono niuu:text-amber-300">
                                   {slugConflict ? 'slug conflict' : 'name adjusted'}
                                 </span>
                               )}
