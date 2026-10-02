@@ -368,22 +368,50 @@
   margin: 0 2px;
 }
 
-.niuu-shell__theme-select {
-  min-height: 34px;
-  max-width: 144px;
-  padding: 5px 8px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-bg-tertiary);
+.niuu-shell__theme-picker {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
   color: var(--color-text-primary);
-  font-family: var(--font-sans);
-  font-size: 12px;
-  font-weight: 600;
   cursor: pointer;
 }
-.niuu-shell__theme-select:focus-visible {
+.niuu-shell__theme-picker:hover,
+.niuu-shell__theme-picker[data-state='open'] {
+  background: var(--color-bg-elevated);
+}
+.niuu-shell__theme-picker:focus-visible,
+.niuu-shell__theme-option:focus-visible {
   outline: 2px solid var(--color-brand);
   outline-offset: 2px;
+}
+.niuu-shell__theme-options {
+  min-width: 150px;
+  padding: var(--space-2);
+  background: var(--color-bg-secondary);
+  box-shadow: var(--shadow-md);
+}
+.niuu-shell__theme-option {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.niuu-shell__theme-option:hover,
+.niuu-shell__theme-option[aria-pressed='true'] {
+  background: var(--color-bg-elevated);
+  color: var(--color-brand);
 }
 [data-theme='xteo'] .niuu-shell__topbar {
   box-shadow: var(--shadow-sm);
@@ -399,11 +427,11 @@
 }
 
 @media (min-width: 761px) {
-  [data-theme='xteo'].niuu-shell {
+  :is([data-theme='xteo'], [data-theme='light']).niuu-shell {
     grid-template-columns: 56px auto minmax(0, 1fr);
     grid-template-rows: 52px minmax(0, 1fr) 30px;
   }
-  [data-theme='xteo'] .niuu-shell__rail-item {
+  :is([data-theme='xteo'], [data-theme='light']) .niuu-shell__rail-item {
     width: 56px;
   }
 }
@@ -452,9 +480,6 @@
   .niuu-shell__topbar-right > .niuu-shell__plugin-status {
     display: none;
   }
-  .niuu-shell__theme-select {
-    max-width: 104px;
-  }
 }
 
 .niuu-shell__rail .niuu-shell__rail-item--icon {
@@ -472,5 +497,32 @@
 @media (min-width: 761px) and (max-width: 1100px) {
   .niuu-shell__topbar-right {
     gap: 8px;
+  }
+}
+
+/* Reveal the new palette from the header corner across the entire viewport. */
+html.theme-transitioning::view-transition-old(root),
+html.theme-transitioning::view-transition-new(root) {
+  mix-blend-mode: normal;
+  animation: none;
+}
+html.theme-transitioning::view-transition-old(root) {
+  z-index: 1;
+}
+html.theme-transitioning::view-transition-new(root) {
+  z-index: 2;
+  animation: niuu-theme-reveal 700ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes niuu-theme-reveal {
+  from {
+    clip-path: circle(0 at 100% 0);
+  }
+  to {
+    clip-path: circle(150vmax at 100% 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  html.theme-transitioning::view-transition-new(root) {
+    animation: none;
   }
 }

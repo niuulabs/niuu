@@ -1,9 +1,14 @@
-import { createElement, useCallback, useEffect, useMemo, type ReactNode } from 'react';
+import { flushSync } from 'react-dom';
+import { createElement, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import clsx from 'clsx';
 import { Outlet, useRouter, useRouterState } from '@tanstack/react-router';
 import { type PluginCtx, type PluginDescriptor } from '@niuulabs/plugin-sdk';
 import {
   Kbd,
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+  PopoverClose,
   Tooltip,
   TooltipProvider,
   useCommandPalette,
@@ -55,6 +60,28 @@ function RailTooltipContent({ title, subtitle }: { title: string; subtitle?: str
 
 export function ShellLayout() {
   const { theme, setTheme } = useTheme();
+  const themeButton = useRef<HTMLButtonElement>(null);
+
+  function changeTheme(nextTheme: ThemeName) {
+    if (nextTheme === theme) return;
+    if (
+      !document.startViewTransition ||
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ) {
+      setTheme(nextTheme);
+      return;
+    }
+    // Keep rapid clicks from overlapping snapshot animations.
+    if (document.documentElement.classList.contains('theme-transitioning')) return;
+    document.documentElement.classList.add('theme-transitioning');
+    const transition = document.startViewTransition(() => {
+      flushSync(() => setTheme(nextTheme));
+    });
+    const cleanup = () => document.documentElement.classList.remove('theme-transitioning');
+    // A skipped/interrupted view transition still applies the theme update.
+    void transition.finished.then(cleanup, cleanup);
+  }
+
   const { enabled, brand, version, ctx, topbarContent } = useShellContext();
   const router = useRouter();
   const { location } = useRouterState({ select: (s) => ({ location: s.location }) });
@@ -232,17 +259,63 @@ export function ShellLayout() {
             <div className="niuu-shell__plugin-status">
               <PluginSlot render={active?.topbarRight ?? null} ctx={ctx} />
             </div>
-            <select
-              className="niuu-shell__theme-select"
-              aria-label="Color theme"
-              value={theme}
-              onChange={(event) => setTheme(event.target.value as ThemeName)}
-            >
-              <option value="xteo">blue</option>
-              <option value="ice">Native dark</option>
-              <option value="amber">Amber</option>
-              <option value="spring">Spring</option>
-            </select>
+            <Popover>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  ref={themeButton}
+                  className="niuu-shell__theme-picker"
+                  aria-label="Color theme"
+                  title="Color theme"
+                >
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    {theme === 'light' ? (
+                      <>
+                        <circle cx="12" cy="12" r="4" />
+                        <path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" />
+                      </>
+                    ) : (
+                      <path d="M20.9 13.2A9 9 0 0 1 10.8 3.1a9 9 0 1 0 10.1 10.1Z" />
+                    )}
+                  </svg>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="niuu-shell__theme-options">
+                {(
+                  [
+                    ['xteo', 'blue'],
+                    ['ice', 'Native dark'],
+                    ['amber', 'Amber'],
+                    ['spring', 'Spring'],
+                    ['light', 'Light'],
+                  ] as const
+                ).map(([value, label]) => (
+                  <PopoverClose asChild key={value}>
+                    <button
+                      type="button"
+                      className="niuu-shell__theme-option"
+                      aria-pressed={theme === value}
+                      onClick={() => {
+                        changeTheme(value);
+                        requestAnimationFrame(() => themeButton.current?.focus());
+                      }}
+                    >
+                      {label}
+                    </button>
+                  </PopoverClose>
+                ))}
+              </PopoverContent>
+            </Popover>
             <button
               type="button"
               className="niuu-shell__cp-btn"

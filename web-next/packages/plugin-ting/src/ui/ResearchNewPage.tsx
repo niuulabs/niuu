@@ -142,7 +142,7 @@ export function ResearchNewPage() {
                     className={[
                       'niuu:rounded-full niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:font-medium',
                       !showAllWorkflows
-                        ? 'niuu:bg-sky-400/15 niuu:text-sky-100'
+                        ? 'ting-new__accent-control niuu:bg-sky-400/15 niuu:text-sky-100'
                         : 'niuu:text-text-secondary',
                     ].join(' ')}
                   >
@@ -154,7 +154,7 @@ export function ResearchNewPage() {
                     className={[
                       'niuu:rounded-full niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:font-medium',
                       showAllWorkflows
-                        ? 'niuu:bg-sky-400/15 niuu:text-sky-100'
+                        ? 'ting-new__accent-control niuu:bg-sky-400/15 niuu:text-sky-100'
                         : 'niuu:text-text-secondary',
                     ].join(' ')}
                   >
@@ -198,7 +198,7 @@ export function ResearchNewPage() {
                   {(selectedWorkflow.tags ?? []).map((tag) => (
                     <span
                       key={tag}
-                      className="niuu:rounded-full niuu:border niuu:border-sky-300/25 niuu:bg-sky-400/10 niuu:px-2 niuu:py-0.5 niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.16em] niuu:text-sky-100"
+                      className="ting-new__tag niuu:rounded-full niuu:border niuu:border-sky-300/25 niuu:bg-sky-400/10 niuu:px-2 niuu:py-0.5 niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.16em] niuu:text-sky-100"
                     >
                       {tag}
                     </span>
@@ -402,7 +402,7 @@ export function ResearchNewPage() {
               disabled={
                 createCampaign.isPending || question.trim().length === 0 || workflowsQuery.isLoading
               }
-              className="niuu:rounded-full niuu:border niuu:border-sky-300/40 niuu:bg-sky-400/15 niuu:px-5 niuu:py-2.5 niuu:text-sm niuu:font-medium niuu:text-sky-100 niuu:disabled:opacity-50"
+              className="ting-new__accent-control niuu:rounded-full niuu:border niuu:border-sky-300/40 niuu:bg-sky-400/15 niuu:px-5 niuu:py-2.5 niuu:text-sm niuu:font-medium niuu:text-sky-100 niuu:disabled:opacity-50"
             >
               {createCampaign.isPending ? 'Launching…' : 'Launch campaign'}
             </button>

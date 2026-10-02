@@ -666,3 +666,66 @@ test('3D view survives a filter change without emptying the stage', async ({ pag
   await page.getByTestId('layer-toggle-platform').click();
   await expect(page.getByTestId('topology-scene3d-host').locator('canvas')).toBeVisible();
 });
+
+test('Light mode covers both Observatory canvases and their controls', async ({ page }) => {
+  await page.route('**/config*.json', async (route) => {
+    const response = await route.fetch();
+    const config = await response.json();
+    config.services.setup = { mode: 'http', baseUrl: '/surface-test-setup' };
+    config.services.integrations = { mode: 'http', baseUrl: '/api/v1/integrations' };
+    config.services.features = { mode: 'http', baseUrl: '/api/v1' };
+    await route.fulfill({ json: config });
+  });
+  await page.route('**/api/v1/features/**', (route) =>
+    route.fulfill({ status: 503, body: 'Unavailable' }),
+  );
+  await page.route('**/surface-test-setup', (route) =>
+    route.fulfill({ json: { enabled: false, completed: true } }),
+  );
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/observatory?config=default');
+  const theme = page.getByRole('button', { name: 'Color theme', exact: true });
+  await theme.click();
+  await page.getByRole('button', { name: 'Light', exact: true }).click();
+  await expect(page.getByTestId('camera-controls')).toHaveCSS(
+    'background-color',
+    'rgb(255, 255, 255)',
+  );
+  const canvas = page.getByTestId('topology-canvas');
+  // Scene geometry can overlap the sampled corner; require a light pixel,
+  // rather than assuming the backdrop is the only thing drawn there.
+  await expect
+    .poll(() =>
+      canvas.evaluate((e) =>
+        Math.min(
+          ...Array.from(
+            (e as HTMLCanvasElement).getContext('2d')!.getImageData(0, 0, 1, 1).data,
+          ).slice(0, 3),
+        ),
+      ),
+    )
+    .toBeGreaterThan(200);
+  await page.evaluate(() => localStorage.setItem('niuu.observatory.view', '3d'));
+  await page.goto('/observatory?config=default');
+  await expect(page.getByTestId('camera-controls-3d')).toHaveCSS(
+    'background-color',
+    'rgb(255, 255, 255)',
+  );
+  const scene = page.getByTestId('topology-scene3d-host').locator('canvas');
+  await expect
+    .poll(() =>
+      scene.evaluate((e) => {
+        const gl = (e as HTMLCanvasElement).getContext('webgl2')!;
+        return Array.from(gl.getParameter(gl.COLOR_CLEAR_VALUE) as Float32Array)
+          .slice(0, 3)
+          .map((v) => Math.round(v * 255));
+      }),
+    )
+    .toEqual([247, 247, 247]);
+  await theme.click();
+  await page.getByRole('button', { name: 'Native dark', exact: true }).click();
+  await expect(page.getByTestId('camera-controls-3d')).toHaveCSS(
+    'background-color',
+    'rgba(9, 9, 11, 0.82)',
+  );
+});

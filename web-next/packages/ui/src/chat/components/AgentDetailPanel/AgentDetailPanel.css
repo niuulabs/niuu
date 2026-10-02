@@ -203,3 +203,8 @@
   font-size: 10px;
   font-weight: 700;
 }
+
+/* Participant dots retain identity colors; names need contrast on Light surfaces. */
+[data-theme='light'] .niuu-chat-agent-persona-name {
+  color: var(--color-text-primary);
+}

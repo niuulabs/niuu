@@ -4,3 +4,65 @@
 @import './ui/DashboardPage.css';
 @import './ui/WorkflowBuilder/nodeAccent.css';
 @import './ui/WorkflowBuilder/workflowCanvas.css';
+
+/* Light colors for legacy fixed-color surfaces. */
+[data-theme='light'] .niuu\:bg-\[\#151a20\] {
+  background-color: var(--color-bg-secondary);
+}
+[data-theme='light'] .niuu\:bg-\[\#202733\] {
+  background-color: var(--color-bg-tertiary);
+}
+[data-theme='light'] .niuu\:bg-\[\#1d232b\] {
+  background-color: var(--color-bg-tertiary);
+}
+[data-theme='light'] .niuu\:bg-\[\#1d2630\] {
+  background-color: var(--color-bg-secondary);
+}
+[data-theme='light'] .niuu\:bg-\[\#1e232a\] {
+  background-color: var(--color-bg-secondary);
+}
+[data-theme='light'] .niuu\:bg-\[\#252c36\] {
+  background-color: var(--color-bg-tertiary);
+}
+[data-theme='light'] .niuu\:bg-\[\#171b22\] {
+  background-color: var(--color-bg-secondary);
+}
+[data-theme='light'] .niuu\:bg-\[\#455564\] {
+  background-color: var(--color-bg-elevated);
+}
+[data-theme='light'] .niuu\:bg-\[\#8aa0b8\] {
+  background-color: var(--color-text-muted);
+}
+[data-theme='light'] .niuu\:border-\[\#617183\] {
+  border-color: var(--color-border);
+}
+[data-theme='light'] .niuu\:text-\[\#cad4df\] {
+  color: var(--color-text-primary);
+}
+
+[data-theme='light'] .niuu\:hover\:bg-\[\#1d232b\]:hover {
+  background-color: var(--color-bg-tertiary);
+}
+
+/* Legacy pale labels need stronger contrast on the Light palette. */
+[data-theme='light'] .ting-new__accent-control {
+  background-color: var(--color-selection-surface);
+  border-color: var(--color-brand);
+  color: var(--color-brand);
+}
+
+[data-theme='light'] .ting-new__tag {
+  background-color: transparent;
+  border-color: transparent;
+  color: var(--color-brand);
+}
+
+[data-theme='light'] .ting-sagas__import-warning {
+  background-color: transparent;
+  color: var(--status-amber);
+}
+
+[data-theme='light'] .ting-dispatch__active-batch {
+  background-image: none;
+  background-color: var(--color-bg-secondary);
+}

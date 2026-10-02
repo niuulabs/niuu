@@ -1,3 +1,4 @@
+import { Color, NormalBlending, type Material } from 'three';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { EdgeLayer, Registry, Topology, TopologyNode } from '../../domain';
@@ -102,6 +103,7 @@ export function TopologyScene3D({
   const hostRef = useRef<HTMLDivElement>(null);
   const minimapRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<Scene3DRenderer | null>(null);
+  const minimapPaletteRef = useRef<{ background: string; text: string } | undefined>(undefined);
   const sceneRef = useRef<ObservatoryScene | null>(null);
   const cameraRef = useRef<OrbitCamera>(defaultOrbitCamera());
   const sizeRef = useRef({ w: 0, h: 0 });
@@ -269,7 +271,41 @@ export function TopologyScene3D({
       readoutFor: (regionId) => readouts.get(regionId) ?? null,
     });
     sceneRef.current = scene;
+    const darkBackground = scene.scene.background;
+    const originalBlending = new Map<Material, Material['blending']>();
+    scene.scene.traverse((object) => {
+      const material = (object as { material?: Material | Material[] }).material;
+      for (const entry of material ? (Array.isArray(material) ? material : [material]) : []) {
+        originalBlending.set(entry, entry.blending);
+      }
+    });
+    const updateTheme = () => {
+      const host = hostRef.current;
+      if (!host) return;
+      const light = host.closest('[data-theme]')?.getAttribute('data-theme') === 'light';
+      const styles = getComputedStyle(host);
+      minimapPaletteRef.current = light
+        ? {
+            background: styles.getPropertyValue('--color-bg-primary').trim(),
+            text: styles.getPropertyValue('--color-text-secondary').trim(),
+          }
+        : undefined;
+      scene.scene.background = light
+        ? new Color(styles.getPropertyValue('--color-bg-primary').trim())
+        : darkBackground;
+      originalBlending.forEach((blending, material) => {
+        material.blending = light ? NormalBlending : blending;
+      });
+    };
+    updateTheme();
+    const themeObserver = new MutationObserver(updateTheme);
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+      subtree: true,
+    });
     return () => {
+      themeObserver.disconnect();
       scene.dispose();
       sceneRef.current = null;
     };
@@ -562,6 +598,7 @@ export function TopologyScene3D({
             h,
             CANVAS.WORLD_W,
             CANVAS.WORLD_H,
+            minimapPaletteRef.current,
           );
         }
       }
@@ -629,26 +666,7 @@ export function TopologyScene3D({
 
       {canRender && (
         <>
-          <div
-            data-testid="camera-controls-3d"
-            style={{
-              position: 'absolute',
-              top: 12,
-              right: 12,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              background: 'rgba(9,9,11,0.82)',
-              border: '1px solid rgba(147,197,253,0.2)',
-              borderRadius: 8,
-              fontFamily: 'var(--font-mono, monospace)',
-              fontSize: 11,
-              color: 'rgba(186,230,253,0.8)',
-              userSelect: 'none',
-              overflow: 'hidden',
-              zIndex: 40,
-            }}
-          >
+          <div data-testid="camera-controls-3d" className="camera-controls">
             <button
               aria-label="Zoom in"
               onClick={() => dolly(1 / CAMERA3D.DOLLY_STEP)}

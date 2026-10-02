@@ -97,7 +97,8 @@ function HighlightedContent({ content, language }: { content: string; language: 
         const { codeToHtml } = await import('shiki');
         const highlighted = await codeToHtml(content, {
           lang: language,
-          theme: 'github-dark-dimmed',
+          themes: { light: 'github-light', dark: 'github-dark-dimmed' },
+          defaultColor: 'dark',
         });
         if (!cancelled) {
           setState({ html: highlighted, warning: null });
