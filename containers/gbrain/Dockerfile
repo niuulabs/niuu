@@ -1,5 +1,5 @@
 FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895
-ARG GBRAIN_REF=d13aa742fd68b71bfd6c98be3dda5813791f1d6c
+ARG GBRAIN_REF=f8d1e3936d908935ce96e18c14249aecd85fb5b2
 USER root
 # CI passes the UTC date, so the registry layer cache cannot keep this upgrade
 # (and the security fixes it pulls) for more than a day.
