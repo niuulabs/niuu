@@ -24,9 +24,9 @@ dependencies = [
     # https://github.com/Kludex/starlette/pull/3498.
     "anyio>=4.14.2,<4.15",
     "python-multipart>=0.0.32",
-    "PyJWT>=2.13.0",
+    "PyJWT>=2.15.1",
     "cryptography>=50.0.1",
-    "urllib3>=2.7.0",
+    "urllib3>=2.8.0",
     "uvicorn>=0.52.4",
     "websockets>=17.1",
     "python-on-whales>=0.81.0",
