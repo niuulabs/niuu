@@ -2,9 +2,9 @@
   "name": "skuld-cli-tools",
   "private": true,
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.282",
+    "@anthropic-ai/claude-code": "2.1.283",
     "@earendil-works/pi-coding-agent": "0.87.1",
-    "@openai/codex": "0.157.0",
+    "@openai/codex": "0.157.1",
     "@xai-official/grok": "1.0.41",
     "opencode-ai": "1.18.32"
   }
