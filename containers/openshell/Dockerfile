@@ -31,9 +31,10 @@ RUN --mount=type=bind,from=python-security,source=/patched-stdlib,target=/patche
     --mount=type=bind,source=containers/python-security,target=/security \
     python /security/install.py /patched-stdlib && python /security/verify.py
 
-COPY containers/node/npm-bootstrap/package.json containers/node/npm-bootstrap/package-lock.json /opt/npm-bootstrap/
+COPY containers/node/npm-bootstrap/package.json containers/node/npm-bootstrap/package-lock.json containers/node/npm-bootstrap/replace-bundled.sh /opt/npm-bootstrap/
 RUN cd /opt/npm-bootstrap && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
     && rm -rf /tmp/npm-cache /tmp/grok-install \
+    && sh /opt/npm-bootstrap/replace-bundled.sh \
     && rm -rf /usr/lib/node_modules/npm \
     && ln -s /opt/npm-bootstrap/node_modules/npm /usr/lib/node_modules/npm \
     && ln -sf /usr/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
