@@ -54,10 +54,7 @@ from ting.ports.workflow_execution import (
 logger = logging.getLogger(__name__)
 
 
-class ExpansionValidator[
-    ExecutionT: WorkflowExecution,
-    ProposalT: WorkflowChildProposal,
-](Protocol):
+class ExpansionValidator[ExecutionT: WorkflowExecution, ProposalT: WorkflowChildProposal](Protocol):
     def __call__(
         self,
         execution: ExecutionT,
@@ -68,11 +65,12 @@ class ExpansionValidator[
     ) -> tuple[ProposalT, ...]: ...
 
 
+# No trailing comma: CodeQL's Python extractor cannot parse one in a type-parameter list.
 class ChildFactory[
     ExecutionT: WorkflowExecution,
     ProposalT: WorkflowChildProposal,
-    ChildT: WorkflowChildExecution,
-](Protocol):
+    ChildT: WorkflowChildExecution
+](Protocol):  # fmt: skip
     def __call__(
         self,
         execution: ExecutionT,

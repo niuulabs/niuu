@@ -41,10 +41,11 @@ from ting.ports.workflow_execution import WorkflowExecutionRepository
 _TABLE_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
+# No trailing comma: CodeQL's Python extractor cannot parse one in a type-parameter list.
 class PostgresWorkflowExecutionRepository[
     ExecutionT: WorkflowExecution,
-    ChildT: WorkflowChildExecution,
-](WorkflowExecutionRepository[ExecutionT, ChildT]):
+    ChildT: WorkflowChildExecution
+](WorkflowExecutionRepository[ExecutionT, ChildT]):  # fmt: skip
     """Raw-asyncpg ledger with transactional budget and fenced launch writes."""
 
     def __init__(
