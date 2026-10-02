@@ -40,6 +40,13 @@ on:
         description: Container registry.
         type: string
         default: ghcr.io
+      push:
+        description: >-
+          Push per-platform images, write the registry cache, and publish
+          manifests. False only builds the images: PRs from forks get a
+          read-only GITHUB_TOKEN and cannot write to the registry.
+        type: boolean
+        default: true
       cache-write:
         description: >-
           Export the BuildKit layer cache to <image>:buildcache-<platform>.
@@ -102,7 +109,7 @@ jobs:
         with:
           context: .
           file: ./containers/${{ matrix.container }}/Dockerfile
-          push: true
+          push: ${{ inputs.push }}
           tags: ${{ inputs.registry }}/${{ github.repository_owner }}/${{ matrix.container }}:${{ inputs.tag-prefix }}-${{ matrix.platform }}
           build-args: |
             ${{ inputs.build-args }}
@@ -118,9 +125,9 @@ jobs:
             ${{ inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:pr-shared-buildcache-{3}', inputs.registry, github.repository_owner, matrix.container, matrix.platform) || '' }}
             ${{ inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:{3}-buildcache-{4}', inputs.registry, github.repository_owner, matrix.container, inputs.cache-scope, matrix.platform) || '' }}
           cache-to: |
-            ${{ inputs.cache-write && format('type=registry,ref={0}/{1}/{2}:buildcache-{3},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, matrix.platform) || '' }}
-            ${{ inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:{3}-buildcache-{4},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, inputs.cache-scope, matrix.platform) || '' }}
-            ${{ inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:pr-shared-buildcache-{3},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, matrix.platform) || '' }}
+            ${{ inputs.push && inputs.cache-write && format('type=registry,ref={0}/{1}/{2}:buildcache-{3},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, matrix.platform) || '' }}
+            ${{ inputs.push && inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:{3}-buildcache-{4},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, inputs.cache-scope, matrix.platform) || '' }}
+            ${{ inputs.push && inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:pr-shared-buildcache-{3},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, matrix.platform) || '' }}
           platforms: linux/${{ matrix.platform }}
           provenance: false
 
@@ -129,6 +136,7 @@ jobs:
   manifest:
     name: "Manifests"
     needs: build
+    if: inputs.push
     runs-on: ubuntu-latest
     permissions:
       packages: write
