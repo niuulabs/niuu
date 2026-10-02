@@ -236,7 +236,9 @@ async def test_host_resident_lifecycle_runs_without_a_container_engine(
     assert f"[skuld] skuld env NIUU_CONFIG {root / 'config' / 'skuld.yaml'}" in messages
     assert f"[skuld] skuld env CODEX_HOME {root / 'home' / '.codex'}" in messages
     assert "[skuld] skuld env RAVN_API_AUTH__ADAPTER <unset>" in messages
-    ravn_messages = await _log_messages(controller, runtime, "ravn argv daemon")
+    # Wait for the last line the fake ravn prints; argv arrives first, and the
+    # env lines can still be in flight when it does.
+    ravn_messages = await _log_messages(controller, runtime, "ravn env EXTRA_INHERITED")
     assert (
         f"[ravn] ravn argv daemon --config {root / 'config' / 'ravn.yaml'} "
         "--persona product-steward"
