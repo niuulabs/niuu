@@ -122,12 +122,12 @@ RUN curl -fsSL -o /tmp/glab.deb \
     && glab --version
 
 # Upgrade npm and install the CLI tools from checked-in lockfiles.
-COPY containers/node/npm-bootstrap/package.json containers/node/npm-bootstrap/package-lock.json containers/node/npm-bootstrap/replace-bundled.sh /opt/npm-bootstrap/
+COPY containers/node/npm-bootstrap/package.json containers/node/npm-bootstrap/package-lock.json containers/node/npm-bootstrap/replace-nested.sh /opt/npm-bootstrap/
 COPY containers/skuld/npm-tools/package.json containers/skuld/npm-tools/package-lock.json /opt/skuld-tools/
 RUN cd /opt/npm-bootstrap \
     && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
     && rm -rf /tmp/npm-cache /tmp/grok-install \
-    && sh /opt/npm-bootstrap/replace-bundled.sh \
+    && sh /opt/npm-bootstrap/replace-nested.sh /opt/npm-bootstrap node_modules/npm/node_modules brace-expansion ip-address undici \
     && rm -rf /usr/lib/node_modules/npm \
     && ln -s /opt/npm-bootstrap/node_modules/npm /usr/lib/node_modules/npm \
     && ln -sf /usr/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
@@ -135,6 +135,7 @@ RUN cd /opt/npm-bootstrap \
     && cd /opt/skuld-tools \
     && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
     && rm -rf /tmp/npm-cache /tmp/grok-install \
+    && sh /opt/npm-bootstrap/replace-nested.sh /opt/skuld-tools node_modules/@earendil-works/pi-coding-agent/node_modules brace-expansion \
     && ln -sf /opt/skuld-tools/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -sf /opt/skuld-tools/node_modules/.bin/codex /usr/local/bin/codex \
     && ln -sf /opt/skuld-tools/node_modules/.bin/opencode /usr/local/bin/opencode \
