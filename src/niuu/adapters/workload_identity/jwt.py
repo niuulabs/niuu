@@ -6,6 +6,7 @@ SPIFFE JWT-SVIDs later by changing issuer/audience/JWKS configuration.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import ssl
 from typing import Any
@@ -17,7 +18,11 @@ from niuu.ports.workload_identity import WorkloadIdentityVerifier
 
 
 class JwtWorkloadIdentityVerifier(WorkloadIdentityVerifier):
-    """Verify JWT workload proofs using a remote or static JWKS."""
+    """Verify JWT workload proofs using a remote or static JWKS.
+
+    ``timeout_seconds`` bounds each JWKS socket operation (default: five seconds).
+    PyJWT retains ownership of key caching and rotation; remote I/O runs off-loop.
+    """
 
     def __init__(
         self,
@@ -27,6 +32,7 @@ class JwtWorkloadIdentityVerifier(WorkloadIdentityVerifier):
         jwks_uri: str = "",
         static_jwks: dict[str, Any] | str | None = None,
         ca_cert_path: str = "",
+        timeout_seconds: float = 5.0,
         algorithms: list[str] | None = None,
         insecure_skip_signature_verification: bool = False,
         **_extra: object,
@@ -48,9 +54,27 @@ class JwtWorkloadIdentityVerifier(WorkloadIdentityVerifier):
         ssl_context = None
         if ca_cert_path:
             ssl_context = ssl.create_default_context(cafile=ca_cert_path)
-        self._client = PyJWKClient(jwks_uri, ssl_context=ssl_context) if jwks_uri else None
+        if timeout_seconds <= 0:
+            raise ValueError("JWKS timeout_seconds must be positive")
+        self._client = (
+            PyJWKClient(jwks_uri, ssl_context=ssl_context, timeout=timeout_seconds)
+            if jwks_uri
+            else None
+        )
 
     async def verify(self, token: str) -> dict[str, Any]:
+        # Unverified claims only reject unrelated proofs; they never grant trust.
+        # Shared Kubernetes issuers still require trying each configured key set.
+        if self._issuer:
+            unverified = jwt.decode(token, options={"verify_signature": False})
+            if unverified.get("iss") != self._issuer:
+                raise jwt.InvalidIssuerError("Invalid issuer")
+        if (
+            not self._insecure_skip_signature_verification
+            and jwt.get_unverified_header(token).get("alg") not in self._algorithms
+        ):
+            raise jwt.InvalidAlgorithmError("The specified alg value is not allowed")
+
         options = {
             "verify_aud": bool(self._audiences),
             "verify_iss": bool(self._issuer),
@@ -66,7 +90,9 @@ class JwtWorkloadIdentityVerifier(WorkloadIdentityVerifier):
             claims = jwt.decode(token, **kwargs)
             return dict(claims)
 
-        key = self._resolve_key(token)
+        # PyJWKClient performs blocking urllib I/O on cache misses and rotation.
+        # Never run it on the server loop: an unavailable issuer must not stall health.
+        key = await asyncio.to_thread(self._resolve_key, token)
         claims = jwt.decode(token, key=key, **kwargs)
         return dict(claims)
 
