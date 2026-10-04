@@ -582,6 +582,7 @@ reset retains the binding and stop request for retry; the VM is never offered as
 idle after incomplete cleanup. The provider and allocation record remain the
 same across successful reuse. Retained surplus VMs expire after
 `idle_timeout_seconds`; lowering maximum capacity or draining the pool can remove
-them sooner. The warm minimum replenishes expired spares while the pool is active.
+them sooner. Spares within the warm minimum never expire: they stay ready until a
+session claims them, so an idle pool does not churn machines.
 Closing a browser tab does not stop a session. Explicit stop, archive, and delete
 operations use the session lifecycle's cleanup path.

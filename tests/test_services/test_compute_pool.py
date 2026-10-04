@@ -96,13 +96,29 @@ async def test_archive_failure_never_deletes_guest_and_retries_stop_intent(setup
     assert repo.leases[lease.id].state == LeaseState.RELEASED
 
 
-async def test_expire_spare_and_drain_preserves_bound_sessions(setup):
+async def test_spares_within_warm_minimum_never_expire(setup):
+    pool, _, repo, provider, runtime, _ = setup
+    spare = await warm(setup)
+    async with repo.operation(spare.id):
+        await repo.save(
+            spare.model_copy(update={"idle_since": datetime.now(UTC) - timedelta(days=1)})
+        )
+    await pool.maintain()
+    await pool.maintain()
+    assert repo.leases[spare.id].state == LeaseState.IDLE
+    assert spare.id in provider.machines
+    assert len(repo.leases) == 1
+    runtime.warm.assert_awaited_once()
+
+
+async def test_expire_surplus_spare_and_drain_preserves_bound_sessions(setup):
     pool, leases, repo, provider, _, _ = setup
     spare = await warm(setup)
     async with repo.operation(spare.id):
         await repo.save(
             spare.model_copy(update={"idle_since": datetime.now(UTC) - timedelta(days=1)})
         )
+    await pool.configure((await pool.policy()).model_copy(update={"warm_min": 0}))
     await pool.maintain()
     assert repo.leases[spare.id].state == LeaseState.RELEASED
     active = await leases.acquire(session_id=uuid4(), owner_id="o", tenant_id="t", profile="small")

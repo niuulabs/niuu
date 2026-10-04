@@ -186,7 +186,7 @@ def create_admin_settings_router(
                 ),
                 "idle_timeout_seconds": (
                     "Spare lifetime (seconds)",
-                    "Delete idle spares after this interval; replenish the configured minimum.",
+                    "Delete idle machines above the ready-spare minimum after this interval.",
                 ),
                 "provisioning_timeout_seconds": (
                     "Provisioning timeout (seconds)",
