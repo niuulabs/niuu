@@ -1,5 +1,5 @@
 # Security fixes awaiting stable CPython releases; no interpreter ABI changes.
-FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm@sha256:82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56 AS python-security
+FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm@sha256:c8137f4c460908c8763f281c8f22c431eb5c538514ba9553fc3a89c06b7cfb88 AS python-security
 COPY containers/python-security/ /security/
 RUN apt-get update && apt-get install -y --no-install-recommends patch \
     && python /security/build.py /patched-stdlib
@@ -19,7 +19,7 @@ RUN wget -q https://github.com/docker/compose/archive/refs/tags/v5.5.1.tar.gz -O
 
 # BuildKit keeps the native wheel in its existing per-platform CI cache.
 # Only the installed Python environment reaches the final image.
-FROM rust:1.98.1-slim-trixie@sha256:f47a8de237dcbb0b0ce1099901e60a89728e3d51f24e664b40e947171538ade7 AS rust-toolchain
+FROM rust:1.98.1-slim-trixie@sha256:4cd829461bd5c4d511c32e269da9cb8929223b666519d8004e35fc8d1d771ab7 AS rust-toolchain
 
 FROM python:3.14-slim-trixie@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d AS python-build
 

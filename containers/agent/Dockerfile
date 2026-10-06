@@ -1,10 +1,10 @@
 # Security fixes awaiting stable CPython releases; no interpreter ABI changes.
-FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm@sha256:82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56 AS python-security
+FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm@sha256:c8137f4c460908c8763f281c8f22c431eb5c538514ba9553fc3a89c06b7cfb88 AS python-security
 COPY containers/python-security/ /security/
 RUN apt-get update && apt-get install -y --no-install-recommends patch \
     && python /security/build.py /patched-stdlib
 
-FROM python:3.14-slim-bookworm@sha256:82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56 AS builder
+FROM python:3.14-slim-bookworm@sha256:c8137f4c460908c8763f281c8f22c431eb5c538514ba9553fc3a89c06b7cfb88 AS builder
 
 ARG TARGETARCH
 
@@ -36,7 +36,7 @@ COPY src/ /app/src/
 COPY vendor/ /app/vendor/
 RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats
 
-FROM python:3.14-slim-bookworm@sha256:82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56
+FROM python:3.14-slim-bookworm@sha256:c8137f4c460908c8763f281c8f22c431eb5c538514ba9553fc3a89c06b7cfb88
 
 RUN --mount=type=bind,from=python-security,source=/patched-stdlib,target=/patched-stdlib \
     --mount=type=bind,source=containers/python-security,target=/security \
