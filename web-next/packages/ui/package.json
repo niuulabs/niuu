@@ -38,15 +38,15 @@
     "@radix-ui/react-tooltip": "^1.2.16",
     "clsx": "^2.1.1",
     "dompurify": "^3",
-    "katex": "^0.18",
-    "lucide-react": "^1.48.0",
+    "katex": "^0.19",
+    "lucide-react": "^1.50.0",
     "mermaid": "^12",
     "react-markdown": "^10",
     "rehype-katex": "^7",
     "remark-breaks": "^4",
     "remark-gfm": "^4",
     "remark-math": "^6",
-    "shiki": "^4.4.3"
+    "shiki": "^4.5.0"
   },
   "devDependencies": {
     "@niuulabs/design-tokens": "workspace:*",
