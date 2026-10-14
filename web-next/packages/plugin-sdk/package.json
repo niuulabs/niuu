@@ -26,13 +26,13 @@
   },
   "peerDependencies": {
     "react": "^19.3.0",
-    "@tanstack/react-router": "^1.170.39"
+    "@tanstack/react-router": "^1.170.42"
   },
   "dependencies": {
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@tanstack/react-router": "^1.170.39",
+    "@tanstack/react-router": "^1.170.42",
     "@types/react": "^19.3.0",
     "react": "^19.3.0",
     "tsup": "^8.3.5",
