@@ -1760,6 +1760,98 @@ async def test_resident_reconcile_reports_missing_sandbox_of_stopped_resident(
     assert observation.conditions[0].reason == "NotFound"
 
 
+def _deployed_resident_manager(adapter, client, runtime):
+    client.sandbox_labels = {"volundr.niuu.io/resident": str(runtime.id)}
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client,
+        volundr_api_url="https://volundr.example.test",
+        workload_audiences=["volundr-api", "mimir", "guild"],
+    )
+    manager.set_credential_store(
+        _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
+    )
+    manager.set_workload_token_issuer(_FakeWorkloadTokenIssuer())
+    return manager
+
+
+def _deployed_resident(runtime):
+    return runtime.model_copy(
+        update={
+            "observed_state": ResidentObservedState.DEPLOYING,
+            "backend_ref": {
+                "kind": "OpenShellSandbox",
+                "id": "sandbox-id",
+                "name": f"r-{runtime.id.hex[:17]}",
+                "service_url": "http://openshell.example/proxy/session-1",
+            },
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_starts_processes_that_stopped_after_deployment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh Volundr starts the skuld an interrupted deployment left stopped."""
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime())
+    client = _FakeOpenShellGatewayClient(adapter)
+    # All processes healthy? no. skuld running? no. ravn running? yes.
+    health_results = iter((1, 1, 0))
+
+    def exec_script(**kwargs):
+        client.bootstrap_execs.append(kwargs)
+        return next(health_results), ""
+
+    client.exec_script = exec_script
+    manager = _deployed_resident_manager(adapter, client, runtime)
+
+    observation = await manager.reconcile(runtime, _resident_profile())
+
+    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/skuld.pid"]
+    assert "/sandbox/.volundr/skuld.yaml" in client.written_files[0]["files"]
+    assert client.created is None
+    assert client.deleted == []
+    assert observation.observed_state is ResidentObservedState.DEPLOYING
+    assert observation.backend_ref["name"] == runtime.backend_ref["name"]
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_leaves_processes_to_a_deploy_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime())
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.exec_script = lambda **_kwargs: (1, "")
+    manager = _deployed_resident_manager(adapter, client, runtime)
+
+    async with manager._resident_process_lock(runtime):
+        observation = await manager.reconcile(runtime, _resident_profile())
+
+    assert client.execs == []
+    assert client.written_files == []
+    assert observation.observed_state is ResidentObservedState.DEPLOYING
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_reports_processes_when_they_cannot_be_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime())
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.exec_script = lambda **_kwargs: (1, "")
+    client.write_files = Mock(side_effect=RuntimeError("file projection failed"))
+    manager = _deployed_resident_manager(adapter, client, runtime)
+
+    observation = await manager.reconcile(runtime, _resident_profile())
+
+    assert client.execs == []
+    assert observation.observed_state is ResidentObservedState.DEPLOYING
+    assert observation.conditions[1].reason == "Unavailable"
+
+
 @pytest.mark.asyncio
 async def test_hermes_reconcile_recovers_internal_service_endpoint(
     monkeypatch: pytest.MonkeyPatch,

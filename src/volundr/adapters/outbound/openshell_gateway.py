@@ -955,6 +955,8 @@ class OpenShellGatewayPodManager(
             timeout=command_timeout,
         )
         self._service_urls: dict[str, str] = {}
+        # Held while a deploy, restart or reconcile owns a resident's processes.
+        self._resident_process_locks: dict[str, asyncio.Lock] = {}
         self._resident_forwarders: dict[str, OpenShellTcpForwarder] = {}
         self._provider_grants: dict[str, tuple[OpenShellProviderGrant, ...]] = {}
         self._credential_store: CredentialStorePort | None = None
@@ -1616,7 +1618,18 @@ class OpenShellGatewayPodManager(
         except (RuntimeError, TypeError, ValueError):
             return False
 
+    def _resident_process_lock(self, runtime: ResidentRuntime) -> asyncio.Lock:
+        return self._resident_process_locks.setdefault(str(runtime.id), asyncio.Lock())
+
     async def deploy(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        async with self._resident_process_lock(runtime):
+            return await self._deploy(runtime, profile)
+
+    async def _deploy(
         self,
         runtime: ResidentRuntime,
         profile: ResidentDeploymentProfile,
@@ -1838,6 +1851,12 @@ class OpenShellGatewayPodManager(
                 processes,
                 service_port=service_port,
             )
+            if (
+                not processes_ready
+                and runtime.backend_ref
+                and runtime.desired_state is ResidentDesiredState.RUNNING
+            ):
+                await self._start_missing_resident_processes(runtime, values, sandbox, processes)
         service_url = str(runtime.backend_ref.get("service_url") or "")
         if not service_url and runtime.engine is ResidentEngine.HERMES:
             service_url = HERMES_INTERNAL_SERVICE_URL
@@ -1866,40 +1885,52 @@ class OpenShellGatewayPodManager(
             process_names=tuple(process.name for process in processes),
         )
 
-    async def restart(
+    async def _start_missing_resident_processes(
         self,
         runtime: ResidentRuntime,
-        profile: ResidentDeploymentProfile,
-    ) -> ResidentRuntimeObservation:
-        if not self.supports(profile):
-            raise RuntimeError(f"OpenShell does not support resident profile {profile.id!r}")
-        values = self._with_brokered_credential_values(_resident_profile_values(profile))
-        sandbox = await asyncio.to_thread(
-            self._client.get_sandbox,
-            self._resident_sandbox_name(runtime),
-        )
-        if sandbox is None or not sandbox.ready:
-            raise RuntimeError("OpenShell resident sandbox is not ready")
+        values: dict[str, Any],
+        sandbox: OpenShellSandbox,
+        processes: Sequence[OpenShellRuntimeProcess],
+    ) -> None:
+        """Start the processes of a deployed resident that are no longer running.
+
+        A process can stop after its deployment finished, for example when the
+        Volundr that launched it with an older configuration was replaced. A
+        deploy or restart in progress owns the processes, so this leaves them to
+        it. A failure is logged and retried on the next reconcile pass.
+        """
+        lock = self._resident_process_lock(runtime)
+        if lock.locked():
+            return
+        async with lock:
+            try:
+                files, env = await self._resident_launch_inputs(runtime, values, processes)
+                await asyncio.to_thread(
+                    self._client.write_files, sandbox_id=sandbox.id, files=files
+                )
+                await self._launch_missing_resident_processes(sandbox.id, env, processes)
+            except Exception:
+                logger.warning(
+                    "Could not start missing OpenShell resident processes for %s",
+                    runtime.id,
+                    exc_info=True,
+                )
+                return
+        logger.info("Started missing OpenShell resident processes for %s", runtime.id)
+
+    async def _resident_launch_inputs(
+        self,
+        runtime: ResidentRuntime,
+        values: dict[str, Any],
+        processes: Sequence[OpenShellRuntimeProcess],
+    ) -> tuple[dict[str, bytes], dict[str, str]]:
+        """Return the files and environment that launch a deployed resident's processes."""
         credential_context = await self._resolve_credential_context(
             self._resident_subject(runtime), values
         )
-        processes = self._resident_processes(runtime, values)
-        exit_code, output = await asyncio.to_thread(
-            self._client.exec_script,
-            sandbox_id=sandbox.id,
-            script=_resident_stop_script(tuple(process.name for process in processes)),
-            env={},
-        )
-        if exit_code != 0:
-            raise RuntimeError(f"OpenShell resident process stop failed: {output.strip()}")
         files = {**credential_context.files, **await self._resident_config_files(runtime, values)}
         for process in processes:
             files.update(_shared_resident_process_files(runtime, process.files))
-        await asyncio.to_thread(
-            self._client.write_files,
-            sandbox_id=sandbox.id,
-            files=files,
-        )
         env = self._resident_environment(runtime, values)
         env.update(resident_flock_environment(runtime))
         env.update(credential_context.environment)
@@ -1922,6 +1953,45 @@ class OpenShellGatewayPodManager(
                 self._credential_store,
                 runtime,
             )
+        return files, env
+
+    async def restart(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        async with self._resident_process_lock(runtime):
+            return await self._restart(runtime, profile)
+
+    async def _restart(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        if not self.supports(profile):
+            raise RuntimeError(f"OpenShell does not support resident profile {profile.id!r}")
+        values = self._with_brokered_credential_values(_resident_profile_values(profile))
+        sandbox = await asyncio.to_thread(
+            self._client.get_sandbox,
+            self._resident_sandbox_name(runtime),
+        )
+        if sandbox is None or not sandbox.ready:
+            raise RuntimeError("OpenShell resident sandbox is not ready")
+        processes = self._resident_processes(runtime, values)
+        files, env = await self._resident_launch_inputs(runtime, values, processes)
+        exit_code, output = await asyncio.to_thread(
+            self._client.exec_script,
+            sandbox_id=sandbox.id,
+            script=_resident_stop_script(tuple(process.name for process in processes)),
+            env={},
+        )
+        if exit_code != 0:
+            raise RuntimeError(f"OpenShell resident process stop failed: {output.strip()}")
+        await asyncio.to_thread(
+            self._client.write_files,
+            sandbox_id=sandbox.id,
+            files=files,
+        )
         await self._launch_resident_processes(sandbox.id, env, processes)
         service_name, service_port = _resident_service(
             values, self._service_name, self._service_port
@@ -1950,6 +2020,7 @@ class OpenShellGatewayPodManager(
     async def delete(self, runtime: ResidentRuntime) -> bool:
         runtime_id = str(runtime.id)
         self._service_urls.pop(runtime_id, None)
+        self._resident_process_locks.pop(runtime_id, None)
         forwarder = self._resident_forwarders.pop(runtime_id, None)
         if forwarder is not None:
             await asyncio.to_thread(forwarder.close)
