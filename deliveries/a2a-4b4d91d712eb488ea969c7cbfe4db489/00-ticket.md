@@ -3,6 +3,7 @@
 - Tracker: https://linear.app/niuu/issue/NIU-295/tests-for-harvesteradapter
 - Tracker UUID: `958e75e9-2080-458d-9cdb-f0e7dc121845`
 - Status at implementation start: In Progress
+- Status after implementation: In Review
 - Target branch: `regin`
 
 ## Scope

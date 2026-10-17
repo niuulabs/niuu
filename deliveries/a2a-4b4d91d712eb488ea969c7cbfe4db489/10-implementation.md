@@ -42,4 +42,4 @@ change did not alter their code.
 
 - Branch: `test/niu-295-harvester-adapter` (cut from `regin`)
 - Target: `regin`
-- Hosted PR: recorded after push and PR creation.
+- Hosted PR: https://github.com/niuulabs/niuu/pull/1140 (base: `regin`)
