@@ -12,6 +12,7 @@ import yaml
 
 from niuu.adapters.outbound.http_auth import (
     FileBearerTokenAuthAdapter,
+    NoAuthHeaderAdapter,
     StaticBearerTokenAuthAdapter,
 )
 from volundr.adapters.outbound.harvester import (
@@ -38,6 +39,8 @@ class HarvesterAPI:
         self.delay_delete = False
         self.conflict = False
         self.prefix = "/proxy/"
+        self.image_storage_class = "image-storage"
+        self.network_exists = True
 
     def handle(self, request):
         self.requests.append(request)
@@ -47,8 +50,12 @@ class HarvesterAPI:
         if self.denied:
             return httpx.Response(self.denied, json={"message": "do-not-expose-secret"})
         if request.method == "GET" and "/virtualmachineimages/" in path:
-            return httpx.Response(200, json={"status": {"storageClassName": "image-storage"}})
+            return httpx.Response(
+                200, json={"status": {"storageClassName": self.image_storage_class}}
+            )
         if request.method == "GET" and "/network-attachment-definitions/" in path:
+            if not self.network_exists:
+                return httpx.Response(404, json={})
             return httpx.Response(200, json={"metadata": {"name": "lan"}})
         if request.method == "GET":
             if path in self.objects:
@@ -107,6 +114,41 @@ def provider(api):
         auth=StaticBearerTokenAuthAdapter(token="test-only-token"),
         transport=httpx.MockTransport(api.handle),
     )
+
+
+@pytest.mark.parametrize(
+    ("base_url", "timeout_seconds", "page_size", "profiles", "match"),
+    [
+        ("http://harvester.test", 30, 100, {"small": {}}, "HTTPS origin"),
+        ("https://harvester.test?unsafe=true", 30, 100, {"small": {}}, "HTTPS origin"),
+        ("https://harvester.test", 0, 100, {"small": {}}, "must be positive"),
+        ("https://harvester.test", 30, 0, {"small": {}}, "must be positive"),
+        ("https://harvester.test", 30, 100, {}, "at least one"),
+    ],
+)
+def test_constructor_rejects_unsafe_or_incomplete_configuration(
+    base_url, timeout_seconds, page_size, profiles, match
+):
+    with pytest.raises(ValueError, match=match):
+        HarvesterMachineProvider(
+            base_url=base_url,
+            namespace="test-vms",
+            installation_id="test-installation",
+            profiles=profiles,
+            auth=StaticBearerTokenAuthAdapter(token="test-only-token"),
+            timeout_seconds=timeout_seconds,
+            page_size=page_size,
+        )
+
+
+async def test_request_requires_a_configured_authorization_header(provider, api):
+    provider._auth = NoAuthHeaderAdapter()
+
+    with pytest.raises(MachineProviderError, match="authentication is missing"):
+        await provider.get(uuid4())
+
+    assert not api.requests
+    await provider.close()
 
 
 async def test_real_api_shape_idempotency_inventory_and_cleanup(provider, api):
@@ -243,6 +285,52 @@ async def test_vm_state_and_guest_addresses(provider, api, phase, expected):
 async def test_create_conflict_resolves_same_owned_request(provider, api):
     api.conflict = True
     await provider.create(MachineRequest(allocation_id=uuid4(), profile="small"))
+    assert len(api.objects) == 3
+    await provider.close()
+
+
+async def test_create_requires_ready_image_storage_and_existing_network(provider, api):
+    api.image_storage_class = None
+    request = MachineRequest(allocation_id=uuid4(), profile="small")
+
+    with pytest.raises(MachineProviderError, match="no ready storage class"):
+        await provider.create(request)
+
+    assert not api.objects
+    api.image_storage_class = "image-storage"
+    api.network_exists = False
+
+    with pytest.raises(MachineProviderError, match="network does not exist"):
+        await provider.create(request)
+
+    assert not api.objects
+    await provider.close()
+
+
+async def test_get_reports_deleting_and_failed_virtual_machines(provider, api):
+    request = MachineRequest(allocation_id=uuid4(), profile="small")
+    await provider.create(request)
+    vm = next(v for key, v in api.objects.items() if "/virtualmachines/" in key)
+    vm["metadata"]["deletionTimestamp"] = "2026-10-17T00:00:00Z"
+
+    assert (await provider.get(request.allocation_id)).state == MachineState.DELETING
+
+    vm["metadata"].pop("deletionTimestamp")
+    vm["status"] = {"conditions": [{"type": "Failure", "status": "True"}]}
+
+    assert (await provider.get(request.allocation_id)).state == MachineState.FAILED
+    await provider.close()
+
+
+async def test_delete_refuses_resources_without_a_uid(provider, api):
+    request = MachineRequest(allocation_id=uuid4(), profile="small")
+    await provider.create(request)
+    vm = next(v for key, v in api.objects.items() if "/virtualmachines/" in key)
+    vm["metadata"].pop("uid")
+
+    with pytest.raises(MachineProviderError, match="has no UID"):
+        await provider.delete(request.allocation_id)
+
     assert len(api.objects) == 3
     await provider.close()
 
