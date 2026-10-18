@@ -57,7 +57,7 @@ The same full-gate run also reports missing mocked workload-token exchanges in `
 
 - Branch: `test/niu-295-harvester-adapter`
 - Target: `regin`
-- Existing hosted PR: https://github.com/niuulabs/niuu/pull/1140 (base: `regin`); this branch has been rebased onto the current `regin` head and requires a force-with-lease push.
+- Hosted PR: https://github.com/niuulabs/niuu/pull/1140 (base: `regin`); the rebased branch was force-with-lease pushed at `1424e082`.
 
 ## Clean-regin baseline
 
