@@ -4,7 +4,8 @@
 - Tracker UUID: `958e75e9-2080-458d-9cdb-f0e7dc121845`
 - Status at implementation start: In Progress
 - Target branch: `regin`
-- Working branch: `test/niu-295-harvester-adapter` (rebased onto `origin/regin` at `f88bd733`)
+- Working branch: `test/niu-295-harvester-adapter` (rebased onto `origin/regin` at `a7d6c5ad`)
+- Tracker status at clean-baseline verification: `In Review`
 
 ## Scope
 
@@ -13,3 +14,7 @@ Add focused, observable-behavior tests for `HarvesterMachineProvider` only. Prod
 ## Tracker retrieval record
 
 The required tracker shim resolved NIU-295 and moved it from `Todo` to `In Progress` before implementation. The issue record supplies no description beyond the title; the delivery request supplies the acceptance criteria.
+
+## Clean-base gate evidence
+
+`20-gate-baseline.md` records the complete clean-`regin` gate output and category breakdown requested by the operator.

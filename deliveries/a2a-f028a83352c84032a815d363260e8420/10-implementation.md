@@ -58,3 +58,20 @@ The same full-gate run also reports missing mocked workload-token exchanges in `
 - Branch: `test/niu-295-harvester-adapter`
 - Target: `regin`
 - Existing hosted PR: https://github.com/niuulabs/niuu/pull/1140 (base: `regin`); this branch has been rebased onto the current `regin` head and requires a force-with-lease push.
+
+## Clean-regin baseline
+
+Per the operator request, the full gate was rerun in a detached clean worktree at `origin/regin` commit `a7d6c5ad`, with no NIU-295 branch commits. It failed with 266 pre-existing failures: 182 missing-`helm`, 79 workload-token-exchange-related, and 5 other environment/test failures. `20-gate-baseline.md` attaches every emitted `FAILED ...` summary line verbatim. No gate was disabled, skipped, or lowered, and no shared fixture, persona/platform, or Helm change was made.
+
+## Focused verification after rebase
+
+The clean `regin` base now includes the original NIU-295 Harvester coverage plus five additional same-file tests. The focused suite therefore reports the current base result rather than the earlier 33-test snapshot:
+
+```text
+uv run --extra dev pytest tests/test_adapters/test_harvester.py --cov=volundr.adapters.outbound.harvester --cov-report=term-missing
+38 passed in 0.80s
+Harvester adapter coverage: 94%
+
+uv run ruff check tests/test_adapters/test_harvester.py
+All checks passed!
+```
