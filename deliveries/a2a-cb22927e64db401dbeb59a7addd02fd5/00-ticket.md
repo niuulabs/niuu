@@ -2,7 +2,7 @@
 
 - Delivery slug: `a2a-cb22927e64db401dbeb59a7addd02fd5`
 - Required base and target: `regin`
-- Working branch: `fix/niu-1140-delivery-blocked-outcome`, rebased on `origin/regin` at `8747758d`
+- Working branch: `fix/niu-1140-delivery-blocked-outcome`, rebased on `origin/regin` at `fdb97876`
 
 ## Tracker
 
