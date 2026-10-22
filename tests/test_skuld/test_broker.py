@@ -2055,7 +2055,29 @@ class TestBroker:
         test_broker._emit_pipeline_event.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_routing_only_peer_outcome_can_activate_native_workflow_gate(self, tmp_path):
+    @pytest.mark.parametrize(
+        ("explanation_fields", "expected_explanation"),
+        [
+            (
+                {"reason": "The requirements have been reconciled."},
+                "The requirements have been reconciled.",
+            ),
+            (
+                {"rationale": "The requirements have been reconciled."},
+                "The requirements have been reconciled.",
+            ),
+            (
+                {
+                    "reason": "The requirements have been reconciled.",
+                    "rationale": "This fallback must not be shown.",
+                },
+                "The requirements have been reconciled.",
+            ),
+        ],
+    )
+    async def test_routing_only_peer_outcome_can_activate_native_workflow_gate(
+        self, tmp_path, explanation_fields, expected_explanation
+    ):
         settings = SkuldSettings(
             session={"id": "sess-gate-1", "workspace_dir": str(tmp_path)},
             workflow={
@@ -2117,7 +2139,7 @@ class TestBroker:
                     "fields": {
                         "verdict": "ready_for_gate",
                         "summary": "PRD is ready for approval.",
-                        "reason": "The requirements have been reconciled.",
+                        **explanation_fields,
                     },
                 },
             },
@@ -2129,9 +2151,7 @@ class TestBroker:
         assert gates[0]["status"] == "pending"
         assert gates[0]["pending_behavior"] == "help_needed"
         assert gates[0]["triggered_by_event_type"] == "spec.prd.ready_for_gate"
-        assert gates[0]["summary"] == (
-            "PRD is ready for approval. — The requirements have been reconciled."
-        )
+        assert gates[0]["summary"] == f"PRD is ready for approval. — {expected_explanation}"
         broker_under_test._emit_workflow_gate_help_needed_sleipnir_event.assert_awaited_once()
         broker_under_test._report_activity_state.assert_awaited_once()
         pending_events = [

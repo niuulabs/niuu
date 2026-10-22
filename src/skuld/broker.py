@@ -2553,7 +2553,7 @@ class Broker(
         fields = payload.get("fields")
         reason = ""
         if isinstance(fields, dict):
-            reason = str(fields.get("rationale") or fields.get("reason") or "").strip()
+            reason = str(fields.get("reason") or fields.get("rationale") or "").strip()
         if reason and reason not in summary:
             summary = f"{summary} — {reason}" if summary else reason
 
