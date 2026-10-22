@@ -28,9 +28,9 @@
   },
   "peerDependencies": {
     "@niuulabs/shell": "workspace:*",
-    "@tanstack/react-query": "^5.104.0",
-    "@tanstack/react-router": "^1.170.39",
-    "react": "^19.3.0"
+    "@tanstack/react-query": "^5.104.3",
+    "@tanstack/react-router": "^1.170.45",
+    "react": "^19.3.1"
   },
   "dependencies": {
     "@niuulabs/domain": "workspace:*",
@@ -40,19 +40,19 @@
     "@niuulabs/query": "workspace:*",
     "@niuulabs/shell": "workspace:*",
     "@niuulabs/ui": "workspace:*",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@niuulabs/design-tokens": "workspace:*",
-    "@tanstack/react-query": "^5.104.0",
-    "@tanstack/react-router": "^1.170.39",
+    "@tanstack/react-query": "^5.104.3",
+    "@tanstack/react-router": "^1.170.45",
     "@types/react": "^19.3.0",
     "autoprefixer": "^10.6.1",
-    "postcss": "^8.5.28",
-    "postcss-import": "^17.0.0",
-    "react": "^19.3.0",
+    "postcss": "^8.5.30",
+    "postcss-import": "^17.0.1",
+    "react": "^19.3.1",
     "tailwindcss": "^4.3.3",
-    "tsup": "^8.3.5",
+    "tsup": "^9.0.0",
     "typescript": "^6.0.3"
   }
 }
