@@ -21,5 +21,7 @@ rationale-only, and both-field outcomes, asserting that reason wins when both ex
 
 ## Handoff
 
-The existing PR is updated from a branch rebased on `regin`; its target remains `regin`
-only. No merge was performed.
+PR: https://github.com/niuulabs/niuu/pull/1166
+
+The PR is updated from a branch rebased on `regin`; its target remains `regin` only.
+No merge was performed.
