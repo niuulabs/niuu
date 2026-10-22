@@ -36,3 +36,14 @@
 ## Recommendation
 
 Do not merge this PR until it is rebased and the reason/rationale regression is corrected.
+
+## Revision response
+
+- Rebased `fix/niu-1140-delivery-blocked-outcome` on current `origin/regin` at
+  `fdb97876`; GitHub now reports PR #1166 as `mergeable: MERGEABLE` and
+  `mergeStateStatus: CLEAN` with `regin` as its base.
+- Retained `regin`'s existing blocked-delivery implementation rather than duplicating it.
+- Restored compatibility for both explanation fields: gate summaries prefer
+  `fields.reason`, then use `fields.rationale`; regression coverage exercises reason-only,
+  rationale-only, and both-field payloads.
+- Focused suite: 426 passed (11 pre-existing dependency deprecation warnings); Ruff passed.
