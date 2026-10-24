@@ -7,8 +7,8 @@ caller.
 
 ## Protocol compatibility
 
-Compatibility was rechecked on 2026-07-14 against the official A2A materials. The current
-stable protocol release is 1.0.1, and `a2a-sdk` 1.1 implements the 1.0 protocol. The A2A
+Compatibility was rechecked on 2026-10-24 against the official A2A materials. The current
+stable protocol release is 1.0.0, and the installed `a2a-sdk` 1.1.2 implements the 1.0 protocol. The A2A
 discovery documentation explicitly leaves curated registries to deployments, so these REST
 directory endpoints are Niuu-specific. Agent Cards, supported interfaces, cache validators,
 security declarations, and JWS signatures retain their official A2A semantics.
