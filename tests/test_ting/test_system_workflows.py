@@ -416,8 +416,26 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         "security.passed -> security.passed",
         "review.changes_requested -> review.changes_requested",
         "security.changes_requested -> security.changes_requested",
+        "capability.blocked -> capability.blocked",
         "capability.ready -> capability.ready",
     }.issubset(builder_edge_labels)
+    builder_blocked_gate = next(
+        node for node in builder_flow.graph["nodes"] if node["id"] == "capability-blocked"
+    )
+    assert builder_blocked_gate["kind"] == "gate"
+    assert builder_blocked_gate["pendingBehavior"] == "help_needed"
+    builder_settings = Settings.model_validate(
+        {
+            "workflow": {
+                "workflow_id": "tool-skill-builder",
+                "name": "Tool & Skill Builder",
+                "graph": builder_flow.graph,
+            }
+        }
+    )
+    assert _workflow_allowed_outcome_topics(
+        builder_settings, node_id="capability-publish"
+    ) == {"capability.blocked", "capability.ready"}
     builder_resources = {
         node["label"]: node
         for node in builder_flow.graph["nodes"]
@@ -434,6 +452,57 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         if binding["id"] == "binding-capability-memory"
     )
     assert "specifications/" in builder_binding["writePrefixes"]
+
+
+def test_tool_skill_builder_routes_publisher_block_to_help_gate() -> None:
+    """Publish failures remain blocked while successful publications complete."""
+    builder_flow = next(
+        workflow
+        for workflow in load_system_workflows()
+        if workflow.name == "Tool & Skill Builder"
+    )
+    routes = {
+        edge["label"]: edge["target"]
+        for edge in builder_flow.graph["edges"]
+        if edge["source"] == "capability-publish"
+    }
+    assert routes == {
+        "capability.blocked -> capability.blocked": "capability-blocked",
+        "capability.ready -> capability.ready": "capability-complete",
+    }
+
+    blocked_gate = next(
+        node for node in builder_flow.graph["nodes"] if node["id"] == "capability-blocked"
+    )
+    assert blocked_gate == {
+        "id": "capability-blocked",
+        "kind": "gate",
+        "label": "Capability publication blocked",
+        "condition": (
+            "Review the publisher's blocking diagnosis, correct the external "
+            "capability publication dependency, then re-commission the workflow."
+        ),
+        "mode": "human_approval",
+        "pendingBehavior": "help_needed",
+        "instructions": (
+            "Publication did not complete. Preserve the publisher's stated cause, "
+            "resolve it outside this workflow, then re-commission the capability build."
+        ),
+        "position": {"x": 1408, "y": 480},
+    }
+
+    settings = Settings.model_validate(
+        {
+            "workflow": {
+                "workflow_id": "tool-skill-builder",
+                "name": "Tool & Skill Builder",
+                "graph": builder_flow.graph,
+            }
+        }
+    )
+    assert _workflow_allowed_outcome_topics(
+        settings, node_id="capability-publish"
+    ) == {"capability.blocked", "capability.ready"}
 
 
 def test_load_system_workflows_rejects_missing_bundle_directory(tmp_path) -> None:
