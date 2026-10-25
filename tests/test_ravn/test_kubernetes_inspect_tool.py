@@ -259,6 +259,30 @@ async def test_clusters_lists_every_context_in_the_kubeconfig(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_out_of_cluster_uses_default_kubeconfig_when_kubeconfig_is_unset(monkeypatch) -> None:
+    from kubernetes_asyncio import client, config
+
+    monkeypatch.delenv("KUBECONFIG", raising=False)
+    received: dict[str, object] = {}
+
+    async def new_client_from_config(*, config_file=None, context=None):
+        received["config_file"] = config_file
+        received["context"] = context
+        return object()
+
+    monkeypatch.setattr(config, "new_client_from_config", new_client_from_config)
+    monkeypatch.setattr(client, "CoreV1Api", lambda api_client: FakeCoreV1())
+    monkeypatch.setattr(client, "AppsV1Api", lambda api_client: FakeAppsV1())
+    monkeypatch.setattr(client, "BatchV1Api", lambda api_client: FakeBatchV1())
+    tool = KubernetesInspectTool(in_cluster=False)
+
+    result = await tool.execute({"action": "workload", "namespace": "nats", "name": "regin"})
+
+    assert not result.is_error
+    assert received == {"config_file": None, "context": None}
+
+
+@pytest.mark.asyncio
 async def test_a_named_cluster_reads_that_cluster_and_reuses_its_client(tmp_path) -> None:
     built: list[str] = []
     tool = _multi_cluster_tool(tmp_path, built)

@@ -26,7 +26,7 @@ class KubernetesClients:
 
 
 #: Builds the clients for one kubeconfig context (tests inject their own).
-ClientFactory = Callable[[str, str], Awaitable[KubernetesClients]]
+ClientFactory = Callable[[str | None, str | None], Awaitable[KubernetesClients]]
 
 
 class KubernetesInspectTool(ToolPort):
@@ -67,7 +67,7 @@ class KubernetesInspectTool(ToolPort):
         self._max_configmap_value_chars = max(1, max_configmap_value_chars)
         self._max_configmap_tail_bytes = max(1, max_configmap_tail_bytes)
         self._client_factory = client_factory or _clients_for_context
-        self._clients_by_context: dict[str, KubernetesClients] = {}
+        self._clients_by_context: dict[str | None, KubernetesClients] = {}
 
     @property
     def name(self) -> str:
@@ -192,18 +192,20 @@ class KubernetesInspectTool(ToolPort):
             )
         return ToolResult(tool_call_id="", content=json.dumps(payload, indent=2, sort_keys=True))
 
-    def _kubeconfig(self) -> str:
-        return self._kubeconfig_path or os.environ.get(self._kubeconfig_env, "")
+    def _kubeconfig(self) -> str | None:
+        return self._kubeconfig_path or os.environ.get(self._kubeconfig_env) or None
 
     def _contexts(self) -> list[str]:
         kubeconfig = self._kubeconfig()
-        if not kubeconfig:
-            raise RuntimeError(
-                "kubernetes_inspect has no kubeconfig: set tools.kubernetes.kubeconfig_path "
-                f"or {self._kubeconfig_env}, or use in_cluster"
-            )
-        document = yaml.safe_load(Path(kubeconfig).read_text(encoding="utf-8")) or {}
-        return sorted(str(item["name"]) for item in document.get("contexts") or [])
+        if kubeconfig:
+            document = yaml.safe_load(Path(kubeconfig).read_text(encoding="utf-8")) or {}
+            return sorted(str(item["name"]) for item in document.get("contexts") or [])
+        try:
+            from kubernetes_asyncio import config
+        except ImportError as exc:  # pragma: no cover - depends on installed extras
+            raise RuntimeError("kubernetes_asyncio is required for kubernetes_inspect") from exc
+        contexts, _ = config.list_kube_config_contexts(config_file=None)
+        return sorted(str(item["name"]) for item in contexts)
 
     def _clusters(self) -> list[str]:
         if self._in_cluster or self._loaded:
@@ -243,10 +245,11 @@ class KubernetesInspectTool(ToolPort):
             self._batch_v1 = client.BatchV1Api()
             self._loaded = True
             return
-        context = self._resolve_context(cluster)
+        kubeconfig = self._kubeconfig()
+        context = self._resolve_context(cluster) if kubeconfig or cluster else None
         clients = self._clients_by_context.get(context)
         if clients is None:
-            clients = await self._client_factory(self._kubeconfig(), context)
+            clients = await self._client_factory(kubeconfig, context)
             self._clients_by_context[context] = clients
         self._core_v1 = clients.core_v1
         self._apps_v1 = clients.apps_v1
@@ -372,7 +375,7 @@ class KubernetesInspectTool(ToolPort):
         return {"action": "node", "name": name, "node": _node(node)}
 
 
-async def _clients_for_context(kubeconfig: str, context: str) -> KubernetesClients:
+async def _clients_for_context(kubeconfig: str | None, context: str | None) -> KubernetesClients:
     try:
         from kubernetes_asyncio import client, config
     except ImportError as exc:  # pragma: no cover - depends on installed extras

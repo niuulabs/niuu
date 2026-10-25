@@ -33,3 +33,12 @@ replacement characters could exceed `tail_bytes`. The revision retains the
 same bounded keyed read contract while removing a partial leading UTF-8
 sequence before decoding, so returned text is valid UTF-8 and never encodes to
 more than the selected byte cap.
+
+## Review revision (2026-10-25, default kubeconfig)
+
+The review finding is addressed: when this out-of-cluster tool has neither an
+explicit `kubeconfig_path` nor `KUBECONFIG`, it now passes `config_file=None`
+and `context=None` to Kubernetes' client factory. This retains Kubernetes'
+normal default kubeconfig lookup and current-context selection. Explicit
+kubeconfig paths retain the existing multi-context resolution behavior; a
+named cluster without an explicit path resolves against the default kubeconfig.

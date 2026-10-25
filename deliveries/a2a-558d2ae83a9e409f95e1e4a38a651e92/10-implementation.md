@@ -69,3 +69,35 @@ uv run ruff check src/ravn/adapters/tools/kubernetes.py src/ravn/config.py \
   tests/ravn/unit/test_builtin_registry.py
 All checks passed!
 ```
+
+## Review revision — default kubeconfig compatibility (2026-10-25)
+
+Out-of-cluster callers with neither `tools.kubernetes.kubeconfig_path` nor
+`KUBECONFIG` now again delegate to `kubernetes_asyncio` with
+`config_file=None` and `context=None`. Kubernetes therefore performs its
+standard default kubeconfig lookup and uses its current context, as it did
+before the multi-cluster inspector change. Explicit kubeconfig paths and
+named-cluster context resolution remain unchanged; named clusters without an
+explicit path resolve through Kubernetes' default config contexts.
+
+A regression test unsets `KUBECONFIG`, exercises an out-of-cluster workload
+inspection, and asserts that the Kubernetes client factory receives both
+`config_file=None` and `context=None`.
+
+Verification:
+
+```text
+uv run pytest -q tests/test_ravn/test_kubernetes_inspect_tool.py \
+  tests/ravn/unit/test_builtin_registry.py tests/test_ravn/test_config.py
+226 passed in 1.73s
+
+uv run ruff check src/ravn/adapters/tools/kubernetes.py src/ravn/config.py \
+  src/ravn/adapters/tools/builtin_registry.py \
+  tests/test_ravn/test_kubernetes_inspect_tool.py \
+  tests/ravn/unit/test_builtin_registry.py
+All checks passed!
+```
+
+Live authorization verification remains unavailable: `kubectl` and `tsh` are
+not installed in this workspace. No hosted PR was opened; this ticket lands
+directly on `regin` only.
