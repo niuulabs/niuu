@@ -53,3 +53,20 @@ with the required `otel` extra passed all 113 focused tests.
   reported unrelated Ting/Ravn/lint failures were already fixed before merging.
 - No hosted PR is applicable: the delivery is required to start and finish on
   `regin`, and no PR or merge targets `dev` or `main`.
+
+## Full-command limitation
+
+`make verify` cannot be invoked in this worker because `make` is not installed
+(`/bin/bash: make: command not found`). The equivalent direct full-suite command
+was attempted after repository-wide Ruff passed:
+
+```sh
+uv run pytest tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-fail-under=85
+```
+
+Collection stopped before tests ran because the default environment does not
+install the optional `k8s` dependency:
+`ModuleNotFoundError: No module named 'kubernetes_asyncio'` from
+`tests/test_adapters/test_user_home_files.py`. This is outside NIU-1112's
+A2A/Ting scope. The focused A2A, Agent Card, and workflow suites and the
+repository-wide Ruff checks above are the completed local verification.
