@@ -143,7 +143,7 @@ class _Client:
 
 
 @pytest.mark.asyncio
-async def test_url_invoked_task_persists_canonical_handle_for_exact_get(tmp_path) -> None:
+async def test_url_invoked_task_persists_handle_and_deduplicates_alias_start(tmp_path) -> None:
     agent = _agent().model_copy(
         update={"card_url": "https://peer.example/.well-known/agent-card.json"}
     )
@@ -160,6 +160,7 @@ async def test_url_invoked_task_persists_canonical_handle_for_exact_get(tmp_path
         agent_directory=GuildAgentDirectoryAdapter(base_url="https://guild.example", client=client),
         client=client,
         activity_emitter=runtime.record_a2a_activity,
+        activity_finder=runtime.find_a2a_tasks,
     )
 
     started = json.loads(
@@ -175,6 +176,14 @@ async def test_url_invoked_task_persists_canonical_handle_for_exact_get(tmp_path
         ).content
     )
     handle = (await runtime.find_a2a_tasks(query="task-url"))[0]
+    duplicate = await tool.execute(
+        {
+            "operation": "start",
+            "agent_id": agent.id,
+            "skill_id": "review",
+            "prompt": "Review the change.",
+        }
+    )
     retrieved = await tool.execute(
         {
             "operation": "get",
@@ -199,6 +208,8 @@ async def test_url_invoked_task_persists_canonical_handle_for_exact_get(tmp_path
 
     assert started["agent_id"] == agent.id
     assert handle["agent_id"] == agent.id
+    assert duplicate.is_error
+    assert "task-url" in duplicate.content
     assert not retrieved.is_error
     assert json.loads(retrieved.content)["state"] == "TASK_STATE_WORKING"
     assert not legacy_retrieved.is_error

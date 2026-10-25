@@ -336,7 +336,7 @@ class A2ATaskTool(ToolPort):
             request_fingerprint = hashlib.sha256(
                 json.dumps(
                     [
-                        agent_id,
+                        agent.id,
                         input.get("skill_id"),
                         input.get("prompt"),
                         metadata,
