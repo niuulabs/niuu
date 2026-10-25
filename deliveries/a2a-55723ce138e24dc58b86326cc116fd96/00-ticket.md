@@ -35,3 +35,11 @@ lookup now uses only the raw Guild page, while configured canonical IDs retain
 their existing explicit-card behavior. The regression test denies a
 configured-only URL. Revision commit
 `d5296cf352798790bc4d03603461db28ae136a76` is pushed to `origin/regin`.
+
+## Alias idempotency revision
+
+The review re-check found that a URL-form start and its resolved canonical
+Guild id produced different active-task fingerprints. The revision now builds
+the fingerprint from the resolved canonical `agent.id`, so aliases for the
+same visible Guild agent share the duplicate-start guard. Commit
+`662a7f5d35750eae29a8fa1ab99f1d0640a6e68c` is pushed to `origin/regin`.

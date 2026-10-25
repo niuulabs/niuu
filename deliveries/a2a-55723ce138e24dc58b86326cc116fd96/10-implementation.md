@@ -50,3 +50,20 @@ Review revision commit `d5296cf352798790bc4d03603461db28ae136a76`
 `origin/regin`.
 GitHub reports no Actions run for that `regin` push, so CI is not asserted; the
 focused local verification above is the available evidence.
+
+## Alias idempotency revision
+
+After resolving an input identifier through the visible Guild directory,
+`A2ATaskTool` fingerprints a start request with the returned canonical
+`agent.id`, not the caller's alias. Thus starting through an Agent Card URL
+and retrying through the equivalent canonical id is one active request and the
+second start is rejected before another `SendMessage` RPC is made.
+
+The URL durable-handle regression now also starts via the visible URL, retries
+through the canonical id with the same request, and verifies that the existing
+task is reported with only one `SendMessage`. It continues to verify exact
+stored-handle get, legacy URL get, and invisible URL denial.
+
+Revision commit `662a7f5d35750eae29a8fa1ab99f1d0640a6e68c`
+(`fix(ravn): deduplicate A2A starts across agent aliases`) is pushed to
+`origin/regin`.
