@@ -24,18 +24,17 @@ PR [#1171](https://github.com/niuulabs/niuu/pull/1171) targets `regin`, but its 
 
 Each failure reproduces unchanged at `origin/regin`: the PR has no diff for the affected files. Correcting any one is unrelated to NIU-1107 and requires an operator scope decision. Do not merge #1171 until required CI is green.
 
-The fresh PR run [40147302852](https://github.com/niuulabs/niuu/actions/runs/40147302852) also completed with those same three required checks failed: `Python / Python: Lint` (job `121031345082`), `Python / Python: Test Ting` (job `121031345113`), and `Python / Python: Test Ravn` (job `121031345116`). Its detailed failures match the baseline proof below.
+The CI run [40148007518] created for `c62a9f83`(https://github.com/niuulabs/niuu/actions/runs/40148007518) and Forge Stability run [40148007507](https://github.com/niuulabs/niuu/actions/runs/40148007507) are pending for the current documentation-only head, so they are not evidence of green CI. The detailed failures below come from completed CI run [40138560609](https://github.com/niuulabs/niuu/actions/runs/40138560609), then independently reproduce at the exact `origin/regin` base.
 
 ## PR identity, target, and actual diff
 
 PR [#1171](https://github.com/niuulabs/niuu/pull/1171) is open, non-draft, and
-has no merge commit. Its base is `regin` at
-`fd3fff955f3953a7769c7099229a576cc408c908`; its head is
-`codex/niu-1107-regin-reconciliation` at
-`0087bdee1b73b0613e2040768992a5629cec4963`. `git merge-base origin/regin
-HEAD` is the same `fd3fff…` commit; `origin/regin` is an ancestor of the PR
-head. Thus the reconciliation's base and merge target are both `regin`, not
-`dev` or `main`.
+has no merge commit. Its base and merge target are both `regin`; the head is
+`codex/niu-1107-regin-reconciliation`. At evidence capture, `origin/regin`
+was `fd3fff955f3953a7769c7099229a576cc408c908` and `git merge-base
+origin/regin HEAD` returned that same commit, proving `regin` is an ancestor
+of the PR branch. The reconciliation is not based on, targeted at, or merged
+into `dev` or `main`.
 
 The entire PR diff is documentation/evidence, not product code:
 
@@ -45,10 +44,12 @@ The entire PR diff is documentation/evidence, not product code:
 | `deliveries/a2a-0d31cf27b5204368a545f3495329bf2d/10-implementation.md` | added reconciliation evidence |
 | `deliveries/a2a-6a37353bba874b7fbc438a94f42501aa/00-ticket.md` | added ticket and operator-decision evidence |
 | `deliveries/a2a-6a37353bba874b7fbc438a94f42501aa/10-implementation.md` | added verification and baseline evidence |
+| `deliveries/a2a-6a37353bba874b7fbc438a94f42501aa/20-review.md` | added unresolved-CI review finding |
 | `docs/operator/a2a-agent-directory.md` | corrected A2A version evidence |
 
-The PR's pre-update commits are `566209bc` (record NIU-1107 regin
-verification) and `0087bdee` (correct A2A reconciliation evidence). The
+The evidence commits are `566209bc` (record NIU-1107 regin verification),
+`0087bdee` (correct A2A reconciliation evidence), `e8336b7f` (record CI
+baseline), and `c62a9f83` (record review). The
 actual NIU-1107 implementation commits `4d4abb0f`, `3a2c083d`, and `a992872f`
 are all ancestors of `origin/regin`, so nothing is brought from `dev` by this
 PR.
@@ -94,11 +95,14 @@ pytest -q tests/test_ting/test_bundled_workflow_versions_lock.py \
   -> expected Mimir tool count 7, actual 8
 ```
 
-All eight implicated source/test/lock blobs are byte-identical between
-`origin/regin` and PR head: the three formatting files,
-`test_bundled_workflow_versions_lock.py`, `tracker-delivery-flow.yaml`, its
-lock JSON, `test_entity_extractor.py`, and `mimir_tools.py`. The PR has no
-path diff for any of them. This proves the failures pre-exist this
+The completed CI log records: `3 files would be reformatted`; the Ting
+assertion that the released `3f444455-6b63-53c2-b057-3205345a56da@1.0.0`
+content changed and must be version-bumped/locked; and the Ravn assertion
+`assert 8 == 7`. All eight implicated source/test/lock blobs are
+byte-identical between `origin/regin` and the PR branch: the three formatting
+files, `test_bundled_workflow_versions_lock.py`, `tracker-delivery-flow.yaml`,
+its lock JSON, `test_entity_extractor.py`, and `mimir_tools.py`. The PR has
+no path diff for any of them. This proves the failures pre-exist this
 documentation-only reconciliation PR. The operator declined scope expansion;
 leave them for separate triage, do not claim CI is green, and do not merge
 until green CI and review acceptance exist.
