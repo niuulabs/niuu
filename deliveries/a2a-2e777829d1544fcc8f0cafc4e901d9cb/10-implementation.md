@@ -70,3 +70,12 @@ install the optional `k8s` dependency:
 `tests/test_adapters/test_user_home_files.py`. This is outside NIU-1112's
 A2A/Ting scope. The focused A2A, Agent Card, and workflow suites and the
 repository-wide Ruff checks above are the completed local verification.
+
+After installing `k8s` and rerunning with `dev`, `k8s`, and `otel` extras,
+the full suite collected 27,644 selected tests but had two unrelated early
+failures in `tests/integration/test_http_persona_adapter.py`; the long run was
+then stopped rather than consuming the worker on a known failing full suite.
+The two failures reproduce independently in 0.34s: the HTTP persona adapter
+tries `http://testserver/api/v1/tokens/workload/exchange`, receives 404, and
+therefore returns no `integ-coder` configuration / no `alpha-agent` name.
+No unrelated persona-adapter repair was made in this NIU-1112 delivery.
