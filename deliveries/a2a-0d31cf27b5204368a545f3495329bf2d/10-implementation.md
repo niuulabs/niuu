@@ -10,11 +10,11 @@ The complete directory implementation is already in the `regin` history:
 
 The implementation uses the official `a2a-sdk` (installed version `1.1.2`) for Agent Card parsing. It projects workflow-session entities into the directory without a duplicate topology node, principal-filters before card resolution, respects ETags/conditional cache validation, isolates card caches by principal, verifies supported signatures, and aggregates through Guild's existing instance facade with source provenance and partial-source warnings. The UI data layer retains topology, cluster, and instance identity. Observatory's existing `/api/v1/observatory/registry` is unaffected.
 
-`docs/operator/a2a-agent-directory.md` records the Niuu-specific registry status, official discovery semantics, safe card handling, endpoints, and shared Observatory/Guild dynamic-adapter configuration. This pass corrected its current-protocol statement to the official 1.0.0 release.
+`docs/operator/a2a-agent-directory.md` records the Niuu-specific registry status, official discovery semantics, safe card handling, endpoints, and shared Observatory/Guild dynamic-adapter configuration. This pass corrected its current-protocol statement to the official 1.0.1 release.
 
 ## Verification artifacts
 
-Commands were run from this reconciliation checkout on 2026-10-24:
+Commands were run from this reconciliation checkout on 2026-10-25:
 
 ```text
 uv run --extra dev pytest -q tests/test_observatory/test_agent_directory.py tests/test_observatory/test_app.py tests/test_observatory/test_entity_discovery.py tests/test_observatory/test_plugin.py tests/test_niuu/test_agent_directory.py tests/test_niuu/test_rest_instances.py tests/test_volundr/test_session_response_a2a.py
