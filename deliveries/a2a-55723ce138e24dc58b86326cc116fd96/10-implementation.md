@@ -67,3 +67,13 @@ stored-handle get, legacy URL get, and invisible URL denial.
 Revision commit `662a7f5d35750eae29a8fa1ab99f1d0640a6e68c`
 (`fix(ravn): deduplicate A2A starts across agent aliases`) is pushed to
 `origin/regin`.
+
+Final focused verification passed:
+
+- `uv run --extra dev pytest -q tests/test_ravn/test_agent_directory_adapter.py tests/test_ravn/test_a2a_task_tool.py` — 20 passed.
+- `uv run --extra dev ruff check src/ravn/adapters/agent_directory.py src/ravn/adapters/tools/a2a_task.py src/ravn/ports/agent_directory.py tests/test_ravn/test_agent_directory_adapter.py tests/test_ravn/test_a2a_task_tool.py` — passed.
+- `git diff --check HEAD~2..HEAD` — passed.
+
+`gh run list --branch regin --commit f31f7fc2 --limit 5` returned no runs;
+CI is therefore not asserted. This direct-integration delivery has no hosted
+PR because its required source and target are both `regin`.
