@@ -9,9 +9,8 @@ required-check result. Do not merge.
 ## Finding
 
 - **Major — CI evidence is stale and required CI is unresolved**
-  (`deliveries/a2a-6a37353bba874b7fbc438a94f42501aa/10-implementation.md:27`,
-  `deliveries/a2a-6a37353bba874b7fbc438a94f42501aa/20-review.md:12`). The reviewed PR
-  head is `1d39b1e5`, but both documents call the superseded `39db5307` run
+  (`deliveries/a2a-6a37353bba874b7fbc438a94f42501aa/10-implementation.md:27`). The reviewed PR
+  head is `1d39b1e5`, but that implementation handoff calls the superseded `39db5307` run
   [40148166827](https://github.com/niuulabs/niuu/actions/runs/40148166827) the “current”
   run and assert that its lint job failed. That run is queued; the actual current-head runs
   are [CI 40148474219](https://github.com/niuulabs/niuu/actions/runs/40148474219) (pending)
