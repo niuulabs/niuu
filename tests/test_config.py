@@ -131,6 +131,7 @@ class TestSettings:
                     "guild_max_concurrency": 4,
                     "signature_algorithms": ["ES256"],
                     "authenticated_card_origins": ["https://agents.example.test"],
+                    "allowed_card_origins": ["https://agents.example.test"],
                 }
             }
         )
@@ -142,6 +143,9 @@ class TestSettings:
         assert settings.observatory.directory.guild_max_concurrency == 4
         assert settings.observatory.directory.signature_algorithms == ["ES256"]
         assert settings.observatory.directory.authenticated_card_origins == [
+            "https://agents.example.test"
+        ]
+        assert settings.observatory.directory.allowed_card_origins == [
             "https://agents.example.test"
         ]
 

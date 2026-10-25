@@ -182,6 +182,7 @@ class HttpAgentCardResolver(AgentCardResolverPort):
         default_cache_ttl_seconds: float,
         signature_algorithms: list[str],
         authenticated_card_origins: list[str] | None = None,
+        allowed_card_origins: list[str] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._timeout_seconds = timeout_seconds
@@ -194,6 +195,9 @@ class HttpAgentCardResolver(AgentCardResolverPort):
         self._signature_algorithms = list(signature_algorithms)
         self._authenticated_card_origins = frozenset(
             _origin(value.strip()) for value in authenticated_card_origins or ()
+        )
+        self._allowed_card_origins = frozenset(
+            _origin(value.strip()) for value in allowed_card_origins or ()
         )
         self._transport = transport
         self._cache: dict[tuple[str, str], _CardCacheEntry] = {}
@@ -208,6 +212,7 @@ class HttpAgentCardResolver(AgentCardResolverPort):
     ) -> ResolvedAgentCard:
         """Resolve a standard card without sharing restricted cards between callers."""
         card_url = _validate_http_url(card_url.strip())
+        self._validate_allowed_origin(card_url)
         cache_key = (principal_key, card_url)
         cached = self._cache.get(cache_key)
         now = time.monotonic()
@@ -273,6 +278,11 @@ class HttpAgentCardResolver(AgentCardResolverPort):
                 )
             return resolved
 
+    def _validate_allowed_origin(self, url: str) -> None:
+        if _origin(url) in self._allowed_card_origins:
+            return
+        raise AgentCardResolutionError("Agent Card retrieval origin is not allowed")
+
     @staticmethod
     def _parse_card(payload: Any) -> AgentCard:
         if not isinstance(payload, dict):
@@ -324,6 +334,7 @@ class HttpAgentCardResolver(AgentCardResolverPort):
                     f"Agent Card signature algorithm is not allowed: {algorithm}"
                 )
             _validate_http_url(jwks_url, require_https=True)
+            self._validate_allowed_origin(jwks_url)
             key_ids.append(key_id)
             if (key_id, jwks_url) in keys:
                 continue

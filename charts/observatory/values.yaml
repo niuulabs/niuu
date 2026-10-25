@@ -219,6 +219,8 @@ directory:
     - EdDSA
   # -- Card origins explicitly trusted to receive forwarded caller authentication.
   authenticatedCardOrigins: []
+  # -- Card and JWKS retrieval is denied until a deployment owner allowlists exact origins.
+  allowedCardOrigins: []
 
 nodeSelector: {}
 tolerations: []

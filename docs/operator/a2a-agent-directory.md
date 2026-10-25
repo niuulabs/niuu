@@ -8,7 +8,7 @@ caller.
 ## Protocol compatibility
 
 Compatibility was rechecked on 2026-10-25 against the official A2A materials. The current
-stable protocol release is 1.0.1, and the installed `a2a-sdk` 1.1.2 implements the 1.0 protocol. The A2A
+stable protocol release is 1.0.1, and `a2a-sdk` 1.1 implements the 1.0 protocol. The A2A
 discovery documentation explicitly leaves curated registries to deployments, so these REST
 directory endpoints are Niuu-specific. Agent Cards, supported interfaces, cache validators,
 security declarations, and JWS signatures retain their official A2A semantics.
@@ -47,9 +47,11 @@ visibility before fetching a card. Guild independently rechecks owner, tenant, a
 after fan-out; Environment membership remains enforced by each principal-aware Observatory source.
 An Environment-scoped entry without authoritative membership metadata fails closed for everyone
 except its explicit owner.
-Authentication headers are forwarded to registered Observatory instances. Agent Card endpoints
-receive caller authentication only when their origin is explicitly trusted through
-`authenticatedCardOrigins`; public and untrusted card origins receive no caller credentials.
+Authentication headers are forwarded to registered Observatory instances. Agent Card and JWKS
+retrieval is default-deny: `allowedCardOrigins` must explicitly allow each exact deployment-owned
+origin before Observatory makes any request. `authenticatedCardOrigins` is separate and only
+controls which allowed card origins receive caller authentication; public and untrusted card
+origins receive no caller credentials.
 Missing and inaccessible detail records both return the same `404` response.
 
 Card caches are keyed by caller identity and card URL, preventing one principal's authenticated
@@ -102,6 +104,9 @@ directory:
   guildTimeoutSeconds: 5.0
   guildMaxConcurrency: 8
   signatureAlgorithms: [ES256, ES384, RS256, RS384, PS256, EdDSA]
+  # Exact origins for both Agent Card and JWKS retrieval. Empty denies all retrieval.
+  allowedCardOrigins: [https://agents.internal.example]
+  # A subset of allowedCardOrigins that may receive caller authentication.
   authenticatedCardOrigins: [https://agents.internal.example]
 ```
 
