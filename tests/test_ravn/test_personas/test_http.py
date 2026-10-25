@@ -93,6 +93,17 @@ def _adapter(**kwargs: object) -> HttpPersonaAdapter:
     return HttpPersonaAdapter(base_url=_BASE, **kwargs)  # type: ignore[arg-type]
 
 
+@pytest.fixture(autouse=True)
+def _isolate_ambient_workload_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep a runner's mounted service-account token out of unit requests."""
+    monkeypatch.delenv("NIUU_WORKLOAD_IDENTITY_TOKEN_FILE", raising=False)
+    monkeypatch.delenv("NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", raising=False)
+    monkeypatch.setattr(
+        "niuu.adapters.outbound.http_auth._DEFAULT_SERVICE_ACCOUNT_TOKEN_FILE",
+        "/nonexistent/serviceaccount/token",
+    )
+
+
 # ---------------------------------------------------------------------------
 # load — happy path
 # ---------------------------------------------------------------------------

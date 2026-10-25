@@ -52,3 +52,10 @@ At investigation start, `HEAD` and `origin/regin` were both
 `66c3d35ee6beffee978ee28ee6a5adb64888b851`; `origin/dev` was
 `f75d5b0b824df5e11741b4d9c2f5c64852b531fe`. `origin/dev` is an ancestor of
 HEAD through merge `82f6384c`; no merge out of `regin` occurred.
+
+The current `regin` head retains that ancestry and adds test-only isolation for
+the coding worker's mounted service-account token. It does not change persona
+or platform-tool production behavior. NIU-1112 remains In Progress pending a
+green current-head CI run. The post-isolation full suite passed 27,596 tests
+at 88.47% coverage but has six unrelated failures recorded in
+`10-implementation.md`.

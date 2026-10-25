@@ -8,6 +8,7 @@ import httpx
 import pytest
 import respx
 
+from ravn.adapters.tools import platform_tools
 from ravn.adapters.tools.platform_tools import (
     TingPlanTool,
     TingResearchTool,
@@ -29,6 +30,36 @@ TING_WORKFLOWS_URL = f"{BASE_URL}/api/v1/ting/workflows"
 TING_RESEARCH_URL = f"{BASE_URL}/api/v1/ting/research/campaigns"
 TING_PLAN_URL = f"{BASE_URL}/api/v1/ting/sagas/plan"
 TING_SPEC_URL = f"{BASE_URL}/api/v1/ting/specs/campaigns"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ambient_workload_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep a runner's mounted service-account token out of unit requests."""
+    exchange_workload_token = platform_tools._exchange_workload_token
+
+    async def exchange_without_ambient_default(
+        base_url: str,
+        timeout: float,
+        *,
+        workload_token_file: str,
+        exchange_url: str,
+        audiences: list[str] | None,
+    ) -> str:
+        if workload_token_file == platform_tools._DEFAULT_WORKLOAD_TOKEN_FILE:
+            return ""
+        return await exchange_workload_token(
+            base_url,
+            timeout,
+            workload_token_file=workload_token_file,
+            exchange_url=exchange_url,
+            audiences=audiences,
+        )
+
+    monkeypatch.setattr(
+        platform_tools,
+        "_exchange_workload_token",
+        exchange_without_ambient_default,
+    )
 
 
 # ===========================================================================

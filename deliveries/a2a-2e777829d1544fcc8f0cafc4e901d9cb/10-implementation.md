@@ -175,3 +175,48 @@ separate ambient-default-token assumptions in
 SSH-lock, Niuu-shared-chart namespace, CLI Docker-availability, and static-tool
 verification failures. They are outside NIU-1112 and were neither silenced nor
 changed. NIU-1112 remains In Progress until current-head CI is green.
+
+### 2026-10-25 unit-fixture follow-up
+
+The full-suite log also showed that `tests/test_ravn/test_personas/test_http.py`
+had the same ambient mounted-service-account leak as the ASGI integration
+module. The persona unit fixture now removes ambient workload-identity settings
+and redirects only the default service-account path. The platform-tools unit
+fixture bypasses only its implicit default path while retaining its explicit
+workload-token exchange test. Neither production adapter changed.
+
+With a deliberately supplied `NIUU_WORKLOAD_IDENTITY_TOKEN_FILE` and exchange
+URL, the affected suites pass, proving that the test fixtures—not the process
+environment—control their credentials:
+
+```sh
+NIUU_WORKLOAD_IDENTITY_TOKEN_FILE=/tmp/niu-1112-workload-proof \
+NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL=https://ambient.example/api/v1/tokens/workload/exchange \
+  uv run --extra dev pytest -q \
+  tests/test_adapters/test_http_auth.py \
+  tests/test_ravn/test_personas/test_http.py \
+  tests/test_ravn/test_platform_tools.py \
+  tests/integration/test_http_persona_adapter.py
+# 147 passed
+```
+
+The required full command was then rerun with the same hermetic environment:
+
+```sh
+PATH=/tmp/niu-1112-tools:$PATH \
+env -u NIUU_WORKLOAD_IDENTITY_TOKEN_FILE -u NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL \
+  uv run --extra dev --extra k8s --extra otel pytest tests/ -q --tb=short \
+  --cov=src --cov-report=term-missing --cov-fail-under=85
+```
+
+It passed all formerly ambient-identity-affected suites and coverage (88.47%),
+but is still not green: `6 failed, 27596 passed, 46 skipped, 232 deselected,
+1 xfailed` in 29:28. Exact remaining node IDs are
+`test_supervisor_releases_lock_at_deadline_after_controller_death`,
+`test_native_login_runner_has_dedicated_namespace_and_scoped_rbac`, both
+parameterizations of `TestStackUp::test_uses_native_lan_unless_external_host_is_configured`,
+`TestRavnAgentToolUse::test_build_tool_reuses_persisted_commission_after_restart`,
+and `TestStaticDefects::test_correct_code_is_clean`. Their raw errors are,
+respectively: missing `ProcessLookupError`; `skuld` versus expected `default`
+namespace; absent Docker; a persisted-operation-ID mismatch; and an unrelated
+`__classdict__` static-defect report. No unrelated behavior was changed.
