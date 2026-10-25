@@ -7,6 +7,11 @@ that exact URL belongs to an entry returned by the principal-filtered Guild
 directory. It returns the corresponding canonical directory entry; it does not
 fetch a caller-provided URL or change the directory's visibility behavior.
 
+The URL lookup reads the unaugmented Guild response directly. Configured Agent
+Cards are still available by their deterministic configured canonical IDs, but
+their URLs cannot be used to bypass principal visibility. A configured-only
+URL therefore resolves as not visible rather than causing an Agent Card fetch.
+
 Consequently, `A2ATaskTool` resolves URL-invoked starts to the canonical Guild
 id before emitting resident activity, so the durable handle stores that id and
 can be supplied directly to `a2a_task.get`. Existing legacy URL-form handles
@@ -16,7 +21,7 @@ record. The operator documentation records this compatibility contract.
 
 ## Verification
 
-- Passed: `uv run --extra dev pytest -q tests/test_ravn/test_agent_directory_adapter.py tests/test_ravn/test_a2a_task_tool.py` — `19 passed`.
+- Passed: `uv run --extra dev pytest -q tests/test_ravn/test_agent_directory_adapter.py tests/test_ravn/test_a2a_task_tool.py` — `20 passed`.
 - Passed: `uv run --extra dev ruff check src/ravn/adapters/agent_directory.py src/ravn/adapters/tools/a2a_task.py src/ravn/ports/agent_directory.py tests/test_ravn/test_agent_directory_adapter.py tests/test_ravn/test_a2a_task_tool.py`.
 - Passed: `git diff --check`.
 
@@ -25,6 +30,11 @@ its resident handle, and gets the live task with the exact stored `agent_id`.
 It also gets the same task through the legacy URL form. Adapter coverage proves
 unknown URLs are not fetched and do not resolve. Existing A2A tests retain the
 canonical-id get and invisible-agent denial cases.
+
+The review-revision adapter test proves a configured local card whose URL is
+absent from Guild's raw response cannot resolve through the URL path. The
+existing configured canonical-ID test proves that compatibility path remains
+available separately.
 
 ## Hosted delivery
 

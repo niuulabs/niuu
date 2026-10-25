@@ -34,22 +34,21 @@ class GuildAgentDirectoryAdapter:
         self._agent_card_urls = list(dict.fromkeys(agent_card_urls or []))
 
     async def list_agents(self) -> AgentDirectoryPage:
-        response = await self._client.get(self._url)
-        if response.status_code != 200 or not isinstance(response.body, dict):
+        try:
+            page = await self._visible_guild_page()
+        except RuntimeError as exc:
             if not self._agent_card_urls:
-                raise RuntimeError(f"Guild Agent Directory returned HTTP {response.status_code}")
+                raise
             page = AgentDirectoryPage(
                 warnings=[
                     AgentDirectoryWarning(
                         sourceInstanceId="guild",
                         code="guild-directory-unavailable",
-                        message=(f"Guild Agent Directory returned HTTP {response.status_code}"),
+                        message=str(exc),
                     )
                 ],
                 partial=True,
             )
-        else:
-            page = AgentDirectoryPage.model_validate(response.body)
         known_cards = {entry.card_url for entry in page.items}
         configured: list[AgentDirectoryEntry] = []
         warnings = list(page.warnings)
@@ -93,15 +92,20 @@ class GuildAgentDirectoryAdapter:
         )
         if configured_url is not None:
             return await self._load_agent_card(configured_url)
+        if _is_agent_card_url(normalized):
+            try:
+                page = await self._visible_guild_page()
+            except RuntimeError:
+                return None
+            return next((item for item in page.items if item.card_url == normalized), None)
         page = await self.list_agents()
-        return next(
-            (
-                item
-                for item in page.items
-                if item.id == normalized or item.card_url == normalized
-            ),
-            None,
-        )
+        return next((item for item in page.items if item.id == normalized), None)
+
+    async def _visible_guild_page(self) -> AgentDirectoryPage:
+        response = await self._client.get(self._url)
+        if response.status_code != 200 or not isinstance(response.body, dict):
+            raise RuntimeError(f"Guild Agent Directory returned HTTP {response.status_code}")
+        return AgentDirectoryPage.model_validate(response.body)
 
     async def _load_agent_card(self, card_url: str) -> AgentDirectoryEntry:
         response = await self._client.get(card_url, headers={"A2A-Version": "1.0"})
@@ -121,6 +125,11 @@ def _agent_directory_url(base_url: str) -> str:
     if not path.endswith(suffix):
         path = f"{path}{suffix}" if path else suffix
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _is_agent_card_url(agent_id: str) -> bool:
+    parsed = urlsplit(agent_id)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def _agent_from_card(card_url: str, card: dict[str, Any]) -> AgentDirectoryEntry:

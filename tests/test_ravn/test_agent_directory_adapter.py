@@ -183,3 +183,22 @@ async def test_guild_agent_card_url_resolves_only_to_a_visible_directory_entry()
     assert resolved.id == entry.id
     assert hidden is None
     assert all(url.endswith("/api/v1/niuu/observatory/agents") for url, _ in client.gets)
+
+
+@pytest.mark.asyncio
+async def test_configured_agent_card_url_does_not_bypass_guild_visibility() -> None:
+    card_url = "https://configured.example/.well-known/agent-card.json"
+    client = _Client(
+        guild={"items": [], "warnings": [], "sources": [], "partial": False},
+        card={"name": "must not be fetched"},
+    )
+    adapter = GuildAgentDirectoryAdapter(
+        base_url="https://guild.example",
+        client=client,
+        agent_card_urls=[card_url],
+    )
+
+    resolved = await adapter.get_agent(card_url)
+
+    assert resolved is None
+    assert client.gets == [("https://guild.example/api/v1/niuu/observatory/agents", {})]

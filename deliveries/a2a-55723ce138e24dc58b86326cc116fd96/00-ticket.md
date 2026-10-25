@@ -26,3 +26,11 @@ PR targets `dev` or `main`.
 The implementation is directly integrated on `regin` in
 `acd2ad1d3827e687986424c2f0bbaab5d012fdb9`. No hosted PR is created because
 source and target are both the required integration branch.
+
+## Review revision
+
+The review finding that locally configured Agent Card URLs could bypass the
+principal-filtered Guild response is in scope for this delivery. URL-form
+lookup now uses only the raw Guild page, while configured canonical IDs retain
+their existing explicit-card behavior. The regression test denies a
+configured-only URL.

@@ -14,4 +14,4 @@ class PeerAgentDirectoryPort(Protocol):
         """Return agents already filtered by Guild for the current principal."""
 
     async def get_agent(self, agent_id: str) -> AgentDirectoryEntry | None:
-        """Resolve a visible aggregate id or a previously published Agent Card URL."""
+        """Resolve an aggregate id or URL returned by the principal-scoped directory."""
