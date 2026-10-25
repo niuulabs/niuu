@@ -6,47 +6,60 @@
 
 ## Re-check status
 
-The prior requested default-kubeconfig follow-up is satisfied. With neither an
-explicit kubeconfig path nor `KUBECONFIG`, the out-of-cluster path now calls
-Kubernetes with `config_file=None` and `context=None`; the added regression
-covers that behavior.
+The prior requested multi-context current-context follow-up is satisfied. With
+an explicit single kubeconfig, an omitted `cluster` now resolves its
+`current-context`; the new regression test verifies a legacy workload request
+uses `teleport.niuu.world-valhalla`. Explicit unknown clusters still fail.
 
 ## Finding
 
-### Major — multi-context kubeconfigs break existing calls without `cluster`
+### Major — standard multi-file kubeconfig values no longer work
 
-- `src/ravn/adapters/tools/kubernetes.py:217-220` now rejects an out-of-cluster
-  request with no `cluster` whenever its kubeconfig has more than one context.
-  Before this change, `load_kube_config(..., context=None)` selected the
-  kubeconfig's `current-context`, so existing callers of every pre-existing
-  action (`inspect_pod`, events, logs, workloads, and nodes) worked without a
-  new argument. The newly added test at
-  `tests/test_ravn/test_kubernetes_inspect_tool.py:301-312` codifies that
-  backwards-incompatible error. This violates the ticket requirement that
-  existing callers remain unchanged.
+- `src/ravn/adapters/tools/kubernetes.py:202` treats `kubeconfig_path` (or the
+  configured `KUBECONFIG` environment value) as one filesystem path and calls
+  `Path(...).read_text()`. Kubernetes accepts a path-list here (colon-separated
+  on this platform) and the prior implementation passed that value to
+  `kubernetes_asyncio.config.load_kube_config`, whose `KubeConfigMerger`
+  splits and merges it. Consequently any existing out-of-cluster caller using
+  the standard `KUBECONFIG=/path/one:/path/two` form now gets
+  `FileNotFoundError` for the combined literal path before any Kubernetes
+  client is built. This violates the required unchanged behavior for existing
+  callers.
 
-  Preserve the default/current-context behavior when `cluster` is omitted;
-  use the new `cluster` parameter only to override that selection. Add a
-  regression test using a multi-context kubeconfig with `current-context`
-  asserting a legacy no-`cluster` request reaches that context. Explicit
-  unknown clusters should remain errors.
+  Preserve Kubernetes' multi-file kubeconfig parsing when listing/resolving
+  contexts (for example, use `kubernetes_asyncio.config.list_kube_config_contexts`
+  with the supplied config-file string rather than reading it as one `Path`),
+  and add a regression using two kubeconfig files and an omitted `cluster`.
+  It should select the merged kubeconfig's current context and reach the
+  injected client factory.
 
 ## Verification
 
-- Re-checked the committed repo-root branch `regin` at `8aeca20d`; it matches
-  `origin/regin`. Full delivery diff reviewed: `01af0978..8aeca20d`.
+- Re-checked committed repo-root branch `regin` at `a42f11bb`; it matches
+  `origin/regin`. Reviewed the full delivery diff `01af0978..a42f11bb` and the
+  re-check commit.
+- Verified the prior requested current-context behavior at
+  `src/ravn/adapters/tools/kubernetes.py:216-228` and
+  `tests/test_ravn/test_kubernetes_inspect_tool.py:301-313`.
+- Reproduced this finding with two valid colon-separated kubeconfig files:
+  `kubernetes_inspect` returned `FileNotFoundError` for their combined path
+  before the injected client factory ran. `kubernetes_asyncio`'s installed
+  `KubeConfigMerger` splits that same config-file value on the platform path
+  separator.
 - Ran `uv run pytest -q tests/test_ravn/test_kubernetes_inspect_tool.py
   tests/ravn/unit/test_builtin_registry.py tests/test_ravn/test_config.py`:
-  **226 passed**.
+  **227 passed**.
 - Ran `uv run ruff check src/ravn/adapters/tools/kubernetes.py
   src/ravn/config.py src/ravn/adapters/tools/builtin_registry.py
   tests/test_ravn/test_kubernetes_inspect_tool.py
   tests/ravn/unit/test_builtin_registry.py`: **All checks passed**.
+- Ran a UTF-8 tail property smoke test; all selected suffixes encoded within
+  their configured byte bound.
 - Live cluster access remains unverified: `kubectl` and `tsh` are unavailable
   in this workspace, and the implementation makes no claim otherwise.
 
 ## Recommendation
 
-Restore legacy current-context selection for omitted `cluster`, cover it, and
-request another review. The prior default-kubeconfig follow-up is verified as
+Restore standard multi-file kubeconfig handling, cover it, and request another
+review. The prior multi-context current-context follow-up is verified as
 satisfied.
