@@ -432,9 +432,10 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
             }
         }
     )
-    assert _workflow_allowed_outcome_topics(
-        builder_settings, node_id="capability-publish"
-    ) == {"capability.blocked", "capability.ready"}
+    assert _workflow_allowed_outcome_topics(builder_settings, node_id="capability-publish") == {
+        "capability.blocked",
+        "capability.ready",
+    }
     builder_resources = {
         node["label"]: node
         for node in builder_flow.graph["nodes"]
@@ -456,9 +457,7 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
 def test_tool_skill_builder_routes_publisher_block_to_help_gate() -> None:
     """Publish failures remain blocked while successful publications complete."""
     builder_flow = next(
-        workflow
-        for workflow in load_system_workflows()
-        if workflow.name == "Tool & Skill Builder"
+        workflow for workflow in load_system_workflows() if workflow.name == "Tool & Skill Builder"
     )
     routes = {
         edge["label"]: edge["target"]
@@ -499,9 +498,10 @@ def test_tool_skill_builder_routes_publisher_block_to_help_gate() -> None:
             }
         }
     )
-    assert _workflow_allowed_outcome_topics(
-        settings, node_id="capability-publish"
-    ) == {"capability.blocked", "capability.ready"}
+    assert _workflow_allowed_outcome_topics(settings, node_id="capability-publish") == {
+        "capability.blocked",
+        "capability.ready",
+    }
 
 
 def test_load_system_workflows_rejects_missing_bundle_directory(tmp_path) -> None:

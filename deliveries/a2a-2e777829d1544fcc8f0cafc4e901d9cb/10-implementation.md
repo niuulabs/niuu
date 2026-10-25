@@ -23,8 +23,9 @@ Passed at the integrated `regin` head:
 
 ```sh
 uv run --extra dev --extra otel pytest -q \
-  tests/test_ting/test_a2a_card.py tests/test_ting/test_a2a_tasks.py
-# 89 passed
+  tests/test_ting/test_a2a_card.py tests/test_ting/test_a2a_tasks.py \
+  tests/test_ting/test_system_workflows.py
+# 113 passed
 
 uv run --extra dev ruff check \
   src/ting/api/a2a_card.py tests/test_ting/test_a2a_card.py
@@ -34,16 +35,18 @@ git diff --check
 # all passed
 ```
 
-A preliminary no-OTel invocation of the same test set produced one environment
+A preliminary no-OTel invocation of the A2A test set produced one environment
 failure (`ModuleNotFoundError: opentelemetry`) in the telemetry test; rerunning
-with the required `otel` extra passed all 89 tests.
+with the required `otel` extra passed all 113 focused tests.
 
 ## Branch and CI evidence
 
 - `origin/dev` and `regin` had diverged by 40/15 commits. `origin/dev` was
   merged into `regin` as `82f6384c` (`chore: merge dev into regin`), resolving
-  only the bundled workflow-version lock by retaining both independent version
-  entries.
+  the bundled workflow-version lock by retaining both independent version
+  entries. The merge retained an older local formatting hunk in
+  `test_system_workflows.py`; this delivery reapplies the exact current-dev Ruff
+  formatting so repository-wide Ruff check and format verification pass.
 - The latest `origin/dev` commit `f75d5b0b` had three successful GitHub Actions
   runs, including [CI](https://github.com/niuulabs/niuu/actions/runs/40153495545).
   This addressed the launch instruction to check whether the previously
