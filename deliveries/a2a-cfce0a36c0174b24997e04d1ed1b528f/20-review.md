@@ -1,4 +1,4 @@
-# NIU-1114 — review
+# NIU-1114 — re-check review
 
 ## Verdict
 
@@ -6,25 +6,42 @@
 
 ## Findings
 
-### Major — the prior live-proof request remains unsatisfied
+### Major — live end-to-end acceptance evidence is still absent
 
-`deliveries/a2a-cfce0a36c0174b24997e04d1ed1b528f/10-implementation.md:36-38` still confirms no authorized submission route to the selected deployed Runa resident. Lines `60-67` specify the required identifiers but do not record them. The new source-side endpoint probe is non-commissioning, so it does not satisfy the previous request for a real commission/task, verification, court, installation, ledger, and deployed-owner/configuration evidence.
+`deliveries/a2a-cfce0a36c0174b24997e04d1ed1b528f/10-implementation.md:118-123`
+states that this branch cannot inspect the authorized resident or submit/read its
+actor-bound task, so it records none of the required resident/configuration,
+commission/task, workflow/Forge run, verification, court, installation/version,
+or ledger evidence. This is the ticket's merge gate, as specified in
+`deliveries/a2a-cfce0a36c0174b24997e04d1ed1b528f/00-ticket.md:10-14`; source
+tests and the non-commissioning doctor probe cannot substitute for it.
 
-**Fix:** use the selected deployed Runa/Valhalla workload identity (or an equivalently bounded authorized route) to submit exactly one capability-gap request, independently inspect its deployed configuration/owner, and record the resulting task/commission ID, workflow/Forge run, verification result, court verdict, installation ID or learned-tool version, and ledger entry here.
+**Fix:** use the selected deployed Runa/Valhalla workload identity (or an
+equivalently bounded authorized evidence route) for exactly one capability-gap
+build, independently verify the deployed owner/configuration, and record the
+resulting task/commission ID, workflow/Forge run, verification result, court
+verdict, installation ID or learned-tool version, and ledger entry.
 
-### Major — the endpoint probe accepts unsupported A2A RPC methods
+## Prior follow-up verified
 
-`src/ravn/valkyrie_evolution/tool_build_doctor.py:456-470` marks every syntactically valid JSON-RPC envelope as a successful endpoint check. In particular, a server replying with `{"jsonrpc":"2.0","error":{"code":-32601,"message":"method not found"}}` passes even though the build backend requires `GetTask` to poll commissioned work. This can produce a green doctor run for an endpoint that cannot execute the A2A method needed by the configured backend.
-
-**Fix:** accept only the expected benign response for the reserved absent task (the Ting task-not-found JSON-RPC error) or a valid task result, and fail on other JSON-RPC errors, including method-not-found. Add regression coverage for that error response.
+The prior method-validation request is satisfied. The new endpoint handling in
+`src/ravn/valkyrie_evolution/tool_build_doctor.py:466-499` accepts only the
+expected `-32001` task-not-found response or a result for the reserved probe
+task and rejects other JSON-RPC errors. The regression at
+`tests/test_ravn/test_tool_build_doctor.py:556-586` verifies that `-32601`
+(`method not found`) fails the doctor. No additional source-code blocker was
+found in this re-check.
 
 ## Verification notes
 
-- Re-check review of committed `regin` at `cdeb3c87` (`origin/regin` is the same ref); reviewed `git diff b5fb82fb..HEAD` and current files. No hosted PR is recorded.
-- The prior follow-up was explicitly checked and remains unsatisfied; the handoff itself says the independently launched route is still awaited.
-- `uv run --extra dev pytest -q tests/test_ravn/test_tool_build_doctor.py tests/test_ravn/test_tool_build_backends.py tests/test_ravn/test_tool_build_workflows_cli.py` — **95 passed**.
+- Reviewed committed `regin` at `5829c0d5` (`origin/regin` matched) and the
+  complete re-check diff `ddfe1e3b..HEAD`; no hosted PR is recorded.
+- Confirmed the prior review artifact before inspecting the diff, then verified
+  its method-validation request in both current source and regression coverage.
 - `uv run ruff check src/ravn/valkyrie_evolution/tool_build_doctor.py tests/test_ravn/test_tool_build_doctor.py` — passed.
+- `uv run --extra dev pytest -q tests/test_ravn/test_tool_build_doctor.py tests/test_ravn/test_tool_build_backends.py tests/test_ravn/test_tool_build_workflows_cli.py` — **96 passed**.
 
 ## Recommendation
 
-Keep NIU-1114 in review until both the endpoint-probe validation and the independently inspectable, bounded live proof are complete.
+Keep NIU-1114 in review until the authorized bounded route publishes the
+independently inspectable live proof listed above.
