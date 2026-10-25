@@ -94,7 +94,14 @@ class GuildAgentDirectoryAdapter:
         if configured_url is not None:
             return await self._load_agent_card(configured_url)
         page = await self.list_agents()
-        return next((item for item in page.items if item.id == normalized), None)
+        return next(
+            (
+                item
+                for item in page.items
+                if item.id == normalized or item.card_url == normalized
+            ),
+            None,
+        )
 
     async def _load_agent_card(self, card_url: str) -> AgentDirectoryEntry:
         response = await self._client.get(card_url, headers={"A2A-Version": "1.0"})

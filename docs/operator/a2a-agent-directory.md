@@ -59,6 +59,18 @@ Cards are parsed by the official SDK. Credential-bearing card URLs, malformed in
 invalid cards, and unverifiable signatures are excluded with a warning. Unsigned cards can be
 listed but cannot be merged across sources.
 
+### Durable task-handle compatibility
+
+Ravn normally persists the Guild aggregate `agent_id` returned after resolving an A2A task
+target. A task started using the target's Agent Card URL is therefore saved with that canonical
+id and can be passed verbatim to `a2a_task.get`.
+
+Older durable handles may contain an Agent Card URL. Ravn accepts that form only by matching it
+against the current, principal-filtered Guild directory response; it never fetches a
+caller-supplied URL and does not broaden directory visibility. A legacy URL that no longer
+matches a visible directory entry remains unavailable with the usual indistinguishable
+not-visible result. Handles are not rewritten in place, preserving their audit record.
+
 ## Publishing a workflow session
 
 Volundr is the first production discovery source. A session is addressable only when its real

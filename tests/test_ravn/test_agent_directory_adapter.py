@@ -159,3 +159,27 @@ async def test_configured_agent_card_remains_available_when_guild_is_down() -> N
     assert page.partial is True
     assert page.items[0].skill_ids == ["research"]
     assert page.warnings[0].code == "guild-directory-unavailable"
+
+
+@pytest.mark.asyncio
+async def test_guild_agent_card_url_resolves_only_to_a_visible_directory_entry() -> None:
+    card_url = "https://peer.example/.well-known/agent-card.json"
+    entry = _guild_entry(card_url)
+    client = _Client(
+        guild={
+            "items": [entry.model_dump(by_alias=True)],
+            "warnings": [],
+            "sources": [],
+            "partial": False,
+        },
+        card={"name": "must not be fetched"},
+    )
+    adapter = GuildAgentDirectoryAdapter(base_url="https://guild.example", client=client)
+
+    resolved = await adapter.get_agent(card_url)
+    hidden = await adapter.get_agent("https://hidden.example/.well-known/agent-card.json")
+
+    assert resolved is not None
+    assert resolved.id == entry.id
+    assert hidden is None
+    assert all(url.endswith("/api/v1/niuu/observatory/agents") for url, _ in client.gets)

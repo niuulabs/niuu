@@ -15,13 +15,16 @@ from niuu.domain.agent_directory import (
     AgentProvenance,
     AgentSkill,
 )
+from ravn.adapters.agent_directory import GuildAgentDirectoryAdapter
 from ravn.adapters.permission.allow_deny import AllowAllPermission
+from ravn.adapters.resident_state.mimir import LocalResidentState
 from ravn.adapters.tool_build.http import HttpResponse
 from ravn.adapters.tools.a2a_task import A2ATaskTool
 from ravn.adapters.tools.capability_catalog import CapabilityListTool
 from ravn.agent import RavnAgent
 from ravn.domain.events import RavnEventType
 from ravn.domain.models import StreamEvent, StreamEventType, TokenUsage, ToolCall
+from ravn.resident_runtime import ResidentRuntime
 from tests.ravn.fixtures.fakes import InMemoryChannel
 
 
@@ -83,6 +86,43 @@ class _Directory:
         return self.agent if self.agent and self.agent.id == agent_id else None
 
 
+class _GuildDirectoryTaskClient:
+    def __init__(self, agent: AgentDirectoryEntry, results: list[dict[str, Any]]) -> None:
+        self._agent = agent
+        self._results = list(results)
+        self.gets: list[str] = []
+        self.posts: list[tuple[str, dict[str, Any]]] = []
+
+    async def get(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> HttpResponse:
+        self.gets.append(url)
+        if url.endswith("/api/v1/niuu/observatory/agents"):
+            return HttpResponse(
+                200,
+                {
+                    "items": [self._agent.model_dump(by_alias=True)],
+                    "warnings": [],
+                    "sources": [],
+                    "partial": False,
+                },
+            )
+        raise AssertionError(f"unexpected Agent Card fetch: {url}")
+
+    async def post(
+        self,
+        url: str,
+        json_body: dict[str, Any],
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> HttpResponse:
+        self.posts.append((url, json_body))
+        return HttpResponse(200, {"jsonrpc": "2.0", "result": self._results.pop(0)})
+
+
 class _Client:
     def __init__(self, results: list[dict[str, Any]]) -> None:
         self.results = list(results)
@@ -100,6 +140,76 @@ class _Client:
     ) -> HttpResponse:
         self.posts.append((url, json_body, dict(headers or {})))
         return HttpResponse(200, {"jsonrpc": "2.0", "result": self.results.pop(0)})
+
+
+@pytest.mark.asyncio
+async def test_url_invoked_task_persists_canonical_handle_for_exact_get(tmp_path) -> None:
+    agent = _agent().model_copy(
+        update={"card_url": "https://peer.example/.well-known/agent-card.json"}
+    )
+    client = _GuildDirectoryTaskClient(
+        agent,
+        [
+            {"task": {"id": "task-url", "status": {"state": "TASK_STATE_SUBMITTED"}}},
+            {"id": "task-url", "status": {"state": "TASK_STATE_WORKING"}},
+            {"id": "task-url", "status": {"state": "TASK_STATE_WORKING"}},
+        ],
+    )
+    runtime = ResidentRuntime(state=LocalResidentState(tmp_path), resident_id="regin")
+    tool = A2ATaskTool(
+        agent_directory=GuildAgentDirectoryAdapter(base_url="https://guild.example", client=client),
+        client=client,
+        activity_emitter=runtime.record_a2a_activity,
+    )
+
+    started = json.loads(
+        (
+            await tool.execute(
+                {
+                    "operation": "start",
+                    "agent_id": agent.card_url,
+                    "skill_id": "review",
+                    "prompt": "Review the change.",
+                }
+            )
+        ).content
+    )
+    handle = (await runtime.find_a2a_tasks(query="task-url"))[0]
+    retrieved = await tool.execute(
+        {
+            "operation": "get",
+            "agent_id": handle["agent_id"],
+            "task_id": handle["task_id"],
+        }
+    )
+    legacy_retrieved = await tool.execute(
+        {
+            "operation": "get",
+            "agent_id": agent.card_url,
+            "task_id": handle["task_id"],
+        }
+    )
+    invisible = await tool.execute(
+        {
+            "operation": "get",
+            "agent_id": "https://hidden.example/.well-known/agent-card.json",
+            "task_id": handle["task_id"],
+        }
+    )
+
+    assert started["agent_id"] == agent.id
+    assert handle["agent_id"] == agent.id
+    assert not retrieved.is_error
+    assert json.loads(retrieved.content)["state"] == "TASK_STATE_WORKING"
+    assert not legacy_retrieved.is_error
+    assert invisible.is_error
+    assert "not visible" in invisible.content
+    assert all(url != agent.card_url for url in client.gets)
+    assert [body["method"] for _, body in client.posts] == [
+        "SendMessage",
+        "GetTask",
+        "GetTask",
+    ]
 
 
 @pytest.mark.asyncio

@@ -87,7 +87,10 @@ class A2ATaskTool(ToolPort):
                 },
                 "agent_id": {
                     "type": "string",
-                    "description": "Guild agent id from an agent_skill catalog entry.",
+                    "description": (
+                        "Guild agent id from an agent_skill catalog entry, or a durable "
+                        "Agent Card URL that belongs to a currently visible Guild agent."
+                    ),
                 },
                 "skill_id": {
                     "type": "string",
