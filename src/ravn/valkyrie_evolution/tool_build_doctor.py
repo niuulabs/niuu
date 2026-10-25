@@ -98,9 +98,12 @@ async def diagnose_tool_build(settings: Settings) -> DoctorReport:
     kind = _backend_kind(backend)
 
     hops.append(_hop3_auth(settings, backend))
-    hop4 = await _hop4_reachability(backend, kind)
+    hop4, card = await _hop4_reachability(backend, kind)
     hops.append(hop4)
-    hops.append(await _hop5_workflow(backend, kind, hop4))
+    hop5 = await _hop5_workflow(backend, kind, hop4, card)
+    hops.append(hop5)
+    if kind == "a2a":
+        hops.append(await _hop6_endpoint(backend, card, hop5))
 
     return DoctorReport(hops=hops)
 
@@ -216,23 +219,29 @@ def _hop3_auth(settings: Settings, backend: Any) -> HopResult:
 # ---------------------------------------------------------------------------
 
 
-async def _hop4_reachability(backend: Any, kind: str) -> HopResult:
+async def _hop4_reachability(backend: Any, kind: str) -> tuple[HopResult, dict[str, Any] | None]:
     base_url = _backend_base_url(backend)
     if not base_url:
-        return HopResult(
-            number=4,
-            title="reachability",
-            status=HopStatus.FAIL,
-            reason="backend has no base_url to probe",
+        return (
+            HopResult(
+                number=4,
+                title="reachability",
+                status=HopStatus.FAIL,
+                reason="backend has no base_url to probe",
+            ),
+            None,
         )
 
     client = _backend_client(backend)
     if client is None:
-        return HopResult(
-            number=4,
-            title="reachability",
-            status=HopStatus.FAIL,
-            reason="backend exposes no HTTP client to probe",
+        return (
+            HopResult(
+                number=4,
+                title="reachability",
+                status=HopStatus.FAIL,
+                reason="backend exposes no HTTP client to probe",
+            ),
+            None,
         )
 
     if kind == "a2a":
@@ -242,31 +251,56 @@ async def _hop4_reachability(backend: Any, kind: str) -> HopResult:
     else:
         url = f"{base_url}{_FORGE_HEALTH_PATH}"
     try:
-        response = await client.get(url)
+        response = await client.get(
+            url,
+            headers=_A2A_HEADERS if kind == "a2a" else None,
+        )
     except Exception as exc:  # noqa: BLE001 — doctor must never throw
-        return HopResult(
-            number=4,
-            title="reachability",
-            status=HopStatus.FAIL,
-            reason=f"GET {url} raised {type(exc).__name__}: {exc}",
-            details={"url": url},
+        return (
+            HopResult(
+                number=4,
+                title="reachability",
+                status=HopStatus.FAIL,
+                reason=f"GET {url} raised {type(exc).__name__}: {exc}",
+                details={"url": url},
+            ),
+            None,
         )
 
     status_code = getattr(response, "status_code", 0)
-    if 200 <= status_code < 300:
-        return HopResult(
+    if not 200 <= status_code < 300:
+        return (
+            HopResult(
+                number=4,
+                title="reachability",
+                status=HopStatus.FAIL,
+                reason=f"GET {url} -> HTTP {status_code}",
+                details={"url": url, "status_code": status_code},
+            ),
+            None,
+        )
+
+    if kind == "a2a" and not isinstance(getattr(response, "body", None), dict):
+        return (
+            HopResult(
+                number=4,
+                title="reachability",
+                status=HopStatus.FAIL,
+                reason="agent card did not return a JSON object",
+                details={"url": url, "status_code": status_code},
+            ),
+            None,
+        )
+
+    return (
+        HopResult(
             number=4,
             title="reachability",
             status=HopStatus.PASS,
             reason=f"GET {url} -> HTTP {status_code}",
             details={"url": url, "status_code": status_code},
-        )
-    return HopResult(
-        number=4,
-        title="reachability",
-        status=HopStatus.FAIL,
-        reason=f"GET {url} -> HTTP {status_code}",
-        details={"url": url, "status_code": status_code},
+        ),
+        getattr(response, "body", None) if kind == "a2a" else None,
     )
 
 
@@ -275,7 +309,12 @@ async def _hop4_reachability(backend: Any, kind: str) -> HopResult:
 # ---------------------------------------------------------------------------
 
 
-async def _hop5_workflow(backend: Any, kind: str, hop4: HopResult) -> HopResult:
+async def _hop5_workflow(
+    backend: Any,
+    kind: str,
+    hop4: HopResult,
+    card: dict[str, Any] | None,
+) -> HopResult:
     if kind == "forge":
         return _skip(5, "workflow discovery", "not applicable to the forge_session backend")
 
@@ -301,7 +340,7 @@ async def _hop5_workflow(backend: Any, kind: str, hop4: HopResult) -> HopResult:
     if hop4.status is not HopStatus.PASS:
         return _skip(5, "workflow discovery", "reachability failed; cannot list workflows")
 
-    workflows = await _list_a2a_skills(backend)
+    workflows = _card_workflows(card)
     source = "agent card"
     if workflows is None:
         return HopResult(
@@ -343,6 +382,105 @@ async def _hop5_workflow(backend: Any, kind: str, hop4: HopResult) -> HopResult:
     )
 
 
+_A2A_DOCTOR_PROBE_TASK_ID = "ravn-tool-build-doctor-probe"
+_A2A_HEADERS = {"A2A-Version": "1.0"}
+
+
+async def _hop6_endpoint(
+    backend: Any,
+    card: dict[str, Any] | None,
+    hop5: HopResult,
+) -> HopResult:
+    """Confirm the advertised JSON-RPC endpoint without commissioning a task."""
+    if hop5.status is not HopStatus.PASS:
+        return _skip(6, "A2A endpoint", "workflow discovery failed; endpoint not probed")
+    if card is None:
+        return _skip(6, "A2A endpoint", "agent card was not available")
+
+    from ravn.adapters.tool_build.a2a import _jsonrpc_endpoint, _same_origin  # noqa: PLC0415
+
+    endpoint = _jsonrpc_endpoint(card)
+    if not endpoint:
+        return HopResult(
+            number=6,
+            title="A2A endpoint",
+            status=HopStatus.FAIL,
+            reason="agent card declares no JSONRPC interface",
+        )
+    card_url = str(getattr(backend, "card_url", "") or "")
+    if not _same_origin(endpoint, card_url):
+        return HopResult(
+            number=6,
+            title="A2A endpoint",
+            status=HopStatus.FAIL,
+            reason="A2A JSONRPC interface must share the configured card origin",
+            details={"endpoint": endpoint},
+        )
+
+    client = _backend_client(backend)
+    if client is None:
+        return HopResult(
+            number=6,
+            title="A2A endpoint",
+            status=HopStatus.FAIL,
+            reason="backend exposes no HTTP client to probe",
+        )
+
+    probe = {
+        "jsonrpc": "2.0",
+        "id": "ravn-tool-build-doctor",
+        "method": "GetTask",
+        "params": {"id": _A2A_DOCTOR_PROBE_TASK_ID},
+    }
+    try:
+        response = await client.post(endpoint, probe, headers=_A2A_HEADERS)
+    except Exception as exc:  # noqa: BLE001 — doctor must never throw
+        return HopResult(
+            number=6,
+            title="A2A endpoint",
+            status=HopStatus.FAIL,
+            reason=f"GetTask {endpoint} raised {type(exc).__name__}: {exc}",
+            details={"endpoint": endpoint},
+        )
+
+    status_code = getattr(response, "status_code", 0)
+    body = getattr(response, "body", None)
+    if not 200 <= status_code < 300:
+        return HopResult(
+            number=6,
+            title="A2A endpoint",
+            status=HopStatus.FAIL,
+            reason=f"GetTask {endpoint} -> HTTP {status_code}",
+            details={"endpoint": endpoint, "status_code": status_code},
+        )
+    if not isinstance(body, dict) or body.get("jsonrpc") != "2.0":
+        return HopResult(
+            number=6,
+            title="A2A endpoint",
+            status=HopStatus.FAIL,
+            reason="GetTask probe did not return a JSON-RPC response",
+            details={"endpoint": endpoint, "status_code": status_code},
+        )
+    return HopResult(
+        number=6,
+        title="A2A endpoint",
+        status=HopStatus.PASS,
+        reason=f"GetTask {endpoint} -> HTTP {status_code} JSON-RPC response",
+        details={"endpoint": endpoint, "status_code": status_code},
+    )
+
+
+def _card_workflows(card: dict[str, Any] | None) -> list[WorkflowCapability] | None:
+    if not isinstance(card, dict):
+        return None
+    skills = card.get("skills")
+    if not isinstance(skills, list):
+        return None
+    from ravn.adapters.tool_build.a2a import _skill_capability  # noqa: PLC0415
+
+    return [_skill_capability(skill) for skill in skills]
+
+
 async def _list_a2a_skills(backend: Any) -> list[WorkflowCapability] | None:
     card_url = str(getattr(backend, "card_url", "") or "")
     client = _backend_client(backend)
@@ -355,16 +493,7 @@ async def _list_a2a_skills(backend: Any) -> list[WorkflowCapability] | None:
     if getattr(response, "status_code", 0) != 200:
         return None
     body = getattr(response, "body", None)
-    if not isinstance(body, dict):
-        return None
-    skills = body.get("skills")
-    if not isinstance(skills, list):
-        return None
-    # The one skill mapper lives in the A2A backend — the doctor must see
-    # exactly the capabilities the backend it diagnoses sees.
-    from ravn.adapters.tool_build.a2a import _skill_capability  # noqa: PLC0415
-
-    return [_skill_capability(skill) for skill in skills]
+    return _card_workflows(body)
 
 
 # ---------------------------------------------------------------------------

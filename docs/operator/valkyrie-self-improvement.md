@@ -315,9 +315,11 @@ security budget on every backend — set trust levels accordingly.
 
 1. **Configure** — add the `resident_evolution:` block (levers 1, 2, 5 above)
    to the Valkyrie's ravn config; restart the daemon.
-2. **Diagnose the chain** — run `ravn tool-build doctor --json`. All five hops
-   must be PASS (config → backend → auth → reachability → workflow
-   discovery). Fix the first FAIL; later hops depend on it.
+2. **Diagnose the chain** — run `ravn tool-build doctor --json`. For the A2A
+   backend, all six hops must be PASS (config → backend → auth → agent-card
+   fetch → workflow discovery → JSON-RPC endpoint). The endpoint probe sends
+   only `GetTask` for a reserved nonexistent id; it never commissions a build.
+   Fix the first FAIL; later hops depend on it.
 3. **Seed governance** — create the realm and a `build` grant (lever 2).
    Validate: `curl {BASE_URL}/api/v1/realms/{slug}/trust-grants` shows it, and
    `ravn tool-build workflows` marks the granted workflow with `*`.
@@ -338,9 +340,10 @@ security budget on every backend — set trust levels accordingly.
 
 ### Dev Kubernetes A2A proof record
 
-`ravn tool-build doctor` is read-only. A green result proves only the
-configured diagnostic hops; it does not commission a tool or prove its
-verification, court decision, installation, or ledger update. For an approved
+`ravn tool-build doctor` is non-commissioning. Its A2A endpoint check sends
+only a `GetTask` probe for a reserved nonexistent id, so a green result proves
+only the configured diagnostic hops; it does not commission a tool or prove
+its verification, court decision, installation, or ledger update. For an approved
 dev Kubernetes proof, change the resident configuration only through the
 repository's GitOps `infra_change` workflow and let Fleet reconcile it. Do not
 mutate Fleet-managed resources directly, and keep credentials in

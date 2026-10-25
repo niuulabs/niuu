@@ -70,3 +70,46 @@ facade finding as a follow-up issue rather than changing it in this ticket.
 
 No new hosted PR was created: the small documentation and delivery handoff is
 committed directly on the required `regin` branch.
+
+## Review revision
+
+The doctor now retains the authenticated agent-card response for skill
+selection and, after a unique builder skill is selected, sends only a
+JSON-RPC `GetTask` request for the reserved nonexistent
+`ravn-tool-build-doctor-probe` id to the advertised same-origin endpoint. This
+is a non-commissioning diagnostic: it validates the endpoint and its
+authenticated request path without issuing `SendMessage` or creating a second
+capability-gap build.
+
+Focused verification after this revision passed:
+
+```text
+uv run --extra dev pytest -q tests/test_ravn/test_tool_build_doctor.py \
+  tests/test_ravn/test_tool_build_backends.py \
+  tests/test_ravn/test_tool_build_workflows_cli.py
+95 passed in 0.96s
+```
+
+This source-level diagnostic improvement does not address the live acceptance
+gate above. At the operator's direction, no cross-actor retry or broader
+credential request was made; the bounded submission/evidence-reader task
+`a2a-e7c858b5863a4e67b012baa3547400b9` remains the route expected to publish
+the deployed Runa/Valhalla proof identifiers.
+
+## Independent doctor/runbook completion — 2026-10-25
+
+`ravn tool-build doctor` now reports a sixth A2A-only hop after card fetch and
+workflow selection: it verifies the card's same-origin JSON-RPC endpoint with
+a read-only `GetTask` request for a reserved nonexistent task id. The doctor
+accepts the resulting JSON-RPC response (including the expected task-not-found
+error) as endpoint reachability; it fails for a non-2xx response, non-JSON-RPC
+body, absent interface, or cross-origin interface. The card is fetched once,
+so discovery and endpoint validation use the same verified snapshot.
+
+The operator runbook now defines the six A2A hops and explicitly distinguishes
+this non-commissioning endpoint probe from real live-proof evidence. Focused
+verification passed: `ruff check` and 95 tests across the doctor, A2A backend,
+and workflow CLI suites. These changes are source/runbook verification only;
+NIU-1114 remains In Progress pending real IDs from the launching resident or
+bounded tool. No hosted PR was created because this required `regin`-only
+checkout is updated directly on `regin`; no dev/main PR or merge was created.

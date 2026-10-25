@@ -25,20 +25,25 @@ runner = CliRunner()
 
 
 class _FakeHttpClient:
-    """Scripted AsyncJsonHttpClient: maps (method, url-suffix) -> HttpResponse."""
+    """Scripted AsyncJsonHttpClient used by the read-only doctor probes."""
 
     def __init__(
         self,
         routes: dict[tuple[str, str], HttpResponse] | None = None,
         *,
         raise_on_get: Exception | None = None,
+        raise_on_post: Exception | None = None,
     ) -> None:
         self._routes = dict(routes or {})
         self._raise_on_get = raise_on_get
+        self._raise_on_post = raise_on_post
         self.calls: list[tuple[str, str]] = []
+        self.post_bodies: list[dict[str, Any]] = []
+        self.headers_seen: list[dict[str, str]] = []
 
-    async def get(self, url: str) -> HttpResponse:
+    async def get(self, url: str, *, headers: dict[str, str] | None = None) -> HttpResponse:
         self.calls.append(("GET", url))
+        self.headers_seen.append(dict(headers or {}))
         if self._raise_on_get is not None:
             raise self._raise_on_get
         for (method, suffix), response in self._routes.items():
@@ -46,9 +51,29 @@ class _FakeHttpClient:
                 return response
         raise AssertionError(f"no scripted response for GET {url}")
 
-    async def post(self, url: str, json_body: dict[str, Any]) -> HttpResponse:
+    async def post(
+        self,
+        url: str,
+        json_body: dict[str, Any],
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> HttpResponse:
         self.calls.append(("POST", url))
-        raise AssertionError("doctor must never POST — it is read-only")
+        self.post_bodies.append(json_body)
+        self.headers_seen.append(dict(headers or {}))
+        if self._raise_on_post is not None:
+            raise self._raise_on_post
+        for (method, suffix), response in self._routes.items():
+            if method == "POST" and url.endswith(suffix):
+                return response
+        return HttpResponse(
+            200,
+            {
+                "jsonrpc": "2.0",
+                "id": json_body["id"],
+                "error": {"code": -32001, "message": "no task"},
+            },
+        )
 
 
 def _settings(
@@ -313,27 +338,30 @@ async def test_workflow_discovery_non_list_body_fails() -> None:
     assert "did not return a workflow list" in hop5.reason
 
 
-async def test_workflow_relist_non_200_fails() -> None:
-    """Hop 4 probes the card once; Hop 5 re-reads it — a flapping card FAILs."""
+async def test_workflow_uses_the_card_fetched_by_reachability() -> None:
+    """Discovery uses the verified card snapshot instead of an inconsistent re-fetch."""
     card = _a2a_doctor_card(
         [{"id": "wf-builder", "name": "Tool Builder", "tags": ["tool-builder"]}]
     )
     responses = iter([HttpResponse(200, card), HttpResponse(500, "flap")])
 
     class _FlappingClient(_FakeHttpClient):
-        async def get(self, url: str) -> HttpResponse:
+        async def get(self, url: str, *, headers: dict[str, str] | None = None) -> HttpResponse:
             self.calls.append(("GET", url))
+            self.headers_seen.append(dict(headers or {}))
             return next(responses)
 
-    backend = _a2a_doctor_backend(_FlappingClient(), workflow_selector={"tags": ["tool-builder"]})
+    client = _FlappingClient()
+    backend = _a2a_doctor_backend(client, workflow_selector={"tags": ["tool-builder"]})
     settings = _settings(adapter="ravn.adapters.tool_build.a2a.A2AToolBuildBackend")
 
     with patch("ravn.cli.commands._build_tool_build_backend", return_value=backend):
         report = await diagnose_tool_build(settings)
 
     assert report.hops[3].status is HopStatus.PASS
-    assert report.hops[4].status is HopStatus.FAIL
-    assert "did not return a workflow list" in report.hops[4].reason
+    assert report.hops[4].status is HopStatus.PASS
+    assert report.hops[5].status is HopStatus.PASS
+    assert client.calls.count(("GET", _A2A_CARD_URL)) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -472,11 +500,25 @@ async def test_a2a_happy_path_all_pass() -> None:
         3: HopStatus.PASS,
         4: HopStatus.PASS,
         5: HopStatus.PASS,
+        6: HopStatus.PASS,
     }
     assert report.ok is True
-    # Reachability probes the card URL itself.
+    # The doctor reads the card once, then makes a read-only GetTask probe.
     assert _A2A_CARD_URL in report.hops[3].reason
     assert "Tool Builder" in report.hops[4].reason
+    assert client.calls == [
+        ("GET", _A2A_CARD_URL),
+        ("POST", "http://ting/api/v1/ting/a2a"),
+    ]
+    assert client.post_bodies == [
+        {
+            "jsonrpc": "2.0",
+            "id": "ravn-tool-build-doctor",
+            "method": "GetTask",
+            "params": {"id": "ravn-tool-build-doctor-probe"},
+        }
+    ]
+    assert client.headers_seen[-1] == {"A2A-Version": "1.0"}
 
 
 async def test_a2a_selector_without_matching_skill_fails() -> None:
@@ -506,3 +548,41 @@ async def test_a2a_unreachable_card_fails_and_skips_discovery() -> None:
     statuses = _statuses(report)
     assert statuses[4] is HopStatus.FAIL
     assert report.ok is False
+
+
+async def test_a2a_endpoint_probe_rejects_http_failure() -> None:
+    card = _a2a_doctor_card(
+        [{"id": "wf-builder", "name": "Tool Builder", "tags": ["tool-builder"]}]
+    )
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): HttpResponse(200, card),
+            ("POST", "/api/v1/ting/a2a"): HttpResponse(503, {"detail": "down"}),
+        }
+    )
+    backend = _a2a_doctor_backend(client, workflow_selector={"tags": ["tool-builder"]})
+    settings = _settings(adapter="ravn.adapters.tool_build.a2a.A2AToolBuildBackend")
+
+    with patch("ravn.cli.commands._build_tool_build_backend", return_value=backend):
+        report = await diagnose_tool_build(settings)
+
+    assert report.hops[5].status is HopStatus.FAIL
+    assert "HTTP 503" in report.hops[5].reason
+    assert report.ok is False
+
+
+async def test_a2a_endpoint_probe_rejects_cross_origin_interface() -> None:
+    card = _a2a_doctor_card(
+        [{"id": "wf-builder", "name": "Tool Builder", "tags": ["tool-builder"]}]
+    )
+    card["supportedInterfaces"][0]["url"] = "https://attacker.example/a2a"
+    client = _FakeHttpClient({("GET", "/.well-known/agent-card.json"): HttpResponse(200, card)})
+    backend = _a2a_doctor_backend(client, workflow_selector={"tags": ["tool-builder"]})
+    settings = _settings(adapter="ravn.adapters.tool_build.a2a.A2AToolBuildBackend")
+
+    with patch("ravn.cli.commands._build_tool_build_backend", return_value=backend):
+        report = await diagnose_tool_build(settings)
+
+    assert report.hops[5].status is HopStatus.FAIL
+    assert "share the configured card origin" in report.hops[5].reason
+    assert not client.post_bodies
