@@ -25,17 +25,25 @@ alone.
 
 ## Blocking live evidence
 
-This session has no `kubernetes_inspect`, `kubectl`, or `tsh` capability, so
-it cannot independently read the Fleet-applied Valhalla Deployment/ConfigMap
-or address a build to the deployed Runa resident. Do not close NIU-1114 from
-this handoff.
+An authorized operator has now supplied read-only `kubernetes_inspect`
+evidence for `valkyrie-ymir-k8s` on `teleport.niuu.world-ymir`: generation
+and observed generation `89`, ready `1`, and matching ConfigMap/Fleet
+objectset hash `6071741d8f91dbe9a1d106514e58a63a80fae04a`. The inspector
+truncates before the backend declaration, and the reported resident differs
+from the Runa/Valhalla target named by the prior handoff. It is therefore not
+proof of the selected resident's A2A configuration.
 
-The next authorized live-validation pass must, using read-only cluster access,
-verify the deployed Runa configuration and readiness, then submit one bounded
-read-only capability gap to that resident. Record the resulting A2A task id,
-workflow/Forge run id, verification result, court verdict, installation
-identifier or tool version, and realm capability-ledger entry. File any
-protocol or facade finding as a follow-up issue rather than changing it in
+No authorized submission route has been provided to send a capability gap to
+the deployed Sigrun resident, and read-only inspection cannot do so. Do not
+close NIU-1114 from this handoff.
+
+The remaining authorization must grant a real submission route to the selected
+deployed resident: either an approved human/operator invocation endpoint or a
+scoped workload identity that may submit exactly one bounded, read-only
+capability-gap request through its configured A2A path. It must also permit
+reading the resulting task, workflow/Forge run, verification, court,
+installation, and capability-ledger records. Record those identifiers. File
+any protocol or facade finding as a follow-up issue rather than changing it in
 this ticket.
 
 ## Hosted review

@@ -15,6 +15,13 @@ do not substitute for that evidence.
 
 ## Evidence observed on 2026-10-25
 
+- The authorized operator's read-only `kubernetes_inspect` on
+  `teleport.niuu.world-ymir` reports Deployment `valkyrie-ymir-k8s` at
+  generation and observed generation `89`, ready `1`, with ConfigMap and
+  Fleet objectset hash `6071741d8f91dbe9a1d106514e58a63a80fae04a`. Its
+  response truncates `config.yaml` before the backend declaration. This
+  establishes only the reported workload/Fleet state; it neither identifies
+  the selected Runa target nor proves `A2AToolBuildBackend` is configured.
 - A read-only GET of `https://yggdrasil.niuu.world/.well-known/agent-card.json`
   returned HTTP 200. The card advertises JSON-RPC endpoint
   `https://yggdrasil.niuu.world/api/v1/ting/a2a`, push notifications, and
