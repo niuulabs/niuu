@@ -1032,65 +1032,83 @@ class _CampaignArtifactsUnavailableError(Exception):
         self.slug = slug
 
 
+async def _load_campaign_artifact_pages(
+    campaign: WorkflowCampaign,
+    *,
+    settings: Any,
+    bearer_token: str | None = None,
+    service_auth: HttpAuthPort | None = None,
+    artifact_paths: tuple[str, ...] = (),
+    include_campaign_prefix: bool = True,
+) -> list[MimirPage]:
+    """Load the pages a campaign is allowed to expose as durable artifacts.
+
+    Callers can add graph-declared artifact paths without widening the campaign
+    prefix discovery that backs research. The same loader keeps REST listings
+    and A2A task artifacts aligned while leaving authorization at the detail
+    route authoritative.
+    """
+    adapter = _campaign_knowledge(
+        campaign,
+        settings,
+        bearer_token=bearer_token,
+        service_auth=service_auth,
+    )
+    if adapter is None:
+        return []
+
+    paths = set(artifact_paths)
+    slug = _artifact_slug(campaign)
+    prefix = f"research/campaigns/{slug}/"
+    if include_campaign_prefix:
+        try:
+            pages = await adapter.list_pages(prefix=prefix)
+        except httpx.TimeoutException:
+            # Mímir lists pages by walking the corpus even when given a prefix,
+            # so a timeout means this campaign's output is unknown, not empty.
+            logger.error(
+                "Mimir timed out listing artifacts for research campaign %s "
+                "(prefix=%s); returning the campaign without its artifact list",
+                campaign.slug,
+                prefix,
+                exc_info=True,
+            )
+            raise _CampaignArtifactsUnavailableError(campaign.slug) from None
+        paths.update(page.path for page in pages)
+
+    loaded: list[MimirPage] = []
+    for path in sorted(paths):
+        try:
+            loaded.append(await adapter.get_page(path))
+        except FileNotFoundError:
+            continue
+    return loaded
+
+
 async def _load_campaign_artifacts(
     campaign: WorkflowCampaign,
     *,
     settings: Any,
     bearer_token: str | None = None,
 ) -> tuple[list[CampaignArtifactResponse], dict[str, str]]:
+    slug = _artifact_slug(campaign)
+    pages = await _load_campaign_artifact_pages(
+        campaign,
+        settings=settings,
+        bearer_token=bearer_token,
+        artifact_paths=(
+            f"learnings/research/{slug}.md",
+            f"followups/research/{slug}.md",
+        ),
+    )
     adapter = _campaign_knowledge(campaign, settings, bearer_token=bearer_token)
     if adapter is None:
         return [], {}
 
-    slug = _artifact_slug(campaign)
-    prefix = f"research/campaigns/{slug}/"
-    try:
-        pages = await adapter.list_pages(prefix=prefix)
-    except httpx.TimeoutException:
-        # Mímir lists pages by walking the corpus even when given a prefix, so
-        # this call scales with the whole wiki rather than with one campaign's
-        # handful of files. Past 30s it times out, and the exception used to
-        # escape and 500 the entire detail route — which deleted the campaign
-        # from the research page altogether. Four finished campaigns with every
-        # artifact safely written were invisible for that reason alone.
-        #
-        # Degrade to "artifacts could not be read" rather than vanishing. The
-        # caller is told which it is; nothing here claims the campaign is empty.
-        logger.error(
-            "Mimir timed out listing artifacts for research campaign %s "
-            "(prefix=%s); returning the campaign without its artifact list",
-            campaign.slug,
-            prefix,
-            exc_info=True,
-        )
-        raise _CampaignArtifactsUnavailableError(campaign.slug) from None
-    page_paths = {page.path for page in pages}
-    extra_paths = [
-        f"learnings/research/{slug}.md",
-        f"followups/research/{slug}.md",
-    ]
-    extra_pages: list[MimirPage] = []
-    for path in extra_paths:
-        if path in page_paths:
-            continue
-        try:
-            extra_pages.append(await adapter.get_page(path))
-        except FileNotFoundError:
-            continue
-
-    full_pages: list[MimirPage] = []
-    for meta in pages:
-        try:
-            full_pages.append(await adapter.get_page(meta.path))
-        except FileNotFoundError:
-            continue
-    full_pages.extend(extra_pages)
-
     published_paths = await _published_paths(adapter, slug)
     manifest_known = bool(published_paths)
     artifacts = [
-        _artifact_response(page, published_paths, manifest_known=manifest_known)
-        for page in sorted(full_pages, key=lambda page: page.meta.path)
+        _artifact_response(page, published_paths, manifest_known=manifest_known) for page in pages
     ]
     canonical: dict[str, str] = {}
     for artifact in artifacts:
