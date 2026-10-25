@@ -41,4 +41,7 @@ workspace, so no claim is made about access to
 
 ## Hosted review
 
-Pending commit, push, and PR creation against `regin`.
+No PR was opened.  The task explicitly required landing directly on `regin` and
+prohibited opening or targeting a PR to `dev` or `main`; a hosted PR cannot use
+`regin` as both source and target.  Commits `6470b1f6` and `3eb3dd42` were
+pushed to `origin/regin`.
