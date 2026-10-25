@@ -62,6 +62,22 @@ at 88.47% coverage but has six unrelated failures recorded in
 
 ## 2026-10-25 review revision
 
+Review finding that the A2A-only completion coverage was not committed is now
+resolved by `06c298ac21b59e71d7f6d8bd55c956b202ffc667`
+(`test(ting): cover A2A gate completion`) on `regin` and `origin/regin`. The
+parameterized test drives both `approve` and `request_changes` through Ting's
+HTTP adapter, Skuld's workflow runtime, and Ting's campaign projector, then
+asserts `TASK_STATE_COMPLETED`.
+
+The focused verification at that exact head passed 116 tests. The repository's
+`CI` workflow is `pull_request`-only, while this regin-only delivery is
+integrated directly on `regin`; `gh run list` therefore returns no current-head
+CI run. The previous full suite's six unrelated failures remain the blocking
+condition. No waiver or unrelated repair is recorded, so the ticket remains
+**In Progress** rather than being closed.
+
+## 2026-10-25 review revision
+
 The requested ambiguous-gate regression is committed in `5a6f2b00` and the
 A2A-only completion proof for both decisions is committed in `06c298ac`.
 NIU-1112 remains **In Progress** until required full current-head verification

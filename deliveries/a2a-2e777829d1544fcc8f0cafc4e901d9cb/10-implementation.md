@@ -240,6 +240,39 @@ git diff --check
 The ticket remains **In Progress**: the review-requested A2A-to-terminal-state
 integration proof and a green current-head full suite are still outstanding.
 
+### 2026-10-25 review revision: committed end-to-end acceptance coverage
+
+The review-requested test is committed and pushed as
+`06c298ac21b59e71d7f6d8bd55c956b202ffc667`
+(`test(ting): cover A2A gate completion`). It parametrizes `approve` and
+`request_changes`, activates a `human_approval` gate, sends the reply through
+Ting's A2A HTTP adapter to Skuld's configured workflow gate, emits the terminal
+workflow outcome, projects the activity back into the campaign, and asserts
+the resulting A2A task is `TASK_STATE_COMPLETED`.
+
+At that commit, focused verification is green:
+
+```sh
+uv run --extra dev --extra otel pytest -q \
+  tests/test_ting/test_a2a_card.py tests/test_ting/test_a2a_tasks.py \
+  tests/test_ting/test_system_workflows.py
+# 116 passed
+
+uv run --extra dev ruff check src/ting/api/a2a.py tests/test_ting/test_a2a_tasks.py
+uv run --extra dev ruff format --check src/ting/api/a2a.py tests/test_ting/test_a2a_tasks.py
+git diff --check
+# all passed
+```
+
+`CI` is configured for `pull_request` events only. Because this delivery is
+required to be integrated directly on `regin`, no PR-backed GitHub Actions run
+exists for `06c298ac`; `gh run list --repo niuulabs/niuu --branch regin --commit
+06c298ac21b59e71d7f6d8bd55c956b202ffc667 --limit 10` returned no runs. The
+recorded full suite remains non-green with the six unrelated failures above.
+No unrelated repair or validation bypass was made, so green required
+current-head verification remains a blocker and the ticket stays **In
+Progress**.
+
 ### 2026-10-25 review follow-up: A2A-only terminal proof
 
 Commit `06c298ac` adds a parametrized end-to-end regression for `approve` and
