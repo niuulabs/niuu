@@ -415,6 +415,7 @@ def create_app(
                 default_cache_ttl_seconds=directory_cfg.card_cache_ttl_seconds,
                 signature_algorithms=directory_cfg.signature_algorithms,
                 authenticated_card_origins=directory_cfg.authenticated_card_origins,
+                allowed_card_origins=directory_cfg.allowed_card_origins,
             ),
             instance_id=directory_cfg.instance_id,
             cluster_id=directory_cfg.cluster_id,

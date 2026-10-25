@@ -323,6 +323,7 @@ async def test_http_resolver_validates_and_conditionally_revalidates_agent_cards
         default_cache_ttl_seconds=5.0,
         signature_algorithms=["RS256"],
         authenticated_card_origins=["https://agent.example.test"],
+        allowed_card_origins=["https://agent.example.test"],
         transport=httpx.MockTransport(handler),
     )
     url = "https://agent.example.test/.well-known/agent-card.json"
@@ -362,6 +363,7 @@ async def test_http_resolver_only_forwards_auth_to_explicitly_trusted_origins() 
         default_cache_ttl_seconds=5.0,
         signature_algorithms=["RS256"],
         authenticated_card_origins=["https://trusted.example.test"],
+        allowed_card_origins=["https://untrusted.example.test"],
         transport=httpx.MockTransport(handler),
     )
 
@@ -376,6 +378,53 @@ async def test_http_resolver_only_forwards_auth_to_explicitly_trusted_origins() 
 
     assert "authorization" not in calls[0].headers
     assert "x-auth-user-id" not in calls[0].headers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "card_url",
+    [
+        "http://127.0.0.1/.well-known/agent-card.json",
+        "http://169.254.169.254/latest/meta-data",
+        "http://10.0.0.1/.well-known/agent-card.json",
+        "https://unallowlisted.example.test/.well-known/agent-card.json",
+    ],
+)
+async def test_http_resolver_blocks_disallowed_card_origins_without_requests(card_url: str) -> None:
+    calls: list[httpx.Request] = []
+    resolver = HttpAgentCardResolver(
+        timeout_seconds=1.0,
+        default_cache_ttl_seconds=5.0,
+        signature_algorithms=["RS256"],
+        allowed_card_origins=["https://agents.example.test"],
+        transport=httpx.MockTransport(lambda request: calls.append(request) or httpx.Response(200)),
+    )
+
+    with pytest.raises(AgentCardResolutionError, match="retrieval origin is not allowed"):
+        await resolver.resolve(card_url, principal_key="tenant-a\0user-a", headers={})
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_directory_warns_without_request_for_disallowed_card_origin() -> None:
+    card_url = "http://127.0.0.1/.well-known/agent-card.json"
+    calls: list[httpx.Request] = []
+    resolver = HttpAgentCardResolver(
+        timeout_seconds=1.0,
+        default_cache_ttl_seconds=5.0,
+        signature_algorithms=["RS256"],
+        allowed_card_origins=["https://agents.example.test"],
+        transport=httpx.MockTransport(lambda request: calls.append(request) or httpx.Response(200)),
+    )
+    service = _service([_entity("session-a", "user-a", card_url)], resolver)  # type: ignore[arg-type]
+
+    page = await service.list_agents(_principal(), headers={})
+
+    assert calls == []
+    assert page.items == []
+    assert page.warnings[0].code == "agent-card-unavailable"
+    assert page.warnings[0].message == "Agent Card retrieval origin is not allowed"
 
 
 @pytest.mark.asyncio
@@ -394,6 +443,7 @@ async def test_http_resolver_isolates_principals_and_honors_no_store() -> None:
         timeout_seconds=1.0,
         default_cache_ttl_seconds=60.0,
         signature_algorithms=["RS256"],
+        allowed_card_origins=["https://agent.example.test"],
         transport=httpx.MockTransport(handler),
     )
     url = "https://agent.example.test/.well-known/agent-card.json"
@@ -436,6 +486,7 @@ async def test_http_resolver_verifies_signed_agent_card() -> None:
         timeout_seconds=1.0,
         default_cache_ttl_seconds=5.0,
         signature_algorithms=["RS256"],
+        allowed_card_origins=["https://agent.example.test"],
         transport=httpx.MockTransport(handler),
     )
 
@@ -453,6 +504,7 @@ async def test_http_resolver_verifies_signed_agent_card() -> None:
         timeout_seconds=1.0,
         default_cache_ttl_seconds=5.0,
         signature_algorithms=["RS256"],
+        allowed_card_origins=["https://unsigned.example.test"],
         transport=httpx.MockTransport(lambda request: httpx.Response(200, json=_card_payload())),
     )
     unsigned = await unsigned_resolver.resolve(
@@ -464,11 +516,54 @@ async def test_http_resolver_verifies_signed_agent_card() -> None:
 
 
 @pytest.mark.asyncio
+async def test_http_resolver_blocks_disallowed_signature_jwks_without_request() -> None:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem = private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    card = HttpAgentCardResolver._parse_card(_card_payload())
+    signed: AgentCard = create_agent_card_signer(
+        private_pem,
+        {
+            "alg": "RS256",
+            "kid": "agent-key",
+            "jku": "https://169.254.169.254/jwks.json",
+            "typ": "JOSE",
+        },
+    )(card)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=MessageToDict(signed))
+
+    resolver = HttpAgentCardResolver(
+        timeout_seconds=1.0,
+        default_cache_ttl_seconds=5.0,
+        signature_algorithms=["RS256"],
+        allowed_card_origins=["https://agent.example.test"],
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(AgentCardResolutionError, match="retrieval origin is not allowed"):
+        await resolver.resolve(
+            "https://agent.example.test/.well-known/agent-card.json",
+            principal_key="tenant-a\0user-a",
+            headers={},
+        )
+
+    assert [request.url.host for request in calls] == ["agent.example.test"]
+
+
+@pytest.mark.asyncio
 async def test_http_resolver_rejects_invalid_or_credential_bearing_cards() -> None:
     resolver = HttpAgentCardResolver(
         timeout_seconds=1.0,
         default_cache_ttl_seconds=5.0,
         signature_algorithms=["RS256"],
+        allowed_card_origins=["https://agent.example.test"],
         transport=httpx.MockTransport(
             lambda request: httpx.Response(200, json={"name": "incomplete"})
         ),

@@ -129,3 +129,52 @@ The GitHub check API reported 56 runs: 54 `success` and two intentionally
 No implementation or CI blocker remains. PR #1171 is intentionally left open and
 unmerged pending the requested reviewer gate; no PR was opened, merged, pushed or
 prepared against `dev` or `main`.
+
+
+## Security revision — default-deny card retrieval (2026-10-25)
+
+Reviewer finding `20-review.md` is addressed with a distinct, deployment-owned
+`directory.allowedCardOrigins` policy. It defaults to `[]`, so Observatory makes
+no Agent Card or JWKS request until an operator allowlists the exact HTTP(S)
+origin. `authenticatedCardOrigins` remains independent and only controls
+forwarding caller authentication to an already allowed origin. Both initial
+card URLs and `jku` URLs are validated before `httpx` is invoked; rejected URLs
+produce the fixed bounded warning `Agent Card retrieval origin is not allowed`.
+
+Changed product/configuration files:
+
+- `src/observatory/a2a_cards.py`
+- `src/observatory/app.py`
+- `src/volundr/config.py`
+- `charts/observatory/{values.yaml,templates/configmap.yaml}`
+- `charts/guild/{values.yaml,templates/configmap.yaml}`
+- `docs/operator/a2a-agent-directory.md`
+
+Regression coverage in `tests/test_observatory/test_agent_directory.py` proves
+loopback, link-local, RFC1918, and unallowlisted Card origins make no request;
+it also proves a blocked Card yields only the fixed directory warning and that a
+signed Card cannot cause an unallowlisted `jku` request. Configuration and chart
+coverage verify the policy is rendered through the shared settings shape.
+
+Official A2A discovery and release guidance were rechecked on 2026-10-25:
+version 1.0.1 remains latest and the guidance continues to describe curated
+registries while explicitly not prescribing a standard registry API. The existing
+Niuu-specific directory contract remains appropriate.
+
+### Revision verification
+
+```text
+$ uv run ruff check src/observatory/a2a_cards.py src/observatory/app.py \
+    src/volundr/config.py tests/test_observatory/test_agent_directory.py \
+    tests/test_config.py tests/test_charts/test_service_chart_entrypoints.py
+All checks passed!
+
+$ uv run --extra dev pytest -q tests/test_observatory/test_agent_directory.py \
+    tests/test_niuu/test_agent_directory.py \
+    tests/test_volundr/test_session_response_a2a.py tests/test_config.py \
+    tests/test_charts/test_service_chart_entrypoints.py
+148 passed in 1.61s
+```
+
+CI for the post-revision `regin` head must be reviewed before merge approval;
+this local verification is not represented as required-check status.

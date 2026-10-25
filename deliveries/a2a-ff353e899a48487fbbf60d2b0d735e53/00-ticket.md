@@ -21,3 +21,13 @@ It must not be mistaken for the implementation itself.
 `regin`, at merge base `f75d5b0b824df5e11741b4d9c2f5c64852b531fe`; `regin...dev`
 was `33 0`. Therefore there is no unmerged `dev` fix or divergent baseline failure
 to merge in this delivery, and no dev-vs-regin CI failure comparison applies.
+
+
+## Security revision — 2026-10-25
+
+The review at [`20-review.md`](20-review.md) found an SSRF in untrusted Agent
+Card and signed-card JWKS retrieval. The tracker was moved from `In Review` to
+`In Progress` for this revision. The security fix is made directly on `regin`,
+which is the required delivery branch; PR #1171 remains the pre-existing
+documentation-only reconciliation PR targeting `regin` and is not represented
+as the product/security diff.

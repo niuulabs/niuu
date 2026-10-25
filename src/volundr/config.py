@@ -2518,6 +2518,13 @@ class AgentDirectoryConfig(BaseModel):
         default_factory=list,
         description="HTTP(S) origins trusted to receive caller authentication for card retrieval.",
     )
+    allowed_card_origins: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Deployment-owned HTTP(S) origins permitted for Agent Card and JWKS retrieval. "
+            "Empty denies all outbound card retrieval."
+        ),
+    )
 
 
 class ObservatoryFragmentInboxConfig(BaseModel):

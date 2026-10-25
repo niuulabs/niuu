@@ -77,6 +77,7 @@ data:
         guild_max_concurrency: {{ .Values.directory.guildMaxConcurrency | default 8 }}
         signature_algorithms: {{ .Values.directory.signatureAlgorithms | toJson }}
         authenticated_card_origins: {{ .Values.directory.authenticatedCardOrigins | toJson }}
+        allowed_card_origins: {{ .Values.directory.allowedCardOrigins | toJson }}
       guild:
         url: {{ .Values.guild.url | default (printf "http://%s-guild" .Release.Name) | quote }}
       discovery:
