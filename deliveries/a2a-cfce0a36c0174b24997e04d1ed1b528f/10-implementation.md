@@ -34,17 +34,26 @@ from the Runa/Valhalla target named by the prior handoff. It is therefore not
 proof of the selected resident's A2A configuration.
 
 No authorized submission route has been provided to send a capability gap to
-the deployed Sigrun resident, and read-only inspection cannot do so. Do not
+the selected deployed resident, and read-only inspection cannot do so. Do not
 close NIU-1114 from this handoff.
 
-The remaining authorization must grant a real submission route to the selected
-deployed resident: either an approved human/operator invocation endpoint or a
-scoped workload identity that may submit exactly one bounded, read-only
-capability-gap request through its configured A2A path. It must also permit
-reading the resulting task, workflow/Forge run, verification, court,
-installation, and capability-ledger records. Record those identifiers. File
-any protocol or facade finding as a follow-up issue rather than changing it in
-this ticket.
+For request `e79e4b9fd0ce`, the recorded operator decision authorizes one dev
+`k8s-valkyrie` proof and requires GitOps changes through
+`jve/infrastructure` infra `main` and `infra_change`; no direct Fleet mutation
+is authorized. It does not establish that Sigrun/`valkyrie-ymir-k8s` supersedes
+the selected Runa/Valhalla target. Deployed configuration and owner evidence
+must identify the resident before that conclusion can be made.
+
+The bounded submission/evidence route under separate delivery
+`a2a-cd26d65106d04df2ac3a4cde1de72b3f` is reported push-registered `WORKING`,
+but no endpoint, scoped identity, or successful request is demonstrated. The
+concrete outstanding authorization/evidence is therefore: (1) an approved
+endpoint or scoped workload identity that can submit exactly one bounded
+capability-gap request through the deployed resident's A2A path, and (2)
+read access to its resulting task id, workflow/Forge run, verification result,
+court verdict, installation id or learned-tool version, and capability-ledger
+entry. Record those identifiers. File any protocol or facade finding as a
+follow-up issue rather than changing it in this ticket.
 
 ## Hosted review
 

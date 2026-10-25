@@ -336,6 +336,23 @@ security budget on every backend — set trust levels accordingly.
    assert the wiring via the test suite instead:
    `uv run --extra dev pytest tests/test_ravn/test_learning_ledger.py -q`.)
 
+### Dev Kubernetes A2A proof record
+
+`ravn tool-build doctor` is read-only. A green result proves only the
+configured diagnostic hops; it does not commission a tool or prove its
+verification, court decision, installation, or ledger update. For an approved
+dev Kubernetes proof, change the resident configuration only through the
+repository's GitOps `infra_change` workflow and let Fleet reconcile it. Do not
+mutate Fleet-managed resources directly, and keep credentials in
+Doppler/ExternalSecret rather than Git.
+
+Before recording the proof as complete, retain the deployed configuration and
+owner evidence identifying the resident and cluster, plus the commission/task
+id, verification result, court verdict, installation id or learned-tool
+version, and capability-ledger entry. A bounded submission endpoint or scoped
+workload identity must be available for the one approved capability-gap
+request; push registration alone is not evidence that a submission succeeded.
+
 ## Troubleshooting
 
 | Symptom | Check |

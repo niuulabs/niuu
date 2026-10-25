@@ -34,3 +34,13 @@ do not substitute for that evidence.
 - The prior GitOps handoff remains in
   `deliveries/a2a-80c316f97d704238a3abd3f130748223/`; it identifies the
   configuration expected after Fleet reconciliation, not live build evidence.
+- For request `e79e4b9fd0ce`, the recorded operator decision authorizes one
+  dev `k8s-valkyrie` live proof. Deployment changes must use
+  `jve/infrastructure` on infra `main` through `infra_change`; secrets stay in
+  Doppler/ExternalSecret and Fleet-managed resources must not be mutated
+  directly. This authorization does not identify Sigrun as a replacement for
+  Runa/Valhalla.
+- The separately built bounded submission/evidence route is tracked as
+  `a2a-cd26d65106d04df2ac3a4cde1de72b3f` and is push-registered `WORKING`, but
+  no endpoint, scoped identity, or successful capability-gap submission has
+  been demonstrated. It is not live-proof evidence.
