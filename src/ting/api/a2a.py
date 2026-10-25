@@ -1618,6 +1618,7 @@ def _select_pending_gate_id(
 ) -> str | None:
     wanted_gate = gate_id.strip()
     wanted_node = node_id.strip()
+    matches: list[str] = []
     for gate in gates:
         if not isinstance(gate, dict):
             continue
@@ -1631,8 +1632,14 @@ def _select_pending_gate_id(
         if wanted_node and candidate_node != wanted_node:
             continue
         if candidate:
-            return candidate
-    return None
+            matches.append(candidate)
+    if not matches:
+        return None
+    if not wanted_gate and not wanted_node and len(matches) > 1:
+        raise InvalidParamsError(
+            "multiple workflow gates await input; reply metadata must include gateId or nodeId"
+        )
+    return matches[0]
 
 
 def _pending_question_view(request: dict) -> dict[str, Any]:

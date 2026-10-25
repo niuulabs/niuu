@@ -220,3 +220,22 @@ and `TestStaticDefects::test_correct_code_is_clean`. Their raw errors are,
 respectively: missing `ProcessLookupError`; `skuld` versus expected `default`
 namespace; absent Docker; a persisted-operation-ID mismatch; and an unrelated
 `__classdict__` static-defect report. No unrelated behavior was changed.
+
+### 2026-10-25 review follow-up: ambiguous gates
+
+Unqualified A2A replies no longer resolve an arbitrary gate when more than one
+workflow gate is pending. `_select_pending_gate_id` now rejects that input with
+JSON-RPC invalid params and directs callers to supply `metadata.gateId` or
+`metadata.nodeId`; selector-qualified replies retain their existing behavior.
+
+```sh
+uv run --extra dev --extra otel pytest -q tests/test_ting/test_a2a_tasks.py
+# 78 passed
+uv run --extra dev ruff check src/ting/api/a2a.py tests/test_ting/test_a2a_tasks.py
+uv run --extra dev ruff format --check src/ting/api/a2a.py tests/test_ting/test_a2a_tasks.py
+git diff --check
+# all passed
+```
+
+The ticket remains **In Progress**: the review-requested A2A-to-terminal-state
+integration proof and a green current-head full suite are still outstanding.

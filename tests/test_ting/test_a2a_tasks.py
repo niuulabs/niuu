@@ -1643,6 +1643,21 @@ class TestGateContinuation:
         assert response.status_code == 200
         assert port.resolved_gates[0][1] == "gate-2"
 
+    def test_unqualified_reply_with_multiple_pending_gates_is_rejected(self) -> None:
+        client, campaign, port = self._blocked_client(
+            gates=[
+                {"id": "gate-1", "nodeId": "lint", "status": "pending"},
+                {"id": "gate-2", "nodeId": "review", "status": "pending"},
+            ],
+        )
+
+        response = _rpc(client, "SendMessage", self._reply_params(campaign.slug))
+
+        error = response.json()["error"]
+        assert error["code"] == -32602
+        assert "include gateId or nodeId" in error["message"]
+        assert port.resolved_gates == []
+
 
 class TestGetTask:
     def test_scoped_launcher_cannot_read_owner_tasks_without_ledger_claims(self) -> None:
