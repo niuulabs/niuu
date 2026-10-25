@@ -41,3 +41,14 @@ current dev CI after the earlier unrelated Ting/Ravn/lint failures.
 The requested A2A-cluster context is cited at
 `deliveries/2026-10-18-regin-a2a-cluster-inflight.md`; live tracker and branch
 state above take precedence.
+
+## 2026-10-25 verification follow-up
+
+NIU-1112 remains **In Progress**. The operator declined both a waiver and any
+unrelated production persona change. The required current-head verification is
+not green, so this delivery is not closed.
+
+At investigation start, `HEAD` and `origin/regin` were both
+`66c3d35ee6beffee978ee28ee6a5adb64888b851`; `origin/dev` was
+`f75d5b0b824df5e11741b4d9c2f5c64852b531fe`. `origin/dev` is an ancestor of
+HEAD through merge `82f6384c`; no merge out of `regin` occurred.

@@ -108,6 +108,17 @@ def personas_dir(tmp_path: Path) -> str:
     return str(d)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_ambient_workload_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep local Kubernetes credentials out of unauthenticated ASGI round trips."""
+    monkeypatch.delenv("NIUU_WORKLOAD_IDENTITY_TOKEN_FILE", raising=False)
+    monkeypatch.delenv("NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", raising=False)
+    monkeypatch.setattr(
+        "niuu.adapters.outbound.http_auth._DEFAULT_SERVICE_ACCOUNT_TOKEN_FILE",
+        "/nonexistent/serviceaccount/token",
+    )
+
+
 @pytest.fixture()
 def personas_app(personas_dir: str) -> FastAPI:
     return _make_personas_app(personas_dir)

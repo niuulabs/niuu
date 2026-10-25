@@ -79,3 +79,99 @@ The two failures reproduce independently in 0.34s: the HTTP persona adapter
 tries `http://testserver/api/v1/tokens/workload/exchange`, receives 404, and
 therefore returns no `integ-coder` configuration / no `alpha-agent` name.
 No unrelated persona-adapter repair was made in this NIU-1112 delivery.
+
+## 2026-10-25 persona-adapter failure diagnosis
+
+The original failure is reproducible in this coding worker on the exact two
+reported node IDs, before the test fixture correction:
+
+```sh
+env -u NIUU_WORKLOAD_IDENTITY_TOKEN_FILE \
+  uv run --extra dev --extra k8s --extra otel pytest -q \
+  tests/integration/test_http_persona_adapter.py::test_round_trip_load \
+  tests/integration/test_http_persona_adapter.py::test_round_trip_list_names
+```
+
+```text
+FAILED tests/integration/test_http_persona_adapter.py::test_round_trip_load
+E   assert None is not None
+WARNING ravn.adapters.personas.http:http.py:209 HttpPersonaAdapter: request failed
+for 'integ-coder': Client error '404 Not Found' for url
+'http://testserver/api/v1/tokens/workload/exchange'
+
+FAILED tests/integration/test_http_persona_adapter.py::test_round_trip_list_names
+E   AssertionError: assert 'alpha-agent' in []
+WARNING ravn.adapters.personas.http:http.py:241 HttpPersonaAdapter: list_names request failed:
+Client error '404 Not Found' for url
+'http://testserver/api/v1/tokens/workload/exchange'
+
+2 failed in 0.36s
+```
+
+This worker has a non-empty projected service-account file at
+`/var/run/secrets/kubernetes.io/serviceaccount/token` and an ambient
+`NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL`. `WorkloadIdentityBearerTokenAuthAdapter`
+uses that default path even when `NIUU_WORKLOAD_IDENTITY_TOKEN_FILE` is unset.
+The in-process persona test application deliberately mounts only the personas
+router, not the workload-token exchange route, so the ambient credential turns
+an otherwise unauthenticated local ASGI request into the 404 above. This is a
+test-fixture isolation failure, not a production persona-adapter change.
+
+`tests/integration/test_http_persona_adapter.py` now explicitly removes the
+ambient identity variables and replaces only the default token path for that
+module. The fixture preserves tests which deliberately exercise explicit bearer
+tokens or workload identity. With both ambient settings deliberately supplied,
+the focused module passes:
+
+```sh
+NIUU_WORKLOAD_IDENTITY_TOKEN_FILE=/var/run/secrets/kubernetes.io/serviceaccount/token \
+NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL=https://volundr.valhalla.asgard.niuu.world/api/v1/tokens/workload/exchange \
+uv run --extra dev --extra k8s --extra otel pytest -q \
+  tests/integration/test_http_persona_adapter.py
+# 6 passed in 0.43s
+```
+
+### Clean-regin and dev comparison
+
+Before this fixture-only correction:
+
+```text
+HEAD          66c3d35ee6beffee978ee28ee6a5adb64888b851
+origin/regin  66c3d35ee6beffee978ee28ee6a5adb64888b851
+origin/dev    f75d5b0b824df5e11741b4d9c2f5c64852b531fe
+origin/dev is an ancestor of HEAD: yes
+
+HEAD/dev blobs (all equal):
+src/ravn/adapters/personas/http.py             d77d3054dcb6c961d61647443a22bfbc93b19716
+src/niuu/adapters/outbound/http_auth.py        9b7fd3a06e911d9caa8d20e9795ef99054fcde14
+tests/integration/test_http_persona_adapter.py 6d95a14ada16156899667d8aff0d562c202402b2
+```
+
+Therefore there is no `dev` repair missing from `regin` to merge. The
+operator's clean-regin pass is consistent with a worker that has no mounted
+service-account token; this worker does have one. Only `dev -> regin` has been
+merged; nothing was merged outward.
+
+### Current-head full-suite evidence
+
+The runner initially lacked Helm, so chart tests failed with `FileNotFoundError`
+for `helm`; Helm v3.14.0, the version installed by the repository CI workflow,
+was then made available at `/tmp/niu-1112-tools/helm`. The full command was
+rerun at current head with `dev`, `k8s`, and `otel` extras:
+
+```sh
+PATH=/tmp/niu-1112-tools:$PATH \
+env -u NIUU_WORKLOAD_IDENTITY_TOKEN_FILE -u NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL \
+  uv run --extra dev --extra k8s --extra otel pytest tests/ -q --tb=short \
+  --cov=src --cov-report=term-missing --cov-fail-under=85
+```
+
+It reached the coverage gate (88.20%) but was not green: `101 failed, 27501
+passed, 46 skipped, 232 deselected, 1 xfailed` in 30:12. The repaired persona
+integration module passed in that run. The remaining failures include the
+separate ambient-default-token assumptions in
+`tests/test_ravn/test_platform_tools.py` (79 failures attempting the unmocked
+`http://localhost:8080/api/v1/tokens/workload/exchange`), plus independent
+SSH-lock, Niuu-shared-chart namespace, CLI Docker-availability, and static-tool
+verification failures. They are outside NIU-1112 and were neither silenced nor
+changed. NIU-1112 remains In Progress until current-head CI is green.
