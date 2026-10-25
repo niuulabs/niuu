@@ -1,7 +1,7 @@
 # Configuring a Valkyrie for Self-Improvement
 
 How to configure a Valkyrie (ravn resident) so it can commission, verify,
-install, and evolve its own tools through Ting/Forge build workflows. Written
+install, and evolve its own tools through A2A or Forge build workflows. Written
 to be executable by an agent: every step has an action and a validation. Run
 the validations; do not assume.
 
@@ -64,12 +64,14 @@ Options:
   `gateway.channels.http` has `enabled` and `a2a_push_enabled` (with
   `a2a_push_auth` verifying Ting's workload token). The callback origin must
   also be in Ting's `a2a.push_callback_allowed_origins`.
-- `ForgeSessionToolBuildBackend` — drives a single Forge session directly.
+- `ForgeSessionToolBuildBackend` — drives a single Forge session directly; it
+  remains the non-A2A path while the A2A deployment is being validated.
 - Empty `tool_build_adapter` — the investigating agent writes tool code
   inline in-session (no external build; verification still runs).
 
-(The old `TingWorkflowToolBuildBackend`, which drove the bespoke Ting REST
-API, was removed after the A2A path was validated in dev — NIU-1115.)
+Do not remove an existing build path based on a configuration or doctor result
+alone. Retain it until a resident has completed a recorded A2A commission,
+verification, court decision, and installation in the target environment.
 
 The backend automatically requests a least-privilege build token scoped to
 exactly its launch endpoint (`ting:workflow:launch` or
