@@ -77,3 +77,16 @@ reserved probe id. It rejects all other JSON-RPC errors, including
 `-32601`/`method not found`; the focused regression test covers that response.
 This source revision does not create or provide the still-missing live-proof
 identifiers required by the acceptance gate.
+
+## Review re-check — 2026-10-25
+
+The review gate was re-opened and tracker status returned to **In Progress**.
+This session re-ran the bounded, read-only evidence check against task
+`a2a-e7c858b5863a4e67b012baa3547400b9`: workload-token exchange succeeded,
+but `GetTask` at `https://yggdrasil.niuu.world/api/v1/ting/a2a` returned HTTP
+403, `Scoped credential only grants operations on tasks its workload launched`.
+No `SendMessage`, deployment mutation, or cross-actor retry was made. This
+confirms that the available session identity cannot read the independent route's
+records; it does not identify the deployed Runa configuration or satisfy any
+live-proof criterion. The evidence-reader route's launching workload (or a
+bounded equivalent) must publish the required identifiers.

@@ -121,3 +121,22 @@ resident/configuration, commission/task, workflow/Forge run, verification,
 court, installation/version, and ledger evidence remains absent. This revision
 therefore leaves NIU-1114 In Progress rather than claiming the live acceptance
 gate.
+
+## Review re-check: bounded evidence route unavailable
+
+After the review re-opened NIU-1114, this session used its available workload
+identity only for a read-only `GetTask` request for
+`a2a-e7c858b5863a4e67b012baa3547400b9` at
+`https://yggdrasil.niuu.world/api/v1/ting/a2a`. Token exchange succeeded; Ting
+returned HTTP 403 with `Scoped credential only grants operations on tasks its
+workload launched`. No `SendMessage`, direct cluster mutation, or cross-actor
+retry was issued.
+
+`kubectl`, `tsh`, and Teleport inspection credentials are not available in this
+session, and the supplied workload identity is not authorized to read the
+independent task. Therefore no deployed resident/configuration, commission or
+task, workflow/Forge run, verification, court, installation/version, or ledger
+identifier was observed. NIU-1114 remains **In Progress**. The exact missing
+input is a record from the authorized Runa/Valhalla workload identity (or an
+equivalently bounded reader) containing those identifiers for exactly one
+capability-gap build.
