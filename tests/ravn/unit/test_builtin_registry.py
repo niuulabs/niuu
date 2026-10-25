@@ -138,6 +138,7 @@ class TestRegistryStructure:
         settings.tools.kubernetes.in_cluster = False
         settings.tools.kubernetes.kubeconfig_env = "EITRI_KUBECONFIG"
         settings.tools.kubernetes.max_log_lines = 80
+        settings.tools.kubernetes.max_configmap_value_chars = 900
 
         kwargs = BUILTIN_TOOLS["kubernetes_inspect"].kwargs_fn(settings, {})
 
@@ -146,6 +147,7 @@ class TestRegistryStructure:
             "kubeconfig_env": "EITRI_KUBECONFIG",
             "kubeconfig_path": "",
             "max_log_lines": 80,
+            "max_configmap_value_chars": 900,
         }
 
     def test_kubernetes_tool_is_enabled_explicitly_not_by_environment_type(self) -> None:

@@ -5,10 +5,28 @@ from __future__ import annotations
 import inspect
 import json
 import os
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from ravn.domain.models import ToolResult
 from ravn.ports.tool import ToolPort
+
+
+@dataclass(frozen=True)
+class KubernetesClients:
+    """The read-only API groups the tool uses, bound to one cluster."""
+
+    core_v1: Any
+    apps_v1: Any
+    batch_v1: Any
+
+
+#: Builds the clients for one kubeconfig context (tests inject their own).
+ClientFactory = Callable[[str, str], Awaitable[KubernetesClients]]
 
 
 class KubernetesInspectTool(ToolPort):
@@ -17,6 +35,11 @@ class KubernetesInspectTool(ToolPort):
     This intentionally exposes only read-only calls. It gives k8s Valkyries a
     real container-safe inspection capability without depending on a kubectl
     binary in the image.
+
+    With a kubeconfig that names several clusters (a Teleport Machine ID
+    kubeconfig, for example) every call names its ``cluster``; the tool never
+    guesses one. What the tool may read on each cluster is whatever that
+    identity's RBAC grants, so read-only stays enforced by the cluster too.
     """
 
     def __init__(
@@ -29,6 +52,8 @@ class KubernetesInspectTool(ToolPort):
         apps_v1: Any | None = None,
         batch_v1: Any | None = None,
         max_log_lines: int = 120,
+        max_configmap_value_chars: int = 4000,
+        client_factory: ClientFactory | None = None,
     ) -> None:
         self._in_cluster = in_cluster
         self._kubeconfig_path = kubeconfig_path
@@ -38,6 +63,9 @@ class KubernetesInspectTool(ToolPort):
         self._batch_v1 = batch_v1
         self._loaded = core_v1 is not None
         self._max_log_lines = max(1, max_log_lines)
+        self._max_configmap_value_chars = max(1, max_configmap_value_chars)
+        self._client_factory = client_factory or _clients_for_context
+        self._clients_by_context: dict[str, KubernetesClients] = {}
 
     @property
     def name(self) -> str:
@@ -47,8 +75,10 @@ class KubernetesInspectTool(ToolPort):
     def description(self) -> str:
         return (
             "Read-only Kubernetes inspection for resident Valkyries. Supports "
-            "pod status, object events, pod logs, workload status, and node status "
-            "using the in-cluster service account or a kubeconfig."
+            "pod status, object events, pod logs, workload status (images, rollout "
+            "progress), ConfigMap contents, and node status using the in-cluster "
+            "service account or a kubeconfig. When the kubeconfig spans several "
+            "clusters, `clusters` lists them and every other action names one."
         )
 
     @property
@@ -59,13 +89,22 @@ class KubernetesInspectTool(ToolPort):
                 "action": {
                     "type": "string",
                     "enum": [
+                        "clusters",
                         "inspect_pod",
                         "object_events",
                         "pod_logs",
                         "workload",
+                        "configmap",
                         "node",
                     ],
                     "description": "Read-only inspection action to perform.",
+                },
+                "cluster": {
+                    "type": "string",
+                    "description": (
+                        "Cluster to inspect, as listed by the `clusters` action. "
+                        "Required when the kubeconfig spans more than one cluster."
+                    ),
                 },
                 "namespace": {
                     "type": "string",
@@ -102,7 +141,16 @@ class KubernetesInspectTool(ToolPort):
     async def execute(self, input: dict) -> ToolResult:  # noqa: A002
         action = str(input.get("action") or "").strip()
         try:
-            await self._ensure_clients()
+            if action == "clusters":
+                return ToolResult(
+                    tool_call_id="",
+                    content=json.dumps(
+                        {"action": "clusters", "clusters": self._clusters()},
+                        indent=2,
+                        sort_keys=True,
+                    ),
+                )
+            await self._ensure_clients(str(input.get("cluster") or "").strip())
             match action:
                 case "inspect_pod":
                     payload = await self._inspect_pod(input)
@@ -112,6 +160,8 @@ class KubernetesInspectTool(ToolPort):
                     payload = await self._pod_logs(input)
                 case "workload":
                     payload = await self._workload(input)
+                case "configmap":
+                    payload = await self._configmap(input)
                 case "node":
                     payload = await self._node(input)
                 case _:
@@ -128,25 +178,65 @@ class KubernetesInspectTool(ToolPort):
             )
         return ToolResult(tool_call_id="", content=json.dumps(payload, indent=2, sort_keys=True))
 
-    async def _ensure_clients(self) -> None:
-        if self._loaded:
-            return
-        try:
-            from kubernetes_asyncio import client, config
-        except ImportError as exc:  # pragma: no cover - depends on installed extras
-            raise RuntimeError("kubernetes_asyncio is required for kubernetes_inspect") from exc
+    def _kubeconfig(self) -> str:
+        return self._kubeconfig_path or os.environ.get(self._kubeconfig_env, "")
 
-        if self._in_cluster:
+    def _contexts(self) -> list[str]:
+        kubeconfig = self._kubeconfig()
+        if not kubeconfig:
+            raise RuntimeError(
+                "kubernetes_inspect has no kubeconfig: set tools.kubernetes.kubeconfig_path "
+                f"or {self._kubeconfig_env}, or use in_cluster"
+            )
+        document = yaml.safe_load(Path(kubeconfig).read_text(encoding="utf-8")) or {}
+        return sorted(str(item["name"]) for item in document.get("contexts") or [])
+
+    def _clusters(self) -> list[str]:
+        if self._in_cluster or self._loaded:
+            return ["(this cluster)"]
+        return self._contexts()
+
+    def _resolve_context(self, cluster: str) -> str:
+        contexts = self._contexts()
+        if not cluster:
+            if len(contexts) == 1:
+                return contexts[0]
+            raise ValueError(f"cluster is required; available clusters: {', '.join(contexts)}")
+        matches = [
+            context for context in contexts if context == cluster or context.endswith(f"-{cluster}")
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"unknown cluster {cluster!r}; available clusters: {', '.join(contexts)}"
+            )
+        return matches[0]
+
+    async def _ensure_clients(self, cluster: str = "") -> None:
+        if self._loaded or self._in_cluster:
+            if cluster:
+                raise ValueError(
+                    "this resident inspects only its own cluster; cluster must be empty"
+                )
+            if self._loaded:
+                return
+            try:
+                from kubernetes_asyncio import client, config
+            except ImportError as exc:  # pragma: no cover - depends on installed extras
+                raise RuntimeError("kubernetes_asyncio is required for kubernetes_inspect") from exc
             config.load_incluster_config()
-        else:
-            kubeconfig = self._kubeconfig_path or os.environ.get(self._kubeconfig_env, "")
-            maybe_loaded = config.load_kube_config(config_file=kubeconfig or None)
-            if inspect.isawaitable(maybe_loaded):
-                _ = await maybe_loaded
-        self._core_v1 = client.CoreV1Api()
-        self._apps_v1 = client.AppsV1Api()
-        self._batch_v1 = client.BatchV1Api()
-        self._loaded = True
+            self._core_v1 = client.CoreV1Api()
+            self._apps_v1 = client.AppsV1Api()
+            self._batch_v1 = client.BatchV1Api()
+            self._loaded = True
+            return
+        context = self._resolve_context(cluster)
+        clients = self._clients_by_context.get(context)
+        if clients is None:
+            clients = await self._client_factory(self._kubeconfig(), context)
+            self._clients_by_context[context] = clients
+        self._core_v1 = clients.core_v1
+        self._apps_v1 = clients.apps_v1
+        self._batch_v1 = clients.batch_v1
 
     async def _inspect_pod(self, input: dict) -> dict[str, Any]:  # noqa: A002
         namespace, name = _namespace_name(input)
@@ -199,12 +289,39 @@ class KubernetesInspectTool(ToolPort):
             "workload": _workload(obj),
         }
 
+    async def _configmap(self, input: dict) -> dict[str, Any]:  # noqa: A002
+        namespace, name = _namespace_name(input)
+        configmap = await _maybe_await(self._core_v1.read_namespaced_config_map(name, namespace))
+        data = dict(_field(configmap, "data", default={}) or {})
+        limit = self._max_configmap_value_chars
+        return {
+            "action": "configmap",
+            "namespace": namespace,
+            "name": name,
+            "metadata": _metadata(configmap),
+            "data": {key: str(value)[:limit] for key, value in sorted(data.items())},
+            "truncated_keys": sorted(key for key, value in data.items() if len(str(value)) > limit),
+        }
+
     async def _node(self, input: dict) -> dict[str, Any]:  # noqa: A002
         name = str(input.get("name") or "").strip()
         if not name:
             raise ValueError("name is required for node")
         node = await _maybe_await(self._core_v1.read_node(name))
         return {"action": "node", "name": name, "node": _node(node)}
+
+
+async def _clients_for_context(kubeconfig: str, context: str) -> KubernetesClients:
+    try:
+        from kubernetes_asyncio import client, config
+    except ImportError as exc:  # pragma: no cover - depends on installed extras
+        raise RuntimeError("kubernetes_asyncio is required for kubernetes_inspect") from exc
+    api_client = await config.new_client_from_config(config_file=kubeconfig, context=context)
+    return KubernetesClients(
+        core_v1=client.CoreV1Api(api_client),
+        apps_v1=client.AppsV1Api(api_client),
+        batch_v1=client.BatchV1Api(api_client),
+    )
 
 
 def _namespace_name(input: dict) -> tuple[str, str]:  # noqa: A002
@@ -346,8 +463,22 @@ def _event(event: Any) -> dict[str, Any]:
 def _workload(obj: Any) -> dict[str, Any]:
     status = _field(obj, "status", default={}) or {}
     spec = _field(obj, "spec", default={}) or {}
+    template = _field(spec, "template", default={}) or {}
+    pod_spec = _field(template, "spec", default={}) or {}
+    meta = _field(obj, "metadata", default={}) or {}
     return {
         "metadata": _metadata(obj),
+        "images": {
+            _field(container, "name", default=""): _field(container, "image", default="")
+            for container in list(_field(pod_spec, "containers", default=[]) or [])
+        },
+        # observed == generation and updated == replicas means the rollout of
+        # the current spec has finished, not just started.
+        "generation": _field(meta, "generation", default=None),
+        "observed_generation": _field(
+            status, "observed_generation", "observedGeneration", default=None
+        ),
+        "updated_replicas": _field(status, "updated_replicas", "updatedReplicas", default=0),
         "replicas": _field(status, "replicas", default=_field(spec, "replicas", default=None)),
         "ready_replicas": _field(status, "ready_replicas", "readyReplicas", default=0),
         "available_replicas": _field(status, "available_replicas", "availableReplicas", default=0),

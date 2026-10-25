@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ravn.adapters.tools.kubernetes import KubernetesInspectTool
+from ravn.adapters.tools.kubernetes import KubernetesClients, KubernetesInspectTool
 from ravn.cli.commands import _filter_tools, _groups_for_persona
 from ravn.config import Settings
 
@@ -163,6 +163,139 @@ async def test_kubernetes_inspect_events_and_logs_are_read_only() -> None:
     assert core.event_selector == "involvedObject.name=checkout-abc,involvedObject.kind=Pod"
     assert json.loads(events.content)["events"][0]["reason"] == "BackOff"
     assert json.loads(logs.content)["tail_lines"] == 50
+
+
+_TELEPORT_KUBECONFIG = """
+apiVersion: v1
+kind: Config
+current-context: teleport.niuu.world-valhalla
+contexts:
+  - name: teleport.niuu.world-valhalla
+    context: {cluster: teleport.niuu.world, user: bot}
+  - name: teleport.niuu.world-ymir
+    context: {cluster: teleport.niuu.world, user: bot}
+clusters:
+  - name: teleport.niuu.world
+    cluster: {server: https://teleport.niuu.world:443}
+users:
+  - name: bot
+    user: {token: unused}
+"""
+
+
+class _RolledOutApps:
+    def __init__(self, cluster: str) -> None:
+        self.cluster = cluster
+
+    async def read_namespaced_deployment(self, name: str, namespace: str):
+        return SimpleNamespace(
+            metadata=SimpleNamespace(name=name, namespace=namespace, uid="d", generation=7),
+            spec=SimpleNamespace(
+                replicas=1,
+                template=SimpleNamespace(
+                    spec=SimpleNamespace(
+                        containers=[SimpleNamespace(name="ravn", image=f"niuu:dev-{self.cluster}")]
+                    )
+                ),
+            ),
+            status=SimpleNamespace(
+                replicas=1, ready_replicas=1, updated_replicas=1, observed_generation=7
+            ),
+        )
+
+
+class _ConfigCore:
+    async def read_namespaced_config_map(self, name: str, namespace: str):
+        return SimpleNamespace(
+            metadata=SimpleNamespace(name=name, namespace=namespace, uid="cm"),
+            data={"config.yaml": "x" * 50, "small": "ok"},
+        )
+
+
+def _multi_cluster_tool(tmp_path, built: list[str]) -> KubernetesInspectTool:
+    kubeconfig = tmp_path / "kubeconfig.yaml"
+    kubeconfig.write_text(_TELEPORT_KUBECONFIG, encoding="utf-8")
+
+    async def factory(path: str, context: str) -> KubernetesClients:
+        assert path == str(kubeconfig)
+        built.append(context)
+        cluster = context.rsplit("-", 1)[-1]
+        return KubernetesClients(
+            core_v1=_ConfigCore(), apps_v1=_RolledOutApps(cluster), batch_v1=FakeBatchV1()
+        )
+
+    return KubernetesInspectTool(
+        in_cluster=False,
+        kubeconfig_path=str(kubeconfig),
+        max_configmap_value_chars=10,
+        client_factory=factory,
+    )
+
+
+@pytest.mark.asyncio
+async def test_clusters_lists_every_context_in_the_kubeconfig(tmp_path) -> None:
+    tool = _multi_cluster_tool(tmp_path, [])
+
+    result = await tool.execute({"action": "clusters"})
+
+    assert json.loads(result.content)["clusters"] == [
+        "teleport.niuu.world-valhalla",
+        "teleport.niuu.world-ymir",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_named_cluster_reads_that_cluster_and_reuses_its_client(tmp_path) -> None:
+    built: list[str] = []
+    tool = _multi_cluster_tool(tmp_path, built)
+    request = {"action": "workload", "namespace": "nats", "name": "regin", "cluster": "ymir"}
+
+    first = json.loads((await tool.execute(request)).content)
+    await tool.execute(request)
+
+    workload = first["workload"]
+    assert workload["images"] == {"ravn": "niuu:dev-ymir"}
+    assert workload["generation"] == workload["observed_generation"] == 7
+    assert workload["updated_replicas"] == 1
+    assert built == ["teleport.niuu.world-ymir"]
+
+
+@pytest.mark.asyncio
+async def test_a_multi_cluster_kubeconfig_never_guesses_the_cluster(tmp_path) -> None:
+    tool = _multi_cluster_tool(tmp_path, [])
+
+    missing = await tool.execute({"action": "workload", "namespace": "nats", "name": "regin"})
+    unknown = await tool.execute(
+        {"action": "workload", "namespace": "nats", "name": "regin", "cluster": "asgard"}
+    )
+
+    assert missing.is_error and "cluster is required" in missing.content
+    assert unknown.is_error and "unknown cluster 'asgard'" in unknown.content
+    assert "teleport.niuu.world-valhalla" in unknown.content
+
+
+@pytest.mark.asyncio
+async def test_configmap_values_are_capped(tmp_path) -> None:
+    tool = _multi_cluster_tool(tmp_path, [])
+
+    result = await tool.execute(
+        {"action": "configmap", "namespace": "nats", "name": "regin-config", "cluster": "valhalla"}
+    )
+
+    payload = json.loads(result.content)
+    assert payload["data"] == {"config.yaml": "x" * 10, "small": "ok"}
+    assert payload["truncated_keys"] == ["config.yaml"]
+
+
+@pytest.mark.asyncio
+async def test_an_in_cluster_resident_cannot_name_another_cluster() -> None:
+    tool = KubernetesInspectTool(core_v1=FakeCoreV1(), apps_v1=FakeAppsV1(), batch_v1=FakeBatchV1())
+
+    result = await tool.execute(
+        {"action": "workload", "namespace": "shop", "name": "checkout", "cluster": "ymir"}
+    )
+
+    assert result.is_error and "only its own cluster" in result.content
 
 
 def test_k8s_persona_can_request_kubernetes_inspect_tool() -> None:

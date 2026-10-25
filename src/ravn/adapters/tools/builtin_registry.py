@@ -340,6 +340,7 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "kubeconfig_env": s.tools.kubernetes.kubeconfig_env,
             "kubeconfig_path": s.tools.kubernetes.kubeconfig_path,
             "max_log_lines": s.tools.kubernetes.max_log_lines,
+            "max_configmap_value_chars": s.tools.kubernetes.max_configmap_value_chars,
         },
     ),
     # =========================================================================

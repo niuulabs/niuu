@@ -259,6 +259,11 @@ class KubernetesToolsConfig(BaseModel):
     kubeconfig_env: str = Field(default="KUBECONFIG")
     kubeconfig_path: str = Field(default="")
     max_log_lines: int = Field(default=120, ge=1)
+    max_configmap_value_chars: int = Field(
+        default=4000,
+        ge=1,
+        description="Characters of each ConfigMap value kubernetes_inspect returns.",
+    )
 
 
 class BashToolConfig(BaseModel):
