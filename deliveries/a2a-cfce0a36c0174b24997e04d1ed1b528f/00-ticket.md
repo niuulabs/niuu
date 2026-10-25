@@ -54,3 +54,17 @@ do not substitute for that evidence.
   usable identity or that the independent task can be observed. No
   `SendMessage` was issued: that workload is not the authorized deployed
   resident for this proof.
+
+## Independently verified doctor work — 2026-10-25
+
+The source-side A2A doctor now uses the authenticated agent-card snapshot for
+skill selection and then checks the advertised same-origin JSON-RPC endpoint
+with a non-commissioning `GetTask` probe for the reserved
+`ravn-tool-build-doctor-probe` id. A JSON-RPC task-not-found reply is expected
+and establishes endpoint/auth reachability without creating a workflow,
+capability-gap request, or cross-actor read.
+
+This does not contact or retry the independent `a2a-e7c858b5863a4e67b012baa3547400b9`
+task. It remains unrelated to the one authorized live resident proof and
+cannot replace its task, build, verification, court, installation, or ledger
+identifiers.
