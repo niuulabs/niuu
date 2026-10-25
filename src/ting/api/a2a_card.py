@@ -96,7 +96,10 @@ def _workflow_skill(workflow: WorkflowDefinition) -> AgentSkill:
             f"{workflow.description}\n\n"
             "Launch context may be supplied in A2A message metadata: repo is a "
             "repository URL, branch selects its starting branch, and "
-            f"{connection_note}"
+            f"{connection_note}\n\n"
+            "When a task reports INPUT_REQUIRED, reply with that taskId and "
+            'metadata.gateDecision set to "approve" or "request_changes"; '
+            "the text part is the reviewer comment."
         ),
         tags=tags or ["workflow"],
         examples=[

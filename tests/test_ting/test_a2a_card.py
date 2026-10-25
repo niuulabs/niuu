@@ -176,6 +176,18 @@ class TestAgentCard:
         assert "graph.placement" in card.skills[0].description
         assert "422" in card.skills[0].description
 
+    def test_skill_description_explains_input_required_gate_replies(self) -> None:
+        client = _client(InMemoryWorkflowRepository([_workflow()]))
+
+        card = parse_agent_card(client.get(CARD_PATH).json())
+
+        description = card.skills[0].description
+        assert "INPUT_REQUIRED" in description
+        assert "taskId" in description
+        assert "metadata.gateDecision" in description
+        assert "approve" in description
+        assert "request_changes" in description
+
     def test_workflow_without_declared_tags_gets_protocol_tag(self) -> None:
         workflow = _workflow()
         workflow.graph["tags"] = []
