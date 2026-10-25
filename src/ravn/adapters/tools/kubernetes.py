@@ -37,9 +37,10 @@ class KubernetesInspectTool(ToolPort):
     binary in the image.
 
     With a kubeconfig that names several clusters (a Teleport Machine ID
-    kubeconfig, for example) every call names its ``cluster``; the tool never
-    guesses one. What the tool may read on each cluster is whatever that
-    identity's RBAC grants, so read-only stays enforced by the cluster too.
+    kubeconfig, for example), calls without ``cluster`` use its current
+    context. A named ``cluster`` overrides that context. What the tool may
+    read on each cluster is whatever that identity's RBAC grants, so read-only
+    stays enforced by the cluster too.
     """
 
     def __init__(
@@ -104,8 +105,8 @@ class KubernetesInspectTool(ToolPort):
                 "cluster": {
                     "type": "string",
                     "description": (
-                        "Cluster to inspect, as listed by the `clusters` action. "
-                        "Required when the kubeconfig spans more than one cluster."
+                        "Optional cluster to inspect, as listed by the `clusters` action. "
+                        "When omitted, the kubeconfig current-context is used."
                     ),
                 },
                 "namespace": {
@@ -212,12 +213,19 @@ class KubernetesInspectTool(ToolPort):
             return ["(this cluster)"]
         return self._contexts()
 
-    def _resolve_context(self, cluster: str) -> str:
+    def _resolve_context(self, cluster: str) -> str | None:
         contexts = self._contexts()
         if not cluster:
-            if len(contexts) == 1:
-                return contexts[0]
-            raise ValueError(f"cluster is required; available clusters: {', '.join(contexts)}")
+            kubeconfig = self._kubeconfig()
+            if not kubeconfig:
+                return None
+            document = yaml.safe_load(Path(kubeconfig).read_text(encoding="utf-8")) or {}
+            current_context = str(document.get("current-context") or "").strip()
+            if not current_context:
+                return None
+            if current_context not in contexts:
+                raise ValueError(f"unknown current-context {current_context!r}")
+            return current_context
         matches = [
             context for context in contexts if context == cluster or context.endswith(f"-{cluster}")
         ]

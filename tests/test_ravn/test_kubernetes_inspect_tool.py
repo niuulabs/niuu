@@ -299,15 +299,28 @@ async def test_a_named_cluster_reads_that_cluster_and_reuses_its_client(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_a_multi_cluster_kubeconfig_never_guesses_the_cluster(tmp_path) -> None:
+async def test_a_multi_cluster_kubeconfig_uses_its_current_context_when_cluster_is_omitted(
+    tmp_path,
+) -> None:
+    built: list[str] = []
+    tool = _multi_cluster_tool(tmp_path, built)
+
+    result = json.loads(
+        (await tool.execute({"action": "workload", "namespace": "nats", "name": "regin"})).content
+    )
+
+    assert result["workload"]["images"] == {"ravn": "niuu:dev-valhalla"}
+    assert built == ["teleport.niuu.world-valhalla"]
+
+
+@pytest.mark.asyncio
+async def test_a_multi_cluster_kubeconfig_rejects_an_unknown_cluster(tmp_path) -> None:
     tool = _multi_cluster_tool(tmp_path, [])
 
-    missing = await tool.execute({"action": "workload", "namespace": "nats", "name": "regin"})
     unknown = await tool.execute(
         {"action": "workload", "namespace": "nats", "name": "regin", "cluster": "asgard"}
     )
 
-    assert missing.is_error and "cluster is required" in missing.content
     assert unknown.is_error and "unknown cluster 'asgard'" in unknown.content
     assert "teleport.niuu.world-valhalla" in unknown.content
 

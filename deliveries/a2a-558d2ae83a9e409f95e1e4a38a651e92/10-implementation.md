@@ -101,3 +101,32 @@ All checks passed!
 Live authorization verification remains unavailable: `kubectl` and `tsh` are
 not installed in this workspace. No hosted PR was opened; this ticket lands
 directly on `regin` only.
+
+## Review revision — multi-context current-context compatibility (2026-10-25)
+
+The out-of-cluster inspector again preserves the kubeconfig's legacy
+current-context behavior when `cluster` is omitted, including for a
+multi-context kubeconfig. An explicit `cluster` continues to select a matching
+context, and an unknown explicit value remains an error.
+
+A regression test uses the multi-context Teleport fixture with
+`current-context: teleport.niuu.world-valhalla`, performs a legacy workload
+request without `cluster`, and verifies that the client is built for Valhalla.
+
+Verification:
+
+```text
+uv run pytest -q tests/test_ravn/test_kubernetes_inspect_tool.py \
+  tests/ravn/unit/test_builtin_registry.py tests/test_ravn/test_config.py
+227 passed
+
+uv run ruff check src/ravn/adapters/tools/kubernetes.py src/ravn/config.py \
+  src/ravn/adapters/tools/builtin_registry.py \
+  tests/test_ravn/test_kubernetes_inspect_tool.py \
+  tests/ravn/unit/test_builtin_registry.py
+All checks passed!
+```
+
+Live authorization verification remains unavailable: neither `kubectl` nor
+`tsh` is installed in this workspace. No hosted PR was opened; this ticket
+lands directly on `regin` only.

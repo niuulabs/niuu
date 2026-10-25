@@ -42,3 +42,11 @@ and `context=None` to Kubernetes' client factory. This retains Kubernetes'
 normal default kubeconfig lookup and current-context selection. Explicit
 kubeconfig paths retain the existing multi-context resolution behavior; a
 named cluster without an explicit path resolves against the default kubeconfig.
+
+## Review revision (2026-10-25, multi-context compatibility)
+
+The multi-context extension initially made `cluster` mandatory whenever an
+explicit kubeconfig listed more than one context. This changed legacy caller
+behavior. Omitted `cluster` now selects the kubeconfig's `current-context`,
+while an explicit cluster still overrides it and unknown explicit clusters
+remain errors.
