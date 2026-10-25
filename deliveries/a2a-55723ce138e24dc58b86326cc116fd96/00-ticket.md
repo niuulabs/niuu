@@ -34,4 +34,4 @@ principal-filtered Guild response is in scope for this delivery. URL-form
 lookup now uses only the raw Guild page, while configured canonical IDs retain
 their existing explicit-card behavior. The regression test denies a
 configured-only URL. Revision commit
-`d5296cf362f7f0bafc1414c69c09155168cdb71c` is pushed to `origin/regin`.
+`d5296cf352798790bc4d03603461db28ae136a76` is pushed to `origin/regin`.
