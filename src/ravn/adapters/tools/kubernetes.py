@@ -7,10 +7,7 @@ import json
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
-
-import yaml
 
 from ravn.domain.models import ToolResult
 from ravn.ports.tool import ToolPort
@@ -196,17 +193,21 @@ class KubernetesInspectTool(ToolPort):
     def _kubeconfig(self) -> str | None:
         return self._kubeconfig_path or os.environ.get(self._kubeconfig_env) or None
 
-    def _contexts(self) -> list[str]:
-        kubeconfig = self._kubeconfig()
-        if kubeconfig:
-            document = yaml.safe_load(Path(kubeconfig).read_text(encoding="utf-8")) or {}
-            return sorted(str(item["name"]) for item in document.get("contexts") or [])
+    def _kubeconfig_contexts(self) -> tuple[list[str], str | None]:
+        """List contexts through Kubernetes so path-list kubeconfigs are merged."""
         try:
             from kubernetes_asyncio import config
         except ImportError as exc:  # pragma: no cover - depends on installed extras
             raise RuntimeError("kubernetes_asyncio is required for kubernetes_inspect") from exc
-        contexts, _ = config.list_kube_config_contexts(config_file=None)
-        return sorted(str(item["name"]) for item in contexts)
+        contexts, current_context = config.list_kube_config_contexts(config_file=self._kubeconfig())
+        return (
+            sorted(str(item["name"]) for item in contexts),
+            str(current_context["name"]) if current_context else None,
+        )
+
+    def _contexts(self) -> list[str]:
+        contexts, _ = self._kubeconfig_contexts()
+        return contexts
 
     def _clusters(self) -> list[str]:
         if self._in_cluster or self._loaded:
@@ -214,13 +215,10 @@ class KubernetesInspectTool(ToolPort):
         return self._contexts()
 
     def _resolve_context(self, cluster: str) -> str | None:
-        contexts = self._contexts()
+        contexts, current_context = self._kubeconfig_contexts()
         if not cluster:
-            kubeconfig = self._kubeconfig()
-            if not kubeconfig:
+            if not self._kubeconfig():
                 return None
-            document = yaml.safe_load(Path(kubeconfig).read_text(encoding="utf-8")) or {}
-            current_context = str(document.get("current-context") or "").strip()
             if not current_context:
                 return None
             if current_context not in contexts:

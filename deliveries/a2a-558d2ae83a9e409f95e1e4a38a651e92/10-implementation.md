@@ -130,3 +130,35 @@ All checks passed!
 Live authorization verification remains unavailable: neither `kubectl` nor
 `tsh` is installed in this workspace. No hosted PR was opened; this ticket
 lands directly on `regin` only.
+
+## Review revision — kubeconfig path-list compatibility (2026-10-25)
+
+Context listing and current-context resolution no longer read the configured
+kubeconfig as one filesystem path. They delegate to
+`kubernetes_asyncio.config.list_kube_config_contexts`, passing the original
+configuration string. This preserves Kubernetes' standard colon-separated
+`KUBECONFIG` merging semantics before the selected context is passed to the
+client factory.
+
+A new two-file regression sets `KUBECONFIG` to a platform path list whose
+second file establishes `teleport.niuu.world-ymir` as the merged current
+context. An omitted `cluster` successfully reaches the injected factory with
+that original path list and selected context.
+
+Verification:
+
+```text
+uv run pytest -q tests/test_ravn/test_kubernetes_inspect_tool.py \\
+  tests/ravn/unit/test_builtin_registry.py tests/test_ravn/test_config.py
+228 passed in 1.77s
+
+uv run ruff check src/ravn/adapters/tools/kubernetes.py src/ravn/config.py \\
+  src/ravn/adapters/tools/builtin_registry.py \\
+  tests/test_ravn/test_kubernetes_inspect_tool.py \\
+  tests/ravn/unit/test_builtin_registry.py
+All checks passed!
+```
+
+Live authorization verification remains unavailable: neither `kubectl` nor
+`tsh` is installed in this workspace. No hosted PR was opened; this ticket
+lands directly on `regin` only.

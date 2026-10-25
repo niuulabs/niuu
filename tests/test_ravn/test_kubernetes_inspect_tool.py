@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -311,6 +312,53 @@ async def test_a_multi_cluster_kubeconfig_uses_its_current_context_when_cluster_
 
     assert result["workload"]["images"] == {"ravn": "niuu:dev-valhalla"}
     assert built == ["teleport.niuu.world-valhalla"]
+
+
+@pytest.mark.asyncio
+async def test_a_kubeconfig_path_list_uses_the_merged_current_context_when_cluster_is_omitted(
+    tmp_path, monkeypatch
+) -> None:
+    first_kubeconfig = tmp_path / "first-kubeconfig.yaml"
+    first_kubeconfig.write_text(
+        _TELEPORT_KUBECONFIG.replace(
+            "current-context: teleport.niuu.world-valhalla\n", ""
+        ).replace(
+            "  - name: teleport.niuu.world-ymir\n"
+            "    context: {cluster: teleport.niuu.world, user: bot}\n",
+            "",
+        ),
+        encoding="utf-8",
+    )
+    second_kubeconfig = tmp_path / "second-kubeconfig.yaml"
+    second_kubeconfig.write_text(
+        _TELEPORT_KUBECONFIG.replace(
+            "current-context: teleport.niuu.world-valhalla",
+            "current-context: teleport.niuu.world-ymir",
+        ).replace(
+            "  - name: teleport.niuu.world-valhalla\n"
+            "    context: {cluster: teleport.niuu.world, user: bot}\n",
+            "",
+        ),
+        encoding="utf-8",
+    )
+    kubeconfig_path_list = os.pathsep.join((str(first_kubeconfig), str(second_kubeconfig)))
+    monkeypatch.setenv("KUBECONFIG", kubeconfig_path_list)
+    built: list[tuple[str | None, str | None]] = []
+
+    async def factory(path: str | None, context: str | None) -> KubernetesClients:
+        built.append((path, context))
+        return KubernetesClients(
+            core_v1=_ConfigCore(),
+            apps_v1=_RolledOutApps("ymir"),
+            batch_v1=FakeBatchV1(),
+        )
+
+    tool = KubernetesInspectTool(in_cluster=False, client_factory=factory)
+
+    result = await tool.execute({"action": "workload", "namespace": "nats", "name": "regin"})
+
+    assert not result.is_error
+    assert built == [(kubeconfig_path_list, "teleport.niuu.world-ymir")]
 
 
 @pytest.mark.asyncio

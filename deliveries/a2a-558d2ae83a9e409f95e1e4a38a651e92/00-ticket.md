@@ -50,3 +50,13 @@ explicit kubeconfig listed more than one context. This changed legacy caller
 behavior. Omitted `cluster` now selects the kubeconfig's `current-context`,
 while an explicit cluster still overrides it and unknown explicit clusters
 remain errors.
+
+## Review revision (2026-10-25, kubeconfig path lists)
+
+The requested compatibility regression is addressed: context enumeration and
+current-context resolution now use `kubernetes_asyncio.config.list_kube_config_contexts`
+with the configured kubeconfig string. Kubernetes therefore handles standard
+platform path-list `KUBECONFIG` values through its `KubeConfigMerger`, just as
+client creation does. A two-file regression sets `KUBECONFIG` to a path list,
+omits `cluster`, and verifies the merged current context reaches the injected
+client factory.
