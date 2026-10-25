@@ -8,10 +8,9 @@ but the required CI evidence for the current PR tip is not green. Do not merge.
 ## Finding
 
 - **Major — required CI is unresolved.** The ticket requires green required CI before a
-  merge into `regin`. The documentation-only commit `c62a9f83` has CI run
-  [40148007518](https://github.com/niuulabs/niuu/actions/runs/40148007518) and Forge
-  Stability run [40148007507](https://github.com/niuulabs/niuu/actions/runs/40148007507)
-  pending, so there is no green result to approve. Completed CI run
+  merge into `regin`. The current documentation-only head `39db5307` has CI run
+  [40148166827](https://github.com/niuulabs/niuu/actions/runs/40148166827) still running,
+  with `Python / Python: Lint` already failed, so there is no green result to approve. Completed CI run
   [40138560609](https://github.com/niuulabs/niuu/actions/runs/40138560609) failed Lint,
   Ting, and Ravn; those same failures reproduce on `origin/regin` with byte-identical
   implicated blobs, so they are not introduced by this PR. **Fix:** have the owning

@@ -24,7 +24,7 @@ PR [#1171](https://github.com/niuulabs/niuu/pull/1171) targets `regin`, but its 
 
 Each failure reproduces unchanged at `origin/regin`: the PR has no diff for the affected files. Correcting any one is unrelated to NIU-1107 and requires an operator scope decision. Do not merge #1171 until required CI is green.
 
-The CI run [40148007518] created for `c62a9f83`(https://github.com/niuulabs/niuu/actions/runs/40148007518) and Forge Stability run [40148007507](https://github.com/niuulabs/niuu/actions/runs/40148007507) are pending for the current documentation-only head, so they are not evidence of green CI. The detailed failures below come from completed CI run [40138560609](https://github.com/niuulabs/niuu/actions/runs/40138560609), then independently reproduce at the exact `origin/regin` base.
+The current CI run [40148166827](https://github.com/niuulabs/niuu/actions/runs/40148166827) for `39db5307` is still running and its `Python / Python: Lint` check has already failed, so it is not evidence of green CI. The detailed failures below come from completed CI run [40138560609](https://github.com/niuulabs/niuu/actions/runs/40138560609), then independently reproduce at the exact `origin/regin` base.
 
 ## PR identity, target, and actual diff
 
@@ -100,8 +100,11 @@ assertion that the released `3f444455-6b63-53c2-b057-3205345a56da@1.0.0`
 content changed and must be version-bumped/locked; and the Ravn assertion
 `assert 8 == 7`. All eight implicated source/test/lock blobs are
 byte-identical between `origin/regin` and the PR branch: the three formatting
-files, `test_bundled_workflow_versions_lock.py`, `tracker-delivery-flow.yaml`,
-its lock JSON, `test_entity_extractor.py`, and `mimir_tools.py`. The PR has
+files, `test_bundled_workflow_versions_lock.py`,
+`src/ting/workflows/tracker-delivery-flow.yaml`,
+`tests/test_ting/data/bundled_workflow_versions.lock.json`,
+`tests/test_ravn/test_entity_extractor.py`, and
+`src/ravn/adapters/tools/mimir_tools.py`. The PR has
 no path diff for any of them. This proves the failures pre-exist this
 documentation-only reconciliation PR. The operator declined scope expansion;
 leave them for separate triage, do not claim CI is green, and do not merge
