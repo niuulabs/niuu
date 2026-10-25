@@ -28,4 +28,4 @@ uv run --extra dev --extra otel ruff format --check src/ tests/
 
 ## Handoff
 
-PR: pending push of `feat/niu-1111-a2a-task-artifacts` with base `regin` only.
+PR: https://github.com/niuulabs/niuu/pull/1174 (base `regin` only).
