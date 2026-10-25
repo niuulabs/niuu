@@ -15,11 +15,12 @@ ticket complete on configuration or a code-only proof alone.
 
 ## Selected deployment target
 
-The selected resident is **Sigrun**, `valkyrie-ymir-k8s`, in the named **ymir**
-Teleport cluster. It is the appropriate first target because the active
-infrastructure source already has the complete A2A wiring, a unique public
-callback, workload identity, a `ymir` realm binding, and its own read-only
-Kubernetes inspection capability.
+The selected resident is **Runa**, `valkyrie-valhalla-k8s`, in the named
+**Valhalla** Teleport cluster. The active infrastructure source has the complete
+A2A wiring, a unique public callback, workload identity, a `valhalla` realm
+binding, and its own read-only Kubernetes inspection capability. Its public HUD
+reported zero queued tasks at 2026-10-25T13:56Z; Sigrun was not selected because
+its queue was at its configured capacity (50/50).
 
 ## Exact GitOps configuration required
 
@@ -27,7 +28,7 @@ Inspection of `jve/infrastructure` at
 `e211e1c427906dcb921bffdf02180a77e3ccaa9d` found the required configuration
 already present. No speculative or duplicate infrastructure edit is warranted.
 
-`ymir/valkyries/manifests/configmap.yaml` configures:
+`valhalla/valkyries/manifests/configmap.yaml` configures:
 
 ```yaml
 gateway:
@@ -35,7 +36,7 @@ gateway:
     enabled: true
     base_url: https://yggdrasil.niuu.world
     a2a_default_connection_id: Valhalla
-    a2a_push_callback_url: https://sigrun.yggdrasil.niuu.world/a2a/push
+    a2a_push_callback_url: https://runa.valhalla.asgard.niuu.world/a2a/push
     workload_token_file: /var/run/secrets/niuu-workload/token
     workload_exchange_url: https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange
   channels:
@@ -52,7 +53,7 @@ gateway:
       a2a_push_required_claims:
         workload_service: ting
 resident_evolution:
-  realm_slug: ymir
+  realm_slug: valhalla
   autonomy_mode: autonomous
   realm_api_base_url: https://yggdrasil.niuu.world
   tool_build_adapter: ravn.adapters.tool_build.a2a.A2AToolBuildBackend
@@ -67,8 +68,8 @@ resident_evolution:
     tags: [tool-builder]
 ```
 
-`ymir/valkyries/manifests/service.yaml` exposes the HTTPS
-`/a2a/push` route for `sigrun.yggdrasil.niuu.world`. The central Ting
+`valhalla/valkyries/manifests/service.yaml` exposes the HTTPS
+`/a2a/push` route for `runa.valhalla.asgard.niuu.world`. The central Ting
 configuration in `ymir/niuu-app/helm/values-niuu.yaml` allow-lists that origin
 and supplies `A2A__PUSH_ENCRYPTION_KEY` through an existing Kubernetes secret;
 no secret value belongs in Git.

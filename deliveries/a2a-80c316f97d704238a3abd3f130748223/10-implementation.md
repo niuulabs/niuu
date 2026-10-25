@@ -4,7 +4,7 @@
 
 No Niuu code or infrastructure change was needed: the reviewed GitOps source
 already contains the complete A2A resident configuration required for the
-selected `valkyrie-ymir-k8s` target. The infrastructure checkout is clean at
+selected `valkyrie-valhalla-k8s` target. The infrastructure checkout is clean at
 `e211e1c427906dcb921bffdf02180a77e3ccaa9d`; therefore this pass opened no
 infrastructure PR and did not mutate Kubernetes or merge infrastructure.
 
@@ -18,23 +18,24 @@ targets `dev` or `main`.
   agent-card reachability, and a single `Tool & Skill Builder` selector result.
 - The live card advertises `Tool & Skill Builder`
   (`3c217e0a-1ff0-56d6-ba27-54cd43bff8e6`) and push notifications.
-- The selected Sigrun public callback responds `405` to a HEAD request with
+- The selected Runa public callback responds `405` to a GET request with
   `Allow: POST`, which proves the published path reaches the resident gateway;
   it is not proof of a deployed ConfigMap revision or of build completion.
-- The unauthenticated HUD data endpoint timed out during this pass. It is not
-  evidence of an unavailable resident and must not be reported as live success.
+- Runa’s public HUD reported one active task, zero queued tasks, and no A2A
+  tasks at 2026-10-25T13:56Z. This selects an available resident; it is not
+  evidence of a commissioned build, verification, court verdict, or install.
 
 The Mímir handoff was published and read back at
 `resident/niu-1114-gitops-handoff-2026-10-25.md` on `mimir-yggdrasil`.
 
 ## Required Regin live-validation sequence
 
-Regin must use **read-only** `kubernetes_inspect` against the named `ymir`
+Regin must use **read-only** `kubernetes_inspect` against the named `valhalla`
 Teleport cluster to verify the Fleet-applied ConfigMap, Deployment revision,
-resident readiness, and callback route before sending work to Sigrun. No direct
+resident readiness, and callback route before sending work to Runa. No direct
 Kubernetes mutation is authorized.
 
-Then instruct Sigrun to handle one bounded, read-only capability gap and retain:
+Then instruct Runa to handle one bounded, read-only capability gap and retain:
 
 1. the A2A task/campaign id and Forge session id;
 2. the doctor output from the resident configuration;
