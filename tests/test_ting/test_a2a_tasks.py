@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import json
 import logging
@@ -17,8 +18,10 @@ from typing import Any
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+import httpx
 import jwt
 import pytest
+from a2a.types import TaskState
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from grpc import server as grpc_server
@@ -28,6 +31,9 @@ from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from niuu.domain.models import Principal
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ravn.adapters.tools.build_tool import BuildTool
+from skuld.broker import Broker
+from skuld.config import SkuldSettings
+from ting.adapters.volundr_http import VolundrHTTPAdapter
 from ting.api.a2a import (
     _launch_digest,
     campaign_to_task,
@@ -1657,6 +1663,185 @@ class TestGateContinuation:
         assert error["code"] == -32602
         assert "include gateId or nodeId" in error["message"]
         assert port.resolved_gates == []
+
+    @pytest.mark.parametrize(
+        ("decision", "expected_event", "notes"),
+        [
+            ("approve", "review.approved", "LGTM"),
+            ("request_changes", "review.changes_requested", "Please revise the tests"),
+        ],
+    )
+    def test_a2a_gate_reply_reaches_completed_campaign_via_skuld(
+        self,
+        tmp_path: Path,
+        decision: str,
+        expected_event: str,
+        notes: str,
+    ) -> None:
+        """Drive an INPUT_REQUIRED reply through Ting's HTTP adapter and Skuld runtime."""
+        graph = {
+            "nodes": [
+                {"id": "work", "kind": "trigger"},
+                {
+                    "id": "review",
+                    "kind": "gate",
+                    "mode": "human_approval",
+                    "approvalEvent": "review.approved",
+                    "changesRequestedEvent": "review.changes_requested",
+                },
+                {
+                    "id": "approved-done",
+                    "kind": "end",
+                    "completionEvent": "workflow.completed",
+                    "passingVerdicts": ["approved", "changes_requested"],
+                },
+                {
+                    "id": "changes-done",
+                    "kind": "end",
+                    "completionEvent": "workflow.completed",
+                    "passingVerdicts": ["approved", "changes_requested"],
+                },
+            ],
+            "edges": [
+                {
+                    "id": "request-review",
+                    "source": "work",
+                    "target": "review",
+                    "label": "work.ready -> work.ready",
+                },
+                {
+                    "id": "approved",
+                    "source": "review",
+                    "target": "approved-done",
+                    "label": "review.approved -> review.approved",
+                },
+                {
+                    "id": "changes",
+                    "source": "review",
+                    "target": "changes-done",
+                    "label": "review.changes_requested -> review.changes_requested",
+                },
+            ],
+        }
+        broker = Broker(
+            SkuldSettings.model_validate(
+                {
+                    "session": {
+                        "id": "session-123",
+                        "workspace_dir": str(tmp_path),
+                        "initial_prompt": "review",
+                    },
+                    "room": {"enabled": True},
+                    "workflow": {"graph": graph},
+                    "workflow_trigger": {
+                        "enabled": True,
+                        "event_type": "work.ready",
+                    },
+                }
+            )
+        )
+        broker._mesh_adapter = SimpleNamespace(publish=AsyncMock())
+        broker._emit_pipeline_event = AsyncMock()
+        broker._emit_broker_frame = AsyncMock()
+        broker._finish_trace_span = AsyncMock()
+        broker._emit_workflow_gate_help_needed_sleipnir_event = AsyncMock()
+        broker._report_activity_state = AsyncMock(return_value=True)
+        broker.handle_human_room_message = AsyncMock()
+
+        asyncio.run(
+            broker._maybe_activate_workflow_gate(
+                {"root_correlation_id": "review-activation"},
+                {"event_type": "work.ready", "summary": "Ready for review"},
+            )
+        )
+
+        adapter = VolundrHTTPAdapter(
+            base_url="http://volundr.test",
+            config={"allow_plaintext": True},
+        )
+
+        async def gateway(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET" and request.url.path.endswith("/workflow/gates"):
+                return httpx.Response(200, json={"gates": broker.list_workflow_gates()})
+            if request.method == "POST" and "/workflow/gates/" in request.url.path:
+                assert request.headers["x-niuu-workflow-gate-intent"] == "resolve"
+                payload = json.loads(request.content)
+                gate_id = request.url.path.rsplit("/", 2)[-2]
+                gate = await broker.resolve_workflow_gate(
+                    gate_id,
+                    payload["decision"],
+                    notes=payload["notes"],
+                    source=payload["source"],
+                )
+                return httpx.Response(200, json={"status": "resolved", "gate": gate})
+            if request.method == "POST" and request.url.path.endswith("/session-123/stop"):
+                return httpx.Response(404)
+            raise AssertionError(f"unexpected Volundr request: {request.method} {request.url}")
+
+        async def client_factory(**_kwargs: Any) -> httpx.AsyncClient:
+            return httpx.AsyncClient(transport=httpx.MockTransport(gateway))
+
+        adapter._client = client_factory  # type: ignore[method-assign]
+        campaign = _make_campaign(
+            status=WorkflowCampaignStatus.BLOCKED,
+            workflow_snapshot={"graph": graph},
+        )
+        client, campaigns, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+            volundr_factory=RecordingVolundrFactory([adapter]),
+        )
+
+        response = _rpc(
+            client,
+            "SendMessage",
+            self._reply_params(campaign.slug, decision=decision, text=notes),
+        )
+
+        assert response.json()["result"]["task"]["status"]["state"] == "TASK_STATE_WORKING"
+        event, event_type = broker._mesh_adapter.publish.await_args.args
+        assert event_type == expected_event
+        asyncio.run(
+            broker._maybe_emit_workflow_terminal_outcome(
+                "workflow-gate:review",
+                {
+                    "root_correlation_id": "review-activation",
+                    "data": {"workflow_activation_id": "review-activation"},
+                },
+                event.payload,
+            )
+        )
+        terminal_events = [
+            call.args[1]
+            for call in reversed(broker._emit_pipeline_event.await_args_list)
+            if call.args[0] == "outcome" and call.args[1]["event_type"] == "workflow.completed"
+        ]
+        assert terminal_events, broker._emit_pipeline_event.await_args_list
+        terminal = terminal_events[0]
+        asyncio.run(
+            broker._maybe_report_flock_completion(
+                f"workflow-stop:{'approved-done' if decision == 'approve' else 'changes-done'}",
+                {
+                    "metadata": {"event_type": "workflow.completed"},
+                    "data": {"fields": terminal["fields"], "valid": True},
+                },
+            )
+        )
+
+        activity_metadata = broker._report_activity_state.await_args.kwargs["extra_metadata"]
+        projector = WorkflowCampaignProjector(
+            repo=campaigns,
+            volundr_factory=RecordingVolundrFactory([adapter]),
+            event_bus=AsyncMock(),
+        )
+        assert asyncio.run(
+            projector.handle_activity(
+                ActivityEvent(campaign.session_id, "idle", activity_metadata, campaign.owner_id),
+                campaign.owner_id,
+            )
+        )
+        completed = asyncio.run(campaigns.get_campaign_by_slug(campaign.slug, owner_id="user-1"))
+        assert completed is not None
+        assert campaign_to_task(completed).status.state == TaskState.TASK_STATE_COMPLETED
 
 
 class TestGetTask:
