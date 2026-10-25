@@ -121,3 +121,17 @@ async def test_later_contributor_overrides_same_env_var_by_name(
     )
 
     assert merged.values["envVars"] == [{"name": "A", "value": "second"}]
+
+
+async def test_user_facing_resources_are_not_copied_into_the_chart(session: Session) -> None:
+    """valhalla's specs declare {cpu, memory}, the form the launch wizard sends
+    with a launch. Copied here, it became resources.cpu/memory on every session
+    pod, which Kubernetes ignored with a warning."""
+    spec = LaunchSpec(name="standard-claude", resource_config={"cpu": "1", "memory": "2Gi"})
+    provider = MagicMock()
+    provider.get.return_value = spec
+    contributor = LaunchSpecContributor(launch_spec_provider=provider)
+
+    result = await contributor.contribute(session, SessionContext(launch_spec="standard-claude"))
+
+    assert "resources" not in result.values

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from niuu.domain.models import IntegrationConnection, IntegrationType, Principal
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
@@ -18,14 +18,27 @@ from volundr.adapters.inbound.auth import extract_principal
 logger = logging.getLogger(__name__)
 
 
-class StatusUpdateRequest(BaseModel):
-    """Request body for updating an issue status."""
+class IssueUpdateRequest(BaseModel):
+    """Request body for updating an issue: its status, title and/or description."""
 
-    status: str = Field(
+    status: str | None = Field(
+        default=None,
         min_length=1,
         description="New status for the issue",
         examples=["In Progress"],
     )
+    title: str | None = Field(default=None, min_length=1, description="New issue title")
+    description: str | None = Field(
+        default=None,
+        min_length=1,
+        description="New issue body as Markdown; replaces the whole description",
+    )
+
+    @model_validator(mode="after")
+    def _requires_a_change(self) -> IssueUpdateRequest:
+        if self.status is None and self.title is None and self.description is None:
+            raise ValueError("give at least one of status, title or description")
+        return self
 
 
 class IssueCreateRequest(BaseModel):
@@ -278,10 +291,10 @@ def _build_issues_router(
         request: Request,
         response: Response,
         issue_id: str,
-        data: StatusUpdateRequest,
+        data: IssueUpdateRequest,
         principal: Principal = Depends(extract_principal),
     ) -> TrackerIssue:
-        """Update the status of an issue."""
+        """Update an issue's title and/or description, then its status."""
         connections = await integration_repo.list_connections(
             principal.user_id,
             integration_type=IntegrationType.ISSUE_TRACKER,
@@ -298,7 +311,13 @@ def _build_issues_router(
                 issue = await adapter.get_issue(issue_id)
                 if issue is None:
                     continue
-                updated = await adapter.update_issue_status(issue_id, data.status)
+                updated = issue
+                if data.title is not None or data.description is not None:
+                    updated = await adapter.update_issue(
+                        issue_id, title=data.title, description=data.description
+                    )
+                if data.status is not None:
+                    updated = await adapter.update_issue_status(issue_id, data.status)
             except TrackerRequestError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,

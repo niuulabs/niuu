@@ -355,3 +355,18 @@ line (empty when no OpenShell controller manages claims).
 {{- end -}}
 {{- join "\n" $namespaces -}}
 {{- end }}
+
+{{/*
+preStop drain shared by every serving container: keep answering while the
+endpoint controller and Envoy stop routing to this pod, instead of exiting on
+SIGTERM with requests still in flight.
+*/}}
+{{- define "volundr.drainLifecycle" -}}
+{{- if gt (int .Values.rollout.drainSeconds) 0 -}}
+lifecycle:
+  preStop:
+    sleep:
+      seconds: {{ int .Values.rollout.drainSeconds }}
+{{- end -}}
+{{- end -}}
+

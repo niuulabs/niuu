@@ -1290,3 +1290,34 @@ def test_cli_executor_refuses_a_gateway_persona_on_a_transport_without_gateway_s
 
     with pytest.raises(ValueError, match="FakeResumableTransport cannot be routed through one"):
         _build_coder(executor, _SELF_HOSTED_MODEL)
+
+
+def test_ravn_tools_server_inherits_the_workload_identity_bootstrap(monkeypatch) -> None:
+    """Codex gives MCP servers a minimal environment. The builder's publisher
+    lost NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL, so its mimir_write to the shared
+    Mímir failed and the capability was reported blocked."""
+    monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", "https://forge.example/exchange")
+    monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_TOKEN_FILE", "/var/run/secrets/niuu-workload/token")
+    executor = CliTransportExecutor(
+        transport_adapter="tests.test_ravn.test_executor_cli.FakeResumableTransport"
+    )
+    agent = executor.build(
+        channel=_CollectingChannel(),
+        system_prompt="You publish capabilities.",
+        session=Session(),
+        model="fake-model",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-publish",
+        persona="capability-publisher",
+        workspace_dir="/tmp/workspace",
+        permission_mode="read_only",
+        tools=[DummyTool()],
+        mcp_servers=[],
+    )
+
+    (server,) = agent._transport_kwargs["mcp_servers"]
+    assert server["env"]["NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL"] == "https://forge.example/exchange"
+    assert server["env"]["NIUU_WORKLOAD_IDENTITY_TOKEN_FILE"] == (
+        "/var/run/secrets/niuu-workload/token"
+    )

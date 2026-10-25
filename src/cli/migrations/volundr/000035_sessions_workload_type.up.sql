@@ -1,2 +1,0 @@
-ALTER TABLE sessions
-    ADD COLUMN IF NOT EXISTS workload_type VARCHAR(100) NOT NULL DEFAULT 'session';

@@ -20,10 +20,15 @@ logger = logging.getLogger(__name__)
 
 try:
     from telegram import Bot
+    from telegram.error import Conflict as TelegramConflictError
 
     HAS_TELEGRAM = True
 except ImportError:  # pragma: no cover
     Bot = object  # type: ignore[assignment]
+
+    class TelegramConflictError(Exception):  # type: ignore[no-redef]
+        """Stand-in so the poller's except clause is valid without the dependency."""
+
     HAS_TELEGRAM = False
 
 
@@ -88,6 +93,11 @@ class TelegramIngressService:
     async def _run_manager(self) -> None:
         try:
             while not self._stop_event.is_set():
+                # A poller that ended (a network error, or another instance's
+                # poll during a rolling update) is restarted on this refresh.
+                # Keeping its finished task here left the bot unpolled for good.
+                for token in [t for t, task in self._bot_tasks.items() if task.done()]:
+                    self._bot_tasks.pop(token)
                 bindings = await self._load_bindings()
                 active_tokens = {binding.bot_token for binding in bindings}
                 for binding in bindings:
@@ -170,8 +180,15 @@ class TelegramIngressService:
                     await self._store_offset(binding, offset)
         except asyncio.CancelledError:
             raise
+        except TelegramConflictError:
+            # Another Völundr is polling this bot (the old pod of a rolling
+            # update). The next manager refresh polls again once it is gone.
+            logger.info("Telegram bot is polled by another instance; retrying on next refresh")
         except Exception:
-            logger.warning("Telegram ingress poller failed", exc_info=True)
+            logger.error(
+                "Telegram ingress poller failed; restarting it on the next refresh",
+                exc_info=True,
+            )
 
     async def _handle_update(self, update: object) -> None:
         message = (

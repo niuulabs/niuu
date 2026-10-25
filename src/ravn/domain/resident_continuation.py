@@ -379,6 +379,9 @@ class ResidentMemoryPort(Protocol):
     async def write_operator_answer(self, answer: str, *, case_id: str = "") -> str:
         """Persist the latest operator answer and mark the pending question answered."""
 
+    async def withdraw_operator_needed(self, case_id: str, *, reason: str, turn_ref: str) -> str:
+        """Close a pending operator question the resident judged no longer needs an answer."""
+
     async def read_operator_answer(self, case_id: str = "") -> ResidentMemoryEntry | None:
         """Return the latest operator answer when one exists."""
 

@@ -1369,6 +1369,9 @@ class Workspace:
 # Keep in sync with charts/volundr/templates/kyverno-pvc-isolation.yaml.
 LABEL_OWNER = "volundr/owner"
 LABEL_SESSION_ID = "volundr/session-id"
+# Pods that mount a user's home claim carry its name, so a single-node (RWO)
+# home co-locates exactly the pods that share it — not every pod of the owner.
+LABEL_HOME_CLAIM = "volundr/home-claim"
 LABEL_PVC_TYPE = "volundr/pvc-type"
 LABEL_TENANT_ID = "volundr/tenant-id"
 LABEL_MANAGED_BY = "app.kubernetes.io/managed-by"

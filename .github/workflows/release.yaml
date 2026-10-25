@@ -407,7 +407,7 @@ jobs:
         run: uv sync --python 3.12 --extra cli --extra dev
 
       - name: Build
-        run: make copy-migrations build-cli-bin
+        run: make build-cli-bin
 
       - name: Set up Node.js for the real agent runtime
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

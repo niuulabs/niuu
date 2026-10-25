@@ -20,6 +20,7 @@ from skuld.transports.codex_ws import (
     _rpc_notification,
     _rpc_request,
     codex_gateway_overrides,
+    prepare_codex_daemon_dir,
 )
 
 # ---------------------------------------------------------------------------
@@ -3765,8 +3766,19 @@ class TestModelGateway:
             "model_providers.niuu.base_url": '"http://niuu:8080/api/v1/bifrost/v1"',
             "model_providers.niuu.env_key": '"NIUU_MODEL_GATEWAY_TOKEN"',
             "model_providers.niuu.wire_api": '"responses"',
+            "web_search": '"disabled"',
+            "features.multi_agent": "false",
         }
         assert codex_gateway_overrides("  ") == []
+
+    def test_multi_agent_cannot_be_asked_of_the_gateway(self, tmp_path):
+        with pytest.raises(ValueError, match="multi-agent tool namespace"):
+            _make_transport(
+                tmp_path,
+                model_gateway_url="http://niuu:8080/api/v1/bifrost",
+                model_gateway_token="niuu-gateway",
+                multi_agent_enabled=True,
+            )
 
     @pytest.mark.asyncio
     async def test_spawn_passes_the_overrides_and_the_token(self, tmp_path):
@@ -3796,6 +3808,8 @@ class TestModelGateway:
         assert 'model_provider="niuu"' in args
         assert 'model_providers.niuu.base_url="http://niuu:8080/api/v1/bifrost/v1"' in args
         assert 'model_providers.niuu.wire_api="responses"' in args
+        assert 'web_search="disabled"' in args
+        assert "features.multi_agent=false" in args
         assert mock_exec.call_args.kwargs["env"]["NIUU_MODEL_GATEWAY_TOKEN"] == "niuu-gateway"
 
     @pytest.mark.asyncio
@@ -3986,3 +4000,37 @@ class TestGatewayReasoningEffort:
             tmp_path, model="deepseek-r1", model_gateway_url="http://gw", reasoning_effort="medium"
         )
         assert explicit._reasoning_effort == "medium"
+
+
+class TestCodexDaemonDir:
+    """Codex 0.157 refuses to start unless /tmp/codex-daemon-<euid> is 0700 and ours."""
+
+    def test_creates_the_directory_at_exactly_0700(self, tmp_path):
+        path = prepare_codex_daemon_dir(tmp_path)
+        assert path == tmp_path / f"codex-daemon-{os.geteuid()}"
+        assert path.stat().st_mode & 0o7777 == 0o700
+
+    @pytest.mark.parametrize("drifted", [0o2700, 0o000, 0o755])
+    def test_repairs_a_drifted_mode(self, tmp_path, drifted):
+        """Builder pods share a setgid /tmp: the directory came up 02700 (or was
+        masked), and every later app-server in the pod failed to start."""
+        path = tmp_path / f"codex-daemon-{os.geteuid()}"
+        path.mkdir()
+        os.chmod(path, drifted)
+
+        prepare_codex_daemon_dir(tmp_path)
+
+        assert path.stat().st_mode & 0o7777 == 0o700
+
+    def test_refuses_a_directory_owned_by_someone_else(self, tmp_path, monkeypatch):
+        path = tmp_path / f"codex-daemon-{os.geteuid()}"
+        path.mkdir()
+        monkeypatch.setattr("skuld.transports.codex_ws.os.geteuid", lambda: os.getuid() + 1)
+        (tmp_path / f"codex-daemon-{os.getuid() + 1}").mkdir()
+        with pytest.raises(RuntimeError, match="belongs to uid"):
+            prepare_codex_daemon_dir(tmp_path)
+
+    def test_refuses_a_non_directory(self, tmp_path):
+        (tmp_path / f"codex-daemon-{os.geteuid()}").write_text("x")
+        with pytest.raises(RuntimeError, match="not a directory"):
+            prepare_codex_daemon_dir(tmp_path)

@@ -99,6 +99,9 @@ COPY pyproject.toml uv.lock README.md /app/
 RUN uv sync --frozen --no-dev --no-editable --no-install-project --extra cli --extra k8s --extra nats \
     --extra openshell --extra otel --extra switchyard --no-install-package nemo-switchyard
 COPY src/ /app/src/
+# migrations/ is force-included into the wheel as cli/migrations, where
+# Volundr and Ting run them at startup (cli.resources.migration_dir).
+COPY migrations/ /app/migrations/
 # vendor/envoy_authz_protos/ provides the envoy.service.auth.v3 ext_authz
 # bindings identity/authz_main.py needs (see its README); vendored instead of
 # depending on xds-protos, which bundled a copy of opentelemetry/proto/** that

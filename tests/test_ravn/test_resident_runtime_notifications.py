@@ -3,6 +3,10 @@ retire them: the resident runtime writes both to its notification outbox."""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
+import pytest
+
 from niuu.domain.resident_notifications import AttentionInputKind, ResidentNotificationOp
 from ravn.adapters.resident_notifications import SqliteResidentNotificationOutbox
 from ravn.adapters.resident_state.mimir import LocalResidentState
@@ -25,8 +29,21 @@ def _runtime(tmp_path, *, outbox=None) -> tuple[ResidentRuntime, list[AgentTask]
     return runtime, queued
 
 
+_OPEN_OUTBOXES: list[SqliteResidentNotificationOutbox] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_outboxes() -> Iterator[None]:
+    """Close every outbox a test opened; a leaked connection warns in a later test."""
+    yield
+    while _OPEN_OUTBOXES:
+        _OPEN_OUTBOXES.pop().close()
+
+
 def _outbox(tmp_path) -> SqliteResidentNotificationOutbox:
-    return SqliteResidentNotificationOutbox(tmp_path / "openclaw" / "state.db", max_pending=100)
+    outbox = SqliteResidentNotificationOutbox(tmp_path / "openclaw" / "state.db", max_pending=100)
+    _OPEN_OUTBOXES.append(outbox)
+    return outbox
 
 
 async def _ask(runtime: ResidentRuntime, question: str = "May I inspect etcd logs?") -> None:

@@ -11,8 +11,11 @@ Micro-dreams (reactive capability builds in
 :class:`~ravn.valkyrie_evolution.resident_learning.ResidentLearningRuntime`)
 stay signal-driven; the scheduled dream implemented here is the reflective
 layer: it reviews skill usage telemetry, marks stale skills, promotes
-repeatedly successful private skills when the autonomy policy allows it, and
-reopens deferred capability gaps so held builds get another chance.
+repeatedly successful private skills when the autonomy policy allows it,
+reopens deferred capability gaps so held builds get another chance, and — when
+a learning curator is wired — curates the resident's recorded learnings
+(merge, supersede, prune, rewrite; see
+:mod:`ravn.adapters.reflection.learning_curation`).
 
 Every transition is published as ``valkyrie.state.changed`` and every dream as
 ``valkyrie.dream.started``/``valkyrie.dream.completed`` with a summary, so the
@@ -66,6 +69,8 @@ class ResidentWakefulness:
         resident_learning: Any | None = None,
         memory: Any | None = None,
         review_requester: ReviewRequester | None = None,
+        learning_curator: Any | None = None,
+        self_improvement: Any | None = None,
         tick_interval_seconds: float = DEFAULT_TICK_INTERVAL_SECONDS,
         wakeful_window_seconds: float = DEFAULT_WAKEFUL_WINDOW_SECONDS,
         dream_interval_seconds: float = DEFAULT_DREAM_INTERVAL_SECONDS,
@@ -81,6 +86,8 @@ class ResidentWakefulness:
         self._resident_learning = resident_learning
         self._memory = memory
         self._review_requester = review_requester
+        self._learning_curator = learning_curator
+        self._self_improvement = self_improvement
         self._tick_interval_seconds = tick_interval_seconds
         self._wakeful_window_seconds = wakeful_window_seconds
         self._dream_interval_seconds = dream_interval_seconds
@@ -166,7 +173,14 @@ class ResidentWakefulness:
             {"dream_kind": "consolidation"},
             summary=f"{self.identity.valkyrie_id} started consolidation dream",
         )
-        summary = await self._consolidate()
+        try:
+            summary = await self._consolidate()
+        except BaseException:
+            # A failed dream must not leave the resident stuck in "dreaming":
+            # tick() skips while dreaming, so it would never dream or wake again.
+            self._last_dream_at = self._clock()
+            await self._transition(_WATCHING, reason="consolidation dream failed")
+            raise
         self._last_dream_at = self._clock()
         await self._publish_dream_event(
             "valkyrie.dream.completed",
@@ -259,8 +273,11 @@ class ResidentWakefulness:
                 )
             )
 
+        learnings = await self._curate_learnings()
+
         return {
             "skills_reviewed": len(rows),
+            "learnings": learnings,
             "marked_stale": marked_stale,
             "promoted": promoted,
             "promotion_candidates": promotion_candidates,
@@ -271,6 +288,18 @@ class ResidentWakefulness:
                 "implicated_skills": sorted(feedback["implicated_skills"]),
             },
         }
+
+    async def _curate_learnings(self) -> dict[str, Any]:
+        """Curate recorded learnings when a curator is wired and its interval elapsed."""
+        if self._learning_curator is None or not self._learning_curator.due():
+            return {}
+        report = await self._learning_curator.curate()
+        summary = report.summary()
+        if self._self_improvement is not None:
+            # Acts on friction with the learnings this pass just curated.
+            improvement = await self._self_improvement.run()
+            summary["self_improvement"] = improvement.summary()
+        return summary
 
     async def _file_promotion_review(
         self,

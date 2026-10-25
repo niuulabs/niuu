@@ -167,9 +167,19 @@ class _Conversation:
         self._append("assistant", blocks)
 
 
-def responses_request_to_anthropic(req: ResponsesRequest) -> AnthropicRequest:
-    """Convert a Responses API request to the Anthropic canonical format."""
-    if req.previous_response_id:
+def responses_request_to_anthropic(
+    req: ResponsesRequest, *, skip_native_only: bool = False
+) -> AnthropicRequest:
+    """Convert a Responses API request to the Anthropic canonical format.
+
+    With *skip_native_only* the result is a policy view for a request that may
+    be served natively: ``previous_response_id`` and input items only the
+    provider can interpret (compaction items, item references …) are left out
+    instead of refused. The caller must refuse them itself if the request ends
+    up on the canonical path (see
+    :func:`bifrost.inbound.native.responses_native_only_features`).
+    """
+    if req.previous_response_id and not skip_native_only:
         raise UnsupportedResponsesInputError(
             "previous_response_id is not supported: the gateway keeps no response state; "
             "send the full conversation in input"
@@ -228,17 +238,22 @@ def responses_request_to_anthropic(req: ResponsesRequest) -> AnthropicRequest:
         elif kind == "reasoning":
             # Reasoning items round-trip OpenAI-side state; there is none here.
             continue
+        elif skip_native_only:
+            continue
         else:
             raise UnsupportedResponsesInputError(f"unsupported input item type {kind!r}")
 
     tools: list[ToolDefinition] | None = None
     if req.tools and req.tool_choice != "none":
         function_tools = [tool for tool in req.tools if tool.get("type") == "function"]
-        skipped = [tool.get("type") for tool in req.tools if tool.get("type") != "function"]
-        if skipped:
-            logger.warning(
-                "Responses request asks for tools the gateway cannot provide, dropped: %s",
-                ", ".join(str(kind) for kind in skipped),
+        hosted = sorted({str(tool.get("type")) for tool in req.tools} - {"function"})
+        if hosted and not skip_native_only:
+            # Served without them, the model would answer a different request
+            # than the one sent; only the provider itself runs hosted tools.
+            raise UnsupportedResponsesInputError(
+                f"tools of type {', '.join(hosted)} are not supported on the canonical "
+                "translation; only function tools are. Serve the model through a provider "
+                "with passthrough: true to use the provider's own tools"
             )
         if function_tools:
             tools = [

@@ -1521,6 +1521,8 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
       acceptance criteria (requires ``issue_id``).
     - ``create``        — create an issue (requires ``title``, ``description``,
       ``team``; optional ``labels``, ``priority``, ``connection_id``).
+    - ``update``        — rewrite an issue's title and/or description (requires
+      ``issue_id`` and at least one of ``title``, ``description``).
     - ``update_status`` — update issue status (requires ``issue_id``, ``status``).
     """
 
@@ -1554,7 +1556,9 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
             "bodies; get (issue_id) — full issue including its description (the ticket body "
             "with acceptance criteria, as Markdown); create (title + description + team, "
             "optional labels, priority, connection_id) — files a new issue and returns it; "
-            "labels must already exist in the tracker; update_status (issue_id + status)."
+            "labels must already exist in the tracker; update (issue_id + title and/or "
+            "description) — rewrites the ticket, the description replacing the whole body; "
+            "update_status (issue_id + status)."
         )
 
     @property
@@ -1564,12 +1568,12 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["search", "get", "create", "update_status"],
+                    "enum": ["search", "get", "create", "update", "update_status"],
                     "description": "Operation to perform.",
                 },
                 "issue_id": {
                     "type": "string",
-                    "description": "Issue identifier (required for get, update_status).",
+                    "description": "Issue identifier (required for get, update, update_status).",
                 },
                 "query": {
                     "type": "string",
@@ -1581,13 +1585,13 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
                 },
                 "title": {
                     "type": "string",
-                    "description": "Issue title (required for create).",
+                    "description": "Issue title (required for create; optional for update).",
                 },
                 "description": {
                     "type": "string",
                     "description": (
                         "Issue body as Markdown, including acceptance criteria "
-                        "(required for create)."
+                        "(required for create; for update it replaces the whole body)."
                     ),
                 },
                 "team": {
@@ -1633,6 +1637,8 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
                     return await self._get(client, input.get("issue_id", ""))
                 case "create":
                     return await self._create(client, input)
+                case "update":
+                    return await self._update(client, input)
                 case "update_status":
                     return await self._update_status(
                         client, input.get("issue_id", ""), input.get("status", "")
@@ -1681,6 +1687,18 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
             return _err(f"Failed to create issue: {exc.response.status_code} {exc.response.text}")
         except Exception as exc:
             return _err(f"Failed to create issue: {_http_failure(exc)}")
+
+    async def _update(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
+        issue_id = input.get("issue_id", "")
+        body = {key: input[key] for key in ("title", "description") if input.get(key)}
+        if not issue_id or not body:
+            return _err("issue_id and a title and/or description are required for update")
+        try:
+            resp = await client.patch(f"{_TRACKER_ISSUES_PATH}/{issue_id}", json=body)
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(f"Failed to update issue {issue_id}: {_http_failure(exc)}")
 
     async def _update_status(
         self, client: httpx.AsyncClient, issue_id: str, status: str

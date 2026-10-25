@@ -7,7 +7,6 @@ events to downstream Valkyrie consumers.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -21,6 +20,7 @@ except ImportError:
 import bifrost.metrics as _metrics
 from bifrost.auth import AgentIdentity
 from bifrost.domain.models import RequestLog, TokenUsage
+from bifrost.inbound.native import ANTHROPIC_STREAM_USAGE, StreamUsageReader
 from bifrost.ports.events import BudgetWarningEvent, CostEventEmitter, RequestCompletedEvent
 from bifrost.ports.usage_store import UsageRecord, UsageStore
 from bifrost.pricing import ModelPricing, calculate_cost
@@ -36,42 +36,12 @@ __all__ = ["_HEADER_QUOTA_WARNING", "_HEADER_QUOTA_REMAINING"]
 
 
 def _extract_usage_from_sse_line(line: str, usage: TokenUsage) -> None:
-    """Parse one SSE data line and update *usage* in-place."""
-    for raw_line in line.splitlines():
-        if not raw_line.startswith("data: "):
-            continue
-        try:
-            payload = json.loads(raw_line[6:])
-        except (json.JSONDecodeError, ValueError):
-            continue
-
-        event_type = payload.get("type", "")
-
-        if event_type == "message_start":
-            msg_usage = payload.get("message", {}).get("usage", {})
-            usage.input_tokens += msg_usage.get("input_tokens", 0)
-            usage.cache_creation_input_tokens += msg_usage.get("cache_creation_input_tokens", 0)
-            usage.cache_read_input_tokens += msg_usage.get("cache_read_input_tokens", 0)
-            usage.reasoning_tokens += msg_usage.get("reasoning_tokens", 0)
-        elif event_type == "message_delta":
-            delta_usage = payload.get("usage", {})
-            usage.input_tokens += delta_usage.get("input_tokens", 0)
-            usage.output_tokens += delta_usage.get("output_tokens", 0)
-            usage.reasoning_tokens += delta_usage.get("reasoning_tokens", 0)
+    """Parse one canonical (Anthropic) SSE chunk and update *usage* in-place."""
+    ANTHROPIC_STREAM_USAGE.feed(line, usage)
 
 
 def _stream_chunk_is_terminal(chunk: str) -> bool:
-    for line in chunk.splitlines():
-        if line == "event: message_stop" or line == "data: [DONE]":
-            return True
-        if not line.startswith("data: "):
-            continue
-        try:
-            if json.loads(line[6:]).get("type") == "message_stop":
-                return True
-        except (json.JSONDecodeError, ValueError):
-            continue
-    return False
+    return ANTHROPIC_STREAM_USAGE.is_terminal(chunk)
 
 
 def _log_request(log: RequestLog) -> None:
@@ -170,8 +140,14 @@ async def _stream_with_tracking(
     agent_budget_limit: float = 0.0,
     budget_warning_threshold_pct: float = 20.0,
     sleipnir_publisher: object | None = None,
+    usage_reader: StreamUsageReader = ANTHROPIC_STREAM_USAGE,
 ) -> AsyncIterator[str]:
-    """Yield SSE lines from *source* while tracking token usage."""
+    """Yield SSE lines from *source* while tracking token usage.
+
+    *usage_reader* reads the stream's protocol: the canonical Anthropic events
+    by default, or a native protocol's on the passthrough path. Everything after
+    the read (usage record, cost, metrics, span, cost events) is the same.
+    """
     usage = TokenUsage()
     recorded = False
 
@@ -249,8 +225,8 @@ async def _stream_with_tracking(
         )
 
     async for line in source:
-        _extract_usage_from_sse_line(line, usage)
-        if _stream_chunk_is_terminal(line):
+        usage_reader.feed(line, usage)
+        if usage_reader.is_terminal(line):
             await record_usage()
         yield line
     await record_usage()

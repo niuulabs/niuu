@@ -642,6 +642,118 @@ async def test_explicit_outcome_routes_operator_question_without_an_episode(tmp_
     assert await state.read_operator_needed("root-1") is not None
 
 
+async def _ask(runtime: ResidentRuntime, case_id: str, question: str) -> None:
+    await runtime.handle_completed_turn(
+        task=_task(task_id=f"task-{case_id}", root_correlation_id=case_id),
+        prompt="prompt",
+        result=_result({}),
+        response_text="needs input",
+        outcome_fields={
+            "continuation": "ask_operator",
+            "question": question,
+            "next_action_timing": "operator_input",
+        },
+        outcome_valid=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_every_turn_sees_the_questions_it_already_asked(tmp_path) -> None:
+    """A resident that cannot see its open questions asks them again (Regin: 24)."""
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state)
+    await _ask(runtime, "case-ticket", "May NIU-1116 start from regin?")
+
+    context = await runtime.prepare_context(_task(root_correlation_id="case-new"))
+
+    assert "## Open operator questions" in context
+    assert "case-ticket" in context
+    assert "May NIU-1116 start from regin?" in context
+    assert "withdrawn_questions" in context
+
+
+@pytest.mark.asyncio
+async def test_a_turn_with_nothing_open_says_so(tmp_path) -> None:
+    runtime = ResidentRuntime(state=LocalResidentState(tmp_path))
+
+    context = await runtime.prepare_context(_task())
+
+    assert "(No operator questions are waiting for an answer.)" in context
+
+
+@pytest.mark.asyncio
+async def test_withdrawn_questions_close_exactly_the_named_questions(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state)
+    outbox = AsyncMock()
+    runtime.bind_notification_outbox(outbox)
+    await _ask(runtime, "case-stale", "Should I merge PR #1166?")
+    await _ask(runtime, "case-live", "Which scope is authorized?")
+    outbox.reset_mock()
+
+    await runtime.handle_completed_turn(
+        task=_task(task_id="task-steward", root_correlation_id="case-steward"),
+        prompt="prompt",
+        result=_result({}),
+        response_text="stewardship",
+        outcome_fields={
+            "continuation": "stop",
+            "next_action_timing": "none",
+            "withdrawn_questions": [
+                {"case_id": "case-stale", "reason": "PR #1166 was merged into regin"}
+            ],
+        },
+        outcome_valid=True,
+    )
+
+    assert await state.read_operator_needed("case-stale") is None
+    assert await state.read_operator_needed("case-live") is not None
+    marker = (
+        tmp_path / "resident/continuation/cases/case-stale/operator-needed/latest.md"
+    ).read_text()
+    assert "- status: withdrawn" in marker
+    assert "- withdraw_reason: PR #1166 was merged into regin" in marker
+    assert "- withdrawn_by: resident/continuation/cases/case-steward/turns/" in marker
+    outbox.resolve.assert_awaited_once_with(group="case-stale")
+    assert [_metadata(e.content, "case_id") for e in await state.list_operator_needed()] == [
+        "case-live"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_withdrawals_that_name_no_open_question_change_nothing(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state)
+    await _ask(runtime, "case-live", "Which scope is authorized?")
+
+    await runtime.handle_completed_turn(
+        task=_task(task_id="task-live-2", root_correlation_id="case-live"),
+        prompt="prompt",
+        result=_result({}),
+        response_text="again",
+        outcome_fields={
+            "continuation": "stop",
+            "next_action_timing": "none",
+            # Its own question, and one that does not exist.
+            "withdrawn_questions": ["case-live", "case-missing"],
+        },
+        outcome_valid=True,
+    )
+
+    assert await state.read_operator_needed("case-live") is not None
+
+
+@pytest.mark.asyncio
+async def test_only_a_pending_question_can_be_withdrawn(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state)
+    await _ask(runtime, "case-done", "Which scope is authorized?")
+    await state.write_operator_answer("Only NIU-1107.", case_id="case-done")
+
+    with pytest.raises(ValueError, match="only a pending operator question"):
+        await state.withdraw_operator_needed("case-done", reason="stale", turn_ref="turn-1")
+
+
 @pytest.mark.asyncio
 async def test_home_trigger_keeps_only_one_wake_inflight(tmp_path) -> None:
     mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
@@ -1367,6 +1479,10 @@ async def test_stewardship_fires_for_a_resident_that_has_never_run(tmp_path) -> 
     assert "careful" in task.initiative_context
     # The turn must not push the model toward manufacturing work.
     assert "nothing warrants action is a correct" in task.initiative_context
+    # Nor may the last focus stand in for the charter: a resident watching one
+    # delivery must still survey the rest of its queue.
+    assert "not the edge of your charter" in task.initiative_context
+    assert "including any work queue it names" in task.initiative_context
 
 
 @pytest.mark.asyncio

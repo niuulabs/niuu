@@ -43,6 +43,14 @@ from ravn.tool_observability import tool_argument_attributes
 logger = logging.getLogger(__name__)
 
 _RAVN_TOOLS_MCP_ALLOW_RULE = "mcp__ravn-tools__*"
+# Runtime bootstrap the ravn-tools process needs and Codex does not pass to MCP
+# servers on its own. Without the exchange URL, a builder's mimir_write to the
+# shared Mímir failed with "no exchange_url is set", and the publisher reported
+# the capability blocked.
+_RAVN_TOOLS_BOOTSTRAP_ENV = (
+    "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE",
+    "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL",
+)
 
 
 @dataclass(frozen=True)
@@ -1150,6 +1158,9 @@ def _with_ravn_tool_mcp_server(
         env["RAVN_CONFIG"] = config_path
     if pythonpath := os.environ.get("PYTHONPATH"):
         env["PYTHONPATH"] = pythonpath
+    for name in _RAVN_TOOLS_BOOTSTRAP_ENV:
+        if value := os.environ.get(name):
+            env[name] = value
 
     args = ["-m", "ravn", "tool-mcp"]
     if config_path:

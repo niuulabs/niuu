@@ -208,13 +208,34 @@ class TestAgentEpisodeEnrichment:
         with pytest.raises(RuntimeError, match="recording the episode"):
             await agent.run_turn("hello")
 
-    async def test_reflection_failure_stores_fallback_message(self) -> None:
+    async def test_reflection_failure_is_fatal(self) -> None:
+        """Replaces a test asserting a "Reflection unavailable" text was recorded.
+
+        That text went into memory as if it were the model's view of the turn.
+        """
         mem = RecordingMemory()
         llm = make_simple_llm()
         llm.generate = AsyncMock(side_effect=RuntimeError("api error"))
         agent, _ = make_agent(llm, memory=mem)
-        await agent.run_turn("task with failed reflection")
-        assert "unavailable" in mem.recorded[0].reflection.lower()
+        with pytest.raises(RuntimeError, match="recording the episode.*api error"):
+            await agent.run_turn("task with failed reflection")
+        assert mem.recorded == []
+
+    async def test_reflection_cut_off_by_its_budget_is_fatal(self) -> None:
+        mem = RecordingMemory()
+        llm = make_simple_llm()
+        llm.generate = AsyncMock(
+            return_value=LLMResponse(
+                content="The deploy went",
+                tool_calls=[],
+                stop_reason=StopReason.MAX_TOKENS,
+                usage=TokenUsage(input_tokens=10, output_tokens=512),
+            )
+        )
+        agent, _ = make_agent(llm, memory=mem)
+        with pytest.raises(RuntimeError, match="memory.reflection_max_tokens"):
+            await agent.run_turn("task with truncated reflection")
+        assert mem.recorded == []
 
     async def test_multiple_turns_record_multiple_episodes(self) -> None:
         mem = RecordingMemory()

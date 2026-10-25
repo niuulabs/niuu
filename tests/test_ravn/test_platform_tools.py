@@ -590,6 +590,25 @@ class TestTrackerIssueTool:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_update_rewrites_the_ticket(self):
+        """Regin was told to change NIU-1116 from dev to regin and had no way to."""
+        route = respx.patch(f"{TRACKER_ISSUES_URL}/NIU-1116").mock(
+            return_value=httpx.Response(200, json={"id": "NIU-1116", "description": "regin"})
+        )
+        result = await self.tool.execute(
+            {"action": "update", "issue_id": "NIU-1116", "description": "Branch from regin."}
+        )
+        assert not result.is_error
+        assert json.loads(route.calls.last.request.content) == {"description": "Branch from regin."}
+
+    @pytest.mark.asyncio
+    async def test_update_needs_an_issue_and_a_change(self):
+        result = await self.tool.execute({"action": "update", "issue_id": "NIU-1116"})
+        assert result.is_error
+        assert "title and/or description" in result.content
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_update_status(self):
         respx.patch(f"{TRACKER_ISSUES_URL}/NIU-1").mock(
             return_value=httpx.Response(200, json={"id": "NIU-1", "status": "Done"})

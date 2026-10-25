@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field
 from mimir.connections import resolve_mimir_workload
 from niuu.domain.mimir import MimirPage, MimirPageMeta
 from niuu.domain.models import Principal
+from niuu.domain.services.token_scope import scoped_credential_claims
+from niuu.ports.http_auth import HttpAuthPort
 from niuu.ports.mimir import MimirPort
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.dispatch import resolve_volundr_factory
@@ -566,7 +568,10 @@ def create_research_router() -> APIRouter:
         if not _campaign_owns_path(campaign, path):
             raise HTTPException(status_code=404, detail="Artifact not found")
         adapter = _campaign_knowledge(
-            campaign, request.app.state.settings, bearer_token=extract_bearer_token(request)
+            campaign,
+            request.app.state.settings,
+            bearer_token=extract_bearer_token(request),
+            service_auth=getattr(request.app.state, "mimir_service_auth", None),
         )
         if adapter is None:
             raise HTTPException(
@@ -1395,14 +1400,41 @@ def _active_stage_id(stage_state: list[CampaignStageState]) -> str | None:
 
 
 def _campaign_knowledge(
-    campaign: WorkflowCampaign, settings: Any, *, bearer_token: str | None = None
+    campaign: WorkflowCampaign,
+    settings: Any,
+    *,
+    bearer_token: str | None = None,
+    service_auth: HttpAuthPort | None = None,
 ) -> MimirPort | None:
+    """Open the campaign's memory well as the caller.
+
+    A scoped workload credential is never forwarded downstream. When the caller
+    holds one, ``service_auth`` — Ting's own Mimir credential — reads instead;
+    the caller has already been authorized for this campaign and its paths.
+    """
+    if bearer_token and scoped_credential_claims(bearer_token) is not None:
+        bearer_token = _service_mimir_token(service_auth)
     return resolve_mimir_workload(
         workflow_mimir_from_snapshot(campaign.workflow_snapshot),
         hosted_url=settings.dispatch.flock.mimir_hosted_url,
         registry_path=settings.dispatch.flock.mimir_registry_path,
         bearer_token=bearer_token,
     )
+
+
+def _service_mimir_token(service_auth: HttpAuthPort | None) -> str:
+    header = service_auth.headers().get("Authorization", "") if service_auth else ""
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "A scoped credential cannot read campaign artifacts: Ting has no Mimir "
+                "credential of its own. Set dispatch.flock.mimir_service_auth (workload "
+                "identity with audience mimir)."
+            ),
+        )
+    return token.strip()
 
 
 def _campaign_owns_path(campaign: WorkflowCampaign, path: str) -> bool:

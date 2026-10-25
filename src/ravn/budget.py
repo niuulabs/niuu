@@ -15,7 +15,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from ravn.domain.models import Message, TokenUsage
+from ravn.domain.models import PROVIDER_ITEMS_KEY, Message, TokenUsage
 
 # ---------------------------------------------------------------------------
 # Token estimation
@@ -54,6 +54,10 @@ class TokenEstimator:
                         for v in block.values():
                             if isinstance(v, str):
                                 total += len(v)
+            if msg.get("reasoning_details"):
+                total += TokenEstimator._json_chars(msg["reasoning_details"])
+            if msg.get(PROVIDER_ITEMS_KEY):
+                total += TokenEstimator._json_chars(msg[PROVIDER_ITEMS_KEY])
         return total // _CHARS_PER_TOKEN
 
     @staticmethod
@@ -97,12 +101,28 @@ class TokenEstimator:
 
     @staticmethod
     def _message_chars(msg: Message) -> int:
+        """Characters a message adds to the prompt, opaque reasoning included.
+
+        ``reasoning_details`` and ``provider_items`` are sent back with the
+        message on every later request and are far larger than the text they
+        accompany, so leaving them out would let a long tool loop grow past the
+        prompt budget unseen.
+        """
         content = msg.content
-        if isinstance(content, str):
-            return len(content)
+        chars = len(content) if isinstance(content, str) else TokenEstimator._json_chars(content)
+        if msg.reasoning_details:
+            chars += TokenEstimator._json_chars(msg.reasoning_details)
+        # Replayed instead of ``content`` by an adapter of the same protocol;
+        # counting both keeps the estimate on the safe side for every adapter.
+        if msg.provider_items:
+            chars += TokenEstimator._json_chars(msg.provider_items)
+        return chars
+
+    @staticmethod
+    def _json_chars(value: Any) -> int:
         return len(
             json.dumps(
-                content,
+                value,
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),

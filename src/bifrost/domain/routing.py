@@ -38,7 +38,9 @@ def _strip_image_blocks(request: AnthropicRequest) -> AnthropicRequest:
         if not filtered:
             filtered = [TextBlock(text="[image removed]")]
         new_messages.append(msg.model_copy(update={"content": filtered}))
-    return request.model_copy(update={"messages": new_messages})
+    stripped = request.model_copy(update={"messages": new_messages})
+    stripped._images_stripped = True
+    return stripped
 
 
 class RuleRejectError(Exception):
@@ -48,6 +50,17 @@ class RuleRejectError(Exception):
         super().__init__(message)
         self.rule_name = rule_name
         self.message = message
+
+
+class UnsupportedFeatureError(RuleRejectError):
+    """The request asks for something the routed provider cannot do.
+
+    A 400 like a rule rejection: the request is refused before any provider is
+    called, with the reason, rather than served without the feature.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__("unsupported-feature", message)
 
 
 def apply_rules(

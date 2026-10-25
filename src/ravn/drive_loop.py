@@ -3605,6 +3605,15 @@ class DriveLoop:
         )
         if not canonical_event_type or not validation_errors:
             return None
+        # Repair reformats an answer; it cannot supply one. Given an empty turn
+        # it invented a whole outcome ("No previous outcome or supporting
+        # evidence was supplied"), closed the case and consumed the operator's
+        # reply, so every answer to a resumed question was lost.
+        if not response_text.strip():
+            raise RuntimeError(
+                f"resident task {task.task_id} produced no output, so there is no outcome "
+                "to repair; the model turn failed and must be diagnosed, not reformatted"
+            )
         repair_outcome = getattr(agent, "repair_outcome", None)
         if repair_outcome is None or not asyncio.iscoroutinefunction(repair_outcome):
             return None
@@ -3886,26 +3895,42 @@ class DriveLoop:
         Ting, and A2A clients read — so emitting one here is what turns a silent
         stall into a visible failure.
         """
+        detail = "; ".join(error for error in outcome_errors if error)
+        await self._emit_workflow_error(
+            task,
+            channel,
+            message=(
+                f"Workflow node {task.workflow_node_id or task.task_id} produced an "
+                f"outcome that cannot be accepted: {detail}"
+            ),
+            failure_kind="outcome_rejected",
+        )
+
+    async def _emit_workflow_error(
+        self,
+        task: AgentTask,
+        channel: ChannelPort | None,
+        *,
+        message: str,
+        failure_kind: str,
+    ) -> None:
+        """Emit the terminal ERROR event that fails the flock workflow visibly."""
         if channel is None:
             return
-        detail = "; ".join(error for error in outcome_errors if error)
         try:
             await channel.emit(
                 RavnEvent.error(
                     source=self._source_id,
-                    message=(
-                        f"Workflow node {task.workflow_node_id or task.task_id} produced an "
-                        f"outcome that cannot be accepted: {detail}"
-                    ),
+                    message=message,
                     correlation_id=task.task_id,
                     session_id=task.session_id or task.task_id,
                     task_id=task.task_id,
-                    failure_kind="outcome_rejected",
+                    failure_kind=failure_kind,
                 )
             )
         except Exception:
             logger.warning(
-                "drive_loop: failed to announce rejected outcome; continuing",
+                "drive_loop: failed to announce workflow error; continuing",
                 exc_info=True,
             )
 
@@ -3928,6 +3953,22 @@ class DriveLoop:
             or outcome_fields.get("summary")
             or ""
         ).strip()
+        if verdict == "blocked":
+            # The agent stopped and said why. That is an answer, not a malformed
+            # outcome: a graph with no route for it ends the task blocked, with
+            # the agent's reason, instead of reporting a platform-looking
+            # "outcome that cannot be accepted".
+            reason = explanation or "no reason given"
+            self._result_store.set_failure(task.task_id, "The workflow is blocked.", [reason])
+            await self._emit_workflow_error(
+                task,
+                channel,
+                message=(
+                    f"Workflow node {task.workflow_node_id or task.task_id} is blocked: {reason}"
+                ),
+                failure_kind="blocked",
+            )
+            return
         detail = (
             f"verdict {verdict or '<missing>'!r} selected {selected_topic!r}, "
             f"but node {task.workflow_node_id or '<unknown>'!r} only allows "

@@ -100,7 +100,6 @@ class TestRequestTranslation:
                         "description": "Run a command",
                         "parameters": {"type": "object", "properties": {"command": {}}},
                     },
-                    {"type": "web_search"},
                 ],
                 tool_choice="auto",
                 reasoning={"effort": "high", "summary": "auto"},
@@ -193,6 +192,10 @@ class TestRequestTranslation:
         [
             ({"input": "x", "previous_response_id": "resp_1"}, "previous_response_id"),
             ({"input": [{"type": "computer_call"}]}, "unsupported input item type"),
+            (
+                {"input": "x", "tools": [{"type": "web_search"}, {"type": "local_shell"}]},
+                "tools of type local_shell, web_search are not supported",
+            ),
             ({"input": [{"role": "tool", "content": "x"}]}, "unsupported message role"),
             (
                 {"input": [{"role": "user", "content": [{"type": "input_file"}]}]},

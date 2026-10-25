@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import json
 import logging
 import re
 import time
@@ -48,9 +49,11 @@ from ravn.ports.channel import ChannelPort
 from ravn.ports.checkpoint import CheckpointPort
 from ravn.ports.llm import LLMPort, SystemPrompt
 from ravn.ports.memory import MemoryPort
+from ravn.ports.native_compaction import NativeCompactionPort
 from ravn.ports.permission import PermissionPort
 from ravn.ports.tool import ToolPort
 from ravn.prompt_builder import PromptBuilder
+from ravn.resident_text import compact_line
 
 if TYPE_CHECKING:
     from niuu.domain.outcome import ParsedOutcome
@@ -123,9 +126,10 @@ class RavnAgent:
         episode_task_max_chars: int = 200,
         iteration_budget: IterationBudget | None = None,
         compressor: ContextCompressor | None = None,
+        native_compaction: NativeCompactionPort | None = None,
         prompt_builder: PromptBuilder | None = None,
         reflection_model: str = "claude-haiku-4-5-20251001",
-        reflection_max_tokens: int = 512,
+        reflection_max_tokens: int = 4096,
         task_summary_max_chars: int = 200,
         input_token_cost_per_million: float = 3.0,
         output_token_cost_per_million: float = 15.0,
@@ -149,6 +153,19 @@ class RavnAgent:
         inject_learnings: bool = False,
         max_learnings_injected: int = 5,
         learning_token_budget: int = 500,
+        # Ranks injected learnings by meaning-relevance to the first turn's input
+        # when given (a ravn.adapters.reflection.lessons.LessonIndex); without
+        # one, learnings are injected by recency.
+        learning_index: Any | None = None,
+        learning_entry_max_chars: int = 0,
+        # Route recoveries (a tool failed, then succeeded with other input)
+        # carried on ravn.session.ended as first-hand evidence for reflection;
+        # 0 records none.
+        max_route_recoveries: int = 0,
+        route_excerpt_chars: int = 240,
+        # Tool-level friction (unrecovered failures, timeouts, retries) carried
+        # on ravn.session.ended for the friction ledger; 0 records none.
+        max_friction_signals: int = 0,
         # NIU-594: persona config for outcome block parsing
         persona_config: PersonaConfig | None = None,
         # Retained for constructor compatibility. A tool-use response is never
@@ -177,7 +194,13 @@ class RavnAgent:
         self._episode_summary_max_chars = episode_summary_max_chars
         self._episode_task_max_chars = episode_task_max_chars
         self._iteration_budget = iteration_budget
+        if compressor is not None and native_compaction is not None:
+            raise ValueError(
+                "RavnAgent was given both a client-side compressor and native compaction; "
+                "a model's context is compacted by one of them, never both"
+            )
         self._compressor = compressor
+        self._native_compaction = native_compaction
         self._prompt_builder = prompt_builder
         # Set identity on prompt_builder if provided — this was missing and caused
         # empty system prompts when using PromptBuilder with personas.
@@ -214,6 +237,13 @@ class RavnAgent:
         self._inject_learnings_enabled = inject_learnings
         self._max_learnings_injected = max_learnings_injected
         self._learning_token_budget = learning_token_budget
+        self._learning_index = learning_index
+        self._learning_entry_max_chars = learning_entry_max_chars
+        self._max_route_recoveries = max(0, max_route_recoveries)
+        self._route_excerpt_chars = route_excerpt_chars
+        self._route_recoveries: list[dict[str, str]] = []
+        self._max_friction_signals = max(0, max_friction_signals)
+        self._friction: list[dict[str, str]] = []
         # NIU-594: persona config for outcome block parsing
         self._persona_config = persona_config
         self._context_window_tokens = max(0, context_window_tokens)
@@ -343,7 +373,7 @@ class RavnAgent:
         """
         total_tokens = self._session.total_usage.total_tokens
         duration_s = round(time.monotonic() - self._session_wall_start, 3)
-        return ravn_session_ended(
+        event = ravn_session_ended(
             session_id=str(self._session.id),
             persona=self._persona,
             outcome=outcome,
@@ -353,6 +383,20 @@ class RavnAgent:
             repo_slug=self._repo_slug,
             correlation_id=self._task_id,
         )
+        if self._route_recoveries:
+            event.payload["route_recoveries"] = [dict(item) for item in self._route_recoveries]
+        friction = [dict(item) for item in self._friction]
+        if (
+            self._max_friction_signals
+            and self._iteration_budget is not None
+            and self._iteration_budget.exhausted
+        ):
+            friction.append(
+                {"kind": "budget_exhausted", "tool": "", "input": "", "detail": outcome}
+            )
+        if friction:
+            event.payload["friction"] = friction
+        return event
 
     async def emit_session_ended(self, outcome: str) -> None:
         """Publish ravn.session.ended to Sleipnir.
@@ -471,7 +515,7 @@ class RavnAgent:
         # rules over many episodes, not per-turn context, so re-reading every
         # turn would spend the budget without changing the content.
         if self._turn_count == 1:
-            await self._inject_learnings()
+            await self._inject_learnings(user_input)
 
         # Check budget before starting the turn.
         if self._iteration_budget is not None and self._iteration_budget.exhausted:
@@ -624,6 +668,9 @@ class RavnAgent:
                             role="assistant",
                             content=llm_response.content,
                             reasoning=llm_response.reasoning,
+                            reasoning_details=llm_response.reasoning_details,
+                            provider_items=llm_response.provider_items,
+                            provider_protocol=llm_response.provider_protocol,
                         )
                     )
                     self._emit_native_harness_step(
@@ -647,6 +694,9 @@ class RavnAgent:
                         role="assistant",
                         content=assistant_content,
                         reasoning=llm_response.reasoning,
+                        reasoning_details=llm_response.reasoning_details,
+                        provider_items=llm_response.provider_items,
+                        provider_protocol=llm_response.provider_protocol,
                     )
                 )
 
@@ -725,6 +775,7 @@ class RavnAgent:
 
         self._session.record_turn(cumulative_usage)
         duration_seconds = time.monotonic() - start_time
+        self._record_route_recoveries(turn_tool_calls, turn_tool_results)
 
         # NIU-594: build a partial result to pass into episode extraction
         partial_result = TurnResult(
@@ -1053,7 +1104,26 @@ class RavnAgent:
             is_error=result.is_error,
         )
 
-    async def _inject_learnings(self) -> None:
+    def _record_route_recoveries(
+        self,
+        calls: list[ToolCall],
+        results: list[ToolResult],
+    ) -> None:
+        """Keep this turn's route recoveries and tool friction for the session-ended record."""
+        room = self._max_route_recoveries - len(self._route_recoveries)
+        if room > 0:
+            self._route_recoveries.extend(
+                _route_recoveries(
+                    calls, results, limit=room, excerpt_chars=self._route_excerpt_chars
+                )
+            )
+        room = self._max_friction_signals - len(self._friction)
+        if room > 0:
+            self._friction.extend(
+                _tool_friction(calls, results, limit=room, excerpt_chars=self._route_excerpt_chars)
+            )
+
+    async def _inject_learnings(self, query: str = "") -> None:
         """Put promoted Mímir learnings into the system prompt for this session.
 
         Restored from NIU-588, which added it and was then dropped in c1253e9d
@@ -1086,6 +1156,9 @@ class RavnAgent:
             repo_slug=self._repo_slug,
             max_pages=self._max_learnings_injected,
             token_budget=self._learning_token_budget,
+            query=query,
+            lessons=self._learning_index,
+            entry_max_chars=self._learning_entry_max_chars,
         )
         if learnings_text:
             self._prompt_builder.set_learnings_context(learnings_text)
@@ -1111,6 +1184,8 @@ class RavnAgent:
             to the compactor as an anchor so the structured state document can
             reference relevant past context.
         """
+        if self._native_compaction is not None:
+            return self._drop_natively_compacted_history()
         if self._compressor is None:
             return self._session.messages
 
@@ -1139,6 +1214,37 @@ class RavnAgent:
                 result.compression_count,
                 result.removed_message_count,
             )
+        return messages
+
+    def _drop_natively_compacted_history(self) -> list[Message]:
+        """Drop the history the provider's latest compaction item already carries.
+
+        With native compaction the provider compacts inside the request and
+        returns an opaque compaction item; everything before it is in that item.
+        Keeping it would grow the history — and the prompt estimate and the
+        checkpoint — without bound while the provider no longer reads it.
+        """
+        messages = self._session.messages
+        start = self._native_compaction.compaction_window_start(
+            [message.to_api_dict() for message in messages]
+        )
+        if start <= 0:
+            return messages
+        original_count = len(messages)
+        del messages[:start]
+        self._last_compression_result = CompressionResult(
+            original_count=original_count,
+            final_count=len(messages),
+            compression_count=1,
+            removed_message_count=start,
+        )
+        logger.info(
+            "Native compaction: dropped %d message(s) the provider's compaction item "
+            "supersedes (%d → %d)",
+            start,
+            original_count,
+            len(messages),
+        )
         return messages
 
     async def _maybe_save_snapshot(self, *, label: str = "") -> None:
@@ -1333,21 +1439,27 @@ class RavnAgent:
             "3. What patterns from previous episodes are confirmed or contradicted?"
         )
 
-        try:
-            response = await self._llm.generate(
-                [{"role": "user", "content": prompt}],
-                tools=[],
-                system=(
-                    "You are Ravn reflecting on a completed task. "
-                    "Be concise, factual, and specific. No preamble."
-                ),
-                model=self._reflection_model,
-                max_tokens=self._reflection_max_tokens,
+        response = await self._llm.generate(
+            [{"role": "user", "content": prompt}],
+            tools=[],
+            system=(
+                "You are Ravn reflecting on a completed task. "
+                "Be concise, factual, and specific. No preamble."
+            ),
+            model=self._reflection_model,
+            max_tokens=self._reflection_max_tokens,
+        )
+        # A reasoning model can spend the whole budget thinking and return a
+        # truncated or empty reflection, which would be recorded as if it were
+        # the model's view of the turn.
+        if response.stop_reason == StopReason.MAX_TOKENS:
+            raise RuntimeError(
+                f"the reflection model {self._reflection_model!r} used its whole "
+                f"{self._reflection_max_tokens}-token budget before finishing; raise "
+                "memory.reflection_max_tokens, or set memory.reflection_model: off to "
+                "keep episodes without a reflection"
             )
-            return response.content
-        except Exception as exc:
-            logger.warning("Reflection LLM call failed: %s", exc)
-            return f"Reflection unavailable: {exc}"
+        return response.content
 
     def _resolve_thinking(
         self,
@@ -1553,6 +1665,9 @@ class RavnAgent:
         """Call the LLM with streaming and accumulate into an LLMResponse."""
         accumulated_text = ""
         accumulated_reasoning = ""
+        accumulated_reasoning_details: list[dict] = []
+        provider_items: list[dict] = []
+        provider_protocol = ""
         self._last_ttft_ms = None
         self._last_usage_available = False
         self._last_usage = None
@@ -1602,6 +1717,13 @@ class RavnAgent:
                                 self._session.id,
                             )
                         )
+                case StreamEventType.REASONING_DETAILS:
+                    if event.reasoning_details:
+                        accumulated_reasoning_details.extend(event.reasoning_details)
+                case StreamEventType.PROVIDER_ITEMS:
+                    if event.provider_items:
+                        provider_items.extend(event.provider_items)
+                        provider_protocol = event.provider_protocol
                 case StreamEventType.TOOL_CALL:
                     if event.tool_call:
                         tool_calls.append(event.tool_call)
@@ -1626,6 +1748,9 @@ class RavnAgent:
             stop_reason=stop_reason,
             usage=final_usage,
             reasoning=accumulated_reasoning,
+            reasoning_details=accumulated_reasoning_details,
+            provider_items=provider_items,
+            provider_protocol=provider_protocol,
         )
 
     async def _execute_tool(self, tool_call: ToolCall) -> ToolResult:
@@ -1837,6 +1962,123 @@ def _infer_tags(tool_names: list[str]) -> list[str]:
     if not tags:
         tags.append("general")
     return tags
+
+
+def _route_recoveries(
+    calls: list[ToolCall],
+    results: list[ToolResult],
+    *,
+    limit: int,
+    excerpt_chars: int,
+) -> list[dict[str, str]]:
+    """Find tool calls that failed and were then recovered by a different route.
+
+    A recovery is a failed call followed, later in the same turn, by a
+    successful call to the same tool with different input — the agent hit a
+    wall and found a way round it. Each failure is paired with the first such
+    success. These come from the tool results themselves, so a lesson tied to
+    one is verified rather than the model's recollection.
+    """
+    if limit <= 0:
+        return []
+    pairs = list(zip(calls, results, strict=False))
+    recoveries: list[dict[str, str]] = []
+    for index, (failed_call, failed_result) in enumerate(pairs):
+        if not failed_result.is_error:
+            continue
+        failed_input = _tool_input_key(failed_call)
+        for later_call, later_result in pairs[index + 1 :]:
+            if later_call.name != failed_call.name or later_result.is_error:
+                continue
+            if _tool_input_key(later_call) == failed_input:
+                continue
+            recoveries.append(
+                {
+                    "tool": failed_call.name,
+                    "failed_input": compact_line(failed_input, limit=excerpt_chars),
+                    "failed_result": compact_line(failed_result.content, limit=excerpt_chars),
+                    "succeeded_input": compact_line(
+                        _tool_input_key(later_call), limit=excerpt_chars
+                    ),
+                    "succeeded_result": compact_line(later_result.content, limit=excerpt_chars),
+                }
+            )
+            break
+        if len(recoveries) >= limit:
+            break
+    return recoveries
+
+
+_TIMEOUT_MARKERS = ("timed out", "timeout")
+
+
+def _recovered_failures(pairs: list[tuple[ToolCall, ToolResult]]) -> set[int]:
+    """Indices of failed calls later recovered by the same tool with other input."""
+    recovered: set[int] = set()
+    for index, (call, result) in enumerate(pairs):
+        if not result.is_error:
+            continue
+        key = _tool_input_key(call)
+        if any(
+            later_call.name == call.name
+            and not later_result.is_error
+            and _tool_input_key(later_call) != key
+            for later_call, later_result in pairs[index + 1 :]
+        ):
+            recovered.add(index)
+    return recovered
+
+
+def _tool_friction(
+    calls: list[ToolCall],
+    results: list[ToolResult],
+    *,
+    limit: int,
+    excerpt_chars: int,
+) -> list[dict[str, str]]:
+    """Tool-level friction in one turn, read from its own tool results.
+
+    ``retry`` is a call repeated with the same input after it failed;
+    ``timeout`` and ``tool_failure`` are failures nothing later recovered (a
+    recovered failure is a route recovery, recorded separately as a
+    workaround). One signal per kind and call.
+    """
+    if limit <= 0:
+        return []
+    pairs = list(zip(calls, results, strict=False))
+    recovered = _recovered_failures(pairs)
+    failed: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
+    signals: list[dict[str, str]] = []
+    for index, (call, result) in enumerate(pairs):
+        key = (call.name, _tool_input_key(call))
+        if key in failed:
+            kind = "retry"
+        elif result.is_error and index not in recovered:
+            lowered = result.content.casefold()
+            kind = "timeout" if any(m in lowered for m in _TIMEOUT_MARKERS) else "tool_failure"
+        else:
+            kind = ""
+        if result.is_error:
+            failed.add(key)
+        if not kind or (kind, *key) in seen:
+            continue
+        seen.add((kind, *key))
+        signals.append(
+            {
+                "kind": kind,
+                "tool": call.name,
+                "input": compact_line(key[1], limit=excerpt_chars),
+                "detail": compact_line(result.content, limit=excerpt_chars),
+            }
+        )
+        if len(signals) >= limit:
+            break
+    return signals
+
+
+def _tool_input_key(call: ToolCall) -> str:
+    return json.dumps(call.input, sort_keys=True, default=str)
 
 
 def _determine_outcome(tool_results: list[ToolResult]) -> Outcome:

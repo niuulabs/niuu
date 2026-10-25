@@ -539,7 +539,8 @@ class TestBuildMimirTools:
     def test_build_without_extractor(self) -> None:
         adapter = MagicMock()
         tools = build_mimir_tools(adapter)
-        assert len(tools) == 7
+        assert len(tools) == 8
+        assert any(type(tool).__name__ == "MimirPublishArtifactTool" for tool in tools)
         ingest_tool = tools[0]
         assert isinstance(ingest_tool, MimirIngestTool)
         assert ingest_tool._entity_extractor is None

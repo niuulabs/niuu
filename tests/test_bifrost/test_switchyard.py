@@ -26,10 +26,14 @@ async def test_native_selection_preserves_request_and_selects_second_provider(st
     with caplog.at_level("INFO"):
         if stream:
             assert [chunk async for chunk in router.stream(request)] == ["data: test\n\n"]
-            assert second.stream_calls == [(request, "gpt-4o")]
+            calls = second.stream_calls
         else:
             await router.complete(request)
-            assert second.complete_calls == [(request, "gpt-4o")]
+            calls = second.complete_calls
+    # The adapter gets the routed copy of the request, with the content unchanged.
+    [(sent, model)] = calls
+    assert model == "gpt-4o"
+    assert sent.model_dump() == request.model_dump()
     assert not first.complete_calls and not first.stream_calls
     assert "switchyard decision provider=second" in caplog.text
     assert "outcome_id=" in caplog.text

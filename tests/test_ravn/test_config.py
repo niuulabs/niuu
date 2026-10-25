@@ -172,7 +172,31 @@ class TestReflectionModelFallbacks:
         settings.llm.model = "Qwen/Qwen3.6-35B-A3B-FP8"
         settings.reflection.llm_alias = "fast"
 
-        assert settings.effective_post_session_reflection_config() is settings.reflection
+        resolved = settings.effective_post_session_reflection_config()
+
+        assert resolved.llm_alias == "fast"
+        # An empty judge alias means "the reflection model".
+        assert resolved.matching.judge_llm_alias == "fast"
+        assert settings.reflection.matching.judge_llm_alias == ""
+
+    def test_post_session_reflection_config_keeps_explicit_judge_alias(self) -> None:
+        settings = Settings()
+        settings.reflection.llm_alias = "fast"
+        settings.reflection.matching.judge_llm_alias = "judge"
+
+        resolved = settings.effective_post_session_reflection_config()
+
+        assert resolved is settings.reflection
+        assert resolved.matching.judge_llm_alias == "judge"
+
+    def test_post_session_reflection_judge_follows_resolved_agent_model(self) -> None:
+        settings = Settings()
+        settings.llm.model = "Qwen/Qwen3.6-35B-A3B-FP8"
+        settings.reflection.llm_alias = "agent"
+
+        resolved = settings.effective_post_session_reflection_config()
+
+        assert resolved.matching.judge_llm_alias == "Qwen/Qwen3.6-35B-A3B-FP8"
 
 
 class TestToolAdapterConfig:

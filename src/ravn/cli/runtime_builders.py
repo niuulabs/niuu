@@ -8,6 +8,7 @@ import inspect
 import logging
 import os
 from collections.abc import Awaitable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -16,6 +17,7 @@ import httpx
 
 from niuu.adapters.outbound.http_auth import WorkloadIdentityBearerTokenAuthAdapter
 from ravn.config import PermissionConfig, Settings, ToolGroupConfig
+from ravn.domain.exceptions import ConfigurationError
 from ravn.domain.permission_mode import PermissionMode, parse_permission_mode
 from ravn.ports.executor import ExecutorPort
 
@@ -153,9 +155,35 @@ def _attach_agent_build_tool(
         )
     except TypeError:
         logger.debug("build_tool not attached: executor does not support dynamic tools")
-    except Exception as exc:
-        logger.warning("Failed to attach build_tool to signal investigation: %s", exc)
     return agent
+
+
+def require_tool_build_push(settings: Settings) -> None:
+    """Refuse to start a resident that commissions A2A builds it cannot hear back from.
+
+    A builder that asks a question after the commissioning turn ends can only
+    reach the resident by push. Without it the question went unanswered, the
+    build held its session pod in INPUT_REQUIRED, and the resident commissioned
+    the same tool again — every Kubernetes resident on 2026-10-24.
+    """
+    adapter = settings.resident_evolution.tool_build_adapter
+    if not adapter:
+        return
+    if not _constructor_accepts_kwarg(_import_class(adapter), "push_callback_url"):
+        return
+    missing: list[str] = []
+    if not settings.gateway.platform.a2a_push_callback_url:
+        missing.append("gateway.platform.a2a_push_callback_url (the public URL of /a2a/push)")
+    http = settings.gateway.channels.http
+    if not (http.enabled and http.a2a_push_enabled):
+        missing.append("gateway.channels.http.enabled and a2a_push_enabled")
+    if missing:
+        raise ConfigurationError(
+            f"resident_evolution.tool_build_adapter {adapter} commissions builds over A2A, "
+            "but this resident cannot receive their push notifications: set "
+            + "; ".join(missing)
+            + ", or remove tool_build_adapter to build tools inline"
+        )
 
 
 def _build_tool_build_backend(
@@ -597,6 +625,176 @@ def _uses_cli_transport_executor(
 # ---------------------------------------------------------------------------
 
 
+def _build_embedding_port(settings: Settings) -> Any:
+    """Construct the configured embedding adapter, or raise with the remedy."""
+    # Asking for embeddings and silently getting lexical-only search is the
+    # failure this must not have: retrieval keeps working, quality collapses,
+    # and nothing says so. Configuration that cannot be honoured is a
+    # startup error, not a warning.
+    try:
+        cls = _import_class(settings.embedding.adapter)
+        kwargs = _inject_secrets(
+            settings.embedding.kwargs,
+            settings.embedding.secret_kwargs_env,
+        )
+        return cls(**kwargs)
+    except Exception as exc:
+        raise RuntimeError(
+            f"embedding.enabled is true but the adapter "
+            f"{settings.embedding.adapter!r} could not be constructed: {exc}. "
+            f"Set embedding.enabled=false to run with lexical-only search, or "
+            f"fix the adapter configuration — memory will not silently degrade."
+        ) from exc
+
+
+@dataclass(frozen=True)
+class LearningConsolidation:
+    """Lesson index and judge shared by reflection, curation, and injection."""
+
+    lessons: Any
+    judge: Any
+
+
+def _build_learning_consolidation(settings: Settings, llm: Any) -> LearningConsolidation | None:
+    """Build meaning-based lesson matching when reflection asks for it.
+
+    Needed by ``reflection.matching.mode: semantic`` and by
+    ``reflection.curation.enabled``. Either one without embeddings, or without
+    a native LLM for the judge, is a startup error: running on lexical matching
+    instead is the paraphrase blindness the operator configured away from.
+    """
+    reflection = settings.effective_post_session_reflection_config()
+    wanted = [
+        name
+        for name, on in (
+            ("reflection.matching.mode: semantic", reflection.matching.mode == "semantic"),
+            ("reflection.curation.enabled", reflection.curation.enabled),
+            ("reflection.friction.enabled", reflection.friction.enabled),
+            ("reflection.self_improvement.enabled", reflection.self_improvement.enabled),
+        )
+        if on
+    ]
+    if not wanted:
+        return None
+    if not settings.embedding.enabled:
+        raise RuntimeError(
+            f"{', '.join(wanted)} compare lessons and friction by embedding, but "
+            "embedding.enabled is false. Enable and configure embedding, or turn those "
+            "settings off (reflection.matching.mode: lexical)."
+        )
+    if llm is None:
+        raise RuntimeError(
+            "semantic learning consolidation needs a native LLM adapter for its judge, "
+            "but this runtime has none (CLI-transport executor). Set "
+            "reflection.matching.mode: lexical and reflection.curation.enabled: false."
+        )
+    from ravn.adapters.reflection.lesson_judge import LessonJudge  # noqa: PLC0415
+    from ravn.adapters.reflection.lessons import LessonIndex  # noqa: PLC0415
+
+    return LearningConsolidation(
+        lessons=LessonIndex(
+            _build_embedding_port(settings),
+            batch_size=reflection.matching.embed_batch_size,
+        ),
+        judge=LessonJudge(
+            llm,
+            model=reflection.matching.judge_llm_alias,
+            max_tokens=reflection.matching.judge_max_tokens,
+            attempts=reflection.matching.judge_attempts,
+            excerpt_chars=reflection.matching.judge_excerpt_chars,
+        ),
+    )
+
+
+def _build_friction_ledger(
+    settings: Settings,
+    *,
+    mimir: Any,
+    consolidation: LearningConsolidation | None,
+) -> Any | None:
+    """Build the friction ledger when friction capture is enabled."""
+    reflection = settings.effective_post_session_reflection_config()
+    if not reflection.friction.enabled:
+        return None
+    if consolidation is None or mimir is None:
+        raise RuntimeError(
+            "reflection.friction.enabled is true but there is no Mímir mount or lesson "
+            "index to record friction in; configure mimir and embedding, or set "
+            "reflection.friction.enabled: false"
+        )
+    from ravn.adapters.reflection.friction import FrictionLedger  # noqa: PLC0415
+
+    return FrictionLedger(mimir=mimir, lessons=consolidation.lessons, config=reflection.friction)
+
+
+def _build_self_improvement(
+    settings: Settings,
+    *,
+    mimir: Any,
+    consolidation: LearningConsolidation | None,
+    ledger: Any | None,
+    drive_loop: Any | None,
+    resident_id: str,
+) -> Any | None:
+    """Build the self-improvement pass when it is enabled.
+
+    It acts on recorded friction with curated learnings, so it needs friction
+    capture and learning curation; either missing is a startup error.
+    """
+    reflection = settings.effective_post_session_reflection_config()
+    if not reflection.self_improvement.enabled:
+        return None
+    if ledger is None or consolidation is None or not reflection.curation.enabled:
+        raise RuntimeError(
+            "reflection.self_improvement.enabled is true but it acts on recorded friction "
+            "with curated learnings: enable reflection.friction and reflection.curation "
+            "(with embedding), or set reflection.self_improvement.enabled: false"
+        )
+    from ravn.adapters.reflection.self_improvement import SelfImprovementPass  # noqa: PLC0415
+
+    return SelfImprovementPass(
+        mimir=mimir,
+        ledger=ledger,
+        lessons=consolidation.lessons,
+        judge=consolidation.judge,
+        config=reflection.self_improvement,
+        procedure_max_chars=reflection.curation.procedure_max_chars,
+        resident_id=resident_id,
+        # Improvements that need a tool or a ticket run as ordinary resident tasks.
+        dispatch=drive_loop.enqueue if drive_loop is not None else None,
+    )
+
+
+def _build_learning_curator(
+    settings: Settings,
+    *,
+    mimir: Any,
+    consolidation: LearningConsolidation | None,
+) -> Any | None:
+    """Build the dream-time learning curator when curation is enabled."""
+    reflection = settings.effective_post_session_reflection_config()
+    if not reflection.curation.enabled:
+        return None
+    if consolidation is None or mimir is None:
+        raise RuntimeError(
+            "reflection.curation.enabled is true but there is no Mímir mount or lesson "
+            "index to curate; configure mimir and embedding, or set "
+            "reflection.curation.enabled: false"
+        )
+    from ravn.adapters.reflection.learning_curation import LearningCurator  # noqa: PLC0415
+
+    return LearningCurator(
+        mimir=mimir,
+        lessons=consolidation.lessons,
+        judge=consolidation.judge,
+        config=reflection.curation,
+        similarity_threshold=reflection.matching.similarity_threshold,
+        evidence_duplicate_similarity=reflection.matching.evidence_duplicate_similarity,
+        min_repetitions=reflection.candidate_min_repetitions,
+        verified_recovery_promotes=reflection.verified_promotion.route_recovery_promotes,
+    )
+
+
 def _build_memory(settings: Settings, llm: Any = None) -> Any:
     """Build the memory adapter (SQLite or Postgres), or None."""
     backend = settings.memory.backend
@@ -604,26 +802,7 @@ def _build_memory(settings: Settings, llm: Any = None) -> Any:
     if backend in {"", "none", "disabled", "off"}:
         return None
 
-    embedding_port = None
-    if settings.embedding.enabled:
-        # Asking for embeddings and silently getting lexical-only search is the
-        # failure this must not have: retrieval keeps working, quality collapses,
-        # and nothing says so. Configuration that cannot be honoured is a
-        # startup error, not a warning.
-        try:
-            cls = _import_class(settings.embedding.adapter)
-            kwargs = _inject_secrets(
-                settings.embedding.kwargs,
-                settings.embedding.secret_kwargs_env,
-            )
-            embedding_port = cls(**kwargs)
-        except Exception as exc:
-            raise RuntimeError(
-                f"embedding.enabled is true but the adapter "
-                f"{settings.embedding.adapter!r} could not be constructed: {exc}. "
-                f"Set embedding.enabled=false to run with lexical-only search, or "
-                f"fix the adapter configuration — memory will not silently degrade."
-            ) from exc
+    embedding_port = _build_embedding_port(settings) if settings.embedding.enabled else None
 
     reranker_port = None
     if getattr(settings, "reranker", None) is not None and settings.reranker.enabled:

@@ -285,9 +285,7 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     assert "review.changes_requested -> review.changes_requested" in delivery_edge_labels
     assert "review.passed -> review.passed" in delivery_edge_labels
     delivery_gates = {
-        node["id"]: node
-        for node in delivery_flow.graph["nodes"]
-        if node.get("kind") == "gate"
+        node["id"]: node for node in delivery_flow.graph["nodes"] if node.get("kind") == "gate"
     }
     assert delivery_gates["delivery-blocked"] == {
         "id": "delivery-blocked",
@@ -313,9 +311,10 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
             }
         }
     )
-    assert _workflow_allowed_outcome_topics(
-        delivery_settings, node_id="delivery-implement"
-    ) == {"code.changed", "code.blocked"}
+    assert _workflow_allowed_outcome_topics(delivery_settings, node_id="delivery-implement") == {
+        "code.changed",
+        "code.blocked",
+    }
     delivery_resources = {
         node["label"]: node
         for node in delivery_flow.graph["nodes"]

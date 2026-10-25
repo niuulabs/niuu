@@ -279,6 +279,37 @@ class JiraAdapter(IssueTrackerProvider):
             raise JiraAPIError(f"Issue not found after update: {issue_id}")
         return updated
 
+    async def update_issue(
+        self,
+        issue_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> TrackerIssue:
+        """Rewrite a Jira issue's summary and/or description."""
+        fields: dict[str, Any] = {}
+        if title is not None:
+            fields["summary"] = title
+        if description is not None:
+            fields["description"] = text_to_adf(description)
+        if not fields:
+            raise TrackerRequestError("Nothing to update: give a title and/or a description")
+        if self._project_keys or self._labels:
+            if await self.get_issue(issue_id) is None:
+                raise TrackerRequestError(
+                    f"Issue is outside this Jira connection's configured scope: {issue_id}"
+                )
+
+        response = await self._request("PUT", f"/issue/{issue_id}", json={"fields": fields})
+        if response.status_code == 400:
+            raise TrackerRequestError(f"Jira rejected the edit to {issue_id}: {response.text}")
+        response.raise_for_status()
+
+        updated = await self.get_issue(issue_id)
+        if updated is None:
+            raise JiraAPIError(f"Issue not found after update: {issue_id}")
+        return updated
+
     async def create_issue(
         self,
         title: str,

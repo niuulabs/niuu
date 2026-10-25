@@ -144,6 +144,12 @@ data:
         {{- if .Values.dispatch.flock.observability }}
         observability: {{ .Values.dispatch.flock.observability | toJson }}
         {{- end }}
+        {{- with .Values.dispatch.flock.mimirServiceAuth }}
+        mimir_service_auth:
+          adapter: {{ .adapter | quote }}
+          kwargs:
+            {{- toYaml .kwargs | nindent 12 }}
+        {{- end }}
       {{- end }}
 
     {{- if and .Values.planner (or .Values.planner.plannerSystemPrompt .Values.planner.finalizePrompt) }}
@@ -181,6 +187,10 @@ data:
         adapter: {{ .Values.a2a.pushAuth.adapter | quote }}
         kwargs:
           {{- toYaml .Values.a2a.pushAuth.kwargs | nindent 10 }}
+      stale_campaigns:
+        sweep_interval_seconds: {{ .Values.a2a.staleCampaigns.sweepIntervalSeconds }}
+        input_wait_timeout_seconds: {{ .Values.a2a.staleCampaigns.inputWaitTimeoutSeconds }}
+        idle_timeout_seconds: {{ .Values.a2a.staleCampaigns.idleTimeoutSeconds }}
     {{- end }}
 
     workflow_execution:

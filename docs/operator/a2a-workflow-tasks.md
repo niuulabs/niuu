@@ -29,8 +29,10 @@ returns the same card plus the caller's own workflows as skills.
 
 `POST /api/v1/ting/a2a` is a JSON-RPC 2.0 endpoint implementing `SendMessage`,
 `GetTask`, and `CancelTask`. Requests must carry the `A2A-Version: 1.0` header
-and a platform bearer token (PAT or workload-identity exchange). Streaming and
-push notifications are not supported — poll `GetTask`.
+and a platform bearer token (PAT or workload-identity exchange). Streaming is
+not supported. Push notifications (`CreateTaskPushNotificationConfig`) are
+available when Ting has `a2a.push_encryption_key` set and the callback's origin
+is listed in `a2a.push_callback_allowed_origins`; otherwise poll `GetTask`.
 
 There is no A2A-specific state: the **task id is the workflow campaign slug**,
 and task views are synthesized from the campaign record, which the campaign

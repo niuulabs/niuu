@@ -226,6 +226,7 @@ def _build_resident_runtime(
     *,
     state: Any,
     inbox: Any | None,
+    known_resolutions: Any | None = None,
 ) -> Any:
     """Build the resident runtime.
 
@@ -259,6 +260,10 @@ def _build_resident_runtime(
         stewardship_interval_seconds=cfg.stewardship_interval_seconds,
         directed_messages_enabled=settings.resident_inbox.directed_messages_enabled,
         environment_id=settings.environment.id,
+        known_resolutions=known_resolutions,
+        known_resolution_redirect_seconds=(
+            settings.reflection.self_improvement.redirect_delay_seconds
+        ),
     )
 
 
@@ -426,6 +431,8 @@ def _build_resident_wakefulness(
     resident_learning_runtime: Any | None,
     publisher: Any | None,
     memory: Any | None = None,
+    learning_curator: Any | None = None,
+    self_improvement: Any | None = None,
 ) -> Any | None:
     """Build the wakefulness state machine for a resident daemon."""
     if not settings.resident_wakefulness.enabled:
@@ -447,6 +454,8 @@ def _build_resident_wakefulness(
         resident_learning=resident_learning_runtime,
         memory=memory,
         review_requester=resident_learning_runtime.review_requester,
+        learning_curator=learning_curator,
+        self_improvement=self_improvement,
         tick_interval_seconds=cfg.tick_interval_seconds,
         wakeful_window_seconds=cfg.wakeful_window_seconds,
         dream_interval_seconds=cfg.dream_interval_seconds,

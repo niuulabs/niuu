@@ -8,6 +8,14 @@ from uuid import UUID
 from ting.domain.models import WorkflowCampaign
 
 
+class CampaignAlreadyTerminalError(RuntimeError):
+    """A write tried to reopen a campaign that already completed or failed.
+
+    Terminal states are final. A writer holding an older copy (an activity
+    event racing CancelTask, say) loses: its write is refused, not merged.
+    """
+
+
 class WorkflowCampaignRepository(ABC):
     """Persistence interface for launched workflow campaigns."""
 
@@ -57,7 +65,11 @@ class WorkflowCampaignRepository(ABC):
 
     @abstractmethod
     async def save_campaign(self, campaign: WorkflowCampaign) -> WorkflowCampaign:
-        """Insert or update a campaign."""
+        """Insert or update a campaign.
+
+        Raises :class:`CampaignAlreadyTerminalError` when the stored campaign is
+        completed or failed and this write would make it active again.
+        """
 
     @abstractmethod
     async def delete_campaign(self, campaign_id: UUID) -> bool:

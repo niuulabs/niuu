@@ -541,3 +541,49 @@ class TestCreateIssue:
 
         with pytest.raises(LinearAPIError, match="did not create the issue in team NIU"):
             await adapter.create_issue("T", "B", team="NIU")
+
+    async def test_update_rewrites_title_and_description(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.return_value = _mock_response(
+            {
+                "data": {
+                    "issueUpdate": {
+                        "success": True,
+                        "issue": _issue_node(
+                            title="Start from regin", description="Branch from regin."
+                        ),
+                    }
+                }
+            }
+        )
+        adapter._set_cached("search:test:None", [], ttl=60.0)
+
+        issue = await adapter.update_issue(
+            "NIU-1116", title="Start from regin", description="Branch from regin."
+        )
+
+        assert issue.title == "Start from regin"
+        assert issue.description == "Branch from regin."
+        sent = adapter._gql._client.post.call_args.kwargs["json"]["variables"]
+        assert sent == {
+            "issueId": "NIU-1116",
+            "input": {"title": "Start from regin", "description": "Branch from regin."},
+        }
+        assert adapter._get_cached("search:test:None") is None
+
+    async def test_update_sends_only_the_fields_given_and_rejects_nothing(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.side_effect = [
+            _mock_response({"data": {"issueUpdate": {"success": True, "issue": _issue_node()}}}),
+            _mock_response({"data": {"issueUpdate": {"success": False, "issue": None}}}),
+        ]
+
+        await adapter.update_issue("NIU-1", description="New body")
+        sent = adapter._gql._client.post.call_args.kwargs["json"]["variables"]["input"]
+        assert sent == {"description": "New body"}
+        with pytest.raises(LinearAPIError, match="did not update issue NIU-1"):
+            await adapter.update_issue("NIU-1", title="T")
+        with pytest.raises(TrackerRequestError, match="Nothing to update"):
+            await adapter.update_issue("NIU-1")

@@ -16,9 +16,6 @@ OUTPUT_DIR   ?= dist
 WEB_DIR      := web-next
 WEB_APP_DIST := $(WEB_DIR)/apps/niuu/dist
 WEB_DEST     := src/cli/web/dist
-MIG_DIR      := migrations
-MIG_DEST     := src/cli/migrations/volundr
-TING_MIG_DEST := src/cli/migrations/ting
 
 # PostgreSQL build — versions read from the single source of truth
 PG_VERSIONS_PY := src/niuu/pg_versions.py
@@ -26,14 +23,14 @@ POSTGRES_VERSION := $(shell python3 -c "exec(open('$(PG_VERSIONS_PY)').read()); 
 PGVECTOR_VERSION := $(shell python3 -c "exec(open('$(PG_VERSIONS_PY)').read()); print(PGVECTOR_VERSION)")
 PGINSTALL_DIR    := build/pginstall
 
-.PHONY: build build-web build-postgres build-cli build-cli-bin build-ravn copy-migrations clean lint test verify \
+.PHONY: build build-web build-postgres build-cli build-cli-bin build-ravn clean lint test verify \
        test-integration test-integration-volundr test-integration-ting test-integration-sleipnir \
        test-e2e test-e2e-ui test-all test-ravn
 
 # --------------------------------------------------------------------------
 # Full build: web assets → migrations → PostgreSQL → Nuitka binary
 # --------------------------------------------------------------------------
-build: build-web copy-migrations build-postgres build-cli
+build: build-web build-postgres build-cli
 
 # --------------------------------------------------------------------------
 # Web UI: pnpm build + copy dist/ into the cli package data directory
@@ -51,15 +48,6 @@ build-postgres:
 	PGVECTOR_VERSION=$(PGVECTOR_VERSION) \
 	INSTALL_PREFIX=$(PGINSTALL_DIR) \
 	scripts/build_postgres.sh
-
-# --------------------------------------------------------------------------
-# Migrations: copy SQL files into the cli package data directory
-# --------------------------------------------------------------------------
-copy-migrations:
-	rm -rf $(MIG_DEST)/*.sql $(TING_MIG_DEST)/*.sql
-	mkdir -p $(MIG_DEST) $(TING_MIG_DEST)
-	cp $(MIG_DIR)/*.sql $(MIG_DEST)/
-	cp $(MIG_DIR)/ting/*.sql $(TING_MIG_DEST)/
 
 # --------------------------------------------------------------------------
 # Nuitka single-binary compilation
@@ -144,7 +132,6 @@ test-ravn:
 # --------------------------------------------------------------------------
 clean:
 	rm -rf $(OUTPUT_DIR) $(WEB_DEST) build/ *.build/ *.dist/ *.onefile-build/
-	rm -rf $(MIG_DEST)/*.sql $(TING_MIG_DEST)/*.sql
 	rm -rf $(PGINSTALL_DIR)
 
 # Real provider usage; requires a running platform and authenticated CLIs.

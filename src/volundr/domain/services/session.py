@@ -1859,10 +1859,14 @@ class SessionService:
             # Run contributor cleanup in reverse order
             await self._run_cleanup(session, principal, context=cleanup_context)
 
+            # Stopping a failed session keeps why it failed. Clearing it here is
+            # how a build that could not be scheduled ended up "stopped" with no
+            # error, and the resident that commissioned it had nothing to read.
+            kept_error = session.error if session.status == SessionStatus.FAILED else None
             stopped = (
                 stopping.with_status(SessionStatus.STOPPED)
                 .with_cleared_endpoints()
-                .model_copy(update={"error": None})
+                .model_copy(update={"error": kept_error})
             )
             final = await self._repository.update(stopped)
 
@@ -2092,7 +2096,6 @@ class SessionService:
                 continue
 
             actual_status = await self._pod_manager.status(session)
-            status_detail = await self._pod_manager.status_detail(session)
 
             if session.status in {
                 SessionStatus.STOPPING,
@@ -2123,6 +2126,10 @@ class SessionService:
                 if actual_status == SessionStatus.FAILED and await self._pod_manager.stop(session):
                     reconciled += 1
                 continue
+
+            # Only live rows use the detail; asking for it on every terminal row
+            # costs a cluster read per stopped session per pass.
+            status_detail = await self._pod_manager.status_detail(session)
 
             if actual_status == session.status:
                 if (

@@ -1,6 +1,7 @@
 """Tests for Flux HelmRelease pod manager adapter."""
 
 from contextlib import ExitStack
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -2774,3 +2775,95 @@ class TestFluxResidentFollowsPlatform:
         body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
         assert body["metadata"]["annotations"]["niuu.world/platform-version"] == _NEW_VERSION
         assert observation.backend_ref["platformVersion"] == _NEW_VERSION
+
+
+def _pod_event(name: str, reason: str, message: str, minute: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        involved_object=SimpleNamespace(name=name),
+        reason=reason,
+        message=message,
+        last_timestamp=datetime(2026, 10, 24, 16, minute, tzinfo=UTC),
+        event_time=None,
+        first_timestamp=None,
+    )
+
+
+class TestStatusDetail:
+    """Why a session's pods are not running, read from the cluster."""
+
+    async def test_reports_the_latest_pod_warning_and_the_release_message(
+        self, pod_manager: FluxPodManager, sample_session: Session, core_api: AsyncMock
+    ) -> None:
+        release = f"skuld-{sample_session.id}"
+        core_api.list_namespaced_event.return_value = SimpleNamespace(
+            items=[
+                _pod_event(
+                    f"{release}-abc", "FailedScheduling", "0/10 nodes: 1 Insufficient memory", 40
+                ),
+                _pod_event(
+                    f"{release}-abc", "FailedScheduling", "0/10 nodes: 2 Insufficient memory", 41
+                ),
+                _pod_event("skuld-someone-else-abc", "BackOff", "not mine", 59),
+            ]
+        )
+        helmrelease = {
+            "status": {
+                "conditions": [
+                    {
+                        "type": "Ready",
+                        "status": "False",
+                        "reason": "InstallFailed",
+                        "message": "context deadline exceeded",
+                    }
+                ]
+            }
+        }
+        with patch.object(pod_manager, "_get_helmrelease", AsyncMock(return_value=helmrelease)):
+            detail = await pod_manager.status_detail(sample_session)
+
+        assert detail == (
+            f"pod {release}-abc: FailedScheduling: 0/10 nodes: 2 Insufficient memory; "
+            "HelmRelease InstallFailed: context deadline exceeded"
+        )
+        core_api.list_namespaced_event.assert_awaited_once_with(
+            "test-ns", field_selector="type=Warning,involvedObject.kind=Pod"
+        )
+
+    async def test_events_survive_the_uninstalled_release(
+        self, pod_manager: FluxPodManager, sample_session: Session, core_api: AsyncMock
+    ) -> None:
+        release = f"skuld-{sample_session.id}"
+        core_api.list_namespaced_event.return_value = SimpleNamespace(
+            items=[_pod_event(f"{release}-abc", "FailedScheduling", "Insufficient memory", 40)]
+        )
+        with patch.object(pod_manager, "_get_helmrelease", AsyncMock(return_value=None)):
+            detail = await pod_manager.status_detail(sample_session)
+
+        assert detail == f"pod {release}-abc: FailedScheduling: Insufficient memory"
+
+    async def test_a_ready_release_has_no_detail_and_reads_no_events(
+        self, pod_manager: FluxPodManager, sample_session: Session, core_api: AsyncMock
+    ) -> None:
+        ready = {"status": {"conditions": [{"type": "Ready", "status": "True"}]}}
+        with patch.object(pod_manager, "_get_helmrelease", AsyncMock(return_value=ready)):
+            assert await pod_manager.status_detail(sample_session) is None
+        core_api.list_namespaced_event.assert_not_awaited()
+
+    async def test_nothing_known_is_none(
+        self, pod_manager: FluxPodManager, sample_session: Session, core_api: AsyncMock
+    ) -> None:
+        core_api.list_namespaced_event.return_value = SimpleNamespace(items=[])
+        with patch.object(pod_manager, "_get_helmrelease", AsyncMock(return_value=None)):
+            assert await pod_manager.status_detail(sample_session) is None
+
+    async def test_forbidden_events_name_the_missing_grant(
+        self, pod_manager: FluxPodManager, sample_session: Session, core_api: AsyncMock
+    ) -> None:
+        forbidden = Exception("Forbidden")
+        forbidden.status = 403
+        core_api.list_namespaced_event.side_effect = forbidden
+        with (
+            patch.object(pod_manager, "_get_helmrelease", AsyncMock(return_value=None)),
+            pytest.raises(RuntimeError, match="grant events get/list"),
+        ):
+            await pod_manager.status_detail(sample_session)

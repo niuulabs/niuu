@@ -7,6 +7,9 @@ Features:
 - Streaming via SSE (``data: {...}`` events)
 - Tool calling in OpenAI function-calling format
 - Reasoning output from both ``reasoning`` and legacy ``reasoning_content`` fields
+- Opaque reasoning (``reasoning_details``): when the server returns it with a
+  turn, it is captured verbatim and sent back on that assistant message in
+  later requests, so the model continues its own reasoning across tool calls
 - Token usage normalisation: ``prompt_tokens`` → ``input_tokens``,
   ``completion_tokens`` → ``output_tokens``
 - Token estimation fallback when the API response does not include usage data
@@ -54,6 +57,7 @@ import httpx
 from niuu.observability import get_observability
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class
+from ravn.adapters.llm.provider_items import refuse_foreign_compaction, without_provider_keys
 from ravn.budget import TokenEstimator
 from ravn.domain.exceptions import LLMError
 from ravn.domain.models import (
@@ -70,6 +74,8 @@ logger = logging.getLogger(__name__)
 
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503})
 _DEFAULT_BASE_URL = "https://api.openai.com"
+# The protocol this adapter speaks, as provider_items name it.
+_CHAT_COMPLETIONS = "openai_chat_completions"
 
 # OpenAI reasoning-era models reject the legacy ``max_tokens`` parameter and
 # require ``max_completion_tokens`` instead. OpenAI-compatible servers (vLLM,
@@ -113,6 +119,25 @@ def _strip_reasoning_tags(text: str) -> str:
 def _uses_developer_role(model: str) -> bool:
     """Return True when *model* expects a ``developer`` role instead of ``system``."""
     return any(model.startswith(prefix) for prefix in _DEVELOPER_ROLE_PREFIXES)
+
+
+def _reasoning_details_of(container: dict) -> list[dict]:
+    """The ``reasoning_details`` list of a message or stream delta, or ``[]``.
+
+    Raises:
+        LLMError: The server sent ``reasoning_details`` that is not a list of
+            objects. It is opaque payload meant to be echoed back; accepting a
+            malformed one would corrupt the next request.
+    """
+    details = container.get("reasoning_details")
+    if not details:
+        return []
+    if not isinstance(details, list) or not all(isinstance(item, dict) for item in details):
+        raise LLMError(
+            "OpenAI-compatible API sent reasoning_details that is not a list of objects: "
+            f"{type(details).__name__}"
+        )
+    return details
 
 
 def _emit_tool_calls(
@@ -251,6 +276,8 @@ def _convert_anthropic_messages(messages: list[dict]) -> list[dict]:
             out: dict = {"role": "assistant", "content": "\n".join(text_parts) or None}
             if msg.get("reasoning"):
                 out["reasoning_content"] = msg["reasoning"]
+            if msg.get("reasoning_details"):
+                out["reasoning_details"] = msg["reasoning_details"]
             if tool_calls_out:
                 out["tool_calls"] = tool_calls_out
             converted.append(out)
@@ -382,7 +409,10 @@ class OpenAICompatibleAdapter(LLMPort):
         Anthropic-format tool_use / tool_result content blocks are converted
         to OpenAI-format tool_calls and role=tool messages.
         """
-        converted = _convert_anthropic_messages(messages)
+        # Another protocol's verbatim items cannot go on a Chat Completions wire;
+        # a compaction item among them holds context that would be lost with it.
+        refuse_foreign_compaction(messages, _CHAT_COMPLETIONS, type(self).__name__)
+        converted = _convert_anthropic_messages([without_provider_keys(m) for m in messages])
 
         system_text = _system_to_string(system)
         if self._system_prefix:
@@ -558,6 +588,7 @@ class OpenAICompatibleAdapter(LLMPort):
             # Accumulate output text for estimation fallback when usage is absent.
             accumulated_text: list[str] = []
             accumulated_reasoning: list[str] = []
+            reasoning_details_received = 0
             usage_emitted = False
 
             # Bound here, not only inside the loop: a stream can end without ever
@@ -567,25 +598,29 @@ class OpenAICompatibleAdapter(LLMPort):
             # inside the very branch meant to report an empty stream, so a
             # resident turn failed with a Python error instead of a diagnosis.
             finish_reason: str | None = None
-
-            # Bound here, not only inside the loop: a stream can end without ever
-            # delivering a chunk that carries `choices` — every chunk usage-only,
-            # or nothing at all — and the post-loop recovery and logging all read
-            # this. Leaving it unbound made that case die with UnboundLocalError
-            # inside the very branch meant to report an empty stream, so a
-            # resident turn failed with a Python error instead of a diagnosis.
+            saw_done = False
 
             async for line in response.aiter_lines():
                 if not line.startswith("data: "):
                     continue
                 raw = line[len("data: ") :]
                 if raw == "[DONE]":
+                    saw_done = True
                     break
 
                 try:
                     event_data = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
+
+                upstream_error = event_data.get("error")
+                if upstream_error:
+                    message = (
+                        upstream_error.get("message")
+                        if isinstance(upstream_error, dict)
+                        else str(upstream_error)
+                    )
+                    raise LLMError(f"OpenAI-compatible stream error: {message}")
 
                 # Usage-only chunk (stream_options: include_usage)
                 usage_raw = event_data.get("usage")
@@ -612,6 +647,14 @@ class OpenAICompatibleAdapter(LLMPort):
                 if reasoning:
                     accumulated_reasoning.append(reasoning)
                     yield StreamEvent(type=StreamEventType.THINKING, text=reasoning)
+
+                reasoning_details = _reasoning_details_of(delta)
+                if reasoning_details:
+                    reasoning_details_received += len(reasoning_details)
+                    yield StreamEvent(
+                        type=StreamEventType.REASONING_DETAILS,
+                        reasoning_details=reasoning_details,
+                    )
 
                 # Text content delta.
                 content = delta.get("content")
@@ -673,6 +716,17 @@ class OpenAICompatibleAdapter(LLMPort):
             # Same reasoning as the non-streaming path: a stream that produced
             # neither text nor a tool call leaves the agent loop with nothing to
             # act on, and the cause is not recoverable after the fact.
+            # A stream that ends with neither [DONE] nor a finish_reason was cut
+            # off, not answered. Bifröst used to end the stream this way when the
+            # provider rejected the request after the 200 was sent; reading that
+            # as an empty answer let a resident's schema repair invent an outcome
+            # and consume the operator's reply.
+            if not saw_done and finish_reason is None:
+                raise LLMError(
+                    f"OpenAI-compatible stream for {model or self._default_model!r} ended "
+                    "before completion (no [DONE] and no finish_reason); the server "
+                    "aborted the response"
+                )
             if not "".join(accumulated_text).strip() and not tool_names:
                 logger.warning(
                     "openai-compatible: empty stream model=%s finish_reason=%s "
@@ -695,12 +749,13 @@ class OpenAICompatibleAdapter(LLMPort):
                 text = "".join(accumulated_text)
                 logger.info(
                     "openai-compatible: stream done model=%s finish_reason=%s "
-                    "content_len=%d reasoning_len=%d tool_calls=%d tool_names=%s "
-                    "content_head=%r content_tail=%r",
+                    "content_len=%d reasoning_len=%d reasoning_details=%d tool_calls=%d "
+                    "tool_names=%s content_head=%r content_tail=%r",
                     model or self._default_model,
                     finish_reason,
                     len(text),
                     len("".join(accumulated_reasoning)),
+                    reasoning_details_received,
                     len(tool_names),
                     sorted(tool_names.values()),
                     text[:200],
@@ -763,6 +818,7 @@ class OpenAICompatibleAdapter(LLMPort):
 
         content_text = _strip_reasoning_tags(message.get("content") or "")
         reasoning_text = message.get("reasoning") or message.get("reasoning_content") or ""
+        reasoning_details = _reasoning_details_of(message)
         tool_calls: list[ToolCall] = []
 
         # First, check for API-returned tool calls
@@ -813,12 +869,13 @@ class OpenAICompatibleAdapter(LLMPort):
             # repair. Record the shape of every reply, not just the blank ones.
             logger.info(
                 "openai-compatible: completion model=%s finish_reason=%s "
-                "content_len=%d reasoning_len=%d tool_calls=%d tool_names=%s "
-                "usage=%s content_head=%r",
+                "content_len=%d reasoning_len=%d reasoning_details=%d tool_calls=%d "
+                "tool_names=%s usage=%s content_head=%r",
                 model or self._default_model,
                 finish_reason,
                 len(content_text),
                 len(reasoning_text),
+                len(reasoning_details),
                 len(tool_calls),
                 [tc.name for tc in tool_calls],
                 data.get("usage"),
@@ -842,4 +899,5 @@ class OpenAICompatibleAdapter(LLMPort):
             stop_reason=stop_reason,
             usage=usage,
             reasoning=reasoning_text,
+            reasoning_details=reasoning_details,
         )

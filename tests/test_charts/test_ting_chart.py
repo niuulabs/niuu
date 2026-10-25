@@ -1,6 +1,5 @@
 """Tests for Ting Helm chart templates."""
 
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -603,33 +602,20 @@ class TestWorkflowMigrationInitContainer:
         assert "workflow-catalog-migrate" in [c["name"] for c in init_containers]
 
 
-class TestMigrationConfigMap:
-    """Tests for embedded Ting SQL migrations."""
+def test_ting_chart_renders_mimir_service_auth(tmp_path: Path) -> None:
+    auth = {
+        "adapter": "niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter",
+        "kwargs": {
+            "exchange_url": "https://platform.test/api/v1/tokens/workload/exchange",
+            "token_file": "/var/run/secrets/niuu-workload/token",
+            "audiences": ["mimir"],
+        },
+    }
 
-    @pytest.fixture
-    def template_yaml(self) -> str:
-        return (CHART_DIR / "templates" / "migrations-configmap.yaml").read_text()
+    config = _config_from_rendered(
+        _render_ting_chart(tmp_path, {"dispatch": {"flock": {"mimirServiceAuth": auth}}})
+    )
 
-    def test_embedded_migrations_match_source_files(self, template_yaml: str) -> None:
-        pattern = re.compile(r"^  (\d+_[^:]+\.(?:up|down)\.sql): \|\n", re.MULTILINE)
-        blocks: dict[str, str] = {}
-        matches = list(pattern.finditer(template_yaml))
-        template_end = template_yaml.index("{{- end }}")
-
-        for index, match in enumerate(matches):
-            name = match.group(1)
-            start = match.end()
-            end = matches[index + 1].start() if index + 1 < len(matches) else template_end
-            lines = template_yaml[start:end].splitlines()
-            content = (
-                "\n".join(line[4:] if line.startswith("    ") else "" for line in lines).rstrip()
-                + "\n"
-            )
-            blocks[name] = content
-
-        source_files = sorted(path.name for path in TING_MIGRATIONS_DIR.glob("*.sql"))
-        assert sorted(blocks) == source_files
-
-        for filename in source_files:
-            expected = (TING_MIGRATIONS_DIR / filename).read_text().rstrip() + "\n"
-            assert blocks[filename] == expected
+    assert config["dispatch"]["flock"]["mimir_service_auth"] == auth
+    settings = Settings.model_validate(config)
+    assert settings.dispatch.flock.mimir_service_auth.kwargs["audiences"] == ["mimir"]

@@ -331,9 +331,11 @@ spec:
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- with .Values.lifecycle }}
+          {{- if .Values.lifecycle }}
           lifecycle:
-            {{- toYaml . | nindent 12 }}
+            {{- toYaml .Values.lifecycle | nindent 12 }}
+          {{- else }}
+          {{- include "volundr.drainLifecycle" . | nindent 10 }}
           {{- end }}
         {{- if .Values.envoy.authorization.enabled }}
         - name: cedar-authz
@@ -341,6 +343,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["python", "-m", "identity.authz_main"]
           args: ["--config", "/etc/authorization/authz.yaml"]
+          {{- include "volundr.drainLifecycle" . | nindent 10 }}
           readinessProbe:
             exec:
               command:
@@ -391,6 +394,7 @@ spec:
             {{- with .Values.envoy.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- include "volundr.drainLifecycle" . | nindent 10 }}
           readinessProbe:
             tcpSocket:
               port: {{ .Values.envoy.port }}
@@ -522,7 +526,15 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
+      {{- $affinity := deepCopy (.Values.affinity | default dict) }}
+      {{- if .Values.rollout.colocate }}
+      {{- $term := dict "topologyKey" "kubernetes.io/hostname" "labelSelector" (dict "matchLabels" (include "volundr.selectorLabels" . | fromYaml)) }}
+      {{- $podAffinity := $affinity.podAffinity | default dict }}
+      {{- $required := $podAffinity.requiredDuringSchedulingIgnoredDuringExecution | default list }}
+      {{- $_ := set $podAffinity "requiredDuringSchedulingIgnoredDuringExecution" (append $required $term) }}
+      {{- $_ := set $affinity "podAffinity" $podAffinity }}
+      {{- end }}
+      {{- with $affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}

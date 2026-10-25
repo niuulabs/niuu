@@ -1661,7 +1661,7 @@ class TestDaemonAgentFactory:
             ) as publish_inventory,
             patch("ravn.cli.commands._build_llm", return_value=MagicMock()),
             patch("ravn.cli.commands._build_memory", return_value=MagicMock()),
-            patch("ravn.cli.commands._build_compressor", return_value=MagicMock()),
+            patch("ravn.cli.commands._build_compaction", return_value=(MagicMock(), None)),
             patch(
                 "ravn.cli.commands._build_environment_signal_publisher",
                 return_value=publisher,

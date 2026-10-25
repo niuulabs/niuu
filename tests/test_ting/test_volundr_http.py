@@ -1232,6 +1232,34 @@ class TestSubscribeActivity:
         assert events[0].metadata == {"step": "plan"}
         assert events[1].session_id == "ses-2"
         assert events[1].session_status == "stopped"
+        assert events[1].metadata == {}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_session_carries_voelundrs_error(
+        self, adapter: VolundrHTTPAdapter, monkeypatch
+    ):
+        """A build that could not be scheduled failed its A2A task as a bare
+        "Session failed"; the reason was in the event and was dropped."""
+        failed = {
+            "id": "ses-9",
+            "status": "failed",
+            "owner_id": "user-1",
+            "error": "pod skuld-ses-9-x: FailedScheduling: 1 Insufficient memory",
+        }
+        response = _FakeStreamResponse(
+            ["event: session_updated", f"data: {json.dumps(failed)}", ""]
+        )
+        monkeypatch.setattr(
+            httpx,
+            "AsyncClient",
+            lambda *args, **kwargs: _FakeAsyncClient(response, expected_headers={}),
+        )
+
+        items = [item async for item in adapter.subscribe_activity()]
+
+        (event,) = items[1:]
+        assert event.session_status == "failed"
+        assert event.metadata == {"error": failed["error"]}
 
     @pytest.mark.asyncio
     async def test_uses_service_auth_headers(self, monkeypatch):

@@ -562,6 +562,29 @@ class TestOpenAIAdapterStream:
         assert all(e.type != StreamEventType.TEXT_DELTA for e in events)
 
     @respx.mock
+    async def test_stream_cut_off_before_done_raises(self) -> None:
+        """Bifröst aborted the stream after the 200 when the provider rejected the
+        request; read as an empty answer, it let schema repair invent an outcome."""
+        adapter = OpenAICompatibleAdapter(api_key="k", base_url=_BASE_URL)
+        respx.post(f"{_BASE_URL}/v1/chat/completions").mock(
+            return_value=httpx.Response(200, content=b"")
+        )
+
+        with pytest.raises(LLMError, match="ended before completion"):
+            [event async for event in adapter.stream(_MESSAGES, **_KWARGS)]
+
+    @respx.mock
+    async def test_stream_error_chunk_raises_with_the_upstream_message(self) -> None:
+        adapter = OpenAICompatibleAdapter(api_key="k", base_url=_BASE_URL)
+        sse = b'data: {"error": {"message": "No tool output found for function call c1."}}\n\n'
+        respx.post(f"{_BASE_URL}/v1/chat/completions").mock(
+            return_value=httpx.Response(200, content=sse)
+        )
+
+        with pytest.raises(LLMError, match="No tool output found"):
+            [event async for event in adapter.stream(_MESSAGES, **_KWARGS)]
+
+    @respx.mock
     async def test_stream_usage_in_final_chunk(self) -> None:
         adapter = OpenAICompatibleAdapter(api_key="k", base_url=_BASE_URL)
         sse = _make_sse_lines(

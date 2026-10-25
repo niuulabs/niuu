@@ -45,6 +45,9 @@ RUN uv sync --frozen --no-dev --no-editable --no-install-project --extra otel --
 # ---------------------------------------------------------------------------
 FROM builder AS project
 COPY src/ /app/src/
+# migrations/ is force-included into the wheel as cli/migrations (see
+# pyproject.toml); the build fails without it.
+COPY migrations/ /app/migrations/
 # vendor/envoy_authz_protos/ provides the envoy.service.auth.v3 ext_authz
 # bindings identity/authz_main.py needs (see its README); vendored instead of
 # depending on xds-protos, which bundled a copy of opentelemetry/proto/** that

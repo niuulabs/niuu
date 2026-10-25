@@ -119,18 +119,7 @@ async def test_missing_prerequisite_fails_before_applying_any(tmp_path):
     conn.execute.assert_not_awaited()
 
 
-def test_aliases_are_identical_sql_in_source_package_and_chart():
-    import yaml
-
-    root = MIGRATIONS.parent
-    packaged = root / "src/cli/migrations/volundr"
-    template = (root / "charts/volundr/templates/migrations-configmap.yaml").read_text()
-    # Only inspect literal data; Helm metadata is rendered by the separate chart gate.
-    literal = template[template.index("\ndata:\n") + 1 : template.rindex("{{- end")]
-    data = yaml.safe_load(literal)["data"]
-    for path in [*MIGRATIONS.glob("*.sql"), MIGRATIONS / "lineage-aliases.json"]:
-        assert (packaged / path.name).read_bytes() == path.read_bytes(), path.name
-        assert data[path.name] == path.read_text(), path.name
+def test_aliases_pin_the_digest_of_their_canonical_migration():
     manifest = json.loads((MIGRATIONS / "lineage-aliases.json").read_text())
     for canonical, aliases in manifest.items():
         digest = hashlib.sha256((MIGRATIONS / canonical).read_bytes()).hexdigest()
@@ -168,7 +157,6 @@ def test_renumbered_fork_migrations_alias_their_applied_filenames(canonical, his
     """Forge installs applied these under fork numbers; the canonical file must adopt them."""
     digest = hashlib.sha256((MIGRATIONS / f"{canonical}.up.sql").read_bytes()).hexdigest()
     entry = {"filename": f"{historical}.up.sql", "sha256": digest}
-    for directory in (MIGRATIONS, MIGRATIONS.parent / "src/cli/migrations/volundr"):
-        aliases = json.loads((directory / "lineage-aliases.json").read_text())
-        assert entry in aliases[f"{canonical}.up.sql"]
+    aliases = json.loads((MIGRATIONS / "lineage-aliases.json").read_text())
+    assert entry in aliases[f"{canonical}.up.sql"]
     assert not (MIGRATIONS / f"{historical}.up.sql").exists()

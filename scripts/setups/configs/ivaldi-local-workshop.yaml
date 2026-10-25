@@ -176,22 +176,10 @@ resident_evolution:
   trust_level_autonomy_table:
     autonomous: 2
     yolo: 2
-  tool_build_adapter: ravn.adapters.tool_build.a2a.A2AToolBuildBackend
-  tool_build_kwargs:
-    card_url: https://yggdrasil.niuu.world/.well-known/agent-card.json
-    connection_id: 5bf5d964-1fba-4f8c-9271-a1d34a559b6e
-    max_poll_attempts: 360
-    workload_token_file: ~/.ravn/ivaldi-local/workload-token
-    workload_exchange_url: https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange
-    workload_audiences:
-      - volundr-api
-      - forge
-      - ting
-      - mimir
-      - guild
-  tool_builder_workflow:
-    tags:
-      - tool-builder
+  # Build learned tools inline. A2A builds need Ting to push back to this
+  # resident (gateway.platform.a2a_push_callback_url), and a resident bound to
+  # 127.0.0.1 has no reachable callback, so the daemon refuses that pairing.
+  tool_build_adapter: ""
   learned_tool_execution_backend: local
   build_repair_attempts: 3
   rollback_consecutive_failures: 3

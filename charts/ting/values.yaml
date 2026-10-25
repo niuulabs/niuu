@@ -122,6 +122,13 @@ dispatch:
     ravnConfig: {}
     # -- Shared OTEL exporter settings; runtime service names stay ravn and skuld.
     observability: {}
+    # -- Credential Ting presents to Mimir when reading a campaign's artifacts
+    # for a caller holding a scoped workload credential (a resident's A2A build).
+    # Scoped credentials are never forwarded. Use workload identity with
+    # audience mimir; with no credential such reads fail with HTTP 503.
+    mimirServiceAuth:
+      adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
+      kwargs: {}
 
   # -- In-process (single-turn) dispatch configuration.
   # Controls the LLM used by the RavnDispatcher when running the
@@ -224,6 +231,15 @@ a2a:
   pushAuth:
     adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
     kwargs: {}
+  # Unfinished campaigns keep their session pod. Fail (and stop) ones that wait
+  # for an answer nobody sends, or whose session sits idle. 0 disables a check.
+  staleCampaigns:
+    # -- Seconds between sweeps of active campaigns; 0 disables the sweep.
+    sweepIntervalSeconds: 300
+    # -- Fail a campaign waiting this long for an answer (INPUT_REQUIRED).
+    inputWaitTimeoutSeconds: 21600
+    # -- Fail a submitted/working campaign whose session is idle or gone this long.
+    idleTimeoutSeconds: 7200
 
 workflowExecution:
   # Domain-neutral fan-out/join, durable waits, and the Ravn A2A gateway.

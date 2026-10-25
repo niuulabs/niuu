@@ -458,6 +458,7 @@ class VolundrHTTPAdapter(VolundrPort):
                 workload_type=data.get("workload_type", "default"),
                 activity_state=data.get("activity_state"),
                 activity_metadata=data.get("activity_metadata") or {},
+                last_active=_parse_timestamp(data.get("last_active")),
             )
 
     async def list_sessions(
@@ -924,10 +925,14 @@ class VolundrHTTPAdapter(VolundrPort):
                                 continue
                             status = data.get("status", "")
                             if status in ("stopped", "failed"):
+                                # Carry Völundr's reason: without it a session
+                                # that could not even be scheduled failed its
+                                # A2A task as a bare "Session failed".
+                                error = str(data.get("error") or "").strip()
                                 yield ActivityEvent(
                                     session_id=data.get("id", ""),
                                     state="",
-                                    metadata={},
+                                    metadata={"error": error} if error else {},
                                     owner_id=data.get("owner_id", ""),
                                     session_status=status,
                                 )
@@ -953,3 +958,10 @@ def _session_chat_base_url(
     if path.endswith("/session"):
         path = path[: -len("/session")]
     return parsed._replace(path=path, params="", query="", fragment="").geturl().rstrip("/")
+
+
+def _parse_timestamp(value: object) -> datetime | None:
+    """Parse an ISO-8601 timestamp from Völundr; absent means not reported."""
+    if not value:
+        return None
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))

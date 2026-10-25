@@ -17,6 +17,7 @@ import logging
 import os
 import shlex
 import shutil
+import stat
 import sys
 import tempfile
 import uuid
@@ -57,6 +58,40 @@ from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
 
+# Codex 0.157 also keeps a fixed per-user daemon directory, /tmp/codex-daemon-<euid>,
+# and refuses to start unless it is owned by the user with mode exactly 0700. A
+# flock pod's agents share one setgid /tmp, so the directory drifted (setgid on
+# creation, or a sandbox's 000 mask) and every later app-server in the pod failed
+# with "app-server socket directory must be a user-owned directory with mode 0700".
+_CODEX_DAEMON_PARENT = Path("/tmp")
+_CODEX_DAEMON_MODE = 0o700
+
+
+def prepare_codex_daemon_dir(parent: Path | None = None) -> Path:
+    """Make Codex's daemon directory exist, belong to us, and be exactly 0700."""
+    euid = os.geteuid()
+    path = (parent or _CODEX_DAEMON_PARENT) / f"codex-daemon-{euid}"
+    try:
+        os.mkdir(path, _CODEX_DAEMON_MODE)
+    except FileExistsError:
+        pass
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode):
+        raise RuntimeError(
+            f"{path} is not a directory; remove it so Codex can create its daemon directory"
+        )
+    if info.st_uid != euid:
+        raise RuntimeError(
+            f"{path} belongs to uid {info.st_uid}, not {euid}; every agent sharing this /tmp "
+            "must run as one user, or give each its own /tmp"
+        )
+    mode = stat.S_IMODE(info.st_mode)
+    if mode != _CODEX_DAEMON_MODE:
+        logger.warning("Codex daemon directory %s had mode %o; resetting to 0700", path, mode)
+        os.chmod(path, _CODEX_DAEMON_MODE)
+    return path
+
+
 # Codex config for the platform's model gateway: a Responses-API provider (the
 # only wire format current Codex accepts) whose key comes from
 # CODEX_GATEWAY_TOKEN_ENV, selected with `model_provider`.
@@ -76,6 +111,12 @@ def codex_gateway_overrides(gateway_url: str) -> list[tuple[str, str]]:
         (f"{base}.base_url", json.dumps(f"{url}/v1")),
         (f"{base}.env_key", json.dumps(CODEX_GATEWAY_TOKEN_ENV)),
         (f"{base}.wire_api", json.dumps("responses")),
+        # The gateway serves self-hosted models through Bifröst's canonical
+        # translation, which carries function tools only and refuses the rest.
+        # Codex otherwise asks for hosted web search (on by default) and the
+        # multi-agent tool namespace (verified against Codex 0.157.1).
+        ("web_search", json.dumps("disabled")),
+        ("features.multi_agent", "false"),
     ]
 
 
@@ -342,6 +383,13 @@ class CodexWebSocketTransport(CLITransport):
         self._model_gateway_url = model_gateway_url.strip()
         self._model_gateway_token = model_gateway_token
         self._gateway_overrides = codex_gateway_overrides(self._model_gateway_url)
+        if self._model_gateway_url and multi_agent_enabled:
+            raise ValueError(
+                "multi_agent_enabled is set for a Codex session routed through the model "
+                f"gateway at {self._model_gateway_url!r}; the gateway serves function tools "
+                "only, so Codex's multi-agent tool namespace cannot reach the model. Unset "
+                "multi_agent_enabled for gateway sessions, or run the model without the gateway"
+            )
         # Default every OpenAI Codex model to high unless launch configuration
         # overrides it. A model behind the gateway is whatever the operator
         # serves; only an explicit session setting asks it for reasoning.
@@ -593,6 +641,7 @@ class CodexWebSocketTransport(CLITransport):
         # Codex requires exactly 0700. Under a setgid /tmp (the shared session
         # volume) mkdtemp inherits S_ISGID and yields 02700, which Codex rejects.
         os.chmod(self._codex_socket_dir, 0o700)
+        prepare_codex_daemon_dir()
         self._codex_socket_path = os.path.join(self._codex_socket_dir, "app-server.sock")
         listen_url = f"unix://{self._codex_socket_path}"
         codex_cli = resolve_codex_cli()

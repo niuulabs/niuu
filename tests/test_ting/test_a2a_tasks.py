@@ -785,7 +785,11 @@ class TestSendMessage:
         assert campaign.owner_id == "user-1"
         assert campaign.metadata["surface"] == "a2a"
         assert campaign.metadata["a2a_message_id"] == "msg-1"
-        assert campaign.metadata["a2a_workflow_slug"] == "build-the-widget-tool"
+        # NIU-1149: the recorded slug is the one the session runs under (its
+        # launch name), not the caller's requested sessionName — `{slug}` in
+        # the workflow's artifact paths must resolve to where it wrote them.
+        assert campaign.metadata["a2a_workflow_slug"] == result["id"]
+        assert port.spawned[0].name == result["id"]
 
     def test_fan_out_skill_binds_durable_execution_context(self) -> None:
         workflow = next(
@@ -1485,6 +1489,8 @@ class TestSendMessage:
         assert campaign is not None
         assert campaign.connection_id == "spark-01"
         assert campaign.session_id == "recovered-session"
+        # The stale pre-launch slug is replaced by the recovered launch's own.
+        assert campaign.metadata["a2a_workflow_slug"] == task_id
 
     def test_launch_failure_marks_the_campaign_failed_instead_of_leaving_it_pending(
         self,
@@ -1668,6 +1674,37 @@ class TestGetTask:
 
         assert response.status_code == 200
         assert response.json()["result"]["id"] == campaign.slug
+
+    def test_scoped_launcher_reads_completed_artifacts_with_ting_credential(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """NIU-1149: the build's artifacts are read with Ting's Mimir credential."""
+        from niuu.adapters.outbound.http_auth import StaticBearerTokenAuthAdapter
+        from ting.api import research as research_module
+
+        regin = "system:serviceaccount:nats:regin"
+        campaign = _make_campaign(
+            slug="tool-built-by-regin",
+            status=WorkflowCampaignStatus.COMPLETED,
+            metadata={"actor_id": regin},
+        )
+        client, _, _ = _make_client(campaign_repo=InMemoryCampaignRepository([campaign]))
+        client.app.state.identity = EnvoyHeaderAuthenticationAdapter()
+        client.app.state.mimir_service_auth = StaticBearerTokenAuthAdapter(token="ting-mimir")
+        seen: list[str | None] = []
+
+        def _resolve(*_args: Any, bearer_token: str | None = None, **_kwargs: Any) -> None:
+            seen.append(bearer_token)
+            return None
+
+        monkeypatch.setattr(research_module, "resolve_mimir_workload", _resolve)
+        token = _build_token(["ting:workflow:launch"], act={"sub": regin})
+
+        response = _rpc(client, "GetTask", {"id": campaign.slug}, headers=_headers(token=token))
+
+        assert response.status_code == 200, response.text
+        assert "error" not in response.json()
+        assert seen == ["ting-mimir"]
 
     def test_scoped_launcher_cannot_read_another_workloads_task(self) -> None:
         campaign = _make_campaign(
@@ -1970,6 +2007,27 @@ class TestCancelTask:
         followup = _rpc(client, "GetTask", {"id": campaign.slug})
         assert followup.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
 
+    def test_cancel_is_recorded_before_the_session_stops(self) -> None:
+        """Stopping the session emits events; a projector reading the campaign
+        while it was still active wrote it back over the cancellation."""
+        campaign = _make_campaign(status=WorkflowCampaignStatus.BLOCKED)
+        repo = InMemoryCampaignRepository([campaign])
+        client, _, port = _make_client(campaign_repo=repo)
+        states_at_stop: list[str] = []
+        original_stop = port.stop_session
+
+        async def _stop(session_id, **kwargs):
+            stored = await repo.get_campaign_by_slug(campaign.slug)
+            states_at_stop.append(stored.status.value)
+            await original_stop(session_id, **kwargs)
+
+        port.stop_session = _stop
+
+        response = _rpc(client, "CancelTask", {"id": campaign.slug})
+
+        assert response.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
+        assert states_at_stop == ["failed"]
+
     def test_cancel_terminal_task_is_not_cancelable(self) -> None:
         campaign = _make_campaign(status=WorkflowCampaignStatus.COMPLETED)
         client, _, port = _make_client(
@@ -2031,6 +2089,36 @@ class TestProtocolSurface:
         assert [task["id"] for task in result["tasks"]] == ["task-mine"]
         assert result["totalSize"] == 1
 
+    def test_scoped_launcher_lists_only_the_tasks_its_workload_launched(self) -> None:
+        """build_tool looks up its earlier task by contextId before re-sending."""
+        regin = "system:serviceaccount:nats:regin"
+        mine = _make_campaign(slug="task-regin", metadata={"actor_id": regin})
+        theirs = _make_campaign(
+            slug="task-ivaldi", metadata={"actor_id": "system:serviceaccount:nats:ivaldi"}
+        )
+        owners = _make_campaign(slug="task-owner")
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([mine, theirs, owners]),
+        )
+        client.app.state.identity = EnvoyHeaderAuthenticationAdapter()
+        token = _build_token(["ting:workflow:launch"], act={"sub": regin})
+
+        response = _rpc(client, "ListTasks", {}, headers=_headers(token=token))
+
+        assert response.status_code == 200
+        assert [task["id"] for task in response.json()["result"]["tasks"]] == [mine.slug]
+
+    def test_scoped_list_without_launch_scope_is_denied(self) -> None:
+        client, _, _ = _make_client()
+        client.app.state.identity = EnvoyHeaderAuthenticationAdapter()
+        token = _build_token(
+            ["forge:session:create"], act={"sub": "system:serviceaccount:nats:regin"}
+        )
+
+        response = _rpc(client, "ListTasks", {}, headers=_headers(token=token))
+
+        assert response.status_code == 403
+
     def test_missing_identity_headers_are_unauthorized(self) -> None:
         client, _, _ = _make_client()
 
@@ -2084,6 +2172,41 @@ class TestPushNotifications:
         )
         assert deleted.status_code == 200
         assert dispatcher.repo.configs == {}
+
+    def test_scoped_launcher_registers_push_for_its_own_task_only(self) -> None:
+        """build_tool registers a callback for the build it just launched."""
+        regin = "system:serviceaccount:nats:regin"
+        mine = _make_campaign(slug="task-regin", metadata={"actor_id": regin})
+        theirs = _make_campaign(
+            slug="task-ivaldi", metadata={"actor_id": "system:serviceaccount:nats:ivaldi"}
+        )
+        dispatcher = RecordingPushDispatcher()
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([mine, theirs]),
+            push_dispatcher=dispatcher,
+        )
+        client.app.state.identity = EnvoyHeaderAuthenticationAdapter()
+        token = _build_token(["ting:workflow:launch"], act={"sub": regin})
+
+        def register(task_id: str):
+            return _rpc(
+                client,
+                "CreateTaskPushNotificationConfig",
+                {
+                    "taskId": task_id,
+                    "id": "ravn-tool-build",
+                    "url": "https://resident.example/a2a/push",
+                    "authentication": {"scheme": "Bearer"},
+                },
+                headers=_headers(token=token),
+            )
+
+        own = register(mine.slug)
+        other = register(theirs.slug)
+
+        assert own.status_code == 200
+        assert own.json()["result"]["taskId"] == mine.slug
+        assert other.status_code == 403
 
     def test_rejects_unowned_or_unallowlisted_callback(self) -> None:
         campaign = _make_campaign()

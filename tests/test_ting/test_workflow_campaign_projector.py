@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -17,6 +18,7 @@ from ting.domain.services.workflow_campaign_projector import (
     _status_from_session,
 )
 from ting.ports.volundr import ActivityEvent
+from ting.ports.workflow_campaign_repository import CampaignAlreadyTerminalError
 
 
 def _campaign(
@@ -730,6 +732,7 @@ async def test_reconnect_attributes_a_missed_peer_failure_by_persona() -> None:
     assert failed.metadata["failure_stage_id"] == "research-coordinate"
     assert failed.stage_state[1].status == "failed"
 
+
 @pytest.mark.asyncio
 async def test_authoritative_publish_supersedes_blocked_help_gate_without_attestation() -> None:
     """A retry that publishes a tool must close the earlier help-needed gate."""
@@ -781,3 +784,168 @@ async def test_authoritative_publish_supersedes_blocked_help_gate_without_attest
     assert completed.status == WorkflowCampaignStatus.COMPLETED
     assert completed.completed_at is not None
     assert adapter.stopped == [campaign.session_id]
+
+
+# ---------------------------------------------------------------------------
+# Stale campaign expiry
+# ---------------------------------------------------------------------------
+
+_HOUR = 3600.0
+
+
+def _sweeping_projector(adapter: _Adapter) -> tuple[WorkflowCampaignProjector, AsyncMock]:
+    repo = AsyncMock()
+    repo.save_campaign = AsyncMock(side_effect=lambda campaign: campaign)
+    projector = WorkflowCampaignProjector(
+        repo=repo,
+        volundr_factory=_Factory(adapter),
+        event_bus=AsyncMock(),
+        sweep_interval_seconds=300.0,
+        input_wait_timeout_seconds=6 * _HOUR,
+        idle_timeout_seconds=2 * _HOUR,
+    )
+    return projector, repo
+
+
+def _aged(status: WorkflowCampaignStatus, hours: float) -> WorkflowCampaign:
+    then = datetime.now(UTC) - timedelta(hours=hours)
+    return replace(_campaign(status), updated_at=then, last_activity_at=then)
+
+
+class _IdleAdapter(_Adapter):
+    def __init__(self, *, last_active: datetime | None, missing: bool = False, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._last_active = last_active
+        self._missing = missing
+
+    async def get_session(self, session_id, *, auth_token=None, principal=None):
+        if self._missing:
+            return None
+        session = await super().get_session(session_id)
+        session.last_active = self._last_active
+        return session
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_input_request_expires_and_stops_its_session() -> None:
+    """Regin's builder tasks sat in INPUT_REQUIRED for up to 19 hours, each
+    holding a session pod on the one node all its sessions had to share."""
+    adapter = _Adapter()
+    projector, repo = _sweeping_projector(adapter)
+    stale = _aged(WorkflowCampaignStatus.BLOCKED, 7)
+    fresh = _aged(WorkflowCampaignStatus.BLOCKED, 1)
+    repo.list_active_campaigns.return_value = [stale, fresh]
+
+    assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 1
+
+    saved = [call.args[0] for call in repo.save_campaign.await_args_list]
+    failed = [c for c in saved if c.status == WorkflowCampaignStatus.FAILED]
+    # Saved once failed, then again with the session-stopped receipt.
+    assert {c.id for c in failed} == {stale.id}
+    assert "No answer to the input request within 6 hours" in failed[0].metadata["failure_error"]
+    assert failed[-1].metadata[TERMINAL_SESSION_STOPPED_KEY] is True
+    assert adapter.stopped == [stale.session_id]
+
+
+@pytest.mark.asyncio
+async def test_an_idle_session_expires_but_a_busy_one_never_does() -> None:
+    long_ago = datetime.now(UTC) - timedelta(hours=5)
+    idle_projector, idle_repo = _sweeping_projector(
+        _IdleAdapter(last_active=long_ago, activity_state="idle")
+    )
+    idle_repo.list_active_campaigns.return_value = [_aged(WorkflowCampaignStatus.RUNNING, 5)]
+    assert await idle_projector.expire_stale_campaigns(now=datetime.now(UTC)) == 1
+    failed = idle_repo.save_campaign.await_args_list[0].args[0]
+    assert "Session idle for over 2 hours" in failed.metadata["failure_error"]
+
+    busy_projector, busy_repo = _sweeping_projector(
+        _IdleAdapter(last_active=long_ago, activity_state="tool_executing")
+    )
+    busy_repo.list_active_campaigns.return_value = [_aged(WorkflowCampaignStatus.RUNNING, 5)]
+    assert await busy_projector.expire_stale_campaigns(now=datetime.now(UTC)) == 0
+    busy_repo.save_campaign.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recent_session_activity_keeps_an_old_campaign_alive() -> None:
+    recently = datetime.now(UTC) - timedelta(minutes=10)
+    projector, repo = _sweeping_projector(_IdleAdapter(last_active=recently, activity_state="idle"))
+    repo.list_active_campaigns.return_value = [_aged(WorkflowCampaignStatus.PENDING, 5)]
+
+    assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_vanished_session_expires_its_campaign() -> None:
+    projector, repo = _sweeping_projector(_IdleAdapter(last_active=None, missing=True))
+    repo.list_active_campaigns.return_value = [_aged(WorkflowCampaignStatus.RUNNING, 3)]
+
+    assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 1
+    failed = repo.save_campaign.await_args_list[0].args[0]
+    assert "no longer exists" in failed.metadata["failure_error"]
+
+
+@pytest.mark.asyncio
+async def test_zero_timeouts_disable_expiry_and_the_sweep() -> None:
+    repo = AsyncMock()
+    projector = WorkflowCampaignProjector(
+        repo=repo,
+        volundr_factory=_Factory(_Adapter()),
+        event_bus=AsyncMock(),
+        sweep_interval_seconds=300.0,
+    )
+    repo.list_active_campaigns.return_value = [
+        _aged(WorkflowCampaignStatus.BLOCKED, 100),
+        _aged(WorkflowCampaignStatus.RUNNING, 100),
+    ]
+    assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 0
+    await projector.start()
+    assert projector._sweep_task is None
+    await projector.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_runs_on_its_interval_and_stops_cleanly(monkeypatch) -> None:
+    projector, repo = _sweeping_projector(_Adapter())
+    repo.list_active_campaigns.return_value = []
+    swept = asyncio.Event()
+
+    async def _expire(*, now):
+        swept.set()
+        return 0
+
+    monkeypatch.setattr(projector, "expire_stale_campaigns", _expire)
+    projector._sweep_interval = 0.01
+    await projector.start()
+    await asyncio.wait_for(swept.wait(), timeout=1)
+    await projector.stop()
+    assert projector._sweep_task is None
+
+
+@pytest.mark.asyncio
+async def test_one_campaign_failing_its_check_does_not_stop_the_sweep() -> None:
+    projector, repo = _sweeping_projector(_Adapter())
+    good = _aged(WorkflowCampaignStatus.BLOCKED, 7)
+    bad = _aged(WorkflowCampaignStatus.RUNNING, 7)
+    repo.list_active_campaigns.return_value = [bad, good]
+    projector._campaign_adapter = AsyncMock(side_effect=[RuntimeError("unreachable"), _Adapter()])
+
+    assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stale_event_does_not_reopen_a_finished_campaign() -> None:
+    projector, repo, event_bus = _projector(_Adapter())
+    blocked = _campaign(WorkflowCampaignStatus.RUNNING)
+    repo.get_active_campaign_by_session.return_value = blocked
+    repo.save_campaign = AsyncMock(side_effect=CampaignAlreadyTerminalError("already failed"))
+
+    handled = await projector.record_help_needed(
+        {"summary": "need input"},
+        "user-1",
+        session_id="session-123",
+        gate={"node_id": "gate"},
+    )
+
+    assert handled is True
+    event_bus.emit.assert_not_awaited()

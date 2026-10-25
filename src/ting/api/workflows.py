@@ -970,9 +970,14 @@ def _configure_child_task_a2a_runtime(
     return configured
 
 
+def launch_slug_for_session_name(session_name: str) -> str:
+    """The slug a launch with this session name runs under (``{slug}`` in its paths)."""
+    return _slugify(session_name)[:96] or "workflow"
+
+
 def _resolve_launch_slug(body: WorkflowLaunchBody, workflow: WorkflowDefinition) -> str:
     if body.session_name:
-        return _slugify(body.session_name)[:96] or "workflow"
+        return launch_slug_for_session_name(body.session_name)
     return _slugify(body.prompt)[:96] or _slugify(workflow.name)[:96] or "workflow"
 
 

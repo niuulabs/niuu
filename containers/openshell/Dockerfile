@@ -115,6 +115,9 @@ COPY pyproject.toml uv.lock README.md /app/
 # edits; only the project itself is installed after src/ is copied.
 RUN uv sync --frozen --no-dev --no-editable --no-cache --no-install-project --extra nats --extra dsh
 COPY src/ /app/src/
+# migrations/ is force-included into the wheel as cli/migrations (see
+# pyproject.toml); the build fails without it.
+COPY migrations/ /app/migrations/
 # vendor/envoy_authz_protos/ is one of the wheel's registered package roots
 # (see pyproject.toml); the build fails without it even though this image
 # does not run identity.authz_main.

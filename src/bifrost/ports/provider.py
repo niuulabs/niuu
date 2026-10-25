@@ -15,6 +15,15 @@ class ProviderError(Exception):
 class ProviderPort(ABC):
     """Abstract interface that every provider adapter must implement."""
 
+    accepts_context_management: bool = False
+    """Whether the adapter forwards Anthropic ``context_management`` and
+    ``compaction`` blocks to a provider that honours them.
+
+    Only the Anthropic adapter does: the canonical format *is* its wire format.
+    A translating adapter has nowhere to put them, so the router refuses such a
+    request for it instead of letting the compaction state silently vanish.
+    """
+
     @abstractmethod
     async def complete(self, request: AnthropicRequest, model: str) -> AnthropicResponse:
         """Perform a non-streaming completion.

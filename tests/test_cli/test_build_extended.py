@@ -57,8 +57,9 @@ class TestBuildCommandDataDirs:
     def test_migration_globs_use_source_of_truth(self) -> None:
         mappings = {src.as_posix(): dest for src, dest in DATA_FILE_MAPPINGS}
 
+        # Same layout the wheel force-includes, so cli.resources finds both.
         assert mappings[next(src for src in mappings if src.endswith("migrations/*.sql"))] == (
-            "cli/migrations/volundr/"
+            "cli/migrations/"
         )
         assert (
             mappings[next(src for src in mappings if src.endswith("migrations/ting/*.sql"))]

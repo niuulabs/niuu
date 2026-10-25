@@ -769,6 +769,55 @@ async def test_a2a_backend_suspends_for_push_and_resumes_with_one_get() -> None:
     ]
 
 
+async def test_a2a_backend_refuses_push_callback_against_card_without_push() -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+            ],
+        }
+    )
+    backend = _a2a_backend(
+        client,
+        workflow_id="wf-1",
+        push_callback_url="https://ivaldi.example/a2a/push",
+    )
+
+    with pytest.raises(ToolBuildError, match="does not advertise push notifications"):
+        await backend.build(_request())
+
+    assert [body["method"] for body in client.post_bodies] == ["SendMessage"]
+
+
+async def test_a2a_backend_raises_when_push_registration_fails() -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [
+                HttpResponse(200, _a2a_card(push_notifications=True))
+            ],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                HttpResponse(403, {"detail": "forbidden"}),
+            ],
+        }
+    )
+    backend = _a2a_backend(
+        client,
+        workflow_id="wf-1",
+        push_callback_url="https://ivaldi.example/a2a/push",
+    )
+
+    with pytest.raises(ToolBuildError, match="HTTP 403"):
+        await backend.build(_request())
+
+    # No in-turn polling after a failed registration.
+    assert [body["method"] for body in client.post_bodies] == [
+        "SendMessage",
+        "CreateTaskPushNotificationConfig",
+    ]
+
+
 async def test_a2a_backend_closes_local_tracking_when_polling_is_exhausted() -> None:
     activities: list[dict[str, object]] = []
 

@@ -178,6 +178,9 @@ class NullResidentMemory(ResidentMemoryPort):
     async def write_operator_answer(self, answer: str, *, case_id: str = "") -> str:
         return ""
 
+    async def withdraw_operator_needed(self, case_id: str, *, reason: str, turn_ref: str) -> str:
+        return ""
+
     async def read_operator_answer(self, case_id: str = "") -> ResidentMemoryEntry | None:
         return None
 
@@ -559,6 +562,16 @@ class LocalResidentMemory(ResidentMemoryPort):
             _render_answered_operator_needed(prior, answer_path=answer_ref, answered_at=now),
         )
         return answer_ref
+
+    async def withdraw_operator_needed(self, case_id: str, *, reason: str, turn_ref: str) -> str:
+        marker_rel = self._prefix / _case_path(case_id, _OPERATOR_NEEDED_PATH)
+        prior = self._safe_path(marker_rel).read_text(encoding="utf-8")
+        return self._write(
+            marker_rel,
+            _render_withdrawn_operator_needed(
+                prior, reason=reason, turn_ref=turn_ref, withdrawn_at=datetime.now(UTC)
+            ),
+        )
 
     async def read_operator_answer(self, case_id: str = "") -> ResidentMemoryEntry | None:
         rel = self._prefix / _case_path(case_id, _OPERATOR_ANSWER_PATH)
@@ -950,6 +963,25 @@ def _render_consumed_operator_answer(content: str, *, consumed_at: datetime) -> 
     else:
         rendered = "# Operator Answer\n\n- status: consumed\n"
     return rendered.rstrip() + "\n" + f"- consumed_at: {consumed_at.isoformat()}\n"
+
+
+def _render_withdrawn_operator_needed(
+    prior: str,
+    *,
+    reason: str,
+    turn_ref: str,
+    withdrawn_at: datetime,
+) -> str:
+    if not _operator_marker_is_pending(prior):
+        raise ValueError("only a pending operator question can be withdrawn")
+    content = re.sub(r"^- status: .*$", "- status: withdrawn", prior, count=1, flags=re.MULTILINE)
+    return (
+        content.rstrip()
+        + "\n"
+        + f"- withdrawn_at: {withdrawn_at.isoformat()}\n"
+        + f"- withdrawn_by: {turn_ref}\n"
+        + f"- withdraw_reason: {_compact_line(reason, limit=500)}\n"
+    )
 
 
 def _render_answered_operator_needed(

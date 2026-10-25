@@ -4,6 +4,11 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
+import jwt
+import pytest
+from fastapi import HTTPException
+
+from niuu.adapters.outbound.http_auth import NoAuthHeaderAdapter, StaticBearerTokenAuthAdapter
 from ting.api import research
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
 
@@ -84,3 +89,48 @@ def test_unresolved_well_does_not_read_the_hosted_default() -> None:
     campaign.workflow_snapshot["mimir"]["registry_refs"] = [{"mount_name": "mimir-yggdrasil"}]
     with pytest.raises(ValueError, match="no adapter, path or url"):
         research._campaign_knowledge(campaign, settings)
+
+
+def _scoped_token() -> str:
+    return jwt.encode(
+        {"sub": "user-1", "token_use": "valkyrie_build", "scopes": ["ting:workflow:launch"]},
+        "test-signing-key-long-enough-for-hs256",
+        algorithm="HS256",
+    )
+
+
+def test_scoped_caller_reads_with_tings_own_mimir_credential() -> None:
+    """NIU-1149: a scoped build token is never forwarded; Ting's credential reads."""
+    adapter = research._campaign_knowledge(
+        _campaign(),
+        _settings(),
+        bearer_token=_scoped_token(),
+        service_auth=StaticBearerTokenAuthAdapter(token="ting-service-token"),
+    )
+
+    assert getattr(adapter, "_auth").token == "ting-service-token"
+
+
+@pytest.mark.parametrize("service_auth", [None, NoAuthHeaderAdapter()])
+def test_scoped_caller_without_ting_mimir_credential_is_refused(service_auth) -> None:
+    with pytest.raises(HTTPException) as raised:
+        research._campaign_knowledge(
+            _campaign(),
+            _settings(),
+            bearer_token=_scoped_token(),
+            service_auth=service_auth,
+        )
+
+    assert raised.value.status_code == 503
+    assert "dispatch.flock.mimir_service_auth" in raised.value.detail
+
+
+def test_unscoped_caller_token_is_forwarded_even_with_a_service_credential() -> None:
+    adapter = research._campaign_knowledge(
+        _campaign(),
+        _settings(),
+        bearer_token="caller-token",
+        service_auth=StaticBearerTokenAuthAdapter(token="ting-service-token"),
+    )
+
+    assert getattr(adapter, "_auth").token == "caller-token"

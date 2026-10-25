@@ -779,6 +779,26 @@ findings: "[{severity: high}]"
         assert validation_errors == []
 
     @pytest.mark.asyncio
+    async def test_an_empty_resident_turn_is_not_repaired_into_an_outcome(self) -> None:
+        """Repairing nothing invented "No previous outcome or supporting evidence
+        was supplied", closed the case and consumed the operator's answer."""
+        dl = _make_drive_loop()
+        dl._persona_config = SimpleNamespace(
+            name="k8s-valkyrie",
+            produces=_valkyrie_judgment_produces(),
+        )
+        task = _make_agent_task(task_id="task-valkyrie-empty")
+
+        class RepairAgent:
+            async def repair_outcome(self, prompt: str) -> TurnResult:
+                raise AssertionError("an empty turn must not reach repair")
+
+        with pytest.raises(RuntimeError, match="produced no output"):
+            await dl._maybe_repair_resident_valkyrie_outcome(
+                agent=RepairAgent(), task=task, response_text="  "
+            )
+
+    @pytest.mark.asyncio
     async def test_repair_unroutable_workflow_outcome_reuses_same_agent(self) -> None:
         dl = _make_drive_loop()
         dl._persona_config = SimpleNamespace(
@@ -2323,9 +2343,12 @@ rationale: delivery_evidence approval was denied
         dl._skuld_channel.emit.assert_awaited_once()
         error = dl._skuld_channel.emit.await_args.args[0]
         assert error.type == RavnEventType.ERROR
-        assert error.payload["failure_kind"] == "outcome_rejected"
-        assert "verdict 'blocked'" in error.payload["message"]
-        assert "delivery_evidence approval was denied" in error.payload["message"]
+        # A declared block is reported as one, with the agent's reason; it used
+        # to read as a malformed outcome ("cannot be accepted").
+        assert error.payload["failure_kind"] == "blocked"
+        assert error.payload["message"] == (
+            "Workflow node delivery-coordinate is blocked: delivery_evidence approval was denied"
+        )
 
     @pytest.mark.asyncio
     async def test_merges_tool_metadata_into_canonical_outcome(self) -> None:

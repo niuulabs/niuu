@@ -69,3 +69,9 @@ def module_broker_runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[
         yield runtime
     finally:
         singleton._session_runtime_cache, singleton._session_tools_cache = saved
+
+
+@pytest.fixture(autouse=True)
+def _isolate_codex_daemon_dir(tmp_path, monkeypatch):
+    """Keep Codex app-server spawns from touching the real /tmp/codex-daemon-<uid>."""
+    monkeypatch.setattr("skuld.transports.codex_ws._CODEX_DAEMON_PARENT", tmp_path)

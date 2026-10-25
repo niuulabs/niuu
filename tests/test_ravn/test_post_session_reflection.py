@@ -828,6 +828,9 @@ async def test_promotion_reuses_the_recorded_learning_path_after_a_retitle():
     """One belief promotes to one page even when the model rewords its title."""
     mimir = AsyncMock()
     mimir.search.return_value = []
+    # The page it was promoted to before, which re-promotion reads to keep a
+    # curated procedure (this one has none).
+    mimir.read_page.return_value = _loop_page("First observation.")
     svc = PostSessionReflectionService(InProcessBus(), mimir, AsyncMock(), _make_config())
 
     candidate = _mark_candidate_promoted(
@@ -1333,8 +1336,12 @@ async def test_write_learning_skips_on_empty_title():
 
 
 @pytest.mark.asyncio
-async def test_write_learning_handles_upsert_error_on_update():
-    existing = _make_mimir_page("learnings/general/some-thing", "Learning: Some thing")
+async def test_write_learning_raises_when_the_update_cannot_be_written():
+    existing = _make_mimir_page(
+        "learning-candidates/general/some-thing",
+        "Learning candidate: Some thing",
+        category="learning-candidates",
+    )
     bus = InProcessBus()
     mimir = AsyncMock()
     mimir.search.return_value = [existing]
@@ -1350,12 +1357,13 @@ async def test_write_learning_handles_upsert_error_on_update():
         "tags": [],
         "evidence": "e",
     }
-    # Must not raise.
-    await svc._write_learning(learning, {"session_id": "s", "repo_slug": ""})
+    # A lost write is a hard failure, never a silently dropped observation.
+    with pytest.raises(RuntimeError, match="write error"):
+        await svc._write_learning(learning, {"session_id": "s", "repo_slug": ""})
 
 
 @pytest.mark.asyncio
-async def test_write_learning_handles_upsert_error_on_create():
+async def test_write_learning_raises_when_the_candidate_cannot_be_written():
     bus = InProcessBus()
     mimir = AsyncMock()
     mimir.search.return_value = []
@@ -1371,8 +1379,8 @@ async def test_write_learning_handles_upsert_error_on_create():
         "tags": [],
         "evidence": "e",
     }
-    # Must not raise.
-    await svc._write_learning(learning, {"session_id": "s", "repo_slug": ""})
+    with pytest.raises(RuntimeError, match="write error"):
+        await svc._write_learning(learning, {"session_id": "s", "repo_slug": ""})
 
 
 # ---------------------------------------------------------------------------

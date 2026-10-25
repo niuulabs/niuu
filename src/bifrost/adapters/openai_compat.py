@@ -5,6 +5,11 @@ Handles any endpoint that speaks the OpenAI Chat Completions API:
 - vLLM, TGI, Azure OpenAI, LM Studio, llama.cpp server, etc.
 
 Ollama extends this class with minor quirks.
+
+With ``passthrough: true`` on the provider, a caller that speaks Chat
+Completions is served natively: its body is posted as is, with the model name
+rewritten, the provider's ``chat_template_kwargs`` applied and, on a stream,
+``stream_options.include_usage`` set so Bifröst can meter the call.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from typing import Any
 
 import httpx
 
+from bifrost.ports.native import NativePassthroughPort, NativeProtocol
 from bifrost.ports.provider import ProviderPort
 from bifrost.translation.models import AnthropicRequest, AnthropicResponse
 from bifrost.translation.streaming import openai_stream_to_anthropic
@@ -25,12 +31,14 @@ from bifrost.translation.to_openai import anthropic_to_openai
 logger = logging.getLogger(__name__)
 
 
-class OpenAICompatAdapter(ProviderPort):
+class OpenAICompatAdapter(ProviderPort, NativePassthroughPort):
     """Provider adapter for OpenAI-compatible Chat Completions endpoints.
 
     Translates Anthropic-format requests to OpenAI format before sending
     and converts responses back to Anthropic format.
     """
+
+    native_protocol = NativeProtocol.OPENAI_CHAT_COMPLETIONS
 
     def __init__(
         self,
@@ -105,6 +113,24 @@ class OpenAICompatAdapter(ProviderPort):
                 ),
             ):
                 yield event
+
+    async def native_stream(self, payload: dict[str, Any], model: str) -> AsyncIterator[str]:
+        stream_options = {**(payload.get("stream_options") or {}), "include_usage": True}
+        body = self._prepare_payload(
+            {**payload, "model": model, "stream": True, "stream_options": stream_options}
+        )
+        async with self._client.stream(
+            "POST", self._completions_url(), headers=self._headers(), json=body
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                yield f"{line}\n"
+
+    async def native_complete(self, payload: dict[str, Any], model: str) -> dict[str, Any]:
+        body = self._prepare_payload({**payload, "model": model, "stream": False})
+        resp = await self._client.post(self._completions_url(), headers=self._headers(), json=body)
+        resp.raise_for_status()
+        return resp.json()
 
     async def close(self) -> None:
         await self._client.aclose()

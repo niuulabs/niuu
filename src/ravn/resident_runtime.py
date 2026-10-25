@@ -32,6 +32,7 @@ from ravn.domain.resident_continuation import (
 )
 from ravn.domain.resident_state import ResidentStatePort
 from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
+from ravn.ports.known_resolutions import KnownResolutionPort
 from ravn.ports.resident_notifications import ResidentNotificationOutboxPort
 from ravn.ports.trigger import TriggerPort
 from ravn.resident_continuation import (
@@ -105,7 +106,13 @@ is required. Declare `next_action_timing` as `external_event` or `scheduled_time
 When you sleep with `scheduled_time`, also give `wake_at` as an ISO timestamp. The runtime
 persists it and wakes this same case at that time; without a usable `wake_at` it falls back to
 its configured default delay. Sleeping with `external_event` schedules nothing — the next
-observation is the wake source."""
+observation is the wake source.
+
+The open operator questions above are ones you already asked that are still waiting. Do not
+ask any of them again in other words; wait for the answer. When one no longer needs an answer
+— the work it waited on is done, it was decided another way, or a newer question replaces it —
+withdraw it: include `withdrawn_questions` as a list of `{case_id: <case_id>, reason: <why>}`.
+The runtime closes exactly those questions and nothing else."""
 
 
 @dataclass(frozen=True)
@@ -146,8 +153,12 @@ class ResidentRuntime:
         directed_messages_enabled: bool = True,
         environment_id: str = "",
         review_requester: ReviewRequester | None = None,
+        known_resolutions: KnownResolutionPort | None = None,
+        known_resolution_redirect_seconds: float = 60.0,
     ) -> None:
         self._state = state
+        self._known_resolutions = known_resolutions
+        self._known_resolution_redirect_seconds = max(0.0, float(known_resolution_redirect_seconds))
         self._inbox = inbox
         self._resident_id = resident_id.strip() or "resident"
         self._resident_personality = resident_personality.strip()
@@ -370,6 +381,19 @@ class ResidentRuntime:
             if a2a_tasks
             else "(No active durable A2A task handles.)"
         )
+        open_questions = await self._state.list_operator_needed()
+        questions_block = (
+            _bounded(
+                json.dumps(
+                    [_open_question_prompt_view(entry) for entry in open_questions],
+                    indent=2,
+                    sort_keys=True,
+                ),
+                self._context_max_chars,
+            )
+            if open_questions
+            else "(No operator questions are waiting for an answer.)"
+        )
         return (
             f"{task.initiative_context.rstrip()}\n\n"
             "## Durable resident working state\n\n"
@@ -377,6 +401,8 @@ class ResidentRuntime:
             f"{state_block}\n\n"
             "## Durable A2A task handles\n\n"
             f"{a2a_block}\n\n"
+            "## Open operator questions\n\n"
+            f"{questions_block}\n\n"
             f"{_WORKING_STATE_PROTOCOL}\n"
         )
 
@@ -759,6 +785,9 @@ class ResidentRuntime:
                     attributes={"ravn.resident.id": self._resident_id},
                 )
 
+        if outcome_valid:
+            await self._withdraw_operator_questions(fields, case_id=case_id, turn_ref=turn_ref)
+
         snapshot = ResidentBudgetSnapshot(
             turns_used=turn_index,
             elapsed_seconds=_elapsed(task.resident_started_at or task.created_at.isoformat()),
@@ -912,6 +941,20 @@ class ResidentRuntime:
                     budget_ref=budget_ref,
                     reason=budget_reason,
                 )
+            redirected = await self._redirect_to_known_resolution(
+                task=task,
+                record=record,
+                fields=fields,
+                case_id=case_id,
+                root_id=root_id,
+                turn_ref=turn_ref,
+                turn_index=turn_index,
+                mandate=mandate,
+                cumulative=cumulative,
+                budget_ref=budget_ref,
+            )
+            if redirected is not None:
+                return redirected
             return await self._ask_operator(
                 task=task,
                 record=record,
@@ -1203,6 +1246,83 @@ class ResidentRuntime:
             queued += 1
         return queued
 
+    async def _redirect_to_known_resolution(
+        self,
+        *,
+        task: AgentTask,
+        record: ResidentTurnRecord,
+        fields: dict[str, Any],
+        case_id: str,
+        root_id: str,
+        turn_ref: str,
+        turn_index: int,
+        mandate: str,
+        cumulative: TokenUsage,
+        budget_ref: str,
+    ) -> ResidentTurnDisposition | None:
+        """Answer an escalation the resident already has a resolution for.
+
+        Once per case, the question goes back to the resident as a short
+        scheduled wake carrying what it already learned, commissioned, or
+        filed. Asking again in the same case reaches the operator, and that is
+        recorded against the resolution so an improvement that does not help
+        is found out and demoted.
+        """
+        if self._known_resolutions is None:
+            return None
+        question = _operator_question(fields, record)
+        resolution = await self._known_resolutions.resolution_for(question)
+        if resolution is None:
+            return None
+        telemetry = get_observability()
+        if not await self._known_resolutions.note_redirect(resolution.ref, case_id):
+            await self._known_resolutions.note_escalated_anyway(resolution.ref, case_id, question)
+            telemetry.count(
+                "ravn.resident.escalations_despite_resolution",
+                attributes={"ravn.resident.id": self._resident_id},
+                description="Escalations that reached the operator despite a known resolution.",
+            )
+            return None
+        wake_at = datetime.now(UTC) + timedelta(seconds=self._known_resolution_redirect_seconds)
+        # One line: it is stored as the wake's recorded reason and shown on waking.
+        instruction = " ".join(
+            f"Known resolution instead of asking the operator: {resolution.instruction}".split()
+        )
+        wake_ref, wake_at_text = await self._schedule_wake(
+            task=task,
+            fields={
+                **fields,
+                "next_action_timing": "scheduled_time",
+                "wake_at": wake_at.isoformat(),
+                "selected_next_action": instruction,
+            },
+            case_id=case_id,
+            root_id=root_id,
+            turn_ref=turn_ref,
+            turn_index=turn_index,
+            mandate=mandate,
+            cumulative=cumulative,
+        )
+        telemetry.count(
+            "ravn.resident.escalations_redirected",
+            attributes={"ravn.resident.id": self._resident_id},
+            description="Operator escalations answered by a resolution the resident already had.",
+        )
+        telemetry.event(
+            "ravn.resident.escalation_redirected",
+            attributes={"ravn.resident.case_id": case_id, "ravn.friction.ref": resolution.ref},
+            content={"question": question, "instruction": resolution.instruction},
+        )
+        return ResidentTurnDisposition(
+            kind=ContinuationDecisionKind.SLEEP,
+            case_id=case_id,
+            turn_ref=turn_ref,
+            budget_ref=budget_ref,
+            reason=f"known resolution ({resolution.ref}) instead of asking the operator",
+            wake_ref=wake_ref,
+            wake_at=wake_at_text,
+        )
+
     async def _ask_operator(
         self,
         *,
@@ -1251,6 +1371,53 @@ class ResidentRuntime:
             operator_ref=operator_ref,
             question=question,
         )
+
+    async def _withdraw_operator_questions(
+        self,
+        fields: Mapping[str, Any],
+        *,
+        case_id: str,
+        turn_ref: str,
+    ) -> None:
+        """Close the open questions this turn judged no longer need an answer.
+
+        The judgment is the resident's; this only applies it. A withdrawal naming
+        no open question is rejected visibly rather than guessed at.
+        """
+        requested = fields.get("withdrawn_questions")
+        if not requested:
+            return
+        telemetry = get_observability()
+        items = requested if isinstance(requested, list) else [requested]
+        for item in items:
+            target, reason = _withdrawal_request(item, fallback_reason=fields.get("rationale"))
+            pending = await self._state.read_operator_needed(target) if target else None
+            if pending is None or target == case_id:
+                telemetry.event(
+                    "ravn.resident.operator_question.withdraw_rejected",
+                    attributes={"ravn.resident.case_id": case_id},
+                    content={
+                        "requested": item,
+                        "reason": "its own question"
+                        if target == case_id
+                        else "no open question for that case",
+                    },
+                )
+                continue
+            operator_ref = await self._state.withdraw_operator_needed(
+                target, reason=reason, turn_ref=turn_ref
+            )
+            if self._notifications is not None:
+                # Its "needs your input" item must not keep asking the owner.
+                await self._notifications.resolve(group=target)
+            telemetry.event(
+                "ravn.resident.operator_question.withdrawn",
+                attributes={
+                    "ravn.resident.case_id": case_id,
+                    "ravn.resident.withdrawn_case_id": target,
+                },
+                content={"reason": reason, "operator_ref": operator_ref},
+            )
 
     async def pending_questions(self) -> list[dict[str, str]]:
         return [_pending_view(item) for item in await self._state.list_operator_needed()]
@@ -1599,6 +1766,12 @@ class ResidentRuntime:
                 "believe. The restraint below is about consequences, not about "
                 "curiosity — a turn that concludes without having looked has "
                 "grounded nothing.",
+                "",
+                "Your working state records what you were last focused on; it is "
+                "not the edge of your charter. Survey the charter's whole scope — "
+                "including any work queue it names — before you conclude. Something "
+                "you are watching that is progressing on its own and is not waiting "
+                "on you is not a reason to leave everything else untouched.",
                 "",
                 "Deciding that nothing warrants action is a correct and expected "
                 "outcome. Do not manufacture work to justify this turn. Prefer "
@@ -2083,6 +2256,24 @@ def _evidence_refs(fields: dict[str, Any], task: AgentTask) -> tuple[str, ...]:
             if value:
                 refs.append(value)
     return tuple(dict.fromkeys(refs))
+
+
+def _open_question_prompt_view(entry: ResidentMemoryEntry) -> dict[str, str]:
+    return {
+        "case_id": _metadata(entry.content, "case_id") or _case_from_path(entry.path),
+        "asked_at": _metadata(entry.content, "created_at"),
+        "question": _metadata(entry.content, "question"),
+    }
+
+
+def _withdrawal_request(item: Any, *, fallback_reason: Any) -> tuple[str, str]:
+    if isinstance(item, Mapping):
+        target = str(item.get("case_id") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+    else:
+        target = str(item or "").strip()
+        reason = ""
+    return target, reason or str(fallback_reason or "").strip() or "withdrawn by the resident"
 
 
 def _pending_view(entry: ResidentMemoryEntry) -> dict[str, str]:

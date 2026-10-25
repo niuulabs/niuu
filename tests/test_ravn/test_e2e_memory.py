@@ -177,7 +177,12 @@ class TestMemoryRecallScenario:
             _ep("ep-1", "sess-old", "nginx proxy deployment configuration completed")
         )
 
-        llm = ScriptedLLM([_text_response("I remember the nginx deployment.")])
+        llm = ScriptedLLM(
+            [
+                _text_response("I remember the nginx deployment."),
+                _text_response("Reflection on the nginx recall."),
+            ]
+        )
         agent, _ = _make_agent(llm, memory=mem)
 
         # Query uses exact terms from the episode.
@@ -240,7 +245,12 @@ class TestMemoryRecallScenario:
 
     async def test_episode_recorded_after_turn(self, mem: SqliteMemoryAdapter) -> None:
         """The turn's episode is recorded in the memory backend."""
-        llm = ScriptedLLM([_text_response("Deployed to staging; health endpoint returned 200.")])
+        llm = ScriptedLLM(
+            [
+                _text_response("Deployed to staging; health endpoint returned 200."),
+                _text_response("Reflection on the staging deploy."),
+            ]
+        )
         agent, _ = _make_agent(llm, memory=mem)
 
         await agent.run_turn("deploy the service to staging")
@@ -342,6 +352,7 @@ class TestSessionSearchScenario:
             [
                 _tool_response("session_search", query="prometheus"),
                 _text_response("Found past prometheus work. Reusing configuration."),
+                _text_response("Reflection on the prometheus reuse."),
             ]
         )
         agent, _ = _make_agent(llm, memory=mem, tools=[search_tool])

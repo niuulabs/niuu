@@ -100,6 +100,11 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch"]
+  # Session pods' Warning events: why a session could not start (e.g.
+  # FailedScheduling). They outlive the pods Flux uninstalls.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
   {{- end }}
   {{- if contains "K8sStorageAdapter" .Values.storageAdapter.adapter }}
   # Cluster-wide access to PVCs (cross-namespace provisioning)

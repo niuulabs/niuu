@@ -51,11 +51,11 @@ def migration_dir(variant: str = "volundr") -> Path:
     if repo_dir.is_dir():
         return repo_dir
 
-    # Fallback: bundled package data (Nuitka binary)
+    # Installed package data: the wheel force-includes migrations/ as
+    # cli/migrations, and the Nuitka binary maps it to the same layout.
+    pkg_dir = importlib.resources.files("cli") / "migrations"
     if variant == "ting":
-        pkg_dir = importlib.resources.files("cli") / "migrations" / "ting"
-    else:
-        pkg_dir = importlib.resources.files("cli") / "migrations" / "volundr"
+        pkg_dir = pkg_dir / "ting"
 
     resolved = _resource_path(pkg_dir)
     if resolved.is_dir():

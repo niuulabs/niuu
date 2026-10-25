@@ -28,8 +28,7 @@ where `session_id` is the Forge session UUID string.
 
 ## 2. Storage: migration `000084_forge_notifications` (core)
 
-Idempotent SQL, written in all three places: `migrations/`,
-`charts/volundr/templates/migrations-configmap.yaml` and `src/cli/migrations/volundr/`.
+Idempotent SQL in `migrations/`, which the Helm chart and the CLI bundle read directly.
 
 ```sql
 forge_notifications(

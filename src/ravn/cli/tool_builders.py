@@ -677,8 +677,76 @@ def _build_hooks(settings: Settings) -> tuple[list[PreToolHook], list[PostToolHo
 # ---------------------------------------------------------------------------
 
 
+def _build_compaction(settings: Settings, llm: Any, model: str) -> tuple[Any, Any]:
+    """Build *model*'s compaction: ``(compressor, native_compaction)``.
+
+    At most one is set, as ``context_management.compaction`` (or its
+    ``compaction_models`` entry for *model*) says:
+
+    - ``ravn``: Ravn's ContextCompressor, and no native compaction;
+    - ``native``: the provider compacts — the adapter is told to for *model*
+      and returned as the native-compaction port; Ravn never compacts;
+    - ``off``: neither.
+
+    Raises:
+        ConfigurationError: ``native`` for an adapter that cannot compact
+            natively, or with no prompt budget to derive the threshold from.
+    """
+    from ravn.config import CompactionMode  # noqa: PLC0415
+
+    match settings.context_management.compaction_for(model):
+        case CompactionMode.RAVN:
+            return _build_compressor(settings, llm), None
+        case CompactionMode.NATIVE:
+            return None, _enable_native_compaction(settings, llm, model)
+        case CompactionMode.OFF:
+            return None, None
+    raise AssertionError("Unreachable compaction mode")
+
+
+def _enable_native_compaction(settings: Settings, llm: Any, model: str) -> Any:
+    """Turn on provider compaction for *model* on *llm* and return the port.
+
+    The provider counts real tokens while Ravn's budget is a conservative
+    estimate (``token_estimate_safety_factor``), so the threshold is the same
+    point Ravn's own compactor would fire at — ``compression_threshold`` of the
+    prompt budget — converted back to real tokens.
+
+    Raises:
+        ConfigurationError: The adapter has no native compaction, or there is
+            no prompt budget (``max_prompt_tokens`` or ``context_window_tokens``).
+    """
+    from ravn.domain.exceptions import ConfigurationError  # noqa: PLC0415
+    from ravn.ports.native_compaction import NativeCompactionPort  # noqa: PLC0415
+
+    if not isinstance(llm, NativeCompactionPort):
+        raise ConfigurationError(
+            f"context_management.compaction is 'native' for model {model!r}, but the LLM "
+            f"adapter {type(llm).__name__} cannot ask its provider to compact. Use an adapter "
+            "whose protocol has provider compaction "
+            "(ravn.adapters.llm.openai_responses.OpenAIResponsesAdapter, or the Anthropic / "
+            "Bifröst Anthropic adapters), or set compaction to 'ravn' or 'off' for this model"
+        )
+    cm = settings.context_management
+    budget = cm.max_prompt_tokens or max(
+        0, cm.context_window_tokens - settings.effective_max_tokens()
+    )
+    if budget <= 0:
+        raise ConfigurationError(
+            f"context_management.compaction is 'native' for model {model!r} but no prompt "
+            "budget is configured to derive the compaction threshold from: set "
+            "context_management.max_prompt_tokens or context_window_tokens"
+        )
+    threshold = int(budget * cm.compression_threshold / cm.token_estimate_safety_factor)
+    llm.enable_native_compaction(model=model, threshold_tokens=threshold)
+    logger.info(
+        "Native compaction enabled for %s: provider compacts above %d tokens", model, threshold
+    )
+    return llm
+
+
 def _build_compressor(settings: Settings, llm: Any) -> Any:
-    """Build the context compressor, or None."""
+    """Build Ravn's client-side context compressor."""
     from ravn.compression import ContextCompressor
 
     cm = settings.context_management

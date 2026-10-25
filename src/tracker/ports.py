@@ -41,6 +41,21 @@ class IssueTrackerProvider(ABC):
     async def update_issue_status(self, issue_id: str, status: str) -> TrackerIssue: ...
 
     @abstractmethod
+    async def update_issue(
+        self,
+        issue_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> TrackerIssue:
+        """Rewrite an issue's title and/or description and return it.
+
+        ``description`` replaces the whole body (Markdown). Fields left as
+        ``None`` are not touched. Raises :class:`TrackerRequestError` when the
+        issue is outside the connection's scope or the tracker rejects the edit.
+        """
+
+    @abstractmethod
     async def create_issue(
         self,
         title: str,

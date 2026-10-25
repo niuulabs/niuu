@@ -1,1 +1,0 @@
-DROP INDEX IF EXISTS idx_forge_notification_deliveries_rule_delivered;

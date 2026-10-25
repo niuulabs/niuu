@@ -20,6 +20,7 @@ async def _run_daemon(
     from ravn.adapters.channels.gateway import RavnGateway
     from ravn.adapters.channels.gateway_http import HttpGateway
     from ravn.adapters.channels.gateway_telegram import TelegramGateway
+    from ravn.cli.runtime_builders import require_tool_build_push  # noqa: PLC0415
     from ravn.drive_loop import DriveLoop
     from ravn.ports.channel import ChannelPort
 
@@ -48,6 +49,7 @@ async def _run_daemon(
                 max_iterations = persona_config.iteration_budget
     base_model = _resolve_persona_model(settings, persona_config)
 
+    require_tool_build_push(settings)
     workspace = _resolve_workspace(settings)
     from ravn.cli.tool_builders import _build_learned_tool_resolver  # noqa: PLC0415
 
@@ -55,7 +57,10 @@ async def _run_daemon(
     cli_transport_executor = _uses_cli_transport_executor(persona_config)
     llm = None if cli_transport_executor else _build_llm(settings)
     memory = _build_memory(settings)
-    compressor = None if cli_transport_executor else _build_compressor(settings, llm)
+    # Built here for the persona's own model so an impossible compaction setting
+    # fails at startup; each task builds its own for the model it runs on.
+    if llm is not None:
+        _build_compaction(settings, llm, base_model)
     pre_hooks, post_hooks = _build_hooks(settings)
 
     mcp_manager: Any | None = None
@@ -64,6 +69,10 @@ async def _run_daemon(
     # Build Mímir adapter early so _agent_factory closure can capture it.
     daemon_mimir = _build_mimir(settings)
     memory = _with_mimir_fact_capture(memory, daemon_mimir)
+    learning_consolidation = _build_learning_consolidation(settings, llm)
+    friction_ledger = _build_friction_ledger(
+        settings, mimir=daemon_mimir, consolidation=learning_consolidation
+    )
 
     # Resolve the resident's charter once, before any consumer (this runtime,
     # EnvironmentSignalRuntime's triage prompts, resident context, the HUD
@@ -96,6 +105,9 @@ async def _run_daemon(
             settings,
             state=resident_state,
             inbox=resident_inbox,
+            known_resolutions=(
+                friction_ledger if settings.reflection.self_improvement.enabled else None
+            ),
         )
 
     # What the resident wants its owner to hear about (questions it waits on, its
@@ -311,6 +323,9 @@ async def _run_daemon(
             resolved_persona,
             cli_transport_executor=_uses_cli_transport_executor(resolved_persona),
         )
+        compressor, native_compaction = (
+            _build_compaction(settings, llm, resolved_model) if llm is not None else (None, None)
+        )
         agent = executor.build(
             llm=llm,
             tools=tools,
@@ -332,10 +347,20 @@ async def _run_daemon(
             inject_learnings=settings.reflection.inject_learnings,
             max_learnings_injected=settings.reflection.max_learnings_injected,
             learning_token_budget=settings.reflection.learning_token_budget,
+            learning_index=learning_consolidation.lessons if learning_consolidation else None,
+            learning_entry_max_chars=settings.reflection.learning_entry_max_chars,
+            max_route_recoveries=settings.reflection.verified_promotion.max_route_recoveries,
+            route_excerpt_chars=settings.reflection.verified_promotion.excerpt_chars,
+            max_friction_signals=(
+                settings.reflection.friction.max_signals
+                if settings.reflection.friction.enabled
+                else 0
+            ),
             episode_summary_max_chars=settings.agent.episode_summary_max_chars,
             episode_task_max_chars=settings.agent.episode_task_max_chars,
             iteration_budget=budget,
             compressor=compressor,
+            native_compaction=native_compaction,
             prompt_builder=_build_prompt_builder(settings),
             reflection_model=settings.effective_memory_reflection_model(),
             reflection_max_tokens=settings.memory.reflection_max_tokens,
@@ -610,12 +635,39 @@ async def _run_daemon(
         await realm_capability_sync.start()
         typer.echo("  Realm capability sync: subscribed")
 
+    learning_curator = _build_learning_curator(
+        settings,
+        mimir=daemon_mimir,
+        consolidation=learning_consolidation,
+    )
+    self_improvement = _build_self_improvement(
+        settings,
+        mimir=daemon_mimir,
+        consolidation=learning_consolidation,
+        ledger=friction_ledger,
+        drive_loop=drive_loop,
+        resident_id=(
+            resident_runtime.resident_id
+            if resident_runtime is not None
+            else settings.environment.resident_name or settings.environment.id
+        ),
+    )
     resident_wakefulness = _build_resident_wakefulness(
         settings,
         resident_learning_runtime=resident_learning_runtime,
         publisher=environment_signal_publisher,
         memory=memory,
+        learning_curator=learning_curator,
+        self_improvement=self_improvement,
     )
+    if learning_curator is not None and resident_wakefulness is None:
+        raise RuntimeError(
+            "reflection.curation.enabled is true, but learning curation runs inside "
+            "the resident consolidation dream and resident wakefulness is not running "
+            "(resident_wakefulness.enabled, a resident learning runtime, and a mesh "
+            "publisher are all required). Enable those or set "
+            "reflection.curation.enabled: false."
+        )
     if resident_wakefulness is not None:
         await resident_wakefulness.start()
         typer.echo("  Resident wakefulness: started")
@@ -743,6 +795,9 @@ async def _run_daemon(
             mimir=daemon_mimir,
             llm=llm,
             config=settings.effective_post_session_reflection_config(),
+            lessons=learning_consolidation.lessons if learning_consolidation else None,
+            judge=learning_consolidation.judge if learning_consolidation else None,
+            friction=friction_ledger,
         )
         await daemon_reflection_svc.start()
 

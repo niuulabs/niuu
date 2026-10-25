@@ -113,10 +113,9 @@ def test_duplicate_profile_ids_fail_configuration() -> None:
         )
 
 
-def test_chart_contains_profile_config_and_dual_migration() -> None:
+def test_chart_contains_profile_config_and_migrations() -> None:
     root = Path(__file__).resolve().parents[2]
     configmap = (root / "charts/volundr/templates/configmap.yaml").read_text()
-    migrations = (root / "charts/volundr/templates/migrations-configmap.yaml").read_text()
     migration = (root / "migrations/000055_resident_runtimes.up.sql").read_text()
     usage_migration = (root / "migrations/000056_resident_usage.up.sql").read_text()
     trace_migration = (root / "migrations/000058_resident_session_traces.up.sql").read_text()
@@ -125,10 +124,6 @@ def test_chart_contains_profile_config_and_dual_migration() -> None:
     assert "residentRuntimeProfiles" in configmap
     assert "residentRuntimeControllers" in configmap
     assert "residentRuntimeSessionControllers" in configmap
-    assert "000055_resident_runtimes.up.sql" in migrations
     assert "CREATE TABLE IF NOT EXISTS resident_runtimes" in migration
-    assert "CREATE TABLE IF NOT EXISTS resident_runtimes" in migrations
     assert "ADD COLUMN IF NOT EXISTS tokens_used" in usage_migration
-    assert "000056_resident_usage.up.sql" in migrations
     assert "DROP CONSTRAINT IF EXISTS session_spans_session_id_fkey" in trace_migration
-    assert "000058_resident_session_traces.up.sql" in migrations

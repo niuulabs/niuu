@@ -316,17 +316,18 @@ class A2AToolBuildBackend(ToolBuildBackend):
         )
 
         push_registered = bool(continuation.get("push_registered"))
-        if not push_registered and push_supported and self._push_callback_url:
-            try:
-                await self._register_push(endpoint, task_id)
-                push_registered = True
-            except ToolBuildError as exc:
-                logger.warning(
-                    "A2A tool-build push registration failed for task %s; "
-                    "using compatibility polling: %s",
-                    task_id,
-                    exc,
+        if not push_registered and self._push_callback_url:
+            # Configured for push, so a build must be followable by push. Falling
+            # back to polling inside this turn left later builder questions
+            # unanswered once the turn ended.
+            if not push_supported:
+                raise ToolBuildError(
+                    f"A2A builder at {self._card_url} does not advertise push "
+                    f"notifications, so task {task_id} could not wake this resident; "
+                    "enable push on the builder or remove push_callback_url"
                 )
+            await self._register_push(endpoint, task_id)
+            push_registered = True
 
         if push_registered:
             final, gate_exchanges = await self._advance_push_task_once(

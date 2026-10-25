@@ -78,7 +78,7 @@ from ting.api.workflows import (
     WorkflowLaunchExecution,
     _can_view_workflow,
     _resolve_target_adapter,
-    _slugify,
+    launch_slug_for_session_name,
     launch_workflow_execution,
     resolve_workflow_repo,
 )
@@ -117,6 +117,11 @@ _CANCELED_KEY = "a2a_canceled"
 _CONTEXT_ID_KEY = "a2a_context_id"
 _MESSAGE_ID_KEY = "a2a_message_id"
 _WORKFLOW_SLUG_KEY = "a2a_workflow_slug"
+
+
+def _launch_session_name(reservation: A2ALaunchReservation) -> str:
+    """Session name of an A2A launch; stable per reservation so a retry recovers it."""
+    return f"a2a-{reservation.id.hex}"
 
 
 async def resolve_a2a_launch_repo() -> A2ALaunchReservationRepository:
@@ -378,7 +383,9 @@ class WorkflowTaskHandler(RequestHandler):
                 "prompt": prompt,
                 _CONTEXT_ID_KEY: message.context_id or reservation.task_id,
                 _MESSAGE_ID_KEY: message.message_id,
-                _WORKFLOW_SLUG_KEY: _slugify(_optional_str(metadata, "sessionName") or prompt),
+                # The slug the session runs under, so ``{slug}`` in declared
+                # artifact paths resolves to where the workflow wrote them.
+                _WORKFLOW_SLUG_KEY: launch_slug_for_session_name(_launch_session_name(reservation)),
                 **({"repo": str(metadata["repo"])} if metadata.get("repo") else {}),
                 **({"branch": str(metadata["branch"])} if metadata.get("branch") else {}),
                 # The workload that sent this task for its owner (attribution only).
@@ -419,7 +426,7 @@ class WorkflowTaskHandler(RequestHandler):
                     parent_execution,
                     request=self._request,
                     prompt=prompt,
-                    session_name=f"a2a-{reservation.id.hex}",
+                    session_name=_launch_session_name(reservation),
                     repo=str(metadata.get("repo") or ""),
                     branch=str(metadata.get("branch") or ""),
                     model=str(metadata.get("model") or ""),
@@ -432,7 +439,7 @@ class WorkflowTaskHandler(RequestHandler):
             else:
                 launch = WorkflowLaunchBody(
                     prompt=prompt,
-                    sessionName=f"a2a-{reservation.id.hex}",
+                    sessionName=_launch_session_name(reservation),
                     repo=str(metadata.get("repo") or ""),
                     branch=str(metadata.get("branch") or ""),
                     model=str(metadata.get("model") or ""),
@@ -483,7 +490,7 @@ class WorkflowTaskHandler(RequestHandler):
                     execution = WorkflowLaunchExecution(
                         workflow=workflow,
                         workflow_snapshot=pending.workflow_snapshot,
-                        slug=f"a2a-{reservation.id.hex}",
+                        slug=launch_slug_for_session_name(_launch_session_name(reservation)),
                         session=recovered,
                         adapter=target_adapter,
                         connection_id=getattr(target_adapter, "target_id", None),
@@ -550,7 +557,7 @@ class WorkflowTaskHandler(RequestHandler):
                 "cluster_name": execution.session.cluster_name,
                 _CONTEXT_ID_KEY: message.context_id or reservation.task_id,
                 _MESSAGE_ID_KEY: message.message_id,
-                _WORKFLOW_SLUG_KEY: pending.metadata[_WORKFLOW_SLUG_KEY],
+                _WORKFLOW_SLUG_KEY: execution.slug,
                 # Code-output pointers: for code workflows the durable
                 # artifact is the branch the session pushes, not a Mimir page.
                 **({"repo": launch.repo} if launch.repo else {}),
@@ -681,12 +688,9 @@ class WorkflowTaskHandler(RequestHandler):
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="No Volundr connection is available for this user",
             )
-        await adapter.stop_session(
-            campaign.session_id,
-            auth_token=self._downstream_auth_token(),
-            principal=self._principal,
-        )
-
+        # Record the cancellation before stopping the session: the stop emits
+        # events, and a projector that read the campaign while it was still
+        # active used to write it back over the cancellation.
         now = datetime.now(UTC)
         updated = WorkflowCampaign(
             **{
@@ -699,6 +703,11 @@ class WorkflowTaskHandler(RequestHandler):
             }
         )
         saved = await self._campaign_repo.save_campaign(updated)
+        await adapter.stop_session(
+            campaign.session_id,
+            auth_token=self._downstream_auth_token(),
+            principal=self._principal,
+        )
         await _emit_campaign_event(self._request, "workflow.campaign.updated", saved)
         await self._queue_push(saved)
         return campaign_to_task(saved)
@@ -710,7 +719,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: ListTasksRequest,
         context: ServerCallContext,
     ) -> ListTasksResponse:
-        self._reject_execution_gateway_operation()
+        launcher_actor = self._scoped_list_actor()
         campaigns = await self._campaign_repo.list_campaigns(
             owner_id=self._principal.user_id,
         )
@@ -722,6 +731,11 @@ class WorkflowTaskHandler(RequestHandler):
             else None
         )
         for campaign in campaigns:
+            if (
+                launcher_actor is not None
+                and str(campaign.metadata.get("actor_id") or "") != launcher_actor
+            ):
+                continue
             task = campaign_to_task(campaign)
             if params.context_id and task.context_id != params.context_id:
                 continue
@@ -785,7 +799,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: TaskPushNotificationConfig,
         context: ServerCallContext,
     ) -> TaskPushNotificationConfig:
-        self._reject_execution_gateway_operation()
+        await self._authorize_scoped_task_operation(str(params.task_id or "").strip())
         task_id = str(params.task_id or "").strip()
         if not task_id:
             raise InvalidParamsError("taskId is required")
@@ -805,7 +819,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: GetTaskPushNotificationConfigRequest,
         context: ServerCallContext,
     ) -> TaskPushNotificationConfig:
-        self._reject_execution_gateway_operation()
+        await self._authorize_scoped_task_operation(str(params.task_id or "").strip())
         task_id = str(params.task_id or "").strip()
         config_id = str(params.id or "").strip()
         if not task_id or not config_id:
@@ -825,7 +839,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: ListTaskPushNotificationConfigsRequest,
         context: ServerCallContext,
     ) -> ListTaskPushNotificationConfigsResponse:
-        self._reject_execution_gateway_operation()
+        await self._authorize_scoped_task_operation(str(params.task_id or "").strip())
         task_id = str(params.task_id or "").strip()
         if not task_id:
             raise InvalidParamsError("taskId is required")
@@ -857,7 +871,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: DeleteTaskPushNotificationConfigRequest,
         context: ServerCallContext,
     ) -> None:
-        self._reject_execution_gateway_operation()
+        await self._authorize_scoped_task_operation(str(params.task_id or "").strip())
         task_id = str(params.task_id or "").strip()
         config_id = str(params.id or "").strip()
         if not task_id or not config_id:
@@ -1163,7 +1177,8 @@ class WorkflowTaskHandler(RequestHandler):
         adapter = _campaign_knowledge(
             campaign,
             settings,
-            bearer_token=self._downstream_auth_token(),
+            bearer_token=self._bearer_token,
+            service_auth=getattr(self._request.app.state, "mimir_service_auth", None),
         )
         if adapter is None:
             return
@@ -1454,6 +1469,44 @@ class WorkflowTaskHandler(RequestHandler):
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Scoped credential does not grant this A2A operation",
             )
+
+    async def _authorize_scoped_task_operation(self, task_id: str) -> None:
+        """Gate task-bound operations (push configs) for scoped credentials.
+
+        Unscoped callers are unaffected. A launch-scoped workload may manage
+        the tasks it launched (see ``_authorize_launcher_task``); developer
+        child credentials stay limited to their exact ledger operations.
+        """
+        if scoped_credential_claims(self._bearer_token or "") is None:
+            return
+        if self._execution_gateway_claims() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Scoped credential does not grant this A2A operation",
+            )
+        await self._authorize_launcher_task(task_id)
+
+    def _scoped_list_actor(self) -> str | None:
+        """The workload a scoped ListTasks is limited to, or None when unscoped.
+
+        build_tool looks up its earlier task by contextId before sending, so a
+        launch-scoped workload may list tasks, but only the ones it launched.
+        """
+        if scoped_credential_claims(self._bearer_token or "") is None:
+            return None
+        if self._execution_gateway_claims() is not None or not token_has_scope(
+            self._bearer_token or "", LAUNCH_SCOPE
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Scoped credential does not grant this A2A operation",
+            )
+        if not self._principal.actor:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Scoped credential names no workload actor for this task operation",
+            )
+        return self._principal.actor
 
     async def _authorize_launcher_task(self, task_id: str) -> None:
         """Let a launch-scoped workload follow the tasks it launched itself.

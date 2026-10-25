@@ -394,3 +394,46 @@ async def test_create_issue_raises_when_jira_returns_no_key_or_issue_vanishes() 
             await adapter.create_issue("T", "B", team="PROJ")
     finally:
         await adapter.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_update_issue_puts_summary_and_adf_description() -> None:
+    edit = respx.put(f"{DIRECT_API}/issue/PROJ-42").mock(return_value=httpx.Response(204))
+    respx.get(f"{DIRECT_API}/issue/PROJ-42").mock(return_value=httpx.Response(200, json=_issue()))
+    adapter = _scoped_adapter()
+    try:
+        issue = await adapter.update_issue("PROJ-42", title="Fix the sign-in", description="Body")
+    finally:
+        await adapter.close()
+
+    assert issue.identifier == "PROJ-42"
+    fields = json.loads(edit.calls.last.request.content)["fields"]
+    assert fields == {
+        "summary": "Fix the sign-in",
+        "description": {
+            "type": "doc",
+            "version": 1,
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Body"}]}],
+        },
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_update_issue_rejects_nothing_out_of_scope_and_jira_validation() -> None:
+    respx.get(f"{DIRECT_API}/issue/OTHER-1").mock(return_value=httpx.Response(404))
+    respx.get(f"{DIRECT_API}/issue/PROJ-42").mock(return_value=httpx.Response(200, json=_issue()))
+    respx.put(f"{DIRECT_API}/issue/PROJ-42").mock(
+        return_value=httpx.Response(400, text='{"errors":{"summary":"too long"}}')
+    )
+    adapter = _scoped_adapter(project_keys=["PROJ"])
+    try:
+        with pytest.raises(TrackerRequestError, match="Nothing to update"):
+            await adapter.update_issue("PROJ-42")
+        with pytest.raises(TrackerRequestError, match="outside this Jira connection"):
+            await adapter.update_issue("OTHER-1", title="x")
+        with pytest.raises(TrackerRequestError, match="too long"):
+            await adapter.update_issue("PROJ-42", title="x" * 300)
+    finally:
+        await adapter.close()

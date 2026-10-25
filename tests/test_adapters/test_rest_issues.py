@@ -419,6 +419,57 @@ class TestUpdateIssueStatus:
         assert resp.status_code == 422
 
 
+class TestEditIssue:
+    def test_rewrites_the_description_without_touching_status(self):
+        app, integration_repo, tracker_factory = _make_app()
+        integration_repo.list_connections.return_value = [_make_connection()]
+        mock_adapter = AsyncMock()
+        mock_adapter.get_issue.return_value = _make_issue(issue_id="NIU-1116")
+        mock_adapter.update_issue.return_value = _make_issue(issue_id="NIU-1116")
+        tracker_factory.create.return_value = mock_adapter
+        client = TestClient(app)
+
+        resp = client.patch(
+            f"{PREFIX}/issues/NIU-1116",
+            json={"description": "Branch from regin."},
+            headers=AUTH,
+        )
+
+        assert resp.status_code == 200
+        mock_adapter.update_issue.assert_called_once_with(
+            "NIU-1116", title=None, description="Branch from regin."
+        )
+        mock_adapter.update_issue_status.assert_not_called()
+
+    def test_edits_then_moves_status_in_one_request(self):
+        app, integration_repo, tracker_factory = _make_app()
+        integration_repo.list_connections.return_value = [_make_connection()]
+        mock_adapter = AsyncMock()
+        mock_adapter.get_issue.return_value = _make_issue(issue_id="NIU-1116", status="Todo")
+        mock_adapter.update_issue_status.return_value = _make_issue(
+            issue_id="NIU-1116", status="In Progress"
+        )
+        tracker_factory.create.return_value = mock_adapter
+        client = TestClient(app)
+
+        resp = client.patch(
+            f"{PREFIX}/issues/NIU-1116",
+            json={"title": "Start from regin", "status": "In Progress"},
+            headers=AUTH,
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "In Progress"
+        mock_adapter.update_issue.assert_called_once_with(
+            "NIU-1116", title="Start from regin", description=None
+        )
+
+    def test_an_empty_edit_is_rejected(self):
+        app, _, _ = _make_app()
+        resp = TestClient(app).patch(f"{PREFIX}/issues/NIU-1116", json={}, headers=AUTH)
+        assert resp.status_code == 422
+
+
 class TestCreateIssue:
     BODY = {
         "title": "Tracker API lacks create",

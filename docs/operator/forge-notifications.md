@@ -533,8 +533,8 @@ Migration `000084_forge_notifications` creates four tables:
 Migration `000085_forge_notification_delivery_rate_index` adds a partial index on
 `(rule_id, delivered_at) WHERE status = 'delivered'` for the per-rule rate limit.
 
-Both migrations ship in `migrations/`, in the Helm migrations configmap, and in the CLI
-bundle (`src/cli/migrations/volundr/`). Mini mode applies them at startup.
+Both migrations live in `migrations/`; the Helm migrations configmap and the CLI bundle
+read them from there. Mini mode applies them at startup.
 
 To check them, and the dispatcher against a local webhook receiver, on a disposable
 PostgreSQL database, run:

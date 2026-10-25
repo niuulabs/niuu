@@ -24,15 +24,30 @@ from pydantic import ValidationError
 import bifrost.metrics as _metrics
 from bifrost import catalog as _catalog
 from bifrost.auth import AgentIdentity, AuthMode
-from bifrost.config import AgentPermissions, AuditDetailLevel, BifrostConfig, BudgetGuardrailConfig
+from bifrost.config import (
+    AgentPermissions,
+    AuditDetailLevel,
+    BifrostConfig,
+    BudgetGuardrailConfig,
+)
 from bifrost.domain.models import RequestLog, TokenUsage
 from bifrost.domain.routing import RuleRejectError
 from bifrost.inbound.chat_completions import (
+    InvalidReasoningDetailsError,
     OpenAIChatRequest,
     anthropic_response_to_openai,
     anthropic_stream_to_openai,
     openai_error_response,
     openai_request_to_anthropic,
+    openai_stream_errors_reported,
+)
+from bifrost.inbound.native import (
+    NATIVE_STREAM_USAGE,
+    native_response_usage,
+    responses_native_only_features,
+    responses_requests_compaction,
+    responses_stream_errors_reported,
+    strip_native_images,
 )
 from bifrost.inbound.ollama import (
     OllamaChatRequest,
@@ -62,10 +77,11 @@ from bifrost.ports.audit import AuditEvent, AuditPort
 from bifrost.ports.auth import AuthPort
 from bifrost.ports.cache import CachePort
 from bifrost.ports.events import BudgetDegradedEvent, CostEventEmitter
+from bifrost.ports.native import NativeProtocol
 from bifrost.ports.rules import RoutingContext
 from bifrost.ports.usage_store import UsageRecord, UsageStore
 from bifrost.pricing import ModelPricing, calculate_cost
-from bifrost.router import ModelRouter, RouterError, record_genai_span_attributes
+from bifrost.router import ModelRouter, RoutedRequest, RouterError, record_genai_span_attributes
 from bifrost.translation.models import AnthropicRequest, AnthropicResponse
 from niuu.domain.model_catalog import ProviderHealthState
 from niuu.settings_schema import SettingsFieldSchema, SettingsProviderSchema, SettingsSectionSchema
@@ -589,6 +605,7 @@ def _build_audit_event(
     tags: dict | None = None,
     request: AnthropicRequest | None = None,
     response: AnthropicResponse | None = None,
+    response_body: dict | None = None,
 ) -> AuditEvent:
     """Build an ``AuditEvent`` populated according to the configured detail level.
 
@@ -635,6 +652,8 @@ def _build_audit_event(
         event.prompt_content = json.dumps([m.model_dump() for m in request.messages], default=str)
     if response is not None:
         event.response_content = json.dumps(response.model_dump(), default=str)
+    elif response_body is not None:
+        event.response_content = json.dumps(response_body, default=str)
 
     return event
 
@@ -770,6 +789,161 @@ def create_router(
         task = asyncio.create_task(_audit.log(event))
         _audit_tasks.add(task)
         task.add_done_callback(_audit_tasks.discard)
+
+    stream_headers = {
+        "cache-control": "no-cache",
+        "x-accel-buffering": "no",
+        "connection": "keep-alive",
+    }
+
+    async def _serve_native(
+        *,
+        raw_request: Request,
+        routed: RoutedRequest,
+        payload: dict,
+        identity: AgentIdentity,
+        agent_perms: AgentPermissions,
+        warnings: list[str],
+        budget_warn: str | None,
+        start: float,
+        request_id: str,
+        provider: str,
+    ) -> JSONResponse | StreamingResponse:
+        """Serve *payload* verbatim on the routed providers' native protocol.
+
+        The policy already ran on the canonical view (access, quotas, guardrails,
+        rules, selection). What follows is the canonical path's bookkeeping read
+        from the native response: the same usage record, cost, metrics, audit
+        event and cost events, so a request is accounted for identically on
+        either path.
+        """
+        protocol = routed.native_protocol
+        if protocol is None:
+            raise RouterError("_serve_native called for a request on the canonical path")
+        request = routed.request
+        if request._images_stripped:
+            payload = strip_native_images(protocol, payload)
+        if (
+            protocol == NativeProtocol.OPENAI_RESPONSES
+            and responses_requests_compaction(payload)
+            and not router.supports_native_compaction(routed)
+        ):
+            return openai_error_response(
+                400,
+                f"provider '{provider}' cannot compact context natively; remove "
+                "context_management / compaction_trigger from the request or route the "
+                "model to a provider that supports it",
+                "invalid_request_error",
+            )
+        agent_budget_limit = agent_perms.quota.max_cost_per_day
+
+        if request.stream:
+            tracked = _stream_with_tracking(
+                router.stream_native(routed, payload),
+                request.model,
+                start,
+                identity,
+                store,
+                pricing_overrides,
+                request_id,
+                provider=provider,
+                emitter=event_emitter,
+                agent_budget_limit=agent_budget_limit,
+                budget_warning_threshold_pct=config.events.budget_warning_threshold_pct,
+                sleipnir_publisher=getattr(raw_request.app.state, "sleipnir_publisher", None),
+                usage_reader=NATIVE_STREAM_USAGE[protocol],
+            )
+            reported = (
+                responses_stream_errors_reported(
+                    tracked, response_id=f"resp_{uuid.uuid4().hex[:24]}", model=request.model
+                )
+                if protocol == NativeProtocol.OPENAI_RESPONSES
+                else openai_stream_errors_reported(tracked)
+            )
+            stream_resp = StreamingResponse(
+                reported, media_type="text/event-stream", headers=dict(stream_headers)
+            )
+            if warnings:
+                stream_resp.headers[_HEADER_QUOTA_WARNING] = "; ".join(warnings)
+            if budget_warn:
+                stream_resp.headers[_HEADER_BUDGET_WARNING] = budget_warn
+            return stream_resp
+
+        body = await router.complete_native(routed, payload)
+        latency_ms = (time.monotonic() - start) * 1000
+        usage = native_response_usage(protocol, body)
+        _log_request(
+            RequestLog(
+                timestamp=datetime.now(UTC),
+                model=request.model,
+                usage=usage,
+                latency_ms=latency_ms,
+                stream=False,
+            )
+        )
+        cost = calculate_cost(request.model, usage, pricing_overrides)
+        _metrics.record_request(
+            provider=provider,
+            model=request.model,
+            status="200",
+            duration_seconds=latency_ms / 1000.0,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cache_read_input_tokens,
+            cache_write_tokens=usage.cache_creation_input_tokens,
+            cost_usd=cost,
+        )
+        await store.record(
+            UsageRecord(
+                request_id=request_id,
+                agent_id=identity.agent_id,
+                tenant_id=identity.tenant_id,
+                session_id=identity.session_id,
+                saga_id=identity.saga_id,
+                model=request.model,
+                provider=provider,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cache_read_input_tokens,
+                cache_write_tokens=usage.cache_creation_input_tokens,
+                reasoning_tokens=usage.reasoning_tokens,
+                cost_usd=cost,
+                latency_ms=latency_ms,
+                streaming=False,
+                timestamp=datetime.now(UTC),
+            )
+        )
+        _schedule_audit(
+            _build_audit_event(
+                config=config,
+                request_id=request_id,
+                identity=identity,
+                model=request.model,
+                provider=provider,
+                outcome="success",
+                status_code=200,
+                latency_ms=latency_ms,
+                tokens_input=usage.input_tokens,
+                tokens_output=usage.output_tokens,
+                cost_usd=cost,
+                request=request,
+                response_body=body,
+            )
+        )
+        await _emit_events(
+            identity,
+            cost,
+            usage.input_tokens + usage.output_tokens,
+            request.model,
+            agent_budget_limit,
+            raw_request=raw_request,
+        )
+        json_resp = JSONResponse(content=body)
+        if warnings:
+            json_resp.headers[_HEADER_QUOTA_WARNING] = "; ".join(warnings)
+        if budget_warn:
+            json_resp.headers[_HEADER_BUDGET_WARNING] = budget_warn
+        return json_resp
 
     @api_router.get("/health")
     async def health() -> dict:
@@ -1078,6 +1252,9 @@ def create_router(
             request = await _prepare_model_route(
                 request, routing_ctx, identity, agent_perms, request_id
             )
+            # Routed before the stream opens, so a rejection is a 4xx, not a
+            # failure after the 200.
+            request = (await router.route(request, routing_ctx)).request
             provider = request._routed_provider or provider
             if request.stream:
                 stream_resp = StreamingResponse(
@@ -1433,6 +1610,10 @@ def create_router(
         internal Anthropic canonical format, routes via the shared ModelRouter,
         then translates the response back to OpenAI format.  The full streaming
         path is supported; token usage is extracted and logged on each request.
+
+        When the model's providers set ``passthrough`` and speak Chat Completions
+        natively, the canonical form is only the policy view: the body goes to
+        the provider verbatim (see ``_serve_native``).
         """
         # --- Authentication ---
         identity = await auth_adapter.extract(raw_request)
@@ -1447,7 +1628,11 @@ def create_router(
                 422, f"Invalid request body: {reason}", "invalid_request_error"
             )
 
-        request = openai_request_to_anthropic(oai_request)
+        try:
+            request = openai_request_to_anthropic(oai_request)
+        except InvalidReasoningDetailsError as exc:
+            logger.warning("Rejected /v1/chat/completions request: %s", exc)
+            return openai_error_response(400, str(exc), "invalid_request_error")
 
         # --- Model access control ---
         agent_perms = config.permissions_for_agent(identity.agent_id)
@@ -1480,29 +1665,46 @@ def create_router(
             request = await _prepare_model_route(
                 request, routing_ctx, identity, agent_perms, request_id
             )
+            routed = await router.route(request, routing_ctx)
+            request = routed.request
             provider = request._routed_provider or provider
+            if routed.native_protocol == NativeProtocol.OPENAI_CHAT_COMPLETIONS:
+                return await _serve_native(
+                    raw_request=raw_request,
+                    routed=routed,
+                    payload=body,
+                    identity=identity,
+                    agent_perms=agent_perms,
+                    warnings=warnings,
+                    budget_warn=budget_warn,
+                    start=start,
+                    request_id=request_id,
+                    provider=provider,
+                )
             if request.stream:
                 message_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
                 stream_resp = StreamingResponse(
-                    anthropic_stream_to_openai(
-                        _stream_with_tracking(
-                            router.stream(request, routing_ctx),
-                            request.model,
-                            start,
-                            identity,
-                            store,
-                            pricing_overrides,
-                            request_id,
-                            provider=provider,
-                            emitter=event_emitter,
-                            agent_budget_limit=agent_budget_limit,
-                            budget_warning_threshold_pct=config.events.budget_warning_threshold_pct,
-                            sleipnir_publisher=getattr(
-                                raw_request.app.state, "sleipnir_publisher", None
+                    openai_stream_errors_reported(
+                        anthropic_stream_to_openai(
+                            _stream_with_tracking(
+                                router.stream(request, routing_ctx),
+                                request.model,
+                                start,
+                                identity,
+                                store,
+                                pricing_overrides,
+                                request_id,
+                                provider=provider,
+                                emitter=event_emitter,
+                                agent_budget_limit=agent_budget_limit,
+                                budget_warning_threshold_pct=config.events.budget_warning_threshold_pct,
+                                sleipnir_publisher=getattr(
+                                    raw_request.app.state, "sleipnir_publisher", None
+                                ),
                             ),
-                        ),
-                        message_id=message_id,
-                        model=request.model,
+                            message_id=message_id,
+                            model=request.model,
+                        )
                     ),
                     media_type="text/event-stream",
                     headers={
@@ -1689,6 +1891,12 @@ def create_router(
         Same pipeline as chat completions with the Responses request and
         event shapes; the gateway keeps no response state, so every request
         carries the full conversation.
+
+        When the model's providers set ``passthrough`` and speak Responses
+        natively, the body goes to the provider verbatim (see
+        ``_serve_native``) — the only path on which ``context_management``,
+        ``previous_response_id`` and compaction items can be honoured; the
+        canonical path refuses them.
         """
         # --- Authentication ---
         identity = await auth_adapter.extract(raw_request)
@@ -1703,8 +1911,11 @@ def create_router(
                 422, f"Invalid request body: {reason}", "invalid_request_error"
             )
 
+        # The view skips what only the provider can interpret; whether that is
+        # allowed depends on the route, decided below.
+        native_only = responses_native_only_features(body)
         try:
-            request = responses_request_to_anthropic(responses_request)
+            request = responses_request_to_anthropic(responses_request, skip_native_only=True)
         except UnsupportedResponsesInputError as exc:
             logger.warning("Rejected /v1/responses request: %s", exc.message)
             return openai_error_response(400, exc.message, "invalid_request_error")
@@ -1740,7 +1951,30 @@ def create_router(
             request = await _prepare_model_route(
                 request, routing_ctx, identity, agent_perms, request_id
             )
+            routed = await router.route(request, routing_ctx)
+            request = routed.request
             provider = request._routed_provider or provider
+            if routed.native_protocol == NativeProtocol.OPENAI_RESPONSES:
+                return await _serve_native(
+                    raw_request=raw_request,
+                    routed=routed,
+                    payload=body,
+                    identity=identity,
+                    agent_perms=agent_perms,
+                    warnings=warnings,
+                    budget_warn=budget_warn,
+                    start=start,
+                    request_id=request_id,
+                    provider=provider,
+                )
+            if native_only:
+                reason = (
+                    f"{', '.join(native_only)} cannot be served through the canonical "
+                    f"translation that model '{request.model}' is routed on; only a provider "
+                    "with passthrough: true can honour it"
+                )
+                logger.warning("Rejected /v1/responses request: %s", reason)
+                return openai_error_response(400, reason, "invalid_request_error")
             if request.stream:
                 response_id = f"resp_{uuid.uuid4().hex[:24]}"
                 stream_resp = StreamingResponse(
@@ -2021,6 +2255,9 @@ def create_router(
             request = await _prepare_model_route(
                 request, routing_ctx, identity, agent_perms, request_id
             )
+            # Routed before the stream opens, so a rejection is a 4xx, not a
+            # failure after the 200.
+            request = (await router.route(request, routing_ctx)).request
             provider = request._routed_provider or provider
             if request.stream:
                 stream_resp = StreamingResponse(

@@ -3,7 +3,7 @@ id: 3f444455-6b63-53c2-b057-3205345a56da
 name: Tracker Delivery Flow
 description: Tracker-driven developer workflow that implements a ticket, iterates through code review,
   updates the tracker, merges the branch, and publishes a durable delivery record.
-version: 1.0.0
+version: 1.0.1
 persona_dependencies:
   closer:
     id: closer

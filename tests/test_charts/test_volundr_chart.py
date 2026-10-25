@@ -1095,6 +1095,25 @@ class TestConfigMapTemplate:
         cluster_role = next(doc for doc in documents if doc["kind"] == "ClusterRole")
         assert all("secrets" not in rule["resources"] for rule in cluster_role["rules"])
 
+    def test_cluster_wide_flux_may_read_session_pod_events(self):
+        """status_detail reads the pods' Warning events. valhalla runs
+        cluster-wide RBAC with no events rule: the read got 403 during
+        startup reconciliation and Völundr crash-looped."""
+        documents = self._rbac(
+            "--set",
+            "podManager.adapter=volundr.adapters.outbound.flux.FluxPodManager",
+            "--set",
+            "podManager.kwargs.namespace=skuld",
+            "--set",
+            "rbac.clusterWide=true",
+        )
+        cluster_role = next(doc for doc in documents if doc["kind"] == "ClusterRole")
+        assert {
+            "apiGroups": [""],
+            "resources": ["events"],
+            "verbs": ["get", "list", "watch"],
+        } in cluster_role["rules"]
+
     @pytest.mark.parametrize(
         "controller",
         [
@@ -1926,3 +1945,93 @@ class TestGuildMembership:
         assert "guild" not in self._config("guild")
         config = self._config("guild", "--set", "guild.url=https://yggdrasil.niuu.world")
         assert config["guild"] == {"url": "https://yggdrasil.niuu.world"}
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestStorageContributorHomePlacement:
+    """The storage contributor's home placement comes from storage.home."""
+
+    @staticmethod
+    def _storage_kwargs(*extra: str) -> dict:
+        config = _rendered_configmap(*extra)
+        return next(
+            c["kwargs"]
+            for c in config["session_contributors"]
+            if c["adapter"].endswith("contributors.storage.StorageContributor")
+        )
+
+    def test_shared_home_mounts_everywhere_without_colocation(self):
+        kwargs = self._storage_kwargs()
+        assert kwargs["home_colocate"] is False
+        assert kwargs["home_excluded_workload_types"] == []
+
+    def test_rwo_home_colocates_and_excludes_configured_workloads(self):
+        kwargs = self._storage_kwargs(
+            "--set",
+            "storage.home.accessMode=ReadWriteOnce",
+            "--set",
+            "storage.home.excludeWorkloadTypes={ravn_flock}",
+        )
+        assert kwargs["home_colocate"] is True
+        assert kwargs["home_excluded_workload_types"] == ["ravn_flock"]
+
+
+def _rendered_volundr_deployment(*extra_args: str) -> dict:
+    command = ["helm", "template", "test", str(CHART_DIR), *extra_args]
+    docs = list(yaml.safe_load_all(subprocess.check_output(command)))
+    return next(
+        d
+        for d in docs
+        if d and d["kind"] == "Deployment" and d["metadata"]["name"] == "test-volundr"
+    )
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestZeroDowntimeRollout:
+    """Recreate stopped Völundr before starting the new pod; every request in
+    between got a 503, which failed a resident's delivery launch."""
+
+    def test_rolls_with_a_ready_surge_pod_before_the_old_one_stops(self):
+        spec = _rendered_volundr_deployment()["spec"]
+        assert spec["strategy"] == {
+            "type": "RollingUpdate",
+            "rollingUpdate": {"maxSurge": 1, "maxUnavailable": 0},
+        }
+
+    def test_surge_pod_lands_beside_the_current_one_for_the_rwo_volume(self):
+        affinity = _rendered_volundr_deployment()["spec"]["template"]["spec"]["affinity"]
+        (term,) = affinity["podAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
+        assert term["topologyKey"] == "kubernetes.io/hostname"
+        assert term["labelSelector"]["matchLabels"] == {
+            "app.kubernetes.io/name": "volundr",
+            "app.kubernetes.io/instance": "test",
+        }
+
+    def test_colocation_keeps_operator_affinity(self):
+        affinity = _rendered_volundr_deployment(
+            "--set",
+            "affinity.nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].weight=1",
+            "--set",
+            "affinity.nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution[0]"
+            ".preference.matchExpressions[0].key=tier",
+            "--set",
+            "affinity.nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution[0]"
+            ".preference.matchExpressions[0].operator=Exists",
+        )["spec"]["template"]["spec"]["affinity"]
+        assert "nodeAffinity" in affinity and "podAffinity" in affinity
+
+    def test_serving_containers_drain_before_exiting(self):
+        pod = _rendered_volundr_deployment("--set", "envoy.enabled=true")["spec"]["template"][
+            "spec"
+        ]
+        drains = {c["name"]: c.get("lifecycle") for c in pod["containers"]}
+        assert drains["volundr"] == {"preStop": {"sleep": {"seconds": 10}}}
+        assert drains["envoy"] == {"preStop": {"sleep": {"seconds": 10}}}
+        assert pod["terminationGracePeriodSeconds"] > 10
+
+    def test_colocation_and_drain_can_be_turned_off(self):
+        pod = _rendered_volundr_deployment(
+            "--set", "rollout.colocate=false", "--set", "rollout.drainSeconds=0"
+        )["spec"]["template"]["spec"]
+        assert "affinity" not in pod
+        assert all("lifecycle" not in c for c in pod["containers"])

@@ -34,7 +34,7 @@ cd web-next && pnpm test          # web tests (coverage-gated)
 ## Key rules (the short version)
 
 - **No fallbacks. Configured-but-impossible is fatal, never degraded** — `.claude/rules/no-fallbacks.md`
-- Migrations go in BOTH `migrations/` and the Helm configmap — `.claude/rules/migrations.md`
+- Migrations go only in `migrations/` (Ting: `migrations/ting/`); charts and the CLI read them from there — `.claude/rules/migrations.md`
 - Raw SQL with asyncpg, no ORM — `.claude/rules/database.md`
 - 85% coverage gates on backend and web; never lower them — `.claude/rules/testing.md`
 - Conventional commits — `.claude/rules/commits.md`

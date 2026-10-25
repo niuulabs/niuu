@@ -16,7 +16,15 @@ from collections.abc import AsyncIterator
 import httpx
 
 from niuu.observability import get_observability
-from ravn.domain.exceptions import LLMError
+from ravn.adapters.llm.provider_items import (
+    ANTHROPIC_MESSAGES,
+    COMPACTION_TYPE,
+    PROVIDER_KEYS,
+    latest_compaction_index,
+    provider_items_of,
+    refuse_foreign_compaction,
+)
+from ravn.domain.exceptions import ConfigurationError, LLMError
 from ravn.domain.models import (
     LLMResponse,
     StopReason,
@@ -26,15 +34,24 @@ from ravn.domain.models import (
     ToolCall,
 )
 from ravn.ports.llm import LLMPort, SystemPrompt
+from ravn.ports.native_compaction import NativeCompactionPort
 
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_VERSION = "2023-06-01"
 _BETA_PROMPT_CACHING = "prompt-caching-2024-07-31"
 _BETA_INTERLEAVED_THINKING = "interleaved-thinking-2025-05-14"
+# Server-side compaction at a token threshold (Messages API beta).
+_BETA_COMPACTION = "compact-2026-01-12"
+_COMPACTION_EDIT = "compact_20260112"
+# The API refuses a compaction trigger below this many input tokens.
+_MIN_COMPACTION_TRIGGER_TOKENS = 50_000
 
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503})
 _DEFAULT_BASE_URL = "https://api.anthropic.com"
+
+# Ravn's transport-neutral message keys that the Anthropic API does not accept.
+_INTERNAL_MESSAGE_KEYS = frozenset({"reasoning", "reasoning_details"}) | PROVIDER_KEYS
 
 # Everything the Messages API accepts inside a tool_result block. Any other key
 # is rejected outright ("tool_result.name: Extra inputs are not permitted"), so
@@ -90,11 +107,81 @@ def _pruned_block(block: object) -> object:
     return {key: value for key, value in block.items() if key in _TOOL_RESULT_KEYS}
 
 
+def _accumulate_block(block: dict, delta: dict) -> None:
+    """Grow a verbatim content block by one stream delta."""
+    match delta.get("type"):
+        case "text_delta":
+            block["text"] = block.get("text", "") + delta.get("text", "")
+        case "thinking_delta":
+            block["thinking"] = block.get("thinking", "") + delta.get("thinking", "")
+        case "signature_delta":
+            block["signature"] = block.get("signature", "") + delta.get("signature", "")
+        case "compaction_delta":
+            block["content"] = (block.get("content") or "") + delta.get("content", "")
+
+
+def _compaction_usage(usage: dict) -> tuple[int, int]:
+    """Input and output tokens of the compaction iterations in *usage*.
+
+    With the compaction beta the top-level counts exclude compaction; the
+    billed total is the sum over every ``usage.iterations`` entry.
+    """
+    iterations = [
+        item
+        for item in usage.get("iterations") or []
+        if isinstance(item, dict) and item.get("type") == COMPACTION_TYPE
+    ]
+    return (
+        sum(int(item.get("input_tokens") or 0) for item in iterations),
+        sum(int(item.get("output_tokens") or 0) for item in iterations),
+    )
+
+
+def _tool_use_ids(content: object) -> list[str]:
+    if not isinstance(content, list):
+        return []
+    return [
+        str(block.get("id", ""))
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    ]
+
+
+def _verbatim_content(message: dict) -> list[dict] | None:
+    """The assistant turn's own content blocks, when the provider returned them.
+
+    Kept for models on native compaction: the ``compaction`` block (and the
+    signed thinking around it) must go back exactly as it came.
+
+    Raises:
+        LLMError: The blocks name other tool calls than the message's content.
+    """
+    blocks = provider_items_of(message, ANTHROPIC_MESSAGES)
+    if not blocks:
+        return None
+    if _tool_use_ids(blocks) != _tool_use_ids(message.get("content")):
+        raise LLMError(
+            "assistant message's Anthropic content blocks name different tool calls than "
+            "its content; the history was changed after the provider answered and cannot "
+            "be replayed"
+        )
+    return blocks
+
+
 def _for_api(messages: list[dict]) -> list[dict]:
-    """Strip internal reasoning and non-schema tool_result keys."""
+    """Strip internal reasoning and non-schema tool_result keys.
+
+    ``reasoning_details`` is another provider's opaque payload; the Anthropic
+    API has its own thinking blocks and would reject the field. An assistant
+    turn kept verbatim (``provider_items`` in this protocol) is sent as those
+    blocks.
+    """
     cleaned: list[dict] = []
     for message in messages:
-        out = {key: value for key, value in message.items() if key != "reasoning"}
+        out = {key: value for key, value in message.items() if key not in _INTERNAL_MESSAGE_KEYS}
+        verbatim = _verbatim_content(message) if message.get("role") == "assistant" else None
+        if verbatim is not None:
+            out["content"] = verbatim
         content = out.get("content")
         if isinstance(content, list):
             out["content"] = [_pruned_block(block) for block in content]
@@ -102,7 +189,7 @@ def _for_api(messages: list[dict]) -> list[dict]:
     return cleaned
 
 
-class AnthropicAdapter(LLMPort):
+class AnthropicAdapter(LLMPort, NativeCompactionPort):
     """Calls the Anthropic Messages API with streaming and tool support.
 
     Constructor kwargs are forwarded from config via the dynamic adapter pattern.
@@ -113,6 +200,13 @@ class AnthropicAdapter(LLMPort):
     header is added automatically.  Thinking blocks are yielded as
     ``StreamEvent(type=StreamEventType.THINKING, text=…)`` events and their
     approximate token count is tracked in ``TokenUsage.thinking_tokens``.
+
+    Native compaction (``context_management.compaction: native``): requests for
+    the enabled model carry the ``compact_20260112`` edit with the configured
+    trigger and the ``compact-2026-01-12`` beta. The turn's content blocks —
+    including the ``compaction`` block — are kept verbatim on the message and
+    sent back unchanged, and history before the latest compaction block is
+    dropped (the API ignores it). Compaction iterations are counted in usage.
     """
 
     @property
@@ -137,6 +231,25 @@ class AnthropicAdapter(LLMPort):
         self._max_retries = max_retries
         self._retry_base_delay = retry_base_delay
         self._timeout = timeout
+        # Model → compaction trigger, for the models set to native compaction.
+        self._compaction_triggers: dict[str, int] = {}
+
+    def enable_native_compaction(self, *, model: str, threshold_tokens: int) -> None:
+        if threshold_tokens < _MIN_COMPACTION_TRIGGER_TOKENS:
+            raise ConfigurationError(
+                f"native compaction for {model!r} would trigger at {threshold_tokens} "
+                f"tokens, but Anthropic accepts no trigger below "
+                f"{_MIN_COMPACTION_TRIGGER_TOKENS}; raise context_management.max_prompt_tokens "
+                "(the trigger is max_prompt_tokens x compression_threshold / "
+                "token_estimate_safety_factor), or use compaction 'ravn' for this model"
+            )
+        self._compaction_triggers[model] = threshold_tokens
+
+    def compaction_window_start(self, messages: list[dict]) -> int:
+        return latest_compaction_index(messages, ANTHROPIC_MESSAGES)
+
+    def _native_compaction_for(self, model: str) -> int | None:
+        return self._compaction_triggers.get(model or self._default_model)
 
     def _headers(self, *, thinking_enabled: bool = False, model: str = "") -> dict[str, str]:
         betas = [_BETA_PROMPT_CACHING]
@@ -144,6 +257,8 @@ class AnthropicAdapter(LLMPort):
         # for the models that still take a fixed budget.
         if thinking_enabled and _uses_legacy_thinking(model or self._default_model):
             betas.append(_BETA_INTERLEAVED_THINKING)
+        if self._native_compaction_for(model) is not None:
+            betas.append(_BETA_COMPACTION)
         return {
             "x-api-key": self._api_key,
             "anthropic-version": ANTHROPIC_API_VERSION,
@@ -186,6 +301,7 @@ class AnthropicAdapter(LLMPort):
         stream: bool,
         thinking: dict | None = None,
     ) -> dict:
+        refuse_foreign_compaction(messages, ANTHROPIC_MESSAGES, type(self).__name__)
         effective_max_tokens = max_tokens or self._default_max_tokens
         body: dict = {
             "model": model or self._default_model,
@@ -200,6 +316,10 @@ class AnthropicAdapter(LLMPort):
             body["tools"] = tools
         if thinking is not None:
             body["thinking"] = _thinking_for_model(thinking, body["model"])
+        trigger = self._native_compaction_for(body["model"])
+        if trigger is not None:
+            edit = {"type": _COMPACTION_EDIT, "trigger": {"type": "input_tokens", "value": trigger}}
+            body["context_management"] = {"edits": [edit]}
         return body
 
     async def _post_with_retry(
@@ -285,6 +405,9 @@ class AnthropicAdapter(LLMPort):
                     status_code=response.status_code,
                 )
 
+            # With native compaction the turn's blocks are kept verbatim, by index.
+            capture = self._native_compaction_for(model) is not None
+            blocks: dict[int, dict] = {}
             # Accumulate partial tool inputs keyed by tool_use block index.
             partial_inputs: dict[int, dict] = {}
             tool_ids: dict[int, str] = {}
@@ -312,6 +435,8 @@ class AnthropicAdapter(LLMPort):
                     case "content_block_start":
                         block = event_data.get("content_block", {})
                         current_block_index = event_data.get("index", current_block_index)
+                        if capture:
+                            blocks[current_block_index] = dict(block)
                         if block.get("type") == "tool_use":
                             tool_ids[current_block_index] = block.get("id", "")
                             tool_names[current_block_index] = block.get("name", "")
@@ -322,6 +447,8 @@ class AnthropicAdapter(LLMPort):
                     case "content_block_delta":
                         delta = event_data.get("delta", {})
                         idx = event_data.get("index", current_block_index)
+                        if capture and idx in blocks:
+                            _accumulate_block(blocks[idx], delta)
                         match delta.get("type"):
                             case "text_delta":
                                 yield StreamEvent(
@@ -355,6 +482,8 @@ class AnthropicAdapter(LLMPort):
                                 parsed_input = json.loads(raw_json) if raw_json else {}
                             except json.JSONDecodeError:
                                 parsed_input = {}
+                            if capture and idx in blocks:
+                                blocks[idx]["input"] = parsed_input
                             yield StreamEvent(
                                 type=StreamEventType.TOOL_CALL,
                                 tool_call=ToolCall(
@@ -371,11 +500,18 @@ class AnthropicAdapter(LLMPort):
                         usage_data = event_data.get("usage", {})
                         # Approximate thinking tokens from accumulated char count.
                         thinking_tokens = accumulated_thinking_chars // 4
+                        if capture:
+                            yield StreamEvent(
+                                type=StreamEventType.PROVIDER_ITEMS,
+                                provider_items=[blocks[index] for index in sorted(blocks)],
+                                provider_protocol=ANTHROPIC_MESSAGES,
+                            )
+                        compaction_in, compaction_out = _compaction_usage(usage_data)
                         yield StreamEvent(
                             type=StreamEventType.MESSAGE_DONE,
                             usage=TokenUsage(
-                                input_tokens=usage_data.get("input_tokens", 0),
-                                output_tokens=usage_data.get("output_tokens", 0),
+                                input_tokens=usage_data.get("input_tokens", 0) + compaction_in,
+                                output_tokens=usage_data.get("output_tokens", 0) + compaction_out,
                                 cache_read_tokens=usage_data.get("cache_read_input_tokens", 0),
                                 cache_write_tokens=usage_data.get("cache_creation_input_tokens", 0),
                                 thinking_tokens=thinking_tokens,
@@ -436,7 +572,9 @@ class AnthropicAdapter(LLMPort):
                     )
 
         usage_data = data.get("usage", {})
+        compaction_in, compaction_out = _compaction_usage(usage_data)
         reasoning = "".join(thinking_parts)
+        native = self._native_compaction_for(model) is not None
         stop_reason_raw = data.get("stop_reason", "end_turn")
         try:
             stop_reason = StopReason(stop_reason_raw)
@@ -448,11 +586,13 @@ class AnthropicAdapter(LLMPort):
             tool_calls=tool_calls,
             stop_reason=stop_reason,
             usage=TokenUsage(
-                input_tokens=usage_data.get("input_tokens", 0),
-                output_tokens=usage_data.get("output_tokens", 0),
+                input_tokens=usage_data.get("input_tokens", 0) + compaction_in,
+                output_tokens=usage_data.get("output_tokens", 0) + compaction_out,
                 cache_read_tokens=usage_data.get("cache_read_input_tokens", 0),
                 cache_write_tokens=usage_data.get("cache_creation_input_tokens", 0),
                 thinking_tokens=len(reasoning) // 4,
             ),
             reasoning=reasoning,
+            provider_items=list(data.get("content", [])) if native else [],
+            provider_protocol=ANTHROPIC_MESSAGES if native else "",
         )

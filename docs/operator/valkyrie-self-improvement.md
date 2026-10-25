@@ -58,6 +58,12 @@ Options:
   task against any agent card (Ting's facade or a foreign platform).
   Configuration is a card URL plus credentials; workflow discovery happens
   via the card's skills (see `docs/operator/a2a-workflow-tasks.md`).
+  The resident must be reachable by push: builder questions arrive after the
+  commissioning turn ends, so the daemon refuses to start unless
+  `gateway.platform.a2a_push_callback_url` is set and
+  `gateway.channels.http` has `enabled` and `a2a_push_enabled` (with
+  `a2a_push_auth` verifying Ting's workload token). The callback origin must
+  also be in Ting's `a2a.push_callback_allowed_origins`.
 - `ForgeSessionToolBuildBackend` — drives a single Forge session directly.
 - Empty `tool_build_adapter` — the investigating agent writes tool code
   inline in-session (no external build; verification still runs).

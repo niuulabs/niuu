@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import Any
 
-from volundr.domain.models import Session, StorageQuota
+from volundr.domain.models import LABEL_HOME_CLAIM, Session, StorageQuota
 from volundr.domain.ports import (
     SessionContext,
     SessionContribution,
@@ -25,12 +25,24 @@ class StorageContributor(SessionContributor):
         home_enabled: bool = True,
         persistent_tmp: bool = True,
         admin_settings: dict | None = None,
+        home_excluded_workload_types: list[str] | None = None,
+        home_colocate: bool = False,
         **_extra: object,
     ):
+        """Create the contributor.
+
+        ``home_excluded_workload_types`` lists workload types that never mount
+        the user's home (e.g. ``ravn_flock`` workflow sessions, which run as
+        the user but use none of their home). ``home_colocate`` pins the pods
+        that do mount a home to the node that already holds it; set it when the
+        home claim is ReadWriteOnce, where a second node cannot attach it.
+        """
         self._storage = storage
         self._default_home_enabled = home_enabled
         self._persistent_tmp = persistent_tmp
         self._admin_settings = admin_settings
+        self._home_excluded_workload_types = frozenset(home_excluded_workload_types or ())
+        self._home_colocate = home_colocate
 
     @property
     def _home_enabled(self) -> bool:
@@ -40,6 +52,11 @@ class StorageContributor(SessionContributor):
                 "home_enabled", self._default_home_enabled
             )
         return self._default_home_enabled
+
+    def _mounts_home(self, session: Session) -> bool:
+        if not self._home_enabled:
+            return False
+        return session.workload_type not in self._home_excluded_workload_types
 
     @property
     def name(self) -> str:
@@ -78,6 +95,13 @@ class StorageContributor(SessionContributor):
                 "mountPath": self._storage.home_mount_path,
                 "persistentTmp": self._persistent_tmp,
             }
+            if self._home_colocate:
+                values.update(_home_colocation_values(home_pvc))
+        else:
+            # Session defaults may enable the home volume; without a claim the
+            # chart renders an empty PVC and every mount of "home" fails
+            # admission, as every excluded (ravn_flock) session did.
+            values["homeVolume"] = {"enabled": False}
         if workspace_pvc:
             values["persistence"] = {
                 "existingClaim": workspace_pvc,
@@ -116,7 +140,7 @@ class StorageContributor(SessionContributor):
                 existing_ws.pvc_name,
                 session.id,
             )
-            if self._home_enabled and session.owner_id:
+            if self._mounts_home(session) and session.owner_id:
                 home_ref = await self._storage.provision_user_storage(
                     session.owner_id,
                     StorageQuota(),
@@ -142,7 +166,7 @@ class StorageContributor(SessionContributor):
             return ws_ref.name if ws_ref else None
 
         async def _provision_home() -> str | None:
-            if not self._home_enabled:
+            if not self._mounts_home(session):
                 return None
             if not session.owner_id:
                 return None
@@ -157,3 +181,25 @@ class StorageContributor(SessionContributor):
             _provision_home(),
         )
         return (home_pvc, workspace_pvc)
+
+
+def _home_colocation_values(claim: str) -> dict[str, Any]:
+    """Place a pod on the node holding *claim*, alongside the pods that share it.
+
+    Matching on the claim, not the owner, keeps a user's home-less workflow
+    pods free to schedule anywhere. Kubernetes admits the first pod of a term
+    that matches its own labels, so the first session lands wherever it fits.
+    """
+    return {
+        "podLabels": {LABEL_HOME_CLAIM: claim},
+        "affinity": {
+            "podAffinity": {
+                "requiredDuringSchedulingIgnoredDuringExecution": [
+                    {
+                        "topologyKey": "kubernetes.io/hostname",
+                        "labelSelector": {"matchLabels": {LABEL_HOME_CLAIM: claim}},
+                    }
+                ]
+            }
+        },
+    }

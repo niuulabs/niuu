@@ -88,6 +88,7 @@ class VolundrSession:
     workload_type: str = "default"
     activity_state: str | None = None
     activity_metadata: dict = field(default_factory=dict)
+    last_active: datetime | None = None
 
 
 @dataclass(frozen=True)

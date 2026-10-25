@@ -685,6 +685,14 @@ data:
           {{- $_ := set $kwargs "base_domain" ($root.Values.podManager.kwargs.base_domain | default "volundr.local") }}
         {{- end }}
       {{- end }}
+      {{- if eq $contributor.adapter "volundr.adapters.outbound.contributors.storage.StorageContributor" }}
+        {{- if not (hasKey $kwargs "home_excluded_workload_types") }}
+          {{- $_ := set $kwargs "home_excluded_workload_types" ($root.Values.storage.home.excludeWorkloadTypes | default list) }}
+        {{- end }}
+        {{- if not (hasKey $kwargs "home_colocate") }}
+          {{- $_ := set $kwargs "home_colocate" (eq ($root.Values.storage.home.accessMode | default "") "ReadWriteOnce") }}
+        {{- end }}
+      {{- end }}
       - adapter: {{ $contributor.adapter | quote }}
         kwargs: {{ $kwargs | toJson }}
         {{- if $contributor.secretKwargs }}

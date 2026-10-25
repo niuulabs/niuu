@@ -105,6 +105,15 @@ async def test_browser_lifecycle_and_busy_delete(monkeypatch):
     assert browser_manifest("bob", "b", "image", 123)["spec"]["activeDeadlineSeconds"] == 123
 
 
+def test_home_browser_sits_beside_the_pods_that_mount_its_claim():
+    manifest = browser_manifest("bob", "home-claim", "image", 60)
+    assert manifest["metadata"]["labels"]["volundr/home-claim"] == "home-claim"
+    (term,) = manifest["spec"]["affinity"]["podAffinity"][
+        "requiredDuringSchedulingIgnoredDuringExecution"
+    ]
+    assert term["labelSelector"] == {"matchLabels": {"volundr/home-claim": "home-claim"}}
+
+
 async def test_k8s_owner_and_missing_home():
     adapter = K8sStorageAdapter(file_browser_image="image")
     adapter._api_client = api = AsyncMock()

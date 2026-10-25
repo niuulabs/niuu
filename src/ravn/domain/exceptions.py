@@ -41,6 +41,15 @@ class MaxIterationsError(RavnError):
         super().__init__(f"Agent loop exceeded {max_iterations} iterations")
 
 
+class ContextCompressionError(RavnError):
+    """Raised when client-side compaction cannot produce its state document.
+
+    The compactor replaces history with that document, so compacting without
+    one would throw the conversation away while the turn carried on as if it
+    remembered it.
+    """
+
+
 class ConfigurationError(RavnError):
     """Raised when Ravn is misconfigured."""
 

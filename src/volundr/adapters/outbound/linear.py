@@ -111,6 +111,25 @@ mutation UpdateIssueStatus($issueId: String!, $stateId: String!) {
 }
 """
 
+_UPDATE_ISSUE_QUERY = """
+mutation UpdateIssue($issueId: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $issueId, input: $input) {
+    success
+    issue {
+      id
+      identifier
+      title
+      description
+      state { name }
+      assignee { name }
+      labels { nodes { name } }
+      priority
+      url
+    }
+  }
+}
+"""
+
 _TEAM_BY_KEY_QUERY = """
 query TeamByKey($key: String!) {
   teams(filter: { key: { eqIgnoreCase: $key } }) {
@@ -363,6 +382,32 @@ class LinearAdapter(IssueTrackerProvider):
         self._gql.invalidate_cache("search:")
         self._gql.invalidate_cache("recent:")
 
+        return self._node_to_issue(updated)
+
+    async def update_issue(
+        self,
+        issue_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> TrackerIssue:
+        """Rewrite a Linear issue's title and/or description."""
+        payload: dict[str, str] = {}
+        if title is not None:
+            payload["title"] = title
+        if description is not None:
+            payload["description"] = description
+        if not payload:
+            raise TrackerRequestError("Nothing to update: give a title and/or a description")
+
+        data = await self._gql.query(_UPDATE_ISSUE_QUERY, {"issueId": issue_id, "input": payload})
+        result = data.get("issueUpdate") or {}
+        updated = result.get("issue")
+        if not result.get("success") or updated is None:
+            raise GraphQLError(f"Linear did not update issue {issue_id}: {result}")
+
+        self._gql.invalidate_cache("search:")
+        self._gql.invalidate_cache("recent:")
         return self._node_to_issue(updated)
 
     async def create_issue(

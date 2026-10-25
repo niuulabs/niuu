@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -16,6 +17,7 @@ from bifrost.inbound.chat_completions import (
     anthropic_stream_to_openai,
     openai_error_response,
     openai_request_to_anthropic,
+    openai_stream_errors_reported,
 )
 from bifrost.translation.models import (
     AnthropicResponse,
@@ -1259,3 +1261,20 @@ class TestOpenAIErrorResponse:
         assert body["error"]["type"] == "server_error"
         assert body["error"]["param"] is None
         assert body["error"]["code"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_provider_failure_after_the_200_is_reported_as_an_error_event() -> None:
+    """The ChatGPT backend rejected an orphaned tool call mid-stream; the
+    connection just closed and the client read it as an empty answer."""
+
+    async def failing() -> AsyncIterator[str]:
+        yield 'data: {"choices": []}\n\n'
+        raise RuntimeError("No tool output found for function call call_0a53.")
+
+    chunks = [chunk async for chunk in openai_stream_errors_reported(failing())]
+
+    assert chunks[0] == 'data: {"choices": []}\n\n'
+    error = json.loads(chunks[-1].removeprefix("data: "))
+    assert error["error"]["type"] == "server_error"
+    assert "No tool output found" in error["error"]["message"]

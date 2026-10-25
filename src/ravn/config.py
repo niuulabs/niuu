@@ -30,6 +30,7 @@ import json
 import os
 from contextlib import suppress
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
@@ -554,8 +555,11 @@ class MemoryConfig(BaseModel):
         ),
     )
     reflection_max_tokens: int = Field(
-        default=512,
-        description="Maximum tokens for the reflection LLM call.",
+        default=4096,
+        description=(
+            "Maximum tokens for the reflection LLM call, reasoning included: a "
+            "reasoning model needs room to think before it answers."
+        ),
     )
     task_summary_max_chars: int = Field(
         default=200,
@@ -835,8 +839,36 @@ class IterationBudgetConfig(BaseModel):
     )
 
 
+class CompactionMode(StrEnum):
+    """Who compacts a model's context when it grows past the budget."""
+
+    RAVN = "ravn"
+    """Ravn's own ContextCompressor summarises older history client-side."""
+    NATIVE = "native"
+    """The provider compacts (OpenAI Responses / Anthropic compaction); Ravn never does."""
+    OFF = "off"
+    """Nobody compacts; the prompt budget check is the only guard."""
+
+
 class ContextManagementConfig(BaseModel):
     """Context compression and prompt-builder configuration."""
+
+    compaction: CompactionMode = Field(
+        default=CompactionMode.RAVN,
+        description=(
+            "Who compacts the context of models not listed in compaction_models: "
+            "'ravn' (Ravn's client-side compactor, the default), 'native' (the "
+            "provider's own compaction — the LLM adapter must support it, or startup "
+            "fails) or 'off'. Never both: with 'native' Ravn does not compact."
+        ),
+    )
+    compaction_models: dict[str, CompactionMode] = Field(
+        default_factory=dict,
+        description=(
+            "Per-model override of 'compaction', keyed by model id, e.g. "
+            "{'gpt-6-sol': 'native', 'Qwen/Qwen3.8-27B': 'ravn'}."
+        ),
+    )
 
     context_window_tokens: int = Field(
         default=0,
@@ -902,6 +934,10 @@ class ContextManagementConfig(BaseModel):
             "that overflows the model's context window."
         ),
     )
+
+    def compaction_for(self, model: str) -> CompactionMode:
+        """The compaction mode configured for *model*."""
+        return self.compaction_models.get(model, self.compaction)
 
     def effective_protect_last(self) -> int:
         """Return the protect_last value to pass to ContextCompressor.
@@ -2641,6 +2677,305 @@ class WakefulnessConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class LearningMatchingConfig(BaseModel):
+    """How a new reflection candidate is matched to lessons already recorded.
+
+    ``lexical`` compares word overlap and is all a Ravn without embeddings can
+    do; it never merges a paraphrase, so a resident that rediscovers a lesson
+    in new words collects one-observation candidates that never promote.
+    ``semantic`` shortlists recorded lessons by embedding similarity and asks a
+    small model judge whether the closest ones state the same lesson. It needs
+    ``embedding.enabled: true``; asking for it without embeddings is a startup
+    error, never a silent fall back to lexical matching.
+    """
+
+    mode: Literal["lexical", "semantic"] = Field(
+        default="lexical",
+        description="Candidate matching strategy: 'lexical' word overlap or 'semantic'.",
+    )
+    similarity_threshold: float = Field(
+        default=0.65,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum cosine similarity for a recorded lesson to be shown to the "
+            "judge as a possible match. Below it the lessons are treated as distinct "
+            "without a model call."
+        ),
+    )
+    max_related: int = Field(
+        default=5,
+        ge=1,
+        description="Most similar recorded lessons the judge sees for one new candidate.",
+    )
+    judge_llm_alias: str = Field(
+        default="",
+        description=(
+            "LLM alias for the same-lesson / contradiction / procedure judgments. "
+            "Empty uses reflection.llm_alias."
+        ),
+    )
+    judge_max_tokens: int = Field(
+        default=4096,
+        ge=1,
+        description=(
+            "Maximum tokens one judge call may produce, reasoning included: a "
+            "reasoning model needs room to think before it answers."
+        ),
+    )
+    embed_batch_size: int = Field(
+        default=64,
+        ge=1,
+        description=(
+            "Lessons embedded per request. The first comparison embeds every "
+            "recorded lesson, which on a long-running resident is hundreds."
+        ),
+    )
+    evidence_duplicate_similarity: float = Field(
+        default=0.9,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Cosine similarity at or above which a new evidence note restates one "
+            "already on the lesson. The same unchanged fact re-read in another session "
+            "is one observation repeated, not corroboration, and must not count toward "
+            "promotion. Word overlap cannot make this call: different observations of "
+            "one lesson share its hosts and tool names."
+        ),
+    )
+    judge_excerpt_chars: int = Field(
+        default=400,
+        ge=40,
+        description="Characters of each lesson's title and claim shown to the judge.",
+    )
+    judge_attempts: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "Judge calls made before an empty or malformed answer is a hard failure. "
+            "Local models occasionally emit broken JSON once."
+        ),
+    )
+
+
+class VerifiedPromotionConfig(BaseModel):
+    """Which first-hand evidence lets a candidate promote on its first observation.
+
+    A route recovery is a turn in which a tool call failed and a later call to
+    the same tool with different input succeeded. It is recorded from the
+    turn's own tool results, not from the model's account of them, so a lesson
+    that restates it is verified rather than speculative. Speculative lessons
+    still need ``candidate_min_repetitions`` independent observations.
+    """
+
+    route_recovery_promotes: bool = Field(
+        default=True,
+        description=(
+            "Promote a candidate on first observation when the reflection ties it to "
+            "a route recovery recorded in the same session's tool results."
+        ),
+    )
+    max_route_recoveries: int = Field(
+        default=5,
+        ge=0,
+        description="Route recoveries carried on ravn.session.ended per session; 0 records none.",
+    )
+    excerpt_chars: int = Field(
+        default=240,
+        ge=20,
+        description="Characters of tool input/result kept for each side of a route recovery.",
+    )
+
+
+class LearningCurationConfig(BaseModel):
+    """The dream pass that curates learnings and candidates themselves.
+
+    Runs inside the resident consolidation dream. It merges near-duplicate
+    lessons, lets stronger evidence supersede contradicted claims, prunes
+    candidates nobody ever confirmed, and rewrites promoted learnings into short
+    procedural form. Every change is recorded on a Mímir audit page. It needs
+    semantic matching; enabling it without embeddings is a startup error.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Curate learnings during resident consolidation dreams.",
+    )
+    min_interval_seconds: float = Field(
+        default=24 * 3600.0,
+        ge=0.0,
+        description="Minimum seconds between curation passes; dreams in between skip it.",
+    )
+    max_judgments: int = Field(
+        default=40,
+        ge=1,
+        description="Most lesson pairs one pass may send to the judge.",
+    )
+    max_rewrites: int = Field(
+        default=10,
+        ge=0,
+        description="Most promoted learnings one pass may rewrite into procedural form.",
+    )
+    procedure_max_chars: int = Field(
+        default=280,
+        ge=40,
+        description="Longest procedural 'When X, do Y' rewrite accepted from the judge.",
+    )
+    prune_after_days: float = Field(
+        default=14.0,
+        gt=0.0,
+        description=(
+            "A single-observation, unverified candidate older than this is pruned as "
+            "never confirmed."
+        ),
+    )
+    audit_prefix: str = Field(
+        default="learning-curation",
+        min_length=1,
+        description="Mímir path prefix for curation audit pages.",
+    )
+
+
+class FrictionConfig(BaseModel):
+    """What a resident records about the walls it hits.
+
+    Friction is captured from each session's own record: tool calls that failed
+    and stayed failed, retries of the same call, timeouts, an exhausted
+    iteration budget, route recoveries (a workaround), and from the outcome
+    contract: operator escalations, declared capability gaps, and blocked
+    decisions. Signals are clustered by meaning into a ledger of Mímir pages so
+    "how often does this keep happening" has an answer. Needs semantic
+    matching; enabling it without embeddings is a startup error.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Record friction from every session into the friction ledger.",
+    )
+    max_signals: int = Field(
+        default=10,
+        ge=0,
+        description="Tool-level friction signals carried on ravn.session.ended per session.",
+    )
+    similarity_threshold: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Cosine similarity at or above which a new signal is another occurrence "
+            "of a recorded friction of the same kind."
+        ),
+    )
+    max_occurrences_kept: int = Field(
+        default=50,
+        ge=1,
+        description="Most recent occurrences kept on one friction record (the total is kept).",
+    )
+    ledger_prefix: str = Field(
+        default="friction",
+        min_length=1,
+        description="Mímir path prefix for friction records.",
+    )
+
+
+class SelfImprovementConfig(BaseModel):
+    """The proactive loop that acts on recorded friction without being asked.
+
+    Runs in the resident consolidation dream after learning curation. It
+    judges whether past improvements worked, then chooses at most
+    ``max_actions`` new ones for recurring friction, each with an explicit
+    expected benefit. Learning actions (promote, rewrite, retire) use Ravn's
+    evidence gates. A tool commission or a defect ticket is dispatched as an
+    ordinary resident task, so it passes the same persona tool permissions,
+    build_tool autonomy/review, and branch rules as any other turn — this loop
+    has no privileged path of its own. Needs friction capture and learning
+    curation.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Choose and take self-improvement actions during consolidation dreams.",
+    )
+    max_actions: int = Field(
+        default=2,
+        ge=1,
+        description="Most improvement actions one pass may take.",
+    )
+    min_occurrences: int = Field(
+        default=2,
+        ge=1,
+        description="Occurrences before a friction counts as recurring and is worth acting on.",
+    )
+    max_candidates: int = Field(
+        default=8,
+        ge=1,
+        description="Recurring frictions shown to the planner in one pass.",
+    )
+    allowed_actions: list[
+        Literal[
+            "promote_learning",
+            "rewrite_learning",
+            "retire_belief",
+            "commission_tool",
+            "file_defect",
+        ]
+    ] = Field(
+        default_factory=lambda: [
+            "promote_learning",
+            "rewrite_learning",
+            "retire_belief",
+            "commission_tool",
+            "file_defect",
+        ],
+        description="Improvement actions the planner may choose.",
+    )
+    evaluation_window_seconds: float = Field(
+        default=3 * 24 * 3600.0,
+        gt=0.0,
+        description="How long after an action its friction is watched before it is judged.",
+    )
+    recurrence_threshold: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "Recurrences inside the evaluation window that make an action ineffective. "
+            "Ineffective learnings are demoted and the action is never retried for that "
+            "friction."
+        ),
+    )
+    redirect_delay_seconds: float = Field(
+        default=60.0,
+        ge=0.0,
+        description=(
+            "When the resident asks the operator about friction it already addressed, "
+            "it is woken again this many seconds later with the known resolution instead; "
+            "asking again in the same case reaches the operator and counts against the fix."
+        ),
+    )
+    task_persona: str = Field(
+        default="",
+        description="Persona for dispatched improvement tasks; empty uses the resident's default.",
+    )
+    task_priority: int = Field(
+        default=10,
+        description="Drive-loop priority of dispatched improvement tasks.",
+    )
+    defect_team: str = Field(
+        default="NIU",
+        min_length=1,
+        description="Tracker team for platform-defect tickets.",
+    )
+    defect_labels: list[str] = Field(
+        default_factory=lambda: ["platform-defect"],
+        description="Labels for platform-defect tickets.",
+    )
+    audit_prefix: str = Field(
+        default="self-improvement",
+        min_length=1,
+        description="Mímir path prefix for the 'what I improved and why' records.",
+    )
+
+
 class PostSessionReflectionConfig(BaseModel):
     """Post-session reflection configuration (NIU-588).
 
@@ -2697,6 +3032,19 @@ class PostSessionReflectionConfig(BaseModel):
             "may be promoted to a reusable learning without stronger evidence."
         ),
     )
+    learning_entry_max_chars: int = Field(
+        default=600,
+        ge=80,
+        description=(
+            "Characters one injected learning may occupy, so a single long page "
+            "cannot spend the whole learning budget."
+        ),
+    )
+    matching: LearningMatchingConfig = Field(default_factory=LearningMatchingConfig)
+    verified_promotion: VerifiedPromotionConfig = Field(default_factory=VerifiedPromotionConfig)
+    curation: LearningCurationConfig = Field(default_factory=LearningCurationConfig)
+    friction: FrictionConfig = Field(default_factory=FrictionConfig)
+    self_improvement: SelfImprovementConfig = Field(default_factory=SelfImprovementConfig)
 
 
 class RecapConfig(BaseModel):
@@ -5108,11 +5456,19 @@ class Settings(BaseSettings):
         return configured
 
     def effective_post_session_reflection_config(self) -> PostSessionReflectionConfig:
-        """Return post-session reflection config with any model fallback resolved."""
+        """Return post-session reflection config with model aliases resolved.
 
-        if not self._uses_effective_agent_model(self.reflection.llm_alias):
-            return self.reflection
-        return self.reflection.model_copy(update={"llm_alias": self.effective_model()})
+        An empty ``matching.judge_llm_alias`` means "the reflection model", so it
+        resolves to the same alias the reflection call uses.
+        """
+
+        reflection = self.reflection
+        if self._uses_effective_agent_model(reflection.llm_alias):
+            reflection = reflection.model_copy(update={"llm_alias": self.effective_model()})
+        if reflection.matching.judge_llm_alias:
+            return reflection
+        matching = reflection.matching.model_copy(update={"judge_llm_alias": reflection.llm_alias})
+        return reflection.model_copy(update={"matching": matching})
 
     def effective_max_tokens(self) -> int:
         """Return the resolved max_tokens.

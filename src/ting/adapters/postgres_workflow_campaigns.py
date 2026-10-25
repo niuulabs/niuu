@@ -10,7 +10,14 @@ import asyncpg
 
 from identity.ports import AuthorizationDeniedError
 from ting.domain.models import CampaignStageState, WorkflowCampaign, WorkflowCampaignStatus
-from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
+from ting.ports.workflow_campaign_repository import (
+    CampaignAlreadyTerminalError,
+    WorkflowCampaignRepository,
+)
+
+_TERMINAL_STATUS_VALUES = frozenset(
+    {WorkflowCampaignStatus.COMPLETED.value, WorkflowCampaignStatus.FAILED.value}
+)
 
 
 class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
@@ -163,6 +170,10 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
                 connection_id = EXCLUDED.connection_id
                 WHERE workflow_campaigns.tenant_id = EXCLUDED.tenant_id
                   AND workflow_campaigns.owner_id IS NOT DISTINCT FROM EXCLUDED.owner_id
+                  AND NOT (
+                      workflow_campaigns.status IN ('completed', 'failed')
+                      AND EXCLUDED.status NOT IN ('completed', 'failed')
+                  )
             """,
             campaign.id,
             campaign.slug,
@@ -186,6 +197,17 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
             campaign.tenant_id,
         )
         if result == "INSERT 0 0":
+            stored = await self._pool.fetchval(
+                "SELECT status FROM workflow_campaigns WHERE id = $1",
+                campaign.id,
+            )
+            if stored in _TERMINAL_STATUS_VALUES and campaign.status.value not in (
+                _TERMINAL_STATUS_VALUES
+            ):
+                raise CampaignAlreadyTerminalError(
+                    f"campaign {campaign.slug} is already {stored}; it cannot become "
+                    f"{campaign.status.value}"
+                )
             raise AuthorizationDeniedError("Resource ownership is immutable")
         return campaign
 

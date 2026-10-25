@@ -110,7 +110,7 @@ class TestStorageContributor:
 
         c = StorageContributor(storage=storage, home_enabled=False)
         result = await c.contribute(session, SessionContext())
-        assert "homeVolume" not in result.values
+        assert result.values["homeVolume"] == {"enabled": False}
         assert result.values["persistence"]["existingClaim"] == "ws-pvc"
         storage.provision_user_storage.assert_not_called()
 
@@ -122,9 +122,62 @@ class TestStorageContributor:
         admin_settings = {"storage": {"home_enabled": False}}
         c = StorageContributor(storage=storage, home_enabled=True, admin_settings=admin_settings)
         result = await c.contribute(session, SessionContext())
-        assert "homeVolume" not in result.values
+        assert result.values["homeVolume"] == {"enabled": False}
         storage.provision_user_storage.assert_not_called()
 
     async def test_cleanup_noop_without_storage(self, session):
         c = StorageContributor()
         await c.cleanup(session, SessionContext())  # Should not raise
+
+    async def test_excluded_workload_types_get_no_home(self, session):
+        """Regin's workflow builds ran as the user, mounted the RWO home, and so
+        all queued for the one node that held it."""
+        storage = AsyncMock()
+        storage.create_session_workspace.return_value = PVCRef(name="ws-pvc")
+        storage.get_workspace_by_session.return_value = None
+        contributor = StorageContributor(
+            storage=storage, home_excluded_workload_types=["ravn_flock"], home_colocate=True
+        )
+
+        result = await contributor.contribute(
+            session.model_copy(update={"workload_type": "ravn_flock"}), SessionContext()
+        )
+
+        # Explicitly off: valhalla's session defaults enable the home volume,
+        # and without a claim every flock pod failed Deployment admission.
+        assert result.values["homeVolume"] == {"enabled": False}
+        assert "affinity" not in result.values
+        assert result.values["persistence"]["existingClaim"] == "ws-pvc"
+        storage.provision_user_storage.assert_not_awaited()
+
+    async def test_a_colocated_home_pins_pods_by_claim_not_by_owner(self, session):
+        storage = AsyncMock()
+        storage.create_session_workspace.return_value = PVCRef(name="ws-pvc")
+        storage.provision_user_storage.return_value = PVCRef(name="home-pvc")
+        storage.get_workspace_by_session.return_value = None
+        contributor = StorageContributor(
+            storage=storage, home_excluded_workload_types=["ravn_flock"], home_colocate=True
+        )
+
+        result = await contributor.contribute(session, SessionContext())
+
+        assert result.values["homeVolume"]["existingClaim"] == "home-pvc"
+        assert result.values["podLabels"] == {"volundr/home-claim": "home-pvc"}
+        (term,) = result.values["affinity"]["podAffinity"][
+            "requiredDuringSchedulingIgnoredDuringExecution"
+        ]
+        assert term == {
+            "topologyKey": "kubernetes.io/hostname",
+            "labelSelector": {"matchLabels": {"volundr/home-claim": "home-pvc"}},
+        }
+
+    async def test_a_shared_home_is_not_colocated(self, session):
+        storage = AsyncMock()
+        storage.create_session_workspace.return_value = PVCRef(name="ws-pvc")
+        storage.provision_user_storage.return_value = PVCRef(name="home-pvc")
+        storage.get_workspace_by_session.return_value = None
+
+        result = await StorageContributor(storage=storage).contribute(session, SessionContext())
+
+        assert "affinity" not in result.values
+        assert "podLabels" not in result.values

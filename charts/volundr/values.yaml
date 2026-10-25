@@ -180,6 +180,10 @@ storage:
     size: 1Gi
     # -- Mount path inside session pods
     mountPath: /volundr/home
+    # -- Workload types that never mount the user's home (e.g. ravn_flock
+    # workflow sessions). With a ReadWriteOnce home, every pod that mounts it
+    # must share one node; leaving workflows out lets them schedule anywhere.
+    excludeWorkloadTypes: []
 
 # Tool-result image preview cache (config.preview_cache_dir). The root
 # filesystem is read-only, so this needs a writable mount; previews are
@@ -2188,10 +2192,26 @@ networkPolicy:
   # -- Extra egress rules
   extraEgress: []
 
-# Deployment strategy
-# Use Recreate to avoid PVC mount conflicts during upgrades (ReadWriteOnce volumes)
+# Deployment strategy. Rolling: the new pod is ready before the old one stops,
+# so a rollout never takes the API down. (Recreate stopped Völundr first and
+# every request during the restart got a 503 — a resident's delivery launch
+# failed this way.) A ReadWriteOnce sessions volume attaches to one node but
+# can be shared by pods on it; rollout.colocate keeps the surge pod there.
 strategy:
-  type: Recreate
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+rollout:
+  # -- Schedule a rolling update's new pod on the node already running Völundr,
+  # so a ReadWriteOnce sessions volume can mount on both during the overlap. If
+  # that node has no room the rollout waits, with the old pod still serving.
+  colocate: true
+  # -- Seconds a terminating pod keeps serving while its endpoints are removed,
+  # so in-flight and just-routed requests finish. Must stay below
+  # terminationGracePeriodSeconds.
+  drainSeconds: 10
 
 # -- Node selector
 nodeSelector: {}

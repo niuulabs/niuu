@@ -59,14 +59,12 @@ log, expose via events, or surface to the user.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 
 from ravn.budget import TokenEstimator
+from ravn.domain.exceptions import ContextCompressionError, LLMError
 from ravn.domain.models import LLMResponse, Message, TodoItem
 from ravn.ports.llm import LLMPort
-
-logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # LLM prompt constants
@@ -98,18 +96,6 @@ _MEMORY_ANCHOR_TEMPLATE = (
 
 _COMPACTED_PLACEHOLDER = "[Compacted context]\n\n{document}"
 
-_FALLBACK_DOCUMENT = (
-    "## Active task\n"
-    "Unknown\n\n"
-    "## Decisions made\n"
-    "- [summary unavailable]\n\n"
-    "## Errors encountered\n"
-    "- None\n\n"
-    "## Actions completed\n"
-    "- None\n\n"
-    "## Open questions\n"
-    "- None"
-)
 
 # ---------------------------------------------------------------------------
 # Result dataclass
@@ -299,6 +285,15 @@ class ContextCompressor:
 
         middle_start = protect_first
         middle_end = total - protect_last if protect_last > 0 else total
+        # A tool call and its result must stay on the same side of the cut.
+        # Protecting the first two messages of a turn kept the assistant's tool
+        # calls while their results were summarised away, and the ChatGPT
+        # Responses backend rejects a call with no output ("No tool output
+        # found for function call") — every resumed resident turn failed so.
+        while middle_start > 0 and _has_block(messages[middle_start - 1], "tool_use"):
+            middle_start -= 1
+        while middle_start < middle_end < total and _has_block(messages[middle_end], "tool_result"):
+            middle_end -= 1
         middle = messages[middle_start:middle_end]
 
         if not middle:
@@ -312,8 +307,8 @@ class ContextCompressor:
             content=_COMPACTED_PLACEHOLDER.format(document=document),
         )
 
-        head = messages[:protect_first]
-        tail = messages[total - protect_last :] if protect_last > 0 else []
+        head = messages[:middle_start]
+        tail = messages[middle_end:]
         # middle (len M) is replaced by 1 compacted message → removed = M - 1
         removed = len(middle) - 1
         return head + [compacted_msg] + tail, removed
@@ -342,15 +337,33 @@ class ContextCompressor:
                 model=self._model,
                 max_tokens=self._max_tokens,
             )
-            return response.content.strip() or _FALLBACK_DOCUMENT
-        except Exception as exc:
-            logger.warning("Compaction document generation failed: %s", exc)
-            return _FALLBACK_DOCUMENT
+        except LLMError as exc:
+            raise ContextCompressionError(
+                f"compaction of {len(messages)} message(s) failed: the state document "
+                f"could not be generated with {self._model!r}: {exc}. Fix the model call, "
+                "or set context_management.compaction to 'native' or 'off' for this model"
+            ) from exc
+        document = response.content.strip()
+        if not document:
+            raise ContextCompressionError(
+                f"compaction of {len(messages)} message(s) failed: {self._model!r} returned "
+                "an empty state document; history was left as it was"
+            )
+        return document
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _has_block(message: Message, block_type: str) -> bool:
+    """Whether *message* carries a content block of *block_type*."""
+    if isinstance(message.content, str):
+        return False
+    return any(
+        isinstance(block, dict) and block.get("type") == block_type for block in message.content
+    )
 
 
 def _extract_content_text(content: str | list[dict]) -> str:

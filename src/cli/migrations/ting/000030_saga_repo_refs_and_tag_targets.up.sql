@@ -1,5 +1,0 @@
-ALTER TABLE sagas ADD COLUMN IF NOT EXISTS repo_branches JSONB NOT NULL DEFAULT '{}'::jsonb;
-ALTER TABLE sagas ADD COLUMN IF NOT EXISTS target_tags TEXT[] NOT NULL DEFAULT '{}';
-ALTER TABLE sagas ADD COLUMN IF NOT EXISTS target_match TEXT NOT NULL DEFAULT 'all';
-
-CREATE INDEX IF NOT EXISTS idx_sagas_target_tags ON sagas USING GIN (target_tags);

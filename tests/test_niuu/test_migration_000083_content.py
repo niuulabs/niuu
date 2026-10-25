@@ -1,10 +1,6 @@
-"""Migration 000083 must exist, byte-identical, in all four required
-locations, and must include the (node_id, kind) unique index that closes
-the concurrent-heartbeat duplicate-kind race.
-
-See `.claude/rules/migrations.md` (dual-location requirement) and the
-security review that added the fourth/fifth locations (CLI-embedded
-migration stream, both chart configmaps).
+"""Migration 000083 must include the (node_id, kind) unique index that closes
+the concurrent-heartbeat duplicate-kind race, and Guild's own migration set
+must carry it identically.
 """
 
 from __future__ import annotations
@@ -34,16 +30,13 @@ def test_down_migration_drops_the_unique_index() -> None:
     assert f"DROP INDEX IF EXISTS {UNIQUE_KIND_INDEX}" in down
 
 
-def test_all_four_locations_are_byte_identical() -> None:
+def test_guild_migration_set_carries_it_identically() -> None:
     up = (ROOT / "migrations/000083_guild_node_join.up.sql").read_text()
     down = (ROOT / "migrations/000083_guild_node_join.down.sql").read_text()
 
-    cli_up = (ROOT / "src/cli/migrations/volundr/000083_guild_node_join.up.sql").read_text()
-    cli_down = (ROOT / "src/cli/migrations/volundr/000083_guild_node_join.down.sql").read_text()
-    assert cli_up == up
-    assert cli_down == down
-
-    for chart in ("volundr", "guild"):
+    # Volundr's chart reads migrations/ itself (test_migrations_single_source);
+    # Guild's chart carries its own tailored set, so it must be checked here.
+    for chart in ("guild",):
         configmap = ROOT / f"charts/{chart}/templates/migrations-configmap.yaml"
         chart_up = _chart_migration(configmap, "000083_guild_node_join.up.sql")
         chart_down = _chart_migration(configmap, "000083_guild_node_join.down.sql")

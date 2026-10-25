@@ -1180,7 +1180,9 @@ class TestSessionServiceStop:
         stopped = await service.stop_session(session.id)
         assert pod_manager.stop_calls == [session]
         assert stopped.status == SessionStatus.STOPPED
-        assert stopped.error is None
+        # Stopping a failed session keeps why it failed; clearing it left a
+        # resident's unschedulable build "stopped" with nothing to read.
+        assert stopped.error == "start failed"
 
     async def test_vm_stop_leaves_storage_cleanup_to_runtime(
         self,
