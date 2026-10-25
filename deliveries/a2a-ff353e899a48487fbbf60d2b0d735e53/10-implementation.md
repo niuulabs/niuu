@@ -182,14 +182,14 @@ this local verification is not represented as required-check status.
 ### Handoff
 
 The security implementation is commit
-[`7f201253`](https://github.com/niuulabs/niuu/commit/7f201253); after integrating
-an unrelated upstream `regin` documentation commit, its pushed branch head is
-[`b37866de`](https://github.com/niuulabs/niuu/commit/b37866de). The existing
-hosted PR remains [#1171](https://github.com/niuulabs/niuu/pull/1171), targeting
+[`7f201253`](https://github.com/niuulabs/niuu/commit/7f201253). It was pushed
+after integrating the unrelated upstream `regin` documentation commit
+[`26061cd2`](https://github.com/niuulabs/niuu/commit/26061cd2); this handoff is
+recorded in its successor commit. The existing hosted PR remains [#1171](https://github.com/niuulabs/niuu/pull/1171), targeting
 `regin`; the requested re-review, including the precise security commit and
 focused test result, is recorded in [its review comment](https://github.com/niuulabs/niuu/pull/1171#issuecomment-6396023556).
 
-Immediately after the push, `gh run list --branch regin --commit b37866de`
-reported no current-head workflow runs. The prior PR checks belong to its older
+Immediately after the security push, `gh run list --branch regin --commit b37866de`
+reported no workflow runs for that head. The prior PR checks belong to its older
 documentation head and are not evidence for this security revision. No merge was
 performed; review and post-push CI are still required before approval.
