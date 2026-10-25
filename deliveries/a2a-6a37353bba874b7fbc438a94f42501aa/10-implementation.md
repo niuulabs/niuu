@@ -24,7 +24,7 @@ PR [#1171](https://github.com/niuulabs/niuu/pull/1171) targets `regin`, but its 
 
 Each failure reproduces unchanged at `origin/regin`: the PR has no diff for the affected files. Correcting any one is unrelated to NIU-1107 and requires an operator scope decision. Do not merge #1171 until required CI is green.
 
-The current CI run [40148166827](https://github.com/niuulabs/niuu/actions/runs/40148166827) for `39db5307` is still running and its `Python / Python: Lint` check has already failed, so it is not evidence of green CI. The detailed failures below come from completed CI run [40138560609](https://github.com/niuulabs/niuu/actions/runs/40138560609), then independently reproduce at the exact `origin/regin` base.
+The superseded CI run [40148166827](https://github.com/niuulabs/niuu/actions/runs/40148166827) for `39db5307` is not current-head evidence. The review correction commit `417a0f1f279038eb4ad5655b17921ef29be651c9` was the reviewed PR head; its CI run [40148682923](https://github.com/niuulabs/niuu/actions/runs/40148682923) was queued/in progress at review, with no completed green result. The detailed failures below come from completed CI run [40138560609](https://github.com/niuulabs/niuu/actions/runs/40138560609), then independently reproduce at the exact `origin/regin` base. A subsequent documentation correction creates a new PR head and must itself complete green CI before approval or merge.
 
 ## PR identity, target, and actual diff
 
