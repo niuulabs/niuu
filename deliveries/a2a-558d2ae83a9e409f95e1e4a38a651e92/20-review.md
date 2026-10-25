@@ -4,39 +4,49 @@
 
 `needs_changes`
 
+## Re-check status
+
+The prior requested default-kubeconfig follow-up is satisfied. With neither an
+explicit kubeconfig path nor `KUBECONFIG`, the out-of-cluster path now calls
+Kubernetes with `config_file=None` and `context=None`; the added regression
+covers that behavior.
+
 ## Finding
 
-### Major — default kubeconfig callers no longer work
+### Major — multi-context kubeconfigs break existing calls without `cluster`
 
-- The prior UTF-8 byte-bound finding is fixed: `src/ravn/adapters/tools/kubernetes.py:388-395`
-  trims leading continuation bytes, and the new regression asserts the result
-  is no larger than the selected cap.
-- `src/ravn/adapters/tools/kubernetes.py:198-205` now rejects every
-  out-of-cluster invocation when both `kubeconfig_path` and `KUBECONFIG` are
-  unset.  Before this change `config.load_kube_config(config_file=None)` used
-  Kubernetes' normal default kubeconfig lookup.  This is a backwards-incompatible
-  change to existing callers, contrary to the ticket's preservation requirement.
-  Preserve the prior default-kubeconfig behavior (while still resolving contexts
-  for explicit multi-cluster selection), and add coverage for an unset
-  `KUBECONFIG` using the default config location.
+- `src/ravn/adapters/tools/kubernetes.py:217-220` now rejects an out-of-cluster
+  request with no `cluster` whenever its kubeconfig has more than one context.
+  Before this change, `load_kube_config(..., context=None)` selected the
+  kubeconfig's `current-context`, so existing callers of every pre-existing
+  action (`inspect_pod`, events, logs, workloads, and nodes) worked without a
+  new argument. The newly added test at
+  `tests/test_ravn/test_kubernetes_inspect_tool.py:301-312` codifies that
+  backwards-incompatible error. This violates the ticket requirement that
+  existing callers remain unchanged.
+
+  Preserve the default/current-context behavior when `cluster` is omitted;
+  use the new `cluster` parameter only to override that selection. Add a
+  regression test using a multi-context kubeconfig with `current-context`
+  asserting a legacy no-`cluster` request reaches that context. Explicit
+  unknown clusters should remain errors.
 
 ## Verification
 
-- Re-checked committed repo-root diff `01af0978..6989e44d` on branch `regin`;
-  `HEAD` and `origin/regin` are both `6989e44d`.
+- Re-checked the committed repo-root branch `regin` at `8aeca20d`; it matches
+  `origin/regin`. Full delivery diff reviewed: `01af0978..8aeca20d`.
 - Ran `uv run pytest -q tests/test_ravn/test_kubernetes_inspect_tool.py
   tests/ravn/unit/test_builtin_registry.py tests/test_ravn/test_config.py`:
-  **225 passed**.
+  **226 passed**.
 - Ran `uv run ruff check src/ravn/adapters/tools/kubernetes.py
   src/ravn/config.py src/ravn/adapters/tools/builtin_registry.py
   tests/test_ravn/test_kubernetes_inspect_tool.py
   tests/ravn/unit/test_builtin_registry.py`: **All checks passed**.
-- Directly verified that the current out-of-cluster path rejects an unset
-  `KUBECONFIG` rather than allowing the prior default lookup. Live cluster
-  verification remains unavailable because neither `kubectl` nor Teleport is
-  installed in this workspace.
+- Live cluster access remains unverified: `kubectl` and `tsh` are unavailable
+  in this workspace, and the implementation makes no claim otherwise.
 
 ## Recommendation
 
-Restore default-kubeconfig compatibility and add a regression test, then
-request re-review. The prior UTF-8 bounded-tail follow-up is satisfied.
+Restore legacy current-context selection for omitted `cluster`, cover it, and
+request another review. The prior default-kubeconfig follow-up is verified as
+satisfied.
