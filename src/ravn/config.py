@@ -264,6 +264,13 @@ class KubernetesToolsConfig(BaseModel):
         ge=1,
         description="Characters of each ConfigMap value kubernetes_inspect returns.",
     )
+    max_configmap_tail_bytes: int = Field(
+        default=4000,
+        ge=1,
+        description=(
+            "Maximum trailing bytes kubernetes_inspect returns for a selected ConfigMap key."
+        ),
+    )
 
 
 class BashToolConfig(BaseModel):

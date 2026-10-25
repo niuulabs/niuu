@@ -205,14 +205,25 @@ class _RolledOutApps:
 
 
 class _ConfigCore:
+    def __init__(self, data: dict[str, str] | None = None, error: Exception | None = None) -> None:
+        self._data = data or {"config.yaml": "x" * 50, "small": "ok"}
+        self._error = error
+
     async def read_namespaced_config_map(self, name: str, namespace: str):
+        if self._error is not None:
+            raise self._error
         return SimpleNamespace(
             metadata=SimpleNamespace(name=name, namespace=namespace, uid="cm"),
-            data={"config.yaml": "x" * 50, "small": "ok"},
+            data=self._data,
         )
 
 
-def _multi_cluster_tool(tmp_path, built: list[str]) -> KubernetesInspectTool:
+def _multi_cluster_tool(
+    tmp_path,
+    built: list[str],
+    configmap_data: dict[str, str] | None = None,
+    max_configmap_tail_bytes: int = 4000,
+) -> KubernetesInspectTool:
     kubeconfig = tmp_path / "kubeconfig.yaml"
     kubeconfig.write_text(_TELEPORT_KUBECONFIG, encoding="utf-8")
 
@@ -221,13 +232,16 @@ def _multi_cluster_tool(tmp_path, built: list[str]) -> KubernetesInspectTool:
         built.append(context)
         cluster = context.rsplit("-", 1)[-1]
         return KubernetesClients(
-            core_v1=_ConfigCore(), apps_v1=_RolledOutApps(cluster), batch_v1=FakeBatchV1()
+            core_v1=_ConfigCore(configmap_data),
+            apps_v1=_RolledOutApps(cluster),
+            batch_v1=FakeBatchV1(),
         )
 
     return KubernetesInspectTool(
         in_cluster=False,
         kubeconfig_path=str(kubeconfig),
         max_configmap_value_chars=10,
+        max_configmap_tail_bytes=max_configmap_tail_bytes,
         client_factory=factory,
     )
 
@@ -285,6 +299,53 @@ async def test_configmap_values_are_capped(tmp_path) -> None:
     payload = json.loads(result.content)
     assert payload["data"] == {"config.yaml": "x" * 10, "small": "ok"}
     assert payload["truncated_keys"] == ["config.yaml"]
+
+
+@pytest.mark.asyncio
+async def test_configmap_key_tail_returns_late_backend_without_other_data(tmp_path) -> None:
+    backend = "backend:\n  adapter: ravn.adapters.llm.ymir.YmirBackend\n"
+    config = "models:\n" + ("  - reasoner\n" * 20) + backend
+    tool = _multi_cluster_tool(
+        tmp_path,
+        [],
+        {"config.yaml": config, "unrelated.yaml": "do-not-disclose"},
+        max_configmap_tail_bytes=len(backend) + 1,
+    )
+
+    result = await tool.execute(
+        {
+            "action": "configmap",
+            "cluster": "ymir",
+            "namespace": "nats",
+            "name": "valkyrie-ymir-k8s-config",
+            "key": "config.yaml",
+            "tail_bytes": 1_000_000,
+        }
+    )
+
+    payload = json.loads(result.content)
+    assert backend in payload["data"]["config.yaml"]
+    assert len(payload["data"]["config.yaml"].encode("utf-8")) <= len(backend) + 1
+    assert payload["data"] == {"config.yaml": payload["data"]["config.yaml"]}
+    assert "do-not-disclose" not in result.content
+    assert payload["truncated_keys"] == ["config.yaml"]
+    assert {"key", "tail_bytes"} <= tool.input_schema["properties"].keys()
+
+
+@pytest.mark.asyncio
+async def test_configmap_missing_name_keeps_api_error_semantics() -> None:
+    tool = KubernetesInspectTool(
+        core_v1=_ConfigCore(error=RuntimeError("404 Not Found")),
+        apps_v1=FakeAppsV1(),
+        batch_v1=FakeBatchV1(),
+    )
+
+    result = await tool.execute(
+        {"action": "configmap", "namespace": "nats", "name": "missing-config"}
+    )
+
+    assert result.is_error
+    assert "404 Not Found" in result.content
 
 
 @pytest.mark.asyncio

@@ -53,6 +53,7 @@ class KubernetesInspectTool(ToolPort):
         batch_v1: Any | None = None,
         max_log_lines: int = 120,
         max_configmap_value_chars: int = 4000,
+        max_configmap_tail_bytes: int = 4000,
         client_factory: ClientFactory | None = None,
     ) -> None:
         self._in_cluster = in_cluster
@@ -64,6 +65,7 @@ class KubernetesInspectTool(ToolPort):
         self._loaded = core_v1 is not None
         self._max_log_lines = max(1, max_log_lines)
         self._max_configmap_value_chars = max(1, max_configmap_value_chars)
+        self._max_configmap_tail_bytes = max(1, max_configmap_tail_bytes)
         self._client_factory = client_factory or _clients_for_context
         self._clients_by_context: dict[str, KubernetesClients] = {}
 
@@ -76,7 +78,7 @@ class KubernetesInspectTool(ToolPort):
         return (
             "Read-only Kubernetes inspection for resident Valkyries. Supports "
             "pod status, object events, pod logs, workload status (images, rollout "
-            "progress), ConfigMap contents, and node status using the in-cluster "
+            "progress), selected ConfigMap contents, and node status using the in-cluster "
             "service account or a kubeconfig. When the kubeconfig spans several "
             "clusters, `clusters` lists them and every other action names one."
         )
@@ -125,6 +127,18 @@ class KubernetesInspectTool(ToolPort):
                 "tail_lines": {
                     "type": "integer",
                     "description": "Maximum pod log lines to return.",
+                },
+                "key": {
+                    "type": "string",
+                    "description": "Optional ConfigMap data key to return by itself.",
+                },
+                "tail_bytes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": (
+                        "Optional trailing bytes of the selected ConfigMap key. "
+                        "Requires key and is capped by the configured read limit."
+                    ),
                 },
             },
             "required": ["action"],
@@ -293,14 +307,61 @@ class KubernetesInspectTool(ToolPort):
         namespace, name = _namespace_name(input)
         configmap = await _maybe_await(self._core_v1.read_namespaced_config_map(name, namespace))
         data = dict(_field(configmap, "data", default={}) or {})
-        limit = self._max_configmap_value_chars
+        key = str(input.get("key") or "").strip()
+        tail_bytes = input.get("tail_bytes")
+        if tail_bytes is not None and not key:
+            raise ValueError("key is required when tail_bytes is set")
+        if key:
+            return self._selected_configmap_data(
+                configmap=configmap,
+                namespace=namespace,
+                name=name,
+                data=data,
+                key=key,
+                tail_bytes=tail_bytes,
+            )
         return {
             "action": "configmap",
             "namespace": namespace,
             "name": name,
             "metadata": _metadata(configmap),
-            "data": {key: str(value)[:limit] for key, value in sorted(data.items())},
-            "truncated_keys": sorted(key for key, value in data.items() if len(str(value)) > limit),
+            "data": {
+                data_key: str(value)[: self._max_configmap_value_chars]
+                for data_key, value in sorted(data.items())
+            },
+            "truncated_keys": sorted(
+                data_key
+                for data_key, value in data.items()
+                if len(str(value)) > self._max_configmap_value_chars
+            ),
+        }
+
+    def _selected_configmap_data(
+        self,
+        *,
+        configmap: Any,
+        namespace: str,
+        name: str,
+        data: dict[str, Any],
+        key: str,
+        tail_bytes: Any,
+    ) -> dict[str, Any]:
+        if key not in data:
+            raise ValueError(f"ConfigMap data key {key!r} was not found")
+        value = str(data[key])
+        if tail_bytes is None:
+            selected_value = value[: self._max_configmap_value_chars]
+            is_truncated = len(value) > self._max_configmap_value_chars
+        else:
+            limit = max(1, min(int(tail_bytes), self._max_configmap_tail_bytes))
+            selected_value, is_truncated = _tail_bytes(value, limit)
+        return {
+            "action": "configmap",
+            "namespace": namespace,
+            "name": name,
+            "metadata": _metadata(configmap),
+            "data": {key: selected_value},
+            "truncated_keys": [key] if is_truncated else [],
         }
 
     async def _node(self, input: dict) -> dict[str, Any]:  # noqa: A002
@@ -322,6 +383,13 @@ async def _clients_for_context(kubeconfig: str, context: str) -> KubernetesClien
         apps_v1=client.AppsV1Api(api_client),
         batch_v1=client.BatchV1Api(api_client),
     )
+
+
+def _tail_bytes(value: str, limit: int) -> tuple[str, bool]:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= limit:
+        return value, False
+    return encoded[-limit:].decode("utf-8", errors="replace"), True
 
 
 def _namespace_name(input: dict) -> tuple[str, str]:  # noqa: A002
