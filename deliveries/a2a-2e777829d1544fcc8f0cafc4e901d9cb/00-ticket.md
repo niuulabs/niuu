@@ -59,3 +59,11 @@ or platform-tool production behavior. NIU-1112 remains In Progress pending a
 green current-head CI run. The post-isolation full suite passed 27,596 tests
 at 88.47% coverage but has six unrelated failures recorded in
 `10-implementation.md`.
+
+## 2026-10-25 review revision
+
+The requested ambiguous-gate regression is committed in `5a6f2b00` and the
+A2A-only completion proof for both decisions is committed in `06c298ac`.
+NIU-1112 remains **In Progress** until required full current-head verification
+is green; no PR is required because this regin-only delivery is integrated
+directly on `regin`.
