@@ -21,7 +21,8 @@ from uuid import UUID, uuid4
 import httpx
 import jwt
 import pytest
-from a2a.types import TaskState
+from a2a.client import ClientConfig, ClientFactory
+from a2a.types import GetTaskRequest, TaskState
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from grpc import server as grpc_server
@@ -40,6 +41,7 @@ from ting.api.a2a import (
     create_a2a_router,
     resolve_a2a_launch_repo,
 )
+from ting.api.a2a_card import build_agent_card
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.research import create_research_router, resolve_workflow_campaign_repo
 from ting.api.workflows import resolve_workflow_repo
@@ -2594,8 +2596,11 @@ class TestTaskArtifacts:
         )
         return client, campaign
 
-    def test_completed_task_inlines_small_artifacts(self, tmp_path: Path) -> None:
-        client, campaign = self._client_with_files(tmp_path)
+    def test_artifact_at_inline_threshold_is_text_part(self, tmp_path: Path) -> None:
+        client, campaign = self._client_with_files(
+            tmp_path,
+            inline_max=len(self._JSON_CONTENT),
+        )
 
         result = _rpc(client, "GetTask", {"id": campaign.slug}).json()["result"]
 
@@ -2606,8 +2611,11 @@ class TestTaskArtifacts:
         assert json_part["mediaType"] == "application/json"
         assert json_part["filename"] == "learned_tool.json"
 
-    def test_large_artifact_becomes_fetchable_url_part(self, tmp_path: Path) -> None:
-        client, campaign = self._client_with_files(tmp_path, inline_max=10)
+    def test_artifact_over_inline_threshold_is_fetchable_url_part(self, tmp_path: Path) -> None:
+        client, campaign = self._client_with_files(
+            tmp_path,
+            inline_max=len(self._JSON_CONTENT) - 1,
+        )
 
         result = _rpc(client, "GetTask", {"id": campaign.slug}).json()["result"]
 
@@ -2621,6 +2629,49 @@ class TestTaskArtifacts:
         )
         assert fetched.status_code == 200
         assert fetched.json()["content"] == self._JSON_CONTENT
+
+    def test_a2a_sdk_reads_inline_and_url_artifact_parts(self, tmp_path: Path) -> None:
+        workflow = _mimir_workflow(tmp_path)
+        large_path = f"capabilities/{self._SLUG}/instructions.txt"
+        large_content = self._JSON_CONTENT + "x"
+        workflow.graph["artifactPaths"].append("capabilities/{slug}/instructions.txt")
+        campaign = _make_campaign(
+            slug=self._SLUG,
+            status=WorkflowCampaignStatus.COMPLETED,
+            metadata={"a2a_workflow_slug": self._SLUG},
+            workflow_snapshot=build_workflow_snapshot(workflow),
+        )
+        artifact_dir = tmp_path / "wiki" / "capabilities" / self._SLUG
+        artifact_dir.mkdir(parents=True)
+        (artifact_dir / "learned_tool.json").write_text(self._JSON_CONTENT, encoding="utf-8")
+        (artifact_dir / "instructions.txt").write_text(large_content, encoding="utf-8")
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+            settings=Settings(
+                auth=AuthConfig(allow_anonymous_dev=False),
+                a2a=A2AConfig(inline_artifact_max_chars=len(self._JSON_CONTENT)),
+            ),
+        )
+
+        async def get_task_with_sdk():
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=client.app),
+                base_url="http://testserver",
+                headers=_headers(),
+            ) as http_client:
+                card = build_agent_card(
+                    workflows=[workflow],
+                    config=client.app.state.settings.a2a,
+                    endpoint_url=f"http://testserver{A2A_PATH}",
+                )
+                sdk_client = ClientFactory(ClientConfig(httpx_client=http_client)).create(card)
+                return await sdk_client.get_task(GetTaskRequest(id=campaign.slug))
+
+        task = asyncio.run(get_task_with_sdk())
+        parts = {artifact.artifact_id: artifact.parts[0] for artifact in task.artifacts}
+
+        assert parts[self._JSON_PATH].text == self._JSON_CONTENT
+        assert parts[large_path].url.endswith("capabilities%2Fbuild-widget%2Finstructions.txt")
 
     def test_blocked_publish_retry_completes_task_with_artifact(self, tmp_path: Path) -> None:
         """A successful publish supersedes its earlier help-needed task state."""

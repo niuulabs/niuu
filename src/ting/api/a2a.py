@@ -62,10 +62,10 @@ from ting.api.a2a_card import _endpoint_url as _card_endpoint_url
 from ting.api.a2a_card import build_agent_card
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.research import (
-    _campaign_knowledge,
     _campaign_status_from_session,
     _emit_campaign_event,
     _initial_stage_state,
+    _load_campaign_artifact_pages,
     resolve_workflow_campaign_repo,
 )
 from ting.api.workflow_execution_launch import (
@@ -1162,56 +1162,37 @@ class WorkflowTaskHandler(RequestHandler):
             task.metadata.update({"pendingGates": pending})
 
     async def _attach_artifacts(self, task: Task, campaign: WorkflowCampaign) -> None:
-        """Project configured durable Mimir outputs onto ``task.artifacts``.
+        """Project completed campaign artifacts onto ``task.artifacts``.
 
-        Only called for COMPLETED tasks: artifacts are outputs, and skipping
-        the Mimir round-trips on every mid-run poll keeps GetTask cheap.
-        Small text pages are inlined; anything over the configured limit
-        becomes a url part pointing at the authenticated artifact route.
-
-        Workflows can declare exact ``artifactPaths`` in their graph. Paths may
-        contain ``{slug}``, resolved from the immutable launch slug. Legacy
-        research campaigns retain their campaign-prefix discovery behavior.
+        The shared campaign loader keeps A2A task output consistent with the
+        authenticated research artifact routes. A workflow that declares
+        artifact paths exposes only those paths; legacy campaigns retain
+        prefix discovery plus configured machine-readable artifact names.
         """
         settings = self._request.app.state.settings
-        adapter = _campaign_knowledge(
+        artifact_slug = str(campaign.metadata.get(_WORKFLOW_SLUG_KEY) or campaign.slug).strip()
+        configured_paths = tuple(
+            workflow_artifact_paths_from_snapshot(
+                campaign.workflow_snapshot,
+                slug=artifact_slug,
+            )
+        )
+        declares_paths = _declares_artifact_paths(campaign)
+        extra_paths = configured_paths
+        if not declares_paths:
+            prefix = f"research/campaigns/{artifact_slug}/"
+            extra_paths += tuple(f"{prefix}{name}" for name in settings.a2a.extra_artifact_files)
+        loaded = await _load_campaign_artifact_pages(
             campaign,
-            settings,
+            settings=settings,
             bearer_token=self._bearer_token,
             service_auth=getattr(self._request.app.state, "mimir_service_auth", None),
+            artifact_paths=extra_paths,
+            include_campaign_prefix=not declares_paths,
         )
-        if adapter is None:
-            return
-        loaded: list[Any] = []
-        artifact_slug = str(campaign.metadata.get(_WORKFLOW_SLUG_KEY) or campaign.slug).strip()
-        configured_paths = workflow_artifact_paths_from_snapshot(
-            campaign.workflow_snapshot,
-            slug=artifact_slug,
-        )
-        for path in configured_paths:
-            try:
-                loaded.append(await adapter.get_page(path))
-            except FileNotFoundError:
-                continue
-        if not configured_paths and not _declares_artifact_paths(campaign):
-            prefix = f"research/campaigns/{campaign.slug}/"
-            for meta in await adapter.list_pages(prefix=prefix):
-                try:
-                    loaded.append(await adapter.get_page(meta.path))
-                except FileNotFoundError:
-                    continue
-            listed_paths = {page.meta.path for page in loaded}
-            for name in settings.a2a.extra_artifact_files:
-                path = f"{prefix}{name}"
-                if path in listed_paths:
-                    continue
-                try:
-                    loaded.append(await adapter.get_page(path))
-                except FileNotFoundError:
-                    continue
 
         max_inline = settings.a2a.inline_artifact_max_chars
-        for page in sorted(loaded, key=lambda page: page.meta.path):
+        for page in loaded:
             artifact = task.artifacts.add()
             artifact.artifact_id = page.meta.path
             artifact.name = page.meta.title or posixpath.basename(page.meta.path)
