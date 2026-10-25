@@ -72,6 +72,7 @@ class DoctorReport:
 
 
 _FORGE_HEALTH_PATH = "/api/v1/forge/health"
+_A2A_TASK_NOT_FOUND_ERROR_CODE = -32001
 
 
 async def diagnose_tool_build(settings: Settings) -> DoctorReport:
@@ -461,11 +462,39 @@ async def _hop6_endpoint(
             reason="GetTask probe did not return a JSON-RPC response",
             details={"endpoint": endpoint, "status_code": status_code},
         )
+
+    error = body.get("error")
+    if isinstance(error, dict):
+        if error.get("code") == _A2A_TASK_NOT_FOUND_ERROR_CODE:
+            return HopResult(
+                number=6,
+                title="A2A endpoint",
+                status=HopStatus.PASS,
+                reason=f"GetTask {endpoint} -> task not found",
+                details={"endpoint": endpoint, "status_code": status_code},
+            )
+        return HopResult(
+            number=6,
+            title="A2A endpoint",
+            status=HopStatus.FAIL,
+            reason=f"GetTask {endpoint} failed: {error.get('message', error)}",
+            details={"endpoint": endpoint, "status_code": status_code, "error": error},
+        )
+
+    result = body.get("result")
+    if isinstance(result, dict) and result.get("id") == _A2A_DOCTOR_PROBE_TASK_ID:
+        return HopResult(
+            number=6,
+            title="A2A endpoint",
+            status=HopStatus.PASS,
+            reason=f"GetTask {endpoint} -> task result",
+            details={"endpoint": endpoint, "status_code": status_code},
+        )
     return HopResult(
         number=6,
         title="A2A endpoint",
-        status=HopStatus.PASS,
-        reason=f"GetTask {endpoint} -> HTTP {status_code} JSON-RPC response",
+        status=HopStatus.FAIL,
+        reason="GetTask probe did not return task-not-found or the requested task",
         details={"endpoint": endpoint, "status_code": status_code},
     )
 

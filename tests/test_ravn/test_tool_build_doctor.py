@@ -571,6 +571,37 @@ async def test_a2a_endpoint_probe_rejects_http_failure() -> None:
     assert report.ok is False
 
 
+async def test_a2a_endpoint_probe_rejects_unsupported_method() -> None:
+    card = _a2a_doctor_card(
+        [{"id": "wf-builder", "name": "Tool Builder", "tags": ["tool-builder"]}]
+    )
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): HttpResponse(200, card),
+            (
+                "POST",
+                "/api/v1/ting/a2a",
+            ): HttpResponse(
+                200,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "ravn-tool-build-doctor",
+                    "error": {"code": -32601, "message": "method not found"},
+                },
+            ),
+        }
+    )
+    backend = _a2a_doctor_backend(client, workflow_selector={"tags": ["tool-builder"]})
+    settings = _settings(adapter="ravn.adapters.tool_build.a2a.A2AToolBuildBackend")
+
+    with patch("ravn.cli.commands._build_tool_build_backend", return_value=backend):
+        report = await diagnose_tool_build(settings)
+
+    assert report.hops[5].status is HopStatus.FAIL
+    assert "method not found" in report.hops[5].reason
+    assert report.ok is False
+
+
 async def test_a2a_endpoint_probe_rejects_cross_origin_interface() -> None:
     card = _a2a_doctor_card(
         [{"id": "wf-builder", "name": "Tool Builder", "tags": ["tool-builder"]}]

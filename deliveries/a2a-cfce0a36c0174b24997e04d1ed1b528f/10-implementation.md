@@ -95,3 +95,29 @@ gate above. At the operator's direction, no cross-actor retry or broader
 credential request was made; the bounded submission/evidence-reader task
 `a2a-e7c858b5863a4e67b012baa3547400b9` remains the route expected to publish
 the deployed Runa/Valhalla proof identifiers.
+
+## Review follow-up: JSON-RPC method validation
+
+The endpoint probe now treats only the A2A SDK's task-not-found JSON-RPC code
+`-32001` for the reserved absent task as benign. A successful task result must
+identify that reserved probe id. Every other JSON-RPC error, including
+`-32601` (`method not found`), fails hop 6; focused regression coverage proves
+that an endpoint without `GetTask` cannot produce a green doctor report.
+
+Focused verification for this revision passed:
+
+```text
+uv run ruff check src/ravn/valkyrie_evolution/tool_build_doctor.py \
+  tests/test_ravn/test_tool_build_doctor.py
+All checks passed!
+
+uv run --extra dev pytest -q tests/test_ravn/test_tool_build_doctor.py
+26 passed in 0.56s
+```
+
+No available session capability can inspect the authorized Teleport workload or
+submit/read the one deployed resident's actor-bound A2A task. The required
+resident/configuration, commission/task, workflow/Forge run, verification,
+court, installation/version, and ledger evidence remains absent. This revision
+therefore leaves NIU-1114 In Progress rather than claiming the live acceptance
+gate.

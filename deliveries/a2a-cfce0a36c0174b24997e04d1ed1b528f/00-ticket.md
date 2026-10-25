@@ -68,3 +68,12 @@ This does not contact or retry the independent `a2a-e7c858b5863a4e67b012baa35474
 task. It remains unrelated to the one authorized live resident proof and
 cannot replace its task, build, verification, court, installation, or ledger
 identifiers.
+
+## Review follow-up — 2026-10-25
+
+The endpoint probe accepts only the A2A SDK `TaskNotFoundError` JSON-RPC code
+(`-32001`) for its reserved absent task, or a task result whose id is the
+reserved probe id. It rejects all other JSON-RPC errors, including
+`-32601`/`method not found`; the focused regression test covers that response.
+This source revision does not create or provide the still-missing live-proof
+identifiers required by the acceptance gate.
