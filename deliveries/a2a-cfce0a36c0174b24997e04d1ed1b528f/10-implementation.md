@@ -44,16 +44,27 @@ is authorized. It does not establish that Sigrun/`valkyrie-ymir-k8s` supersedes
 the selected Runa/Valhalla target. Deployed configuration and owner evidence
 must identify the resident before that conclusion can be made.
 
-The bounded submission/evidence route under separate delivery
-`a2a-cd26d65106d04df2ac3a4cde1de72b3f` is reported push-registered `WORKING`,
-but no endpoint, scoped identity, or successful request is demonstrated. The
-concrete outstanding authorization/evidence is therefore: (1) an approved
-endpoint or scoped workload identity that can submit exactly one bounded
-capability-gap request through the deployed resident's A2A path, and (2)
-read access to its resulting task id, workflow/Forge run, verification result,
-court verdict, installation id or learned-tool version, and capability-ledger
-entry. Record those identifiers. File any protocol or facade finding as a
-follow-up issue rather than changing it in this ticket.
+The bounded submission/evidence route under separate delivery was previously
+reported as `a2a-cd26d65106d04df2ac3a4cde1de72b3f`; the operator now reports
+`a2a-e7c858b5863a4e67b012baa3547400b9` as `WORKING`. To investigate it without
+launching a second build, this session exchanged its Skuld-session workload
+proof for a short-lived `valkyrie_build` token with the standard A2A build
+scopes and called `GetTask` on the public Ting A2A endpoint. The exchange
+succeeded (HTTP 201), but `GetTask` returned HTTP 403: `Scoped credential only
+grants operations on tasks its workload launched`. This is the expected
+actor-bound restriction: the Skuld session's identity cannot read another
+workload's task. No `SendMessage` was issued, because this session is not the
+selected deployed Runa resident and a launch would not satisfy the ticket's
+one-resident proof.
+
+The concrete outstanding authority is therefore a deployed Runa/Valhalla
+resident workload identity (or an equivalently bounded read authority) that
+can both submit exactly one capability-gap request and read that request's
+resulting task, workflow/Forge run, verification result, court verdict,
+installation id or learned-tool version, and capability-ledger entry. The
+independent task's launching workload can alternatively publish those records
+for this ticket. Record the identifiers before closure. File any protocol or
+facade finding as a follow-up issue rather than changing it in this ticket.
 
 ## Hosted review
 

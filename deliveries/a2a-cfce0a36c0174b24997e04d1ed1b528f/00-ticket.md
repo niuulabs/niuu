@@ -40,7 +40,17 @@ do not substitute for that evidence.
   Doppler/ExternalSecret and Fleet-managed resources must not be mutated
   directly. This authorization does not identify Sigrun as a replacement for
   Runa/Valhalla.
-- The separately built bounded submission/evidence route is tracked as
-  `a2a-cd26d65106d04df2ac3a4cde1de72b3f` and is push-registered `WORKING`, but
-  no endpoint, scoped identity, or successful capability-gap submission has
-  been demonstrated. It is not live-proof evidence.
+- The separately built bounded submission/evidence route was previously
+  reported as `a2a-cd26d65106d04df2ac3a4cde1de72b3f`; the operator now reports
+  its successor `a2a-e7c858b5863a4e67b012baa3547400b9` as `WORKING`. Neither
+  report is live-proof evidence until its records can be read.
+- This session successfully exchanged its own Skuld-session workload proof for
+  a short-lived `valkyrie_build` token with `ting:workflow:launch` and
+  `forge:session:create` scopes, then sent a read-only `GetTask` request for
+  `a2a-e7c858b5863a4e67b012baa3547400b9` to the card's A2A endpoint. Ting
+  returned HTTP 403: `Scoped credential only grants operations on tasks its
+  workload launched`. This proves the generic Skuld-session exchange and A2A
+  endpoint are reachable, not that the selected deployed Runa resident has a
+  usable identity or that the independent task can be observed. No
+  `SendMessage` was issued: that workload is not the authorized deployed
+  resident for this proof.
