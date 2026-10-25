@@ -44,3 +44,5 @@ PR checks are green.
 This reconciliation uses a new branch based on `regin` and a PR targeting
 `regin`; it does not push another implementation commit directly to `regin`.
 Tracker remains `In Progress` pending green required checks and review.
+
+Hosted PR: https://github.com/niuulabs/niuu/pull/1173 (base: `regin`).
