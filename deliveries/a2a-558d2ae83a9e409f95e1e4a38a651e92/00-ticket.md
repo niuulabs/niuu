@@ -25,3 +25,11 @@ verifies that a keyed, bounded-tail request returns that declaration intact,
 reports `config.yaml` in `truncated_keys`, and does not expose the unrelated
 key.  Existing unfiltered truncation and missing-name error behavior are also
 covered.
+
+## Review revision (2026-10-25)
+
+Reviewer feedback identified that decoding an arbitrary UTF-8 byte suffix with
+replacement characters could exceed `tail_bytes`. The revision retains the
+same bounded keyed read contract while removing a partial leading UTF-8
+sequence before decoding, so returned text is valid UTF-8 and never encodes to
+more than the selected byte cap.

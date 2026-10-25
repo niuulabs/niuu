@@ -389,7 +389,10 @@ def _tail_bytes(value: str, limit: int) -> tuple[str, bool]:
     encoded = value.encode("utf-8")
     if len(encoded) <= limit:
         return value, False
-    return encoded[-limit:].decode("utf-8", errors="replace"), True
+    tail = encoded[-limit:]
+    while tail and tail[0] & 0b11000000 == 0b10000000:
+        tail = tail[1:]
+    return tail.decode("utf-8"), True
 
 
 def _namespace_name(input: dict) -> tuple[str, str]:  # noqa: A002

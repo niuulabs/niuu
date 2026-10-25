@@ -333,6 +333,32 @@ async def test_configmap_key_tail_returns_late_backend_without_other_data(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_configmap_key_tail_drops_partial_leading_utf8_sequence(tmp_path) -> None:
+    tool = _multi_cluster_tool(
+        tmp_path,
+        [],
+        {"config.yaml": "prefix€tail"},
+        max_configmap_tail_bytes=5,
+    )
+
+    result = await tool.execute(
+        {
+            "action": "configmap",
+            "cluster": "ymir",
+            "namespace": "nats",
+            "name": "valkyrie-ymir-k8s-config",
+            "key": "config.yaml",
+            "tail_bytes": 5,
+        }
+    )
+
+    payload = json.loads(result.content)
+    selected = payload["data"]["config.yaml"]
+    assert selected == "tail"
+    assert len(selected.encode("utf-8")) <= 5
+
+
+@pytest.mark.asyncio
 async def test_configmap_missing_name_keeps_api_error_semantics() -> None:
     tool = KubernetesInspectTool(
         core_v1=_ConfigCore(error=RuntimeError("404 Not Found")),
