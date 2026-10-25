@@ -20,3 +20,9 @@ the resident A2A task path. It does not modify Guild visibility rules,
 NIU-1107/NIU-1116 directory behavior, public REST APIs, migrations, or
 unrelated workflows. The required direct integration is `regin`; no branch or
 PR targets `dev` or `main`.
+
+## Integration result
+
+The implementation is directly integrated on `regin` in
+`acd2ad1d3827e687986424c2f0bbaab5d012fdb9`. No hosted PR is created because
+source and target are both the required integration branch.
