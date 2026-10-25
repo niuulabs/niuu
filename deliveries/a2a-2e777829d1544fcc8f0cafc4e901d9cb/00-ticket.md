@@ -75,11 +75,3 @@ integrated directly on `regin`; `gh run list` therefore returns no current-head
 CI run. The previous full suite's six unrelated failures remain the blocking
 condition. No waiver or unrelated repair is recorded, so the ticket remains
 **In Progress** rather than being closed.
-
-## 2026-10-25 review revision
-
-The requested ambiguous-gate regression is committed in `5a6f2b00` and the
-A2A-only completion proof for both decisions is committed in `06c298ac`.
-NIU-1112 remains **In Progress** until required full current-head verification
-is green; no PR is required because this regin-only delivery is integrated
-directly on `regin`.

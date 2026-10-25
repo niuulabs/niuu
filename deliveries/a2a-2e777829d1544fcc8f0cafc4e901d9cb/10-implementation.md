@@ -272,24 +272,3 @@ recorded full suite remains non-green with the six unrelated failures above.
 No unrelated repair or validation bypass was made, so green required
 current-head verification remains a blocker and the ticket stays **In
 Progress**.
-
-### 2026-10-25 review follow-up: A2A-only terminal proof
-
-Commit `06c298ac` adds a parametrized end-to-end regression for `approve` and
-`request_changes`. Each case uses Ting's `VolundrHTTPAdapter` to resolve an
-INPUT_REQUIRED task against Skuld's native gate runtime, follows Skuld's
-terminal completion report through the Ting campaign projector, and asserts
-the returned A2A task becomes `TASK_STATE_COMPLETED`.
-
-```sh
-uv run --extra dev --extra otel pytest -q \
-  tests/test_ting/test_a2a_tasks.py tests/test_ting/test_system_workflows.py \
-  tests/test_ting/test_a2a_card.py
-# 116 passed
-uv run ruff format --check src/ting/api/a2a.py tests/test_ting/test_a2a_tasks.py
-uv run ruff check src/ting/api/a2a.py tests/test_ting/test_a2a_tasks.py
-# all passed
-```
-
-Required full current-head verification is running separately and remains the
-only closure blocker. This delivery is direct-to-`regin`; no hosted PR exists.
