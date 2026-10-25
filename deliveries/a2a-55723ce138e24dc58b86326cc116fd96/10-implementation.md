@@ -45,5 +45,8 @@ onto `regin`. No PR, merge, or push targets `dev` or `main`.
 
 Implementation commit `acd2ad1d3827e687986424c2f0bbaab5d012fdb9`
 (`fix(ravn): resolve durable A2A card URL handles`) is pushed to `origin/regin`.
+Review revision commit `d5296cf362f7f0bafc1414c69c09155168cdb71c`
+(`fix(ravn): preserve Guild visibility for card URLs`) is also pushed to
+`origin/regin`.
 GitHub reports no Actions run for that `regin` push, so CI is not asserted; the
 focused local verification above is the available evidence.
