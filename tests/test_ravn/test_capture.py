@@ -51,7 +51,7 @@ def _make_event(event_type: RavnEventType, payload: dict) -> RavnEvent:
 
 def _make_drive_loop(cascade_enabled: bool = False) -> DriveLoop:
     agent_factory = MagicMock(return_value=AsyncMock())
-    cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=3, task_queue_max=50)
+    cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=3)
     settings = MagicMock()
     settings.skuld.enabled = False
     settings.cascade.enabled = cascade_enabled
@@ -344,7 +344,7 @@ class TestDriveLoopCaptureIntegration:
             captured_channels.append(channel)
             return mock_agent
 
-        cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=3, task_queue_max=50)
+        cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=3)
         settings = MagicMock()
         settings.skuld.enabled = False
         settings.budget.enabled = True
@@ -392,7 +392,7 @@ class TestDriveLoopCaptureIntegration:
             captured_channels.append(channel)
             return mock_agent
 
-        cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=1, task_queue_max=10)
+        cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=1)
         settings = MagicMock()
         settings.skuld.enabled = False
         settings.budget.enabled = True
@@ -433,7 +433,7 @@ class TestDriveLoopCaptureIntegration:
         def _agent_factory(channel, task_id=None, persona=None, triggered_by=None):  # noqa: ANN001
             return mock_agent
 
-        cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=1, task_queue_max=10)
+        cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=1)
         settings = MagicMock()
         settings.skuld.enabled = False
         settings.budget.enabled = True
@@ -648,7 +648,7 @@ async def test_integration_two_local_tasks_progress_and_collect():
         agent.run_turn = run_turn_map.get(task_id, AsyncMock())
         return agent
 
-    cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=3, task_queue_max=50)
+    cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=3)
     settings = MagicMock()
     settings.skuld.enabled = False
     settings.budget.enabled = True

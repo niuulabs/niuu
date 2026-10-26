@@ -71,6 +71,8 @@ class SqliteResidentNotificationOutbox(ResidentNotificationOutboxPort):
         self._listeners: list[Callable[[], None]] = []
 
     def close(self) -> None:
+        # sqlite3.Connection.close is idempotent; a closed connection refuses
+        # every later call with ProgrammingError rather than reopening.
         self._conn.close()
 
     # -- writers -----------------------------------------------------------

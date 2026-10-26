@@ -9,11 +9,13 @@ import pytest
 
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from ravn.adapters.resident_state.mimir import LocalResidentState
+from ravn.cap_telemetry import cap_hit_counts
 from ravn.config import InitiativeConfig, Settings
 from ravn.domain.models import AgentTask, OutputMode, TokenUsage, ToolCall, ToolResult, TurnResult
 from ravn.domain.resident_continuation import (
     ContinuationDecisionKind,
     ResidentA2ATaskRecord,
+    ResidentMemoryEntry,
     ResidentScheduledWakeRecord,
     ResidentWorkingStateRecord,
     validate_resident_working_state,
@@ -339,11 +341,7 @@ async def test_tool_result_is_durable_without_creating_a_followup_task(tmp_path)
         queued.append(task)
         return True
 
-    runtime = ResidentRuntime(
-        state=state,
-        context_max_chars=1000,
-        tool_result_max_chars=5000,
-    )
+    runtime = ResidentRuntime(state=state)
     runtime.bind_enqueue(enqueue)
     disposition = await runtime.handle_completed_turn(
         task=_task(),
@@ -368,7 +366,10 @@ async def test_tool_result_is_durable_without_creating_a_followup_task(tmp_path)
     assert durable is not None
     assert queued == []
     assert '"task_id":"peer-42"' in durable.content
-    assert "… (truncated)" in durable.content
+    # The tool result is persisted whole: nothing is cut from the middle or end.
+    assert durable.content.count("tool detail ") == 1000
+    assert "truncated" not in durable.content
+    assert cap_hit_counts() == {}
 
 
 @pytest.mark.asyncio
@@ -944,7 +945,7 @@ async def test_operator_answer_preserves_suspended_a2a_build_handoff(tmp_path) -
         queued.append(task)
         return True
 
-    runtime = ResidentRuntime(state=state, tool_result_max_chars=5000)
+    runtime = ResidentRuntime(state=state)
     runtime.bind_enqueue(enqueue)
     await runtime.handle_completed_turn(
         task=_task(),
@@ -1008,6 +1009,31 @@ async def test_operator_answer_fails_if_exact_parent_turn_is_unavailable(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_home_turn_carries_a_large_raw_payload_whole(tmp_path) -> None:
+    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    inbox = MimirResidentInbox(mimir)
+    state = LocalResidentState(tmp_path / "state")
+    detail = "pod restarted; " * 2000
+    await inbox.write_directed_message(
+        content="Please investigate the staging rollout",
+        metadata={"source_context": {"detail": detail}},
+    )
+    runtime = ResidentRuntime(state=state, inbox=inbox)
+
+    task = await runtime.next_home_task(
+        limit=5,
+        persona="domain-drive",
+        output_mode=OutputMode.AMBIENT,
+    )
+
+    assert task is not None
+    assert len(detail) > 12000
+    assert detail in task.initiative_context
+    assert "truncated" not in task.initiative_context
+    assert cap_hit_counts() == {}
+
+
+@pytest.mark.asyncio
 async def test_home_turn_reads_new_records_and_acknowledges_only_after_record(tmp_path) -> None:
     mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
     inbox = MimirResidentInbox(mimir)
@@ -1034,7 +1060,8 @@ async def test_home_turn_reads_new_records_and_acknowledges_only_after_record(tm
     assert task is not None
     assert task.resident_inbox_refs
     assert "inbox_ref=resident/inbox/signals/" in task.initiative_context
-    assert "Bounded raw payload:" in task.initiative_context
+    assert "  Raw payload:" in task.initiative_context
+    assert "Bounded raw payload" not in task.initiative_context
     assert '"service": "deployer"' in task.initiative_context
     assert '"state": "stalled"' in task.initiative_context
     assert "Personality: Patient investigator" in task.initiative_context
@@ -1954,7 +1981,7 @@ async def test_active_a2a_handles_reach_the_prompt_without_their_mandates(tmp_pa
                 push_registered=True,
             )
         )
-    runtime = ResidentRuntime(state=state, resident_id="resident-alpha", context_max_chars=12000)
+    runtime = ResidentRuntime(state=state, resident_id="resident-alpha")
 
     context = await runtime.prepare_context(_task(task_id="task-next"))
 
@@ -1963,3 +1990,75 @@ async def test_active_a2a_handles_reach_the_prompt_without_their_mandates(tmp_pa
     assert "Fix platform-defect NIU-1140." in context
     assert "MANDATE" not in context
     assert len(context) < 4 * 12000
+
+
+@pytest.mark.asyncio
+async def test_every_active_a2a_task_appears_in_the_prompt_block(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    total = 14
+    for index in range(total):
+        await state.write_a2a_task(
+            ResidentA2ATaskRecord(
+                task_id=f"a2a-task-{index:02d}",
+                agent_id="agent-ting",
+                skill_id="skill-delivery",
+                state="TASK_STATE_WORKING",
+                prompt=f"brief {index}",
+                case_id=f"case-{index}",
+                push_registered=True,
+            )
+        )
+    runtime = ResidentRuntime(state=state, resident_id="resident-alpha")
+
+    context = await runtime.prepare_context(_task(task_id="task-next"))
+
+    for index in range(total):
+        assert f"a2a-task-{index:02d}" in context
+
+
+@pytest.mark.asyncio
+async def test_find_a2a_tasks_keeps_its_default_limit_for_searches(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    for index in range(12):
+        await state.write_a2a_task(
+            ResidentA2ATaskRecord(
+                task_id=f"a2a-task-{index:02d}",
+                agent_id="agent-ting",
+                skill_id="skill-delivery",
+                state="TASK_STATE_WORKING",
+                prompt=f"brief {index}",
+                case_id=f"case-{index}",
+                push_registered=True,
+            )
+        )
+    runtime = ResidentRuntime(state=state, resident_id="resident-alpha")
+
+    assert len(await runtime.find_a2a_tasks(active_only=True)) == 10
+    assert len(await runtime.find_a2a_tasks(active_only=True, limit=None)) == 12
+
+
+@pytest.mark.asyncio
+async def test_find_a2a_tasks_refuses_an_unlimited_legacy_recovery(tmp_path) -> None:
+    runtime = ResidentRuntime(state=LocalResidentState(tmp_path), resident_id="resident-alpha")
+
+    with pytest.raises(ValueError, match="pass an explicit limit"):
+        await runtime.find_a2a_tasks(query="nothing-matches-this", limit=None)
+
+
+@pytest.mark.asyncio
+async def test_prior_working_state_reaches_the_next_turn_whole() -> None:
+    working_state = "\n".join(f"observation {index}: " + "w" * 80 for index in range(400))
+    state = AsyncMock()
+    state.read_working_state.return_value = ResidentMemoryEntry(
+        path="resident/working-state.md", summary="state", content=working_state
+    )
+    state.list_a2a_tasks.return_value = []
+    state.list_operator_needed.return_value = []
+    runtime = ResidentRuntime(state=state, resident_id="resident-alpha")
+
+    context = await runtime.prepare_context(_task(task_id="task-next"))
+
+    assert len(working_state) > 12000
+    assert working_state in context
+    assert "truncated" not in context
+    assert cap_hit_counts() == {}

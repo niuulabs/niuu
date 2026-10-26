@@ -221,7 +221,6 @@ def _make_drive_loop_with_publisher(
     config = InitiativeConfig(
         enabled=True,
         max_concurrent_tasks=2,
-        task_queue_max=10,
         queue_journal_path=str(journal),
         default_output_mode="silent",
     )

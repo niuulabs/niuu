@@ -564,7 +564,6 @@ async def test_idle_triage_loop_enqueues_and_resets_batch() -> None:
     settings = _settings()
     settings.environment.signal_task_severities = ["never"]
     settings.environment.idle_triage_interval_seconds = 0.01
-    settings.environment.idle_triage_max_signals = 5
     runtime = EnvironmentSignalRuntime(
         settings=settings,
         publisher=bus,
@@ -584,9 +583,9 @@ async def test_idle_triage_loop_enqueues_and_resets_batch() -> None:
     assert runtime._untriaged == []
 
 
-def test_untriaged_buffer_is_capped() -> None:
+def test_untriaged_buffer_keeps_every_observation() -> None:
+    """Nothing is forgotten to make room; the prompt is bounded by its sample."""
     settings = _settings()
-    settings.environment.idle_triage_max_signals = 3
     runtime = EnvironmentSignalRuntime(settings=settings, publisher=InProcessBus())
     for index in range(6):
         runtime._untriaged.append(
@@ -617,7 +616,68 @@ def test_untriaged_buffer_is_capped() -> None:
 
     runtime._remember_untriaged(_Sig(), event)  # type: ignore[arg-type]
 
+    assert len(runtime._untriaged) == 7
+    assert runtime._untriaged[0]["signal_ref"] == "sig-0"
+
+
+def test_environment_config_refuses_the_removed_triage_cap() -> None:
+    from ravn.config import EnvironmentConfig
+
+    with pytest.raises(ValueError, match="idle_triage_max_signals no longer exists"):
+        EnvironmentConfig(idle_triage_max_signals=200)
+
+
+def _untriaged_entry(index: int) -> dict[str, str]:
+    return {
+        "signal_ref": f"sig-{index}",
+        "signal_type": "generic",
+        "severity": "info",
+        "source_id": "host-events",
+        "observed_at": "2026-10-26T00:00:00+00:00",
+        "payload": f"signal {index}",
+    }
+
+
+@pytest.mark.asyncio
+async def test_refused_triage_window_keeps_its_observations_for_the_next_one() -> None:
+    """While a window is still queued the drive loop refuses another; nothing is lost."""
+    offered: list[AgentTask] = []
+    accept = {"value": False}
+
+    async def enqueue(task: AgentTask) -> bool:
+        offered.append(task)
+        return accept["value"]
+
+    runtime = EnvironmentSignalRuntime(
+        settings=_settings(), publisher=InProcessBus(), enqueue=enqueue
+    )
+    runtime._untriaged.extend(_untriaged_entry(index) for index in range(3))
+
+    assert await runtime.offer_idle_triage_window() is False
     assert len(runtime._untriaged) == 3
+
+    runtime._untriaged.append(_untriaged_entry(3))
+    accept["value"] = True
+    assert await runtime.offer_idle_triage_window() is True
+
+    assert offered[-1].title == "Signal window: 4 observation(s)"
+    assert offered[-1].triggered_by == "signal:idle_triage"
+    assert runtime._untriaged == []
+
+
+@pytest.mark.asyncio
+async def test_triage_window_enqueue_errors_propagate() -> None:
+    async def enqueue(task: AgentTask) -> bool:
+        raise RuntimeError("queue journal unwritable")
+
+    runtime = EnvironmentSignalRuntime(
+        settings=_settings(), publisher=InProcessBus(), enqueue=enqueue
+    )
+    runtime._untriaged.append(_untriaged_entry(0))
+
+    with pytest.raises(RuntimeError, match="queue journal unwritable"):
+        await runtime.offer_idle_triage_window()
+    assert len(runtime._untriaged) == 1
 
 
 async def _record(events: list[SleipnirEvent], event: SleipnirEvent) -> None:

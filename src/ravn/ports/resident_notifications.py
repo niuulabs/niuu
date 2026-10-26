@@ -17,7 +17,18 @@ from niuu.domain.resident_notifications import AttentionInputKind, ResidentNotif
 
 
 class ResidentNotificationOutboxPort(ABC):
-    """A resident's durable, ordered notification outbox."""
+    """A resident's durable, ordered notification outbox.
+
+    The composition root that builds an outbox owns it and calls :meth:`close`
+    when the resident shuts down.
+    """
+
+    @abstractmethod
+    def close(self) -> None:
+        """Release what the outbox holds open (its database connection).
+
+        Idempotent. Nothing may be written after it.
+        """
 
     @abstractmethod
     async def attention(

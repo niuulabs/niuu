@@ -620,6 +620,7 @@ def _build_agent(
         persona_config=persona_config,
         stop_on_outcome=persona_config.stop_on_outcome if persona_config else False,
         max_prompt_tokens=settings.context_management.max_prompt_tokens,
+        compaction_target_tokens=settings.context_management.compaction_target_tokens,
         context_window_tokens=settings.context_management.context_window_tokens,
         token_estimate_safety_factor=settings.context_management.token_estimate_safety_factor,
         max_tool_result_chars=settings.tools.max_result_chars,
@@ -956,6 +957,7 @@ def tool_mcp(
             "ravn.runtime.component": "tool_mcp",
         },
     )
+    notification_outbox = None
     try:
         project_config = ProjectConfig.discover()
         ravn_profile = _require_profile(profile)
@@ -1000,9 +1002,10 @@ def tool_mcp(
             asyncio.run(server.run_stdio())
         finally:
             current_notification_channel.reset(channel_token)
-            if notification_outbox is not None:
-                notification_outbox.close()
     finally:
+        # Closed on every exit, including a failure while the server is built.
+        if notification_outbox is not None:
+            notification_outbox.close()
         shutdown_observability()
 
 

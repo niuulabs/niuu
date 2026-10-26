@@ -144,7 +144,6 @@ gateway:
 initiative:
   enabled: true
   max_concurrent_tasks: 1
-  task_queue_max: 20
   queue_journal_path: ~/.ravn/eitri-local/queue.json
   default_output_mode: ambient
   default_persona: k8s-valkyrie

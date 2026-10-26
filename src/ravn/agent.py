@@ -27,7 +27,6 @@ from ravn.domain.checkpoint import (
 )
 from ravn.domain.events import RavnEvent
 from ravn.domain.exceptions import (
-    ConfigurationError,
     MaxIterationsError,
     PermissionDeniedError,
     PromptBudgetExceededError,
@@ -177,6 +176,7 @@ class RavnAgent:
         stop_on_outcome: bool = False,
         # NIU-1118: hard per-call prompt budget; 0 disables
         max_prompt_tokens: int = 0,
+        compaction_target_tokens: int = 0,
         context_window_tokens: int = 0,
         token_estimate_safety_factor: float = 1.0,
         # NIU-1118: cap one tool result's contribution to history; 0 disables
@@ -252,16 +252,10 @@ class RavnAgent:
         self._persona_config = persona_config
         self._context_window_tokens = max(0, context_window_tokens)
         self._token_estimate_safety_factor = max(1.0, token_estimate_safety_factor)
-        window_ceiling = 0
-        if self._context_window_tokens and self._max_tokens is None and max_prompt_tokens <= 0:
-            # With no output cap the window holds prompt and answer together, so
-            # it says nothing about how much of it the prompt may take.
-            raise ConfigurationError(
-                "context_management.context_window_tokens is set but llm.max_tokens is "
-                "null, so no prompt budget can be derived from the window; set "
-                "context_management.max_prompt_tokens to the share of the window the "
-                "prompt may use"
-            )
+        # The window is the real bound on a prompt. With an answer cap the cap
+        # is reserved out of it; with none, the prompt may fill it, and an answer
+        # that then does not fit comes back cut off and raises.
+        window_ceiling = self._context_window_tokens
         if self._context_window_tokens and self._max_tokens is not None:
             if self._max_tokens >= self._context_window_tokens:
                 raise ValueError("max_tokens must be smaller than context_window_tokens")
@@ -270,6 +264,8 @@ class RavnAgent:
             value for value in (max(0, max_prompt_tokens), window_ceiling) if value > 0
         ]
         self._max_prompt_tokens = min(prompt_ceilings) if prompt_ceilings else 0
+        # Compaction aims under the latency target; the ceiling above only refuses.
+        self._compaction_target_tokens = max(0, compaction_target_tokens)
         self._last_prompt_budget_status: dict[str, int | float | bool] = {}
         self._last_provider_duration_ms: float | None = None
         self._last_ttft_ms: float | None = None
@@ -1233,7 +1229,7 @@ class RavnAgent:
             self._session.messages,
             system_tokens=system_tokens,
             tool_tokens=tool_tokens,
-            prompt_budget_tokens=self._max_prompt_tokens,
+            prompt_budget_tokens=self._compaction_target_tokens or self._max_prompt_tokens,
             todos=self._session.todos or None,
             memory_summary=memory_summary or None,
         )

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Callable, Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -117,6 +118,29 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         (selected if mine else deselected).append(item)
     config.hook.pytest_deselected(items=deselected)
     items[:] = selected
+
+
+@pytest.fixture
+def open_outbox() -> Iterator[Callable[..., Any]]:
+    """Open resident notification outboxes that are closed when the test ends.
+
+    Each holds a SQLite connection; one a test leaves open is reported as an
+    unclosed database in whichever later test the garbage collector runs in.
+    """
+    from ravn.adapters.resident_notifications import (  # noqa: PLC0415
+        SqliteResidentNotificationOutbox,
+    )
+
+    opened: list[SqliteResidentNotificationOutbox] = []
+
+    def _open(path: Path, *, max_pending: int = 100) -> SqliteResidentNotificationOutbox:
+        outbox = SqliteResidentNotificationOutbox(path, max_pending=max_pending)
+        opened.append(outbox)
+        return outbox
+
+    yield _open
+    for outbox in opened:
+        outbox.close()
 
 
 @pytest.fixture(autouse=True)

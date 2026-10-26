@@ -38,7 +38,7 @@ from ravn.adapters.reflection.lessons import (
     body_section,
     frontmatter_values,
 )
-from ravn.cap_telemetry import record_truncation, require_complete
+from ravn.cap_telemetry import require_complete
 from ravn.config import PostSessionReflectionConfig
 from ravn.domain.exceptions import OutputTruncatedError
 from ravn.ports.llm import LLMPort
@@ -372,18 +372,6 @@ class PostSessionReflectionService:
             if work_context
             else "(no subject-matter context was recorded)"
         )
-        context_limit = self._config.context_max_chars
-        if len(rendered_context) > context_limit:
-            # The lesson is then drawn from part of what the session did.
-            record_truncation(
-                "reflection.context_max_chars",
-                what=f"the recorded work context of session {payload.get('session_id', '')}",
-                kept=context_limit,
-                total=len(rendered_context),
-            )
-            rendered_context = (
-                rendered_context[:context_limit].rstrip() + "\n… (recorded context truncated)"
-            )
         prompt = _REFLECTION_PROMPT.format(
             persona=payload.get("persona", ""),
             outcome=payload.get("outcome", ""),

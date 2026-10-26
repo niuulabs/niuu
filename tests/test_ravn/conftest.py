@@ -85,7 +85,6 @@ class _FakeSpawnAdapter:
 
 def _make_drive_loop(
     max_concurrent: int = 3,
-    queue_max: int = 50,
     event_publisher: object | None = None,
     agent_factory: object | None = None,
     heartbeat_seconds: int = 60,
@@ -97,7 +96,6 @@ def _make_drive_loop(
     cfg = InitiativeConfig(
         enabled=True,
         max_concurrent_tasks=max_concurrent,
-        task_queue_max=queue_max,
         queue_journal_path=journal_path,
         heartbeat_interval_seconds=heartbeat_seconds,
     )

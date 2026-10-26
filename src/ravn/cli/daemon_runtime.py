@@ -824,30 +824,11 @@ async def _run_daemon(
     typer.echo("Press Ctrl+C to stop.")
 
     if not tasks:
+        # Nothing runs, so the gather below returns at once and the one shutdown
+        # in its ``finally`` releases everything that was built. A second,
+        # hand-copied shutdown here had drifted: it skipped memory, the event
+        # publisher, MCP and the notification outbox.
         typer.echo("No channels or triggers enabled — daemon has nothing to do.", err=True)
-        if daemon_bus is not None:
-            with suppress(Exception):
-                await daemon_bus.flush()
-        if daemon_reflection_svc is not None:
-            await daemon_reflection_svc.stop()
-        if sleipnir_catalog_publisher is not None:
-            await sleipnir_catalog_publisher.stop()
-        if environment_signal_runtime is not None:
-            await environment_signal_runtime.stop()
-        if resident_wakefulness is not None:
-            await resident_wakefulness.stop()
-        if odin_court is not None:
-            await odin_court.stop()
-        if feedback_recorder is not None:
-            await feedback_recorder.stop()
-        if huddle_archiver is not None:
-            await huddle_archiver.stop()
-        if resident_learning_runtime is not None:
-            await resident_learning_runtime.stop()
-        if environment_signal_publisher_started and environment_signal_publisher is not None:
-            await environment_signal_publisher.stop()
-        shutdown_observability()
-        return
 
     try:
         await asyncio.gather(*tasks)
@@ -875,23 +856,41 @@ async def _run_daemon(
             await environment_signal_runtime.stop()
         if environment_signal_publisher_started and environment_signal_publisher is not None:
             await environment_signal_publisher.stop()
+        if resident_notification_outbox is not None:
+            # Every task and trigger above has stopped, so nothing writes to the
+            # outbox any more; its SQLite connection is released, not leaked.
+            resident_notification_outbox.close()
         if memory is not None:
             # MemoryPort.close() is a no-op for file/sqlite backends and closes
             # the connection pool for postgres. Called unconditionally: the
             # composition root should not have to know which backend it wired.
-            with suppress(Exception):
-                await memory.close()
+            await _shutdown_step("memory.close", memory.close)
         await event_publisher.close()
         await _shutdown_mcp(mcp_manager)
         # NIU-598: flush pending events before tearing down daemon reflection service.
         if daemon_bus is not None:
-            with suppress(Exception):
-                await daemon_bus.flush()
+            await _shutdown_step("daemon_bus.flush", daemon_bus.flush)
         if daemon_reflection_svc is not None:
             await daemon_reflection_svc.stop()
         if sleipnir_catalog_publisher is not None:
             await sleipnir_catalog_publisher.stop()
         shutdown_observability()
+
+
+async def _shutdown_step(name: str, step: Any) -> None:
+    """Run one shutdown step; a failure is reported and the shutdown goes on.
+
+    Raising here would skip every later step (closing connections, flushing the
+    rest), so this is the one place a failure continues. It is never silent: it
+    logs at error with the traceback and counts as degraded ``shutdown.<name>``.
+    """
+    from ravn.cap_telemetry import record_degraded  # noqa: PLC0415
+
+    try:
+        await step()
+    except Exception as exc:  # noqa: BLE001 - reported and counted below
+        logger.error("daemon shutdown: %s failed", name, exc_info=True)
+        record_degraded(f"shutdown.{name}", f"{name} failed during shutdown: {exc}")
 
 
 def _notify_tool_allowed(settings: Any, persona: Any | None) -> bool:

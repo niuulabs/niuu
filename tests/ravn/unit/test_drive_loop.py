@@ -50,7 +50,6 @@ def _make_initiative_config(**kwargs) -> InitiativeConfig:
     defaults = {
         "enabled": True,
         "max_concurrent_tasks": 2,
-        "task_queue_max": 10,
         "queue_journal_path": "/tmp/ravn_test_queue.json",
         "default_output_mode": "silent",
     }
@@ -233,17 +232,23 @@ async def test_drive_loop_enqueue_discards_expired_deadline(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_drive_loop_enqueue_respects_queue_max(tmp_path: Path) -> None:
+async def test_drive_loop_queue_never_drops_work_for_capacity(tmp_path: Path) -> None:
+    """A backlog is visible as queue depth; tasks are never discarded for room."""
     journal = tmp_path / "queue.json"
-    config = _make_initiative_config(task_queue_max=2, queue_journal_path=str(journal))
+    config = _make_initiative_config(queue_journal_path=str(journal))
     settings = Settings()
     factory = MagicMock()
     loop = DriveLoop(agent_factory=factory, config=config, settings=settings)
 
-    for _ in range(3):
-        await loop.enqueue(_make_task())
+    accepted = [await loop.enqueue(_make_task()) for _ in range(120)]
 
-    assert loop._queue.qsize() == 2
+    assert all(accepted)
+    assert loop._queue.qsize() == 120
+
+
+def test_initiative_config_refuses_the_removed_queue_cap() -> None:
+    with pytest.raises(ValueError, match="task_queue_max no longer exists"):
+        InitiativeConfig(task_queue_max=50)
 
 
 @pytest.mark.asyncio
@@ -268,6 +273,105 @@ async def test_drive_loop_keeps_one_pending_occurrence_per_cron_job(tmp_path: Pa
     assert await loop.enqueue(second) is False
 
     assert loop.queued_task_ids() == [first.task_id]
+
+
+@pytest.mark.asyncio
+async def test_drive_loop_keeps_one_pending_idle_triage_window(tmp_path: Path) -> None:
+    """Windows coalesce: a second one waits in its producer, not ahead of other work."""
+    loop, _ = _make_drive_loop(tmp_path)
+    first = _make_task(priority=9, triggered_by="signal:idle_triage")
+    second = _make_task(priority=9, triggered_by="signal:idle_triage")
+
+    assert await loop.enqueue(first) is True
+    assert await loop.enqueue(second) is False
+
+    assert loop.queued_task_ids() == [first.task_id]
+
+
+def _journal_record(task: AgentTask) -> dict:
+    return DriveLoop._task_journal_record(task)
+
+
+@pytest.mark.asyncio
+async def test_journal_restore_lifts_a_home_turn_to_home_priority(tmp_path: Path) -> None:
+    """A home turn journaled at the old default priority must not wait behind signals."""
+    journal = tmp_path / "queue.json"
+    home = _make_task(priority=10, triggered_by="resident:home")
+    signal_task = _make_task(priority=9, triggered_by="signal:idle_triage")
+    journal.write_text(
+        json.dumps({"queue": [_journal_record(signal_task), _journal_record(home)], "inflight": []})
+    )
+    loop = DriveLoop(
+        agent_factory=MagicMock(),
+        config=_make_initiative_config(queue_journal_path=str(journal)),
+        settings=Settings(),
+    )
+
+    loop._load_journal()
+
+    assert loop.queued_task_ids()[0] == home.task_id
+
+
+@pytest.mark.asyncio
+async def test_journal_restore_keeps_only_the_newest_idle_triage_window(tmp_path: Path) -> None:
+    journal = tmp_path / "queue.json"
+    older = _make_task(priority=9, triggered_by="signal:idle_triage")
+    newer = _make_task(priority=9, triggered_by="signal:idle_triage")
+    newer.created_at = older.created_at + timedelta(minutes=15)
+    journal.write_text(
+        json.dumps({"queue": [_journal_record(older), _journal_record(newer)], "inflight": []})
+    )
+    loop = DriveLoop(
+        agent_factory=MagicMock(),
+        config=_make_initiative_config(queue_journal_path=str(journal)),
+        settings=Settings(),
+    )
+
+    loop._load_journal()
+
+    assert loop.queued_task_ids() == [newer.task_id]
+
+
+def test_unreadable_journal_stops_startup_instead_of_emptying_the_queue(tmp_path: Path) -> None:
+    journal = tmp_path / "queue.json"
+    journal.write_text("{not json")
+    loop = DriveLoop(
+        agent_factory=MagicMock(),
+        config=_make_initiative_config(queue_journal_path=str(journal)),
+        settings=Settings(),
+    )
+
+    with pytest.raises(RuntimeError, match="cannot be read"):
+        loop._load_journal()
+
+
+def test_unrestorable_journal_entry_stops_startup(tmp_path: Path) -> None:
+    journal = tmp_path / "queue.json"
+    journal.write_text(json.dumps({"queue": [{"task_id": "task-broken"}], "inflight": []}))
+    loop = DriveLoop(
+        agent_factory=MagicMock(),
+        config=_make_initiative_config(queue_journal_path=str(journal)),
+        settings=Settings(),
+    )
+
+    with pytest.raises(RuntimeError, match="task-broken"):
+        loop._load_journal()
+
+
+def test_failed_journal_write_is_counted_as_degraded(tmp_path: Path) -> None:
+    from ravn.cap_telemetry import degraded_counts, reset_cap_hits
+
+    reset_cap_hits()
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("")
+    loop = DriveLoop(
+        agent_factory=MagicMock(),
+        config=_make_initiative_config(queue_journal_path=str(blocker / "queue.json")),
+        settings=Settings(),
+    )
+
+    assert loop._persist_queue() is False
+    assert degraded_counts() == {"queue_journal.persist": 1}
 
 
 @pytest.mark.asyncio
@@ -807,7 +911,6 @@ def test_initiative_config_defaults() -> None:
     cfg = InitiativeConfig()
     assert not cfg.enabled
     assert cfg.max_concurrent_tasks == 3
-    assert cfg.task_queue_max == 50
 
 
 def test_trigger_adapter_config() -> None:

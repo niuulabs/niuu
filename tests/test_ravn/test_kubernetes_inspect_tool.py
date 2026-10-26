@@ -246,7 +246,7 @@ async def test_clusters_lists_every_context_in_the_kubeconfig(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_named_cluster_reads_that_cluster_and_reuses_its_client(tmp_path) -> None:
+async def test_a_named_cluster_reads_that_cluster_with_a_client_per_call(tmp_path) -> None:
     built: list[str] = []
     tool = _multi_cluster_tool(tmp_path, built)
     request = {"action": "workload", "namespace": "nats", "name": "regin", "cluster": "ymir"}
@@ -258,7 +258,9 @@ async def test_a_named_cluster_reads_that_cluster_and_reuses_its_client(tmp_path
     assert workload["images"] == {"ravn": "niuu:dev-ymir"}
     assert workload["generation"] == workload["observed_generation"] == 7
     assert workload["updated_replicas"] == 1
-    assert built == ["teleport.niuu.world-ymir"]
+    # A client is opened and closed per call: the tool is rebuilt per task and
+    # has no shutdown hook, so a cached client would never be closed.
+    assert built == ["teleport.niuu.world-ymir"] * 2
 
 
 @pytest.mark.asyncio

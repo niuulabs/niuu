@@ -778,9 +778,8 @@ function renderA2A(runtime){
 
 function renderQueue(runtime){
   const queued=runtime.queued_tasks||[], count=runtime.queued_count||0,
-        capacity=runtime.queue_capacity||0, list=document.getElementById("queue-list");
-  document.getElementById("queue-pressure").textContent=capacity
-    ? `${count} / ${capacity} queued`:`${count} queued`;
+        list=document.getElementById("queue-list");
+  document.getElementById("queue-pressure").textContent=`${count} queued`;
   list.replaceChildren();
   if(!queued.length){
     const empty=document.createElement("div");

@@ -24,10 +24,6 @@ from ravn.domain.notification_channel import current_notification_channel
 NOW = datetime(2026, 10, 16, tzinfo=UTC)
 
 
-def _outbox(tmp_path, *, max_pending: int = 100) -> SqliteResidentNotificationOutbox:
-    return SqliteResidentNotificationOutbox(tmp_path / "state.db", max_pending=max_pending)
-
-
 class TestEntryContract:
     def test_attention_needs_its_request_and_kind(self):
         with pytest.raises(ValidationError, match="request_id and input_kind"):
@@ -58,8 +54,8 @@ class TestEntryContract:
 
 
 class TestOutbox:
-    async def test_a_question_is_raised_once_and_its_answer_settles_it(self, tmp_path):
-        outbox = _outbox(tmp_path)
+    async def test_a_question_is_raised_once_and_its_answer_settles_it(self, tmp_path, open_outbox):
+        outbox = open_outbox(tmp_path / "state.db")
         assert await outbox.attention(
             request_id="q1", group="case-1", input_kind=AttentionInputKind.QUESTION, prompt="A?"
         )
@@ -96,21 +92,23 @@ class TestOutbox:
         assert [e.seq for e in entries] == sorted(e.seq for e in entries)
         assert entries[1].input_kind is AttentionInputKind.PERMISSION
 
-    async def test_acknowledged_entries_are_dropped_and_it_survives_a_restart(self, tmp_path):
-        outbox = _outbox(tmp_path)
+    async def test_acknowledged_entries_are_dropped_and_it_survives_a_restart(
+        self, tmp_path, open_outbox
+    ):
+        outbox = open_outbox(tmp_path / "state.db")
         draft = NotificationDraft(kind=NotificationKind.MILESTONE, title="Done")
         first = await outbox.notify(draft=draft, idempotency_key="k1")
         second = await outbox.notify(draft=draft, idempotency_key="k2", channel="c")
         assert await outbox.acknowledge(through_seq=first.seq) == 1
         outbox.close()
 
-        reopened = _outbox(tmp_path)
+        reopened = open_outbox(tmp_path / "state.db")
         [left] = await reopened.pending(limit=10)
         assert left == second
         assert left.draft == draft and left.channel == "c"
 
-    async def test_a_long_unread_outbox_keeps_only_the_newest(self, tmp_path, caplog):
-        outbox = _outbox(tmp_path, max_pending=2)
+    async def test_a_long_unread_outbox_keeps_only_the_newest(self, tmp_path, open_outbox, caplog):
+        outbox = open_outbox(tmp_path / "state.db", max_pending=2)
         draft = NotificationDraft(kind=NotificationKind.INFO, title="n")
         for key in ("a", "b", "c"):
             await outbox.notify(draft=draft, idempotency_key=key)
@@ -119,8 +117,8 @@ class TestOutbox:
         assert [e.idempotency_key for e in await outbox.pending(limit=10)] == ["c", "d"]
         assert "dropped the 1 oldest" in caplog.text
 
-    async def test_many_open_requests_are_settled_in_bounded_entries(self, tmp_path):
-        outbox = _outbox(tmp_path, max_pending=1000)
+    async def test_many_open_requests_are_settled_in_bounded_entries(self, tmp_path, open_outbox):
+        outbox = open_outbox(tmp_path / "state.db", max_pending=1000)
         for index in range(MAX_RESOLVED_REQUESTS + 1):
             await outbox.attention(
                 request_id=f"q{index}",
@@ -134,8 +132,8 @@ class TestOutbox:
         ]
         assert [len(e.resolved_request_ids) for e in resolved] == [MAX_RESOLVED_REQUESTS, 1]
 
-    async def test_listeners_hear_about_each_new_entry(self, tmp_path):
-        outbox = _outbox(tmp_path)
+    async def test_listeners_hear_about_each_new_entry(self, tmp_path, open_outbox):
+        outbox = open_outbox(tmp_path / "state.db")
         calls: list[int] = []
         unsubscribe = outbox.subscribe(lambda: calls.append(1))
         await outbox.attention(
@@ -148,8 +146,8 @@ class TestOutbox:
         await outbox.resolve(group="g")
         assert calls == [1], "a duplicate adds nothing; an unsubscribed listener hears nothing"
 
-    async def test_invalid_input_is_refused(self, tmp_path):
-        outbox = _outbox(tmp_path)
+    async def test_invalid_input_is_refused(self, tmp_path, open_outbox):
+        outbox = open_outbox(tmp_path / "state.db")
         with pytest.raises(ValueError, match="request_id and a group"):
             await outbox.attention(
                 request_id="", group="g", input_kind=AttentionInputKind.QUESTION, prompt=""
@@ -169,8 +167,8 @@ class TestOutbox:
 
 
 class TestNotifyTool:
-    async def test_queues_the_notification_for_the_turns_channel(self, tmp_path):
-        outbox = _outbox(tmp_path)
+    async def test_queues_the_notification_for_the_turns_channel(self, tmp_path, open_outbox):
+        outbox = open_outbox(tmp_path / "state.db")
         tool = ResidentNotifyTool(outbox)
         token = current_notification_channel.set("agent:main:niuu-abc")
         try:
@@ -193,14 +191,16 @@ class TestNotifyTool:
         assert entry.channel == "agent:main:niuu-abc"
         assert entry.draft.title == "Report ready" and entry.draft.links[0].label == "PR"
 
-    async def test_a_turn_outside_a_channel_notifies_from_the_main_room(self, tmp_path):
-        outbox = _outbox(tmp_path)
+    async def test_a_turn_outside_a_channel_notifies_from_the_main_room(
+        self, tmp_path, open_outbox
+    ):
+        outbox = open_outbox(tmp_path / "state.db")
         await ResidentNotifyTool(outbox).execute({"kind": "info", "title": "FYI"})
         [entry] = await outbox.pending(limit=10)
         assert entry.channel is None and entry.idempotency_key
 
-    async def test_the_channel_follows_into_the_turns_own_task(self, tmp_path):
-        outbox = _outbox(tmp_path)
+    async def test_the_channel_follows_into_the_turns_own_task(self, tmp_path, open_outbox):
+        outbox = open_outbox(tmp_path / "state.db")
         tool = ResidentNotifyTool(outbox)
 
         async def turn() -> None:
@@ -222,14 +222,14 @@ class TestNotifyTool:
             ({"kind": "info", "title": "x", "idempotency_key": "k" * 201}, "at most"),
         ],
     )
-    async def test_refuses_what_forge_would_refuse(self, tmp_path, payload, message):
-        outbox = _outbox(tmp_path)
+    async def test_refuses_what_forge_would_refuse(self, tmp_path, open_outbox, payload, message):
+        outbox = open_outbox(tmp_path / "state.db")
         result = await ResidentNotifyTool(outbox).execute(payload)
         assert result.is_error and message in result.content
         assert await outbox.pending(limit=10) == []
 
-    def test_describes_itself_like_the_forge_notify_tool(self, tmp_path):
-        tool = ResidentNotifyTool(_outbox(tmp_path))
+    def test_describes_itself_like_the_forge_notify_tool(self, tmp_path, open_outbox):
+        tool = ResidentNotifyTool(open_outbox(tmp_path / "state.db"))
         assert tool.name == NOTIFY_TOOL_NAME == "notify"
         assert tool.required_permission == "notify:send"
         assert not tool.parallelisable
@@ -256,8 +256,11 @@ class TestDaemonWiring:
         off = self._settings(tmp_path, enabled=True, notifications_enabled=False)
         assert build_resident_notification_outbox(off) is None
         outbox = build_resident_notification_outbox(self._settings(tmp_path, enabled=True))
-        assert isinstance(outbox, SqliteResidentNotificationOutbox)
-        assert (tmp_path / "state.db").exists(), "it shares the shim's own database"
+        try:
+            assert isinstance(outbox, SqliteResidentNotificationOutbox)
+            assert (tmp_path / "state.db").exists(), "it shares the shim's own database"
+        finally:
+            outbox.close()
 
     def test_notify_is_offered_unless_disabled_or_forbidden(self, tmp_path):
         from types import SimpleNamespace
@@ -294,10 +297,78 @@ class TestCliAgentNotify:
         assert _tool_mcp_notification_outbox(self._settings(tmp_path), None) is None
         on = self._settings(tmp_path, enabled=True)
         outbox = _tool_mcp_notification_outbox(on, None)
-        assert isinstance(outbox, SqliteResidentNotificationOutbox)
-        outbox.close()
+        try:
+            assert isinstance(outbox, SqliteResidentNotificationOutbox)
+        finally:
+            outbox.close()
         forbidden = SimpleNamespace(forbidden_tools=[NOTIFY_TOOL_NAME])
         assert _tool_mcp_notification_outbox(on, forbidden) is None
+
+    async def test_the_daemon_closes_the_outbox_when_it_shuts_down(self, tmp_path):
+        """Both exits share one shutdown; it releases the outbox's connection."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from ravn.config import Settings
+
+        settings = Settings()
+        for name in ("telegram", "http", "discord", "slack", "matrix", "whatsapp"):
+            getattr(settings.gateway.channels, name).enabled = False
+        settings.odin_court.enabled = False
+        outbox = MagicMock(spec=SqliteResidentNotificationOutbox)
+
+        with (
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}),
+            patch("ravn.adapters.llm.anthropic.AnthropicAdapter"),
+            patch("ravn.cli.commands._build_mimir", return_value=None),
+            patch(
+                "ravn.cli.commands._start_mcp_shared",
+                new_callable=AsyncMock,
+                return_value=(None, []),
+            ),
+            patch("ravn.cli.commands._shutdown_mcp", new_callable=AsyncMock) as shutdown_mcp,
+            patch("ravn.cli.commands._wire_triggers", return_value=[]),
+            patch("ravn.cli.commands._wire_cron", return_value=[]),
+            patch(
+                "ravn.cli.resident_runtime_wiring.build_resident_notification_outbox",
+                return_value=outbox,
+            ),
+        ):
+            from ravn.cli.commands import _run_daemon
+
+            await _run_daemon(settings)
+
+        outbox.close.assert_called_once_with()
+        # The "nothing to do" exit used to skip MCP, memory and the outbox.
+        shutdown_mcp.assert_awaited_once()
+
+    def test_tool_mcp_closes_the_outbox_when_the_server_cannot_be_built(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        from ravn.cli import commands as commands_mod
+        from ravn.config import Settings
+
+        outbox = MagicMock()
+        with (
+            patch.object(commands_mod, "Settings", return_value=Settings()),
+            patch.object(commands_mod, "_configure_logging"),
+            patch.object(commands_mod.ProjectConfig, "discover", return_value=MagicMock()),
+            patch.object(commands_mod, "_resolve_profile", return_value=None),
+            patch.object(
+                commands_mod, "_resolve_persona", return_value=MagicMock(allowed_tools=[])
+            ),
+            patch.object(commands_mod, "_build_tool_mcp_tools", return_value=[]),
+            patch.object(commands_mod, "_tool_mcp_notification_outbox", return_value=outbox),
+            patch(
+                "ravn.adapters.mcp.tool_port_server.ToolPortMcpServer",
+                side_effect=RuntimeError("cannot bind stdio"),
+            ),
+            pytest.raises(RuntimeError, match="cannot bind stdio"),
+        ):
+            commands_mod.tool_mcp(
+                config="", persona="resident-codex", profile="", notification_channel=""
+            )
+
+        outbox.close.assert_called_once_with()
 
     def test_tool_mcp_serves_notify_in_the_turns_channel(self, tmp_path):
         from unittest.mock import MagicMock, patch
@@ -341,10 +412,10 @@ class TestCliAgentNotify:
         assert current_notification_channel.get() is None, "the channel ends with the server"
         outbox.close.assert_called_once_with()
 
-    def test_the_servers_notification_reaches_the_residents_outbox(self, tmp_path):
+    def test_the_servers_notification_reaches_the_residents_outbox(self, tmp_path, open_outbox):
         # The server is its own process: it writes the file the daemon's shim serves.
-        daemon = _outbox(tmp_path)
-        server = _outbox(tmp_path)
+        daemon = open_outbox(tmp_path / "state.db")
+        server = open_outbox(tmp_path / "state.db")
         token = current_notification_channel.set("room-7")
         try:
             result = asyncio.run(

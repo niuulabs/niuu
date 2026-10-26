@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 import json
 import logging
@@ -10,7 +11,7 @@ import math
 import re
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -448,10 +449,32 @@ class KubernetesJobExecutor:
     ) -> JobRunResult:
         if requirements:
             raise LearnedToolError("k8s_job runtime requirements must be empty")
-        effective_image = image or self._config.image
-        if "@sha256:" not in effective_image:
-            raise LearnedToolError("k8s_job runner image must be pinned by sha256 digest")
-        batch, core, networking = await self._load_clients()
+        effective_image = self._pinned_image(image)
+        async with self._clients() as clients:
+            return await self._execute(
+                clients,
+                run_name=run_name,
+                image=effective_image,
+                code=code,
+                payload=payload,
+                entry_point=entry_point,
+                timeout_seconds=timeout_seconds,
+                network_allowed=network_allowed,
+            )
+
+    async def _execute(
+        self,
+        clients: tuple[Any, Any, Any],
+        *,
+        run_name: str,
+        image: str,
+        code: str,
+        payload: dict[str, Any],
+        entry_point: str,
+        timeout_seconds: float,
+        network_allowed: bool,
+    ) -> JobRunResult:
+        batch, core, networking = clients
         label = NETWORK_ALLOWED_LABEL if network_allowed else NETWORK_DENIED_LABEL
         await self._verify_network_policies(networking, network_label=label)
         created_secret = False
@@ -459,7 +482,7 @@ class KubernetesJobExecutor:
         try:
             body = self._job_body(
                 run_name=run_name,
-                image=effective_image,
+                image=image,
                 command=["python", "-I", "-B", "-c", _BOOTSTRAP],
                 network_label=label,
                 active_deadline_seconds=timeout_seconds,
@@ -536,13 +559,33 @@ class KubernetesJobExecutor:
         tests hang must be durably rejected, not retried forever on
         redelivery because every attempt "looks like" an outage.
         """
-        del tool_name  # no longer used for naming; every verify file name is fixed.
         if requirements:
             raise LearnedToolError("k8s_job verification requirements must be empty")
-        effective_image = image or self._config.image
-        if "@sha256:" not in effective_image:
-            raise LearnedToolError("k8s_job runner image must be pinned by sha256 digest")
-        batch, core, networking = await self._load_clients()
+        effective_image = self._pinned_image(image)
+        async with self._clients() as clients:
+            return await self._execute_verification(
+                clients,
+                run_name=run_name,
+                image=effective_image,
+                tool_name=tool_name,
+                tool_code=tool_code,
+                test_code=test_code,
+                timeout_seconds=timeout_seconds,
+            )
+
+    async def _execute_verification(
+        self,
+        clients: tuple[Any, Any, Any],
+        *,
+        run_name: str,
+        image: str,
+        tool_name: str,
+        tool_code: str,
+        test_code: str,
+        timeout_seconds: float,
+    ) -> JobRunResult:
+        del tool_name  # no longer used for naming; every verify file name is fixed.
+        batch, core, networking = clients
         # verify() always runs its test Job denied-network, so the additive
         # check always applies here (unlike execute(), which only applies
         # it for a denied-network invocation).
@@ -553,7 +596,7 @@ class KubernetesJobExecutor:
         try:
             body = self._job_body(
                 run_name=run_name,
-                image=effective_image,
+                image=image,
                 command=[
                     "python",
                     "/verify/_verify_runner.py",
@@ -855,20 +898,39 @@ class KubernetesJobExecutor:
             body["spec"]["ttlSecondsAfterFinished"] = self._config.job_ttl_seconds_after_finished
         return body
 
-    async def _load_clients(self) -> tuple[Any, Any, Any]:
+    def _pinned_image(self, image: str) -> str:
+        effective_image = image or self._config.image
+        if "@sha256:" not in effective_image:
+            raise LearnedToolError("k8s_job runner image must be pinned by sha256 digest")
+        return effective_image
+
+    @contextlib.asynccontextmanager
+    async def _clients(self) -> AsyncIterator[tuple[Any, Any, Any]]:
+        """Yield the API groups for ONE call, closing the ApiClient this call opened.
+
+        ``kubernetes_asyncio.ApiClient`` owns an aiohttp session. The runner
+        is rebuilt for every learned-tool load, so a client cached on it would
+        never be closed and the garbage collector would log "Unclosed client
+        session". Injected clients stay with their owner and are not closed.
+        """
         if self._clients_loaded:
-            return self._batch_v1, self._core_v1, self._networking_v1
+            yield self._batch_v1, self._core_v1, self._networking_v1
+            return
         from kubernetes_asyncio import client, config  # noqa: PLC0415
 
         if self._in_cluster:
             config.load_incluster_config()
         else:
             await config.load_kube_config()
-        self._batch_v1 = client.BatchV1Api()
-        self._core_v1 = client.CoreV1Api()
-        self._networking_v1 = client.NetworkingV1Api()
-        self._clients_loaded = True
-        return self._batch_v1, self._core_v1, self._networking_v1
+        api_client = client.ApiClient()
+        try:
+            yield (
+                client.BatchV1Api(api_client),
+                client.CoreV1Api(api_client),
+                client.NetworkingV1Api(api_client),
+            )
+        finally:
+            await api_client.close()
 
     async def _verify_network_policies(self, networking: Any, *, network_label: str) -> None:
         """Verify the two named policies by name, and — only for a

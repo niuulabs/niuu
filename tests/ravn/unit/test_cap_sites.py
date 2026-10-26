@@ -1,9 +1,11 @@
 """The remaining character limits on resident context count when they cut.
 
-Each of these shortened something a resident carries forward — its working
-state, an operator question, an A2A result, the reply it is answering —
-without anything counting it. The cut is still made (the bound is real), but
-it now shows on ``ravn.cap.hits`` and the resident's health snapshot.
+Each of these shortened something a resident carries forward — an operator
+question, an A2A result — without anything counting it. The cut is still made
+(the bound is real), but it now shows on ``ravn.cap.hits`` and the resident's
+health snapshot. Content whose real bound is the model's context window (the
+recorded tool results, the prior working state, the reply being answered) is
+not capped at all, and a test below asserts it reaches the resident whole.
 """
 
 from __future__ import annotations
@@ -23,41 +25,40 @@ from ravn.domain.models import (
     ToolResult,
     TurnResult,
 )
-from ravn.drive_loop import _bounded_room_context, _build_resident_valkyrie_schema_repair_prompt
+from ravn.drive_loop import _build_resident_valkyrie_schema_repair_prompt
 from ravn.resident_continuation import _operator_question_line
-from ravn.resident_runtime import ResidentRuntime, _bounded, _tool_result_summaries
+from ravn.resident_runtime import ResidentRuntime, _tool_result_summaries
 
 
 class TestResidentContext:
-    def test_a_bound_with_a_knob_counts_its_cut(self) -> None:
-        text = _bounded(
-            "x" * 50, 10, knob="resident_state.continuation_context_max_chars", what="s"
-        )
-        assert text.startswith("x" * 10)
-        assert text.endswith("(truncated)")
-        assert cap_hit_counts() == {"resident_state.continuation_context_max_chars": 1}
-
-    def test_text_within_the_bound_is_untouched(self) -> None:
-        assert _bounded("short", 10, knob="k", what="w") == "short"
-        assert cap_hit_counts() == {}
-
-    def test_recorded_tool_results_count_their_cut(self) -> None:
+    def test_recorded_tool_results_are_persisted_whole(self) -> None:
+        output = "y" * 50_000
         result = TurnResult(
             response="",
             tool_calls=[ToolCall(id="c1", name="kubernetes_inspect", input={})],
-            tool_results=[ToolResult(tool_call_id="c1", content="y" * 500)],
+            tool_results=[ToolResult(tool_call_id="c1", content=output)],
             usage=TokenUsage(input_tokens=0, output_tokens=0),
         )
 
-        (summary,) = _tool_result_summaries(result, max_chars=100)
+        (summary,) = _tool_result_summaries(result)
 
-        assert summary.startswith("### kubernetes_inspect (ok)")
-        assert cap_hit_counts() == {"resident_state.continuation_tool_result_max_chars": 1}
+        assert summary == f"### kubernetes_inspect (ok)\n\n{output}"
+        assert cap_hit_counts() == {}
 
-    def test_a_long_reply_context_counts(self) -> None:
-        bounded = _bounded_room_context("z" * 30, 10)
-        assert "20 characters omitted" in bounded
-        assert cap_hit_counts() == {"resident_state.directed_message_context_max_chars": 1}
+    def test_an_errored_tool_result_is_labelled_and_whole(self) -> None:
+        output = "boom " * 5_000
+        result = TurnResult(
+            response="",
+            tool_calls=[ToolCall(id="c1", name="bash", input={})],
+            tool_results=[ToolResult(tool_call_id="c1", content=output, is_error=True)],
+            usage=TokenUsage(input_tokens=0, output_tokens=0),
+        )
+
+        (summary,) = _tool_result_summaries(result)
+
+        assert summary.startswith("### bash (error)")
+        assert summary.endswith(output)
+        assert cap_hit_counts() == {}
 
 
 class TestOperatorQuestion:

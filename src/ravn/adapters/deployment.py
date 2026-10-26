@@ -6,9 +6,11 @@ import asyncio
 import os
 import subprocess
 import threading
-from contextlib import suppress
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -557,7 +559,6 @@ class KubernetesApplyWardenDeploymentAdapter(WardenDeploymentPort):
         self._image_pull_policy = image_pull_policy
         self._service_account_name = service_account_name
         self._extra_env = extra_env or {}
-        self._api_client = None
 
     def install(
         self,
@@ -684,90 +685,97 @@ class KubernetesApplyWardenDeploymentAdapter(WardenDeploymentPort):
         )
 
     async def _apply_install(self, spec: WardenSpec, *, config_text: str, replicas: int) -> None:
-        core_api, apps_api = await self._load_clients()
-        if self._create_namespace:
-            await self._ensure_namespace(core_api)
+        async with self._clients() as (core_api, apps_api):
+            if self._create_namespace:
+                await self._ensure_namespace(core_api)
 
-        name = self._resource_name(spec)
-        await self._upsert_config_map(
-            core_api,
-            name=name,
-            config_text=config_text,
-        )
-        await self._upsert_deployment(
-            apps_api,
-            spec,
-            name=name,
-            replicas=replicas,
-        )
+            name = self._resource_name(spec)
+            await self._upsert_config_map(
+                core_api,
+                name=name,
+                config_text=config_text,
+            )
+            await self._upsert_deployment(
+                apps_api,
+                spec,
+                name=name,
+                replicas=replicas,
+            )
 
     async def _scale_deployment(self, spec: WardenSpec, *, replicas: int) -> None:
-        _, apps_api = await self._load_clients()
-        name = self._resource_name(spec)
-        await apps_api.patch_namespaced_deployment_scale(
-            name=name,
-            namespace=self._namespace,
-            body={"spec": {"replicas": replicas}},
-        )
+        async with self._clients() as (_, apps_api):
+            name = self._resource_name(spec)
+            await apps_api.patch_namespaced_deployment_scale(
+                name=name,
+                namespace=self._namespace,
+                body={"spec": {"replicas": replicas}},
+            )
 
     async def _delete_install(self, spec: WardenSpec) -> None:
-        core_api, apps_api = await self._load_clients()
-        name = self._resource_name(spec)
-        await self._delete_if_present(
-            lambda: apps_api.delete_namespaced_deployment(
-                name=name,
-                namespace=self._namespace,
+        async with self._clients() as (core_api, apps_api):
+            name = self._resource_name(spec)
+            await self._delete_if_present(
+                lambda: apps_api.delete_namespaced_deployment(
+                    name=name,
+                    namespace=self._namespace,
+                )
             )
-        )
-        await self._delete_if_present(
-            lambda: core_api.delete_namespaced_config_map(
-                name=name,
-                namespace=self._namespace,
+            await self._delete_if_present(
+                lambda: core_api.delete_namespaced_config_map(
+                    name=name,
+                    namespace=self._namespace,
+                )
             )
-        )
 
     async def _observe_install(self, spec: WardenSpec) -> dict[str, int | bool]:
-        core_api, apps_api = await self._load_clients()
-        name = self._resource_name(spec)
-        deployment = await self._read_if_present(
-            lambda: apps_api.read_namespaced_deployment(name=name, namespace=self._namespace)
-        )
-        config_map = await self._read_if_present(
-            lambda: core_api.read_namespaced_config_map(name=name, namespace=self._namespace)
-        )
+        async with self._clients() as (core_api, apps_api):
+            name = self._resource_name(spec)
+            deployment = await self._read_if_present(
+                lambda: apps_api.read_namespaced_deployment(name=name, namespace=self._namespace)
+            )
+            config_map = await self._read_if_present(
+                lambda: core_api.read_namespaced_config_map(name=name, namespace=self._namespace)
+            )
 
-        desired_replicas = 0
-        ready_replicas = 0
-        available_replicas = 0
-        if deployment is not None:
-            desired_replicas = int(getattr(deployment.spec, "replicas", 0) or 0)
-            ready_replicas = int(getattr(deployment.status, "ready_replicas", 0) or 0)
-            available_replicas = int(getattr(deployment.status, "available_replicas", 0) or 0)
+            desired_replicas = 0
+            ready_replicas = 0
+            available_replicas = 0
+            if deployment is not None:
+                desired_replicas = int(getattr(deployment.spec, "replicas", 0) or 0)
+                ready_replicas = int(getattr(deployment.status, "ready_replicas", 0) or 0)
+                available_replicas = int(getattr(deployment.status, "available_replicas", 0) or 0)
 
-        return {
-            "deployment_present": deployment is not None,
-            "config_map_present": config_map is not None,
-            "desired_replicas": desired_replicas,
-            "ready_replicas": ready_replicas,
-            "available_replicas": available_replicas,
-        }
+            return {
+                "deployment_present": deployment is not None,
+                "config_map_present": config_map is not None,
+                "desired_replicas": desired_replicas,
+                "ready_replicas": ready_replicas,
+                "available_replicas": available_replicas,
+            }
 
-    async def _load_clients(self):
+    @asynccontextmanager
+    async def _clients(self) -> AsyncIterator[tuple[Any, Any]]:
+        """Yield core/apps API groups for ONE operation and close their ApiClient.
+
+        ``ApiClient`` owns an aiohttp session bound to the event loop that
+        created it. Every public operation runs on its own ``asyncio.run`` loop
+        (``_run_coro_blocking``), so a client cached on the adapter outlives its
+        loop and is never closed.
+        """
         from kubernetes_asyncio import client, config
 
-        if self._api_client is None:
-            if self._kubeconfig:
-                await config.load_kube_config(config_file=self._kubeconfig)
-            else:
-                try:
-                    config.load_incluster_config()
-                except config.ConfigException:
-                    await config.load_kube_config()
-            self._api_client = client.ApiClient()
-        return (
-            client.CoreV1Api(self._api_client),
-            client.AppsV1Api(self._api_client),
-        )
+        if self._kubeconfig:
+            await config.load_kube_config(config_file=self._kubeconfig)
+        else:
+            try:
+                config.load_incluster_config()
+            except config.ConfigException:
+                await config.load_kube_config()
+        api_client = client.ApiClient()
+        try:
+            yield client.CoreV1Api(api_client), client.AppsV1Api(api_client)
+        finally:
+            await api_client.close()
 
     async def _ensure_namespace(self, core_api) -> None:
         from kubernetes_asyncio.client import ApiException, V1Namespace, V1ObjectMeta

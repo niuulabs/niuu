@@ -728,15 +728,12 @@ def _enable_native_compaction(settings: Settings, llm: Any, model: str) -> Any:
             "Bifröst Anthropic adapters), or set compaction to 'ravn' or 'off' for this model"
         )
     cm = settings.context_management
-    output_cap = settings.effective_max_tokens()
-    window_budget = max(0, cm.context_window_tokens - output_cap) if output_cap is not None else 0
-    budget = cm.max_prompt_tokens or window_budget
+    budget = settings.compaction_budget_tokens()
     if budget <= 0:
         raise ConfigurationError(
             f"context_management.compaction is 'native' for model {model!r} but no prompt "
-            "budget is configured to derive the compaction threshold from: set "
-            "context_management.max_prompt_tokens (or context_window_tokens together "
-            "with llm.max_tokens)"
+            "size is configured to derive the compaction threshold from: set "
+            "context_management.context_window_tokens (or compaction_target_tokens)"
         )
     threshold = int(budget * cm.compression_threshold / cm.token_estimate_safety_factor)
     llm.enable_native_compaction(model=model, threshold_tokens=threshold)

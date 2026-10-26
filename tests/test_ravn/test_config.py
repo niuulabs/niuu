@@ -1173,11 +1173,28 @@ class TestPlatformAccessToken:
 
 
 class TestPromptBudgetDerivation:
-    """With no answer cap, a context window alone no longer implies a prompt budget."""
+    """The context window bounds the prompt; compaction aims under a separate target."""
 
-    def test_a_window_without_a_cap_or_a_budget_is_refused(self) -> None:
-        with pytest.raises(ValueError, match="max_prompt_tokens"):
-            Settings(context_management={"context_window_tokens": 131072})
+    def test_a_window_without_a_cap_is_the_ceiling(self) -> None:
+        settings = Settings(context_management={"context_window_tokens": 131072})
+        assert settings.prompt_ceiling_tokens() == 131072
+        assert settings.compaction_budget_tokens() == 131072
+
+    def test_an_answer_cap_is_reserved_out_of_the_window(self) -> None:
+        settings = Settings(
+            llm={"max_tokens": 32000}, context_management={"context_window_tokens": 131072}
+        )
+        assert settings.prompt_ceiling_tokens() == 99072
+
+    def test_the_compaction_target_does_not_lower_the_ceiling(self) -> None:
+        settings = Settings(
+            context_management={
+                "context_window_tokens": 1048576,
+                "compaction_target_tokens": 48000,
+            }
+        )
+        assert settings.prompt_ceiling_tokens() == 1048576
+        assert settings.compaction_budget_tokens() == 48000
 
     def test_a_window_with_a_cap_derives_the_budget(self) -> None:
         settings = Settings(
@@ -1199,3 +1216,57 @@ class TestRemovedContinuationCaps:
     def test_a_config_still_setting_it_is_refused(self, key: str) -> None:
         with pytest.raises(ValueError, match=f"resident_state.{key} no longer exist"):
             Settings(resident_state={key: 3})
+
+
+class TestRemovedCharacterCaps:
+    """Content a resident carries is bounded by the model's window, not a character guess."""
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "continuation_context_max_chars",
+            "continuation_tool_result_max_chars",
+            "directed_message_context_max_chars",
+        ],
+    )
+    def test_a_resident_state_config_still_setting_it_is_refused(self, key: str) -> None:
+        with pytest.raises(ValueError) as refused:
+            Settings(resident_state={key: 4000})
+
+        message = str(refused.value)
+        assert f"resident_state.{key} no longer exists" in message
+        assert "context_management.max_prompt_tokens" in message
+        assert "remove the key" in message
+
+    def test_a_reflection_config_still_setting_the_context_cap_is_refused(self) -> None:
+        with pytest.raises(ValueError) as refused:
+            Settings(reflection={"context_max_chars": 12000})
+
+        message = str(refused.value)
+        assert "reflection.context_max_chars no longer exists" in message
+        assert "sent to the reflection model whole" in message
+        assert "remove the key" in message
+
+    def test_every_removed_key_is_named_when_several_are_set(self) -> None:
+        with pytest.raises(ValueError) as refused:
+            Settings(
+                resident_state={
+                    "continuation_context_max_chars": 1,
+                    "continuation_tool_result_max_chars": 1,
+                }
+            )
+
+        message = str(refused.value)
+        assert "resident_state.continuation_context_max_chars no longer exists" in message
+        assert "resident_state.continuation_tool_result_max_chars no longer exists" in message
+
+    def test_the_defaults_carry_none_of_the_removed_keys(self) -> None:
+        settings = Settings()
+
+        for key in (
+            "continuation_context_max_chars",
+            "continuation_tool_result_max_chars",
+            "directed_message_context_max_chars",
+        ):
+            assert not hasattr(settings.resident_state, key)
+        assert not hasattr(settings.reflection, "context_max_chars")

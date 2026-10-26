@@ -24,7 +24,7 @@ from ravn.domain.environment import (
     TopologyRef,
     apply_environment_metadata,
 )
-from ravn.domain.models import AgentTask, OutputMode
+from ravn.domain.models import IDLE_TRIAGE_TRIGGER, AgentTask, OutputMode
 from ravn.domain.valkyrie_contracts import resident_outcome_template
 from ravn.ports.signal_adapter import NormalizedSignal, SignalAdapter
 from sleipnir.domain.events import SleipnirEvent
@@ -166,6 +166,8 @@ class EnvironmentSignalRuntime:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        for adapter in self._adapters:
+            await adapter.close()
         if self._owns_publisher and hasattr(self._publisher, "stop"):
             await self._publisher.stop()  # type: ignore[attr-defined]
 
@@ -401,14 +403,16 @@ class EnvironmentSignalRuntime:
             strict=True,
         ):
             if signal.severity in self._settings.environment.signal_task_severities:
-                await self._enqueue(
+                accepted = await self._enqueue(
                     self._task_from_signal(
                         signal,
                         event,
                         resident_learning_result=resident_result,
                     )
                 )
-                enqueued += 1
+                # Refused only as a duplicate of a queued or running task.
+                if accepted is not False:
+                    enqueued += 1
             elif not self._durable_home_enabled:
                 self._remember_untriaged(signal, event)
         return enqueued
@@ -435,29 +439,35 @@ class EnvironmentSignalRuntime:
         raise RuntimeError("durable signal transport requires every event in the resident inbox")
 
     def _remember_untriaged(self, signal: NormalizedSignal, event: SleipnirEvent) -> None:
+        # Every observation stays in the window until a window carrying it is
+        # queued. The prompt stays bounded by its announced sample, not by
+        # forgetting the oldest observations.
         self._untriaged.append(self._window_entry(signal, event))
-        max_signals = self._settings.environment.idle_triage_max_signals
-        if len(self._untriaged) > max_signals:
-            self._untriaged = self._untriaged[-max_signals:]
 
     async def _idle_triage_loop(self, interval: float) -> None:
-        """Periodically give the resident a bounded window of accumulated signals."""
+        """Periodically give the resident one window of the accumulated signals."""
         if self._enqueue is None:
             return
         while True:
             await asyncio.sleep(interval)
-            batch, self._untriaged = self._untriaged, []
-            if not batch:
-                continue
-            try:
-                await self._enqueue(self._triage_task(batch))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "environment_signals: idle triage enqueue failed: %s",
-                    exc,
-                )
+            await self.offer_idle_triage_window()
+
+    async def offer_idle_triage_window(self) -> bool:
+        """Queue one idle-triage window over everything not yet triaged.
+
+        At most one window is queued or running (the drive loop refuses a
+        second). A refused window is not lost: its observations stay and the
+        next offer carries them together with whatever arrived since. Enqueue
+        errors propagate to the runtime that awaits this loop.
+        """
+        if self._enqueue is None or not self._untriaged:
+            return False
+        batch = list(self._untriaged)
+        accepted = await self._enqueue(self._triage_task(batch))
+        if accepted is False:
+            return False
+        del self._untriaged[: len(batch)]
+        return True
 
     def _triage_task(self, batch: list[dict[str, Any]], *, durable: bool = False) -> AgentTask:
         env_cfg = self._settings.environment
@@ -529,7 +539,7 @@ class EnvironmentSignalRuntime:
                 else f"Signal window: {len(batch)} observation(s)"
             ),
             initiative_context=context,
-            triggered_by="signal:durable_window" if durable else "signal:idle_triage",
+            triggered_by="signal:durable_window" if durable else IDLE_TRIAGE_TRIGGER,
             output_mode=self._output_mode,
             persona=self._persona,
             priority=9,

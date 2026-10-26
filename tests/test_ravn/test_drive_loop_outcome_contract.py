@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from niuu.domain.outcome import OutcomeField
+from ravn.cap_telemetry import cap_hit_counts
 from ravn.domain.events import RavnEventType
 from ravn.domain.models import TokenUsage, ToolCall, ToolResult, TurnResult
 from ravn.domain.valkyrie_contracts import normalize_valkyrie_outcome
@@ -1357,7 +1358,7 @@ correlation_ids:
     async def test_task_lifecycle_publishes_sleipnir_started_completed_and_dropped(
         self,
     ) -> None:
-        dl = _make_drive_loop(queue_max=1)
+        dl = _make_drive_loop()
         published = []
         dl._sleipnir_publisher = SimpleNamespace(publish=AsyncMock(side_effect=published.append))
         dl._source_id = "drive_loop"
@@ -1369,7 +1370,7 @@ correlation_ids:
 
         await dl._emit_sleipnir_task_started(task)
         await dl._emit_sleipnir_task_completed(task, "success", response_text="")
-        await dl.enqueue(_make_agent_task(task_id="task-kept"))
+        await dl.enqueue(_make_agent_task(task_id="task-dropped"))
         await dl.enqueue(_make_agent_task(task_id="task-dropped"))
 
         assert [event.event_type for event in published] == [
@@ -1382,7 +1383,7 @@ correlation_ids:
         assert published[1].payload["task_id"] == "task-observed"
         assert published[1].payload["root_correlation_id"] == "root-observed"
         assert published[2].payload["task_id"] == "task-dropped"
-        assert published[2].payload["reason"] == "queue_full"
+        assert published[2].payload["reason"] == "duplicate_task"
 
     @pytest.mark.asyncio
     async def test_success_without_verdict_still_routes_pass_alias(self) -> None:
@@ -2473,13 +2474,23 @@ summary: post-mortem source captured
         assert "ignored the transport-only check" in recent_context
         assert recent_context.endswith("Human message: makes sense, ignore")
 
-        dl._settings.resident_state.directed_message_context_max_chars = 200
-        bounded_context = dl._directed_message_context(
+        long_prior = "x" * 50_000
+        whole_context = dl._directed_message_context(
             "current message",
-            {"recent_room_context": {"content": "x" * 500}},
+            {"recent_room_context": {"content": long_prior}},
         )
-        assert "prior room context truncated: 300 characters omitted" in bounded_context
-        assert bounded_context.endswith("Human message: current message")
+        assert long_prior in whole_context
+        assert "truncated" not in whole_context
+        assert whole_context.endswith("Human message: current message")
+
+        long_reply = "y" * 50_000
+        whole_reply = dl._directed_message_context(
+            "current message",
+            {"reply_context": {"content": long_reply}},
+        )
+        assert long_reply in whole_reply
+        assert "truncated" not in whole_reply
+        assert cap_hit_counts() == {}
 
     def test_record_tool_outcome_fields_merges_existing_values(self) -> None:
         dl = _make_drive_loop()

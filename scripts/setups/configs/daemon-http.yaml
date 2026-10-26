@@ -66,7 +66,6 @@ gateway:
 initiative:
   enabled: true
   max_concurrent_tasks: 3
-  task_queue_max: 50
   queue_journal_path: ~/.ravn/daemon/queue.json
   default_output_mode: surface           # show task output (useful for dev)
   heartbeat_interval_seconds: 60

@@ -41,7 +41,6 @@ def _make_drive_loop() -> tuple[DriveLoop, list[str]]:
     cfg = InitiativeConfig(
         enabled=True,
         max_concurrent_tasks=1,
-        task_queue_max=10,
         queue_journal_path="/proc/no_such_dir/queue.json",
     )
     settings = MagicMock()

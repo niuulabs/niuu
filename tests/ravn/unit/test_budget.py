@@ -34,7 +34,6 @@ def _make_drive_loop_with_mock_settings(
     config = InitiativeConfig(
         enabled=True,
         max_concurrent_tasks=2,
-        task_queue_max=10,
         queue_journal_path=str(journal),
     )
     settings = MagicMock()
@@ -90,7 +89,6 @@ def _make_drive_loop(
     config = InitiativeConfig(
         enabled=True,
         max_concurrent_tasks=2,
-        task_queue_max=10,
         queue_journal_path=str(journal),
     )
     settings = Settings()
@@ -461,7 +459,6 @@ async def test_drive_loop_heartbeat_includes_budget(tmp_path: Path) -> None:
     loop._config = InitiativeConfig(
         enabled=True,
         max_concurrent_tasks=2,
-        task_queue_max=10,
         queue_journal_path=str(tmp_path / "q.json"),
         heartbeat_interval_seconds=0,  # fire immediately
     )
@@ -526,7 +523,6 @@ def test_drive_loop_budget_initialized_from_settings(tmp_path: Path) -> None:
     config = InitiativeConfig(
         enabled=True,
         max_concurrent_tasks=2,
-        task_queue_max=10,
         queue_journal_path=str(journal),
     )
     settings = Settings()
@@ -664,7 +660,6 @@ async def test_drive_loop_resume_loads_journal(tmp_path: Path) -> None:
     config = InitiativeConfig(
         enabled=True,
         max_concurrent_tasks=2,
-        task_queue_max=10,
         queue_journal_path=str(journal),
     )
     from ravn.config import Settings
@@ -687,7 +682,6 @@ def test_load_journal_returns_early_when_file_missing(tmp_path: Path) -> None:
     config = InitiativeConfig(
         enabled=True,
         max_concurrent_tasks=2,
-        task_queue_max=10,
         queue_journal_path=str(tmp_path / "nonexistent.json"),
     )
     from ravn.config import Settings

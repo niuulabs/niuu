@@ -16,11 +16,18 @@ from typing import Any
 from niuu.domain.notifications import MAX_BODY_CHARS
 from niuu.domain.resident_notifications import AttentionInputKind
 from niuu.observability import get_observability
-from ravn.cap_telemetry import DEGRADED_TOTAL_KEY, record_truncation
+from ravn.cap_telemetry import DEGRADED_TOTAL_KEY
 from ravn.cap_telemetry import HEALTH_TOTAL_KEY as CAP_HEALTH_TOTAL_KEY
 from ravn.cap_telemetry import health_counts as cap_health_counts
 from ravn.domain.exceptions import UnboundOperatorReplyError
-from ravn.domain.models import AgentTask, OutputMode, TokenUsage, TurnResult
+from ravn.domain.models import (
+    RESIDENT_HOME_PRIORITY,
+    RESIDENT_HOME_TRIGGER,
+    AgentTask,
+    OutputMode,
+    TokenUsage,
+    TurnResult,
+)
 from ravn.domain.resident_continuation import (
     ContinuationDecisionKind,
     ResidentA2ATaskRecord,
@@ -146,8 +153,6 @@ class ResidentRuntime:
         resident_id: str = "resident",
         resident_personality: str = "",
         charter: str = "",
-        context_max_chars: int = 12000,
-        tool_result_max_chars: int = 2000,
         scheduled_wake_default_seconds: float = 3600.0,
         repeated_decision_escalate_after: int = 5,
         health_refresh_interval_seconds: float = 300.0,
@@ -165,8 +170,6 @@ class ResidentRuntime:
         self._resident_id = resident_id.strip() or "resident"
         self._resident_personality = resident_personality.strip()
         self._charter = charter.strip()
-        self._context_max_chars = max(1000, int(context_max_chars))
-        self._tool_result_max_chars = max(100, int(tool_result_max_chars))
         self._scheduled_wake_default_seconds = max(1.0, float(scheduled_wake_default_seconds))
         self._repeated_decision_escalate_after = max(0, int(repeated_decision_escalate_after))
         self._health_refresh_interval_seconds = max(1.0, float(health_refresh_interval_seconds))
@@ -376,12 +379,7 @@ class ResidentRuntime:
             state_block = "(No prior resident working state exists yet.)"
             state_ref = "none"
         else:
-            state_block = _bounded(
-                prior.content,
-                self._context_max_chars,
-                knob="resident_state.continuation_context_max_chars",
-                what="the resident's prior working state",
-            )
+            state_block = prior.content
             state_ref = prior.path
             telemetry.event(
                 "ravn.resident.working_state_recalled",
@@ -393,33 +391,23 @@ class ResidentRuntime:
             )
         a2a_tasks = await self.find_a2a_tasks(
             active_only=True,
-            limit=10,
+            limit=None,
         )
         a2a_block = (
-            _bounded(
-                json.dumps(
-                    [_a2a_handle_prompt_view(handle) for handle in a2a_tasks],
-                    indent=2,
-                    sort_keys=True,
-                ),
-                self._context_max_chars,
-                knob="resident_state.continuation_context_max_chars",
-                what="the active A2A task handles",
+            json.dumps(
+                [_a2a_handle_prompt_view(handle) for handle in a2a_tasks],
+                indent=2,
+                sort_keys=True,
             )
             if a2a_tasks
             else "(No active durable A2A task handles.)"
         )
         open_questions = await self._state.list_operator_needed()
         questions_block = (
-            _bounded(
-                json.dumps(
-                    [_open_question_prompt_view(entry) for entry in open_questions],
-                    indent=2,
-                    sort_keys=True,
-                ),
-                self._context_max_chars,
-                knob="resident_state.continuation_context_max_chars",
-                what="the open operator questions",
+            json.dumps(
+                [_open_question_prompt_view(entry) for entry in open_questions],
+                indent=2,
+                sort_keys=True,
             )
             if open_questions
             else "(No operator questions are waiting for an answer.)"
@@ -516,9 +504,16 @@ class ResidentRuntime:
         query: str = "",
         case_id: str = "",
         active_only: bool = False,
-        limit: int = 10,
+        limit: int | None = 10,
     ) -> list[dict[str, Any]]:
-        """Find durable A2A handles, with bounded legacy-memory recovery."""
+        """Find durable A2A handles, with bounded legacy-memory recovery.
+
+        ``limit=None`` returns every match. The tool-facing default stays 10
+        because the model chooses how many handles a search should return; the
+        resident prompt block passes ``None`` so no active task is left out of
+        what the resident judges. Legacy-memory recovery runs a ranked memory
+        search and so needs a numeric ``limit``.
+        """
         list_tasks = getattr(self._state, "list_a2a_tasks", None)
         entries = await list_tasks() if list_tasks is not None else []
         records = [record for entry in entries if (record := _parse_a2a_task(entry.content))]
@@ -546,9 +541,15 @@ class ResidentRuntime:
 
         found = [record for record in records if matches(record)]
         found.sort(key=lambda record: record.updated_at, reverse=True)
-        rendered = [_a2a_record_payload(record) for record in found[: max(1, limit)]]
+        selected = found if limit is None else found[: max(1, limit)]
+        rendered = [_a2a_record_payload(record) for record in selected]
         if rendered or not needle or active_only:
             return rendered
+        if limit is None:
+            raise ValueError(
+                "find_a2a_tasks: limit=None cannot be combined with a query that reaches "
+                "legacy memory recovery; pass an explicit limit"
+            )
 
         # Older turns predate the registry. Existing state search remains the
         # recovery path; only identifier envelopes are projected back out.
@@ -742,10 +743,7 @@ class ResidentRuntime:
             response=response_text or result.response,
             outcome_fields=fields,
             tool_names=tuple(dict.fromkeys(call.name for call in result.tool_calls)),
-            tool_results=_tool_result_summaries(
-                result,
-                max_chars=self._tool_result_max_chars,
-            ),
+            tool_results=_tool_result_summaries(result),
             usage=result.usage,
             cumulative_usage=cumulative,
             selected_next_action=action,
@@ -1658,10 +1656,6 @@ class ResidentRuntime:
                 context_lines.append(f"- Charter: {self._charter}")
             context_lines.append("")
         context_lines.append("Observations:")
-        payload_budget = max(
-            200,
-            min(4000, self._context_max_chars // (2 * max(1, len(rows)))),
-        )
         for ref, signal in rows:
             evidence = signal.raw_ref or ", ".join(signal.evidence_refs) or "none"
             context_lines.append(
@@ -1673,20 +1667,15 @@ class ResidentRuntime:
             raw_payload = signal.payload.get("payload", signal.payload)
             context_lines.extend(
                 (
-                    "  Bounded raw payload:",
+                    "  Raw payload:",
                     "  ```json",
                     _indent(
-                        _bounded(
-                            json.dumps(
-                                raw_payload,
-                                indent=2,
-                                sort_keys=True,
-                                ensure_ascii=False,
-                                default=str,
-                            ),
-                            payload_budget,
-                            knob="resident_state.continuation_context_max_chars",
-                            what=f"the raw payload of observation {signal.id}",
+                        json.dumps(
+                            raw_payload,
+                            indent=2,
+                            sort_keys=True,
+                            ensure_ascii=False,
+                            default=str,
                         ),
                         "  ",
                     ),
@@ -1696,7 +1685,6 @@ class ResidentRuntime:
             context_lines.extend(
                 _extreme_payload_lines(
                     signal,
-                    payload_budget,
                     getattr(self._inbox, "archive", None),
                 )
             )
@@ -1704,9 +1692,10 @@ class ResidentRuntime:
             task_id=_task_id("resident_home"),
             title=f"Resident home turn ({len(rows)} observations)",
             initiative_context="\n".join(context_lines),
-            triggered_by="resident:home",
+            triggered_by=RESIDENT_HOME_TRIGGER,
             output_mode=output_mode,
             persona=persona,
+            priority=RESIDENT_HOME_PRIORITY,
             root_correlation_id=str(origin.get("root_correlation_id") or case_id),
             resident_case_id=case_id,
             resident_turn_index=int(origin.get("turn_index") or 0) + 1,
@@ -1884,12 +1873,7 @@ class ResidentRuntime:
         turn = await self._state.read(turn_ref)
         if turn is None:
             raise RuntimeError(f"resident parent turn is not readable: {turn_ref}")
-        return _bounded(
-            _resident_turn_handoff(turn.content),
-            self._context_max_chars,
-            knob="resident_state.continuation_context_max_chars",
-            what=f"the handoff from resident turn {turn_ref}",
-        )
+        return _resident_turn_handoff(turn.content)
 
     def _inflight_inbox_refs(self) -> set[str]:
         return set(self._inflight_refs)
@@ -2069,18 +2053,12 @@ def _reply_case_id(metadata: Mapping[str, Any]) -> str:
     return ""
 
 
-def _tool_result_summaries(result: TurnResult, *, max_chars: int) -> tuple[str, ...]:
+def _tool_result_summaries(result: TurnResult) -> tuple[str, ...]:
     names = {call.id: call.name for call in result.tool_calls}
     summaries: list[str] = []
     for item in result.tool_results:
         name = names.get(item.tool_call_id, item.tool_call_id or "tool")
-        content = _bounded(
-            item.content,
-            max_chars,
-            knob="resident_state.continuation_tool_result_max_chars",
-            what=f"the recorded result of {name!r}",
-        )
-        summaries.append(f"### {name} ({'error' if item.is_error else 'ok'})\n\n{content}")
+        summaries.append(f"### {name} ({'error' if item.is_error else 'ok'})\n\n{item.content}")
     return tuple(summaries)
 
 
@@ -2197,17 +2175,15 @@ def _coalesced_evidence_lines(signal: ResidentInboxSignal) -> list[str]:
 
 def _extreme_payload_lines(
     signal: ResidentInboxSignal,
-    budget: int,
     archive: Any | None,
 ) -> list[str]:
     """Attach the observation recorded at each numeric extreme.
 
     An excursion inside a large slot is exactly the observation a summary would
-    lose, so the whole payload travels rather than just its bound.  The slot
-    stores only an archive reference, so how much detail reaches the prompt is
-    decided here against the context budget rather than frozen at ingestion.
-    Every numeric path keeps its bounds either way; if the archive cannot be
-    read the reference itself is shown, never silently dropped.
+    lose, so the whole payload travels. The slot stores only an archive
+    reference; the payload is read from the archive here and reaches the prompt
+    whole, bounded only by the prompt budget. If the archive cannot be read the
+    reference itself is shown, never silently dropped.
     """
     extremes = signal.aggregate.extreme_refs
     if signal.observation_count <= 1 or not extremes:
@@ -2216,9 +2192,7 @@ def _extreme_payload_lines(
     keys_by_ref: dict[str, list[str]] = {}
     for key in sorted(extremes):
         keys_by_ref.setdefault(extremes[key], []).append(key)
-    # Several sensor extrema can refer to the same event. Include it once,
-    # and share this slot's payload budget across the distinct events.
-    payload_budget = max(1, budget // len(keys_by_ref))
+    # Several sensor extrema can refer to the same event. Include it once.
     for ref, keys in keys_by_ref.items():
         key = ", ".join(keys)
         record = archive.read(ref) if archive is not None else None
@@ -2231,17 +2205,12 @@ def _extreme_payload_lines(
                 f"  {key}: archive_ref={ref}",
                 "  ```json",
                 _indent(
-                    _bounded(
-                        json.dumps(
-                            payload,
-                            indent=2,
-                            sort_keys=True,
-                            ensure_ascii=False,
-                            default=str,
-                        ),
-                        payload_budget,
-                        knob="resident_state.continuation_context_max_chars",
-                        what=f"the archived payload {ref}",
+                    json.dumps(
+                        payload,
+                        indent=2,
+                        sort_keys=True,
+                        ensure_ascii=False,
+                        default=str,
                     ),
                     "  ",
                 ),
@@ -2249,15 +2218,6 @@ def _extreme_payload_lines(
             )
         )
     return lines
-
-
-def _bounded(value: Any, max_chars: int, *, knob: str, what: str) -> str:
-    """*value* as text of at most *max_chars*; a cut is marked and counted against *knob*."""
-    text = str(value or "")
-    if len(text) <= max_chars:
-        return text
-    record_truncation(knob, what=what, kept=max_chars, total=len(text))
-    return text[:max_chars].rstrip() + "\n… (truncated)"
 
 
 def _indent(value: str, prefix: str) -> str:

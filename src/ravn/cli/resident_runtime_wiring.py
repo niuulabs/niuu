@@ -250,8 +250,6 @@ def _build_resident_runtime(
         ),
         resident_personality=settings.environment.resident_personality,
         charter=settings.environment.charter,
-        context_max_chars=cfg.continuation_context_max_chars,
-        tool_result_max_chars=cfg.continuation_tool_result_max_chars,
         scheduled_wake_default_seconds=cfg.scheduled_wake_default_seconds,
         repeated_decision_escalate_after=cfg.repeated_decision_escalate_after,
         health_refresh_interval_seconds=cfg.health_refresh_interval_seconds,

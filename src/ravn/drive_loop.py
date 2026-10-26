@@ -51,7 +51,6 @@ from ravn.cap_telemetry import record_cap_hit, record_degraded, record_truncatio
 from ravn.config import (
     HttpChannelConfig,
     InitiativeConfig,
-    ResidentStateConfig,
     Settings,
 )
 from ravn.domain.budget import DailyBudgetTracker, resolve_task_cost_usd
@@ -62,7 +61,14 @@ from ravn.domain.exceptions import (
     UnboundOperatorReplyError,
 )
 from ravn.domain.help_needed import build_help_needed_event
-from ravn.domain.models import AgentTask, OutputMode, TurnResult
+from ravn.domain.models import (
+    IDLE_TRIAGE_TRIGGER,
+    RESIDENT_HOME_PRIORITY,
+    RESIDENT_HOME_TRIGGER,
+    AgentTask,
+    OutputMode,
+    TurnResult,
+)
 from ravn.domain.resident_continuation import validate_resident_working_state
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_CONTINUATION_ORDER,
@@ -98,6 +104,16 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+def _record_journal_persist_failure(exc: BaseException) -> None:
+    """A journal write that failed leaves a restart without the current queue."""
+    record_degraded(
+        "queue_journal.persist",
+        f"the queue journal could not be written ({exc}); a restart now would "
+        "restore an older queue. Check the journal volume.",
+    )
+
+
 _SUCCESS_VERDICT_PREFERENCE = (
     "pass",
     "complete",
@@ -124,7 +140,6 @@ _A2A_TERMINAL_STATES = frozenset(
     }
 )
 _HTTP_DEFAULTS = HttpChannelConfig()
-_RESIDENT_STATE_DEFAULTS = ResidentStateConfig()
 
 
 def _bounded_hud_text(value: str, limit: int) -> str:
@@ -132,20 +147,6 @@ def _bounded_hud_text(value: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return f"{text[: max(0, limit - 1)].rstrip()}…"
-
-
-def _bounded_room_context(value: str, limit: int) -> str:
-    text = value.strip()
-    if len(text) <= limit:
-        return text
-    dropped = len(text) - limit
-    record_truncation(
-        "resident_state.directed_message_context_max_chars",
-        what="the prior room message a human replied to",
-        kept=limit,
-        total=len(text),
-    )
-    return f"{text[:limit].rstrip()}\n[prior room context truncated: {dropped} characters omitted]"
 
 
 def _integer_setting(value: object, default: int) -> int:
@@ -1510,13 +1511,18 @@ class DriveLoop:
         self._directed_message_interceptors.append(handler)
 
     async def enqueue(self, task: AgentTask) -> bool:
-        """Add a task to the priority queue, honouring deadline and capacity."""
+        """Add a task to the priority queue, honouring deadline and duplicates.
+
+        The queue has no capacity cap: dropping work when it was full lost
+        tasks with an info line (124 in eight hours on one resident). A
+        backlog is visible instead, as ``queued_count`` and each queued task's
+        ``created_at`` on the HUD, and as the ``ravn.queue.depth`` gauge.
+        """
         telemetry = get_observability()
         attributes = {
             "ravn.task.id": task.task_id,
             "ravn.task.trigger": task.triggered_by,
             "ravn.task.persona": task.persona or "ravn",
-            "ravn.queue.max": self._config.task_queue_max,
         }
         with telemetry.span(
             "ravn.queue.enqueue",
@@ -1586,15 +1592,6 @@ class DriveLoop:
             await self._emit_sleipnir_task_dropped(task, reason="deadline_exceeded")
             return False, "deadline_exceeded"
 
-        if self._queue.qsize() >= self._config.task_queue_max:
-            logger.info(
-                "drive_loop: queue full (max=%d) — discarding task %s",
-                self._config.task_queue_max,
-                task.task_id,
-            )
-            await self._emit_sleipnir_task_dropped(task, reason="queue_full")
-            return False, "queue_full"
-
         counter = self._next_counter()
         await self._queue.put((task.priority, counter, task))
         track = getattr(self._resident_runtime, "track_task", None)
@@ -1612,8 +1609,16 @@ class DriveLoop:
 
     @staticmethod
     def _recurring_key(task: AgentTask) -> str | None:
-        """Return the stable identity shared by occurrences of a cron job."""
-        return task.triggered_by if task.triggered_by.startswith("cron:") else None
+        """Return the stable identity shared by occurrences of a recurring producer.
+
+        Cron jobs, and idle-triage windows: at most one of each is queued or
+        running. A window that arrives while one is still waiting is refused,
+        and its producer keeps the observations for the next window, so a
+        backlog of windows cannot pile up ahead of lower-priority work.
+        """
+        if task.triggered_by.startswith("cron:") or task.triggered_by == IDLE_TRIAGE_TRIGGER:
+            return task.triggered_by
+        return None
 
     def _record_queue_state(self) -> None:
         telemetry = get_observability()
@@ -1766,7 +1771,6 @@ class DriveLoop:
             "active_count": len(active),
             "recent_tasks": recent,
             "queued_count": self._queue.qsize(),
-            "queue_capacity": self._config.task_queue_max,
             "queued_tasks": queued,
             "a2a_tasks": a2a_tasks,
             "a2a_count": len(a2a_tasks),
@@ -2431,14 +2435,6 @@ class DriveLoop:
         context = metadata.get("help_context")
         reply_context = metadata.get("reply_context")
         recent_room_context = metadata.get("recent_room_context")
-        context_limit = _integer_setting(
-            getattr(
-                getattr(self._settings, "resident_state", None),
-                "directed_message_context_max_chars",
-                None,
-            ),
-            _RESIDENT_STATE_DEFAULTS.directed_message_context_max_chars,
-        )
         has_help_context = bool(
             help_summary
             or help_reason
@@ -2459,7 +2455,7 @@ class DriveLoop:
             attempted_items = [str(item).strip() for item in attempted if str(item).strip()]
             if attempted_items:
                 parts.append("Already attempted:")
-                parts.extend(f"  - {item}" for item in attempted_items[:6])
+                parts.extend(f"  - {item}" for item in attempted_items)
         if help_recommendation:
             parts.append(f"Previous recommendation: {help_recommendation}")
         if isinstance(context, dict) and context:
@@ -2470,7 +2466,7 @@ class DriveLoop:
                 parts.extend(
                     [
                         "The human replied to this prior room message:",
-                        _bounded_room_context(prior_content, context_limit),
+                        prior_content,
                     ]
                 )
         elif isinstance(recent_room_context, dict) and recent_room_context:
@@ -2480,7 +2476,7 @@ class DriveLoop:
                     [
                         "Most recent message from this participant in the room "
                         "(context only; the human did not explicitly reply to it):",
-                        _bounded_room_context(prior_content, context_limit),
+                        prior_content,
                     ]
                 )
         label = "Human reply" if has_help_context or reply_context else "Human message"
@@ -4139,7 +4135,6 @@ class DriveLoop:
             "priority": task.priority,
             "reason": reason,
             "queue_size": self._queue.qsize(),
-            "queue_max": self._config.task_queue_max,
             "active_count": len(self._active_tasks),
         }
         event = SleipnirEvent(
@@ -5283,8 +5278,8 @@ class DriveLoop:
         """Snapshot pending and in-flight tasks to the journal file."""
         try:
             serialized = self._serialize_journal_snapshot()
-        except Exception as exc:
-            logger.warning("drive_loop: failed to persist queue journal: %s", exc)
+        except (TypeError, ValueError) as exc:
+            _record_journal_persist_failure(exc)
             return False
         return self._write_journal_snapshot(serialized, self._next_journal_generation())
 
@@ -5348,8 +5343,8 @@ class DriveLoop:
                 if generation is not None:
                     self._journal_written_generation = generation
                 return True
-            except Exception as exc:
-                logger.warning("drive_loop: failed to persist queue journal: %s", exc)
+            except OSError as exc:
+                _record_journal_persist_failure(exc)
                 return False
             finally:
                 if temporary_path is not None:
@@ -5368,8 +5363,8 @@ class DriveLoop:
         """
         try:
             serialized = self._serialize_journal_snapshot()
-        except Exception as exc:
-            logger.warning("drive_loop: failed to persist queue journal: %s", exc)
+        except (TypeError, ValueError) as exc:
+            _record_journal_persist_failure(exc)
             return False
         generation = self._next_journal_generation()
         return await asyncio.to_thread(self._write_journal_snapshot, serialized, generation)
@@ -5417,9 +5412,13 @@ class DriveLoop:
             return
         try:
             raw = json.loads(self._journal_path.read_text())
-        except Exception as exc:
-            logger.warning("drive_loop: failed to load queue journal: %s", exc)
-            return
+        except (OSError, json.JSONDecodeError) as exc:
+            # Starting with an empty queue would silently drop every task the
+            # journal held, including operator answers and scheduled wakes.
+            raise RuntimeError(
+                f"queue journal {self._journal_path} cannot be read ({exc}); move it aside "
+                "to start with an empty queue, knowing its pending tasks are lost"
+            ) from exc
 
         # Support old format (bare list) and new format (dict with queue key)
         if isinstance(raw, list):
@@ -5539,9 +5538,18 @@ class DriveLoop:
                         task.task_id,
                     )
                     continue
+                if task.triggered_by == RESIDENT_HOME_TRIGGER:
+                    # Journals written before home turns had their own priority
+                    # carry the default; restored at it, a home turn waited
+                    # behind every signal task (16 hours on one resident).
+                    task.priority = min(task.priority, RESIDENT_HOME_PRIORITY)
                 restored_tasks.append((task, task.task_id in inflight_task_ids))
-            except Exception as exc:
-                logger.warning("drive_loop: failed to restore journal entry: %s", exc)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"queue journal {self._journal_path} has an entry that cannot be restored "
+                    f"(task {rec.get('task_id') if isinstance(rec, dict) else rec!r}): {exc}; "
+                    "fix or remove that entry"
+                ) from exc
 
         # A restart turns formerly active tasks back into pending work. For a
         # recurring job only its newest occurrence is useful; older ticks
@@ -5561,8 +5569,9 @@ class DriveLoop:
         selected = [*unique, *recurring.values()]
         dropped = len(restored_tasks) - len(selected)
         if dropped:
-            logger.info(
-                "drive_loop: discarded %d superseded recurring task(s) from journal",
+            logger.warning(
+                "drive_loop: discarded %d superseded recurring task(s) from journal; only "
+                "the newest cron tick and idle-triage window of each producer is kept",
                 dropped,
             )
 

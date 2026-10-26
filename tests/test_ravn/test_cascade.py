@@ -1609,7 +1609,7 @@ async def test_mode1_local_parallel_tasks():
     def _agent_factory(channel, task_id=None, persona=None, triggered_by=None):  # noqa: ANN001
         return mock_agent
 
-    cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=3, task_queue_max=50)
+    cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=3)
     settings = MagicMock()
     settings.skuld.enabled = False
     settings.cascade.enabled = False

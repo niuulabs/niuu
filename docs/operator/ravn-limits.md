@@ -39,8 +39,7 @@ counted it.
 
 This follows `.claude/rules/no-hidden-limits.md`: every truncation is marked
 in the output and counted. That includes excerpts the prompt announces
-("first 3000 chars", a raw payload labelled "bounded" next to its archive
-ref).
+("first 3000 chars").
 
 ## Limits
 
@@ -62,18 +61,23 @@ ref).
 | `extended_thinking.budget_tokens` | 8000 | Provider (legacy Anthropic models only; adaptive models ignore it) | Kept: an operator-chosen thinking budget, not an answer cap | Provider 400 if invalid |
 | Bifröst inbound defaults (chat completions 1024, Responses 4096, Ollama 1024) | none | Model max output / remaining window | **Removed**: an uncapped request stays uncapped. Bifröst's Anthropic upstream derives the cap from the Models API; a `max_tokens` routing rule treats uncapped as unbounded | `ProviderError` if the limit cannot be read |
 | **Prompt size** | | | | |
-| `context_management.max_prompt_tokens` | 0 (off) | Model context window | Kept: the hard prompt budget. With `llm.max_tokens: null` and `context_window_tokens` set, it is **required** (the window no longer implies the prompt's share): config load fails without it | `PromptBudgetExceededError` (existing) |
-| `context_management.context_window_tokens` | 0 (unknown) | The model's window | Kept. Prompt budget = window − `llm.max_tokens` only when a cap is set | Startup error when inconsistent |
-| `tools.max_result_chars` and the prompt-budget-derived tool-result limit | 100000 | Prompt budget | Kept. The model sees a marker and is told to narrow the query | Error log + counted (knob `tools.max_result_chars`, or `context_management.max_prompt_tokens` when the budget is what cut) |
+| `context_management.max_prompt_tokens` | 0 = derived from the window | Model context window | Kept as the hard ceiling only. Unset, it is the window minus `llm.max_tokens`, or the whole window when the answer is uncapped (an answer that then does not fit is cut off and raises). Residents used to set 48000 here as a prefill-latency target; that cut tool results to fit, so it moved to `compaction_target_tokens` | `PromptBudgetExceededError` (existing) |
+| `context_management.compaction_target_tokens` | 0 = the ceiling | Prefill latency the operator accepts (self-hosted TTFT grows with prompt size) | New: compaction fires at `compression_threshold` × this. It only summarises older history; it never cuts a tool result or refuses a turn | — (not a cap) |
+| `context_management.context_window_tokens` | 0 (unknown) | The model's window | Kept: the real bound the ceiling derives from | Startup error when inconsistent |
+| `tools.max_result_chars` and the ceiling-derived tool-result limit | 100000 | Prompt ceiling (the window) | Kept. The derived limit now comes from the window, not the latency target, so a result is cut only where it alone would not fit. The model sees a marker and is told to narrow the query | Error log + counted (knob `tools.max_result_chars`, or `context_management.max_prompt_tokens` when the ceiling is what cut) |
 | Resident schema repair: previous response | was hard-coded 4000-char head | Repair call's prompt budget | **Removed**: the head cut off the outcome block at the end, which was the part being repaired | `PromptBudgetExceededError` if too large |
-| `reflection.context_max_chars` (post-session recorded context) | 12000, was hard-coded | Reflection model's window | Made configurable | Error log + counted |
+| `reflection.context_max_chars` (post-session recorded context) | was 12000, hard-coded before that | Reflection model's window | **Removed**: the recorded context is sent whole, so the lesson is never drawn from part of what the session did. A config that sets the key is refused at load | Reflection fails loudly if the prompt does not fit the model |
 | **Resident continuation** | | | | |
-| `resident_state.continuation_context_max_chars` (working state, A2A handles, open questions, turn handoff) | 12000 | Prompt budget | Kept | Error log + counted |
-| `resident_state.continuation_tool_result_max_chars` | 2000 | Durable turn record size | Kept | Error log + counted |
-| `resident_state.directed_message_context_max_chars` | 4000 | Prompt budget | Kept | Error log + counted |
+| `resident_state.continuation_context_max_chars` (working state, A2A handles, open questions, turn handoff, home-turn observation payloads) | was 12000 | `context_management.max_prompt_tokens` and compaction | **Removed**: all of it reaches the resident whole. The home-turn raw payload excerpts (a share of this budget per observation) go with it. A config that sets the key is refused at load | `PromptBudgetExceededError` if the prompt does not fit |
+| `resident_state.continuation_tool_result_max_chars` | was 2000 | Case retention (`resident_state.case_retention_max_cases` / `case_retention_max_age_days`) for the durable record; the prompt budget for what is read back | **Removed**: it was hit on nearly every tool call, so every recorded tool result was cut. Each result is persisted whole. A config that sets the key is refused at load | — |
+| `resident_state.directed_message_context_max_chars` | was 4000 | `context_management.max_prompt_tokens` and compaction | **Removed**: the operator's directed message and the room message it replies to reach the resident whole. A config that sets the key is refused at load | `PromptBudgetExceededError` if the prompt does not fit |
+| Active A2A task handles in the resident prompt | was `limit=10`, silently dropping the rest | Prompt budget | **Removed**: every active handle is listed. The `a2a_task` search tool keeps its default of 10 because the model chooses that count | — |
 | Mandate in turn, operator-needed and wake records | was hard-coded 4000 | Input that created it (already stored whole in the turn's prompt) | **Removed**: the mandate was read back shortened on resume | — |
 | Operator question in the operator-needed record | was hard-coded 1000 | Notification body (`niuu.notifications.MAX_BODY_CHARS`, 4000) | Bound by the notification limit instead | Error log + counted |
 | `resident_state.continuation_max_turns` / `continuation_max_tokens` | 3 / 0 | `budget.daily_cap_usd` (on by default; flat pricing counts self-hosted tokens too), one turn per scheduled wake, `repeated_decision_escalate_after` | **Removed**. The turn cap stopped a case on the turn it asked the operator a question (fixed separately in `272116c4d`) and still cut scheduled rechecks short. A config that sets either key is refused at load. The unused `ResidentRunBudget` is removed too | — |
+| `initiative.task_queue_max` | was 50 | Nothing: a full queue discarded the new task with an info line (124 dropped on one resident in eight hours) | **Removed**. Nothing is dropped for room; a backlog shows as queue depth and each queued task's age. Home turns run at priority 1 so a signal backlog cannot starve operator messages and A2A updates. A config that sets the key is refused at load | Queue depth gauge, HUD |
+| `environment.idle_triage_max_signals` | was 200 | Nothing: the oldest untriaged observations were forgotten | **Removed**. Every observation stays until a window carrying it is queued; at most one window is queued or running and a refused window keeps its observations. The prompt stays bounded by its announced sample (`idle_triage_sample_signals`) | — |
+| Directed message "already attempted" items | was hard-coded 6 | — | **Removed**: every item reaches the resident | — |
 | `budget.daily_cap_usd` | 1.0 | Operator's spend limit | Kept: the real bound on autonomous work | Error log + counted (it used to be an info log); the task waits for the UTC day to roll over |
 | `repeated_decision_escalate_after` | 5 | — | Kept: escalates a loop to the operator rather than stopping it | Operator question; `repeated_decision_streak` on the health snapshot |
 | **Tool output** | | | | |
@@ -84,7 +88,6 @@ ref).
 | `mimir.source_trigger.max_content_chars` | 120000 | Synthesis prompt budget | Kept; context carries a notice | Error log + counted (synthesis worked from part of the source) |
 | Thread-enricher page excerpt | was hard-coded 500 | Classifier model's window | **Removed**: the whole page is classified; the head alone misread pages by their preamble | Context errors raise |
 | `mimir.ingest.entity_source_excerpt_chars` | 3000, was hard-coded | Extraction model's window (raw sources reach megabytes) | Made configurable; the prompt says "first N chars" | Error log + counted |
-| Resident home-turn raw payload excerpts | derived from `resident_state.continuation_context_max_chars` per observation | Prompt budget | Kept; labelled "bounded", with the archive ref | Error log + counted |
 | **Delivery** | | | | |
 | `gateway.channels.<telegram/discord/slack/matrix/whatsapp>.message_max_chars` | 4096 / 2000 / 3000 / 32000 / 4096 | Platform message limit | **Split** into several messages instead of cut with "..." | Nothing lost; Telegram 4xx now logged |
 | Discord image caption | same knob | Platform limit | Kept | Error log + counted |
@@ -101,10 +104,10 @@ and continue around stateful work. The ones next to model calls and state
 writes in the files above were removed: thread enricher, wakefulness, entity
 extractor, and their state files. These remain and are tracked as follow-up:
 
-- `ravn/drive_loop.py`: queue-journal persist/load (`5256`, `5321`, `5341`,
-  `5391` start with an empty queue, `5515`), schema/outcome/artifact repair
-  model calls (`3663`, `3753`, `3826`, `3888`), thread finalise (`5207`), mesh
-  and Sleipnir publishes.
+- `ravn/drive_loop.py`: schema/outcome/artifact repair model calls, thread
+  finalise, mesh and Sleipnir publishes. (The queue journal no longer falls
+  back: an unreadable journal or entry stops startup naming the remedy, and a
+  failed write is counted as degraded `queue_journal.persist`.)
 - `ravn/agent.py`: checkpoint and snapshot saves (`1315`, `1405`), inline-fact
   memory write (`567`), outcome-block parse (`2226`).
 - `ravn/adapters/triggers/condition_poll.py:74`: a failed sensor turn returns

@@ -134,7 +134,6 @@ def _make_drive_loop(tmp_path: Path, mimir: MarkdownMimirAdapter) -> tuple[Drive
     cfg = InitiativeConfig(
         enabled=True,
         max_concurrent_tasks=2,
-        task_queue_max=20,
         queue_journal_path=str(tmp_path / "queue.json"),
     )
     settings = Settings()
@@ -263,7 +262,6 @@ class TestFullWakefulnessLoop:
         cfg = InitiativeConfig(
             enabled=True,
             max_concurrent_tasks=1,
-            task_queue_max=10,
             queue_journal_path=str(tmp_path / "queue.json"),
         )
         settings = Settings()
@@ -317,7 +315,6 @@ class TestBudgetGate:
         cfg = InitiativeConfig(
             enabled=True,
             max_concurrent_tasks=1,
-            task_queue_max=10,
             queue_journal_path=str(tmp_path / "queue.json"),
         )
         settings = Settings()
@@ -366,7 +363,6 @@ class TestBudgetGate:
         cfg = InitiativeConfig(
             enabled=True,
             max_concurrent_tasks=1,
-            task_queue_max=10,
             queue_journal_path=str(tmp_path / "queue.json"),
         )
         settings = Settings()
@@ -574,7 +570,6 @@ class TestThreadStateTransitions:
         cfg = InitiativeConfig(
             enabled=True,
             max_concurrent_tasks=1,
-            task_queue_max=10,
             queue_journal_path=str(tmp_path / "queue.json"),
         )
         loop = DriveLoop(
@@ -617,7 +612,6 @@ class TestThreadStateTransitions:
         cfg = InitiativeConfig(
             enabled=True,
             max_concurrent_tasks=1,
-            task_queue_max=10,
             queue_journal_path=str(tmp_path / "queue.json"),
         )
         loop = DriveLoop(

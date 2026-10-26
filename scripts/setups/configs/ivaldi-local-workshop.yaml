@@ -141,7 +141,6 @@ gateway:
 initiative:
   enabled: true
   max_concurrent_tasks: 1
-  task_queue_max: 20
   # Keep the saturated pre-inbox journal as evidence; this clean journal proves
   # the coalesced intake behavior without replaying obsolete continuation tasks.
   queue_journal_path: ~/.ravn/ivaldi-local/queue-coalesced-proof.json

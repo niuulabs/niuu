@@ -261,9 +261,11 @@ Related bounds (all NIU-1118):
   HUD.
 - `context_management.token_estimate_safety_factor` (default 1.5) — conservative
   multiplier for providers that do not expose an exact preflight token count.
-- `resident_state.directed_message_context_max_chars` (default 4000) — bounds
-  prior room output carried into a human-directed task; the current human
-  message is not truncated.
+- A human-directed task carries the current human message and any prior room
+  message it replies to whole. `resident_state.directed_message_context_max_chars`
+  (default 4000) was removed: the prompt is bounded by
+  `context_management.max_prompt_tokens` and compaction, and a config that
+  still sets the key is refused at load.
 - `tools.max_result_chars` (default 100000, 0 = off) — caps one tool result's
   contribution to history. Compression protects the most recent messages, so
   a single giant result (observed: a 229MB mimir result) would otherwise make

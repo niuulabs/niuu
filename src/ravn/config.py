@@ -901,9 +901,10 @@ class ContextManagementConfig(BaseModel):
         default=0,
         ge=0,
         description=(
-            "Model context-window size in tokens. The runtime reserves the configured "
-            "maximum output before deriving the safe prompt budget. 0 means the model "
-            "window is unknown, so max_prompt_tokens must provide the prompt ceiling."
+            "Model context-window size in tokens: the real bound on a prompt. The prompt "
+            "ceiling is this window minus llm.max_tokens when an answer cap is set, else "
+            "the whole window (an answer that then does not fit comes back cut off and "
+            "raises OutputTruncatedError). 0 means the window is unknown."
         ),
     )
     token_estimate_safety_factor: float = Field(
@@ -959,13 +960,25 @@ class ContextManagementConfig(BaseModel):
     )
     max_prompt_tokens: int = Field(
         default=0,
+        ge=0,
         description=(
-            "Hard per-call budget for the estimated prompt size (system prompt + "
-            "tool schemas + message history), in tokens. 0 disables the check. "
-            "When a turn's estimated prompt still exceeds this after context "
-            "compression, the LLM call is refused with PromptBudgetExceededError "
-            "and a per-section breakdown — fail loud instead of sending a request "
-            "that overflows the model's context window."
+            "Hard per-call ceiling for the estimated prompt size (system prompt + "
+            "tool schemas + message history), in tokens. 0 derives it from "
+            "context_window_tokens (and no check when that is unknown too). A prompt "
+            "still above it after compaction is refused with PromptBudgetExceededError, "
+            "and a single tool result is cut only where it alone would break it. Set it "
+            "below the window only for a real limit; for prompt-size latency use "
+            "compaction_target_tokens, which compacts history instead of cutting results."
+        ),
+    )
+    compaction_target_tokens: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Prompt size compaction keeps history under, for prefill latency: compaction "
+            "fires at compression_threshold x this. 0 uses the prompt ceiling. This "
+            "never cuts a tool result or refuses a turn; on self-hosted models a smaller "
+            "prompt mainly means a faster time to first token."
         ),
     )
 
@@ -1821,6 +1834,18 @@ class BudgetConfig(BaseModel):
 class InitiativeConfig(BaseModel):
     """Drive-loop initiative engine configuration (NIU-539)."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_removed_queue_cap(cls, data: Any) -> Any:
+        """A removed cap left in a config would read as enforced while doing nothing."""
+        if isinstance(data, dict) and "task_queue_max" in data:
+            raise ValueError(
+                "initiative.task_queue_max no longer exists: the queue no longer drops "
+                "tasks when full; a backlog shows as the queue depth and each queued "
+                "task's age. Remove the key"
+            )
+        return data
+
     enabled: bool = Field(
         default=False,
         description="Enable the drive loop / initiative engine.",
@@ -1828,10 +1853,6 @@ class InitiativeConfig(BaseModel):
     max_concurrent_tasks: int = Field(
         default=3,
         description="Maximum simultaneous initiative tasks.",
-    )
-    task_queue_max: int = Field(
-        default=50,
-        description="Maximum tasks in the priority queue.",
     )
     queue_journal_path: str = Field(
         default="~/.ravn/daemon/queue.json",
@@ -3118,6 +3139,54 @@ class SelfImprovementConfig(BaseModel):
     )
 
 
+_CONTINUATION_TURN_BOUND = (
+    "resident case continuations are bounded by budget.daily_cap_usd, one turn per "
+    "scheduled wake, and repeated_decision_escalate_after"
+)
+_CONTINUATION_CONTENT_BOUND = (
+    "what a turn carries forward is bounded by the model's context window "
+    "(context_management.max_prompt_tokens and compaction), and the durable record by "
+    "resident_state.case_retention_max_cases / case_retention_max_age_days"
+)
+_REMOVED_RESIDENT_STATE_KEYS: dict[str, str] = {
+    "continuation_max_turns": _CONTINUATION_TURN_BOUND,
+    "continuation_max_tokens": _CONTINUATION_TURN_BOUND,
+    "continuation_context_max_chars": (
+        "the prior working state, A2A handles, open questions, turn handoff and "
+        "observation payloads reach the resident whole; " + _CONTINUATION_CONTENT_BOUND
+    ),
+    "continuation_tool_result_max_chars": (
+        "every tool result is persisted whole in the turn record; " + _CONTINUATION_CONTENT_BOUND
+    ),
+    "directed_message_context_max_chars": (
+        "a directed message and the room message it replies to reach the resident whole; "
+        "the prompt is bounded by context_management.max_prompt_tokens and compaction"
+    ),
+}
+_REMOVED_REFLECTION_KEYS: dict[str, str] = {
+    "context_max_chars": (
+        "the session's recorded work context is sent to the reflection model whole; "
+        "the reflection model's context window bounds it, and a prompt that does not fit "
+        "fails loudly"
+    ),
+}
+
+
+def _refuse_removed_keys(section: str, data: Any, removed_keys: dict[str, str]) -> Any:
+    """Refuse a config that still sets a removed key, naming what bounds the content now."""
+    if not isinstance(data, dict):
+        return data
+    present = sorted(set(removed_keys) & set(data))
+    if not present:
+        return data
+    raise ValueError(
+        "; ".join(
+            f"{section}.{key} no longer exists: {removed_keys[key]}; remove the key"
+            for key in present
+        )
+    )
+
+
 class PostSessionReflectionConfig(BaseModel):
     """Post-session reflection configuration (NIU-588).
 
@@ -3127,6 +3196,12 @@ class PostSessionReflectionConfig(BaseModel):
     Disabled by default — enable via ``reflection.enabled: true`` in the
     deployment YAML.
     """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_removed_caps(cls, data: Any) -> Any:
+        """A removed cap left in a config would read as enforced while doing nothing."""
+        return _refuse_removed_keys("reflection", data, _REMOVED_REFLECTION_KEYS)
 
     enabled: bool = Field(
         default=False,
@@ -3151,16 +3226,6 @@ class PostSessionReflectionConfig(BaseModel):
             "guess from non-reasoning models that Qwen3.8 spent thinking. A reply "
             "cut off at a cap raises ReflectionError instead of reading as 'no "
             "learning', and counts on ravn.cap.hits."
-        ),
-    )
-    context_max_chars: int = Field(
-        default=12_000,
-        gt=0,
-        description=(
-            "Characters of the session's recorded work context (structured outcome) the "
-            "reflection prompt carries. The reflection model's context window is the "
-            "real bound; this keeps one long session from dominating the prompt. A cut "
-            "counts on ravn.cap.hits."
         ),
     )
     inject_learnings: bool = Field(
@@ -3855,16 +3920,7 @@ class ResidentStateConfig(BaseModel):
     @classmethod
     def _refuse_removed_turn_caps(cls, data: Any) -> Any:
         """A removed cap left in a config would read as enforced while doing nothing."""
-        if isinstance(data, dict):
-            removed = sorted({"continuation_max_turns", "continuation_max_tokens"} & set(data))
-            if removed:
-                raise ValueError(
-                    f"resident_state.{', resident_state.'.join(removed)} no longer exist: "
-                    "resident case continuations are bounded by budget.daily_cap_usd, one "
-                    "turn per scheduled wake, and repeated_decision_escalate_after; remove "
-                    "the key"
-                )
-        return data
+        return _refuse_removed_keys("resident_state", data, _REMOVED_RESIDENT_STATE_KEYS)
 
     adapter: str = Field(
         default="ravn.adapters.resident_state.mimir.LocalResidentState",
@@ -3877,16 +3933,6 @@ class ResidentStateConfig(BaseModel):
     secret_kwargs_env: dict[str, str] = Field(
         default_factory=dict,
         description="Maps adapter kwarg names to env var names for secret injection.",
-    )
-    continuation_context_max_chars: int = Field(
-        default=12000,
-        ge=1000,
-        description="Maximum durable prior-turn characters restored into a continuation.",
-    )
-    continuation_tool_result_max_chars: int = Field(
-        default=2000,
-        ge=100,
-        description="Maximum characters persisted from each resident tool result.",
     )
     case_retention_max_cases: int = Field(
         default=200,
@@ -3917,14 +3963,6 @@ class ResidentStateConfig(BaseModel):
             "Minimum seconds between case retention sweeps. Sweeps run off the "
             "turn write path in a worker thread; this throttle bounds how often "
             "the cases directory is rescanned."
-        ),
-    )
-    directed_message_context_max_chars: int = Field(
-        default=4000,
-        ge=200,
-        description=(
-            "Maximum characters of prior room content carried into a directed-message "
-            "task. The human's current message is never truncated by this setting."
         ),
     )
     home_wake_interval_seconds: float = Field(
@@ -4365,6 +4403,18 @@ class EnvironmentTopologyConfig(BaseModel):
 class EnvironmentConfig(BaseModel):
     """Runtime environment identity for long-running resident Valkyries."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_removed_triage_cap(cls, data: Any) -> Any:
+        """A removed cap left in a config would read as enforced while doing nothing."""
+        if isinstance(data, dict) and "idle_triage_max_signals" in data:
+            raise ValueError(
+                "environment.idle_triage_max_signals no longer exists: an idle-triage "
+                "window keeps every untriaged observation instead of dropping the oldest; "
+                "the prompt is bounded by idle_triage_sample_signals. Remove the key"
+            )
+        return data
+
     id: str = Field(
         default="local",
         description="Stable environment id, for example a k8s cluster or host id.",
@@ -4455,10 +4505,6 @@ class EnvironmentConfig(BaseModel):
             "Seconds between idle triage judgments over signals that did not match "
             "signal_task_severities. 0 disables idle triage."
         ),
-    )
-    idle_triage_max_signals: int = Field(
-        default=200,
-        description="Maximum below-threshold signals summarized in one idle triage task.",
     )
     idle_triage_sample_signals: int = Field(
         default=15,
@@ -5634,24 +5680,24 @@ class Settings(BaseSettings):
         matching = reflection.matching.model_copy(update={"judge_llm_alias": reflection.llm_alias})
         return reflection.model_copy(update={"matching": matching})
 
-    @model_validator(mode="after")
-    def _prompt_budget_is_derivable(self) -> Settings:
-        """Refuse a context window that no longer says how much of it the prompt may use.
-
-        With an answer cap the prompt budget is the window minus the cap. With
-        no cap (``llm.max_tokens: null``) the window holds prompt and answer
-        together, so the budget has to be stated.
-        """
+    def prompt_ceiling_tokens(self) -> int:
+        """The hard prompt ceiling: configured, else derived from the context window."""
         cm = self.context_management
-        if cm.context_window_tokens and cm.max_prompt_tokens <= 0:
-            if self.llm.max_tokens is None and self.agent.max_tokens is None:
-                raise ValueError(
-                    "context_management.context_window_tokens is set but llm.max_tokens is "
-                    "null, so no prompt budget can be derived from the window; set "
-                    "context_management.max_prompt_tokens to the share of the window the "
-                    "prompt may use (or llm.max_tokens to reserve an answer cap)"
-                )
-        return self
+        if cm.max_prompt_tokens > 0:
+            return cm.max_prompt_tokens
+        if cm.context_window_tokens <= 0:
+            return 0
+        output_cap = (
+            self.llm.max_tokens if self.llm.max_tokens is not None else self.agent.max_tokens
+        )
+        if output_cap is None:
+            return cm.context_window_tokens
+        return max(0, cm.context_window_tokens - output_cap)
+
+    def compaction_budget_tokens(self) -> int:
+        """The prompt size compaction aims under: the latency target, else the ceiling."""
+        target = self.context_management.compaction_target_tokens
+        return target if target > 0 else self.prompt_ceiling_tokens()
 
     def effective_max_tokens(self) -> int | None:
         """Return the resolved answer cap, or ``None`` for no cap.

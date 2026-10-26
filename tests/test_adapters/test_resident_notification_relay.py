@@ -123,8 +123,10 @@ async def _eventually(check: Callable[[], Any], *, timeout: float = 10.0) -> Any
     "routes", [_FluxRoutes, _OpenShellRoutes], ids=["helmrelease", "openshell"]
 )
 class TestResidentNotificationsEndToEnd:
-    async def test_attention_is_raised_retired_and_notify_lands(self, tmp_path, routes) -> None:
-        outbox = SqliteResidentNotificationOutbox(tmp_path / "state.db", max_pending=100)
+    async def test_attention_is_raised_retired_and_notify_lands(
+        self, tmp_path, open_outbox, routes
+    ) -> None:
+        outbox = open_outbox(tmp_path / "state.db", max_pending=100)
         async with _resident_shim(tmp_path, notifications=outbox) as shim:
             port = int(shim.url.rsplit(":", 1)[1])
             host = routes(shim_port=port, running_token=TOKEN)
@@ -391,8 +393,8 @@ class TestShimStream:
             with pytest.raises(ResidentNotificationsUnavailableError, match="no notification"):
                 await controller.open_notifications(_runtime())
 
-    async def test_channels_map_to_forges_resident_sessions(self, tmp_path):
-        outbox = SqliteResidentNotificationOutbox(tmp_path / "state.db", max_pending=10)
+    async def test_channels_map_to_forges_resident_sessions(self, tmp_path, open_outbox):
+        outbox = open_outbox(tmp_path / "state.db", max_pending=10)
         async with _resident_shim(tmp_path, notifications=outbox) as shim:
             controller = RavnResidentSessionController(
                 _FluxRoutes(shim_port=int(shim.url.rsplit(":", 1)[1]), running_token=TOKEN),

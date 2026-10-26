@@ -304,7 +304,7 @@ async def test_reflection_prompt_includes_recorded_outcome_context():
 
 
 @pytest.mark.asyncio
-async def test_reflection_prompt_bounds_recorded_outcome_context():
+async def test_reflection_prompt_carries_the_recorded_outcome_context_whole():
     bus = InProcessBus()
     mimir = AsyncMock()
     llm = AsyncMock()
@@ -319,9 +319,9 @@ async def test_reflection_prompt_bounds_recorded_outcome_context():
     )
 
     prompt = llm.generate.await_args.kwargs["messages"][0]["content"]
-    assert "recorded context truncated" in prompt
-    assert "x" * 13_000 not in prompt
-    assert cap_hit_counts() == {"reflection.context_max_chars": 1}
+    assert "x" * 20_000 in prompt
+    assert "truncated" not in prompt
+    assert cap_hit_counts() == {}
 
 
 @pytest.mark.asyncio

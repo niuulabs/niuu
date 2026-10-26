@@ -11,7 +11,6 @@ import asyncio
 
 from niuu.domain.notifications import NotificationDraft, NotificationKind
 from niuu.domain.resident_notifications import AttentionInputKind, ResidentNotificationEntry
-from ravn.adapters.resident_notifications import SqliteResidentNotificationOutbox
 from ravn.adapters.tools.notify import ResidentNotifyTool
 from tests.test_ravn.fake_lexichat_client import FakeLexiChatClient
 from tests.test_ravn.test_openclaw_gateway import (
@@ -22,12 +21,8 @@ from tests.test_ravn.test_openclaw_gateway import (
 )
 
 
-def _outbox(tmp_path) -> SqliteResidentNotificationOutbox:
-    return SqliteResidentNotificationOutbox(tmp_path / "state.db", max_pending=100)
-
-
 class TestShimServesTheOutbox:
-    async def test_methods_are_advertised_only_with_an_outbox(self, tmp_path) -> None:
+    async def test_methods_are_advertised_only_with_an_outbox(self, tmp_path, open_outbox) -> None:
         async with running_shim(tmp_path / "a") as shim:
             async with FakeLexiChatClient(url=shim.url, token=TOKEN) as client:
                 assert "notifications.pull" not in client.hello["features"]["methods"]
@@ -35,7 +30,9 @@ class TestShimServesTheOutbox:
                 assert refused["ok"] is False
                 assert refused["error"]["code"] == "UNSUPPORTED"
         (tmp_path / "b").mkdir()
-        async with running_shim(tmp_path / "b", notifications=_outbox(tmp_path / "b")) as shim:
+        async with running_shim(
+            tmp_path / "b", notifications=open_outbox(tmp_path / "b" / "state.db")
+        ) as shim:
             async with FakeLexiChatClient(url=shim.url, token=TOKEN) as client:
                 methods = set(client.hello["features"]["methods"])
                 assert {
@@ -45,8 +42,8 @@ class TestShimServesTheOutbox:
                 } <= methods
                 assert "chat.send" in methods
 
-    async def test_pull_then_ack_drains_it(self, tmp_path) -> None:
-        outbox = _outbox(tmp_path)
+    async def test_pull_then_ack_drains_it(self, tmp_path, open_outbox) -> None:
+        outbox = open_outbox(tmp_path / "state.db")
         await outbox.attention(
             request_id="q1", group="case", input_kind=AttentionInputKind.QUESTION, prompt="A?"
         )
@@ -67,8 +64,10 @@ class TestShimServesTheOutbox:
                 rest = (await client.request("notifications.pull", {}))["payload"]["entries"]
                 assert [row["idempotency_key"] for row in rest] == ["k"]
 
-    async def test_bad_arguments_are_refused_without_dropping_the_socket(self, tmp_path) -> None:
-        async with running_shim(tmp_path, notifications=_outbox(tmp_path)) as shim:
+    async def test_bad_arguments_are_refused_without_dropping_the_socket(
+        self, tmp_path, open_outbox
+    ) -> None:
+        async with running_shim(tmp_path, notifications=open_outbox(tmp_path / "state.db")) as shim:
             async with FakeLexiChatClient(url=shim.url, token=TOKEN) as client:
                 for method, params in (
                     ("notifications.pull", {"limit": 0}),
@@ -80,8 +79,8 @@ class TestShimServesTheOutbox:
                     assert refused["error"]["code"] == "INVALID_REQUEST"
                 assert (await client.request("health"))["ok"] is True
 
-    async def test_subscribers_hear_when_an_entry_is_added(self, tmp_path) -> None:
-        outbox = _outbox(tmp_path)
+    async def test_subscribers_hear_when_an_entry_is_added(self, tmp_path, open_outbox) -> None:
+        outbox = open_outbox(tmp_path / "state.db")
         async with running_shim(tmp_path, notifications=outbox) as shim:
             async with (
                 FakeLexiChatClient(url=shim.url, token=TOKEN) as forge,
@@ -98,8 +97,8 @@ class TestShimServesTheOutbox:
                     frame.get("event") != "notifications.changed" for frame in _drain(phone._events)
                 ), "only subscribers are told"
 
-    async def test_a_turn_notifies_from_its_own_channel(self, tmp_path) -> None:
-        outbox = _outbox(tmp_path)
+    async def test_a_turn_notifies_from_its_own_channel(self, tmp_path, open_outbox) -> None:
+        outbox = open_outbox(tmp_path / "state.db")
         tool = ResidentNotifyTool(outbox)
 
         class NotifyingRavn(StubRavnGateway):

@@ -27,7 +27,6 @@ from ravn.cap_telemetry import (
 )
 from ravn.compression import ContextCompressor
 from ravn.domain.exceptions import (
-    ConfigurationError,
     ContextCompressionError,
     MaxIterationsError,
     OutputTruncatedError,
@@ -182,19 +181,39 @@ class TestAgentTurn:
         assert result.response == "fine"
         assert cap_hit_counts() == {}
 
-    def test_no_cap_with_a_window_needs_an_explicit_prompt_budget(self) -> None:
-        with pytest.raises(ConfigurationError, match="max_prompt_tokens"):
-            RavnAgent(
-                llm=MockLLM([]),
-                tools=[],
-                channel=InMemoryChannel(),
-                permission=MagicMock(),
-                system_prompt="s",
-                model="m",
-                max_tokens=None,
-                max_iterations=1,
-                context_window_tokens=131072,
-            )
+    def test_no_cap_with_a_window_uses_the_window_as_the_ceiling(self) -> None:
+        """The window is the real bound; an answer that does not fit raises when cut."""
+        agent = RavnAgent(
+            llm=MockLLM([]),
+            tools=[],
+            channel=InMemoryChannel(),
+            permission=MagicMock(),
+            system_prompt="s",
+            model="m",
+            max_tokens=None,
+            max_iterations=1,
+            context_window_tokens=131072,
+        )
+        assert agent._max_prompt_tokens == 131072
+
+    def test_compaction_target_leaves_tool_results_bounded_by_the_window(self) -> None:
+        """A latency target compacts history; it no longer cuts the newest result."""
+        agent = RavnAgent(
+            llm=MockLLM([]),
+            tools=[],
+            channel=InMemoryChannel(),
+            permission=MagicMock(),
+            system_prompt="s",
+            model="m",
+            max_tokens=None,
+            max_iterations=1,
+            context_window_tokens=1048576,
+            compaction_target_tokens=48000,
+        )
+        assert agent._max_prompt_tokens == 1048576
+        assert agent._compaction_target_tokens == 48000
+        # 48000 used to leave ~33k tokens for one result; the window leaves far more.
+        assert agent._budget_tool_result_char_limit() > 1_000_000
 
     def test_no_cap_with_an_explicit_prompt_budget_is_accepted(self) -> None:
         agent = RavnAgent(

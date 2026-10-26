@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from niuu.adapters.outcome.block_parser import BlockParserAdapter
@@ -67,6 +69,28 @@ def test_parse_extracts_simple_block() -> None:
     assert result.fields == {"key": "value"}
     assert result.valid is True
     assert result.errors == []
+
+
+def test_parse_keeps_dates_as_written_and_keys_as_strings() -> None:
+    """An outcome is a JSON contract: no date objects, no non-string keys."""
+    text = (
+        "---outcome---\n"
+        "verdict: watch\n"
+        "incidents:\n"
+        "  2026-10-26:\n"
+        "    - at: 2026-10-26T04:35:00Z\n"
+        "      count: 2\n"
+        "  true: flagged\n"
+        "---end---\n"
+    )
+    result = parse_outcome_block(text)
+
+    assert result is not None
+    assert result.fields["incidents"] == {
+        "2026-10-26": [{"at": "2026-10-26T04:35:00Z", "count": 2}],
+        "true": "flagged",
+    }
+    json.dumps(result.fields, sort_keys=True)
 
 
 def test_parse_block_at_end_of_text(full_agent_output: str) -> None:
@@ -770,9 +794,8 @@ def test_repair_leaves_urls_timestamps_and_quoted_values_alone() -> None:
 
     assert result is not None
     assert result.fields["evidence"] == "generic://workshop-laevateinn/a8311607cd0b3950"
-    # YAML resolves this to a datetime on its own; the point is that the repair
-    # did not quote it into a string first.
-    assert not isinstance(result.fields["expires_at"], str)
+    # Timestamps are carried exactly as the model wrote them.
+    assert result.fields["expires_at"] == "2026-08-03T10:30:00Z"
     assert result.fields["state_summary"] == "watching: operator confirmed"
     assert result.fields["note"] == "plain value with a colon: needs quoting"
 

@@ -400,6 +400,18 @@ class SleipnirEnvelope:
 # ---------------------------------------------------------------------------
 
 
+#: Trigger of the resident home turn, the one task that reads the durable inbox
+#: (operator directed messages, A2A updates, coalesced observations).
+RESIDENT_HOME_TRIGGER = "resident:home"
+#: A home turn runs ahead of signal work, level with an operator answer
+#: resuming its case. Only one home turn is ever queued or running, so this
+#: cannot crowd the queue; at the default priority it waited behind every
+#: signal task, and an operator's message sat unread for 16 hours.
+RESIDENT_HOME_PRIORITY = 1
+#: Trigger of a periodic idle-triage window over below-threshold signals.
+IDLE_TRIAGE_TRIGGER = "signal:idle_triage"
+
+
 @dataclass
 class AgentTask:
     """A task enqueued by the drive loop for autonomous execution.

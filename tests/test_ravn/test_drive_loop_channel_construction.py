@@ -61,7 +61,6 @@ def _make_drive_loop_with_mesh(
     cfg = InitiativeConfig(
         enabled=True,
         max_concurrent_tasks=1,
-        task_queue_max=10,
         queue_journal_path="/proc/no_such_dir/queue.json",
     )
     settings = MagicMock()
@@ -246,7 +245,7 @@ Determine whether the observations require action.
             }
         ]
         assert status["recent_tasks"] == []
-        assert status["queue_capacity"] == 10
+        assert "queue_capacity" not in status
         assert status["queued_tasks"] == []
         assert status["a2a_count"] == 0
         assert status["a2a_tasks"] == []
@@ -537,7 +536,6 @@ Determine whether the observations require action.
         cfg = InitiativeConfig(
             enabled=True,
             max_concurrent_tasks=1,
-            task_queue_max=10,
             queue_journal_path="/proc/no_such_dir/queue.json",
         )
         settings = MagicMock()
@@ -573,7 +571,6 @@ Determine whether the observations require action.
         cfg = InitiativeConfig(
             enabled=True,
             max_concurrent_tasks=1,
-            task_queue_max=10,
             queue_journal_path="/proc/no_such_dir/queue.json",
         )
         settings = MagicMock()

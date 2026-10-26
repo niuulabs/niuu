@@ -262,8 +262,9 @@ class AnthropicAdapter(LLMPort, NativeCompactionPort):
             raise ConfigurationError(
                 f"native compaction for {model!r} would trigger at {threshold_tokens} "
                 f"tokens, but Anthropic accepts no trigger below "
-                f"{_MIN_COMPACTION_TRIGGER_TOKENS}; raise context_management.max_prompt_tokens "
-                "(the trigger is max_prompt_tokens x compression_threshold / "
+                f"{_MIN_COMPACTION_TRIGGER_TOKENS}; raise context_management."
+                "compaction_target_tokens (the trigger is that target, else the prompt "
+                "ceiling, x compression_threshold / "
                 "token_estimate_safety_factor), or use compaction 'ravn' for this model"
             )
         self._compaction_triggers[model] = threshold_tokens

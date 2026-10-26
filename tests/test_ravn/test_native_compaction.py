@@ -93,13 +93,26 @@ class TestCompactionSetting:
         _build_compaction(settings, llm, "gpt-6-sol")
         assert llm._compaction_thresholds["gpt-6-sol"] == int((272000 - 32000) * 0.8)
 
-    def test_an_uncapped_answer_leaves_the_window_alone(self):
-        # With no answer cap the window holds prompt and answer together, so it
-        # cannot be the prompt budget on its own.
-        settings = _settings(compaction="native", context_window_tokens=272000)
+    def test_an_uncapped_answer_compacts_against_the_window(self):
+        llm = OpenAIResponsesAdapter()
+        settings = _settings(
+            compaction="native", context_window_tokens=272000, token_estimate_safety_factor=1.0
+        )
         settings.llm = LLMConfig(model="gpt-6-sol", max_tokens=None)
-        with pytest.raises(ConfigurationError, match="no prompt budget"):
-            _build_compaction(settings, OpenAIResponsesAdapter(), "gpt-6-sol")
+        _build_compaction(settings, llm, "gpt-6-sol")
+        assert llm._compaction_thresholds["gpt-6-sol"] == int(272000 * 0.8)
+
+    def test_the_compaction_target_sets_the_native_trigger(self):
+        llm = OpenAIResponsesAdapter()
+        settings = _settings(
+            compaction="native",
+            context_window_tokens=272000,
+            compaction_target_tokens=200000,
+            token_estimate_safety_factor=1.0,
+        )
+        settings.llm = LLMConfig(model="gpt-6-sol", max_tokens=None)
+        _build_compaction(settings, llm, "gpt-6-sol")
+        assert llm._compaction_thresholds["gpt-6-sol"] == int(200000 * 0.8)
 
     def test_an_uncapped_answer_uses_the_explicit_prompt_budget(self):
         llm = OpenAIResponsesAdapter()
@@ -119,7 +132,7 @@ class TestCompactionSetting:
             _build_compaction(settings, OpenAICompatibleAdapter(), "gpt-6-sol")
 
     def test_native_without_a_budget_is_fatal(self):
-        with pytest.raises(ConfigurationError, match="no prompt budget"):
+        with pytest.raises(ConfigurationError, match="no prompt size"):
             _build_compaction(_settings(compaction="native"), OpenAIResponsesAdapter(), "gpt-6-sol")
 
     def test_anthropic_refuses_a_trigger_below_its_minimum(self):

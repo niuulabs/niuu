@@ -66,7 +66,6 @@ gateway:
 initiative:
   enabled: true
   max_concurrent_tasks: 2
-  task_queue_max: 20
   queue_journal_path: ~/.ravn/daemon/queue.json
   default_output_mode: ambient
   heartbeat_interval_seconds: 60

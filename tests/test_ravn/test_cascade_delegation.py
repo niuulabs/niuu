@@ -230,17 +230,15 @@ class TestDriveLoopDeadline:
         assert "expired-in-queue" not in executed
 
 
-class TestDriveLoopQueueFull:
+class TestDriveLoopBacklog:
     @pytest.mark.asyncio
-    async def test_task_discarded_when_queue_full(self):
-        """When the queue is at capacity, additional tasks are silently discarded."""
-        dl = _make_drive_loop(queue_max=2)
-        for i in range(2):
-            await dl.enqueue(_make_agent_task(f"task-{i}"))
-        extra = _make_agent_task("task-extra")
-        await dl.enqueue(extra)
-        assert dl.task_status("task-extra") == "unknown"
-        assert dl._queue.qsize() == 2
+    async def test_a_backlog_is_queued_not_discarded(self):
+        """There is no capacity cap: every distinct task waits its turn."""
+        dl = _make_drive_loop()
+        for i in range(60):
+            assert await dl.enqueue(_make_agent_task(f"task-{i}")) is True
+        assert dl.task_status("task-59") == "queued"
+        assert dl._queue.qsize() == 60
 
 
 # ---------------------------------------------------------------------------
@@ -672,21 +670,22 @@ class TestDriveLoopJournal:
         assert dl.task_status("expired-journal-task") == "unknown"
 
     @pytest.mark.asyncio
-    async def test_journal_handles_corrupt_file(self, tmp_path: Path):
-        """Corrupt journal does not raise — it is silently skipped."""
+    async def test_corrupt_journal_stops_startup(self, tmp_path: Path):
+        """Starting empty would silently lose every task the journal held."""
         journal_path = tmp_path / "queue.json"
         journal_path.write_text("{ not valid json }{{{")
         dl = _make_drive_loop(journal_path=str(journal_path))
-        dl._load_journal()  # must not raise
+        with pytest.raises(RuntimeError, match="cannot be read"):
+            dl._load_journal()
 
     @pytest.mark.asyncio
-    async def test_journal_handles_invalid_record(self, tmp_path: Path):
-        """Journal records with missing fields are skipped gracefully."""
+    async def test_unrestorable_journal_record_stops_startup(self, tmp_path: Path):
+        """A record missing fields names the task instead of being skipped."""
         journal_path = tmp_path / "queue.json"
         journal_path.write_text(json.dumps([{"task_id": "broken"}]))
         dl = _make_drive_loop(journal_path=str(journal_path))
-        dl._load_journal()
-        assert dl.task_status("broken") == "unknown"
+        with pytest.raises(RuntimeError, match="broken"):
+            dl._load_journal()
 
 
 # ---------------------------------------------------------------------------
