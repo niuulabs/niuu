@@ -65,6 +65,7 @@ class FakeResumableTransport(CLITransport):
         *,
         model: str = "",
         session_id: str = "",
+        resume_session_id: str = "",
         system_prompt: str = "",
         skip_permissions: bool = True,
         initial_prompt: str = "",
@@ -75,6 +76,7 @@ class FakeResumableTransport(CLITransport):
         self.workspace_dir = workspace_dir
         self.model = model
         self._session_id = session_id
+        self.resume_session_id = resume_session_id
         self.system_prompt = system_prompt
         self.skip_permissions = skip_permissions
         self.read_only_mcp_only = read_only_mcp_only
@@ -84,8 +86,11 @@ class FakeResumableTransport(CLITransport):
         self._last_result: dict | None = None
         self.control_calls: list[tuple[str, dict]] = []
         self.stopped = False
+        self.started_with_resume_session_ids: list[str] = []
 
     async def start(self) -> None:
+        self._session_id = self.resume_session_id
+        self.started_with_resume_session_ids.append(self.resume_session_id)
         return None
 
     async def stop(self) -> None:
@@ -257,6 +262,8 @@ async def test_cli_harness_returns_canonical_turn_and_provider_diagnostics() -> 
         await agent.run_turn(HarnessTurnInput("Review the patch"))
 
     await agent.start()
+    initial_transport = agent._transport
+    assert isinstance(initial_transport, FakeResumableTransport)
     result = await agent.run_turn(HarnessTurnInput("Review the patch", provider_session_id="old"))
 
     assert isinstance(result, HarnessTurnResult)
@@ -268,9 +275,13 @@ async def test_cli_harness_returns_canonical_turn_and_provider_diagnostics() -> 
     assert [(item.tool_call_id, item.content) for item in result.turn.tool_results] == [
         ("tool-1", "ok")
     ]
-    assert result.provider_session_id == ""
+    assert initial_transport.stopped is True
+    transport = agent._transport
+    assert isinstance(transport, FakeResumableTransport)
+    assert transport.started_with_resume_session_ids == ["old"]
+    assert result.provider_session_id == "old"
     assert result.metadata["transport"] == "FakeResumableTransport"
-    assert result.metadata["provider_result"] == agent._transport.last_result
+    assert result.metadata["provider_result"] == transport.last_result
 
 
 @pytest.mark.asyncio

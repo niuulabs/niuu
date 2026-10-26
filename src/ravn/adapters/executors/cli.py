@@ -77,6 +77,11 @@ class _TransportBinding:
     supports_system_prompt: bool
 
 
+def _accepts_resume_session_id(cls: type[CLITransport]) -> bool:
+    """Return whether a transport can receive an opaque provider resume ID."""
+    return "resume_session_id" in inspect.signature(cls).parameters
+
+
 def _delegates_permission_config_to_cli(cls: type[CLITransport]) -> bool:
     """Return true for transports whose native CLI profile owns permissions."""
     return (
@@ -335,7 +340,10 @@ class CliTransportAgent(ExecutionAgentPort):
             supports_reasoning=False,
             supports_interrupt=capabilities.interrupt,
             steering_mode=steering_mode,
-            supports_session_resume=capabilities.session_resume,
+            supports_session_resume=(
+                capabilities.session_resume
+                and _accepts_resume_session_id(self._transport_binding.cls)
+            ),
         )
 
     async def start(self) -> None:
@@ -436,6 +444,12 @@ class CliTransportAgent(ExecutionAgentPort):
             raise HarnessContractError("CLI harness does not support attachments")
         if turn.provider_session_id is not None and not self.profile.supports_session_resume:
             raise HarnessContractError("CLI harness does not support provider session resume")
+        if (
+            turn.provider_session_id is not None
+            and self._transport is not None
+            and self._transport.session_id != turn.provider_session_id
+        ):
+            await self._restart_for_provider_session(turn.provider_session_id)
         self._harness_turn_active = True
         try:
             result = await self._run_legacy_turn(turn.user_input)
@@ -779,9 +793,37 @@ class CliTransportAgent(ExecutionAgentPort):
             await self._transport.start()
             self._started = True
 
-    def _create_transport(self) -> CLITransport:
+    async def _restart_for_provider_session(self, provider_session_id: str) -> None:
+        """Replace the started transport with one seeded to resume a provider session."""
+        transport = self._transport
+        if transport is not None:
+            await transport.stop()
+
+        self._transport = None
+        self._turn_runner = None
+        self._started = False
+
+        resumed_transport = self._create_transport(resume_session_id=provider_session_id)
+        resumed_transport.on_event(self._handle_transport_event)
+        try:
+            await resumed_transport.start()
+        except BaseException:
+            await resumed_transport.stop()
+            raise
+
+        self._transport = resumed_transport
+        self._turn_runner = CliTurnRunner(resumed_transport)
+        self._started = True
+
+    def _create_transport(self, *, resume_session_id: str | None = None) -> CLITransport:
         kwargs = dict(self._transport_kwargs)
         sig = inspect.signature(self._transport_binding.cls)
+        if resume_session_id is not None:
+            if not _accepts_resume_session_id(self._transport_binding.cls):
+                raise HarnessContractError(
+                    "CLI transport cannot accept a provider session resume ID"
+                )
+            kwargs["resume_session_id"] = resume_session_id
         filtered = {key: value for key, value in kwargs.items() if key in sig.parameters}
         return self._transport_binding.cls(**filtered)
 
