@@ -18,9 +18,9 @@ from ravn.domain.harness import (
     HarnessTurnResult,
     SteeringMode,
 )
-from ravn.domain.models import TokenUsage
 from ravn.ports.llm import LLMPort
 from tests.test_ravn.conftest import InMemoryChannel, make_simple_llm
+from tests.test_ravn.test_executor_cli import FakeResumableTransport, _make_agent, _TransportBinding
 
 
 def test_native_and_cli_harness_profiles_are_representable_without_runtime_types() -> None:
@@ -184,7 +184,8 @@ async def test_native_harness_returns_the_same_canonical_turn_shape_as_cli() -> 
     assert isinstance(result, HarnessTurnResult)
     assert result.turn.response == "Done"
     assert result.turn.episode is not None
-    assert result.turn.usage == TokenUsage(input_tokens=10, output_tokens=5)
+    assert result.turn.usage.input_tokens == 10
+    assert result.turn.usage.output_tokens == 5
     assert result.metadata == {"provider_adapter": "AsyncMock"}
 
 
@@ -208,3 +209,35 @@ async def test_native_harness_rejects_resume_and_inactive_controls() -> None:
         await agent.control(
             HarnessControl(HarnessControlKind.INTERRUPT, interrupt_reason=InterruptReason.SIGINT)
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("implementation", ["native", "cli"])
+async def test_canonical_turn_contract_fixture_runs_on_both_implementations(
+    implementation: str,
+) -> None:
+    """Keep common result/lifecycle expectations independent of transport type."""
+    if implementation == "native":
+        harness = RavnAgent(
+            llm=make_simple_llm("Done"),
+            tools=[],
+            channel=InMemoryChannel(),
+            permission=AllowAllPermission(),
+            system_prompt="You are a reviewer.",
+            model="fake-model",
+            max_tokens=100,
+            max_iterations=2,
+        )
+    else:
+        harness, _ = _make_agent(binding=_TransportBinding(FakeResumableTransport, True))
+
+    await harness.start()
+    result = await harness.run_turn(HarnessTurnInput("Review the patch"))
+
+    assert isinstance(result, HarnessTurnResult)
+    assert result.turn.response == "Done"
+    assert result.turn.episode is not None
+    assert result.turn.usage.input_tokens == 10
+    assert result.turn.usage.output_tokens == 5
+    tool_call_ids = {call.id for call in result.turn.tool_calls}
+    assert all(item.tool_call_id in tool_call_ids for item in result.turn.tool_results)
