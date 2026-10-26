@@ -104,6 +104,22 @@ def test_harness_controls_represent_supported_control_requests(control: HarnessC
             {"kind": HarnessControlKind.STEER},
             "steering control requires nonblank content",
         ),
+        (
+            {"kind": "interrupt"},
+            "control kind must be a HarnessControlKind",
+        ),
+        (
+            {"kind": "unexpected"},
+            "control kind must be a HarnessControlKind",
+        ),
+        (
+            {"kind": HarnessControlKind.STEER, "content": None},
+            "control content must be a str",
+        ),
+        (
+            {"kind": HarnessControlKind.INTERRUPT, "interrupt_reason": "sigint"},
+            "interrupt reason must be an InterruptReason",
+        ),
     ],
 )
 def test_invalid_harness_controls_fail_deterministically(

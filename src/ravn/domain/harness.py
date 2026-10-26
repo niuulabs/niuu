@@ -188,6 +188,14 @@ class HarnessControl:
     interrupt_reason: InterruptReason | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.kind, HarnessControlKind):
+            raise HarnessContractError("control kind must be a HarnessControlKind")
+        if not isinstance(self.content, str):
+            raise HarnessContractError("control content must be a str")
+        if self.interrupt_reason is not None and not isinstance(
+            self.interrupt_reason, InterruptReason
+        ):
+            raise HarnessContractError("interrupt reason must be an InterruptReason")
         if self.kind is HarnessControlKind.INTERRUPT and self.interrupt_reason is None:
             raise HarnessContractError("interrupt control requires an interrupt reason")
         if self.kind is HarnessControlKind.INTERRUPT and self.content:
