@@ -66,6 +66,10 @@ SELF_REGISTERED_TOOL_CONFIDENCE = 0.74
 #: deployments override it via ``ResidentEvolutionConfig.build_repair_attempts``.
 DEFAULT_MAX_REPAIR_ATTEMPTS = 3
 
+#: Build-input key carrying how many repairs this build has used, so the budget
+#: survives the suspend/resume of a commissioned (A2A) repair.
+_REPAIR_ATTEMPTS_KEY = "_repair_attempts"
+
 ToolRegistrar = Callable[[ToolPort], None]
 InstalledArtifactRecorder = Callable[[ResidentLearningArtifact], Awaitable[None]]
 logger = logging.getLogger(__name__)
@@ -1393,11 +1397,17 @@ class BuildTool(ToolPort):
           4. If still failing after the budget: return a clear error. Never
              install a tool whose verification hard-failed.
         """
-        attempts = 0
+        # A commissioned repair is an A2A task that suspends this call; the
+        # resumed call verifies the repaired build here again. The budget is
+        # carried in the build input (persisted with the pending build) so it
+        # spans those suspensions — counted per call, every resume reset it and
+        # a tool that never verified was rebuilt forever.
+        attempts = int(input.get(_REPAIR_ATTEMPTS_KEY) or 0)
         result = self._verify(artifact)
-        self._record_verification_telemetry(artifact, result, attempt=0, repair="none")
+        self._record_verification_telemetry(artifact, result, attempt=attempts, repair="none")
         while not result.ok and attempts < self._max_repair_attempts:
             attempts += 1
+            input = {**input, _REPAIR_ATTEMPTS_KEY: attempts}
             repaired, input = self._repair_dependency(input, artifact, result)
             if repaired is not None:
                 artifact = repaired

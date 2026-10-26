@@ -3,7 +3,7 @@ id: 3c217e0a-1ff0-56d6-ba27-54cd43bff8e6
 name: Tool & Skill Builder
 description: Resident capability workflow that designs, implements, reviews, canaries, and publishes a
   missing Valkyrie/Ravn tool or skill.
-version: 1.0.4
+version: 1.0.5
 persona_dependencies:
   capability-publisher:
     id: capability-publisher
@@ -12,13 +12,13 @@ persona_dependencies:
     path: personas/capability-publisher.yaml
   coder:
     id: coder
-    revision: content-d0370185bc60dd12
-    digest: sha256:d0370185bc60dd12c1994bb84bb8864bafcb698576813a06591473489a25a6dd
+    revision: content-f32c566d84bbb188
+    digest: sha256:f32c566d84bbb18825d4743eafa5b34d3a536be1d4678945c2581070903451d1
     path: personas/coder.yaml
   reviewer:
     id: reviewer
-    revision: content-ad16133b08a3cdbd
-    digest: sha256:ad16133b08a3cdbd178971e0faceaabbc2196ffa4c08b0f038e1ed50db8c2f03
+    revision: content-15cb459d3cdecf21
+    digest: sha256:15cb459d3cdecf210f15b2f3dbbd731d016e038704bf6e53ee7df8033806a9f5
     path: personas/reviewer.yaml
   security-auditor:
     id: security-auditor
@@ -149,16 +149,6 @@ graph:
     position:
       x: 1408
       y: 280
-  - id: capability-blocked
-    kind: gate
-    label: Capability publication blocked
-    condition: Review the publisher's blocking diagnosis, correct the external capability publication dependency, then re-commission the workflow.
-    mode: human_approval
-    pendingBehavior: help_needed
-    instructions: Publication did not complete. Preserve the publisher's stated cause, resolve it outside this workflow, then re-commission the capability build.
-    position:
-      x: 1408
-      y: 480
   - id: capability-complete
     kind: end
     label: Capability ready
@@ -196,10 +186,6 @@ graph:
     source: capability-review
     target: capability-publish
     label: security.passed -> security.passed
-  - id: edge-capability-publish-to-blocked
-    source: capability-publish
-    target: capability-blocked
-    label: capability.blocked -> capability.blocked
   - id: edge-capability-publish-to-end
     source: capability-publish
     target: capability-complete

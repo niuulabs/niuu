@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from ravn.adapters.tools.bash import _TRUNCATION_NOTICE, BashTool
+from ravn.cap_telemetry import cap_hit_counts
 from ravn.config import BashToolConfig
 
 # ---------------------------------------------------------------------------
@@ -169,6 +170,7 @@ class TestOutputTruncation:
         result = await tool.execute({"command": "python3 -c \"print('x' * 500)\""})
         assert not result.is_error
         assert _TRUNCATION_NOTICE in result.content
+        assert cap_hit_counts() == {"tools.bash.max_output_bytes": 1}
 
     @pytest.mark.asyncio
     async def test_small_output_not_truncated(self, tmp_path: Path) -> None:

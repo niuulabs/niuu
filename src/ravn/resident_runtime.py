@@ -16,6 +16,10 @@ from typing import Any
 from niuu.domain.notifications import MAX_BODY_CHARS
 from niuu.domain.resident_notifications import AttentionInputKind
 from niuu.observability import get_observability
+from ravn.cap_telemetry import DEGRADED_TOTAL_KEY, record_truncation
+from ravn.cap_telemetry import HEALTH_TOTAL_KEY as CAP_HEALTH_TOTAL_KEY
+from ravn.cap_telemetry import health_counts as cap_health_counts
+from ravn.domain.exceptions import UnboundOperatorReplyError
 from ravn.domain.models import AgentTask, OutputMode, TokenUsage, TurnResult
 from ravn.domain.resident_continuation import (
     ContinuationDecisionKind,
@@ -142,8 +146,6 @@ class ResidentRuntime:
         resident_id: str = "resident",
         resident_personality: str = "",
         charter: str = "",
-        max_turns: int = 3,
-        max_tokens: int = 0,
         context_max_chars: int = 12000,
         tool_result_max_chars: int = 2000,
         scheduled_wake_default_seconds: float = 3600.0,
@@ -163,8 +165,6 @@ class ResidentRuntime:
         self._resident_id = resident_id.strip() or "resident"
         self._resident_personality = resident_personality.strip()
         self._charter = charter.strip()
-        self._max_turns = max(1, int(max_turns))
-        self._max_tokens = max(0, int(max_tokens))
         self._context_max_chars = max(1000, int(context_max_chars))
         self._tool_result_max_chars = max(100, int(tool_result_max_chars))
         self._scheduled_wake_default_seconds = max(1.0, float(scheduled_wake_default_seconds))
@@ -240,8 +240,14 @@ class ResidentRuntime:
     # ------------------------------------------------------------------
 
     def health_snapshot(self) -> dict[str, int]:
-        """Latest durable-health counts (possibly empty before first refresh)."""
-        return dict(self._health_snapshot)
+        """Latest durable-health counts plus configured limits hit since start.
+
+        The durable counts may be empty before the first refresh. The cap-hit
+        counts (``cap_hits_total`` and one ``cap_hits.<knob>`` per limit that was
+        reached) are live, so a resident running into a limit shows it here
+        rather than only in its logs.
+        """
+        return {**self._health_snapshot, **cap_health_counts()}
 
     async def refresh_health_snapshot(self) -> dict[str, int]:
         """Recount durable state and re-state the resident health gauges.
@@ -327,6 +333,21 @@ class ResidentRuntime:
             if value is None:
                 continue
             telemetry.gauge(name, value, attributes=attributes, description=description)
+        # The hits themselves are the ravn.cap.hits counter (cap_telemetry);
+        # this restates the resident's total next to the other scorecard gauges.
+        live = cap_health_counts()
+        telemetry.gauge(
+            "ravn.resident.cap_hits",
+            live[CAP_HEALTH_TOTAL_KEY],
+            attributes=attributes,
+            description="Configured Ravn limits reached since the resident started.",
+        )
+        telemetry.gauge(
+            "ravn.resident.degraded",
+            live[DEGRADED_TOTAL_KEY],
+            attributes=attributes,
+            description="Paths that continued without their durable work since start.",
+        )
 
     async def prepare_context(self, task: AgentTask) -> str:
         """Present the resident's exact prior working state to a new model turn."""
@@ -355,7 +376,12 @@ class ResidentRuntime:
             state_block = "(No prior resident working state exists yet.)"
             state_ref = "none"
         else:
-            state_block = _bounded(prior.content, self._context_max_chars)
+            state_block = _bounded(
+                prior.content,
+                self._context_max_chars,
+                knob="resident_state.continuation_context_max_chars",
+                what="the resident's prior working state",
+            )
             state_ref = prior.path
             telemetry.event(
                 "ravn.resident.working_state_recalled",
@@ -377,6 +403,8 @@ class ResidentRuntime:
                     sort_keys=True,
                 ),
                 self._context_max_chars,
+                knob="resident_state.continuation_context_max_chars",
+                what="the active A2A task handles",
             )
             if a2a_tasks
             else "(No active durable A2A task handles.)"
@@ -390,6 +418,8 @@ class ResidentRuntime:
                     sort_keys=True,
                 ),
                 self._context_max_chars,
+                knob="resident_state.continuation_context_max_chars",
+                what="the open operator questions",
             )
             if open_questions
             else "(No operator questions are waiting for an answer.)"
@@ -853,22 +883,11 @@ class ResidentRuntime:
         self._inflight_refs.difference_update(task.resident_inbox_refs)
         control = str(fields.get("continuation") or "").strip().casefold()
         if control == "sleep":
-            timing = str(fields.get("next_action_timing") or "").strip().casefold()
-            if timing == "scheduled_time":
-                budget_reason = _budget_stop_reason(
-                    turn_index=turn_index,
-                    total_tokens=cumulative.total_tokens,
-                    max_turns=self._max_turns,
-                    max_tokens=self._max_tokens,
-                )
-                if budget_reason:
-                    return ResidentTurnDisposition(
-                        kind=ContinuationDecisionKind.STOP,
-                        case_id=case_id,
-                        turn_ref=turn_ref,
-                        budget_ref=budget_ref,
-                        reason=budget_reason,
-                    )
+            # No per-case turn or token cap: rechecks are bounded by the daily
+            # budget (budget.daily_cap_usd, which prices self-hosted tokens too),
+            # by one turn per scheduled wake, and by the repeated-decision guard
+            # below. A turn cap stopped cases mid-work — once on the turn that
+            # asked the operator a question, so the question was never saved.
             stuck_reason = await self._repeated_decision_reason(
                 fields, record=record, case_id=case_id
             )
@@ -927,20 +946,10 @@ class ResidentRuntime:
             )
 
         if _asks_operator(fields, control):
-            budget_reason = _budget_stop_reason(
-                turn_index=turn_index,
-                total_tokens=cumulative.total_tokens,
-                max_turns=self._max_turns,
-                max_tokens=self._max_tokens,
-            )
-            if budget_reason:
-                return ResidentTurnDisposition(
-                    kind=ContinuationDecisionKind.STOP,
-                    case_id=case_id,
-                    turn_ref=turn_ref,
-                    budget_ref=budget_ref,
-                    reason=budget_reason,
-                )
+            # The continuation budget bounds what the resident does on its own.
+            # A question hands the case to a human, whose answer is the only way
+            # it continues, so the budget never swallows one: stopping here left
+            # the resident needing input with no question anyone could answer.
             redirected = await self._redirect_to_known_resolution(
                 task=task,
                 record=record,
@@ -1466,15 +1475,10 @@ class ResidentRuntime:
             requested_by=self._resident_id,
             correlation_id=root_correlation_id or case_id,
         )
-        try:
-            return await self._review_requester.request(item)
-        except Exception as exc:  # noqa: BLE001 — room/Telegram delivery must still proceed
-            get_observability().event(
-                "ravn.resident.operator_question_review_failed",
-                attributes={"ravn.resident.case_id": case_id},
-                content=str(exc),
-            )
-            return None
+        # A question nobody can see in the review queue is one the operator will
+        # never answer: fail the turn loudly. The question itself is already
+        # persisted and its attention raised before this, so nothing is lost.
+        return await self._review_requester.request(item)
 
     async def submit_operator_answer(
         self,
@@ -1529,24 +1533,35 @@ class ResidentRuntime:
         content: str,
         metadata: dict[str, Any] | None,
     ) -> bool:
+        """Bind a human reply to the resident case whose question it answers.
+
+        A reply names its case through the help context its question carried:
+        the exact message the human replied to first, then the room's latest
+        question for this resident. A named case without an open question
+        raises — binding the reply elsewhere, or reading it as fresh chat, would
+        hide that the question and its answer came apart. A message that names
+        no case binds only when exactly one question is open.
+        """
         metadata = metadata or {}
-        context = metadata.get("help_context")
-        if not isinstance(context, dict):
-            context = {}
-        case_id = str(
-            metadata.get("resident_case_id")
-            or metadata.get("case_id")
-            or context.get("resident_case_id")
-            or context.get("case_id")
-            or ""
-        ).strip()
-        if not case_id:
+        case_id = _reply_case_id(metadata)
+        if case_id:
+            if await self._state.read_operator_needed(case_id) is None:
+                get_observability().event(
+                    "ravn.resident.operator_reply.unbound",
+                    attributes={
+                        "ravn.resident.id": self._resident_id,
+                        "ravn.resident.case_id": case_id,
+                    },
+                    content={"reply": content},
+                )
+                raise UnboundOperatorReplyError(case_id)
+        else:
             pending = await self._state.list_operator_needed()
             if len(pending) != 1:
                 return False
             case_id = _metadata(pending[0].content, "case_id")
-        if not case_id or await self._state.read_operator_needed(case_id) is None:
-            return False
+            if not case_id or await self._state.read_operator_needed(case_id) is None:
+                return False
         trace_context = metadata.get("trace_context")
         if not isinstance(trace_context, dict):
             trace_context = {}
@@ -1670,6 +1685,8 @@ class ResidentRuntime:
                                 default=str,
                             ),
                             payload_budget,
+                            knob="resident_state.continuation_context_max_chars",
+                            what=f"the raw payload of observation {signal.id}",
                         ),
                         "  ",
                     ),
@@ -1867,7 +1884,12 @@ class ResidentRuntime:
         turn = await self._state.read(turn_ref)
         if turn is None:
             raise RuntimeError(f"resident parent turn is not readable: {turn_ref}")
-        return _bounded(_resident_turn_handoff(turn.content), self._context_max_chars)
+        return _bounded(
+            _resident_turn_handoff(turn.content),
+            self._context_max_chars,
+            knob="resident_state.continuation_context_max_chars",
+            what=f"the handoff from resident turn {turn_ref}",
+        )
 
     def _inflight_inbox_refs(self) -> set[str]:
         return set(self._inflight_refs)
@@ -2033,30 +2055,33 @@ def _operator_question(fields: dict[str, Any], record: ResidentTurnRecord) -> st
     return str(fields.get("recommendation") or "What information should I use to continue?")
 
 
-def _budget_stop_reason(
-    *,
-    turn_index: int,
-    total_tokens: int,
-    max_turns: int,
-    max_tokens: int,
-) -> str:
-    if turn_index >= max_turns:
-        return f"resident continuation turn budget reached: {max_turns}"
-    if max_tokens > 0 and total_tokens >= max_tokens:
-        return f"resident continuation token budget reached: {max_tokens}"
+def _reply_case_id(metadata: Mapping[str, Any]) -> str:
+    """Return the resident case a directed reply names, most specific first."""
+    reply_context = metadata.get("reply_context")
+    replied_help = reply_context.get("help_context") if isinstance(reply_context, Mapping) else None
+    sources = (metadata, replied_help, metadata.get("help_context"))
+    for source in sources:
+        if not isinstance(source, Mapping):
+            continue
+        case_id = str(source.get("resident_case_id") or source.get("case_id") or "").strip()
+        if case_id:
+            return case_id
     return ""
 
 
 def _tool_result_summaries(result: TurnResult, *, max_chars: int) -> tuple[str, ...]:
     names = {call.id: call.name for call in result.tool_calls}
-    return tuple(
-        (
-            f"### {names.get(item.tool_call_id, item.tool_call_id or 'tool')} "
-            f"({'error' if item.is_error else 'ok'})\n\n"
-            f"{_bounded(item.content, max_chars)}"
+    summaries: list[str] = []
+    for item in result.tool_results:
+        name = names.get(item.tool_call_id, item.tool_call_id or "tool")
+        content = _bounded(
+            item.content,
+            max_chars,
+            knob="resident_state.continuation_tool_result_max_chars",
+            what=f"the recorded result of {name!r}",
         )
-        for item in result.tool_results
-    )
+        summaries.append(f"### {name} ({'error' if item.is_error else 'ok'})\n\n{content}")
+    return tuple(summaries)
 
 
 def _a2a_record_payload(record: ResidentA2ATaskRecord) -> dict[str, Any]:
@@ -2215,6 +2240,8 @@ def _extreme_payload_lines(
                             default=str,
                         ),
                         payload_budget,
+                        knob="resident_state.continuation_context_max_chars",
+                        what=f"the archived payload {ref}",
                     ),
                     "  ",
                 ),
@@ -2224,10 +2251,12 @@ def _extreme_payload_lines(
     return lines
 
 
-def _bounded(value: Any, max_chars: int) -> str:
+def _bounded(value: Any, max_chars: int, *, knob: str, what: str) -> str:
+    """*value* as text of at most *max_chars*; a cut is marked and counted against *knob*."""
     text = str(value or "")
     if len(text) <= max_chars:
         return text
+    record_truncation(knob, what=what, kept=max_chars, total=len(text))
     return text[:max_chars].rstrip() + "\n… (truncated)"
 
 

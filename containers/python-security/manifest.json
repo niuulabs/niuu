@@ -1,32 +1,26 @@
 {
-  "python_version": "3.14.8",
-  "source_sha256": "43b34b293476c1520636c5fdf809db62b29b9f8290cd1cf92770596d78e73320",
+  "python_version": "3.14.9",
+  "source_sha256": "79bda7368e7ac571cc4a0e4048bcfbc6a2765fd037ee282ffdb3dba7e6224d97",
   "patches": [
     {
       "commit": "b234a2b67539f787e191d2ef19a7cbdce32874e7",
       "sha256": "606aa1bd8124cb0d777744dfe1a89d1ba983638115372cc508f4ed4a154f3abf"
-    },
-    {
-      "commit": "fb2f0bbc3b35264f09cc2cb2934b7987527a6bc2",
-      "sha256": "49e6ab509b0c9f95da75c8d66356a8764f98cf263756e7a3cd8c1358756d8172"
-    },
-    {
-      "commit": "d9565e54b1fc6d63c5be9afd58114499128fa57b",
-      "sha256": "ede4540f744d6c6fdf5d1a8f299f1f78461433013a6e2333ea170340dc631ffd"
     }
   ],
   "files": {
     "poplib.py": {
       "original": "527e714523264093910a0a0b1a55c6583f952835c89061537fc40ad98c347056",
       "patched": "a6ffff188814b56d95b043c31d9e0dfee51ac6d6e92afe74ab070cb6136b076f"
-    },
-    "tarfile.py": {
-      "original": "825de0990d0bedf6ed8db97b4a0fc98f25617a692c3d38c0bbba800beb9952fb",
-      "patched": "82ac045a2d97396a295405268a5f14393620b0ebf50e9305e56f34731e1d89ea"
     }
   },
   "cves": [
-    "CVE-2025-15367",
-    "CVE-2026-87910"
+    "CVE-2025-15367"
+  ],
+  "upstream_fixes": [
+    {
+      "cve": "CVE-2026-12345",
+      "file": "tempfile.py",
+      "sha256": "5e2a8c5539e2aa3f4d39a364c701711ba54eeca88c17e95d31ebb83ea84de27d"
+    }
   ]
 }

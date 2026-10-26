@@ -20,6 +20,7 @@ from collections.abc import Awaitable, Callable
 
 from niuu.domain.mimir import OPERATIONAL_SOURCE_TYPES
 from niuu.ports.mimir import MimirPort
+from ravn.cap_telemetry import record_truncation
 from ravn.config import MimirSourceTriggerConfig
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.ports.trigger import TriggerPort
@@ -32,6 +33,13 @@ def _source_excerpt(content: str, max_chars: int) -> str:
     if max_chars <= 0 or len(content) <= max_chars:
         return content
     omitted = len(content) - max_chars
+    # The synthesis then works from part of the source, which its pages will not say.
+    record_truncation(
+        "mimir.source_trigger.max_content_chars",
+        what="a raw source handed to synthesis",
+        kept=max_chars,
+        total=len(content),
+    )
     return (
         f"{content[:max_chars]}\n\n"
         f"[Source content truncated: omitted {omitted:,} characters from the raw source.]"
@@ -147,7 +155,6 @@ class MimirSourceTrigger(TriggerPort):
                 output_mode=OutputMode.SILENT,
                 persona=self._config.persona,
                 priority=8,
-                max_tokens=self._config.max_tokens,
             )
             mount_tag = f" [mount={src.mount_name}]" if src.mount_name else ""
             logger.info(

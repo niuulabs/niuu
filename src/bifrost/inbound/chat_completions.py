@@ -309,7 +309,7 @@ def openai_request_to_anthropic(req: OpenAIChatRequest) -> AnthropicRequest:
 
     return AnthropicRequest(
         model=req.model,
-        max_tokens=req.max_tokens or 1024,
+        max_tokens=req.max_tokens,
         messages=anthropic_messages,
         system=system,
         tools=tools,

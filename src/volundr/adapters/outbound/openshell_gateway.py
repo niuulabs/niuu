@@ -3959,7 +3959,7 @@ class OpenShellGatewayPodManager(
                 command=(
                     "sh",
                     "-lc",
-                    'export RAVN__GATEWAY__PLATFORM__PAT_TOKEN="$NIUU_VOLUNDR_ACCESS_TOKEN"; '
+                    'export RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN="$NIUU_VOLUNDR_ACCESS_TOKEN"; '
                     "exec /opt/niuu/bin/python -m ravn daemon "
                     "--config /sandbox/.volundr/ravn.yaml "
                     f"--persona {shlex.quote(runtime.persona_name or 'product-steward')}",
@@ -6070,6 +6070,7 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
                 sandbox_pb2.NetworkEndpoint(
                     host=str(raw["host"]),
                     port=int(raw["port"]),
+                    path=str(raw.get("path") or ""),
                     protocol=str(raw.get("protocol") or ""),
                     tls=str(raw.get("tls") or "skip"),
                     enforcement=str(raw.get("enforcement") or "enforce"),

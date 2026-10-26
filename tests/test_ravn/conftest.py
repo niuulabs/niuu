@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from ravn.adapters.permission.allow_deny import AllowAllPermission, DenyAllPermission
+from ravn.cap_telemetry import reset_cap_hits
 from ravn.config import InitiativeConfig
 from ravn.domain.models import (
     AgentTask,
@@ -174,3 +175,9 @@ def deny_permission() -> DenyAllPermission:
 @pytest.fixture
 def echo_tool() -> EchoTool:
     return EchoTool()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cap_hits() -> None:
+    """Cap-hit counts are process-wide; each test starts from none."""
+    reset_cap_hits()

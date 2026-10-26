@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from niuu.observability import get_observability
 from niuu.ports.mimir import MimirPort
 from ravn.budget import IterationBudget, TokenEstimator
+from ravn.cap_telemetry import record_cap_hit, record_truncation, require_complete
 from ravn.compression import CompressionResult, ContextCompressor
 from ravn.config import ExtendedThinkingConfig
 from ravn.domain.budget import compute_cost as _compute_cost_usd
@@ -26,6 +27,7 @@ from ravn.domain.checkpoint import (
 )
 from ravn.domain.events import RavnEvent
 from ravn.domain.exceptions import (
+    ConfigurationError,
     MaxIterationsError,
     PermissionDeniedError,
     PromptBudgetExceededError,
@@ -116,7 +118,9 @@ class RavnAgent:
         *,
         system_prompt: str,
         model: str,
-        max_tokens: int,
+        # The answer cap for every model turn; None sends none, so the
+        # provider's own limit (maximum output, or the rest of the window) applies.
+        max_tokens: int | None,
         max_iterations: int,
         pre_tool_hooks: list[PreToolHook] | None = None,
         post_tool_hooks: list[PostToolHook] | None = None,
@@ -129,7 +133,7 @@ class RavnAgent:
         native_compaction: NativeCompactionPort | None = None,
         prompt_builder: PromptBuilder | None = None,
         reflection_model: str = "claude-haiku-4-5-20251001",
-        reflection_max_tokens: int = 4096,
+        reflection_max_tokens: int | None = None,
         task_summary_max_chars: int = 200,
         input_token_cost_per_million: float = 3.0,
         output_token_cost_per_million: float = 15.0,
@@ -248,15 +252,22 @@ class RavnAgent:
         self._persona_config = persona_config
         self._context_window_tokens = max(0, context_window_tokens)
         self._token_estimate_safety_factor = max(1.0, token_estimate_safety_factor)
-        if self._context_window_tokens and self._max_tokens >= self._context_window_tokens:
-            raise ValueError("max_tokens must be smaller than context_window_tokens")
-        prompt_ceilings = [
-            value
-            for value in (
-                max(0, max_prompt_tokens),
-                max(0, self._context_window_tokens - self._max_tokens),
+        window_ceiling = 0
+        if self._context_window_tokens and self._max_tokens is None and max_prompt_tokens <= 0:
+            # With no output cap the window holds prompt and answer together, so
+            # it says nothing about how much of it the prompt may take.
+            raise ConfigurationError(
+                "context_management.context_window_tokens is set but llm.max_tokens is "
+                "null, so no prompt budget can be derived from the window; set "
+                "context_management.max_prompt_tokens to the share of the window the "
+                "prompt may use"
             )
-            if value > 0
+        if self._context_window_tokens and self._max_tokens is not None:
+            if self._max_tokens >= self._context_window_tokens:
+                raise ValueError("max_tokens must be smaller than context_window_tokens")
+            window_ceiling = self._context_window_tokens - self._max_tokens
+        prompt_ceilings = [
+            value for value in (max(0, max_prompt_tokens), window_ceiling) if value > 0
         ]
         self._max_prompt_tokens = min(prompt_ceilings) if prompt_ceilings else 0
         self._last_prompt_budget_status: dict[str, int | float | bool] = {}
@@ -444,6 +455,7 @@ class RavnAgent:
     async def repair_outcome(self, prompt: str) -> TurnResult:
         """Repair output formatting without replaying history or executing tools."""
         if self._iteration_budget is not None and self._iteration_budget.exhausted:
+            self._record_iteration_cap("iteration_budget.total")
             raise MaxIterationsError(self._max_iterations)
         system = "Repair the supplied outcome contract. Preserve the evidence and decisions."
         messages = [{"role": "user", "content": prompt}]
@@ -462,6 +474,13 @@ class RavnAgent:
             system=system,
             model=self._model,
             max_tokens=self._max_tokens,
+        )
+        require_complete(
+            response,
+            knob="llm.max_tokens",
+            budget=self._max_tokens,
+            model=self._model,
+            purpose="outcome repair",
         )
         if self._iteration_budget is not None:
             self._iteration_budget.consume()
@@ -519,6 +538,7 @@ class RavnAgent:
 
         # Check budget before starting the turn.
         if self._iteration_budget is not None and self._iteration_budget.exhausted:
+            self._record_iteration_cap("iteration_budget.total")
             raise MaxIterationsError(self._max_iterations)
 
         # Build the effective system prompt. When using a prompt_builder,
@@ -593,6 +613,7 @@ class RavnAgent:
                     last_tool_result=turn_tool_results[-1] if turn_tool_results else None,
                     interrupted_by=InterruptReason.BUDGET_EXHAUSTED,
                 )
+                self._record_iteration_cap("iteration_budget.total")
                 raise MaxIterationsError(self._max_iterations)
 
             # Optionally compress context before calling the LLM.
@@ -631,6 +652,15 @@ class RavnAgent:
                         system_prompt=effective_system,
                         messages=messages_for_llm,
                         thinking=thinking_param,
+                    )
+                    # Before anything acts on it: a cut-off answer is not a
+                    # conclusion, and a cut-off tool call has no real arguments.
+                    require_complete(
+                        llm_response,
+                        knob="llm.max_tokens",
+                        budget=self._max_tokens,
+                        model=self._model,
+                        purpose="the agent turn",
                     )
                 except BaseException as exc:
                     stop_reason = "aborted" if isinstance(exc, asyncio.CancelledError) else "error"
@@ -771,6 +801,7 @@ class RavnAgent:
                 last_tool_result=turn_tool_results[-1] if turn_tool_results else None,
                 interrupted_by=InterruptReason.BUDGET_EXHAUSTED,
             )
+            self._record_iteration_cap("agent.max_iterations")
             raise MaxIterationsError(self._max_iterations)
 
         self._session.record_turn(cumulative_usage)
@@ -1084,14 +1115,17 @@ class RavnAgent:
         if len(content) <= limit:
             return result
         dropped = len(content) - limit
-        logger.warning(
-            "tool result for %r truncated: %d of %d chars dropped "
-            "(max_tool_result_chars=%d, prompt-budget limit=%d)",
-            tool_call.name,
-            dropped,
-            len(content),
-            self._max_tool_result_chars,
-            budget_limit,
+        record_truncation(
+            "tools.max_result_chars"
+            if limit == self._max_tool_result_chars
+            else "context_management.max_prompt_tokens",
+            what=f"tool result for {tool_call.name!r}",
+            kept=limit,
+            total=len(content),
+            remedy=(
+                f"the model was told to narrow the query (max_tool_result_chars="
+                f"{self._max_tool_result_chars}, prompt-budget limit={budget_limit})"
+            ),
         )
         marker = (
             f"\n\n[tool result truncated: {dropped} characters beyond the "
@@ -1452,14 +1486,22 @@ class RavnAgent:
         # A reasoning model can spend the whole budget thinking and return a
         # truncated or empty reflection, which would be recorded as if it were
         # the model's view of the turn.
-        if response.stop_reason == StopReason.MAX_TOKENS:
-            raise RuntimeError(
-                f"the reflection model {self._reflection_model!r} used its whole "
-                f"{self._reflection_max_tokens}-token budget before finishing; raise "
-                "memory.reflection_max_tokens, or set memory.reflection_model: off to "
-                "keep episodes without a reflection"
-            )
+        require_complete(
+            response,
+            knob="memory.reflection_max_tokens",
+            budget=self._reflection_max_tokens,
+            model=self._reflection_model,
+            purpose="the post-task reflection",
+        )
         return response.content
+
+    def _record_iteration_cap(self, knob: str) -> None:
+        """Count a turn stopped by its iteration limit (it raises MaxIterationsError)."""
+        record_cap_hit(
+            knob,
+            f"turn stopped after {self._max_iterations} model iteration(s) with the work "
+            f"unfinished (checkpointed); raise {knob} if the work needs more steps",
+        )
 
     def _resolve_thinking(
         self,
@@ -1675,6 +1717,7 @@ class RavnAgent:
         tool_calls: list[ToolCall] = []
         final_usage = TokenUsage(input_tokens=0, output_tokens=0)
         stop_reason = StopReason.END_TURN
+        truncated = False
         effective: SystemPrompt = (
             system_prompt if system_prompt is not None else self._system_prompt
         )
@@ -1728,6 +1771,7 @@ class RavnAgent:
                     if event.tool_call:
                         tool_calls.append(event.tool_call)
                 case StreamEventType.MESSAGE_DONE:
+                    truncated = truncated or event.stop_reason == StopReason.MAX_TOKENS
                     if event.usage:
                         final_usage = event.usage
                         self._last_usage = event.usage
@@ -1741,6 +1785,8 @@ class RavnAgent:
         # Whether the model asked for tools does not depend on event order.
         if tool_calls:
             stop_reason = StopReason.TOOL_USE
+        if truncated:
+            stop_reason = StopReason.MAX_TOKENS
 
         return LLMResponse(
             content=accumulated_text,

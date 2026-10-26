@@ -3,22 +3,22 @@ id: 03dba0d8-4f29-560a-a4e1-1fc7e5f9ee23
 name: Code & Review Flow
 description: Tracker-driven developer workflow that implements a ticket, iterates through code review,
   and merges the branch without publishing a delivery record.
-version: 1.0.2
+version: 1.0.3
 persona_dependencies:
   closer:
     id: closer
-    revision: content-2dd7eff6ca4fb5d3
-    digest: sha256:2dd7eff6ca4fb5d32a005f66432590afe89021408a31720914285dcbe0b366e5
+    revision: content-a17b9bad186e3987
+    digest: sha256:a17b9bad186e3987634529f87c739cc81402dcdb4e6e478845a74a50590d3d9f
     path: personas/closer.yaml
   coder:
     id: coder
-    revision: content-d0370185bc60dd12
-    digest: sha256:d0370185bc60dd12c1994bb84bb8864bafcb698576813a06591473489a25a6dd
+    revision: content-f32c566d84bbb188
+    digest: sha256:f32c566d84bbb18825d4743eafa5b34d3a536be1d4678945c2581070903451d1
     path: personas/coder.yaml
   reviewer:
     id: reviewer
-    revision: content-ad16133b08a3cdbd
-    digest: sha256:ad16133b08a3cdbd178971e0faceaabbc2196ffa4c08b0f038e1ed50db8c2f03
+    revision: content-15cb459d3cdecf21
+    digest: sha256:15cb459d3cdecf210f15b2f3dbbd731d016e038704bf6e53ee7df8033806a9f5
     path: personas/reviewer.yaml
 graph:
   nodes:

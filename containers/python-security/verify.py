@@ -1,12 +1,14 @@
 """Verify the installed backports and exploit regressions; emit scan evidence."""
 
 import hashlib
+import inspect
 import io
 import json
 import poplib
 import sys
 import sysconfig
 import tarfile
+import tempfile
 import unittest
 import urllib.request
 import zipfile
@@ -91,6 +93,14 @@ class BackportRegressionTests(unittest.TestCase):
             archive._extract_member.assert_not_called()
             self.assertEqual(filter_function.call_count, 1)
 
+    def test_temporary_directory_cleanup_stays_relative_to_open_directories(self):
+        # CVE-2026-12345: cleanup must not resolve paths again, or a directory
+        # swapped for a symlink mid-cleanup redirects deletion outside the tree.
+        self.assertTrue(tempfile._rmtree_use_dir_fd)
+        parameters = inspect.signature(tempfile.TemporaryDirectory._rmtree).parameters
+        self.assertIn("dir_fd", parameters)
+        self.assertIn("fullname", parameters)
+
 
 def verify(manifest: dict) -> dict:
     if sys.version.split()[0] != manifest["python_version"]:
@@ -101,6 +111,11 @@ def verify(manifest: dict) -> dict:
         actual[name] = hashlib.sha256((stdlib / name).read_bytes()).hexdigest()
         if actual[name] != hashes["patched"]:
             raise RuntimeError(f"Security backport missing or changed: {name}")
+    upstream = {}
+    for item in manifest["upstream_fixes"]:
+        upstream[item["cve"]] = hashlib.sha256((stdlib / item["file"]).read_bytes()).hexdigest()
+        if upstream[item["cve"]] != item["sha256"]:
+            raise RuntimeError(f"Upstream security fix missing or changed: {item['file']}")
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(BackportRegressionTests)
     if not unittest.TextTestRunner(stream=sys.stderr).run(suite).wasSuccessful():
         raise RuntimeError("Installed Python security regression tests failed")
@@ -115,6 +130,7 @@ def verify(manifest: dict) -> dict:
         "cves": manifest["cves"],
         "executable": str(Path(sys.executable).resolve()),
         "patches": [item["commit"] for item in manifest["patches"]],
+        "upstream_fixes": upstream,
     }
 
 

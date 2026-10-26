@@ -40,6 +40,7 @@ from pathlib import Path
 
 from niuu.domain.mimir import MimirPage, MimirPageMeta, ThreadContextRef, ThreadState
 from niuu.ports.mimir import MimirPort
+from ravn.cap_telemetry import require_complete
 from ravn.config import ThreadConfig
 from ravn.domain.models import AgentTask
 from ravn.domain.thread_weight import ThreadWeightConfig, ThreadWeightSignals, compute_weight
@@ -69,9 +70,6 @@ Facts, completed work, and reference material are NOT threads.\
 """
 
 _STATE_FILE_NAME = "thread_enricher_state.json"
-
-# Maximum number of tokens for the LLM classification call.
-_CLASSIFICATION_MAX_TOKENS = 256
 
 
 class ThreadEnricher(TriggerPort):
@@ -137,8 +135,10 @@ class ThreadEnricher(TriggerPort):
                 await self._poll_once()
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
-                logger.warning("ThreadEnricher: poll error: %s", exc)
+            except Exception:
+                # A failed sweep does not advance last_checked_at, so the next
+                # one retries the same pages; the failure is an error, not noise.
+                logger.exception("ThreadEnricher: sweep failed; retrying next poll")
 
             await asyncio.sleep(self._config.enricher_poll_interval_seconds)
 
@@ -173,15 +173,10 @@ class ThreadEnricher(TriggerPort):
                 # source-type guard may still exclude this candidate
                 continue
 
-            try:
-                page = await self._mimir.get_page(page_meta.path)
-                await self._classify_and_tag(page, source_type_map)
-            except Exception as exc:
-                logger.warning(
-                    "ThreadEnricher: error processing page %r: %s",
-                    page_meta.path,
-                    exc,
-                )
+            # Not caught per page: the sweep then ended with last_checked_at
+            # advanced past the page, which was never looked at again.
+            page = await self._mimir.get_page(page_meta.path)
+            await self._classify_and_tag(page, source_type_map)
 
         self._last_checked_at = now
         self._save_state(now)
@@ -220,9 +215,6 @@ class ThreadEnricher(TriggerPort):
     ) -> None:
         """Classify *page* and write thread fields back if it qualifies."""
         result = await self._call_llm(page)
-        if result is None:
-            return
-
         if not result.get("is_thread", False):
             return
 
@@ -274,29 +266,45 @@ class ThreadEnricher(TriggerPort):
     ) -> bool:
         return any(source_type_map.get(sid) == "conversation" for sid in meta.source_ids)
 
-    async def _call_llm(self, page: MimirPage) -> dict | None:
-        """Call the LLM classifier.  Returns parsed JSON or None on failure."""
+    async def _call_llm(self, page: MimirPage) -> dict:
+        """Classify *page*; raises when the model gives no usable answer."""
         prompt = _CLASSIFICATION_PROMPT.format(
             title=page.meta.title,
             summary=page.meta.summary,
-            content=page.content[:500],
+            # Whole: the model's context window is the bound, and a head-only
+            # excerpt classified pages by their preamble.
+            content=page.content,
+        )
+        response = await self._llm.generate(
+            messages=[{"role": "user", "content": prompt}],
+            tools=[],
+            system="You are a page classification assistant. Respond only with valid JSON.",
+            model=self._config.enricher_llm_alias,
+            # Uncapped: the answer is one small object, but a reasoning model
+            # thinks first, and the old 256-token cap ended inside the thinking.
+            max_tokens=None,
+        )
+        require_complete(
+            response,
+            knob="thread.enricher",
+            budget=None,
+            model=self._config.enricher_llm_alias,
+            purpose=f"thread classification of {page.meta.path!r}",
         )
         try:
-            response = await self._llm.generate(
-                messages=[{"role": "user", "content": prompt}],
-                tools=[],
-                system="You are a page classification assistant. Respond only with valid JSON.",
-                model=self._config.enricher_llm_alias,
-                max_tokens=_CLASSIFICATION_MAX_TOKENS,
+            parsed = json.loads(response.content)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"ThreadEnricher: {self._config.enricher_llm_alias!r} answered "
+                f"{page.meta.path!r} with no JSON ({response.content[:200]!r}); set "
+                "thread.enricher_llm_alias to a model that follows JSON instructions"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                f"ThreadEnricher: {self._config.enricher_llm_alias!r} answered "
+                f"{page.meta.path!r} with {type(parsed).__name__}, not an object"
             )
-            return json.loads(response.content)
-        except Exception as exc:
-            logger.warning(
-                "ThreadEnricher: LLM classification failed for %r: %s",
-                page.meta.title,
-                exc,
-            )
-            return None
+        return parsed
 
     # ------------------------------------------------------------------
     # State persistence
@@ -307,21 +315,16 @@ class ThreadEnricher(TriggerPort):
         state_file = self._state_dir / _STATE_FILE_NAME
         if not state_file.exists():
             return None
-        try:
-            raw = json.loads(state_file.read_text(encoding="utf-8"))
-            return datetime.fromisoformat(raw["last_checked_at"])
-        except Exception as exc:
-            logger.warning("ThreadEnricher: could not load state: %s", exc)
-            return None
+        # Unreadable state raises: starting over would silently re-classify
+        # every page. Delete the file to do that deliberately.
+        raw = json.loads(state_file.read_text(encoding="utf-8"))
+        return datetime.fromisoformat(raw["last_checked_at"])
 
     def _save_state(self, last_checked_at: datetime) -> None:
         """Persist ``last_checked_at`` to the state file."""
         self._state_dir.mkdir(parents=True, exist_ok=True)
         state_file = self._state_dir / _STATE_FILE_NAME
-        try:
-            state_file.write_text(
-                json.dumps({"last_checked_at": last_checked_at.isoformat()}),
-                encoding="utf-8",
-            )
-        except Exception as exc:
-            logger.warning("ThreadEnricher: could not save state: %s", exc)
+        state_file.write_text(
+            json.dumps({"last_checked_at": last_checked_at.isoformat()}),
+            encoding="utf-8",
+        )

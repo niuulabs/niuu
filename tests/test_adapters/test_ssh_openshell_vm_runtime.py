@@ -934,7 +934,11 @@ def test_stop_waits_for_authoritative_absence_before_provider_cleanup(tmp_path: 
             '["provider"]',
             "3",
             "0.01",
-            "0.2",
+            # Per-command timeout: each fake CLI call is a fresh interpreter, and
+            # a busy runner can take longer than a fraction of a second to start
+            # one. A list call killed after it counted but before it printed is
+            # read as a timeout and re-polled, so the count check would flake.
+            "1.0",
         ],
         env={**os.environ, "PATH": f"{binary}:{os.environ['PATH']}"},
         capture_output=True,

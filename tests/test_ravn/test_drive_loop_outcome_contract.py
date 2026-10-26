@@ -2922,6 +2922,8 @@ recommendation: choose whether to optimize for latency or quality
         assert help_event.payload["context"]["root_correlation_id"] == "root-help"
         assert help_event.payload["context"]["workflow_parent_event_id"] == "parent-help"
         assert help_event.payload["context"]["workflow_node_id"] == "chair-synthesis"
+        # Not a resident case, so there is no case for a reply to resume.
+        assert "resident_case_id" not in help_event.payload["context"]
         assert help_event.payload["collaboration_routing_only"] is True
         assert alias_event.payload["event_type"] == "council.human_input.requested"
 
@@ -2931,6 +2933,42 @@ recommendation: choose whether to optimize for latency or quality
             skuld_channel.emit.await_args_list[2].args[0].payload["event_type"]
             == "council.human_input.requested"
         )
+
+    @pytest.mark.asyncio
+    async def test_a_resident_outcome_never_publishes_its_own_help_request(self) -> None:
+        """With a resident runtime its disposition alone asks the operator, after the
+        question is persisted. An outcome-path request reached the operator for a
+        question the runtime had not persisted (a spent budget), so no reply bound."""
+        dl = _make_drive_loop()
+        dl._mesh = AsyncMock()
+        dl._skuld_channel = AsyncMock()
+        dl._resident_runtime = object()
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="regin",
+            produces=SimpleNamespace(
+                event_type="valkyrie.judgment.proposed",
+                event_type_map={"help_needed": "valkyrie.help.requested"},
+            ),
+        )
+        task = _make_agent_task(task_id="task-steward")
+        task.root_correlation_id = "regin-operator-room"
+        task.resident_case_id = "resident-stewardship-20261026T002939Z"
+        response_text = """\
+---outcome---
+verdict: help_needed
+summary: which route is authorized
+question: Which deployment route is authorized?
+reason: needs_context
+---end---
+"""
+
+        await dl._emit_mesh_outcome_event(task, response_text, success=True)
+
+        topics = [call.kwargs.get("topic") for call in dl._mesh.publish.await_args_list]
+        assert "help_needed" not in topics
+        emitted = [call.args[0].type for call in dl._skuld_channel.emit.await_args_list]
+        assert "help_needed" not in emitted
 
     @pytest.mark.asyncio
     async def test_help_needed_without_question_is_failed_without_help_or_alias(self) -> None:

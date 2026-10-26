@@ -1114,6 +1114,64 @@ class TestConfigGeneration:
             assert "project/" not in cfg
             assert "entity/" not in cfg
 
+    @pytest.mark.parametrize(
+        ("runtime_backend", "expected_auth"),
+        [
+            (
+                "openshell",
+                {"type": "bearer", "token_env": "NIUU_VOLUNDR_ACCESS_TOKEN"},
+            ),
+            (
+                "kubernetes",
+                {
+                    "type": "workload",
+                    "token_file": "/var/run/secrets/niuu-workload/token",
+                    "audiences": ["mimir"],
+                },
+            ),
+        ],
+    )
+    async def test_workload_mimir_auth_follows_the_runtime_identity(
+        self, session, runtime_backend, expected_auth
+    ):
+        # OpenShell sandboxes have no projected identity token; their platform
+        # grant injects the workload-bound token on Mímir requests instead.
+        template = LaunchSpec(
+            name="research-thread",
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": ["research-explorer"],
+                "mimir": {
+                    "registry_refs": [
+                        {
+                            "registry_entry_id": "mimir-yggdrasil",
+                            "url": "https://mimir.yggdrasil.example/api/v1",
+                            "auth_ref": "workload:mimir",
+                            "role": "shared",
+                        }
+                    ],
+                },
+            },
+        )
+        provider = MagicMock()
+        provider.get.return_value = template
+
+        result = await _flock_contributor(launch_spec_provider=provider).contribute(
+            session,
+            SessionContext(launch_spec="research-thread", runtime_backend=runtime_backend),
+        )
+
+        if runtime_backend == "openshell":
+            workload = result.values["openshell"]["workloads"][0]
+            cfg = result.values["openshell"]["files"][workload["environment"]["RAVN_CONFIG"]]
+        else:
+            cfg = _extract_mounted_config(result.pod_spec, "research-explorer")
+        instance = yaml.safe_load(cfg)["mimir"]["instances"][0]
+        assert instance["url"] == "https://mimir.yggdrasil.example/api/v1"
+        assert instance["auth"] == expected_auth
+        # The grant side reads its Mímir hosts from the session values.
+        assert result.values["mimir"]["registryRefs"][0]["url"] == instance["url"]
+
     async def test_mounted_config_resolves_registry_refs_and_ephemeral_locals(self, session):
         template = LaunchSpec(
             name="registry-flock",

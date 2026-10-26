@@ -18,7 +18,7 @@ class TestAnthropicAdapterInit:
         adapter = AnthropicAdapter(api_key="test")
         assert adapter._api_key == "test"
         assert adapter._base_url == "https://api.anthropic.com"
-        assert adapter._default_max_tokens > 0
+        assert adapter._output_limits == {}
         assert adapter._max_retries >= 0
 
     def test_custom_base_url_trailing_slash_stripped(self) -> None:
@@ -312,7 +312,7 @@ async def test_generate_error_response() -> None:
 
 
 @respx.mock
-async def test_generate_unknown_stop_reason() -> None:
+async def test_generate_unknown_stop_reason_raises() -> None:
     adapter = AnthropicAdapter(api_key="test-key", base_url="https://api.anthropic.com")
 
     response_body = {
@@ -325,8 +325,8 @@ async def test_generate_unknown_stop_reason() -> None:
         return_value=httpx.Response(200, json=response_body)
     )
 
-    result = await adapter.generate([], tools=[], system="", model="m", max_tokens=100)
-    assert result.stop_reason == StopReason.END_TURN
+    with pytest.raises(LLMError, match="future_unknown_reason"):
+        await adapter.generate([], tools=[], system="", model="m", max_tokens=100)
 
 
 def _sse(event: dict) -> str:

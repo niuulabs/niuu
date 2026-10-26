@@ -65,6 +65,7 @@ from ting.domain.workflow_snapshot import (
     workflow_mimir_from_snapshot,
     workflow_personas_from_snapshot,
     workflow_placement_from_snapshot,
+    workflow_uses_isolated_branch,
 )
 from ting.domain.workflow_versioning import WorkflowVersionBump
 from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrPort, VolundrSession
@@ -150,6 +151,7 @@ class WorkflowLaunchBody(BaseModel):
     session_name: str | None = Field(default=None, max_length=63, alias="sessionName")
     repo: str = Field(default="", max_length=500)
     branch: str = Field(default="", max_length=255)
+    base_branch: str = Field(default="", max_length=255, alias="baseBranch")
     connection_id: str | None = Field(default=None, max_length=255, alias="connectionId")
     model: str = Field(default="", max_length=255)
     workflow_version: str | None = Field(default=None, alias="workflowVersion", max_length=64)
@@ -740,6 +742,7 @@ async def launch_workflow_execution(
     bearer_token: str | None = None,
     pinned_workflow_snapshot: dict[str, Any] | None = None,
     trusted_workflow_execution: bool = False,
+    launch_slug: str | None = None,
 ) -> WorkflowLaunchExecution:
     raw_execution_context = launch.provenance.get("workflow_execution")
     if raw_execution_context and not trusted_workflow_execution:
@@ -792,7 +795,10 @@ async def launch_workflow_execution(
             workflow_snapshot,
             launch.gate_auto_forward_after.strip(),
         )
-    launch_slug = _resolve_launch_slug(launch, workflow)
+    # A platform launcher (A2A) pins its own stable slug so a retry recovers the
+    # session it already spawned while the session still gets a readable name.
+    if launch_slug is None:
+        launch_slug = _resolve_launch_slug(launch, workflow)
     session_name = _resolve_launch_session_name(launch, workflow, launch_slug)
     settings = request.app.state.settings
 
@@ -808,10 +814,18 @@ async def launch_workflow_execution(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    try:
+        isolated_branch = workflow_uses_isolated_branch(workflow_snapshot)
+    except WorkflowDocumentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    session_branch, base_branch = _launch_branches(
+        launch, workflow=workflow, slug=launch_slug, isolated=isolated_branch
+    )
     initiative_context = _build_workflow_initiative_context(
         workflow=workflow,
         launch=launch,
         slug=launch_slug,
+        isolated_branch=(session_branch, base_branch) if isolated_branch else None,
     )
     workflow_mimir = resolve_mimir_registry_refs(
         normalize_mimir_workload_config(
@@ -884,8 +898,8 @@ async def launch_workflow_execution(
         SpawnRequest(
             name=session_name,
             repo=launch.repo,
-            branch=launch.branch,
-            base_branch="",
+            branch=session_branch,
+            base_branch=base_branch,
             model=resolved_model,
             tracker_issue_id=f"workflow:{launch_slug}",
             tracker_issue_url="",
@@ -973,6 +987,10 @@ def _configure_child_task_a2a_runtime(
 def launch_slug_for_session_name(session_name: str) -> str:
     """The slug a launch with this session name runs under (``{slug}`` in its paths)."""
     return _slugify(session_name)[:96] or "workflow"
+
+
+#: Prefix of the branch an isolated-branch workflow's session works on.
+_ISOLATED_BRANCH_PREFIX = "workflow"
 
 
 def _resolve_launch_slug(body: WorkflowLaunchBody, workflow: WorkflowDefinition) -> str:
@@ -1109,11 +1127,40 @@ def _placement_rejection_detail(
     return f"No Guild target satisfies workflow placement ({requested}); visible targets: {visible}"
 
 
+def _launch_branches(
+    launch: WorkflowLaunchBody,
+    *,
+    workflow: WorkflowDefinition,
+    slug: str,
+    isolated: bool,
+) -> tuple[str, str]:
+    """The (working branch, base branch) a launched session clones.
+
+    An isolated workflow merges into its target only through its own merge
+    step, so its session works on a branch of its own cut from the target and
+    can never push to the target directly — for a GitOps repository, a push to
+    the target is a deploy.
+    """
+    if not isolated:
+        return launch.branch or launch.base_branch, launch.base_branch
+    target = (launch.base_branch or launch.branch).strip()
+    if not target:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{workflow.name} works on its own branch and merges into a target branch "
+                "only after its merge gate: name the target branch (base_branch)"
+            ),
+        )
+    return f"{_ISOLATED_BRANCH_PREFIX}/{slug}", target
+
+
 def _build_workflow_initiative_context(
     *,
     workflow: WorkflowDefinition,
     launch: WorkflowLaunchBody,
     slug: str,
+    isolated_branch: tuple[str, str] | None = None,
 ) -> str:
     lines = [
         "# Workflow Launch",
@@ -1121,6 +1168,19 @@ def _build_workflow_initiative_context(
         f"Workflow: {workflow.name}",
         f"Slug: {slug}",
     ]
+    if isolated_branch is not None:
+        working, target = isolated_branch
+        lines.extend(
+            [
+                "",
+                "## Branch",
+                (
+                    f"Work and commit only on `{working}`, cut from `{target}`. Never commit "
+                    f"to or push `{target}`: only the merge step merges `{working}` into "
+                    f"`{target}`, after the merge gate approves it."
+                ),
+            ]
+        )
     lines.extend(
         [
             "",

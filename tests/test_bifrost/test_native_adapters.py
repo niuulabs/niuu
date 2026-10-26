@@ -140,6 +140,7 @@ class TestAnthropicContextManagement:
     def _request(self) -> AnthropicRequest:
         return AnthropicRequest(
             model="claude-opus-5-5",
+            max_tokens=1024,
             messages=[
                 {"role": "user", "content": "hi"},
                 {"role": "assistant", "content": [{"type": "compaction", "content": "summary"}]},

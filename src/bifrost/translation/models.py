@@ -268,7 +268,11 @@ class AnthropicRequest(BaseModel):
         return {**data, "messages": kept, "system": [*system, *leading]}
 
     model: str
-    max_tokens: int = 1024
+    # The answer cap. None is "no cap": an OpenAI-compatible or Responses
+    # upstream gets none (the model's maximum output or the rest of its context
+    # window applies), and the Anthropic upstream, whose protocol requires the
+    # parameter, sends the model's maximum output from its Models API.
+    max_tokens: int | None = None
     messages: list[Message]
     system: str | list[TextBlock] | None = None
     tools: list[ToolDefinition] | None = None

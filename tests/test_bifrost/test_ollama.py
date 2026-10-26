@@ -128,9 +128,14 @@ class TestOllamaGenerateToAnthropic:
         assert result.messages[0].role == "user"
         assert result.messages[0].content == "Why is the sky blue?"
 
-    def test_default_max_tokens(self):
+    def test_no_num_predict_is_no_cap(self):
         result = ollama_generate_to_anthropic(self._req())
-        assert result.max_tokens == 1024
+        assert result.max_tokens is None
+
+    def test_unlimited_num_predict_is_no_cap(self):
+        for unlimited in (-1, -2):
+            result = ollama_generate_to_anthropic(self._req(options={"num_predict": unlimited}))
+            assert result.max_tokens is None
 
     def test_num_predict_sets_max_tokens(self):
         result = ollama_generate_to_anthropic(self._req(options={"num_predict": 512}))

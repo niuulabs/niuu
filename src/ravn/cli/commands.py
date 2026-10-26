@@ -39,6 +39,7 @@ from ravn.domain.models import (
 from ravn.domain.models import (
     OutputMode as OutputMode,
 )
+from ravn.domain.notification_channel import current_notification_channel
 from ravn.domain.profile import RavnProfile
 from ravn.ports.checkpoint import CheckpointPort
 from ravn.ports.executor import ExecutionAgentPort
@@ -935,6 +936,7 @@ def tool_mcp(
     task_id: str = typer.Option("", "--task-id", hidden=True),
     traceparent: str = typer.Option("", "--traceparent", hidden=True),
     tracestate: str = typer.Option("", "--tracestate", hidden=True),
+    notification_channel: str = typer.Option("", "--notification-channel", hidden=True),
 ) -> None:
     """Serve the active Ravn ToolPort set over MCP stdio."""
     if config:
@@ -960,6 +962,11 @@ def tool_mcp(
         effective_persona = persona or (ravn_profile.persona if ravn_profile else "")
         persona_config = _require_persona(effective_persona, project_config, settings=settings)
         tools = _build_tool_mcp_tools(settings, persona_config=persona_config)
+        notification_outbox = _tool_mcp_notification_outbox(settings, persona_config)
+        if notification_outbox is not None:
+            from ravn.adapters.tools.notify import ResidentNotifyTool
+
+            tools.append(ResidentNotifyTool(notification_outbox))
 
         from ravn.adapters.mcp.tool_port_server import ToolPortMcpServer
 
@@ -986,9 +993,33 @@ def tool_mcp(
             enabled="build_tool" in allowed_tools,
             settings=settings,
         )
-        asyncio.run(server.run_stdio())
+        # What the agent notifies from this server names the channel its turn runs in;
+        # asyncio.run copies this context into the server's task.
+        channel_token = current_notification_channel.set(notification_channel or None)
+        try:
+            asyncio.run(server.run_stdio())
+        finally:
+            current_notification_channel.reset(channel_token)
+            if notification_outbox is not None:
+                notification_outbox.close()
     finally:
         shutdown_observability()
+
+
+def _tool_mcp_notification_outbox(settings: Settings, persona_config: Any | None) -> Any | None:
+    """The resident's outbox for the ``notify`` tool a CLI agent reaches over MCP.
+
+    A CLI-backed persona (Codex, Claude Code) runs its tools in this server, not in the
+    daemon, so it gets ``notify`` here on the same terms as the daemon's own agents:
+    wherever the outbox exists, unless disabled or forbidden. This process writes the
+    resident's outbox file directly; Forge reads it on its next pull.
+    """
+    from ravn.cli.daemon_runtime import _notify_tool_allowed
+    from ravn.cli.resident_runtime_wiring import build_resident_notification_outbox
+
+    if not _notify_tool_allowed(settings, persona_config):
+        return None
+    return build_resident_notification_outbox(settings)
 
 
 def _build_tool_mcp_tools(settings: Settings, *, persona_config: Any | None) -> list[Any]:
@@ -1418,13 +1449,16 @@ def _make_channel_tasks(
     gw: Any,
     *,
     notifications: Any | None = None,
+    voice_factory: Any | None = None,
 ) -> list[tuple[Any, str]]:
     """Create asyncio tasks for the extended gateway channel adapters.
 
     Returns a list of ``(task, name)`` pairs so callers can populate both
     a task list and a display list without duplicating the if-chain.
     ``notifications`` is the resident notification outbox the OpenClaw shim
-    serves to Forge (``build_resident_notification_outbox``).
+    serves to Forge (``build_resident_notification_outbox``). ``voice_factory``
+    builds the voice channel for the runtime's persona
+    (``ravn.cli.voice_wiring.build_voice_gateway``).
     """
     from ravn.adapters.channels.gateway_discord import DiscordGateway
     from ravn.adapters.channels.gateway_matrix import MatrixGateway
@@ -1453,6 +1487,14 @@ def _make_channel_tasks(
             WhatsAppGateway(channels_cfg.whatsapp, gw).run(), name="whatsapp"
         )
         pairs.append((task, "whatsapp"))
+    voice_cfg = getattr(channels_cfg, "voice", None)
+    if voice_cfg is not None and voice_cfg.enabled:
+        if voice_factory is None:
+            raise RuntimeError(
+                "gateway.channels.voice is enabled but this runtime builds no voice channel"
+            )
+        task = asyncio.create_task(voice_factory().run(), name="voice")
+        pairs.append((task, "voice"))
     return pairs
 
 
@@ -1589,7 +1631,12 @@ async def _run_gateway(
         ht = HttpGateway(settings.gateway.channels.http, gw)
         tasks.append(asyncio.create_task(ht.run(), name="http"))
 
-    for task, _ in _make_channel_tasks(settings.gateway.channels, gw):
+    def _voice_factory() -> Any:
+        from ravn.cli.voice_wiring import build_voice_gateway
+
+        return build_voice_gateway(settings, persona_config)
+
+    for task, _ in _make_channel_tasks(settings.gateway.channels, gw, voice_factory=_voice_factory):
         tasks.append(task)
 
     typer.echo(f"Gateway started ({len(tasks)} channel(s) active). Press Ctrl+C to stop.")

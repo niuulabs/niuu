@@ -23,6 +23,12 @@ from niuu.domain.models import RegisteredInstance
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_log(value: object) -> str:
+    """Sanitize a value for safe log output (prevent log injection)."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
 _PATH = "/api/v1/tokens/workload/delegations"
 #: Instance config key naming the exchange verifier of the instance's cluster.
 VERIFIER_CONFIG_KEY = "workload_verifier"
@@ -103,6 +109,10 @@ class HttpResidentDelegationRegistrar:
                     if deleted.status_code == 204:
                         revoked += 1
         except (httpx.HTTPError, KeyError, ValueError) as exc:
-            logger.error("Revoking delegations of resident %s failed: %s", resident_id, exc)
+            logger.error(
+                "Revoking delegations of resident %s failed: %s",
+                _sanitize_log(resident_id),
+                _sanitize_log(exc),
+            )
             return {"status": "failed", "detail": str(exc)}
         return {"status": "revoked", "count": revoked}

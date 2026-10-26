@@ -385,7 +385,6 @@ def _build_llm(settings: Settings) -> Any:
     kwargs = _inject_secrets(dict(prov.kwargs), prov.secret_kwargs_env)
 
     kwargs.setdefault("model", settings.effective_model())
-    kwargs.setdefault("max_tokens", settings.effective_max_tokens())
     kwargs.setdefault("max_retries", settings.llm.max_retries)
     kwargs.setdefault("retry_base_delay", settings.llm.retry_base_delay)
     kwargs.setdefault("timeout", settings.llm.timeout)

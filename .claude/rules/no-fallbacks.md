@@ -71,3 +71,5 @@ one. Changing provider is a deploy, not a runtime branch.
 - Tests that assert "does not crash", "continues", or "falls back" are
   encoding the defect. Rewrite them to assert the raise — several such tests
   are why these bugs survived for months.
+- A cap that is hit silently (a token budget, a turn or retry count, a
+  truncation) is the same defect; see `no-hidden-limits.md`.

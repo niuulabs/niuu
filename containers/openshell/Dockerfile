@@ -1,15 +1,15 @@
 # Security fixes awaiting stable CPython releases; no interpreter ABI changes.
-FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm@sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83 AS python-security
+FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm@sha256:945c2676dc2b18e0c1f16879244122c57c0ffede60006bf3df159c507a31bcae AS python-security
 COPY containers/python-security/ /security/
 RUN apt-get update && apt-get install -y --no-install-recommends patch \
     && python /security/build.py /patched-stdlib
 
-FROM ghcr.io/astral-sh/uv:0.12.24@sha256:3af4716e991d6956a41e573eab705d0ee08500cd829ed30293eb8472f372c65a AS uv
+FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
 
 # The sandbox base ships gh v2.102.0 (the latest release), built with Go 1.27.1 and
 # golang.org/x/net v0.58.0 (GO-2026-6603/6604/6611/6612). Replace it with the same
-# release built with Go 1.27.2 and the patched module until upstream ships them.
-FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.23@sha256:9e45f0eb4a63ed37ad6e604950407558b7c738e34e015ae77a5d4ad369cde079 AS gh-build
+# release built with Go 1.27.3 and the patched module until upstream ships them.
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:754d5200fc3edae76d3b6598a9a3fac7e74981ee6a5413ab955025f185753ef2 AS gh-build
 ARG TARGETARCH
 WORKDIR /src
 RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.102.0.tar.gz -O /tmp/gh.tar.gz \
@@ -32,14 +32,14 @@ ARG OS_PACKAGES_REFRESH=
 # Refresh inherited runtime packages and the Python managed by uv.
 RUN apt-get update && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/* \
-    && UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python uv python upgrade 3.14 \
-    && PYTHON_BIN=$(UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python uv python find 3.14.8) \
+    && UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python uv python install 3.14.9 \
+    && PYTHON_BIN=$(UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python uv python find 3.14.9) \
     && ln -sf "$PYTHON_BIN" /usr/local/bin/python \
     && ln -sf "$PYTHON_BIN" /usr/local/bin/python3 \
     && ln -sf "$PYTHON_BIN" /sandbox/.venv/bin/python \
-    && sed -i 's/3.14.3/3.14.8/g' /sandbox/.venv/pyvenv.cfg \
+    && sed -i 's/3.14.3/3.14.9/g' /sandbox/.venv/pyvenv.cfg \
     && UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python uv python uninstall 3.14.3 \
-    && uv pip install --python /sandbox/.venv/bin/python pip==26.2.1
+    && uv pip install --python /sandbox/.venv/bin/python pip==26.2.2
 
 RUN --mount=type=bind,from=python-security,source=/patched-stdlib,target=/patched-stdlib \
     --mount=type=bind,source=containers/python-security,target=/security \
@@ -94,7 +94,7 @@ COPY containers/skuld/npm-tools/package.json containers/skuld/npm-tools/package-
 RUN cd /opt/skuld-tools \
     && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
     && rm -rf /tmp/npm-cache /tmp/grok-install \
-    && sh /opt/npm-bootstrap/replace-nested.sh /opt/skuld-tools node_modules/@earendil-works/pi-coding-agent/node_modules brace-expansion \
+    && sh /opt/npm-bootstrap/replace-nested.sh /opt/skuld-tools node_modules/@earendil-works/pi-coding-agent/node_modules undici \
     && rm -rf /usr/lib/node_modules/@openai \
     && mkdir -p /usr/lib/node_modules \
     && mv /opt/skuld-tools/node_modules/@openai /usr/lib/node_modules/@openai \

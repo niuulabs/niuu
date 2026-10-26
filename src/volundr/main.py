@@ -446,20 +446,27 @@ async def _reconcile_active_loop(
     session_service: SessionService,
     *,
     interval_seconds: int,
+    periodic: bool = True,
 ) -> None:
-    """Periodically reconcile session rows against pod_manager.status().
+    """Reconcile session rows against pod_manager.status(), starting at once.
 
     Pod-status authoritative (INV-9): active rows follow runtime state, while
     Kubernetes terminal rows release orphaned runtime resources. This is the
     always-on truth mechanism the heartbeat reaper could not safely provide.
+
+    The first pass runs immediately and replaces the startup pass that used to
+    run before the server bound its port: it makes a runtime call per stored
+    row, which must not hold the listener past its liveness window. With
+    ``periodic`` off (``session_liveness.reconcile_enabled: false``) only that
+    first pass runs.
     """
     logger.info(
-        "Active-session reconcile loop started, interval=%ds",
+        "Active-session reconcile loop started, interval=%ds periodic=%s",
         interval_seconds,
+        periodic,
     )
     while True:
         try:
-            await asyncio.sleep(interval_seconds)
             count = await session_service.reconcile_active_sessions()
             if count:
                 logger.info("Reconcile: corrected %d divergent session(s)", count)
@@ -468,6 +475,13 @@ async def _reconcile_active_loop(
             break
         except Exception:
             logger.exception("Active-session reconcile iteration failed")
+        if not periodic:
+            return
+        try:
+            await asyncio.sleep(interval_seconds)
+        except asyncio.CancelledError:
+            logger.info("Active-session reconcile loop cancelled")
+            break
 
 
 async def _reconcile_resident_runtimes_loop(
@@ -477,14 +491,20 @@ async def _reconcile_resident_runtimes_loop(
     flock_adapter: ResidentFlockAdapter | None = None,
     notification_relay: ResidentNotificationRelay | None = None,
 ) -> None:
-    """Periodically converge durable resident records with backend state."""
+    """Converge durable resident records with backend state, starting at once.
+
+    The first pass runs immediately in the background. It used to run before
+    the server bound its port, but a pass can upgrade every resident — on
+    OpenShell that deletes each sandbox and waits for the deletion — which held
+    startup past the liveness window and crash-looped Völundr on every
+    version bump.
+    """
     logger.info(
         "Resident runtime reconcile loop started, interval=%.1fs",
         interval_seconds,
     )
     while True:
         try:
-            await asyncio.sleep(interval_seconds)
             await service.reconcile_all()
             if flock_adapter is not None:
                 await flock_adapter.sync()
@@ -495,6 +515,11 @@ async def _reconcile_resident_runtimes_loop(
             break
         except Exception:
             logger.exception("Resident runtime reconcile iteration failed")
+        try:
+            await asyncio.sleep(interval_seconds)
+        except asyncio.CancelledError:
+            logger.info("Resident runtime reconcile loop cancelled")
+            break
 
 
 def _create_delivery_service_factory(config, integrations):
@@ -1046,6 +1071,15 @@ def create_app(
                 )
             else:
                 integration_repo = PostgresIntegrationRepository(integration_pool)
+            # Residents get the owner's credentials their profile declares, injected the
+            # same way as a session's (OpenBao), bound to the resident's own identity.
+            for controller in {id(c): c for c in [pod_manager, *resident_controllers]}.values():
+                if hasattr(controller, "set_resident_credentials"):
+                    controller.set_resident_credentials(
+                        secret_injection=secret_injection,
+                        integrations=integration_repo,
+                        credential_store=credential_store,
+                    )
             # Outside mini mode a push device is an integration: a messaging connection
             # whose token lives in the credential store with every other integration secret.
             if settings.push.uses_integration_devices(mini_mode=settings.local_mounts.mini_mode):
@@ -1893,14 +1927,15 @@ def create_app(
             # default and safe: it only corrects a row when pod_manager.status()
             # says the session is actually gone, so it never false-reaps an
             # idle-but-alive session the way the heartbeat reaper would.
-            reconcile_task: asyncio.Task | None = None
-            if settings.session_liveness.reconcile_enabled:
-                reconcile_task = asyncio.create_task(
-                    _reconcile_active_loop(
-                        session_service,
-                        interval_seconds=settings.session_liveness.reconcile_interval_seconds,
-                    )
+            # Runs its first pass immediately even when the periodic loop is
+            # disabled, as the startup pass it replaces did.
+            reconcile_task: asyncio.Task | None = asyncio.create_task(
+                _reconcile_active_loop(
+                    session_service,
+                    interval_seconds=settings.session_liveness.reconcile_interval_seconds,
+                    periodic=settings.session_liveness.reconcile_enabled,
                 )
+            )
             resident_reconcile_task = asyncio.create_task(
                 _reconcile_resident_runtimes_loop(
                     resident_runtime_service,
@@ -1921,14 +1956,11 @@ def create_app(
             if execution_credential_service is not None:
                 await execution_credential_service.start()
 
-            # Reconcile sessions stuck in PROVISIONING after a restart
+            # Re-launch readiness polls for sessions left PROVISIONING by a
+            # restart. This only schedules tasks; the session and resident
+            # reconcile passes run in their loops above so a slow runtime never
+            # holds the listener past its liveness window.
             await session_service.reconcile_provisioning_sessions()
-            await session_service.reconcile_active_sessions()
-            await resident_runtime_service.reconcile_all()
-            if resident_flock_adapter is not None:
-                await resident_flock_adapter.sync()
-            if resident_notification_relay is not None:
-                await resident_notification_relay.sync()
 
             if compute_pool is not None:
                 compute_pool_task = asyncio.create_task(compute_pool.run())

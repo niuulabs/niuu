@@ -7,8 +7,12 @@ import json
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+import yaml
+
+from ravn.cap_telemetry import record_cap_hit, record_truncation
 from ravn.domain.models import ToolResult
 from ravn.ports.tool import ToolPort
 
@@ -23,7 +27,7 @@ class KubernetesClients:
 
 
 #: Builds the clients for one kubeconfig context (tests inject their own).
-ClientFactory = Callable[[str | None, str | None], Awaitable[KubernetesClients]]
+ClientFactory = Callable[[str, str], Awaitable[KubernetesClients]]
 
 
 class KubernetesInspectTool(ToolPort):
@@ -34,10 +38,9 @@ class KubernetesInspectTool(ToolPort):
     binary in the image.
 
     With a kubeconfig that names several clusters (a Teleport Machine ID
-    kubeconfig, for example), calls without ``cluster`` use its current
-    context. A named ``cluster`` overrides that context. What the tool may
-    read on each cluster is whatever that identity's RBAC grants, so read-only
-    stays enforced by the cluster too.
+    kubeconfig, for example) every call names its ``cluster``; the tool never
+    guesses one. What the tool may read on each cluster is whatever that
+    identity's RBAC grants, so read-only stays enforced by the cluster too.
     """
 
     def __init__(
@@ -51,7 +54,7 @@ class KubernetesInspectTool(ToolPort):
         batch_v1: Any | None = None,
         max_log_lines: int = 120,
         max_configmap_value_chars: int = 4000,
-        max_configmap_tail_bytes: int = 4000,
+        max_list_items: int = 100,
         client_factory: ClientFactory | None = None,
     ) -> None:
         self._in_cluster = in_cluster
@@ -63,9 +66,9 @@ class KubernetesInspectTool(ToolPort):
         self._loaded = core_v1 is not None
         self._max_log_lines = max(1, max_log_lines)
         self._max_configmap_value_chars = max(1, max_configmap_value_chars)
-        self._max_configmap_tail_bytes = max(1, max_configmap_tail_bytes)
+        self._max_list_items = max(1, max_list_items)
         self._client_factory = client_factory or _clients_for_context
-        self._clients_by_context: dict[str | None, KubernetesClients] = {}
+        self._clients_by_context: dict[str, KubernetesClients] = {}
 
     @property
     def name(self) -> str:
@@ -76,7 +79,7 @@ class KubernetesInspectTool(ToolPort):
         return (
             "Read-only Kubernetes inspection for resident Valkyries. Supports "
             "pod status, object events, pod logs, workload status (images, rollout "
-            "progress), selected ConfigMap contents, and node status using the in-cluster "
+            "progress), ConfigMap contents, and node status using the in-cluster "
             "service account or a kubeconfig. When the kubeconfig spans several "
             "clusters, `clusters` lists them and every other action names one."
         )
@@ -90,6 +93,7 @@ class KubernetesInspectTool(ToolPort):
                     "type": "string",
                     "enum": [
                         "clusters",
+                        "pods",
                         "inspect_pod",
                         "object_events",
                         "pod_logs",
@@ -102,8 +106,8 @@ class KubernetesInspectTool(ToolPort):
                 "cluster": {
                     "type": "string",
                     "description": (
-                        "Optional cluster to inspect, as listed by the `clusters` action. "
-                        "When omitted, the kubeconfig current-context is used."
+                        "Cluster to inspect, as listed by the `clusters` action. "
+                        "Required when the kubeconfig spans more than one cluster."
                     ),
                 },
                 "namespace": {
@@ -113,6 +117,17 @@ class KubernetesInspectTool(ToolPort):
                 "kind": {
                     "type": "string",
                     "description": "Object kind for events/workloads.",
+                },
+                "label_selector": {
+                    "type": "string",
+                    "description": (
+                        "pods only: Kubernetes label selector, e.g. "
+                        "'app.kubernetes.io/instance=regin'."
+                    ),
+                },
+                "name_prefix": {
+                    "type": "string",
+                    "description": "pods only: keep pods whose name starts with this.",
                 },
                 "name": {
                     "type": "string",
@@ -125,18 +140,6 @@ class KubernetesInspectTool(ToolPort):
                 "tail_lines": {
                     "type": "integer",
                     "description": "Maximum pod log lines to return.",
-                },
-                "key": {
-                    "type": "string",
-                    "description": "Optional ConfigMap data key to return by itself.",
-                },
-                "tail_bytes": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": (
-                        "Optional trailing bytes of the selected ConfigMap key. "
-                        "Requires key and is capped by the configured read limit."
-                    ),
                 },
             },
             "required": ["action"],
@@ -164,6 +167,8 @@ class KubernetesInspectTool(ToolPort):
                 )
             await self._ensure_clients(str(input.get("cluster") or "").strip())
             match action:
+                case "pods":
+                    payload = await self._pods(input)
                 case "inspect_pod":
                     payload = await self._inspect_pod(input)
                 case "object_events":
@@ -190,40 +195,30 @@ class KubernetesInspectTool(ToolPort):
             )
         return ToolResult(tool_call_id="", content=json.dumps(payload, indent=2, sort_keys=True))
 
-    def _kubeconfig(self) -> str | None:
-        return self._kubeconfig_path or os.environ.get(self._kubeconfig_env) or None
-
-    def _kubeconfig_contexts(self) -> tuple[list[str], str | None]:
-        """List contexts through Kubernetes so path-list kubeconfigs are merged."""
-        try:
-            from kubernetes_asyncio import config
-        except ImportError as exc:  # pragma: no cover - depends on installed extras
-            raise RuntimeError("kubernetes_asyncio is required for kubernetes_inspect") from exc
-        contexts, current_context = config.list_kube_config_contexts(config_file=self._kubeconfig())
-        return (
-            sorted(str(item["name"]) for item in contexts),
-            str(current_context["name"]) if current_context else None,
-        )
+    def _kubeconfig(self) -> str:
+        return self._kubeconfig_path or os.environ.get(self._kubeconfig_env, "")
 
     def _contexts(self) -> list[str]:
-        contexts, _ = self._kubeconfig_contexts()
-        return contexts
+        kubeconfig = self._kubeconfig()
+        if not kubeconfig:
+            raise RuntimeError(
+                "kubernetes_inspect has no kubeconfig: set tools.kubernetes.kubeconfig_path "
+                f"or {self._kubeconfig_env}, or use in_cluster"
+            )
+        document = yaml.safe_load(Path(kubeconfig).read_text(encoding="utf-8")) or {}
+        return sorted(str(item["name"]) for item in document.get("contexts") or [])
 
     def _clusters(self) -> list[str]:
         if self._in_cluster or self._loaded:
             return ["(this cluster)"]
         return self._contexts()
 
-    def _resolve_context(self, cluster: str) -> str | None:
-        contexts, current_context = self._kubeconfig_contexts()
+    def _resolve_context(self, cluster: str) -> str:
+        contexts = self._contexts()
         if not cluster:
-            if not self._kubeconfig():
-                return None
-            if not current_context:
-                return None
-            if current_context not in contexts:
-                raise ValueError(f"unknown current-context {current_context!r}")
-            return current_context
+            if len(contexts) == 1:
+                return contexts[0]
+            raise ValueError(f"cluster is required; available clusters: {', '.join(contexts)}")
         matches = [
             context for context in contexts if context == cluster or context.endswith(f"-{cluster}")
         ]
@@ -251,15 +246,44 @@ class KubernetesInspectTool(ToolPort):
             self._batch_v1 = client.BatchV1Api()
             self._loaded = True
             return
-        kubeconfig = self._kubeconfig()
-        context = self._resolve_context(cluster) if kubeconfig or cluster else None
+        context = self._resolve_context(cluster)
         clients = self._clients_by_context.get(context)
         if clients is None:
-            clients = await self._client_factory(kubeconfig, context)
+            clients = await self._client_factory(self._kubeconfig(), context)
             self._clients_by_context[context] = clients
         self._core_v1 = clients.core_v1
         self._apps_v1 = clients.apps_v1
         self._batch_v1 = clients.batch_v1
+
+    async def _pods(self, input: dict) -> dict[str, Any]:  # noqa: A002
+        namespace = str(input.get("namespace") or "").strip()
+        if not namespace:
+            raise ValueError("namespace is required for pods")
+        selector = str(input.get("label_selector") or "").strip()
+        prefix = str(input.get("name_prefix") or "").strip()
+        kwargs: dict[str, Any] = {"label_selector": selector} if selector else {}
+        listed = await _maybe_await(self._core_v1.list_namespaced_pod(namespace, **kwargs))
+        pods = [
+            pod
+            for pod in list(getattr(listed, "items", listed) or [])
+            if _field(_field(pod, "metadata", default={}), "name", default="").startswith(prefix)
+        ]
+        shown = pods[: self._max_list_items]
+        if len(pods) > len(shown):
+            record_cap_hit(
+                "tools.kubernetes.max_list_items",
+                f"kubernetes_inspect listed {len(shown)} of {len(pods)} pods in {namespace}; "
+                "raise tools.kubernetes.max_list_items, or narrow with a selector or prefix",
+            )
+        return {
+            "action": "pods",
+            "namespace": namespace,
+            "label_selector": selector,
+            "name_prefix": prefix,
+            "total": len(pods),
+            "truncated": len(pods) > len(shown),
+            "pods": [_pod_summary(pod) for pod in shown],
+        }
 
     async def _inspect_pod(self, input: dict) -> dict[str, Any]:  # noqa: A002
         namespace, name = _namespace_name(input)
@@ -316,61 +340,22 @@ class KubernetesInspectTool(ToolPort):
         namespace, name = _namespace_name(input)
         configmap = await _maybe_await(self._core_v1.read_namespaced_config_map(name, namespace))
         data = dict(_field(configmap, "data", default={}) or {})
-        key = str(input.get("key") or "").strip()
-        tail_bytes = input.get("tail_bytes")
-        if tail_bytes is not None and not key:
-            raise ValueError("key is required when tail_bytes is set")
-        if key:
-            return self._selected_configmap_data(
-                configmap=configmap,
-                namespace=namespace,
-                name=name,
-                data=data,
-                key=key,
-                tail_bytes=tail_bytes,
-            )
+        limit = self._max_configmap_value_chars
+        for key, value in data.items():
+            if len(str(value)) > limit:
+                record_truncation(
+                    "tools.kubernetes.max_configmap_value_chars",
+                    what=f"configmap {namespace}/{name} key {key!r}",
+                    kept=limit,
+                    total=len(str(value)),
+                )
         return {
             "action": "configmap",
             "namespace": namespace,
             "name": name,
             "metadata": _metadata(configmap),
-            "data": {
-                data_key: str(value)[: self._max_configmap_value_chars]
-                for data_key, value in sorted(data.items())
-            },
-            "truncated_keys": sorted(
-                data_key
-                for data_key, value in data.items()
-                if len(str(value)) > self._max_configmap_value_chars
-            ),
-        }
-
-    def _selected_configmap_data(
-        self,
-        *,
-        configmap: Any,
-        namespace: str,
-        name: str,
-        data: dict[str, Any],
-        key: str,
-        tail_bytes: Any,
-    ) -> dict[str, Any]:
-        if key not in data:
-            raise ValueError(f"ConfigMap data key {key!r} was not found")
-        value = str(data[key])
-        if tail_bytes is None:
-            selected_value = value[: self._max_configmap_value_chars]
-            is_truncated = len(value) > self._max_configmap_value_chars
-        else:
-            limit = max(1, min(int(tail_bytes), self._max_configmap_tail_bytes))
-            selected_value, is_truncated = _tail_bytes(value, limit)
-        return {
-            "action": "configmap",
-            "namespace": namespace,
-            "name": name,
-            "metadata": _metadata(configmap),
-            "data": {key: selected_value},
-            "truncated_keys": [key] if is_truncated else [],
+            "data": {key: str(value)[:limit] for key, value in sorted(data.items())},
+            "truncated_keys": sorted(key for key, value in data.items() if len(str(value)) > limit),
         }
 
     async def _node(self, input: dict) -> dict[str, Any]:  # noqa: A002
@@ -381,7 +366,7 @@ class KubernetesInspectTool(ToolPort):
         return {"action": "node", "name": name, "node": _node(node)}
 
 
-async def _clients_for_context(kubeconfig: str | None, context: str | None) -> KubernetesClients:
+async def _clients_for_context(kubeconfig: str, context: str) -> KubernetesClients:
     try:
         from kubernetes_asyncio import client, config
     except ImportError as exc:  # pragma: no cover - depends on installed extras
@@ -392,16 +377,6 @@ async def _clients_for_context(kubeconfig: str | None, context: str | None) -> K
         apps_v1=client.AppsV1Api(api_client),
         batch_v1=client.BatchV1Api(api_client),
     )
-
-
-def _tail_bytes(value: str, limit: int) -> tuple[str, bool]:
-    encoded = value.encode("utf-8")
-    if len(encoded) <= limit:
-        return value, False
-    tail = encoded[-limit:]
-    while tail and tail[0] & 0b11000000 == 0b10000000:
-        tail = tail[1:]
-    return tail.decode("utf-8"), True
 
 
 def _namespace_name(input: dict) -> tuple[str, str]:  # noqa: A002
@@ -503,6 +478,33 @@ def _pod(pod: Any) -> dict[str, Any]:
                 _field(status, "container_statuses", "containerStatuses", default=[]) or []
             )
         ],
+    }
+
+
+def _pod_summary(pod: Any) -> dict[str, Any]:
+    status = _field(pod, "status", default={}) or {}
+    spec = _field(pod, "spec", default={}) or {}
+    meta = _field(pod, "metadata", default={}) or {}
+    statuses = list(_field(status, "container_statuses", "containerStatuses", default=[]) or [])
+    ready = sum(bool(_field(s, "ready", default=False)) for s in statuses)
+    return {
+        "name": _field(meta, "name", default=""),
+        "phase": _field(status, "phase", default=""),
+        "ready": f"{ready}/{len(statuses)}",
+        "restarts": sum(
+            int(_field(s, "restart_count", "restartCount", default=0) or 0) for s in statuses
+        ),
+        "node_name": _field(spec, "node_name", "nodeName", default=""),
+        "started_at": _iso(_field(status, "start_time", "startTime")),
+        "owner": next(
+            (
+                f"{_field(ref, 'kind', default='')}/{_field(ref, 'name', default='')}"
+                for ref in list(
+                    _field(meta, "owner_references", "ownerReferences", default=[]) or []
+                )
+            ),
+            "",
+        ),
     }
 
 

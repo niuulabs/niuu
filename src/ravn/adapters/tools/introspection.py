@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 
 from ravn.budget import IterationBudget
+from ravn.cap_telemetry import require_complete
 from ravn.domain.models import Session, ToolResult
 from ravn.ports.llm import LLMPort
 from ravn.ports.memory import MemoryPort
@@ -298,7 +299,9 @@ class RavnReflectTool(ToolPort):
         session: Session,
         *,
         model: str,
-        max_tokens: int = 512,
+        # None sends no cap: a reasoning model thinks before the assessment,
+        # and the old 512 ended inside that thinking.
+        max_tokens: int | None = None,
     ) -> None:
         self._llm = llm
         self._session = session
@@ -376,8 +379,16 @@ class RavnReflectTool(ToolPort):
                 model=self._model,
                 max_tokens=self._max_tokens,
             )
+            require_complete(
+                response,
+                knob="ravn_reflect",
+                budget=self._max_tokens,
+                model=self._model,
+                purpose="the mid-task reflection",
+            )
         except Exception as exc:
-            logger.warning("ravn_reflect: LLM call failed: %s", exc)
+            # Returned to the model as a failed tool call, not swallowed.
+            logger.error("ravn_reflect: reflection failed: %s", exc)
             return ToolResult(
                 tool_call_id="",
                 content=f"Reflection failed: {exc}",

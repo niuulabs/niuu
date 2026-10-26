@@ -41,15 +41,15 @@ _TING_WORKFLOWS_PATH = "/api/v1/ting/workflows"
 async def _client(
     base_url: str,
     timeout: float,
-    pat_token: str = "",
+    access_token: str = "",
     *,
     workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
     exchange_url: str = "",
     audiences: list[str] | None = None,
 ) -> httpx.AsyncClient:
     headers: dict[str, str] = {}
-    if pat_token:
-        headers["Authorization"] = f"Bearer {pat_token}"
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
     else:
         token = await _exchange_workload_token(
             base_url,
@@ -94,7 +94,7 @@ class _PlatformAuthMixin:
         self,
         base_url: str = _DEFAULT_BASE_URL,
         timeout: float = _DEFAULT_TIMEOUT,
-        pat_token: str = "",
+        access_token: str = "",
         workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
         exchange_url: str = "",
         audiences: list[str] | None = None,
@@ -104,7 +104,7 @@ class _PlatformAuthMixin:
         self._set_platform_auth(
             base_url=base_url,
             timeout=timeout,
-            pat_token=pat_token,
+            access_token=access_token,
             workload_token_file=workload_token_file,
             exchange_url=exchange_url,
             audiences=audiences,
@@ -115,14 +115,14 @@ class _PlatformAuthMixin:
         *,
         base_url: str,
         timeout: float,
-        pat_token: str,
+        access_token: str,
         workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
         exchange_url: str = "",
         audiences: list[str] | None = None,
     ) -> None:
         self._base_url = base_url
         self._timeout = timeout
-        self._pat_token = pat_token
+        self._access_token = access_token
         self._workload_token_file = workload_token_file
         self._exchange_url = exchange_url
         self._audiences = audiences or _DEFAULT_WORKLOAD_AUDIENCES
@@ -131,7 +131,7 @@ class _PlatformAuthMixin:
         return await _client(
             self._base_url,
             self._timeout,
-            self._pat_token,
+            self._access_token,
             workload_token_file=self._workload_token_file,
             exchange_url=self._exchange_url,
             audiences=self._audiences,
@@ -188,7 +188,7 @@ class VolundrSessionTool(_PlatformAuthMixin, ToolPort):
         self,
         base_url: str = _DEFAULT_BASE_URL,
         timeout: float = _DEFAULT_TIMEOUT,
-        pat_token: str = "",
+        access_token: str = "",
         workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
         exchange_url: str = "",
         audiences: list[str] | None = None,
@@ -196,7 +196,7 @@ class VolundrSessionTool(_PlatformAuthMixin, ToolPort):
         super().__init__(
             base_url=base_url,
             timeout=timeout,
-            pat_token=pat_token,
+            access_token=access_token,
             workload_token_file=workload_token_file,
             exchange_url=exchange_url,
             audiences=audiences,
@@ -371,7 +371,7 @@ class VolundrGitTool(_PlatformAuthMixin, ToolPort):
         self,
         base_url: str = _DEFAULT_BASE_URL,
         timeout: float = _DEFAULT_TIMEOUT,
-        pat_token: str = "",
+        access_token: str = "",
         workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
         exchange_url: str = "",
         audiences: list[str] | None = None,
@@ -379,7 +379,7 @@ class VolundrGitTool(_PlatformAuthMixin, ToolPort):
         super().__init__(
             base_url=base_url,
             timeout=timeout,
-            pat_token=pat_token,
+            access_token=access_token,
             workload_token_file=workload_token_file,
             exchange_url=exchange_url,
             audiences=audiences,
@@ -604,7 +604,7 @@ class TingSagaTool(_PlatformAuthMixin, ToolPort):
         self,
         base_url: str = _DEFAULT_BASE_URL,
         timeout: float = _DEFAULT_TIMEOUT,
-        pat_token: str = "",
+        access_token: str = "",
         workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
         exchange_url: str = "",
         audiences: list[str] | None = None,
@@ -612,7 +612,7 @@ class TingSagaTool(_PlatformAuthMixin, ToolPort):
         super().__init__(
             base_url=base_url,
             timeout=timeout,
-            pat_token=pat_token,
+            access_token=access_token,
             workload_token_file=workload_token_file,
             exchange_url=exchange_url,
             audiences=audiences,
@@ -834,7 +834,7 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
         self,
         base_url: str = _DEFAULT_BASE_URL,
         timeout: float = _DEFAULT_TIMEOUT,
-        pat_token: str = "",
+        access_token: str = "",
         workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
         exchange_url: str = "",
         audiences: list[str] | None = None,
@@ -844,7 +844,7 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
         super().__init__(
             base_url=base_url,
             timeout=timeout,
-            pat_token=pat_token,
+            access_token=access_token,
             workload_token_file=workload_token_file,
             exchange_url=exchange_url,
             audiences=audiences,
@@ -1530,7 +1530,7 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
         self,
         base_url: str = _DEFAULT_BASE_URL,
         timeout: float = _DEFAULT_TIMEOUT,
-        pat_token: str = "",
+        access_token: str = "",
         workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
         exchange_url: str = "",
         audiences: list[str] | None = None,
@@ -1538,7 +1538,7 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
         super().__init__(
             base_url=base_url,
             timeout=timeout,
-            pat_token=pat_token,
+            access_token=access_token,
             workload_token_file=workload_token_file,
             exchange_url=exchange_url,
             audiences=audiences,

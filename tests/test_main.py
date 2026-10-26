@@ -1,5 +1,6 @@
 """Tests for the main application factory."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,6 +16,8 @@ from volundr.main import (
     _bootstrap_startup_schema,
     _ensure_preview_cache_dir_writable,
     _load_bifrost_catalog,
+    _reconcile_active_loop,
+    _reconcile_resident_runtimes_loop,
     create_app,
 )
 
@@ -227,6 +230,53 @@ class TestLifespan:
                 assert response.status_code == 200
 
         assert events[:3] == ["external_modules", "bootstrap", "database_pool"]
+
+    def test_health_answers_while_resident_reconcile_is_still_running(self) -> None:
+        """A resident pass that upgrades sandboxes for minutes must not gate the listener."""
+        import threading
+
+        from fastapi.testclient import TestClient
+
+        mock_pool = AsyncMock()
+        mock_pool.get_max_size = MagicMock(return_value=10)
+        started = threading.Event()
+
+        @asynccontextmanager
+        async def _mock_db_pool(_config):
+            yield mock_pool
+
+        async def _never_finishes(_self) -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        with (
+            patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
+            patch("volundr.main.database_pool", _mock_db_pool),
+            patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_provisioning_sessions",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_active_sessions",
+                new=AsyncMock(return_value=0),
+            ),
+            patch(
+                "volundr.domain.services.resident_runtime.ResidentRuntimeService.reconcile_all",
+                new=_never_finishes,
+            ),
+        ):
+            app = create_app()
+            with TestClient(app) as client:
+                assert started.wait(timeout=5)
+                assert client.get("/health").status_code == 200
 
     def test_lifespan_rejects_durable_compute_policy_before_health(self) -> None:
         """A persisted policy cannot make the app healthy with an invalid profile."""
@@ -804,3 +854,68 @@ async def test_periodic_broadcast_sends_a_figure_less_stats_tick_then_a_heartbea
 
     assert (tick.type, tick.data) == (EventType.STATS_UPDATED, {})
     assert heartbeat.type is EventType.HEARTBEAT
+
+
+class TestStartupReconcilePasses:
+    """The startup passes run first in their background loops, never before bind."""
+
+    @staticmethod
+    def _stop_at_first_sleep(order: list[str]):
+        async def _sleep(_seconds: float) -> None:
+            order.append("sleep")
+            raise asyncio.CancelledError
+
+        return _sleep
+
+    async def test_session_loop_reconciles_before_its_first_sleep(self, monkeypatch) -> None:
+        order: list[str] = []
+        service = MagicMock()
+        service.reconcile_active_sessions = AsyncMock(
+            side_effect=lambda: order.append("reconcile") or 0
+        )
+        monkeypatch.setattr("volundr.main.asyncio.sleep", self._stop_at_first_sleep(order))
+
+        await _reconcile_active_loop(service, interval_seconds=60)
+
+        assert order == ["reconcile", "sleep"]
+
+    async def test_session_loop_runs_one_pass_when_periodic_reconcile_is_off(
+        self, monkeypatch
+    ) -> None:
+        order: list[str] = []
+        service = MagicMock()
+        service.reconcile_active_sessions = AsyncMock(
+            side_effect=lambda: order.append("reconcile") or 0
+        )
+        monkeypatch.setattr("volundr.main.asyncio.sleep", self._stop_at_first_sleep(order))
+
+        await _reconcile_active_loop(service, interval_seconds=60, periodic=False)
+
+        assert order == ["reconcile"]
+
+    async def test_resident_loop_converges_before_its_first_sleep(self, monkeypatch) -> None:
+        order: list[str] = []
+        service = MagicMock()
+        service.reconcile_all = AsyncMock(side_effect=lambda: order.append("reconcile"))
+        flock = MagicMock(sync=AsyncMock(side_effect=lambda: order.append("flock")))
+        relay = MagicMock(sync=AsyncMock(side_effect=lambda: order.append("relay")))
+        monkeypatch.setattr("volundr.main.asyncio.sleep", self._stop_at_first_sleep(order))
+
+        await _reconcile_resident_runtimes_loop(
+            service, interval_seconds=10.0, flock_adapter=flock, notification_relay=relay
+        )
+
+        assert order == ["reconcile", "flock", "relay", "sleep"]
+
+    async def test_resident_loop_failure_is_logged_and_retried_next_interval(
+        self, monkeypatch, caplog
+    ) -> None:
+        order: list[str] = []
+        service = MagicMock()
+        service.reconcile_all = AsyncMock(side_effect=RuntimeError("openshell unavailable"))
+        monkeypatch.setattr("volundr.main.asyncio.sleep", self._stop_at_first_sleep(order))
+
+        await _reconcile_resident_runtimes_loop(service, interval_seconds=10.0)
+
+        assert order == ["sleep"]
+        assert "Resident runtime reconcile iteration failed" in caplog.text

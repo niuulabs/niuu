@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 
 from ravn.adapters.channels._http_mixin import GatewayHttpMixin
+from ravn.adapters.channels._message_split import split_message
 from ravn.adapters.channels.gateway import RavnGateway
 from ravn.config import WhatsAppChannelConfig
 from ravn.ports.gateway_channel import GatewayChannelPort, MessageHandler
@@ -92,16 +93,14 @@ class WhatsAppGateway(GatewayHttpMixin, GatewayChannelPort):
 
     async def send_text(self, chat_id: str, text: str) -> None:
         """Send a text message to *chat_id* via the Meta Cloud API."""
-        limit = self._config.message_max_chars
-        if len(text) > limit:
-            text = text[: limit - 3] + "..."
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": chat_id,
-            "type": "text",
-            "text": {"body": text},
-        }
-        await self._graph_post(f"/{self._phone_number_id}/messages", json=payload)
+        for chunk in split_message(text, self._config.message_max_chars):
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": chat_id,
+                "type": "text",
+                "text": {"body": chunk},
+            }
+            await self._graph_post(f"/{self._phone_number_id}/messages", json=payload)
 
     async def send_image(self, chat_id: str, image: bytes, caption: str = "") -> None:
         """Upload *image* via Meta and send as an image message."""

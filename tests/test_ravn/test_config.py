@@ -42,7 +42,8 @@ class TestAgentConfig:
     def test_defaults(self) -> None:
         c = AgentConfig()
         assert "claude" in c.model
-        assert c.max_tokens > 0
+        # Deprecated in favour of llm.max_tokens; unset unless a config says otherwise.
+        assert c.max_tokens is None
         assert c.max_iterations > 0
         assert c.system_prompt != ""
 
@@ -77,7 +78,8 @@ class TestLLMConfig:
     def test_defaults(self) -> None:
         c = LLMConfig()
         assert "claude" in c.model
-        assert c.max_tokens > 0
+        # No cap by default: the provider's own limit bounds the answer.
+        assert c.max_tokens is None
         assert c.max_retries >= 0
         assert c.timeout > 0
         assert isinstance(c.provider, LLMProviderConfig)
@@ -1143,3 +1145,57 @@ class TestValkyrieRuntimeConfig:
     def test_invalid_canonical_ranges_fail(self, section: str, field: str, value: int) -> None:
         with pytest.raises(ValueError, match=field):
             Settings(valkyrie={section: {field: value}})
+
+
+class TestPlatformAccessToken:
+    """``gateway.platform.access_token`` carries any platform bearer, not only a PAT."""
+
+    def test_config_key_sets_the_platform_bearer(self) -> None:
+        settings = Settings(gateway={"platform": {"access_token": "bearer-1"}})
+
+        assert settings.gateway.platform.access_token == "bearer-1"
+
+    def test_env_var_sets_the_platform_bearer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN", "bearer-from-env")
+
+        assert Settings().gateway.platform.access_token == "bearer-from-env"
+
+    def test_renamed_pat_token_key_fails_loudly(self) -> None:
+        # Silently ignoring the old key would drop the credential.
+        with pytest.raises(ValueError, match="renamed to gateway.platform.access_token"):
+            Settings(gateway={"platform": {"pat_token": "bearer-1"}})
+
+    def test_renamed_pat_token_env_fails_loudly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("RAVN_GATEWAY__PLATFORM__PAT_TOKEN", "bearer-from-env")
+
+        with pytest.raises(ValueError, match="RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN"):
+            Settings()
+
+
+class TestPromptBudgetDerivation:
+    """With no answer cap, a context window alone no longer implies a prompt budget."""
+
+    def test_a_window_without_a_cap_or_a_budget_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="max_prompt_tokens"):
+            Settings(context_management={"context_window_tokens": 131072})
+
+    def test_a_window_with_a_cap_derives_the_budget(self) -> None:
+        settings = Settings(
+            llm={"max_tokens": 32000}, context_management={"context_window_tokens": 131072}
+        )
+        assert settings.effective_max_tokens() == 32000
+
+    def test_a_window_with_an_explicit_budget_needs_no_cap(self) -> None:
+        settings = Settings(
+            context_management={"context_window_tokens": 131072, "max_prompt_tokens": 100000}
+        )
+        assert settings.effective_max_tokens() is None
+
+
+class TestRemovedContinuationCaps:
+    """Rechecks are bounded by the daily budget, one turn per wake and the decision guard."""
+
+    @pytest.mark.parametrize("key", ["continuation_max_turns", "continuation_max_tokens"])
+    def test_a_config_still_setting_it_is_refused(self, key: str) -> None:
+        with pytest.raises(ValueError, match=f"resident_state.{key} no longer exist"):
+            Settings(resident_state={key: 3})

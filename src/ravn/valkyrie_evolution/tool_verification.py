@@ -60,6 +60,11 @@ class VerificationResult:
     missing_module: str | None = None
 
 
+_COMPILER_IMPLICIT_NAMES = frozenset(
+    {"__class__", "__classdict__", "__classdictcell__", "__conditional_annotations__"}
+)
+
+
 def static_defects(tool_code: str, requirements: Sequence[str] = ()) -> list[str]:
     """Return defects visible without running *tool_code*.
 
@@ -105,7 +110,13 @@ def static_defects(tool_code: str, requirements: Sequence[str] = ()) -> list[str
                 f"this tool's requirements — it will not exist where the tool runs"
             )
 
-    known = set(dir(__import__("builtins")))
+    # Names the compiler itself binds inside class machinery, never the tool:
+    # ``__class__`` for zero-argument ``super()`` and, from Python 3.12/3.14,
+    # ``__classdict__`` (and friends) in the implicit annotation and
+    # type-parameter scopes every class body gets. They read as "free" to
+    # symtable but always resolve at runtime; flagging them failed every
+    # learned tool that defined a class.
+    known = set(dir(__import__("builtins"))) | _COMPILER_IMPLICIT_NAMES
 
     def binds(sym: symtable.Symbol) -> bool:
         # A module-level ``def``/``class`` is a namespace, ``import x`` is an

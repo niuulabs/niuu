@@ -32,6 +32,7 @@ A plain number is treated as an equality check (``== N``).
 from __future__ import annotations
 
 import fnmatch
+import math
 import re
 
 from bifrost.config import BifrostConfig, RuleCondition, RuleConfig
@@ -202,7 +203,9 @@ class YamlRuleEngine(RuleEnginePort):
                 return False
 
         if condition.max_tokens is not None:
-            if not _compare_numeric(request.max_tokens, condition.max_tokens):
+            # An uncapped request may run to the model's full output.
+            requested = math.inf if request.max_tokens is None else request.max_tokens
+            if not _compare_numeric(requested, condition.max_tokens):
                 return False
 
         if condition.has_tools is not None:

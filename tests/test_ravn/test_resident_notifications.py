@@ -270,3 +270,94 @@ class TestDaemonWiring:
         assert not _notify_tool_allowed(settings, SimpleNamespace(forbidden_tools=["notify"]))
         settings.tools.disabled = ["notify"]
         assert not _notify_tool_allowed(settings, None)
+
+
+class TestCliAgentNotify:
+    """A CLI-backed persona (Codex) reaches ``notify`` through its ravn-tools MCP server."""
+
+    def _settings(self, tmp_path, **openclaw):
+        from ravn.config import Settings
+
+        return Settings.model_validate(
+            {
+                "gateway": {
+                    "channels": {"openclaw": {"store_path": str(tmp_path / "state.db"), **openclaw}}
+                }
+            }
+        )
+
+    def test_the_server_gets_the_outbox_on_the_daemons_terms(self, tmp_path):
+        from types import SimpleNamespace
+
+        from ravn.cli.commands import _tool_mcp_notification_outbox
+
+        assert _tool_mcp_notification_outbox(self._settings(tmp_path), None) is None
+        on = self._settings(tmp_path, enabled=True)
+        outbox = _tool_mcp_notification_outbox(on, None)
+        assert isinstance(outbox, SqliteResidentNotificationOutbox)
+        outbox.close()
+        forbidden = SimpleNamespace(forbidden_tools=[NOTIFY_TOOL_NAME])
+        assert _tool_mcp_notification_outbox(on, forbidden) is None
+
+    def test_tool_mcp_serves_notify_in_the_turns_channel(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        from ravn.cli import commands as commands_mod
+        from ravn.config import Settings
+
+        outbox = MagicMock()
+        served: dict = {}
+
+        def server_for(tools, **_kwargs):
+            served["tools"] = tools
+            server = MagicMock()
+
+            async def run_stdio() -> None:
+                served["channel"] = current_notification_channel.get()
+
+            server.run_stdio = run_stdio
+            return server
+
+        with (
+            patch.object(commands_mod, "Settings", return_value=Settings()),
+            patch.object(commands_mod, "_configure_logging"),
+            patch.object(commands_mod.ProjectConfig, "discover", return_value=MagicMock()),
+            patch.object(commands_mod, "_resolve_profile", return_value=None),
+            patch.object(
+                commands_mod, "_resolve_persona", return_value=MagicMock(allowed_tools=[])
+            ),
+            patch.object(commands_mod, "_build_tool_mcp_tools", return_value=[]),
+            patch.object(commands_mod, "_tool_mcp_notification_outbox", return_value=outbox),
+            patch.object(commands_mod, "_resolve_workspace", return_value=tmp_path),
+            patch.object(commands_mod, "_attach_agent_build_tool"),
+            patch("ravn.adapters.mcp.tool_port_server.ToolPortMcpServer", side_effect=server_for),
+        ):
+            commands_mod.tool_mcp(
+                config="", persona="resident-codex", profile="", notification_channel="room-7"
+            )
+
+        assert [tool.name for tool in served["tools"]] == [NOTIFY_TOOL_NAME]
+        assert served["channel"] == "room-7"
+        assert current_notification_channel.get() is None, "the channel ends with the server"
+        outbox.close.assert_called_once_with()
+
+    def test_the_servers_notification_reaches_the_residents_outbox(self, tmp_path):
+        # The server is its own process: it writes the file the daemon's shim serves.
+        daemon = _outbox(tmp_path)
+        server = _outbox(tmp_path)
+        token = current_notification_channel.set("room-7")
+        try:
+            result = asyncio.run(
+                ResidentNotifyTool(server).execute(
+                    {"kind": "milestone", "severity": "success", "title": "Report published"}
+                )
+            )
+        finally:
+            current_notification_channel.reset(token)
+            server.close()
+
+        assert not result.is_error
+        (entry,) = asyncio.run(daemon.pending(limit=10))
+        assert entry.draft is not None and entry.draft.title == "Report published"
+        assert entry.channel == "room-7"
+        daemon.close()

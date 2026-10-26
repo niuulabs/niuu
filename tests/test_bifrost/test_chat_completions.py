@@ -376,10 +376,11 @@ class TestOpenAIRequestToAnthropic:
         result = openai_request_to_anthropic(req)
         assert result.max_tokens == 512
 
-    def test_max_tokens_defaults_to_1024(self):
+    def test_no_max_tokens_is_no_cap(self):
+        # The old 1024 default truncated every uncapped request to a reasoning model.
         req = self._req()
         result = openai_request_to_anthropic(req)
-        assert result.max_tokens == 1024
+        assert result.max_tokens is None
 
     def test_stream_flag_forwarded(self):
         req = self._req(stream=True)

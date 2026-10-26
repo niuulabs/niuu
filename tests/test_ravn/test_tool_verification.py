@@ -280,6 +280,40 @@ class TestStaticDefects:
         code = "def run(i):\n    return {'v': never_defined(i)}\n"
         assert any("never_defined" in d for d in static_defects(code))
 
+    def test_a_class_using_zero_argument_super_is_clean(self) -> None:
+        """``__class__`` is the compiler's cell for ``super()``, not a missing name."""
+        from ravn.valkyrie_evolution.tool_verification import static_defects
+
+        code = (
+            "import urllib.request\n"
+            "class _NoRedirect(urllib.request.HTTPRedirectHandler):\n"
+            "    def redirect_request(self, request, fp, code, message, headers, url):\n"
+            "        return super().redirect_request(request, fp, code, message, headers, url)\n"
+            "def run(i):\n"
+            "    return {'h': _NoRedirect.__name__}\n"
+        )
+        assert static_defects(code) == []
+
+    def test_compiler_scopes_of_a_class_body_are_not_free_names(self) -> None:
+        """From Python 3.14 every class body gets an implicit ``__annotate__``
+        scope in which ``__classdict__`` is free; it once failed every learned
+        tool that defined a class (Regin's runtime is 3.14, CI's is 3.12)."""
+        from ravn.valkyrie_evolution.tool_verification import (
+            _COMPILER_IMPLICIT_NAMES,
+            static_defects,
+        )
+
+        assert {"__class__", "__classdict__"} <= _COMPILER_IMPLICIT_NAMES
+        code = (
+            "import urllib.request\n"
+            "class _NoRedirect(urllib.request.HTTPRedirectHandler):\n"
+            "    def redirect_request(self, request, fp, code, message, headers, url):\n"
+            "        return None\n"
+            "def run(i):\n"
+            "    return {'h': _NoRedirect.__name__}\n"
+        )
+        assert static_defects(code) == []
+
     def test_correct_code_is_clean(self) -> None:
         """No false positives on except-as, comprehensions, closures, walrus."""
         from ravn.valkyrie_evolution.tool_verification import static_defects

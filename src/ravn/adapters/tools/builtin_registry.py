@@ -85,7 +85,7 @@ def _platform_kwargs(settings: Settings, *, workflow_aliases: bool = False) -> d
     kwargs = {
         "base_url": platform.base_url,
         "timeout": platform.timeout,
-        "pat_token": platform.pat_token,
+        "access_token": platform.access_token,
         "workload_token_file": platform.workload_token_file,
         "exchange_url": platform.workload_exchange_url,
         "audiences": platform.workload_audiences,
@@ -341,7 +341,7 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "kubeconfig_path": s.tools.kubernetes.kubeconfig_path,
             "max_log_lines": s.tools.kubernetes.max_log_lines,
             "max_configmap_value_chars": s.tools.kubernetes.max_configmap_value_chars,
-            "max_configmap_tail_bytes": s.tools.kubernetes.max_configmap_tail_bytes,
+            "max_list_items": s.tools.kubernetes.max_list_items,
         },
     ),
     # =========================================================================

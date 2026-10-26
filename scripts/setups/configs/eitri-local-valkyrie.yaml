@@ -158,8 +158,6 @@ resident_inbox:
   environment_signals_enabled: true
 
 resident_state:
-  continuation_max_turns: 6
-  continuation_max_tokens: 50000
   home_wake_interval_seconds: 30
 
 resident_wakefulness:

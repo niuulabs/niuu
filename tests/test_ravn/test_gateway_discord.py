@@ -91,7 +91,7 @@ async def test_send_text_posts_to_rest_api(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_send_text_truncates_long_message(monkeypatch):
+async def test_send_text_splits_long_message(monkeypatch):
     monkeypatch.setenv("DC_TOKEN", "tok")
     client = _make_http_client()
     cfg = _make_config(message_max_chars=10)
@@ -100,9 +100,9 @@ async def test_send_text_truncates_long_message(monkeypatch):
 
     await adapter.send_text("0/1", "x" * 20)
 
-    sent_content = client.post.call_args[1]["json"]["content"]
-    assert len(sent_content) <= 10
-    assert sent_content.endswith("...")
+    # Split at the platform limit, not cut: nothing the resident said is lost.
+    sent = [call[1]["json"]["content"] for call in client.post.call_args_list]
+    assert sent == ["x" * 10, "x" * 10]
 
 
 @pytest.mark.asyncio
@@ -644,3 +644,19 @@ async def test_pending_approvals_cap_evicts_oldest(monkeypatch):
     assert "old1" not in adapter._pending_approvals
     assert "old2" in adapter._pending_approvals
     assert "new_msg" in adapter._pending_approvals
+
+
+@pytest.mark.asyncio
+async def test_send_image_caption_over_the_limit_is_cut_and_counted(monkeypatch):
+    from ravn.cap_telemetry import cap_hit_counts
+
+    monkeypatch.setenv("DC_TOKEN", "tok")
+    client = _make_http_client()
+    adapter = DiscordGateway(
+        _make_config(message_max_chars=10), _make_gateway_mock(), http_client=client
+    )
+    adapter._token = "tok"
+
+    await adapter.send_image("111/999", b"\x89PNG", caption="c" * 30)
+
+    assert cap_hit_counts() == {"gateway.channels.discord.message_max_chars": 1}

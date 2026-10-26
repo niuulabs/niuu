@@ -40,10 +40,6 @@ from bifrost.translation.models import (
 
 logger = logging.getLogger(__name__)
 
-# Responses clients usually leave the output budget to the server; coding
-# agents need room for a patch, so the default is wider than chat's.
-DEFAULT_MAX_OUTPUT_TOKENS = 4096
-
 # Anthropic stop reasons → Responses status / incomplete reason.
 _INCOMPLETE_REASONS: dict[str, str] = {"max_tokens": "max_output_tokens"}
 
@@ -278,7 +274,7 @@ def responses_request_to_anthropic(
 
     return AnthropicRequest(
         model=req.model,
-        max_tokens=req.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
+        max_tokens=req.max_output_tokens,
         messages=conversation.messages,
         system="\n\n".join(system_parts) if system_parts else None,
         tools=tools,

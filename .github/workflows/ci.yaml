@@ -34,7 +34,7 @@ jobs:
       publish: ${{ steps.registry.outputs.publish }}
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -190,7 +190,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -230,7 +230,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -274,7 +274,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -341,7 +341,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -353,7 +353,7 @@ jobs:
           version: 9
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
@@ -439,7 +439,7 @@ jobs:
         run: npx playwright test
 
       - name: Upload consumer Playwright report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: failure()
         with:
           name: consumer-playwright-report
@@ -475,7 +475,7 @@ jobs:
       IMAGE_TAG: pr-${{ github.event.number }}-amd64
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -496,7 +496,7 @@ jobs:
       # spent deleting the cluster the discarded runner takes with it (that
       # step now looks for the action's default cluster name, finds none).
       - name: Install kind and kubectl
-        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
           install_only: true
           ignore_failed_clean: true
@@ -804,7 +804,7 @@ jobs:
       packages: write
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -888,7 +888,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -897,14 +897,17 @@ jobs:
       - name: Dependency review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v4
         with:
-          # npm 11.13.0 is the current pinned bootstrap version and still bundles
-          # this advisory through its internal socks -> ip-address dependency chain.
+          # GHSA-v2v4-37r5-5v8g, GHSA-rxp7-6hxx-x8q5: the pinned bootstrap npm
+          # (11.21.1) bundles ip-address 10.7.2 through its internal socks chain,
+          # which no lockfile or override reaches. The images replace that copy
+          # with the locked 10.7.4 at build time (containers/node/npm-bootstrap/
+          # replace-nested.sh, which fails the build if the swap goes stale).
           # GHSA-rrmf-rvhw-rf47: low-severity torch.jit.script memory corruption with
           # NO patched release (<= 2.12.0 covers every published torch); torch arrives
           # via the optional mimir embeddings extra and jit.script is never invoked on
           # untrusted input (inference only). Remove once upstream ships a fix.
           # Keep dependency review strict elsewhere while allowing these upstream-only cases.
-          allow-ghsas: GHSA-v2v4-37r5-5v8g, GHSA-rrmf-rvhw-rf47
+          allow-ghsas: GHSA-v2v4-37r5-5v8g, GHSA-rxp7-6hxx-x8q5, GHSA-rrmf-rvhw-rf47
 
   # ---------------------------------------------------------------------------
   # CI gate — the one check a ruleset on dev requires. Runs even when an
@@ -947,7 +950,7 @@ jobs:
       packages: write
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 

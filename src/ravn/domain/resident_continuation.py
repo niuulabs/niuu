@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol
 
-from ravn.domain.models import TokenUsage, TurnResult
+from ravn.domain.models import TokenUsage
 
 
 class ContinuationDecisionKind(StrEnum):
@@ -87,16 +87,6 @@ class ResidentMemoryEntry:
 
 
 @dataclass(frozen=True)
-class ResidentBudgetLimits:
-    """Generic budget caps for one resident continuation run."""
-
-    max_turns: int = 3
-    max_wall_clock_seconds: float = 900.0
-    max_tokens: int = 0
-    max_cost_usd: float = 0.0
-
-
-@dataclass(frozen=True)
 class ResidentBudgetSnapshot:
     """Budget state at a decision point."""
 
@@ -110,12 +100,6 @@ class ResidentBudgetSnapshot:
     @property
     def total_tokens(self) -> int:
         return self.usage.total_tokens
-
-
-@dataclass(frozen=True)
-class ResidentBudgetDecision:
-    allowed: bool
-    reason: str
 
 
 @dataclass(frozen=True)
@@ -405,19 +389,6 @@ class ResidentPolicyPort(Protocol):
         context: ResidentContinuationContext,
     ) -> ResidentPolicyDecision:
         """Assess whether an action may proceed."""
-
-
-class ResidentBudgetPort(Protocol):
-    """Budget boundary for continuation decisions."""
-
-    def snapshot(self) -> ResidentBudgetSnapshot:
-        """Return current budget usage."""
-
-    def can_continue(self) -> ResidentBudgetDecision:
-        """Return whether another turn may be started."""
-
-    def record_turn(self, result: TurnResult) -> ResidentBudgetSnapshot:
-        """Record model usage for a completed turn."""
 
 
 def selected_action_from_outcome(fields: dict[str, Any]) -> ResidentActionCandidate | None:

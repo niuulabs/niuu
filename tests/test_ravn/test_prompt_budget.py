@@ -10,6 +10,7 @@ import pytest
 
 from ravn.agent import RavnAgent
 from ravn.budget import _CHARS_PER_TOKEN
+from ravn.cap_telemetry import cap_hit_counts
 from ravn.domain.exceptions import PromptBudgetExceededError
 from ravn.domain.models import (
     StreamEvent,
@@ -267,10 +268,15 @@ class TestToolResultCap:
             max_tool_result_chars=1_000,
         )
 
-        with caplog.at_level(logging.WARNING, logger="ravn.agent"):
+        with caplog.at_level(logging.ERROR, logger="ravn.cap_telemetry"):
             await agent.run_turn("go")
 
-        assert any("truncated" in r.message for r in caplog.records)
+        # A cap hit: logged at error with the knob, and counted.
+        assert any(
+            r.levelno == logging.ERROR and "tools.max_result_chars" in r.getMessage()
+            for r in caplog.records
+        )
+        assert cap_hit_counts() == {"tools.max_result_chars": 1}
 
 
 class _PassthroughCompressor:

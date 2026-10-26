@@ -77,6 +77,8 @@ class AnthropicAdapter(ProviderPort):
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._client = httpx.AsyncClient(timeout=timeout)
+        # Model → maximum output tokens, as the Models API reports it.
+        self._output_limits: dict[str, int] = {}
 
     def _headers(self, request: AnthropicRequest | None = None) -> dict[str, str]:
         headers: dict[str, str] = {
@@ -89,6 +91,32 @@ class AnthropicAdapter(ProviderPort):
         if betas:
             headers["anthropic-beta"] = ",".join(betas)
         return headers
+
+    async def _output_cap(self, model: str) -> int:
+        """The model's maximum output, read from the Models API once per model.
+
+        The Messages API requires ``max_tokens``; a caller that sent no cap gets
+        the model's own limit rather than a number chosen here.
+        """
+        cached = self._output_limits.get(model)
+        if cached is not None:
+            return cached
+        url = f"{self._base_url}/v1/models/{model}"
+        resp = await self._client.get(url, headers=self._headers())
+        if resp.status_code != httpx.codes.OK:
+            raise ProviderError(
+                f"the request sent no max_tokens and the output limit of {model!r} could "
+                f"not be read from {url} ({resp.status_code}: {resp.text[:500]}); send "
+                "max_tokens explicitly"
+            )
+        limit = resp.json().get("max_tokens")
+        if not isinstance(limit, int) or limit <= 0:
+            raise ProviderError(
+                f"the request sent no max_tokens and the Models API reported no output "
+                f"limit for {model!r} at {url}; send max_tokens explicitly"
+            )
+        self._output_limits[model] = limit
+        return limit
 
     def _build_payload(self, request: AnthropicRequest, model: str) -> dict:
         """Serialise the request to a JSON-compatible dict for the Anthropic API."""
@@ -126,6 +154,8 @@ class AnthropicAdapter(ProviderPort):
 
     async def complete(self, request: AnthropicRequest, model: str) -> AnthropicResponse:
         payload = self._build_payload(request, model)
+        if request.max_tokens is None:
+            payload["max_tokens"] = await self._output_cap(model)
         payload["stream"] = False
 
         resp = await self._client.post(
@@ -152,6 +182,8 @@ class AnthropicAdapter(ProviderPort):
 
     async def stream(self, request: AnthropicRequest, model: str) -> AsyncIterator[str]:
         payload = self._build_payload(request, model)
+        if request.max_tokens is None:
+            payload["max_tokens"] = await self._output_cap(model)
         payload["stream"] = True
 
         async with self._client.stream(

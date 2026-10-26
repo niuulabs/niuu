@@ -2,11 +2,12 @@
   "name": "devrunner-cli-tools",
   "private": true,
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.283",
-    "@earendil-works/pi-coding-agent": "0.87.1",
-    "@openai/codex": "0.157.1",
-    "@xai-official/grok": "1.0.41",
+    "@anthropic-ai/claude-code": "2.1.309",
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@openai/codex": "0.163.0",
+    "@xai-official/grok": "1.0.68",
     "brace-expansion": "5.0.12",
-    "opencode-ai": "1.18.32"
+    "undici": "8.12.3",
+    "opencode-ai": "1.19.4"
   }
 }

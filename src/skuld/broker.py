@@ -1770,6 +1770,8 @@ class Broker(
             await self._emit_peer_help_needed_sleipnir_event(peer_id, frame)
         elif event_type == "error":
             await self._maybe_report_flock_failure(peer_id, frame)
+        elif event_type in self._PEER_WORK_EVENT_TYPES:
+            await self._report_room_peer_working()
 
         now = time.monotonic()
         watch = self._peer_watches.get(peer_id)

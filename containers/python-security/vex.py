@@ -19,6 +19,8 @@ def document(image: str, evidence: dict, scan: dict, manifest: dict) -> dict:
         or evidence["cves"] != manifest["cves"]
         or evidence["image"] != image
         or evidence["patches"] != [item["commit"] for item in manifest["patches"]]
+        or evidence["upstream_fixes"]
+        != {item["cve"]: item["sha256"] for item in manifest["upstream_fixes"]}
     ):
         raise ValueError("Runtime backport evidence does not match the reviewed manifest")
     if image not in scan["source"]["target"]["repoDigests"]:
@@ -29,7 +31,20 @@ def document(image: str, evidence: dict, scan: dict, manifest: dict) -> dict:
     )
     statements = []
     timestamp = datetime.now(UTC).isoformat()
-    for cve in manifest["cves"]:
+    backport_notes = (
+        "Upstream CPython security backports installed; every backported module's "
+        "SHA-256 hash and exploit regressions verified inside this exact image. "
+        "See the retained python-security evidence and raw Grype report."
+    )
+    upstream_notes = (
+        f"Fixed upstream in CPython {manifest['python_version']}, which the scanner's "
+        "version ranges do not credit yet; the fixed module's SHA-256 hash and regression "
+        "verified inside this exact image. See the retained python-security evidence."
+    )
+    claims = [(cve, backport_notes) for cve in manifest["cves"]] + [
+        (item["cve"], upstream_notes) for item in manifest["upstream_fixes"]
+    ]
+    for cve, notes in claims:
         purls = set()
         for match in scan["matches"]:
             artifact = match["artifact"]
@@ -52,10 +67,10 @@ def document(image: str, evidence: dict, scan: dict, manifest: dict) -> dict:
                 if location["annotations"]["evidence"] == "primary"
             }
             all_locations = {location["path"] for location in artifact["locations"]}
-            if (
-                evidence["executable"] not in locations
-                or not all_locations <= {evidence["executable"], evidence["library"]}
-            ):
+            if evidence["executable"] not in locations or not all_locations <= {
+                evidence["executable"],
+                evidence["library"],
+            }:
                 raise ValueError("Grype found a Python runtime that was not verified")
             if not artifact["purl"]:
                 raise ValueError(
@@ -73,11 +88,7 @@ def document(image: str, evidence: dict, scan: dict, manifest: dict) -> dict:
                         }
                     ],
                     "status": "fixed",
-                    "status_notes": (
-                        "Upstream CPython security backports installed; every backported module's "
-                        "SHA-256 hash and exploit regressions verified inside this exact image. "
-                        "See the retained python-security evidence and raw Grype report."
-                    ),
+                    "status_notes": notes,
                     "timestamp": timestamp,
                 }
             )

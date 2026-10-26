@@ -1290,6 +1290,34 @@ def test_deleting_a_resident_revokes_its_delegations() -> None:
 
 
 @respx.mock
+def test_a_failed_revocation_reports_failure_and_logs_one_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from niuu.adapters.outbound.http_workload_delegations import HttpResidentDelegationRegistrar
+
+    respx.get(_DELEGATIONS).mock(return_value=Response(503))
+    registrar = HttpResidentDelegationRegistrar(_PLATFORM)
+    instance = _instance(
+        "valhalla", base_url="http://valhalla", config={"workload_verifier": "k8s-valhalla"}
+    )
+
+    with caplog.at_level("ERROR"):
+        result = asyncio.run(
+            registrar.revoke(
+                authorization="Bearer test-token",
+                instance=instance,
+                resident_id="0f9e3c1a\nforged entry",
+            )
+        )
+
+    assert result["status"] == "failed"
+    assert "503" in result["detail"]
+    [record] = caplog.records
+    assert "0f9e3c1a\\nforged entry" in record.getMessage()
+    assert "\n" not in record.getMessage()
+
+
+@respx.mock
 def test_a_delegated_caller_deploying_a_resident_records_nothing() -> None:
     """A resident's own token (it names an actor) must not delegate onward."""
     import jwt

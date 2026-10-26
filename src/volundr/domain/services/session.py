@@ -1995,6 +1995,18 @@ class SessionService:
                 lambda t, sid=session.id: self._provisioning_tasks.pop(sid, None)
             )
 
+    def _spawn_in_flight(self, session: Session) -> bool:
+        """True while this process is still creating the session's runtime.
+
+        A STARTING row gets its runtime from ``_provision_background``; until
+        that task finishes there is nothing for the pod manager to observe, and
+        an absent runtime would read as STOPPED and reap a session that is
+        still being created. The task owns the transition (PROVISIONING, or
+        FAILED with the cause). A STARTING row with no task here (the process
+        restarted mid-spawn) is reconciled normally.
+        """
+        return session.status == SessionStatus.STARTING and session.id in self._provisioning_tasks
+
     def _reconciled_session(
         self,
         session: Session,
@@ -2087,6 +2099,8 @@ class SessionService:
         ]
         reconciled = 0
         for session in sessions:
+            if self._spawn_in_flight(session):
+                continue
             if session.status == SessionStatus.FAILED and self._runtime_backend != "kubernetes":
                 # Swept only to release compute a failed cleanup left bound. Never
                 # ask for its status: a VM runtime reports a still-bound lease as
@@ -2164,7 +2178,7 @@ class SessionService:
         }
         if self._runtime_backend == "kubernetes":
             reconcilable_statuses.add(SessionStatus.FAILED)
-        if session.status not in reconcilable_statuses:
+        if session.status not in reconcilable_statuses or self._spawn_in_flight(session):
             return session
 
         actual_status = await self._pod_manager.status(session)

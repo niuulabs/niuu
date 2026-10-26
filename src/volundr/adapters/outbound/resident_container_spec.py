@@ -448,7 +448,7 @@ def _ravn_processes(
             command=(
                 "sh",
                 "-lc",
-                'export RAVN__GATEWAY__PLATFORM__PAT_TOKEN="$NIUU_VOLUNDR_ACCESS_TOKEN"; '
+                'export RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN="$NIUU_VOLUNDR_ACCESS_TOKEN"; '
                 f"exec /opt/niuu/bin/python -m ravn {daemon}",
             ),
             env={},

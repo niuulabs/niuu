@@ -55,7 +55,8 @@ class TestBuildLlm:
         assert llm is mock_cls.return_value
 
     @pytest.mark.usefixtures("_api_key")
-    def test_anthropic_receives_model_and_max_tokens(self, settings: Settings) -> None:
+    def test_anthropic_receives_model_but_no_answer_cap(self, settings: Settings) -> None:
+        """The answer cap is per call; an adapter-level default would override a call's None."""
         from ravn.cli.commands import _build_llm
 
         with patch("ravn.adapters.llm.anthropic.AnthropicAdapter") as mock_cls:
@@ -64,7 +65,7 @@ class TestBuildLlm:
 
         _, kwargs = mock_cls.call_args
         assert kwargs["model"] == settings.effective_model()
-        assert kwargs["max_tokens"] == settings.effective_max_tokens()
+        assert "max_tokens" not in kwargs
 
     @pytest.mark.usefixtures("_api_key")
     def test_no_provider_substitution_is_configurable(self, settings: Settings) -> None:
@@ -1296,6 +1297,9 @@ class TestEffectiveModelResolution:
     def test_default_when_both_at_default(self) -> None:
         s = Settings()
         assert s.effective_model() == "claude-sonnet-4-6"
+
+    def test_effective_max_tokens_defaults_to_no_cap(self) -> None:
+        assert Settings().effective_max_tokens() is None
 
     def test_effective_max_tokens_from_llm(self) -> None:
         s = Settings()

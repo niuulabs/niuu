@@ -69,6 +69,13 @@ class TransportLifecycleMixin:
         self._startup_state = "ready"
         self._startup_failure = ""
         logger.info("Workflow kickoff acknowledged; broker is ready")
+        # The flock accepted the work and is executing it now. A room-routed
+        # session has no CLI transport, so no ``system/init`` frame will ever
+        # move it out of ``provisioning`` — the kickoff ack is its turn start.
+        # Only from provisioning: a peer that already asked for help (or a
+        # flock that already finished) owns the state by now.
+        if self._activity_state == "provisioning":
+            await self._report_activity_state("active")
 
     def _build_transport_kwargs(self) -> dict:
         """Return superset of kwargs that any transport constructor might need."""
@@ -379,6 +386,11 @@ class TransportLifecycleMixin:
         if self._workflow_trigger_task is None and not self._startup_failure:
             self._startup_ready = True
             self._startup_state = "ready"
+            if self._is_room_routed_session() and self._activity_state == "provisioning":
+                # Room-routed sessions never start a CLI transport, so the
+                # ``system/init`` frame that normally leaves provisioning never
+                # arrives. Startup is complete; the room is ready for chat.
+                asyncio.create_task(self._report_activity_state("idle"))
 
     async def shutdown(self) -> None:
         """Clean up on shutdown.

@@ -483,7 +483,8 @@ class TestContextManagementConfig:
         assert c.protect_first_messages == 2
         assert c.protect_last_messages == 6
         assert c.compact_recent_turns == 3
-        assert c.compression_max_tokens == 1024
+        # No cap: a cut-off state document raises rather than replacing history.
+        assert c.compression_max_tokens is None
         assert c.prompt_cache_max_entries == 16
         # effective_protect_last: compact_recent_turns=3 → 3*2=6
         assert c.effective_protect_last() == 6

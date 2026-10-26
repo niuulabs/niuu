@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -27,6 +28,7 @@ import pytest
 
 from ravn.adapters.triggers.wakefulness import WakefulnessTrigger
 from ravn.config import WakefulnessConfig
+from ravn.domain.exceptions import OutputTruncatedError
 from ravn.domain.interaction_tracker import LastInteractionTracker
 from ravn.domain.models import LLMResponse, StopReason, TokenUsage
 
@@ -248,8 +250,8 @@ class TestLLMResponses:
         mimir.create_thread.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_malformed_json_no_crash(self) -> None:
-        """LLM returns invalid JSON → logged, no crash, no threads."""
+    async def test_malformed_json_raises_and_keeps_the_cooldown(self) -> None:
+        """Invalid JSON raises: it used to read as "nothing unfinished"."""
         tracker = LastInteractionTracker()
         llm = AsyncMock()
         mimir = AsyncMock()
@@ -270,13 +272,15 @@ class TestLLMResponses:
             mock_dt.fromisoformat = datetime.fromisoformat
             tracker._last_interaction = now - timedelta(seconds=200)
 
-            await trigger._poll_once()  # should not raise
+            with pytest.raises(ValueError, match="no JSON"):
+                await trigger._poll_once()
 
         mimir.create_thread.assert_not_awaited()
+        assert trigger._last_reflection_at is None
 
     @pytest.mark.asyncio
-    async def test_non_array_json_no_threads(self) -> None:
-        """LLM returns a JSON object instead of array → no threads."""
+    async def test_non_array_json_raises(self) -> None:
+        """A JSON object instead of an array raises."""
         tracker = LastInteractionTracker()
         llm = AsyncMock()
         mimir = AsyncMock()
@@ -297,13 +301,14 @@ class TestLLMResponses:
             mock_dt.fromisoformat = datetime.fromisoformat
             tracker._last_interaction = now - timedelta(seconds=200)
 
-            await trigger._poll_once()
+            with pytest.raises(ValueError, match="not a JSON array"):
+                await trigger._poll_once()
 
         mimir.create_thread.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_llm_exception_no_crash(self) -> None:
-        """LLM call raises → logged, no crash."""
+    async def test_llm_exception_propagates(self) -> None:
+        """A failed model call propagates; run() logs it as an error and retries."""
         tracker = LastInteractionTracker()
         llm = AsyncMock()
         mimir = AsyncMock()
@@ -323,7 +328,8 @@ class TestLLMResponses:
             mock_dt.fromisoformat = datetime.fromisoformat
             tracker._last_interaction = now - timedelta(seconds=200)
 
-            await trigger._poll_once()  # should not raise
+            with pytest.raises(RuntimeError, match="LLM down"):
+                await trigger._poll_once()
 
         mimir.create_thread.assert_not_awaited()
 
@@ -485,8 +491,8 @@ class TestIntentEdgeCases:
         )
 
     @pytest.mark.asyncio
-    async def test_create_thread_failure_logged_not_raised(self) -> None:
-        """create_thread failure → logged, other intents still processed."""
+    async def test_create_thread_failure_raises(self) -> None:
+        """A failed Mímir write raises, and the pass is retried (its cooldown is not taken)."""
         tracker = LastInteractionTracker()
         llm = AsyncMock()
         mimir = AsyncMock()
@@ -508,9 +514,11 @@ class TestIntentEdgeCases:
             mock_dt.fromisoformat = datetime.fromisoformat
             tracker._last_interaction = now - timedelta(seconds=200)
 
-            await trigger._poll_once()  # should not raise
+            with pytest.raises(RuntimeError, match="Mímir down"):
+                await trigger._poll_once()
 
-        assert mimir.create_thread.await_count == 2
+        assert mimir.create_thread.await_count == 1
+        assert trigger._last_reflection_at is None
 
 
 class TestStatePersistence:
@@ -583,15 +591,14 @@ class TestStatePersistence:
         llm.generate.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_corrupt_state_file_handled(self, tmp_path: Path) -> None:
-        """Corrupt state file → loaded gracefully, no crash."""
+    async def test_corrupt_state_file_raises(self, tmp_path: Path) -> None:
+        """A corrupt state file raises: resetting it would silently re-run every reflection."""
         state_file = tmp_path / "wakefulness_state.json"
         state_file.write_text("not valid json {{{")
 
         trigger = _make_trigger(state_dir=tmp_path)
-        trigger._load_state()  # should not raise
-
-        assert trigger._last_reflection_at is None
+        with pytest.raises(json.JSONDecodeError):
+            trigger._load_state()
 
 
 class TestRunLoop:
@@ -694,3 +701,52 @@ class TestDeepStatePersistence:
             await trigger._poll_once()
 
         llm.generate.assert_not_awaited()
+
+
+class TestNoAnswerCap:
+    """The 512-token cap ended inside a reasoning model's thinking; now none is sent."""
+
+    @pytest.mark.asyncio
+    async def test_sends_no_cap(self) -> None:
+        llm = AsyncMock()
+        llm.generate = AsyncMock(return_value=_llm_response([]))
+        trigger = _make_trigger(llm=llm)
+
+        await trigger._call_llm("reflect")
+
+        assert llm.generate.call_args.kwargs["max_tokens"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_cut_off_answer_raises(self) -> None:
+        llm = AsyncMock()
+        llm.generate = AsyncMock(
+            return_value=LLMResponse(
+                content='[{"title": "Fol',
+                tool_calls=[],
+                stop_reason=StopReason.MAX_TOKENS,
+                usage=TokenUsage(input_tokens=10, output_tokens=20),
+            )
+        )
+        trigger = _make_trigger(llm=llm)
+
+        with pytest.raises(OutputTruncatedError, match="wakefulness"):
+            await trigger._call_llm("reflect")
+
+    @pytest.mark.asyncio
+    async def test_run_logs_a_failed_pass_as_an_error(
+        self, caplog: pytest.LogCaptureFixture, tmp_path: Path
+    ) -> None:
+        trigger = _make_trigger(
+            config=_config(enabled=True, poll_interval_seconds=0), state_dir=tmp_path
+        )
+        trigger._poll_once = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[RuntimeError("model down"), asyncio.CancelledError()]
+        )
+
+        with caplog.at_level(logging.ERROR), pytest.raises(asyncio.CancelledError):
+            await trigger.run(AsyncMock())
+
+        assert any(
+            r.levelno == logging.ERROR and "reflection pass failed" in r.getMessage()
+            for r in caplog.records
+        )

@@ -15,6 +15,7 @@ from ravn.adapters.tools.web_fetch import (
     scan_for_injection,
     truncate_to_budget,
 )
+from ravn.cap_telemetry import cap_hit_counts
 
 # ---------------------------------------------------------------------------
 # extract_text — HTML → plain text
@@ -98,6 +99,7 @@ class TestTruncateToBudget:
         result = truncate_to_budget(text, 100)
         assert result.startswith("A" * 100)
         assert "truncated" in result.lower()
+        assert cap_hit_counts() == {"tools.web.fetch.content_budget": 1}
 
     def test_appends_notice(self) -> None:
         text = "B" * 200

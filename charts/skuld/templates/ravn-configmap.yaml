@@ -93,6 +93,34 @@ data:
           max_live_sessions: {{ .Values.resident.openclaw.maxSessions }}
           store_path: {{ .Values.resident.openclaw.storePath | quote }}
         {{- end }}
+        {{- if .Values.resident.voice.enabled }}
+        {{- if not .Values.resident.voice.minters }}
+        {{- fail "resident.voice.enabled needs resident.voice.minters: at least one provider whose key file is mounted" }}
+        {{- end }}
+        {{- if not .Values.session.ownerId }}
+        {{- fail "resident.voice.enabled needs session.ownerId: only the resident's owner may call it" }}
+        {{- end }}
+        # Realtime voice calls; nginx forwards /voice/ here.
+        voice:
+          enabled: true
+          host: "127.0.0.1"
+          port: {{ .Values.resident.voice.port }}
+          store_path: {{ .Values.resident.voice.storePath | quote }}
+          display_name: {{ .Values.resident.voice.displayName | default (include "skuld.residentName" .) | quote }}
+          time_zone: {{ .Values.resident.voice.timeZone | quote }}
+          owner_id: {{ .Values.session.ownerId | quote }}
+          user_id_header: {{ .Values.envoy.headerNames.userId | quote }}
+          {{- with .Values.resident.voice.models }}
+          models:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          minters:
+            {{- toYaml .Values.resident.voice.minters | nindent 12 }}
+          {{- if .Values.resident.voice.roomCopy }}
+          room_broker_url: "http://127.0.0.1:8081"
+          room_participant_id: {{ .Values.resident.flock.peerId | default (printf "flock-%s" $persona) | quote }}
+          {{- end }}
+        {{- end }}
       {{- if .Values.resident.platform.enabled }}
       platform:
         enabled: true

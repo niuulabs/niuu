@@ -28,6 +28,7 @@ import yaml
 from niuu.domain.llm_merge import _SECURITY_KEYS, is_empty, merge_llm
 from niuu.mesh import nng_gateway_port_for as _gateway_port_for
 from niuu.mesh import nng_ports_for as _ports_for
+from volundr.adapters.outbound.resident_container_spec import PLATFORM_ACCESS_TOKEN_ENV
 from volundr.domain.models import (
     LaunchSpec,
     PodSpecAdditions,
@@ -204,6 +205,29 @@ def _mimir_auth_from_ref(auth_ref: object) -> dict[str, Any] | None:
         "token_file": f"{_DEFAULT_WORKLOAD_IDENTITY_MOUNT_PATH}/token",
         "audiences": ["mimir"],
     }
+
+
+def _openshell_mediated_mimir_instances(
+    instances: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Point workload-authenticated Mímir instances at OpenShell's credential mediation.
+
+    OpenShell sandboxes mount no projected identity token, so ``auth: workload``
+    fails on the missing token file. The sandbox's platform grant covers every
+    Mímir URL in the session values and injects a workload-bound token (issued
+    with the ``mimir`` audience) on those requests; the persona reads the same
+    platform token env a resident does.
+    """
+    mediated: list[dict[str, Any]] = []
+    for instance in instances:
+        auth = instance.get("auth")
+        if isinstance(auth, dict) and auth.get("type") == "workload":
+            instance = {
+                **instance,
+                "auth": {"type": "bearer", "token_env": PLATFORM_ACCESS_TOKEN_ENV},
+            }
+        mediated.append(instance)
+    return mediated
 
 
 def _normalize_mimir_workload_config(
@@ -513,6 +537,7 @@ def _build_ravn_config(
     workflow: dict[str, Any] | None = None,
     extra_ravn_config: dict[str, Any] | None = None,
     workspace_root: str = _WORKSPACE_MOUNT_PATH,
+    runtime_backend: str = "",
 ) -> str:
     """Generate the ravn daemon YAML config for a single flock node.
 
@@ -534,6 +559,8 @@ def _build_ravn_config(
     ]
 
     mimir_instances, mimir_write_routing = _resolve_mimir_runtime(mimir_config)
+    if runtime_backend == "openshell":
+        mimir_instances = _openshell_mediated_mimir_instances(mimir_instances)
 
     max_tasks = persona_override.get("max_concurrent_tasks") or global_max_concurrent_tasks
 
@@ -1292,6 +1319,7 @@ class RavnFlockContributor(SessionContributor):
                 skuld_peer_id=skuld_peer_id,
                 static_mesh_peers=static_mesh_peers,
                 mimir_config=mimir_config,
+                runtime_backend=runtime_backend,
                 sleipnir_publish_urls=sleipnir_publish_urls,
                 daily_budget_usd=daily_budget_usd,
                 global_max_concurrent_tasks=global_max_concurrent_tasks,

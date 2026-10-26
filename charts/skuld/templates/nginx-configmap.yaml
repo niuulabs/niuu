@@ -76,6 +76,22 @@ data:
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             }
 
+            {{- if and (include "skuld.residentEnabled" .) .Values.resident.voice.enabled }}
+            # Resident voice channel (Ravn, loopback): the agent-service wire voice clients speak.
+            location = /voice {
+                return 301 /voice/;
+            }
+            location /voice/ {
+                proxy_pass http://127.0.0.1:{{ .Values.resident.voice.port }}/;
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection "upgrade";
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            }
+            {{- end }}
+
             # Broker: health and readiness (for probes)
             location /health {
                 proxy_pass http://broker/health;

@@ -16,6 +16,8 @@ class ActivityReportingMixin:
 
     _RUNNING_RAW_STATES = ("active", "tool_executing")
     _TURN_END_RAW_STATES = ("idle", "stopped", "error")
+    # Flock peer events that mean a peer is doing work right now.
+    _PEER_WORK_EVENT_TYPES = frozenset({"task_started", "thought", "thinking", "tool_start"})
 
     async def _report_session_start(self) -> None:
         """Report the session start timeline event (once)."""
@@ -38,6 +40,28 @@ class ActivityReportingMixin:
             },
             model=self.model,
         )
+
+    async def _report_room_peer_working(self) -> None:
+        """Report ``active`` while flock peers work in a room-only workflow session.
+
+        A flock workflow session has no CLI transport of its own, so the CLI
+        frames that drive activity everywhere else never arrive; peer progress
+        is the only evidence of work. A human gate, an unanswered peer help
+        request, or a reported terminal flock outcome owns the state instead.
+        """
+        if not self._is_room_only_workflow_session():
+            return
+        if self._pending_attention or self._activity_state in ("stopped", "error"):
+            return
+        if any(request.status == "pending" for request in self._pending_help_requests.values()):
+            return
+        if (
+            self._flock_completion_reported
+            or self._flock_failure_reported
+            or self._pending_terminal_activity is not None
+        ):
+            return
+        await self._report_activity_state("active")
 
     @classmethod
     def _coarse_bucket(cls, state: str) -> str:

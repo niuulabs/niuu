@@ -34,6 +34,7 @@ from ravn.adapters.reflection.post_session import (
     evidence_is_new_by_meaning,
     fetch_relevant_learnings,
 )
+from ravn.cap_telemetry import cap_hit_counts
 from ravn.config import LearningCurationConfig, Settings
 from ravn.domain.models import StopReason
 from tests.ravn.fixtures.learning_fakes import (
@@ -546,6 +547,7 @@ async def test_judge_cut_off_by_its_budget_names_the_setting() -> None:
     with pytest.raises(LessonJudgeError, match="reflection.matching.judge_max_tokens"):
         await _judge(llm).match(title="t", claim="c", recorded=[_lesson("a")])
     assert llm.generate.await_count == 1
+    assert cap_hit_counts() == {"reflection.matching.judge_max_tokens": 1}
 
 
 async def test_judge_relate_and_procedure() -> None:

@@ -186,7 +186,7 @@ async def test_selected_action_is_persisted_without_queueing_prose_as_work(tmp_p
         queued.append(task)
         return True
 
-    runtime = ResidentRuntime(state=state, max_turns=3)
+    runtime = ResidentRuntime(state=state)
     runtime.bind_enqueue(enqueue)
     disposition = await runtime.handle_completed_turn(
         task=_task(),
@@ -583,7 +583,8 @@ async def test_invalid_outcome_cannot_replace_state_or_queue_a_continuation(tmp_
 
 
 @pytest.mark.asyncio
-async def test_budget_stops_another_operator_round_trip(tmp_path) -> None:
+async def test_a_question_asked_on_any_turn_is_saved(tmp_path) -> None:
+    """A turn cap once stopped the case on the turn that asked; the question was never saved."""
     state = LocalResidentState(tmp_path)
     queued: list[AgentTask] = []
 
@@ -591,7 +592,7 @@ async def test_budget_stops_another_operator_round_trip(tmp_path) -> None:
         queued.append(task)
         return True
 
-    runtime = ResidentRuntime(state=state, max_turns=1)
+    runtime = ResidentRuntime(state=state)
     runtime.bind_enqueue(enqueue)
     disposition = await runtime.handle_completed_turn(
         task=_task(),
@@ -606,8 +607,9 @@ async def test_budget_stops_another_operator_round_trip(tmp_path) -> None:
         response_text="response",
     )
 
-    assert disposition.kind is ContinuationDecisionKind.STOP
-    assert "turn budget" in disposition.reason
+    assert disposition.kind is ContinuationDecisionKind.ASK_OPERATOR
+    assert disposition.question == "Which environment is in scope?"
+    assert await state.read_operator_needed(disposition.case_id) is not None
     assert queued == []
 
 
@@ -883,6 +885,54 @@ async def test_operator_question_is_filed_in_shared_review_inbox(tmp_path) -> No
     assert item["requested_action"] == "answer_operator_question"
     assert item["title"].endswith("May I inspect etcd logs?")
     assert item["evidence"]["operator_question"]["case_id"] == "root-1"
+
+
+@pytest.mark.asyncio
+async def test_a_question_that_cannot_be_filed_fails_the_turn_loudly(tmp_path) -> None:
+    publisher = AsyncMock()
+    publisher.publish.side_effect = RuntimeError("sleipnir unreachable")
+    state = LocalResidentState(tmp_path / "state")
+    runtime = ResidentRuntime(
+        state=state,
+        resident_id="regin",
+        review_requester=ReviewRequester(
+            publisher=publisher, store=JsonReviewStore(tmp_path / "reviews.json")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="sleipnir unreachable"):
+        await runtime.handle_completed_turn(
+            task=_task(),
+            prompt="prompt",
+            result=_result({"continuation": "ask_operator", "question": "May I merge?"}),
+            response_text="response",
+        )
+
+    # Persisted before filing, so the question survives for the next attempt.
+    assert await state.read_operator_needed("root-1") is not None
+
+
+@pytest.mark.asyncio
+async def test_republishing_pending_questions_fails_when_filing_fails(tmp_path) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    await ResidentRuntime(state=state).handle_completed_turn(
+        task=_task(),
+        prompt="prompt",
+        result=_result({"continuation": "ask_operator", "question": "May I merge?"}),
+        response_text="response",
+    )
+    publisher = AsyncMock()
+    publisher.publish.side_effect = RuntimeError("sleipnir unreachable")
+    runtime = ResidentRuntime(
+        state=state,
+        resident_id="regin",
+        review_requester=ReviewRequester(
+            publisher=publisher, store=JsonReviewStore(tmp_path / "reviews.json")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="sleipnir unreachable"):
+        await runtime.publish_pending_questions()
 
 
 @pytest.mark.asyncio
@@ -1273,9 +1323,9 @@ async def test_a_completed_resumed_turn_consumes_wake_when_outcome_is_invalid(tm
 
 
 @pytest.mark.asyncio
-async def test_scheduled_resume_preserves_and_enforces_the_turn_budget(tmp_path) -> None:
+async def test_scheduled_resume_preserves_case_usage_and_keeps_rechecking(tmp_path) -> None:
     state = LocalResidentState(tmp_path)
-    runtime = ResidentRuntime(state=state, max_turns=3)
+    runtime = ResidentRuntime(state=state)
     queued: list[AgentTask] = []
     started_at = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
 
@@ -1314,54 +1364,13 @@ async def test_scheduled_resume_preserves_and_enforces_the_turn_budget(tmp_path)
                 "wake_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
             }
         ),
-        response_text="another recheck would exceed the case budget",
+        response_text="recheck again in an hour",
     )
 
-    assert disposition.kind is ContinuationDecisionKind.STOP
-    assert "turn budget" in disposition.reason
-    assert await state.list_scheduled_wakes() == []
-
-
-@pytest.mark.asyncio
-async def test_scheduled_resume_enforces_the_cumulative_token_budget(tmp_path) -> None:
-    state = LocalResidentState(tmp_path)
-    runtime = ResidentRuntime(state=state, max_turns=5, max_tokens=100)
-    queued: list[AgentTask] = []
-
-    async def enqueue(task: AgentTask) -> bool:
-        queued.append(task)
-        return True
-
-    runtime.bind_enqueue(enqueue)
-    await state.write_scheduled_wake(
-        ResidentScheduledWakeRecord(
-            case_id="case-token-budget",
-            root_correlation_id="root-token-budget",
-            wake_at=datetime.now(UTC) - timedelta(minutes=1),
-            reason="token-bounded recheck",
-            turn_index=1,
-            case_input_tokens=80,
-            case_output_tokens=10,
-        )
-    )
-
-    assert await runtime.resume_due_wakes() == 1
-    disposition = await runtime.handle_completed_turn(
-        task=queued[0],
-        prompt="schedule another recheck",
-        result=_result(
-            {
-                "continuation": "sleep",
-                "next_action_timing": "scheduled_time",
-                "wake_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
-            }
-        ),
-        response_text="another recheck would exceed the token budget",
-    )
-
-    assert disposition.kind is ContinuationDecisionKind.STOP
-    assert "token budget" in disposition.reason
-    assert await state.list_scheduled_wakes() == []
+    # No per-case turn cap: the daily budget, one turn per wake and the
+    # repeated-decision guard bound rechecks.
+    assert disposition.kind is ContinuationDecisionKind.SLEEP
+    assert len(await state.list_scheduled_wakes()) == 1
 
 
 @pytest.mark.asyncio
@@ -1864,7 +1873,8 @@ async def test_refresh_health_snapshot_counts_durable_state(tmp_path) -> None:
     assert snapshot["inbox_pending"] == 1
     assert snapshot["repeated_decision_streak"] == 0
     # The cached view serves the HUD without touching the store again.
-    assert runtime.health_snapshot() == snapshot
+    # The live cap-hit counts ride along with the durable ones.
+    assert runtime.health_snapshot() == {**snapshot, "cap_hits_total": 0, "degraded_total": 0}
 
 
 @pytest.mark.asyncio

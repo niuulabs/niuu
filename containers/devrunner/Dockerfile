@@ -1,10 +1,10 @@
 # Security fixes awaiting stable CPython releases; no interpreter ABI changes.
-FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm@sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83 AS python-security
+FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm@sha256:945c2676dc2b18e0c1f16879244122c57c0ffede60006bf3df159c507a31bcae AS python-security
 COPY containers/python-security/ /security/
 RUN apt-get update && apt-get install -y --no-install-recommends patch \
     && python /security/build.py /patched-stdlib
 
-FROM python:3.14-slim-bookworm@sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83
+FROM python:3.14-slim-bookworm@sha256:945c2676dc2b18e0c1f16879244122c57c0ffede60006bf3df159c507a31bcae
 
 RUN --mount=type=bind,from=python-security,source=/patched-stdlib,target=/patched-stdlib \
     --mount=type=bind,source=containers/python-security,target=/security \
@@ -59,10 +59,10 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
 
 # Install uv from a pinned release archive.
 RUN set -eux; \
-    UV_VERSION="0.12.13"; \
+    UV_VERSION="0.13.5"; \
     case "${TARGETARCH}" in \
-      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="745765a3b6e360ad76743599ae5c42e9278c7edf8bbff9fc76d05bf2623a04dd" ;; \
-      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="2eaa5d94f5db7b3a1a092156b9420459e42ab0217d917fe74a876309cef9b5e9" ;; \
+      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f" ;; \
+      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="4bb69cf95ed13f23713bb7bc09f241896ea0c75b7c557e615a20604b82f9c403" ;; \
       *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_ARCHIVE}" -o "/tmp/${UV_ARCHIVE}"; \
@@ -86,7 +86,7 @@ RUN cd /opt/npm-bootstrap \
     && cd /opt/devrunner-tools \
     && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
     && rm -rf /tmp/npm-cache /tmp/grok-install \
-    && sh /opt/npm-bootstrap/replace-nested.sh /opt/devrunner-tools node_modules/@earendil-works/pi-coding-agent/node_modules brace-expansion \
+    && sh /opt/npm-bootstrap/replace-nested.sh /opt/devrunner-tools node_modules/@earendil-works/pi-coding-agent/node_modules undici \
     && ln -sf /opt/devrunner-tools/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -sf /opt/devrunner-tools/node_modules/.bin/codex /usr/local/bin/codex \
     && ln -sf /opt/devrunner-tools/node_modules/.bin/opencode /usr/local/bin/opencode \
@@ -104,7 +104,7 @@ RUN echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg ma
 
 # Pin pip past its published advisories. --no-cache keeps a second, scannable
 # copy of every wheel out of /root/.cache/uv.
-RUN uv pip install --system --break-system-packages --no-cache --upgrade pip==26.2.1
+RUN uv pip install --system --break-system-packages --no-cache --upgrade pip==26.2.2
 
 # Common Python packages for web dev (kept in step with uv.lock)
 RUN uv pip install --system --break-system-packages --no-cache \

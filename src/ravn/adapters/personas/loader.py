@@ -81,6 +81,37 @@ class PersonaLLMConfig:
 
 
 @dataclass
+class PersonaVoiceConfig:
+    """How the persona sounds and what it may do on a realtime voice call.
+
+    ``voices`` maps a realtime provider (``grok-voice``, ``openai-realtime``) to the
+    provider's voice name; a persona with no voices does not take voice calls.
+    ``style`` is how the persona speaks. ``tools`` names the tools a voice call may
+    use, inside ``allowed_tools``; empty means none. ``grok`` holds Grok Voice
+    session fields (reasoning, turn detection, transcription key terms) sent as is.
+    """
+
+    voices: dict[str, str] = field(default_factory=dict)
+    style: str = ""
+    tools: list[str] = field(default_factory=list)
+    grok: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.voices)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"voices": dict(self.voices)}
+        if self.style:
+            d["style"] = self.style
+        if self.tools:
+            d["tools"] = list(self.tools)
+        if self.grok:
+            d["grok"] = dict(self.grok)
+        return d
+
+
+@dataclass
 class PersonaExecutorConfig:
     """Executor adapter settings embedded in a persona."""
 
@@ -159,6 +190,8 @@ class PersonaConfig:
     # granted any delivery_workspace action; a persona that has the
     # delivery_workspace tool but declares no actions here gets none.
     delivery_workspace_actions: list[str] = field(default_factory=list)
+    # Realtime voice calls (``gateway.channels.voice``); unset means no voice.
+    voice: PersonaVoiceConfig = field(default_factory=PersonaVoiceConfig)
 
     def __post_init__(self) -> None:
         try:
@@ -251,6 +284,9 @@ class PersonaConfig:
 
         if self.delivery_workspace_actions:
             d["delivery_workspace_actions"] = list(self.delivery_workspace_actions)
+
+        if self.voice.enabled:
+            d["voice"] = self.voice.to_dict()
 
         return d
 
@@ -874,6 +910,36 @@ def _parse_fan_in(raw: Any) -> PersonaFanIn:
     )
 
 
+def _parse_voice(raw: Any) -> PersonaVoiceConfig:
+    """Parse the ``voice:`` section of a persona YAML dict.
+
+    A malformed section raises: a persona that asks for voice and cannot be read
+    must not silently become a persona without it.
+    """
+    if raw is None:
+        return PersonaVoiceConfig()
+    if not isinstance(raw, dict):
+        raise ValueError("persona voice must be a mapping")
+    voices_raw = raw.get("voices") or {}
+    if not isinstance(voices_raw, dict) or not voices_raw:
+        raise ValueError("persona voice.voices must map a provider to a voice name")
+    voices = {str(k).strip(): str(v).strip() for k, v in voices_raw.items()}
+    if any(not k or not v for k, v in voices.items()):
+        raise ValueError("persona voice.voices must not contain empty providers or voices")
+    tools_raw = raw.get("tools", [])
+    if not isinstance(tools_raw, list) or not all(isinstance(t, str) and t for t in tools_raw):
+        raise ValueError("persona voice.tools must be a list of tool names")
+    grok_raw = raw.get("grok", {})
+    if not isinstance(grok_raw, dict):
+        raise ValueError("persona voice.grok must be a mapping")
+    return PersonaVoiceConfig(
+        voices=voices,
+        style=str(raw.get("style", "")),
+        tools=list(tools_raw),
+        grok=dict(grok_raw),
+    )
+
+
 def _apply_outcome_instruction(persona: PersonaConfig) -> PersonaConfig:
     """Append outcome block instruction to system prompt when schema is declared."""
     if not persona.produces.schema:
@@ -1295,6 +1361,7 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
                 if isinstance(delivery_workspace_actions, list)
                 else []
             ),
+            voice=_parse_voice(raw.get("voice")),
         )
 
     @staticmethod
@@ -1326,4 +1393,5 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
             fan_in=persona.fan_in,
             stop_on_outcome=persona.stop_on_outcome,
             delivery_workspace_actions=persona.delivery_workspace_actions,
+            voice=persona.voice,
         )

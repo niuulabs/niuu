@@ -797,7 +797,25 @@ class TestSendMessage:
         # launch name), not the caller's requested sessionName — `{slug}` in
         # the workflow's artifact paths must resolve to where it wrote them.
         assert campaign.metadata["a2a_workflow_slug"] == result["id"]
-        assert port.spawned[0].name == result["id"]
+        # The task id stays the stable recovery key; the session itself gets a
+        # name a human can read (workflow + prompt), never ``a2a-<hex>``.
+        assert port.spawned[0].tracker_issue_id == f"workflow:{result['id']}"
+        assert port.spawned[0].name == "tool-builder-build-the-widget-tool"
+
+    def test_caller_session_name_names_the_session(self) -> None:
+        workflow = _make_workflow()
+        client, _campaigns, port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+        params = _send_params(str(workflow.id))
+        params["message"]["metadata"]["sessionName"] = "NIU-1114 GitOps reconciliation"
+
+        response = _rpc(client, "SendMessage", params)
+
+        assert response.status_code == 200
+        task_id = response.json()["result"]["task"]["id"]
+        assert port.spawned[0].name == "niu-1114-gitops-reconciliation"
+        assert port.spawned[0].tracker_issue_id == f"workflow:{task_id}"
 
     def test_fan_out_skill_binds_durable_execution_context(self) -> None:
         workflow = next(

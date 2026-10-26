@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from niuu.domain.oauth_credentials import OAUTH_ENGINE, mcp_token_env, mcp_token_path
 from volundr.domain.models import (
     CredentialMapping,
+    IntegrationConnection,
     IntegrationType,
     MountType,
     Session,
@@ -37,10 +38,28 @@ _OPENSHELL_VALUES_KEY = "openshell"
 _OPENSHELL_CREDENTIAL_MAPPINGS_KEY = "credentialMappings"
 
 
+def _mcp_endpoint_path(url_path: str) -> str:
+    """OpenShell path selector for an MCP server URL: its path and everything below.
+
+    Two MCP servers can share a host (``mcp.linear.app/mcp`` and
+    ``mcp.linear.app/mcp/readonly``). A host-only endpoint gives their dynamic
+    token grants identical selectors, which OpenShell rejects as ambiguous; the
+    path subtree keeps each credential on its own server's requests.
+    """
+    path = url_path.rstrip("/")
+    return f"{path}/**" if path else ""
+
+
 def _secret_file_name(value: str) -> str:
     normalized = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in value)
     normalized = normalized.strip(".-_")
     return normalized or "credential"
+
+
+def _connection_label(conn: IntegrationConnection) -> str:
+    """How an operator recognises a connection in Settings → Integrations."""
+    name = conn.config.get("name") if isinstance(conn.config, dict) else None
+    return f"'{name or conn.slug}' ({conn.id})"
 
 
 def _integration_auth_ref(slug: str) -> str:
@@ -122,6 +141,8 @@ class SecretInjectionContributor(SessionContributor):
     ) -> list[CredentialMapping]:
         """Build credential mappings from integration connections + direct credentials."""
         mappings: list[CredentialMapping] = []
+        # OpenShell MCP endpoint (host, port, path) -> the connection that owns it.
+        mcp_endpoint_owners: dict[tuple[str, int, str], str] = {}
 
         # Integration connections — mapping comes from IntegrationDefinition
         for conn in context.integration_connections:
@@ -145,6 +166,20 @@ class SecretInjectionContributor(SessionContributor):
                                         "OpenShell MCP supports bearer or raw header authentication"
                                     )
                                 endpoint = urlsplit(spec.url)
+                                selector = (
+                                    str(endpoint.hostname or "").lower(),
+                                    endpoint.port or 443,
+                                    _mcp_endpoint_path(endpoint.path),
+                                )
+                                owner = _connection_label(conn)
+                                if selector in mcp_endpoint_owners:
+                                    raise ValueError(
+                                        f"Integrations {mcp_endpoint_owners[selector]} and "
+                                        f"{owner} both serve the MCP server {spec.url}; a "
+                                        "session can carry only one credential for it. "
+                                        "Disable one of them in Settings → Integrations."
+                                    )
+                                mcp_endpoint_owners[selector] = owner
                                 provider = {
                                     "authStyle": "bearer" if spec.auth_prefix else "header",
                                     "headerName": spec.auth_header,
@@ -152,6 +187,7 @@ class SecretInjectionContributor(SessionContributor):
                                         {
                                             "host": endpoint.hostname,
                                             "port": endpoint.port or 443,
+                                            "path": selector[2],
                                             "protocol": "rest",
                                             "tls": "terminate",
                                             "enforcement": "enforce",

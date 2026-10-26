@@ -444,6 +444,60 @@ async def test_verify_failure_exhausts_repair_budget_and_aborts(tmp_path, monkey
     assert list((tmp_path / "arts" / "pending-commissions").glob("*.json")) == []
 
 
+async def test_repair_budget_spans_push_suspended_repairs(tmp_path, monkeypatch) -> None:
+    """Every commissioned repair suspends for a push and is resumed in a new call.
+
+    The budget used to be counted per call, so each resume started again at
+    zero and a tool that never verified was rebuilt forever (Regin: 18 builds).
+    """
+    commissions: list[str] = []
+
+    class _Backend:
+        name = "a2a"
+        supports_restart_recovery = True
+
+        async def build(self, request: Any) -> ToolBuildResult:
+            if not request.continuation:
+                task_id = f"task-{len(commissions) + 1}"
+                commissions.append(task_id)
+                raise ToolBuildPendingError(
+                    task_id=task_id,
+                    push_registered=True,
+                    continuation={
+                        "task_id": task_id,
+                        "input_kind": "pending",
+                        "push_registered": True,
+                    },
+                )
+            return ToolBuildResult(
+                manifest=_manifest(),
+                tool_code=_ECHO_TOOL,
+                test_code=_ECHO_TEST,
+                requirements=[],
+            )
+
+    def always_fail(**_: Any) -> VerificationResult:
+        return VerificationResult(ok=False, logs="still broken", missing_module=None)
+
+    monkeypatch.setattr(build_tool_mod, "verify_learned_tool_in_ephemeral_venv", always_fail)
+    tool, registered = _tool(tmp_path, build_backend=_Backend(), max_repair_attempts=2)
+
+    result = await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+    for _ in range(10):
+        pending = json.loads(result.content) if not result.is_error else None
+        if not pending or pending.get("status") != "pending":
+            break
+        result = await tool.execute(pending["resume_with"])
+
+    assert result.is_error is True
+    assert "2 repair attempt" in result.content
+    # The initial build plus exactly two repairs — never a fourth commission.
+    assert commissions == ["task-1", "task-2", "task-3"]
+    assert registered == []
+    assert _persisted_provenance(tmp_path)["verification"]["attempts"] == 2
+    assert list((tmp_path / "arts" / "pending-builds").glob("*.json")) == []
+
+
 async def test_commissioned_build_question_is_persisted_and_resumed(tmp_path) -> None:
     requests: list[Any] = []
 

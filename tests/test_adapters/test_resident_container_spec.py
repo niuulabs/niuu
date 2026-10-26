@@ -667,7 +667,7 @@ def test_ravn_processes_are_identical_with_and_without_an_image() -> None:
     assert ravn.command == (
         "sh",
         "-lc",
-        'export RAVN__GATEWAY__PLATFORM__PAT_TOKEN="$NIUU_VOLUNDR_ACCESS_TOKEN"; '
+        'export RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN="$NIUU_VOLUNDR_ACCESS_TOKEN"; '
         "exec /opt/niuu/bin/python -m ravn daemon --config /sandbox/.volundr/ravn.yaml "
         "--persona 'night watch'",
     )

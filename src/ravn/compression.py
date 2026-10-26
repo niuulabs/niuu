@@ -62,6 +62,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ravn.budget import TokenEstimator
+from ravn.cap_telemetry import require_complete
 from ravn.domain.exceptions import ContextCompressionError, LLMError
 from ravn.domain.models import LLMResponse, Message, TodoItem
 from ravn.ports.llm import LLMPort
@@ -136,7 +137,8 @@ class ContextCompressor:
     model:
         Model identifier used for generating compaction documents.
     max_tokens:
-        Max tokens for compaction document generation (default 1024).
+        Answer cap for the compaction document; ``None`` (the default) sends
+        none. A document that reaches it raises ``ContextCompressionError``.
     protect_first:
         Number of messages at the start of history to preserve unchanged.
     protect_last:
@@ -148,7 +150,9 @@ class ContextCompressor:
         Configured context-window size. Zero means unknown.
     output_reserve:
         Tokens reserved for model output when deriving a prompt budget from
-        ``context_window``.
+        ``context_window``. ``None`` means the answer is uncapped, so the window
+        says nothing about the prompt's share and only an explicit
+        ``prompt_budget_tokens`` triggers compaction.
     """
 
     def __init__(
@@ -156,12 +160,12 @@ class ContextCompressor:
         llm: LLMPort,
         *,
         model: str,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
         protect_first: int = 2,
         protect_last: int = 6,
         compression_threshold: float = 0.8,
         context_window: int = 0,
-        output_reserve: int = 0,
+        output_reserve: int | None = 0,
         token_estimate_safety_factor: float = 1.0,
     ) -> None:
         self._llm = llm
@@ -171,7 +175,7 @@ class ContextCompressor:
         self._protect_last = protect_last
         self._threshold = compression_threshold
         self._context_window = max(0, context_window)
-        self._output_reserve = max(0, output_reserve)
+        self._output_reserve = None if output_reserve is None else max(0, output_reserve)
         self._token_estimate_safety_factor = max(1.0, token_estimate_safety_factor)
 
     # ------------------------------------------------------------------
@@ -217,7 +221,11 @@ class ContextCompressor:
         list is returned unchanged.
         """
         original_count = len(messages)
-        configured_budget = max(0, self._context_window - self._output_reserve)
+        configured_budget = (
+            max(0, self._context_window - self._output_reserve)
+            if self._output_reserve is not None
+            else 0
+        )
         budget = prompt_budget_tokens or configured_budget
         if budget <= 0:
             return messages, CompressionResult(
@@ -336,6 +344,15 @@ class ContextCompressor:
                 system=_COMPACT_SYSTEM,
                 model=self._model,
                 max_tokens=self._max_tokens,
+            )
+            # A state document cut off mid-way would replace the history it
+            # failed to finish summarising.
+            require_complete(
+                response,
+                knob="context_management.compression_max_tokens",
+                budget=self._max_tokens,
+                model=self._model,
+                purpose="the compaction state document",
             )
         except LLMError as exc:
             raise ContextCompressionError(

@@ -428,6 +428,7 @@ async def _run_daemon(
         or channels_cfg.whatsapp.enabled
         or getattr(channels_cfg, "openclaw", None) is not None
         and channels_cfg.openclaw.enabled
+        or channels_cfg.voice.enabled
     )
     if _any_channel:
         gw = RavnGateway(
@@ -451,8 +452,16 @@ async def _run_daemon(
             tasks.append(asyncio.create_task(http_gateway.run(), name="http"))
             gw_tasks.append("http")
 
+        def _voice_factory() -> Any:
+            from ravn.cli.voice_wiring import build_voice_gateway  # noqa: PLC0415
+
+            return build_voice_gateway(settings, persona_config)
+
         for task, name in _make_channel_tasks(
-            channels_cfg, gw, notifications=resident_notification_outbox
+            channels_cfg,
+            gw,
+            notifications=resident_notification_outbox,
+            voice_factory=_voice_factory,
         ):
             tasks.append(task)
             gw_tasks.append(name)

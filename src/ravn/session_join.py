@@ -322,12 +322,12 @@ def _build_token_provider(settings: Any) -> AuthTokenProvider | None:
     if not platform.enabled:
         return None
 
-    if platform.pat_token:
+    if platform.access_token:
 
-        async def pat_provider() -> str:
-            return str(platform.pat_token)
+        async def access_token_provider() -> str:
+            return str(platform.access_token)
 
-        return pat_provider
+        return access_token_provider
 
     cached: dict[str, float | str] = {"token": "", "exp": 0.0}
 

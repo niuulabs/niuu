@@ -158,8 +158,6 @@ resident_inbox:
   max_signals_per_wake: 20
 
 resident_state:
-  continuation_max_turns: 8
-  continuation_max_tokens: 80000
   home_wake_interval_seconds: 5
 
 resident_wakefulness:

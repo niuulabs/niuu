@@ -30,7 +30,6 @@ class TestBifrostAdapterInit:
     def test_defaults(self) -> None:
         adapter = BifrostAdapter()
         assert "bifrost" in adapter._base_url
-        assert adapter._default_max_tokens > 0
         assert adapter._max_retries >= 0
         assert adapter._agent_id == ""
         assert adapter._session_id == ""
@@ -277,7 +276,7 @@ async def test_generate_error_response() -> None:
 
 
 @respx.mock
-async def test_generate_unknown_stop_reason_defaults_to_end_turn() -> None:
+async def test_generate_unknown_stop_reason_raises() -> None:
     adapter = BifrostAdapter(base_url=_BASE_URL)
 
     response_body = {
@@ -288,8 +287,8 @@ async def test_generate_unknown_stop_reason_defaults_to_end_turn() -> None:
 
     respx.post(_BIFROST_URL).mock(return_value=httpx.Response(200, json=response_body))
 
-    result = await adapter.generate([], tools=[], system="", model="m", max_tokens=100)
-    assert result.stop_reason == StopReason.END_TURN
+    with pytest.raises(LLMError, match="future_unknown_reason"):
+        await adapter.generate([], tools=[], system="", model="m", max_tokens=100)
 
 
 @respx.mock

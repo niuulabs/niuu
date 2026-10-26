@@ -61,7 +61,7 @@ FAKE_ENTRYPOINT = textwrap.dedent(
         )
         print("ravn escaped", escaped.pid, flush=True)
     shown = ("HOME", "SKULD__HOST", "NIUU_CONFIG", "CODEX_HOME", "RAVN_STATE_DIR",
-             "RAVN__GATEWAY__PLATFORM__PAT_TOKEN", "RAVN_API_AUTH__ADAPTER", "EXTRA_INHERITED")
+             "RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN", "RAVN_API_AUTH__ADAPTER", "EXTRA_INHERITED")
     print(role, "argv", " ".join(sys.argv[2:]), flush=True)
     for name in shown:
         print(role, "env", name, os.environ.get(name, "<unset>"), flush=True)
@@ -243,7 +243,7 @@ async def test_host_resident_lifecycle_runs_without_a_container_engine(
         f"[ravn] ravn argv daemon --config {root / 'config' / 'ravn.yaml'} "
         "--persona product-steward"
     ) in ravn_messages
-    assert "[ravn] ravn env RAVN__GATEWAY__PLATFORM__PAT_TOKEN local-mini" in ravn_messages
+    assert "[ravn] ravn env RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN local-mini" in ravn_messages
     assert f"[ravn] ravn env RAVN_STATE_DIR {root / 'workspace' / '.ravn'}" in ravn_messages
     only_ravn = await controller.logs(runtime, lines=5, sources=("ravn",), min_level="")
     assert {entry.source for entry in only_ravn.entries} == {"ravn"}

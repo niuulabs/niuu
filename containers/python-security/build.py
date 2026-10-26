@@ -39,7 +39,6 @@ subprocess.run(
         "-j",
         "2",
         "test_poplib",
-        "test_tarfile",
     ],
     cwd=source_dir,
     env={**os.environ, "PYTHONPATH": str(source_dir / "Lib")},

@@ -48,6 +48,9 @@ _COMPACTION_EDIT = "compact_20260112"
 _MIN_COMPACTION_TRIGGER_TOKENS = 50_000
 
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503})
+# Stop reasons that mean the answer ran out of room: the output cap, or the
+# context window filling up before the model finished.
+_TRUNCATED_STOP_REASONS = frozenset({"max_tokens", "model_context_window_exceeded"})
 _DEFAULT_BASE_URL = "https://api.anthropic.com"
 
 # Ravn's transport-neutral message keys that the Anthropic API does not accept.
@@ -118,6 +121,26 @@ def _accumulate_block(block: dict, delta: dict) -> None:
             block["signature"] = block.get("signature", "") + delta.get("signature", "")
         case "compaction_delta":
             block["content"] = (block.get("content") or "") + delta.get("content", "")
+
+
+def _stop_reason(raw: object) -> StopReason | None:
+    """Map an Anthropic ``stop_reason`` onto Ravn's, failing on one that is no answer.
+
+    ``None`` is "not reported yet" (a stream's earlier events). A refusal, a
+    paused turn or a reason this adapter does not know is not something the
+    agent can act on as if the model had finished, so it raises.
+    """
+    if raw is None:
+        return None
+    if raw in _TRUNCATED_STOP_REASONS:
+        return StopReason.MAX_TOKENS
+    try:
+        return StopReason(str(raw))
+    except ValueError:
+        raise LLMError(
+            f"Anthropic response stopped with {raw!r}, which is not an answer the agent "
+            "can act on (expected end_turn, tool_use, max_tokens or stop_sequence)"
+        ) from None
 
 
 def _compaction_usage(usage: dict) -> tuple[int, int]:
@@ -219,7 +242,6 @@ class AnthropicAdapter(LLMPort, NativeCompactionPort):
         api_key: str = "",
         base_url: str = _DEFAULT_BASE_URL,
         model: str = "claude-sonnet-4-6",
-        max_tokens: int = 8192,
         max_retries: int = 3,
         retry_base_delay: float = 1.0,
         timeout: float = 120.0,
@@ -227,7 +249,8 @@ class AnthropicAdapter(LLMPort, NativeCompactionPort):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._default_model = model
-        self._default_max_tokens = max_tokens
+        # Model → maximum output tokens, as the Models API reports it.
+        self._output_limits: dict[str, int] = {}
         self._max_retries = max_retries
         self._retry_base_delay = retry_base_delay
         self._timeout = timeout
@@ -297,18 +320,18 @@ class AnthropicAdapter(LLMPort, NativeCompactionPort):
         tools: list[dict],
         system: SystemPrompt,
         model: str,
-        max_tokens: int,
+        max_tokens: int | None,
         stream: bool,
         thinking: dict | None = None,
     ) -> dict:
         refuse_foreign_compaction(messages, ANTHROPIC_MESSAGES, type(self).__name__)
-        effective_max_tokens = max_tokens or self._default_max_tokens
         body: dict = {
             "model": model or self._default_model,
-            "max_tokens": effective_max_tokens,
             "messages": _for_api(messages),
             "stream": stream,
         }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
         system_blocks = self._build_system(system)
         if system_blocks:
             body["system"] = system_blocks
@@ -321,6 +344,39 @@ class AnthropicAdapter(LLMPort, NativeCompactionPort):
             edit = {"type": _COMPACTION_EDIT, "trigger": {"type": "input_tokens", "value": trigger}}
             body["context_management"] = {"edits": [edit]}
         return body
+
+    async def _output_cap(self, model: str, max_tokens: int | None) -> int | None:
+        """The ``max_tokens`` to send for *model*.
+
+        The Messages API requires the parameter, so "no cap" is the model's own
+        maximum output, read from the Models API once per model — never a
+        number chosen here.
+        """
+        if max_tokens is not None:
+            return max_tokens
+        effective_model = model or self._default_model
+        cached = self._output_limits.get(effective_model)
+        if cached is not None:
+            return cached
+        url = f"{self._base_url}/v1/models/{effective_model}"
+        async with httpx.AsyncClient(headers=self._headers(), timeout=self._timeout) as client:
+            response = await client.get(url)
+        if response.status_code != httpx.codes.OK:
+            raise LLMError(
+                f"could not read the output limit of {effective_model!r} from {url} "
+                f"({response.status_code}: {response.text[:500]}); set llm.max_tokens "
+                "(or the calling component's max_tokens) to send an explicit cap",
+                status_code=response.status_code,
+            )
+        limit = response.json().get("max_tokens")
+        if not isinstance(limit, int) or limit <= 0:
+            raise LLMError(
+                f"the Models API reported no max_tokens for {effective_model!r} at {url}; "
+                "set llm.max_tokens (or the calling component's max_tokens) to send an "
+                "explicit cap"
+            )
+        self._output_limits[effective_model] = limit
+        return limit
 
     async def _post_with_retry(
         self,
@@ -378,7 +434,7 @@ class AnthropicAdapter(LLMPort, NativeCompactionPort):
         tools: list[dict],
         system: SystemPrompt,
         model: str,
-        max_tokens: int,
+        max_tokens: int | None,
         thinking: dict | None = None,
     ) -> AsyncIterator[StreamEvent]:
         thinking_enabled = thinking is not None
@@ -387,7 +443,7 @@ class AnthropicAdapter(LLMPort, NativeCompactionPort):
             tools=tools,
             system=system,
             model=model,
-            max_tokens=max_tokens,
+            max_tokens=await self._output_cap(model, max_tokens),
             stream=True,
             thinking=thinking,
         )
@@ -498,6 +554,9 @@ class AnthropicAdapter(LLMPort, NativeCompactionPort):
 
                     case "message_delta":
                         usage_data = event_data.get("usage", {})
+                        stop_reason = _stop_reason(
+                            (event_data.get("delta") or {}).get("stop_reason")
+                        )
                         # Approximate thinking tokens from accumulated char count.
                         thinking_tokens = accumulated_thinking_chars // 4
                         if capture:
@@ -516,6 +575,7 @@ class AnthropicAdapter(LLMPort, NativeCompactionPort):
                                 cache_write_tokens=usage_data.get("cache_creation_input_tokens", 0),
                                 thinking_tokens=thinking_tokens,
                             ),
+                            stop_reason=stop_reason,
                         )
 
     async def generate(
@@ -525,7 +585,7 @@ class AnthropicAdapter(LLMPort, NativeCompactionPort):
         tools: list[dict],
         system: SystemPrompt,
         model: str,
-        max_tokens: int,
+        max_tokens: int | None,
         thinking: dict | None = None,
     ) -> LLMResponse:
         thinking_enabled = thinking is not None
@@ -534,7 +594,7 @@ class AnthropicAdapter(LLMPort, NativeCompactionPort):
             tools=tools,
             system=system,
             model=model,
-            max_tokens=max_tokens,
+            max_tokens=await self._output_cap(model, max_tokens),
             stream=False,
             thinking=thinking,
         )
@@ -575,11 +635,7 @@ class AnthropicAdapter(LLMPort, NativeCompactionPort):
         compaction_in, compaction_out = _compaction_usage(usage_data)
         reasoning = "".join(thinking_parts)
         native = self._native_compaction_for(model) is not None
-        stop_reason_raw = data.get("stop_reason", "end_turn")
-        try:
-            stop_reason = StopReason(stop_reason_raw)
-        except ValueError:
-            stop_reason = StopReason.END_TURN
+        stop_reason = _stop_reason(data.get("stop_reason", "end_turn")) or StopReason.END_TURN
 
         return LLMResponse(
             content=content_text,

@@ -12,7 +12,6 @@ import pytest
 
 from ravn.domain.models import TokenUsage
 from ravn.domain.resident_continuation import (
-    ResidentBudgetLimits,
     ResidentBudgetSnapshot,
     ResidentMemoryEntry,
     ResidentPolicyDecisionRecord,
@@ -24,7 +23,6 @@ from ravn.domain.resident_continuation import (
 from ravn.resident_continuation import (
     LocalResidentMemory,
     NullResidentMemory,
-    ResidentRunBudget,
 )
 
 
@@ -166,16 +164,6 @@ async def test_null_memory_is_noop(tmp_path) -> None:
     assert await mem.list_policy_observations() == []
     assert await mem.read_operator_needed() is None
     assert await mem.read_operator_answer() is None
-
-
-def test_run_budget_snapshot_and_limits() -> None:
-    budget = ResidentRunBudget(ResidentBudgetLimits(max_turns=2, max_tokens=100))
-    assert budget.can_continue().allowed is True
-
-    budget.record_usage(TokenUsage(input_tokens=80, output_tokens=40))  # 120 > 100
-    snap = budget.snapshot()
-    assert snap.total_tokens == 120
-    assert budget.can_continue().allowed is False
 
 
 # ---------------------------------------------------------------------------

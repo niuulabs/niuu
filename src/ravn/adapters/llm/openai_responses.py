@@ -85,6 +85,9 @@ _REASONING_DETAIL_FORMAT = "openai-responses-v1"
 
 _TERMINAL_EVENTS = frozenset({"response.completed", "response.incomplete"})
 _FAILED_EVENTS = frozenset({"response.failed", "error"})
+# ``incomplete_details.reason`` when the answer ran out of output room. Any
+# other incomplete reason (a content filter) is not an answer either, and fails.
+_INCOMPLETE_MAX_OUTPUT = "max_output_tokens"
 
 
 def _system_text(system: SystemPrompt) -> str:
@@ -343,7 +346,6 @@ class OpenAIResponsesAdapter(LLMPort, NativeCompactionPort):
         api_key: str = "",
         base_url: str = _DEFAULT_BASE_URL,
         model: str = "gpt-6-sol",
-        max_tokens: int = 8192,
         max_retries: int = 3,
         retry_base_delay: float = 1.0,
         timeout: float = 120.0,
@@ -359,7 +361,6 @@ class OpenAIResponsesAdapter(LLMPort, NativeCompactionPort):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._default_model = model
-        self._default_max_tokens = max_tokens
         self._max_retries = max_retries
         self._retry_base_delay = retry_base_delay
         self._timeout = timeout
@@ -415,7 +416,7 @@ class OpenAIResponsesAdapter(LLMPort, NativeCompactionPort):
         tools: list[dict],
         system: SystemPrompt,
         model: str,
-        max_tokens: int,
+        max_tokens: int | None,
         thinking: dict | None,
     ) -> dict[str, Any]:
         refuse_foreign_compaction(messages, OPENAI_RESPONSES, type(self).__name__)
@@ -428,9 +429,11 @@ class OpenAIResponsesAdapter(LLMPort, NativeCompactionPort):
                 "stream": True,
                 "store": False,
                 "include": [_REASONING_ENCRYPTED_INCLUDE],
-                "max_output_tokens": max_tokens or self._default_max_tokens,
             }
         )
+        # No cap means none on the wire: the model's own maximum output applies.
+        if max_tokens is not None:
+            body["max_output_tokens"] = max_tokens
         instructions = _system_text(system)
         if instructions:
             body["instructions"] = instructions
@@ -501,7 +504,7 @@ class OpenAIResponsesAdapter(LLMPort, NativeCompactionPort):
         tools: list[dict],
         system: SystemPrompt,
         model: str,
-        max_tokens: int,
+        max_tokens: int | None,
         thinking: dict | None = None,
     ) -> AsyncIterator[StreamEvent]:
         payload = self._build_request(
@@ -582,12 +585,21 @@ class OpenAIResponsesAdapter(LLMPort, NativeCompactionPort):
                 model,
                 usage.input_tokens if usage else 0,
             )
+        if incomplete and incomplete != _INCOMPLETE_MAX_OUTPUT:
+            raise LLMError(
+                f"Responses stream for {model!r} ended incomplete ({incomplete}); the "
+                "provider withheld the answer"
+            )
         yield StreamEvent(
             type=StreamEventType.PROVIDER_ITEMS,
             provider_items=output,
             provider_protocol=OPENAI_RESPONSES,
         )
-        yield StreamEvent(type=StreamEventType.MESSAGE_DONE, usage=usage)
+        yield StreamEvent(
+            type=StreamEventType.MESSAGE_DONE,
+            usage=usage,
+            stop_reason=StopReason.MAX_TOKENS if incomplete else None,
+        )
 
     async def generate(
         self,
@@ -596,7 +608,7 @@ class OpenAIResponsesAdapter(LLMPort, NativeCompactionPort):
         tools: list[dict],
         system: SystemPrompt,
         model: str,
-        max_tokens: int,
+        max_tokens: int | None,
         thinking: dict | None = None,
     ) -> LLMResponse:
         text: list[str] = []
@@ -604,6 +616,7 @@ class OpenAIResponsesAdapter(LLMPort, NativeCompactionPort):
         tool_calls: list[ToolCall] = []
         items: list[dict[str, Any]] = []
         usage = TokenUsage(input_tokens=0, output_tokens=0)
+        truncated = False
         async for event in self.stream(
             messages,
             tools=tools,
@@ -621,12 +634,16 @@ class OpenAIResponsesAdapter(LLMPort, NativeCompactionPort):
                     tool_calls.append(event.tool_call)
                 case StreamEventType.PROVIDER_ITEMS:
                     items.extend(event.provider_items or [])
-                case StreamEventType.MESSAGE_DONE if event.usage is not None:
-                    usage = event.usage
+                case StreamEventType.MESSAGE_DONE:
+                    usage = event.usage or usage
+                    truncated = truncated or event.stop_reason == StopReason.MAX_TOKENS
+        stop_reason = StopReason.TOOL_USE if tool_calls else StopReason.END_TURN
         return LLMResponse(
             content="".join(text),
             tool_calls=tool_calls,
-            stop_reason=StopReason.TOOL_USE if tool_calls else StopReason.END_TURN,
+            # Cut off for max_output_tokens: the answer — and a tool call in it —
+            # is incomplete, whatever else it carries.
+            stop_reason=StopReason.MAX_TOKENS if truncated else stop_reason,
             usage=usage,
             reasoning="".join(reasoning),
             provider_items=items,

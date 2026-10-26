@@ -302,6 +302,10 @@ class StreamEvent:
     # PROVIDER_ITEMS: the whole turn's output items and the protocol they are in.
     provider_items: list[dict[str, Any]] | None = None
     provider_protocol: str = ""
+    # MESSAGE_DONE: why generation stopped, when the provider said. A stream may
+    # carry more than one MESSAGE_DONE (a usage chunk, then the finish); any
+    # one reporting MAX_TOKENS means the turn was cut off.
+    stop_reason: StopReason | None = None
 
 
 @dataclass(frozen=True)
@@ -413,7 +417,6 @@ class AgentTask:
     output_mode: OutputMode
     persona: str | None = None
     priority: int = 10  # lower = higher priority
-    max_tokens: int | None = None
     deadline: datetime | None = None  # task discarded if queue time exceeds this
     output_path: Path | None = None  # where to save task output (cron tasks)
     root_correlation_id: str = ""  # Propagated from triggering event for fan-in chain tracking

@@ -1087,11 +1087,10 @@ class TestPublisherPersona:
     def test_file_exists(self) -> None:
         assert (_PERSONAS_DIR / "publisher.yaml").exists()
 
-    def test_allowed_tools_include_file_only(self) -> None:
+    def test_allowed_tools_are_the_mimir_record_tools_only(self) -> None:
+        """It publishes the delivery record to Mímir and never touches the repository."""
         data = self._load()
-        tools = data["allowed_tools"]
-        assert "file" in tools
-        assert tools == ["file"]
+        assert data["allowed_tools"] == ["mimir_read", "mimir_write"]
 
     def test_produces_delivery_completed_alias(self) -> None:
         data = self._load()

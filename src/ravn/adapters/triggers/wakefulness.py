@@ -32,6 +32,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from niuu.ports.mimir import MimirPort
+from ravn.cap_telemetry import require_complete
 from ravn.config import WakefulnessConfig
 from ravn.domain.interaction_tracker import LastInteractionTracker
 from ravn.domain.models import AgentTask
@@ -41,8 +42,6 @@ from ravn.ports.trigger import TriggerPort
 logger = logging.getLogger(__name__)
 
 _STATE_FILE_NAME = "wakefulness_state.json"
-
-_REFLECTION_MAX_TOKENS = 512
 
 _SHALLOW_PROMPT = """\
 You are reflecting on a conversation between an AI assistant and its operator.
@@ -143,11 +142,10 @@ class WakefulnessTrigger(TriggerPort):
                 await self._poll_once()
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
-                logger.warning("WakefulnessTrigger: poll error: %s", exc)
-                # Prevent tight loop on repeated errors
-                await asyncio.sleep(self._config.poll_interval_seconds)
-                continue
+            except Exception:
+                # The reflection timestamps only advance after a pass succeeds,
+                # so the next poll retries it; the failure itself is an error.
+                logger.exception("WakefulnessTrigger: reflection pass failed; retrying next poll")
 
             await asyncio.sleep(self._config.poll_interval_seconds)
 
@@ -201,9 +199,6 @@ class WakefulnessTrigger(TriggerPort):
         prompt = prompt_template.format(max_intents=self._config.max_intents_per_reflection)
 
         intents = await self._call_llm(prompt)
-        if intents is None:
-            return
-
         capped = intents[: self._config.max_intents_per_reflection]
 
         for intent in capped:
@@ -211,49 +206,50 @@ class WakefulnessTrigger(TriggerPort):
             if not title:
                 continue
 
-            try:
-                await self._mimir.create_thread(
-                    title=title,
-                    weight=self._config.initial_thread_weight,
-                    context_refs=None,
-                    next_action_hint=intent.get("next_action_hint"),
-                )
-                logger.info(
-                    "WakefulnessTrigger: created thread %r (why=%s)",
-                    title,
-                    intent.get("why", ""),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "WakefulnessTrigger: failed to create thread %r: %s",
-                    title,
-                    exc,
-                )
-
-    async def _call_llm(self, prompt: str) -> list[dict] | None:
-        """Call the LLM and parse a JSON array of intents."""
-        try:
-            response = await self._llm.generate(
-                messages=[{"role": "user", "content": prompt}],
-                tools=[],
-                system="You are a reflective assistant. Respond only with valid JSON.",
-                model=self._config.llm_alias,
-                max_tokens=_REFLECTION_MAX_TOKENS,
+            await self._mimir.create_thread(
+                title=title,
+                weight=self._config.initial_thread_weight,
+                context_refs=None,
+                next_action_hint=intent.get("next_action_hint"),
             )
+            logger.info(
+                "WakefulnessTrigger: created thread %r (why=%s)",
+                title,
+                intent.get("why", ""),
+            )
+
+    async def _call_llm(self, prompt: str) -> list[dict]:
+        """Ask for the follow-up intents; raises when the model gives no usable answer."""
+        response = await self._llm.generate(
+            messages=[{"role": "user", "content": prompt}],
+            tools=[],
+            system="You are a reflective assistant. Respond only with valid JSON.",
+            model=self._config.llm_alias,
+            # Uncapped: the old 512-token cap ended inside a reasoning model's
+            # thinking, and the empty answer read as "nothing unfinished".
+            max_tokens=None,
+        )
+        require_complete(
+            response,
+            knob="wakefulness",
+            budget=None,
+            model=self._config.llm_alias,
+            purpose="the wakefulness reflection",
+        )
+        try:
             parsed = json.loads(response.content)
-            if not isinstance(parsed, list):
-                logger.warning(
-                    "WakefulnessTrigger: LLM returned non-array JSON: %s",
-                    type(parsed).__name__,
-                )
-                return None
-            return parsed
         except json.JSONDecodeError as exc:
-            logger.warning("WakefulnessTrigger: malformed JSON from LLM: %s", exc)
-            return None
-        except Exception as exc:
-            logger.warning("WakefulnessTrigger: LLM call failed: %s", exc)
-            return None
+            raise ValueError(
+                f"WakefulnessTrigger: {self._config.llm_alias!r} answered with no JSON "
+                f"({response.content[:200]!r}); set wakefulness.llm_alias to a model that "
+                "follows JSON instructions"
+            ) from exc
+        if not isinstance(parsed, list):
+            raise ValueError(
+                f"WakefulnessTrigger: {self._config.llm_alias!r} answered with "
+                f"{type(parsed).__name__}, not a JSON array of intents"
+            )
+        return parsed
 
     # ------------------------------------------------------------------
     # State persistence
@@ -264,19 +260,13 @@ class WakefulnessTrigger(TriggerPort):
         state_file = self._state_dir / _STATE_FILE_NAME
         if not state_file.exists():
             return
-        try:
-            raw = json.loads(state_file.read_text(encoding="utf-8"))
-            if "last_reflection_at" in raw:
-                self._last_reflection_at = datetime.fromisoformat(raw["last_reflection_at"])
-            if "last_deep_reflection_at" in raw:
-                self._last_deep_reflection_at = datetime.fromisoformat(
-                    raw["last_deep_reflection_at"]
-                )
-        except Exception as exc:
-            logger.warning("WakefulnessTrigger: could not load state: %s", exc)
-            # Reset state on load failure to avoid stuck cooldowns
-            self._last_reflection_at = None
-            self._last_deep_reflection_at = None
+        # Unreadable state raises: resetting it would silently re-run every
+        # reflection. Delete the file to start the cooldowns over.
+        raw = json.loads(state_file.read_text(encoding="utf-8"))
+        if "last_reflection_at" in raw:
+            self._last_reflection_at = datetime.fromisoformat(raw["last_reflection_at"])
+        if "last_deep_reflection_at" in raw:
+            self._last_deep_reflection_at = datetime.fromisoformat(raw["last_deep_reflection_at"])
 
     def _save_state(self) -> None:
         """Persist reflection timestamps to the state file."""
@@ -287,7 +277,4 @@ class WakefulnessTrigger(TriggerPort):
             state["last_reflection_at"] = self._last_reflection_at.isoformat()
         if self._last_deep_reflection_at is not None:
             state["last_deep_reflection_at"] = self._last_deep_reflection_at.isoformat()
-        try:
-            state_file.write_text(json.dumps(state), encoding="utf-8")
-        except Exception as exc:
-            logger.warning("WakefulnessTrigger: could not save state: %s", exc)
+        state_file.write_text(json.dumps(state), encoding="utf-8")

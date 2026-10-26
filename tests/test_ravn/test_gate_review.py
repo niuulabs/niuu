@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
-from ravn.adapters.tool_build.gate_review import build_llm_gate_reviewer, parse_gate_verdict
+from ravn.adapters.tool_build.gate_review import (
+    build_llm_gate_reviewer,
+    build_llm_question_answerer,
+    parse_gate_verdict,
+)
+from ravn.domain.exceptions import OutputTruncatedError
+from ravn.domain.models import LLMResponse, StopReason, TokenUsage
 from ravn.ports.tool_build_backend import ToolBuildError, ToolBuildRequest
 
 
@@ -32,8 +36,11 @@ _GATE = {
 
 
 class _ScriptedLLM:
-    def __init__(self, contents: list[str]) -> None:
+    def __init__(
+        self, contents: list[str], *, stop_reason: StopReason = StopReason.END_TURN
+    ) -> None:
         self._contents = list(contents)
+        self._stop_reason = stop_reason
         self.calls: list[dict] = []
 
     async def generate(self, messages, *, tools, system, model, max_tokens):
@@ -45,7 +52,12 @@ class _ScriptedLLM:
                 "max_tokens": max_tokens,
             }
         )
-        return SimpleNamespace(content=self._contents.pop(0))
+        return LLMResponse(
+            content=self._contents.pop(0),
+            tool_calls=[],
+            stop_reason=self._stop_reason,
+            usage=TokenUsage(input_tokens=0, output_tokens=0),
+        )
 
 
 class TestParseGateVerdict:
@@ -137,3 +149,23 @@ class TestLlmQuestionAnswerer:
 
         with pytest.raises(ToolBuildError, match="empty answer"):
             await answerer(_request(), {"question": "anything"})
+
+
+class TestNoAnswerCap:
+    """A reasoning model thinks before its verdict; a cap sized for the verdict cut that off."""
+
+    async def test_review_sends_no_cap_and_refuses_a_cut_off_verdict(self) -> None:
+        llm = _ScriptedLLM(["APPROVE look"], stop_reason=StopReason.MAX_TOKENS)
+        reviewer = build_llm_gate_reviewer(llm=llm, model="m", valkyrie_id="v")
+
+        with pytest.raises(OutputTruncatedError, match="tool_build.gate_review"):
+            await reviewer(_request(), _GATE)
+        assert llm.calls[0]["max_tokens"] is None
+
+    async def test_answer_sends_no_cap_and_refuses_a_cut_off_answer(self) -> None:
+        llm = _ScriptedLLM(["All namespa"], stop_reason=StopReason.MAX_TOKENS)
+        answerer = build_llm_question_answerer(llm=llm, model="m", valkyrie_id="v")
+
+        with pytest.raises(OutputTruncatedError, match="tool_build.question_answer"):
+            await answerer(_request(), {"question": "Which namespaces?"})
+        assert llm.calls[0]["max_tokens"] is None

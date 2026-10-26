@@ -50,6 +50,10 @@ def test_install_validates_all_modules_before_changing_anything(tmp_path):
     assert not list(cache.iterdir())
 
 
+def _claimed(manifest):
+    return [*manifest["cves"], *(item["cve"] for item in manifest["upstream_fixes"])]
+
+
 @pytest.fixture
 def vex_inputs():
     import json
@@ -64,6 +68,7 @@ def vex_inputs():
         "library": "/usr/local/lib/libpython3.14.so.1.0",
         "image": image,
         "patches": [item["commit"] for item in manifest["patches"]],
+        "upstream_fixes": {item["cve"]: item["sha256"] for item in manifest["upstream_fixes"]},
     }
     scan = {
         "source": {"target": {"repoDigests": [image]}},
@@ -87,7 +92,7 @@ def vex_inputs():
                     ],
                 },
             }
-            for cve in [*manifest["cves"], "CVE-2099-99999"]
+            for cve in [*_claimed(manifest), "CVE-2099-99999"]
         ],
     }
     return image, evidence, scan, manifest
@@ -99,8 +104,8 @@ def test_vex_is_limited_to_verified_image_component_and_its_cves(vex_inputs, lib
         match["artifact"]["locations"][1]["annotations"]["evidence"] = library_evidence
     result = load("vex").document(*vex_inputs)
     image, _, _, manifest = vex_inputs
-    assert {s["vulnerability"]["name"] for s in result["statements"]} == set(manifest["cves"])
-    assert len(result["statements"]) == len(manifest["cves"])
+    assert {s["vulnerability"]["name"] for s in result["statements"]} == set(_claimed(manifest))
+    assert len(result["statements"]) == len(_claimed(manifest))
     for statement in result["statements"]:
         assert statement["status"] == "fixed"
         assert image.split("@", 1)[1] in statement["products"][0]["@id"]
@@ -116,6 +121,7 @@ def test_vex_is_limited_to_verified_image_component_and_its_cves(vex_inputs, lib
         "hash",
         "version",
         "cves",
+        "upstream",
         "scan",
         "runtime",
         "extra_runtime",
@@ -134,6 +140,8 @@ def test_vex_rejects_unverified_evidence(vex_inputs, invalid):
         evidence["python_version"] = "3.14.6"
     elif invalid == "cves":
         evidence["cves"] = []
+    elif invalid == "upstream":
+        evidence["upstream_fixes"] = {cve: "wrong" for cve in evidence["upstream_fixes"]}
     elif invalid == "scan":
         scan["source"]["target"]["repoDigests"] = []
     elif invalid == "runtime":
@@ -150,3 +158,17 @@ def test_vex_rejects_unverified_evidence(vex_inputs, invalid):
         scan["matches"][0]["artifact"]["locations"].pop(0)
     with pytest.raises(ValueError):
         load("vex").document(image, evidence, scan, manifest)
+
+
+def test_vex_tells_upstream_fixes_apart_from_backports(vex_inputs):
+    _, _, _, manifest = vex_inputs
+    notes = {
+        s["vulnerability"]["name"]: s["status_notes"]
+        for s in load("vex").document(*vex_inputs)["statements"]
+    }
+    for cve in manifest["cves"]:
+        assert notes[cve].startswith("Upstream CPython security backports installed")
+    for item in manifest["upstream_fixes"]:
+        assert notes[item["cve"]].startswith(
+            f"Fixed upstream in CPython {manifest['python_version']}"
+        )

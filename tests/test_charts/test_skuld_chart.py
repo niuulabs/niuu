@@ -1671,6 +1671,94 @@ class TestResidentServiceAccount:
         assert sa["metadata"]["name"] == "resident-abc123"
 
 
+class TestResidentVoice:
+    """resident.voice: the Ravn voice channel behind /voice/ on the resident's route."""
+
+    _MINTERS = {
+        "xai": {
+            "adapter": "ravn.adapters.voice.client_secrets.XaiRealtimeMinter",
+            "kwargs": {"key_file": "/run/secrets/xai-api-key"},
+        }
+    }
+
+    def _values(self, **voice: object) -> dict:
+        return {
+            "session": {"ownerId": "owner-1"},
+            "resident": {
+                "enabled": True,
+                "persona": "sidekick",
+                "voice": {"enabled": True, "minters": self._MINTERS, **voice},
+            },
+        }
+
+    def test_off_by_default(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(
+            tmp_path, {"resident": {"enabled": True, "persona": "sidekick"}}
+        )
+
+        assert "voice" not in _ravn_config_from_rendered(rendered)["gateway"]["channels"]
+        assert "location /voice/" not in rendered
+
+    def test_channel_config_is_valid_ravn_configuration(self, tmp_path: Path) -> None:
+        from ravn.config import VoiceChannelConfig
+
+        rendered = _render_skuld_chart(
+            tmp_path, self._values(timeZone="Europe/Amsterdam", models={"grok": "grok-voice-3.0"})
+        )
+        channel = _ravn_config_from_rendered(rendered)["gateway"]["channels"]["voice"]
+        config = VoiceChannelConfig(**channel)
+
+        assert config.enabled and config.host == "127.0.0.1" and config.port == 18791
+        assert config.store_path == "/workspace/.ravn/voice/calls.db"
+        assert config.time_zone == "Europe/Amsterdam"
+        assert config.models == {"grok": "grok-voice-3.0"}
+        assert config.minters["xai"].kwargs == {"key_file": "/run/secrets/xai-api-key"}
+        assert config.room_broker_url == "http://127.0.0.1:8081"
+        assert config.room_participant_id == "flock-sidekick"
+        assert config.owner_id == "owner-1" and config.user_id_header == "x-auth-user-id"
+        # The resident introduces itself by its own name (here its persona, without one).
+        assert config.display_name == "sidekick"
+
+    def test_nginx_forwards_voice_to_the_channel_with_upgrade(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(tmp_path, self._values(port=19001))
+
+        assert "location /voice/ {\n                proxy_pass http://127.0.0.1:19001/;" in rendered
+
+    def test_room_copy_can_be_switched_off(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(tmp_path, self._values(roomCopy=False))
+        channel = _ravn_config_from_rendered(rendered)["gateway"]["channels"]["voice"]
+
+        assert "room_broker_url" not in channel
+
+    @pytest.mark.parametrize(
+        ("change", "message"),
+        [
+            ({"minters": {}}, "resident.voice.enabled needs resident.voice.minters"),
+            ({"owner": ""}, "resident.voice.enabled needs session.ownerId"),
+        ],
+    )
+    def test_voice_that_cannot_serve_fails_to_render(
+        self, tmp_path: Path, change: dict, message: str
+    ) -> None:
+        helm = shutil.which("helm")
+        if not helm:
+            pytest.skip("helm is not installed")
+        values = self._values(**{k: v for k, v in change.items() if k != "owner"})
+        if "owner" in change:
+            values["session"]["ownerId"] = change["owner"]
+        values_file = tmp_path / "values.yaml"
+        values_file.write_text(yaml.safe_dump(values), encoding="utf-8")
+
+        result = subprocess.run(
+            [helm, "template", "skuld-test", str(CHART_DIR), "-f", str(values_file)],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode != 0
+        assert message in result.stderr
+
+
 class TestResidentOpenClawSessions:
     """resident.openclaw: the Ravn shim behind Volundr's resident sessions API."""
 

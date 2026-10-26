@@ -12,7 +12,6 @@ from fastapi.testclient import TestClient
 from bifrost.app import create_app
 from bifrost.config import BifrostConfig, ProviderConfig
 from bifrost.inbound.responses import (
-    DEFAULT_MAX_OUTPUT_TOKENS,
     ResponsesRequest,
     UnsupportedResponsesInputError,
     anthropic_response_to_responses,
@@ -66,10 +65,10 @@ class TestRequestTranslation:
         assert [m.role for m in req.messages] == ["user"]
         assert req.messages[0].content == [TextBlock(text="hi")]
 
-    def test_default_output_budget_suits_a_coding_agent(self):
-        assert responses_request_to_anthropic(_request(input="x")).max_tokens == (
-            DEFAULT_MAX_OUTPUT_TOKENS
-        )
+    def test_no_max_output_tokens_is_no_cap(self):
+        # A guessed default (4096) truncated reasoning models' answers; the
+        # provider's own limit applies instead.
+        assert responses_request_to_anthropic(_request(input="x")).max_tokens is None
 
     def test_codex_turn_with_a_tool_round_trip(self):
         """The shape Codex sends: developer text, user message, its earlier

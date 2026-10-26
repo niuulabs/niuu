@@ -333,6 +333,29 @@ Two mechanisms resume the resident when launched work lands:
   at it there (tagged perception, never confused with your chat), can
   `post` answers into that room, and leaves when the work completes.
 
+## Answering a resident's question
+
+When a resident needs your input it persists the question on its case first,
+then asks — in Telegram as a "needs your input" message you can reply to. Your
+reply carries the case id of the message you replied to, so it resumes exactly
+that case even when several questions are open. A message that is not a reply
+answers a question only when exactly one is open; otherwise it reaches the
+resident as ordinary input.
+
+A reply naming a case whose question is already closed (answered, withdrawn,
+superseded) is not applied to any other case. The resident logs
+`operator reply names resident case … which has no pending question`, emits
+`ravn.resident.operator_reply.unbound`, and receives your words labelled as a
+reply that bound to nothing.
+
+A case has no turn or token cap of its own. Its rechecks are bounded by the
+resident's daily budget (`budget.daily_cap_usd`; a spent budget holds tasks
+until the UTC day rolls over and counts on `ravn.cap.hits`), by one turn per
+scheduled wake, and by the repeated-decision guard below. The former
+`resident_state.continuation_max_turns` and `continuation_max_tokens` are
+refused at config load: a 3-turn cap once stopped a case on the turn that asked
+you a question, so the question was never saved.
+
 ## When a resident stops making progress
 
 A resident that sleeps and rechecks is normal. A resident that reaches the

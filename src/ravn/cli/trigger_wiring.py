@@ -244,7 +244,7 @@ def _wire_api_triggers(drive_loop: Any, settings: Settings, persona_name: str) -
 
     client = client_from_workload_identity(
         base_url=platform.base_url,
-        external_token=platform.pat_token,
+        external_token=platform.access_token,
         workload_token_file=platform.workload_token_file,
         workload_exchange_url=platform.workload_exchange_url,
         workload_audiences=platform.workload_audiences,

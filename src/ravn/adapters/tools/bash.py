@@ -25,6 +25,7 @@ import signal
 from pathlib import Path
 
 from ravn.adapters.permission.bash_validator import BashValidationPipeline
+from ravn.cap_telemetry import record_truncation
 from ravn.config import BashToolConfig
 from ravn.domain.models import ToolResult
 from ravn.ports.tool import ToolPort
@@ -179,6 +180,12 @@ class BashTool(ToolPort):
         """Decode, truncate, and prepend any warnings to *raw* output."""
         truncated = False
         if len(raw) > self._max_output_bytes:
+            record_truncation(
+                "tools.bash.max_output_bytes",
+                what="a bash command's output (bytes)",
+                kept=self._max_output_bytes,
+                total=len(raw),
+            )
             raw = raw[: self._max_output_bytes]
             truncated = True
 

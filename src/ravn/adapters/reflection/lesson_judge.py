@@ -17,7 +17,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from ravn.adapters.reflection.post_session import _parse_reflection_json
-from ravn.domain.models import StopReason
+from ravn.cap_telemetry import require_complete
+from ravn.domain.exceptions import OutputTruncatedError
 from ravn.resident_text import compact_line
 
 if TYPE_CHECKING:
@@ -111,7 +112,7 @@ class LessonJudge:
         llm: LLMPort,
         *,
         model: str,
-        max_tokens: int,
+        max_tokens: int | None,
         attempts: int,
         excerpt_chars: int,
     ) -> None:
@@ -201,11 +202,16 @@ class LessonJudge:
                 model=self._model,
                 max_tokens=self._max_tokens,
             )
-            if response.stop_reason == StopReason.MAX_TOKENS:
-                raise LessonJudgeError(
-                    f"judge model {self._model!r} used its whole {self._max_tokens}-token "
-                    "budget before answering; raise reflection.matching.judge_max_tokens"
+            try:
+                require_complete(
+                    response,
+                    knob="reflection.matching.judge_max_tokens",
+                    budget=self._max_tokens,
+                    model=self._model,
+                    purpose="the lesson judge",
                 )
+            except OutputTruncatedError as exc:
+                raise LessonJudgeError(str(exc)) from exc
             raw = (response.content or "").strip()
             found, parsed = _parse_reflection_json(raw) if raw else (False, None)
             if found and isinstance(parsed, dict):

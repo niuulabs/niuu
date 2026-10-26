@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 import jwt
@@ -1504,6 +1505,75 @@ class TestWorkflowCatalogAPI:
         assert campaign.workflow_snapshot["workflow_revision"].startswith("sha256:")
         assert campaign.metadata["surface"] == "ting.workflow-launch"
         assert "actor_id" not in campaign.metadata
+
+    def _launch_infra_change(self, body: dict) -> tuple[Any, RecordingVolundrPort]:
+        from ting.system_workflows import load_system_workflows
+
+        workflow = next(w for w in load_system_workflows() if w.name == "Infra Change Flow")
+        adapter = RecordingVolundrPort()
+        client = _make_client(
+            InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([adapter]),
+            campaign_repo=RecordingCampaignRepository(),
+        )
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={
+                "prompt": "Pin the Sigrun resident to the dev build.",
+                "sessionName": "niu-1114-sigrun",
+                "repo": "https://github.com/jve/infrastructure",
+                **body,
+            },
+        )
+        return response, adapter
+
+    def test_isolated_workflow_never_works_on_its_target_branch(self) -> None:
+        """A push to an infra repo's target branch is a deploy; only the gated merge may make it."""
+        response, adapter = self._launch_infra_change({"base_branch": "main"})
+
+        assert response.status_code == 201, response.text
+        spawn = adapter.requests[0]
+        assert spawn.branch == "workflow/niu-1114-sigrun"
+        assert spawn.base_branch == "main"
+        assert "Work and commit only on `workflow/niu-1114-sigrun`, cut from `main`" in (
+            spawn.initial_prompt
+        )
+        assert "Never commit to or push `main`" in spawn.initial_prompt
+
+    def test_isolated_workflow_also_takes_the_target_from_branch(self) -> None:
+        response, adapter = self._launch_infra_change({"branch": "main"})
+
+        assert response.status_code == 201, response.text
+        assert adapter.requests[0].branch == "workflow/niu-1114-sigrun"
+        assert adapter.requests[0].base_branch == "main"
+
+    def test_isolated_workflow_without_a_target_branch_is_refused(self) -> None:
+        response, adapter = self._launch_infra_change({})
+
+        assert response.status_code == 422
+        assert "name the target branch" in response.json()["detail"]
+        assert adapter.requests == []
+
+    def test_base_branch_is_honoured_for_an_ordinary_workflow(self) -> None:
+        workflow = _make_research_workflow()
+        adapter = RecordingVolundrPort()
+        client = _make_client(
+            InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([adapter]),
+            campaign_repo=RecordingCampaignRepository(),
+        )
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "Research it.", "sessionName": "research", "base_branch": "regin"},
+        )
+
+        assert response.status_code == 201, response.text
+        assert adapter.requests[0].branch == "regin"
+        assert adapter.requests[0].base_branch == "regin"
+        assert "## Branch" not in adapter.requests[0].initial_prompt
 
     def test_launch_by_a_resident_records_it_as_the_campaign_actor(self) -> None:
         """A resident's exchanged token launches as its owner and names itself (act.sub)."""

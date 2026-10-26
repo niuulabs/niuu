@@ -39,6 +39,7 @@ from niuu.domain.mimir import ThreadState
 from ravn.adapters.triggers.recap import RecapTrigger
 from ravn.adapters.triggers.thread_queue import ThreadQueueTrigger
 from ravn.adapters.triggers.wakefulness import WakefulnessTrigger
+from ravn.cap_telemetry import cap_hit_counts
 from ravn.config import (
     InitiativeConfig,
     RecapConfig,
@@ -348,6 +349,8 @@ class TestBudgetGate:
         assert factory_calls == []
         # Task is not persisted as complete — budget tracker unchanged.
         assert not exhausted_budget.can_spend()
+        # The hit is loud and counted, not an info line.
+        assert cap_hit_counts() == {"budget.daily_cap_usd": 1}
 
     @pytest.mark.asyncio
     async def test_within_cap_task_runs(self, tmp_path: Path) -> None:

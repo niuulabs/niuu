@@ -26,7 +26,9 @@ import pytest
 from niuu.domain.mimir import EntityType, MimirSource, PageConfidence
 from ravn.adapters.tools.entity_extractor import EntityExtractor, ExtractedEntity
 from ravn.adapters.tools.mimir_tools import MimirIngestTool, build_mimir_tools
+from ravn.cap_telemetry import cap_hit_counts
 from ravn.config import MimirIngestConfig
+from ravn.domain.exceptions import OutputTruncatedError
 from ravn.domain.models import LLMResponse, StopReason, TokenUsage
 
 # ---------------------------------------------------------------------------
@@ -107,7 +109,9 @@ class TestMimirIngestConfig:
         cfg = MimirIngestConfig()
         assert cfg.entity_detection is True
         assert cfg.entity_model == "claude-haiku-4-5-20251001"
-        assert cfg.entity_max_tokens == 1024
+        # No cap by default; a reasoning model spends part of any cap thinking.
+        assert cfg.entity_max_tokens is None
+        assert cfg.entity_source_excerpt_chars == 3000
 
     def test_disabled(self) -> None:
         cfg = MimirIngestConfig(entity_detection=False)
@@ -154,7 +158,8 @@ class TestExtractEntities:
         assert entities[1].confidence == PageConfidence.medium
 
     @pytest.mark.asyncio
-    async def test_llm_json_error_returns_empty(self) -> None:
+    async def test_llm_json_error_raises(self) -> None:
+        # Returning [] read as "this source names no entities".
         llm = AsyncMock()
         bad_response = LLMResponse(
             content="not valid json {{{",
@@ -164,16 +169,58 @@ class TestExtractEntities:
         )
         llm.generate = AsyncMock(return_value=bad_response)
         extractor = _make_extractor(llm=llm)
-        entities = await extractor._extract(_source())
-        assert entities == []
+        with pytest.raises(ValueError, match="entity_model"):
+            await extractor._extract(_source())
 
     @pytest.mark.asyncio
-    async def test_llm_exception_returns_empty(self) -> None:
+    async def test_non_object_json_raises(self) -> None:
+        llm = AsyncMock()
+        llm.generate = AsyncMock(
+            return_value=LLMResponse(
+                content="[]",
+                tool_calls=[],
+                stop_reason=StopReason.END_TURN,
+                usage=TokenUsage(input_tokens=1, output_tokens=1),
+            )
+        )
+        with pytest.raises(ValueError, match="not an object"):
+            await _make_extractor(llm=llm)._extract(_source())
+
+    @pytest.mark.asyncio
+    async def test_llm_exception_propagates(self) -> None:
         llm = AsyncMock()
         llm.generate = AsyncMock(side_effect=RuntimeError("network error"))
         extractor = _make_extractor(llm=llm)
-        entities = await extractor._extract(_source())
-        assert entities == []
+        with pytest.raises(RuntimeError, match="network error"):
+            await extractor._extract(_source())
+
+    @pytest.mark.asyncio
+    async def test_truncated_extraction_raises(self) -> None:
+        llm = AsyncMock()
+        llm.generate = AsyncMock(
+            return_value=LLMResponse(
+                content='{"entities": [{"name": "Po',
+                tool_calls=[],
+                stop_reason=StopReason.MAX_TOKENS,
+                usage=TokenUsage(input_tokens=10, output_tokens=5),
+            )
+        )
+        with pytest.raises(OutputTruncatedError, match="mimir.ingest.entity_max_tokens"):
+            await _make_extractor(llm=llm)._extract(_source())
+
+    @pytest.mark.asyncio
+    async def test_reads_the_configured_excerpt(self) -> None:
+        llm = AsyncMock()
+        llm.generate = AsyncMock(return_value=_llm_response([]))
+        extractor = EntityExtractor(
+            mimir=AsyncMock(), llm=llm, config=MimirIngestConfig(entity_source_excerpt_chars=5)
+        )
+        await extractor._extract(_source(content="abcdefghij"))
+        prompt = llm.generate.call_args.kwargs["messages"][0]["content"]
+        assert "first 5 chars" in prompt
+        assert "abcde" in prompt
+        assert "abcdef" not in prompt
+        assert cap_hit_counts() == {"mimir.ingest.entity_source_excerpt_chars": 1}
 
     @pytest.mark.asyncio
     async def test_skips_malformed_entity(self) -> None:
@@ -511,7 +558,7 @@ class TestMimirIngestToolWithExtractor:
         assert "Ingested source" in result.content
 
     @pytest.mark.asyncio
-    async def test_extractor_failure_does_not_crash_ingest(self) -> None:
+    async def test_entity_page_write_failure_fails_the_ingest(self) -> None:
         adapter = AsyncMock()
         adapter.ingest = AsyncMock(return_value=[])
 
@@ -524,10 +571,9 @@ class TestMimirIngestToolWithExtractor:
         extractor = EntityExtractor(mimir=mimir, llm=llm, config=_config())
         tool = MimirIngestTool(adapter=adapter, entity_extractor=extractor)
 
-        result = await tool.execute({"content": "Some content", "title": "Some Title"})
-
-        assert not result.is_error
-        assert "Ingested source" in result.content
+        # Logging it lost the entity while the ingest reported success.
+        with pytest.raises(RuntimeError, match="disk full"):
+            await tool.execute({"content": "Some content", "title": "Some Title"})
 
 
 # ---------------------------------------------------------------------------

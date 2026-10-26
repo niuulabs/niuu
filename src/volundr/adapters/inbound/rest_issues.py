@@ -18,6 +18,11 @@ from volundr.adapters.inbound.auth import extract_principal
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_log(value: object) -> str:
+    """Sanitize a value for safe log output (prevent log injection)."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
 class IssueUpdateRequest(BaseModel):
     """Request body for updating an issue: its status, title and/or description."""
 
@@ -114,8 +119,8 @@ def _tracker_failure(connection_id: str, operation: str, exc: Exception) -> HTTP
     """
     logger.error(
         "Issue tracker connection %s failed to %s",
-        connection_id,
-        operation,
+        _sanitize_log(connection_id),
+        _sanitize_log(operation),
         exc_info=exc,
     )
     return HTTPException(

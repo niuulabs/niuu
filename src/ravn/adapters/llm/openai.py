@@ -329,7 +329,6 @@ class OpenAICompatibleAdapter(LLMPort):
         api_key: str = "",
         base_url: str = _DEFAULT_BASE_URL,
         model: str = "gpt-4o",
-        max_tokens: int = 8192,
         max_retries: int = 3,
         retry_base_delay: float = 1.0,
         timeout: float = 120.0,
@@ -344,7 +343,6 @@ class OpenAICompatibleAdapter(LLMPort):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._default_model = model
-        self._default_max_tokens = max_tokens
         self._max_retries = max_retries
         self._retry_base_delay = retry_base_delay
         self._timeout = timeout
@@ -431,7 +429,7 @@ class OpenAICompatibleAdapter(LLMPort):
         tools: list[dict],
         system: SystemPrompt,
         model: str,
-        max_tokens: int,
+        max_tokens: int | None,
         stream: bool,
         thinking: dict | None = None,
     ) -> dict:
@@ -442,11 +440,14 @@ class OpenAICompatibleAdapter(LLMPort):
         body.update(
             {
                 "model": effective_model,
-                _max_tokens_param(effective_model): max_tokens or self._default_max_tokens,
                 "messages": self._build_messages(messages, system, effective_model),
                 "stream": stream,
             }
         )
+        # No cap means none on the wire: the server then bounds the answer by
+        # the model's maximum output or the rest of its context window.
+        if max_tokens is not None:
+            body[_max_tokens_param(effective_model)] = max_tokens
         if stream:
             # Request usage data in the final stream chunk.
             body["stream_options"] = {"include_usage": True}
@@ -554,7 +555,7 @@ class OpenAICompatibleAdapter(LLMPort):
         tools: list[dict],
         system: SystemPrompt,
         model: str,
-        max_tokens: int,
+        max_tokens: int | None,
         thinking: dict | None = None,
     ) -> AsyncIterator[StreamEvent]:
         payload = self._build_request(
@@ -695,10 +696,14 @@ class OpenAICompatibleAdapter(LLMPort):
             # parse to `{}` and invoke the tool with no arguments at all —
             # worse than not calling it, and a way to turn a truncated
             # generation into a real side effect.
+            #
+            # The turn itself is then reported as MAX_TOKENS below, and the
+            # agent refuses it: dropping the call and carrying on would read as
+            # the model having decided not to act.
             if finish_reason == "length" and tool_names and not tool_calls_emitted:
-                logger.warning(
-                    "openai-compatible: dropping %d tool call(s) %s truncated by "
-                    "the token limit; arguments are incomplete",
+                logger.error(
+                    "openai-compatible: %d tool call(s) %s were truncated by the "
+                    "output limit; their arguments are incomplete and they are not run",
                     len(tool_names),
                     sorted(tool_names.values()),
                 )
@@ -762,6 +767,11 @@ class OpenAICompatibleAdapter(LLMPort):
                     text[-200:],
                 )
 
+            if finish_reason == "length":
+                yield StreamEvent(
+                    type=StreamEventType.MESSAGE_DONE, stop_reason=StopReason.MAX_TOKENS
+                )
+
             # Emit a MESSAGE_DONE with estimated usage when the API did not send one.
             if not usage_emitted:
                 input_text = (
@@ -787,7 +797,7 @@ class OpenAICompatibleAdapter(LLMPort):
         tools: list[dict],
         system: SystemPrompt,
         model: str,
-        max_tokens: int,
+        max_tokens: int | None,
         thinking: dict | None = None,
     ) -> LLMResponse:
         payload = self._build_request(

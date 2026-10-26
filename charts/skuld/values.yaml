@@ -651,6 +651,27 @@ resident:
     # -- NetworkPolicy peers allowed to reach the shim port when
     # networkPolicy.enabled (e.g. Volundr's pods). Empty allows any peer.
     ingressFrom: []
+  # -- Realtime voice calls (gateway.channels.voice): the resident speaks the
+  # agent-service wire voice clients use, under /voice/ on its own route, behind the same Envoy
+  # checks as its room. Needs a persona with a voice: section and a minter whose key
+  # file is mounted into the ravn container (resident credentials, OpenBao).
+  voice:
+    enabled: false
+    # -- Loopback port of the voice channel on the ravn container; nginx forwards /voice/ here.
+    port: 18791
+    # -- The resident's call store. /workspace is the sessions volume.
+    storePath: /workspace/.ravn/voice/calls.db
+    # -- Name the resident introduces itself by. Empty uses the resident's name.
+    displayName: ""
+    # -- IANA time zone for the date and time in a call's prompt.
+    timeZone: UTC
+    # -- Realtime model per prompt provider, e.g. {grok: grok-voice-3.0}. Empty keeps Ravn's defaults.
+    models: {}
+    # -- Credential minter per provider (xai, openai): {adapter, kwargs: {key_file, …}}.
+    # Required when voice is enabled.
+    minters: {}
+    # -- Copy each call's speech into the resident's room transcript.
+    roomCopy: true
   # -- Seconds between the resident's own stewardship/home-wake passes.
   # Empty uses ravn's own default (resident_state.stewardship_interval_seconds).
   stewardshipIntervalSeconds: ""

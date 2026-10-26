@@ -290,8 +290,9 @@ def anthropic_to_responses(
         "store": False,
         "stream": True,
         "include": [REASONING_ENCRYPTED_INCLUDE],
-        "max_output_tokens": request.max_tokens,
     }
+    if request.max_tokens is not None:
+        payload["max_output_tokens"] = request.max_tokens
     instructions = _system_text(request)
     if instructions:
         payload["instructions"] = instructions

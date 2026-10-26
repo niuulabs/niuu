@@ -13,6 +13,7 @@ from uuid import uuid4
 from niuu.domain.agent_directory import AgentDirectoryEntry
 from niuu.observability import get_observability
 from ravn.adapters.tool_build.http import AsyncJsonHttpClient, normalize_http_origin
+from ravn.cap_telemetry import record_cap_hit
 from ravn.domain.models import ToolResult
 from ravn.ports.agent_directory import PeerAgentDirectoryPort
 from ravn.ports.tool import ToolPort
@@ -746,11 +747,16 @@ def _append_while_fits(
 ) -> None:
     target = payload[key]
     assert isinstance(target, list)
-    for value in values[:16]:
+    for index, value in enumerate(values):
         bounded = _bounded_item(value, max_chars=max(256, max_chars // 3))
         target.append(bounded)
         if len(json.dumps(payload, indent=2, default=str)) > max_chars:
             target.pop()
+            record_cap_hit(
+                "gateway.platform.a2a_result_max_chars",
+                f"A2A task result: {len(values) - index} of {len(values)} {key} omitted to "
+                f"fit {max_chars} characters; raise gateway.platform.a2a_result_max_chars",
+            )
             target.append({"truncated": f"additional {key} omitted"})
             if len(json.dumps(payload, indent=2, default=str)) > max_chars:
                 target.pop()

@@ -1721,6 +1721,38 @@ class SecretInjectionPort(ABC):
     async def cleanup_session(self, session_id: str) -> None:
         """Clean up per-session resources (ConfigMaps, etc.). Default no-op."""
 
+    @property
+    def supports_workloads(self) -> bool:
+        """Whether this adapter can inject credentials into a long-lived workload (a resident)."""
+        return False
+
+    async def workload_pod_spec_additions(
+        self,
+        user_id: str,
+        credential_mappings: list[CredentialMapping],
+        *,
+        workload_id: str,
+        service_account_name: str,
+        inject_containers: str,
+        tenant_id: str | None = None,
+    ) -> PodSpecAdditions:
+        """Provision a workload's credentials, bound to the workload's own service account.
+
+        Unlike a session, a resident keeps the service account its workload identity is
+        mapped to, so the adapter binds its access to that account instead of creating
+        one, and returns only the annotations that render the credentials into
+        ``inject_containers``.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot inject credentials into a resident workload"
+        )
+
+    async def cleanup_workload(self, workload_id: str) -> None:
+        """Remove a workload's credential access. Idempotent."""
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot inject credentials into a resident workload"
+        )
+
 
 class ResourceProvider(ABC):
     """Port for discovering, validating, and translating cluster resources.

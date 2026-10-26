@@ -19,6 +19,7 @@ from typing import Any
 
 import httpx
 
+from ravn.adapters.channels._message_split import split_message
 from ravn.adapters.channels._slash_commands import GATEWAY_SLASH_PROMPTS
 from ravn.adapters.channels.gateway import RavnGateway
 from ravn.config import TelegramChannelConfig
@@ -166,17 +167,18 @@ class TelegramGateway:
             )
 
     async def _send_message(self, client: httpx.AsyncClient, chat_id: int, text: str) -> None:
-        """Send *text* to *chat_id*, truncating if it exceeds the API limit."""
-        limit = self._config.message_max_chars
-        if len(text) > limit:
-            text = text[: limit - 3] + "..."
-        try:
-            await client.post(
-                self._api_url("sendMessage"),
-                json={"chat_id": chat_id, "text": text},
-            )
-        except Exception:
-            logger.exception("Failed to send Telegram message to chat %s.", chat_id)
+        """Send *text* to *chat_id*, as several messages if it exceeds the API limit."""
+        for chunk in split_message(text, self._config.message_max_chars):
+            try:
+                response = await client.post(
+                    self._api_url("sendMessage"),
+                    json={"chat_id": chat_id, "text": chunk},
+                )
+                # A rejected message is a 4xx body, not an exception.
+                response.raise_for_status()
+            except Exception:
+                logger.exception("Failed to send Telegram message to chat %s.", chat_id)
+                return
 
     async def _register_commands(self, client: httpx.AsyncClient) -> None:
         """Register slash commands with the Bot API (best effort)."""

@@ -1,4 +1,4 @@
-FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7 AS builder
+FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944 AS builder
 
 ARG TARGETARCH
 
@@ -16,10 +16,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install uv from a pinned release archive and resolve from the committed lockfile.
 RUN set -eux; \
-    UV_VERSION="0.12.13"; \
+    UV_VERSION="0.13.5"; \
     case "${TARGETARCH}" in \
-      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="745765a3b6e360ad76743599ae5c42e9278c7edf8bbff9fc76d05bf2623a04dd" ;; \
-      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="2eaa5d94f5db7b3a1a092156b9420459e42ab0217d917fe74a876309cef9b5e9" ;; \
+      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f" ;; \
+      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="4bb69cf95ed13f23713bb7bc09f241896ea0c75b7c557e615a20604b82f9c403" ;; \
       *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_ARCHIVE}" -o "/tmp/${UV_ARCHIVE}"; \
@@ -57,10 +57,10 @@ RUN uv build --wheel --out-dir /dist
 
 # ---------------------------------------------------------------------------
 # gh v2.102.0 (the latest release) is built with Go 1.27.1 and golang.org/x/net
-# v0.58.0 (GO-2026-6603/6604/6611/6612). Build the same release with Go 1.27.2 and
+# v0.58.0 (GO-2026-6603/6604/6611/6612). Build the same release with Go 1.27.3 and
 # the patched module; return to GitHub's apt package once a release ships them.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.23@sha256:9e45f0eb4a63ed37ad6e604950407558b7c738e34e015ae77a5d4ad369cde079 AS gh-build
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:754d5200fc3edae76d3b6598a9a3fac7e74981ee6a5413ab955025f185753ef2 AS gh-build
 ARG TARGETARCH
 WORKDIR /src
 RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.102.0.tar.gz -O /tmp/gh.tar.gz \
@@ -72,9 +72,23 @@ RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.102.0.tar.gz -O /tmp
         -o /out/gh ./cmd/gh
 
 # ---------------------------------------------------------------------------
+# glab v1.124.0 (the latest release) ships binaries built with Go 1.27.2
+# (GO-2026-6809). Build the same release with Go 1.27.3; the module proxy
+# download is verified against sum.golang.org. Return to the release .deb once
+# one is built with a patched Go.
+# ---------------------------------------------------------------------------
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:754d5200fc3edae76d3b6598a9a3fac7e74981ee6a5413ab955025f185753ef2 AS glab-build
+ARG TARGETARCH
+ARG GLAB_VERSION=1.124.0
+RUN cd "$(go mod download -json gitlab.com/gitlab-org/cli@v${GLAB_VERSION} | sed -n 's/.*"Dir": "\(.*\)".*/\1/p')" \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath \
+        -ldflags "-s -w -X main.version=${GLAB_VERSION}-niuu.1" \
+        -o /out/glab ./cmd/glab
+
+# ---------------------------------------------------------------------------
 # Runtime — Node.js stays (needed for claude-code/codex CLI at runtime)
 # ---------------------------------------------------------------------------
-FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
+FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
 
 
 LABEL org.opencontainers.image.title="skuld"
@@ -131,14 +145,13 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
 COPY --from=gh-build /out/gh /usr/local/bin/gh
 RUN gh --version
 
-# GitLab CLI (glab), pinned release .deb per architecture: the GitLab counterpart of gh.
+# GitLab CLI (glab): the GitLab counterpart of gh. /usr/bin is the path the
+# release .deb used and the OpenShell egress policies name.
+COPY --from=glab-build /out/glab /usr/bin/glab
+RUN glab --version
+
 # ARG values do not cross stages; TARGETARCH must be declared again here.
 ARG TARGETARCH
-ARG GLAB_VERSION=1.122.0
-RUN curl -fsSL -o /tmp/glab.deb \
-    "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/packages/generic/glab/${GLAB_VERSION}/glab_${GLAB_VERSION}_linux_${TARGETARCH}.deb" \
-    && dpkg -i /tmp/glab.deb && rm -f /tmp/glab.deb \
-    && glab --version
 
 # Upgrade npm and install the CLI tools from checked-in lockfiles.
 COPY containers/node/npm-bootstrap/package.json containers/node/npm-bootstrap/package-lock.json containers/node/npm-bootstrap/replace-nested.sh /opt/npm-bootstrap/
@@ -154,7 +167,7 @@ RUN cd /opt/npm-bootstrap \
     && cd /opt/skuld-tools \
     && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
     && rm -rf /tmp/npm-cache /tmp/grok-install \
-    && sh /opt/npm-bootstrap/replace-nested.sh /opt/skuld-tools node_modules/@earendil-works/pi-coding-agent/node_modules brace-expansion \
+    && sh /opt/npm-bootstrap/replace-nested.sh /opt/skuld-tools node_modules/@earendil-works/pi-coding-agent/node_modules undici \
     && ln -sf /opt/skuld-tools/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -sf /opt/skuld-tools/node_modules/.bin/codex /usr/local/bin/codex \
     && ln -sf /opt/skuld-tools/node_modules/.bin/opencode /usr/local/bin/opencode \

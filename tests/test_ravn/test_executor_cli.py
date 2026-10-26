@@ -16,6 +16,7 @@ from ravn.adapters.executors.cli import (
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.events import RavnEvent
 from ravn.domain.models import Message, Session, ToolResult
+from ravn.domain.notification_channel import current_notification_channel
 from ravn.ports.tool import ToolPort
 
 
@@ -840,6 +841,40 @@ def test_cli_executor_propagates_active_trace_to_ravn_tool_mcp(monkeypatch) -> N
     args = agent._transport_kwargs["mcp_servers"][0]["args"]
     assert args[args.index("--traceparent") + 1] == telemetry.inject.return_value["traceparent"]
     assert args[args.index("--tracestate") + 1] == "vendor=value"
+
+
+@pytest.mark.parametrize("permission_mode", ["workspace_write", "read_only"])
+def test_cli_executor_names_the_turns_notification_channel_to_ravn_tool_mcp(
+    permission_mode: str,
+) -> None:
+    def ravn_tools_args() -> list[str]:
+        agent = CliTransportExecutor(
+            transport_adapter="skuld.transports.codex_ws.CodexWebSocketTransport"
+        ).build(
+            channel=_CollectingChannel(),
+            system_prompt="Reside.",
+            session=Session(),
+            model="gpt-5.5",
+            max_iterations=3,
+            checkpoint_port=None,
+            task_id="task-notify-channel",
+            persona="resident-codex",
+            workspace_dir="/tmp/workspace",
+            permission_mode=permission_mode,
+            tools=[DummyTool()],
+            mcp_servers=[],
+        )
+        (server,) = agent._transport_kwargs["mcp_servers"]
+        return server["args"]
+
+    token = current_notification_channel.set("room-7")
+    try:
+        args = ravn_tools_args()
+    finally:
+        current_notification_channel.reset(token)
+
+    assert args[args.index("--notification-channel") + 1] == "room-7"
+    assert "--notification-channel" not in ravn_tools_args()
 
 
 def test_cli_executor_allows_ravn_tool_mcp_timeout_override() -> None:

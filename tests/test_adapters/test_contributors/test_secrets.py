@@ -690,6 +690,82 @@ async def test_openshell_managed_http_mcp_uses_dynamic_provider(session):
     assert "private-access" not in repr(result)
 
 
+def _openshell_mcp_contributor(*specs: MCPServerSpec) -> SecretInjectionContributor:
+    from types import SimpleNamespace
+
+    store = AsyncMock()
+    store.get.return_value = SimpleNamespace(metadata={})
+    return SecretInjectionContributor(
+        credential_store=store,
+        integration_registry=_registry(
+            [_definition(slug=f"mcp-{index}", mcp_server=spec) for index, spec in enumerate(specs)]
+        ),
+    )
+
+
+def _mcp_connections(count: int) -> tuple:
+    from dataclasses import replace
+
+    return tuple(
+        replace(_connection(f"cred-{index}", f"mcp-{index}"), id=f"conn-{index}")
+        for index in range(count)
+    )
+
+
+async def test_openshell_mcp_servers_sharing_a_host_get_distinct_path_selectors(session):
+    from niuu.domain.oauth_credentials import mcp_token_env
+
+    contributor = _openshell_mcp_contributor(
+        MCPServerSpec(
+            name="linear", transport="http", url="https://mcp.linear.app/mcp", token_field="token"
+        ),
+        MCPServerSpec(
+            name="linear-readonly",
+            transport="http",
+            url="https://mcp.linear.app/mcp/readonly/",
+            token_field="token",
+        ),
+        MCPServerSpec(
+            name="root", transport="http", url="https://mcp.example.test", token_field="token"
+        ),
+    )
+
+    result = await contributor.contribute(
+        session,
+        SessionContext(runtime_backend="openshell", integration_connections=_mcp_connections(3)),
+    )
+
+    endpoints = {
+        next(iter(mapping["envMappings"])): mapping["provider"]["endpoints"][0]
+        for mapping in result.values["openshell"]["credentialMappings"]
+        if "provider" in mapping
+    }
+    assert endpoints[mcp_token_env("conn-0")]["path"] == "/mcp/**"
+    assert endpoints[mcp_token_env("conn-1")]["path"] == "/mcp/readonly/**"
+    # A server at the host root keeps the whole host: there is no narrower path.
+    assert endpoints[mcp_token_env("conn-2")]["path"] == ""
+
+
+async def test_openshell_rejects_two_integrations_for_the_same_mcp_server(session):
+    url = "https://mcp.linear.app/mcp"
+    contributor = _openshell_mcp_contributor(
+        MCPServerSpec(name="linear", transport="http", url=url, token_field="token"),
+        MCPServerSpec(name="linear-copy", transport="http", url=f"{url}/", token_field="token"),
+    )
+
+    with pytest.raises(ValueError, match="both serve the MCP server") as raised:
+        await contributor.contribute(
+            session,
+            SessionContext(
+                runtime_backend="openshell", integration_connections=_mcp_connections(2)
+            ),
+        )
+
+    message = str(raised.value)
+    assert "(conn-0)" in message and "(conn-1)" in message
+    assert "Disable one of them in Settings → Integrations" in message
+
+
 @pytest.mark.parametrize("backend", ["vm", "docker", "kubernetes"])
 async def test_brokered_codex_does_not_require_file_or_agent_injection(session, backend):
     from dataclasses import replace

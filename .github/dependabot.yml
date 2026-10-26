@@ -62,6 +62,11 @@ updates:
       # npm 12 blocks dependency lifecycle scripts required by the runtime CLIs.
       - dependency-name: "npm"
         update-types: ["version-update:semver-major"]
+      # These direct undici pins only exist for replace-nested.sh, which copies
+      # them over a bundled copy: they must stay on the major the bundling
+      # package declares (npm's node-gyp ^6, pi-coding-agent's 8.x).
+      - dependency-name: "undici"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: docker
     directories:
@@ -85,6 +90,13 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      # A Python minor release is a deliberate migration (wheels, the venv's
+      # python3.x paths, and containers/python-security pins the exact version
+      # and fails the build on any other); digest updates within 3.14 still flow.
+      - dependency-name: python
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       # Keep Ubuntu on the selected LTS series; interim minor releases expire.
       - dependency-name: ubuntu
         update-types:

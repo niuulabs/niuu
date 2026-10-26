@@ -15,6 +15,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from ravn.cap_telemetry import require_complete
 from ravn.ports.tool_build_backend import ToolBuildError, ToolBuildRequest
 
 logger = logging.getLogger(__name__)
@@ -28,9 +29,6 @@ _REQUEST_CHANGES = "request_changes"
 
 #: One retry on an unparseable verdict before failing the build loudly.
 _MAX_VERDICT_ATTEMPTS = 2
-
-#: The reviewer emits one short verdict line plus rationale.
-_REVIEW_MAX_TOKENS = 400
 
 _SYSTEM_PROMPT = (
     "You are {valkyrie_id}, a resident Valkyrie reviewing a workflow gate for "
@@ -89,7 +87,16 @@ def build_llm_gate_reviewer(
                 tools=[],
                 system=_SYSTEM_PROMPT.format(valkyrie_id=valkyrie_id),
                 model=model,
-                max_tokens=_REVIEW_MAX_TOKENS,
+                # Uncapped: the verdict is short, but a reasoning model thinks
+                # first, and a cap sized for the verdict cut the thinking off.
+                max_tokens=None,
+            )
+            require_complete(
+                response,
+                knob="tool_build.gate_review",
+                budget=None,
+                model=model,
+                purpose="the tool-build gate review",
             )
             last_content = str(getattr(response, "content", "") or "")
             verdict = parse_gate_verdict(last_content)
@@ -113,8 +120,6 @@ def build_llm_gate_reviewer(
 
 #: (request, question_context) -> answer text delivered to the asking peer.
 QuestionAnswerer = Callable[[ToolBuildRequest, dict[str, Any]], Awaitable[str]]
-
-_ANSWER_MAX_TOKENS = 700
 
 _ANSWER_SYSTEM_PROMPT = (
     "You are {valkyrie_id}, a resident Valkyrie. An agent building a tool YOU "
@@ -174,7 +179,15 @@ def build_llm_question_answerer(
             tools=[],
             system=_ANSWER_SYSTEM_PROMPT.format(valkyrie_id=valkyrie_id),
             model=model,
-            max_tokens=_ANSWER_MAX_TOKENS,
+            max_tokens=None,
+        )
+        # A truncated answer would reach the builder as if it were complete.
+        require_complete(
+            response,
+            knob="tool_build.question_answer",
+            budget=None,
+            model=model,
+            purpose="the answer to a tool builder's question",
         )
         answer = str(getattr(response, "content", "") or "").strip()
         if not answer:

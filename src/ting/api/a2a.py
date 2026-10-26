@@ -78,7 +78,6 @@ from ting.api.workflows import (
     WorkflowLaunchExecution,
     _can_view_workflow,
     _resolve_target_adapter,
-    launch_slug_for_session_name,
     launch_workflow_execution,
     resolve_workflow_repo,
 )
@@ -90,6 +89,7 @@ from ting.domain.services.workflow_campaign_lifecycle import (
     stop_terminal_campaign_session,
     terminal_session_cleanup_needed,
 )
+from ting.domain.utils import _session_name
 from ting.domain.workflow_document import workflow_document_revision
 from ting.domain.workflow_execution import (
     ExecutionConflictError,
@@ -110,6 +110,12 @@ from ting.ports.workflow_repository import WorkflowRepository
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_log(value: object) -> str:
+    """Sanitize a value for safe log output (prevent log injection)."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
 A2A_ENDPOINT_PREFIX = "/api/v1/ting/a2a"
 A2A_SURFACE = "a2a"
 LAUNCH_SCOPE = "ting:workflow:launch"
@@ -119,9 +125,18 @@ _MESSAGE_ID_KEY = "a2a_message_id"
 _WORKFLOW_SLUG_KEY = "a2a_workflow_slug"
 
 
-def _launch_session_name(reservation: A2ALaunchReservation) -> str:
-    """Session name of an A2A launch; stable per reservation so a retry recovers it."""
+def _launch_slug(reservation: A2ALaunchReservation) -> str:
+    """Slug of an A2A launch; stable per reservation so a retry recovers its session.
+
+    It keys the session's tracker id (``workflow:{slug}``), the ``{slug}`` in
+    declared artifact paths, and the parent-session key of fan-out children.
+    """
     return f"a2a-{reservation.id.hex}"
+
+
+def _launch_session_name(workflow: Any, prompt: str, metadata: dict[str, Any]) -> str:
+    """Human-readable session name: the caller's ``sessionName``, else workflow + prompt."""
+    return _session_name(_optional_str(metadata, "sessionName") or f"{workflow.name}-{prompt}")
 
 
 async def resolve_a2a_launch_repo() -> A2ALaunchReservationRepository:
@@ -385,7 +400,7 @@ class WorkflowTaskHandler(RequestHandler):
                 _MESSAGE_ID_KEY: message.message_id,
                 # The slug the session runs under, so ``{slug}`` in declared
                 # artifact paths resolves to where the workflow wrote them.
-                _WORKFLOW_SLUG_KEY: launch_slug_for_session_name(_launch_session_name(reservation)),
+                _WORKFLOW_SLUG_KEY: _launch_slug(reservation),
                 **({"repo": str(metadata["repo"])} if metadata.get("repo") else {}),
                 **({"branch": str(metadata["branch"])} if metadata.get("branch") else {}),
                 # The workload that sent this task for its owner (attribution only).
@@ -426,7 +441,7 @@ class WorkflowTaskHandler(RequestHandler):
                     parent_execution,
                     request=self._request,
                     prompt=prompt,
-                    session_name=_launch_session_name(reservation),
+                    session_name=_launch_session_name(workflow, prompt, metadata),
                     repo=str(metadata.get("repo") or ""),
                     branch=str(metadata.get("branch") or ""),
                     model=str(metadata.get("model") or ""),
@@ -439,9 +454,10 @@ class WorkflowTaskHandler(RequestHandler):
             else:
                 launch = WorkflowLaunchBody(
                     prompt=prompt,
-                    sessionName=_launch_session_name(reservation),
+                    sessionName=_launch_session_name(workflow, prompt, metadata),
                     repo=str(metadata.get("repo") or ""),
                     branch=str(metadata.get("branch") or ""),
+                    baseBranch=str(metadata.get("baseBranch") or metadata.get("base_branch") or ""),
                     model=str(metadata.get("model") or ""),
                     # The already-resolved (and, on a retry, already-persisted)
                     # connection — never re-derived from raw request metadata —
@@ -477,7 +493,7 @@ class WorkflowTaskHandler(RequestHandler):
                         auth_token=self._downstream_auth_token(),
                         principal=self._principal,
                     )
-                    tracker_key = f"workflow:a2a-{reservation.id.hex}"
+                    tracker_key = f"workflow:{_launch_slug(reservation)}"
                     recovered = next(
                         (
                             session
@@ -490,7 +506,7 @@ class WorkflowTaskHandler(RequestHandler):
                     execution = WorkflowLaunchExecution(
                         workflow=workflow,
                         workflow_snapshot=pending.workflow_snapshot,
-                        slug=launch_slug_for_session_name(_launch_session_name(reservation)),
+                        slug=_launch_slug(reservation),
                         session=recovered,
                         adapter=target_adapter,
                         connection_id=getattr(target_adapter, "target_id", None),
@@ -505,6 +521,7 @@ class WorkflowTaskHandler(RequestHandler):
                         bearer_token=self._downstream_auth_token(),
                         pinned_workflow_snapshot=pending.workflow_snapshot,
                         trusted_workflow_execution=bool(execution_context or parent_execution),
+                        launch_slug=_launch_slug(reservation),
                     )
                 if parent_execution is not None:
                     execution_repo = self._workflow_execution_repo()
@@ -1306,7 +1323,7 @@ class WorkflowTaskHandler(RequestHandler):
         if child.template_id != self._workflow_id_from_metadata(metadata):
             raise InvalidParamsError("A2A skill does not match the pinned child workflow")
         settings = getattr(self._request.app.state, "settings", None)
-        session_key = f"workflow:a2a-{reservation.id.hex}"
+        session_key = f"workflow:{_launch_slug(reservation)}"
         base_url = settings.a2a.public_base_url.rstrip("/") if settings else ""
         base_url = base_url or str(self._request.base_url).rstrip("/")
         return {
@@ -1883,10 +1900,12 @@ def create_a2a_router() -> APIRouter:
             )
             logger.info(
                 "A2A JSON-RPC %s finished outcome=%s task_id=%s workflow_id=%s",
-                attributes["rpc.method"],
+                _sanitize_log(attributes["rpc.method"]),
                 outcome,
-                str(response_attributes.get("taskId") or attributes.get("taskId") or ""),
-                str(response_attributes.get("workflowId") or attributes.get("workflowId") or ""),
+                _sanitize_log(response_attributes.get("taskId") or attributes.get("taskId") or ""),
+                _sanitize_log(
+                    response_attributes.get("workflowId") or attributes.get("workflowId") or ""
+                ),
             )
             return response
 
