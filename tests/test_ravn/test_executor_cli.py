@@ -171,6 +171,30 @@ class FakeResumableTransport(CLITransport):
         )
 
 
+class DelayedInterruptTransport(FakeResumableTransport):
+    """Transport that keeps canonical turns and interrupt delivery observable."""
+
+    def __init__(self, workspace_dir: str, *, model: str = "") -> None:
+        super().__init__(workspace_dir, model=model)
+        self.turn_started = asyncio.Event()
+        self.release_turn = asyncio.Event()
+        self.control_started = asyncio.Event()
+        self.release_control = asyncio.Event()
+        self.fail_interrupt_delivery = False
+
+    async def send_message(self, content: str) -> None:
+        self.turn_started.set()
+        await self.release_turn.wait()
+        await super().send_message(content)
+
+    async def send_control(self, subtype: str, **kwargs: object) -> None:
+        self.control_started.set()
+        await self.release_control.wait()
+        if self.fail_interrupt_delivery:
+            raise RuntimeError("interrupt delivery failed")
+        await super().send_control(subtype, **kwargs)
+
+
 class FakeStatelessTransport(CLITransport):
     def __init__(self, workspace_dir: str, *, model: str = "") -> None:
         super().__init__()
@@ -355,6 +379,55 @@ async def test_cli_executor_interrupts_active_transport_when_supported() -> None
     transport = agent._transport
     assert transport is not None
     assert transport.control_calls == [("interrupt", {})]
+
+
+@pytest.mark.asyncio
+async def test_cli_harness_interrupt_waits_for_delivery_and_propagates_failure() -> None:
+    agent, _ = _make_agent(binding=_TransportBinding(DelayedInterruptTransport, True))
+    await agent.start()
+    transport = agent._transport
+    assert isinstance(transport, DelayedInterruptTransport)
+
+    running_turn = asyncio.create_task(agent.run_turn(HarnessTurnInput("Review the patch")))
+    await transport.turn_started.wait()
+    interrupt = asyncio.create_task(
+        agent.control(
+            HarnessControl(HarnessControlKind.INTERRUPT, interrupt_reason=InterruptReason.SIGINT)
+        )
+    )
+    await transport.control_started.wait()
+    assert interrupt.done() is False
+
+    transport.release_control.set()
+    assert await interrupt is True
+    assert transport.control_calls == [("interrupt", {})]
+    transport.release_turn.set()
+    await running_turn
+
+    second_agent, _ = _make_agent(binding=_TransportBinding(DelayedInterruptTransport, True))
+    await second_agent.start()
+    second_transport = second_agent._transport
+    assert isinstance(second_transport, DelayedInterruptTransport)
+    second_transport.fail_interrupt_delivery = True
+
+    second_turn = asyncio.create_task(
+        second_agent.run_turn(HarnessTurnInput("Review the patch"))
+    )
+    await second_transport.turn_started.wait()
+    failed_interrupt = asyncio.create_task(
+        second_agent.control(
+            HarnessControl(HarnessControlKind.INTERRUPT, interrupt_reason=InterruptReason.SIGINT)
+        )
+    )
+    await second_transport.control_started.wait()
+    assert failed_interrupt.done() is False
+
+    second_transport.release_control.set()
+    with pytest.raises(RuntimeError, match="interrupt delivery failed"):
+        await failed_interrupt
+    assert second_agent._interrupt_reason is InterruptReason.SIGINT
+    second_transport.release_turn.set()
+    await second_turn
 
 
 @pytest.mark.asyncio

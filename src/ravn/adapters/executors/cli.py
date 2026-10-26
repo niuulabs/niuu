@@ -359,7 +359,14 @@ class CliTransportAgent(ExecutionAgentPort):
         if control.kind is HarnessControlKind.INTERRUPT:
             if not self.profile.supports_interrupt:
                 return False
-            self.interrupt(control.interrupt_reason)
+            if self._interrupt_reason is None:
+                self._interrupt_reason = control.interrupt_reason
+            transport = self._transport
+            if transport is None:
+                raise HarnessLifecycleError("CLI transport is unavailable for harness control")
+            if not transport.capabilities.interrupt:
+                return False
+            await transport.send_control("interrupt")
             return True
         if not self.profile.supports_steering:
             return False
