@@ -43,7 +43,9 @@ asserted or captured.
 3. Add the candidate under the current schema version, then run:
 
    ```bash
-   uv run --extra dev pytest -q tests/test_ravn/test_execution_tape_replay.py
+   uv run --extra dev pytest -q \
+     tests/test_ravn/test_execution_tape_replay.py \
+     tests/test_ravn/test_execution_tape_harness_paths.py
    ```
 
 4. Review the JSON diff as code: every dispatch needs a preceding model call,
@@ -53,10 +55,20 @@ asserted or captured.
    changed. Add a focused regression assertion first; never bless provider
    prose or an external side effect.
 
-Differential mode replays the same tape through the native and CLI-backed test
-adapter paths and calls `structural_diff`. An empty diff proves canonical
-parity; a non-empty mapping identifies the changed invariant without exposing
-model output.
+`test_execution_tape_harness_paths.py` also runs the compatible
+`multiple_tool_calls` tape through the real `RavnAgent` native harness and the
+real `CliTransportAgent` CLI-backed harness. Its scripted LLM and
+`CLITransport` emit only tape events, so this remains credential-free and
+cannot execute an external write. It compares tool order, tool/result pairing,
+outcome category, and usage shape; a mismatch reports the precise canonical
+field and both values. The focused mutations in that test exercise the actual
+native fold, CLI result ledger, native permission check, and native compaction
+methods rather than the test-only replay runner.
+
+The test-only differential runner still calls `structural_diff` over its
+provider-free replay result. An empty diff proves its canonical parity; a
+non-empty mapping identifies the changed invariant without exposing model
+output.
 
 The golden corpus includes plain conversation, multiple tools, tool failure,
 pending approval, crashes on both sides of dispatch, unknown side effects,
