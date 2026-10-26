@@ -43,6 +43,20 @@ Retries may repeat side effects. Inspect the previous attempt and its outputs
 before restarting work that creates external records, publishes changes, or
 performs a deployment.
 
+## Planning from the Plan UI
+
+The Plan UI launches a workflow-backed planning run. It first frames the
+clarified brief for review: approval emits `plan.brief.approved`, while a change
+request emits `plan.brief.changes_requested` and returns the work to
+clarification. The brief gate configures `autoForwardAfter: 30m`.
+
+The planner then produces `plan.breakdown.drafted` for review in the UI. The
+reviewable draft can be sent back for re-planning with
+`plan.breakdown.changes_requested`, or advanced to the final gate. That final
+gate also configures `autoForwardAfter: 30m`: it emits `plan.approved` after an
+approval or, after 30 minutes, without a human response. `plan.approved`
+transitions to the `plan-publish` stage, where the plan is published.
+
 ## Teams and collaboration
 
 Several agents can specialize by persona and task. A workflow controls a process;
