@@ -370,6 +370,13 @@ class PeerWatchState:
     warned: bool = False
 
 
+def _peer_frame_task_id(frame: dict[str, Any]) -> str:
+    """The flock peer task a lifecycle frame belongs to."""
+    metadata = frame.get("metadata")
+    task_id = metadata.get("task_id") if isinstance(metadata, dict) else None
+    return str(task_id or frame.get("task_id") or "").strip()
+
+
 @dataclass
 class WorkflowKickoffAckTracker:
     """Acks received for one logical workflow kickoff dispatch.
@@ -700,6 +707,12 @@ class Broker(
         self._startup_state = "created"
         self._startup_failure = ""
         self._peer_watches: dict[str, PeerWatchState] = {}
+        # Task ids each flock peer has started and not yet completed. A peer can
+        # run several at once, so this, not the per-peer watch, says whether
+        # any work is in flight.
+        self._peer_tasks_in_flight: dict[str, set[str]] = {}
+        # The latest outcome a flock peer reported, named when the flock goes idle.
+        self._last_flock_outcome: dict[str, str] = {}
         self._peer_pending_commands: dict[str, list[str]] = {}
         self._git_workspace_checkpoint: GitWorkspaceCheckpoint | None = None
         self._workflow_gate_nodes = _workflow_gate_nodes(self._settings.workflow.graph)
@@ -1763,6 +1776,7 @@ class Broker(
 
         if event_type == "outcome":
             await self._emit_peer_outcome_pipeline_event(peer_id, frame)
+            self._record_last_flock_outcome(peer_label, frame)
         elif event_type == "help_needed":
             if not self._record_pending_help_request(peer_id, frame):
                 return
@@ -1772,6 +1786,16 @@ class Broker(
             await self._maybe_report_flock_failure(peer_id, frame)
         elif event_type in self._PEER_WORK_EVENT_TYPES:
             await self._report_room_peer_working()
+
+        task_id = _peer_frame_task_id(frame)
+        if event_type == "task_started" and task_id:
+            self._peer_tasks_in_flight.setdefault(peer_id, set()).add(task_id)
+        elif event_type == "task_complete":
+            in_flight = self._peer_tasks_in_flight.get(peer_id, set())
+            in_flight.discard(task_id)
+            if not in_flight:
+                self._peer_tasks_in_flight.pop(peer_id, None)
+            await self._report_room_flock_idle()
 
         now = time.monotonic()
         watch = self._peer_watches.get(peer_id)
@@ -1922,6 +1946,20 @@ class Broker(
 
         if event_type == "outcome":
             await self._maybe_report_flock_completion(peer_id, frame)
+
+    def _record_last_flock_outcome(self, persona: str, frame: dict[str, Any]) -> None:
+        data = frame.get("data")
+        data = data if isinstance(data, dict) else {}
+        metadata = frame.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        event_type = str(metadata.get("event_type") or data.get("event_type") or "").strip()
+        if not event_type:
+            return
+        self._last_flock_outcome = {
+            "event_type": event_type,
+            "verdict": str(data.get("verdict") or "").strip(),
+            "persona": persona,
+        }
 
     async def _emit_peer_outcome_pipeline_event(
         self,

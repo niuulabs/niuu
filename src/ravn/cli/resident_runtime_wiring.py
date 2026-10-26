@@ -429,6 +429,7 @@ def _build_resident_wakefulness(
     memory: Any | None = None,
     learning_curator: Any | None = None,
     self_improvement: Any | None = None,
+    tool_curator: Any | None = None,
 ) -> Any | None:
     """Build the wakefulness state machine for a resident daemon."""
     if not settings.resident_wakefulness.enabled:
@@ -452,12 +453,36 @@ def _build_resident_wakefulness(
         review_requester=resident_learning_runtime.review_requester,
         learning_curator=learning_curator,
         self_improvement=self_improvement,
+        tool_curator=tool_curator,
         tick_interval_seconds=cfg.tick_interval_seconds,
         wakeful_window_seconds=cfg.wakeful_window_seconds,
         dream_interval_seconds=cfg.dream_interval_seconds,
         dream_min_idle_seconds=cfg.dream_min_idle_seconds,
         stale_skill_age_seconds=cfg.stale_skill_age_seconds,
         promote_min_successes=cfg.promote_min_successes,
+    )
+
+
+def _build_learned_tool_curator(
+    settings: Settings,
+    *,
+    workspace: Path,
+    skills: Any | None,
+    matcher: Any | None,
+    persist: bool = True,
+) -> Any | None:
+    """Build the dream pass that retires learned tools, when it is enabled."""
+    cfg = settings.resident_evolution.tool_curation
+    if not cfg.enabled:
+        return None
+    from ravn.valkyrie_evolution.tool_curation import LearnedToolCurator  # noqa: PLC0415
+
+    return LearnedToolCurator(
+        state_dir=_resident_ravn_state_dir(workspace, settings),
+        skills=skills,
+        matcher=matcher,
+        leftover_name_prefixes=cfg.leftover_name_prefixes,
+        persist=persist,
     )
 
 

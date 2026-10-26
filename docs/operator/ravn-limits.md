@@ -96,6 +96,7 @@ in the output and counted. That includes excerpts the prompt announces
 | `llm.max_retries` / `llm.retry_base_delay` / `llm.timeout` | 3 / 1.0 s / 120 s | Provider availability | Kept; `timeout` is the bound for an uncapped answer | `LLMError` after the retries |
 | `agent.max_iterations` / `iteration_budget.total` | 20 / 90 | `budget.daily_cap_usd` bounds spend, but not how long one task holds its slot | Kept: a turn whose tool loop does not converge must end so the queue moves; `0` (max_iterations) is no cap | `MaxIterationsError` (checkpointed); counted |
 | `reflection.matching.judge_attempts`, post-session reflection 2 attempts, gate review 2 attempts | 2 | — | Kept: one retry on an unparseable answer, never on truncation | Raises after the last attempt |
+| Learned-tool "never used" window (`resident_evolution.tool_curation`) | none configured | The longest install-to-first-use wait known on the resident (usage ledger: observed first uses, and pre-ledger tools' install-to-last-use upper bound) | New, derived rather than set: no window until there is evidence; a retirement the widened window no longer supports is undone | Retirement is recorded, counted (`learned_tool_retirements.unused`) and reversible |
 
 ## Remaining fallbacks (not changed in this sweep)
 

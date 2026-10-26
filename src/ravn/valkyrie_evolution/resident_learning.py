@@ -58,6 +58,12 @@ from ravn.valkyrie_evolution.models import (
     ReviewResult,
 )
 from ravn.valkyrie_evolution.ports import EvolutionReviewPort
+from ravn.valkyrie_evolution.tool_curation import (
+    RETIREMENTS_PEERS_CANNOT_UNDO,
+    LearnedToolRetirements,
+    LearnedToolUsageLedger,
+    restore_learned_tool,
+)
 from ravn.valkyrie_evolution.tool_runtime import (
     DEFAULT_TOOL_TIMEOUT_SECONDS,
     ToolRunResult,
@@ -1005,7 +1011,7 @@ class ResidentLearningRuntime:
         # payload at the top level while retaining the signal envelope for tools
         # that need event metadata.
         learned_payload = {**payload, **signal.payload}
-        return await self._learned_tool_runner.run(
+        result = await self._learned_tool_runner.run(
             learned_tool_path(code_dir, artifact.manifest.name),
             learned_payload,
             entry_point=artifact.manifest.entry_point,
@@ -1013,6 +1019,13 @@ class ResidentLearningRuntime:
             requirements=artifact.requirements,
             declared_reach=artifact.manifest.declared_reach,
         )
+        if not result.infrastructure:
+            # The same usage evidence a learned_tool_run dispatch records; a
+            # backend outage is not a use of the tool.
+            LearnedToolUsageLedger(artifacts_dir).record_run(
+                artifact.manifest.name, artifact.artifact_id, result.ok
+            )
+        return result
 
     async def _handle_learning_event(self, event: SleipnirEvent) -> None:
         if event.event_type == registry.ODIN_REVIEW_DECIDED:
@@ -1520,7 +1533,48 @@ class ResidentLearningRuntime:
             await self._publish_adoption(artifact, decision)
             return decision
 
+        retired_here = await self._reconcile_retired_tool(artifact)
+        if retired_here is not None:
+            return retired_here
+
         return await self._review_canary_install(artifact, operator_item=operator_item)
+
+    async def _reconcile_retired_tool(
+        self,
+        artifact: ResidentLearningArtifact,
+    ) -> ResidentLearningDecision | None:
+        """Keep a peer's copy from undoing this resident's own retirement.
+
+        Peers republish their tools, and an adopted tool reached five residents
+        within hours. A tool retired here as superseded (this resident holds
+        the replacement) or as a debug leftover stays retired; an operator
+        command still installs it. A tool retired as unused or unrunnable is
+        restored first, so the peer's version installs in place as its next
+        version instead of beside a retired copy.
+        """
+        if artifact.artifact_type != "agent_tool" or self._tools_dir is None:
+            return None
+        name = str(artifact.learned_tool_manifest.get("name") or artifact.title)
+        tools_dir, artifacts_dir = learned_tool_storage(self._tools_dir.parent)
+        record = LearnedToolRetirements(artifacts_dir).get(name)
+        if record is None:
+            return None
+        if record.reason in RETIREMENTS_PEERS_CANNOT_UNDO and not artifact.operator_command:
+            return ResidentLearningDecision(
+                "ignored",
+                f"learned tool {name!r} is retired here ({record.reason}: {record.detail}); "
+                "a peer's copy does not bring it back",
+                relevant=True,
+            )
+        restore_learned_tool(
+            tools_dir=tools_dir,
+            artifacts_dir=artifacts_dir,
+            name=name,
+            why=f"peer proposal {artifact.learning_id} from {artifact.source_valkyrie_id}",
+        )
+        if self._skills.status(name) == "archived":
+            await self._skills.restore(name)
+        return None
 
     async def _review_canary_install(
         self,

@@ -230,7 +230,11 @@ class LessonIndex:
         """Cosine similarity of *text* to each of *others*, in order."""
         if not others:
             return []
-        texts = [text, *others]
+        vectors = await self.embed_texts([text, *others])
+        return [cosine(vectors[0], vector) for vector in vectors[1:]]
+
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Embed *texts* in batches, in order, with the index's embedding port."""
         vectors: list[list[float]] = []
         for start in range(0, len(texts), self._batch_size):
             chunk = texts[start : start + self._batch_size]
@@ -241,7 +245,7 @@ class LessonIndex:
                     f"{len(chunk)} texts; refusing to compare on a misaligned batch"
                 )
             vectors.extend(embedded)
-        return [cosine(vectors[0], vector) for vector in vectors[1:]]
+        return vectors
 
     async def similar_pairs(
         self,

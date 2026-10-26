@@ -4809,10 +4809,17 @@ class DriveLoop:
         # operator is asked: it persists the question first, then publishes it
         # with the case id. Publishing from the outcome as well sent questions
         # the resident had not persisted, so their replies could never bind.
+        # The runtime only judges resident Valkyrie outcomes, though. A workflow
+        # persona's outcome reaches it empty, so it stops without asking; that
+        # question must still go out from here, or the workflow waits on an
+        # answer nobody was asked for.
+        resident_judges_outcome = self._resident_runtime is not None and (
+            is_valkyrie_outcome_event(canonical_event_type)
+        )
         if (
             verdict == "help_needed"
             and not task.resident_help_published
-            and self._resident_runtime is None
+            and not resident_judges_outcome
         ):
             attempted = outcome_fields.get("attempted")
             if not isinstance(attempted, list):

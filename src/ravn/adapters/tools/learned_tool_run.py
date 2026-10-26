@@ -32,6 +32,7 @@ from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
     LearnedToolInfrastructureError,
     LearnedToolResolver,
+    LearnedToolUsageError,
     learned_tool_venvs_dir,
 )
 from ravn.valkyrie_evolution.resident_learning import (
@@ -260,6 +261,11 @@ class LearnedToolRunTool(ToolPort):
                     ),
                     is_error=True,
                 )
+            except LearnedToolUsageError:
+                # The tool ran; its usage record could not be written. That is
+                # this resident's storage failing, not the tool, and must
+                # neither count toward rollback nor pass for a tool error.
+                raise
             except Exception as exc:
                 logger.warning("learned_tool_run: %r raised: %s", name, exc)
                 result = ToolResult(

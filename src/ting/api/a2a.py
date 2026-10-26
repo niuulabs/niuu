@@ -35,6 +35,8 @@ from a2a.types import (
     ListTasksRequest,
     ListTasksResponse,
     Message,
+    Part,
+    Role,
     SendMessageRequest,
     SubscribeToTaskRequest,
     Task,
@@ -172,6 +174,19 @@ def campaign_to_task(campaign: WorkflowCampaign) -> Task:
     else:
         task.status.state = _STATUS_TO_STATE[campaign.status]
     task.status.timestamp.FromDatetime(campaign.updated_at.astimezone(UTC))
+    failure_error = str(campaign.metadata.get("failure_error") or "").strip()
+    if campaign.status == WorkflowCampaignStatus.FAILED and failure_error:
+        # The protocol's place for why a task ended. metadata.error carries the
+        # same text for callers that already read it there.
+        task.status.message.CopyFrom(
+            Message(
+                message_id=f"{campaign.slug}:failure",
+                context_id=task.context_id,
+                task_id=campaign.slug,
+                role=Role.ROLE_AGENT,
+                parts=[Part(text=failure_error)],
+            )
+        )
     task.metadata.update(
         {
             "sessionId": campaign.session_id,

@@ -980,8 +980,15 @@ class StaleCampaignConfig(BaseModel):
         default=2 * 3600.0,
         ge=0.0,
         description=(
-            "Fail a submitted or working campaign whose session has been idle, "
-            "or is gone, for this long; a busy session is never expired. 0 disables."
+            "Fail a submitted or working campaign whose session has made no progress "
+            "for this long: idle, gone, or reporting busy with nothing recorded since "
+            "(a busy report is re-sent as a heartbeat, so it is not progress; entering "
+            "the busy state or a usage report is). Workflow graphs declare no run "
+            "timeout to derive this from; it is the time an owner gets to notice and "
+            "nudge a stalled session before its pod is reclaimed, and must exceed the "
+            "longest single agent turn without a usage report. Each expiry is logged at "
+            "error, counted on ting_a2a_campaigns_expired_total{reason}, and pushed to "
+            "the A2A caller as a FAILED task whose status message says why. 0 disables."
         ),
     )
 

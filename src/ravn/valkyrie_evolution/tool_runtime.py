@@ -10,6 +10,7 @@ self-built probe cannot take the resident down with it.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
 import re
@@ -19,7 +20,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +83,140 @@ HOST_SDK_MODULE = "ravn.sdk"
 
 #: Environment variable carrying the inherited host-call socket descriptor.
 HOST_CALL_FD_ENV = "RAVN_HOST_CALL_FD"
+
+#: ``ToolRunResult.enforcement`` values (mirrored by the learned-tool runners).
+_REACH_ENFORCEMENT_ENFORCED = "enforced"
+_REACH_ENFORCEMENT_UNAVAILABLE = "unavailable"
+
+#: Exit status the network-isolation prelude uses when the kernel refuses to
+#: create the tool's network namespace. Only trusted together with
+#: :data:`NETWORK_ISOLATION_FAILURE_MARKER` on stderr.
+NETWORK_ISOLATION_FAILURE_EXIT = 97
+
+#: stderr prefix the prelude writes before exiting with
+#: :data:`NETWORK_ISOLATION_FAILURE_EXIT`.
+NETWORK_ISOLATION_FAILURE_MARKER = "ravn-sandbox: network isolation failed:"
+
+#: Linux: runs before any tool code for a tool that declares no network
+#: reach. The process moves into a fresh user namespace (so no privilege is
+#: needed) and a fresh network namespace that holds only a downed loopback:
+#: every IP socket the tool opens afterwards fails with "Network is
+#: unreachable", and name resolution fails. The tool cannot leave it again —
+#: re-joining the pod's network namespace needs CAP_SYS_ADMIN in the
+#: namespace that owns it, which an unprivileged process never has. The
+#: uid/gid maps keep the tool's own uid so file ownership reads the same
+#: inside as out. Unix sockets reached by filesystem path are files, not
+#: network, and stay as reachable as the rest of the filesystem.
+_LINUX_NETWORK_ISOLATION_PRELUDE = f"""
+import os as _os
+import sys as _sys
+
+try:
+    _uid, _gid = _os.getuid(), _os.getgid()
+    _os.unshare(_os.CLONE_NEWUSER | _os.CLONE_NEWNET)
+    with open("/proc/self/setgroups", "w") as _f:
+        _f.write("deny")
+    with open("/proc/self/uid_map", "w") as _f:
+        _f.write(f"{{_uid}} {{_uid}} 1")
+    with open("/proc/self/gid_map", "w") as _f:
+        _f.write(f"{{_gid}} {{_gid}} 1")
+except Exception as _exc:
+    _sys.stderr.write(
+        "{NETWORK_ISOLATION_FAILURE_MARKER} " + type(_exc).__name__ + ": " + str(_exc) + "\\n"
+    )
+    _sys.stderr.flush()
+    _os._exit({NETWORK_ISOLATION_FAILURE_EXIT})
+"""
+
+#: macOS: the Seatbelt profile a no-network tool runs under. It denies every
+#: socket operation (IP and unix-domain alike) and allows everything else; the
+#: profile is inherited by any process the tool starts and cannot be lifted.
+_DARWIN_SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+_DARWIN_NO_NETWORK_PROFILE = "(version 1)(allow default)(deny network*)"
+
+#: stderr prefix ``sandbox-exec`` writes when it cannot apply the profile.
+_DARWIN_SANDBOX_FAILURE_PREFIX = "sandbox-exec:"
+
+#: Proves the boundary from inside it: a connect to the loopback must fail
+#: with a policy error, not "connection refused" (which would mean the
+#: network is still there and merely nothing listens).
+_NETWORK_ISOLATION_CHECK = f"""
+import errno as _errno
+import socket as _socket
+import sys as _sys
+
+_probe = _socket.socket()
+try:
+    _probe.connect(("127.0.0.1", 9))
+except OSError as _exc:
+    if _exc.errno in (_errno.ENETUNREACH, _errno.EPERM, _errno.EACCES):
+        _sys.exit(0)
+    _sys.stderr.write("{NETWORK_ISOLATION_FAILURE_MARKER} loopback still reachable: " + str(_exc))
+    _sys.exit({NETWORK_ISOLATION_FAILURE_EXIT})
+_sys.stderr.write("{NETWORK_ISOLATION_FAILURE_MARKER} loopback connect succeeded")
+_sys.exit({NETWORK_ISOLATION_FAILURE_EXIT})
+"""
+
+
+class NetworkIsolationUnavailableError(RuntimeError):
+    """This host cannot run a process without network access."""
+
+
+def network_isolated_command(interpreter: str, script: str, *args: str) -> list[str]:
+    """``interpreter -I -c script args…`` with every network socket denied.
+
+    Raises :class:`NetworkIsolationUnavailableError` on a platform with no
+    isolation mechanism; callers check :func:`network_isolation_unavailable_reason`
+    first so a tool is refused before it is ever started.
+    """
+    if sys.platform.startswith("linux"):
+        return [interpreter, "-I", "-c", _LINUX_NETWORK_ISOLATION_PRELUDE + script, *args]
+    if sys.platform == "darwin":
+        return [
+            _DARWIN_SANDBOX_EXEC,
+            "-p",
+            _DARWIN_NO_NETWORK_PROFILE,
+            interpreter,
+            "-I",
+            "-c",
+            script,
+            *args,
+        ]
+    raise NetworkIsolationUnavailableError(
+        f"no network isolation mechanism on platform {sys.platform}"
+    )
+
+
+@functools.cache
+def network_isolation_unavailable_reason() -> str | None:
+    """Why this host cannot run a tool without network, or None when it can.
+
+    Probed once per process with the exact isolation every no-network tool
+    run uses, then checked from inside: the answer reflects what the kernel,
+    seccomp profile, AppArmor policy or Seatbelt of THIS host actually
+    enforce — not what the platform nominally supports.
+    """
+    try:
+        command = network_isolated_command(sys.executable, _NETWORK_ISOLATION_CHECK)
+    except NetworkIsolationUnavailableError as exc:
+        return str(exc)
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed interpreter and script
+            command,
+            capture_output=True,
+            timeout=DEFAULT_TOOL_TIMEOUT_SECONDS,
+            check=False,
+            env=sandbox_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"isolation probe could not run: {exc}"
+    if completed.returncode == 0:
+        return None
+    detail = completed.stderr.decode("utf-8", errors="replace").strip()
+    return detail.removeprefix(NETWORK_ISOLATION_FAILURE_MARKER).strip() or (
+        f"isolation probe exited with status {completed.returncode}"
+    )
+
 
 _BOOTSTRAP = """
 import importlib.util
@@ -150,7 +285,7 @@ class ToolRunResult:
     #: How declared reach was enforced for this run: ``"enforced"`` when the
     #: sandbox boundary applied it, ``"unavailable"`` when the backend could
     #: not express it (recorded honestly, never faked), ``""`` when the
-    #: backend makes no reach claim at all (plain local subprocess).
+    #: run makes no reach claim (a local subprocess granted the network).
     enforcement: str = ""
     #: True when ``ok=False`` because the RUNNER/BACKEND could not execute
     #: the tool at all (docker unavailable, venv/dependency provisioning
@@ -445,6 +580,7 @@ async def run_tool(
     output_limit_bytes: int = DEFAULT_TOOL_OUTPUT_LIMIT_BYTES,
     python_executable: str | Path | None = None,
     host_call: HostCall | None = None,
+    deny_network: bool = False,
 ) -> ToolRunResult:
     """Execute a tool implementation in an isolated subprocess.
 
@@ -458,6 +594,11 @@ async def run_tool(
     the tool's request. Without it the module is absent and any import of it
     fails loudly, which is the behavior every existing tool was written
     against — badly, by swallowing it.
+
+    ``deny_network`` runs the tool with every network socket denied (see
+    :func:`network_isolated_command`). If the host cannot apply that the
+    tool never starts and the run is an infrastructure failure — it is
+    never retried with the network on.
     """
     path = Path(tool_path)
     if not path.is_file():
@@ -466,6 +607,18 @@ async def run_tool(
             error=f"tool implementation missing: {path}",
             infrastructure=True,
         )
+    interpreter = str(python_executable) if python_executable is not None else sys.executable
+    command = [interpreter, "-I", "-c", _BOOTSTRAP, str(path), entry_point]
+    if deny_network:
+        try:
+            command = network_isolated_command(interpreter, _BOOTSTRAP, str(path), entry_point)
+        except NetworkIsolationUnavailableError as exc:
+            return ToolRunResult(
+                ok=False,
+                error=f"{path.name} declares no network reach: {exc}",
+                enforcement=_REACH_ENFORCEMENT_UNAVAILABLE,
+                infrastructure=True,
+            )
 
     env = sandbox_env()
     parent_sock: socket.socket | None = None
@@ -477,15 +630,9 @@ async def run_tool(
         pass_fds = (child_sock.fileno(),)
         env[HOST_CALL_FD_ENV] = str(child_sock.fileno())
 
-    interpreter = str(python_executable) if python_executable is not None else sys.executable
     try:
         process = await asyncio.create_subprocess_exec(
-            interpreter,
-            "-I",
-            "-c",
-            _BOOTSTRAP,
-            str(path),
-            entry_point,
+            *command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -520,10 +667,45 @@ async def run_tool(
             parent_sock.close()
 
     stderr_text = stderr.decode("utf-8", errors="replace")[:output_limit_bytes]
-    if process.returncode != 0:
+    if deny_network and _isolation_failed(process.returncode, stderr_text):
+        reason = stderr_text.removeprefix(NETWORK_ISOLATION_FAILURE_MARKER).strip()
         return ToolRunResult(
             ok=False,
-            error=f"tool exited with status {process.returncode}: {path.name}",
+            error=(
+                f"{path.name} declares no network reach and its network namespace "
+                f"could not be created: {reason}"
+            ),
+            enforcement=_REACH_ENFORCEMENT_UNAVAILABLE,
+            infrastructure=True,
+        )
+    result = _tool_run_result(process.returncode, stdout, stderr_text, path, output_limit_bytes)
+    if deny_network:
+        return replace(result, enforcement=_REACH_ENFORCEMENT_ENFORCED)
+    return result
+
+
+def _isolation_failed(returncode: int | None, stderr_text: str) -> bool:
+    """True when the isolation wrapper, not the tool, ended the run."""
+    if returncode == 0:
+        return False
+    if returncode == NETWORK_ISOLATION_FAILURE_EXIT and stderr_text.startswith(
+        NETWORK_ISOLATION_FAILURE_MARKER
+    ):
+        return True
+    return sys.platform == "darwin" and stderr_text.startswith(_DARWIN_SANDBOX_FAILURE_PREFIX)
+
+
+def _tool_run_result(
+    returncode: int | None,
+    stdout: bytes,
+    stderr_text: str,
+    path: Path,
+    output_limit_bytes: int,
+) -> ToolRunResult:
+    if returncode != 0:
+        return ToolRunResult(
+            ok=False,
+            error=f"tool exited with status {returncode}: {path.name}",
             stderr=stderr_text,
         )
 

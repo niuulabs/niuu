@@ -33,6 +33,7 @@ from ravn.ports.tool_build_backend import (
     ToolBuildInputRequiredError,
     ToolBuildPendingError,
     ToolBuildRequest,
+    ToolBuildTaskEndedError,
 )
 
 
@@ -1173,6 +1174,50 @@ async def test_a2a_backend_raises_on_failed_task() -> None:
 
     with pytest.raises(ToolBuildError, match="TASK_STATE_FAILED"):
         await backend.build(_request())
+
+
+@pytest.mark.parametrize(
+    ("status_extra", "metadata", "reason"),
+    [
+        (
+            {
+                "message": {
+                    "messageId": "task-1:failure",
+                    "role": "ROLE_AGENT",
+                    "parts": [{"text": "Session idle for over 2 hours without finishing."}],
+                }
+            },
+            {"error": "ignored when the status says why"},
+            "Session idle for over 2 hours without finishing.",
+        ),
+        ({}, {"error": "Session failed"}, "Session failed"),
+        ({}, {}, ""),
+    ],
+)
+async def test_a2a_backend_reports_why_the_task_ended(
+    status_extra: dict, metadata: dict, reason: str
+) -> None:
+    ended = _a2a_task("TASK_STATE_FAILED")
+    ended["status"].update(status_extra)
+    if metadata:
+        ended["metadata"] = metadata
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(ended),
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1")
+
+    with pytest.raises(ToolBuildTaskEndedError) as raised:
+        await backend.build(_request())
+
+    assert raised.value.state == "TASK_STATE_FAILED"
+    assert raised.value.reason == reason
+    assert (reason or "the peer gave no reason") in str(raised.value)
 
 
 async def test_a2a_backend_raises_on_rpc_error() -> None:

@@ -267,7 +267,10 @@ async def test_capability_list_includes_learned_tools_without_loading_them() -> 
         "has_tests": False,
         "requirements_count": 0,
         "supersedes": "",
+        "version": 1,
         "lifecycle": {"status": "unmanaged"},
+        # No usage ledger wired: no usage evidence, rather than invented zeros.
+        "usage": None,
     }
 
 

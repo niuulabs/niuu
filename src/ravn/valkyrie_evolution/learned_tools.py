@@ -34,6 +34,7 @@ from ravn.valkyrie_evolution.tool_runtime import (
     ToolRunResult,
     ToolVenvError,
     ensure_tool_venv,
+    network_isolation_unavailable_reason,
     run_tool,
     write_tool,
 )
@@ -49,11 +50,33 @@ from ravn.valkyrie_evolution.tool_verification import (
 
 logger = logging.getLogger(__name__)
 
-#: Reach kinds whose declaration grants a learned tool outbound network
-#: access. Any grant whose kind is in this set — or starts with ``http``
-#: ("http_get", "https_post", …) — flips the sandbox to a networked
-#: container; every other tool runs with networking off.
-NETWORK_REACH_KINDS = frozenset({"network", "http", "https", "api", "external_read"})
+#: Reach kinds that declare pure computation: nothing outside the process.
+PURE_COMPUTE_REACH_KINDS = frozenset({"", "pure_compute", "compute", "none"})
+
+#: Reach kinds a tool satisfies without leaving the machine: local files,
+#: named credentials, and the resident's own tools via the host SDK.
+#: Together with :data:`PURE_COMPUTE_REACH_KINDS` these are the ONLY kinds
+#: that keep a tool off the network. Any other kind — ``network``, ``http``,
+#: ``kubernetes``, ``k8s_api``, ``prometheus`` or a free-text description —
+#: names something outside the process, which a tool can only reach over the
+#: network, so it grants network access. Resident-authored manifests name
+#: their reach in their own words; a closed vocabulary of *local* kinds is
+#: what makes "this tool declared no network" a decidable claim.
+LOCAL_REACH_KINDS = PURE_COMPUTE_REACH_KINDS | frozenset(
+    {
+        "file",
+        "filesystem",
+        "path",
+        "workspace",
+        "credential",
+        "credentials",
+        "secret",
+        "secrets",
+        "native_tool",
+        "host_tool",
+        "host_sdk",
+    }
+)
 
 #: Docker network mode used when a tool's declared reach grants network access.
 NETWORK_ALLOWED_DOCKER_NETWORK = "bridge"
@@ -99,12 +122,30 @@ class LearnedToolInfrastructureError(RuntimeError):
     """
 
 
+class LearnedToolUsageError(RuntimeError):
+    """A finished learned-tool run could not be recorded in the usage ledger.
+
+    Distinct from the tool failing: the run happened and its result is real.
+    Callers that turn tool exceptions into tool errors must let this through,
+    or a full disk would read as a failing tool and count toward rollback.
+    """
+
+
+#: Records one finished run of a learned tool: ``(name, artifact_id, succeeded)``.
+#: Raises :class:`LearnedToolUsageError` when the record cannot be written.
+LearnedToolUsageRecorder = Callable[[str, str, bool], None]
+
+
+def grant_reaches_network(grant: ToolReachGrant) -> bool:
+    """True when *grant* reaches past this machine (see :data:`LOCAL_REACH_KINDS`)."""
+    if grant.access == "none":
+        return False
+    return grant.kind.strip().casefold() not in LOCAL_REACH_KINDS
+
+
 def reach_allows_network(declared_reach: Sequence[ToolReachGrant]) -> bool:
     """True when a manifest's declared reach grants outbound network access."""
-    return any(
-        grant.kind.lower() in NETWORK_REACH_KINDS or grant.kind.lower().startswith("http")
-        for grant in declared_reach
-    )
+    return any(grant_reaches_network(grant) for grant in declared_reach)
 
 
 class LearnedToolRunner(Protocol):
@@ -123,20 +164,31 @@ class LearnedToolRunner(Protocol):
     ) -> ToolRunResult:
         """Execute a learned tool and return a structured run result."""
 
+    def check_reach(self, declared_reach: Sequence[ToolReachGrant]) -> None:
+        """Raise :class:`LearnedToolError` when this backend cannot enforce
+        *declared_reach*. Called when a tool is loaded, so a tool whose
+        reach cannot be honoured is refused before anyone can invoke it."""
+
 
 class LocalLearnedToolRunner:
-    """Run learned tools through the existing local isolated subprocess.
+    """Run learned tools as subprocesses of the resident.
 
-    Local execution is crash isolation, not security isolation: it cannot
-    turn networking off for a tool that declares no network reach.
-    :attr:`enforces_reach` is honest about that, and executing such a tool
-    locally logs a one-time warning instead of pretending a boundary exists.
-    Tools with declared ``requirements`` run with the python of a dedicated
-    per-tool venv provisioned under ``venvs_dir``.
+    The one reach boundary this backend enforces is the network: a tool whose
+    declared reach is entirely local (see :data:`LOCAL_REACH_KINDS`) runs with
+    every network socket denied — a fresh network namespace on Linux, a
+    no-network Seatbelt profile on macOS. Where the host cannot apply that
+    (e.g. unprivileged user namespaces blocked by sysctl, seccomp or
+    AppArmor) such a tool is refused — at load through :meth:`check_reach`
+    and again at run time — never run with the resident's network.
+
+    What it does not narrow, and says so: a tool granted network gets the
+    resident's whole network (a grant's ``target`` is not an egress filter),
+    and every tool reads the filesystem as the resident's user. Use the
+    ``container`` or ``k8s_job`` backend where those must hold too. Tools with
+    declared ``requirements`` run with the python of a dedicated per-tool
+    venv provisioned under ``venvs_dir``.
     """
 
-    #: A local subprocess cannot express network isolation.
-    enforces_reach = False
     #: The local backend runs in this resident's own process tree, so the
     #: host-call channel back to it is meaningful here (unlike a container
     #: or Job that has no route back to this process).
@@ -152,10 +204,32 @@ class LocalLearnedToolRunner:
         *,
         venvs_dir: str | Path | None = None,
         pip_timeout_seconds: float = DEFAULT_TOOL_VENV_PIP_TIMEOUT_SECONDS,
+        network_isolation_probe: Callable[[], str | None] = (network_isolation_unavailable_reason),
     ) -> None:
         self._venvs_dir = Path(venvs_dir) if venvs_dir else None
         self._pip_timeout_seconds = pip_timeout_seconds
-        self._reach_warned: set[str] = set()
+        self._network_isolation_probe = network_isolation_probe
+
+    @property
+    def enforces_reach(self) -> bool:
+        """True when this host can run a no-network tool without network."""
+        return self._network_isolation_probe() is None
+
+    def check_reach(self, declared_reach: Sequence[ToolReachGrant]) -> None:
+        if reach_allows_network(declared_reach):
+            return
+        reason = self._network_isolation_probe()
+        if reason is None:
+            return
+        raise LearnedToolError(
+            "this learned tool declares no network reach, but the local execution "
+            f"backend cannot take its network away on this host ({reason}); refusing "
+            "to run it with the resident's network. Remedy: allow unprivileged user "
+            "namespaces on the host (Linux; on Ubuntu 23.10+ set "
+            "kernel.apparmor_restrict_unprivileged_userns=0), set "
+            "resident_evolution.learned_tool_execution_backend to 'container' or "
+            "'k8s_job', or rebuild the tool declaring the network reach it really needs"
+        )
 
     async def run(
         self,
@@ -168,7 +242,16 @@ class LocalLearnedToolRunner:
         declared_reach: Sequence[ToolReachGrant] = (),
         host_call: HostCall | None = None,
     ) -> ToolRunResult:
-        self._warn_unenforced_reach(tool_path, declared_reach)
+        deny_network = not reach_allows_network(declared_reach)
+        try:
+            self.check_reach(declared_reach)
+        except LearnedToolError as exc:
+            return ToolRunResult(
+                ok=False,
+                error=f"learned tool {tool_path.stem}: {exc}",
+                enforcement=REACH_ENFORCEMENT_UNAVAILABLE,
+                infrastructure=True,
+            )
         python_executable: Path | None = None
         if requirements:
             if self._venvs_dir is None:
@@ -202,6 +285,7 @@ class LocalLearnedToolRunner:
             timeout_seconds=timeout_seconds,
             python_executable=python_executable,
             host_call=host_call,
+            deny_network=deny_network,
         )
 
     async def verify(
@@ -225,24 +309,6 @@ class LocalLearnedToolRunner:
             requirements=list(requirements),
             entry_point=entry_point,
             timeout_seconds=int(timeout_seconds),
-        )
-
-    def _warn_unenforced_reach(
-        self,
-        tool_path: Path,
-        declared_reach: Sequence[ToolReachGrant],
-    ) -> None:
-        """One-time honesty warning where enforcement would have mattered."""
-        if reach_allows_network(declared_reach):
-            return
-        key = tool_path.stem
-        if key in self._reach_warned:
-            return
-        self._reach_warned.add(key)
-        logger.warning(
-            "learned tool %s declares no network reach, but the local runner "
-            "cannot turn networking off — reach is NOT enforced on the local backend",
-            key,
         )
 
 
@@ -402,6 +468,9 @@ class ContainedLearnedToolRunner:
         self._output_limit_bytes = output_limit_bytes
         self._provision_timeout_seconds = provision_timeout_seconds
         self._venv_locks: dict[str, asyncio.Lock] = {}
+
+    def check_reach(self, declared_reach: Sequence[ToolReachGrant]) -> None:
+        self._reach_args(declared_reach)
 
     async def run(
         self,
@@ -631,12 +700,7 @@ class ContainedLearnedToolRunner:
     ) -> tuple[list[str], list[str]]:
         args: list[str] = []
         credentials: list[str] = []
-        network_grants = [
-            grant
-            for grant in declared_reach
-            if (grant.kind.lower() in NETWORK_REACH_KINDS or grant.kind.lower().startswith("http"))
-            and grant.access != "none"
-        ]
+        network_grants = [grant for grant in declared_reach if grant_reaches_network(grant)]
         targeted_network = [grant.target for grant in network_grants if grant.target.strip()]
         if targeted_network:
             raise LearnedToolError(
@@ -1117,7 +1181,6 @@ class ForgeSandboxLearnedToolRunner:
         #: Self-managed shells, one per docker network mode, so a networked
         #: tool and an isolated tool never share a container.
         self._shells: dict[str, Any] = {}
-        self._reach_warned: set[str] = set()
         #: One provisioning lock per tool so concurrent runs of the same tool
         #: cannot rebuild each other's in-container venv mid-install.
         self._venv_locks: dict[str, asyncio.Lock] = {}
@@ -1128,6 +1191,19 @@ class ForgeSandboxLearnedToolRunner:
         if self._shell is None:
             return True
         return _shell_network_mode(self._shell) is not None
+
+    def check_reach(self, declared_reach: Sequence[ToolReachGrant]) -> None:
+        if self._shell is None or reach_allows_network(declared_reach):
+            return
+        network = _shell_network_mode(self._shell)
+        if _reach_enforcement(network=network, network_allowed=False) == REACH_ENFORCEMENT_ENFORCED:
+            return
+        raise LearnedToolError(
+            "this learned tool declares no network reach, but the configured forge "
+            f"sandbox shell runs with network mode {network or 'unknown'!r}; refusing to "
+            "run it with network. Remedy: configure the shell with network 'none', or "
+            "let the runner manage its own per-network-mode shells"
+        )
 
     async def run(
         self,
@@ -1184,7 +1260,16 @@ class ForgeSandboxLearnedToolRunner:
             timeout_seconds=timeout_seconds,
         )
         if enforcement == REACH_ENFORCEMENT_UNAVAILABLE and not network_allowed:
-            self._warn_enforcement_unavailable(tool_path)
+            return ToolRunResult(
+                ok=False,
+                error=(
+                    f"learned tool {tool_path.stem} declares no network reach, but the "
+                    "forge sandbox shell cannot run it with networking off; refusing to "
+                    "run it with network"
+                ),
+                enforcement=enforcement,
+                infrastructure=True,
+            )
 
         run_dir = self._runs_dir / uuid.uuid4().hex
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -1279,18 +1364,6 @@ class ForgeSandboxLearnedToolRunner:
         # A config object we cannot re-scope is used as-is; the resulting
         # shell's actual network mode drives the enforcement marker honestly.
         return base
-
-    def _warn_enforcement_unavailable(self, tool_path: Path) -> None:
-        key = tool_path.stem
-        if key in self._reach_warned:
-            return
-        self._reach_warned.add(key)
-        logger.warning(
-            "learned tool %s declares no network reach, but the forge sandbox "
-            "shell cannot express network isolation — enforcement recorded as "
-            "unavailable, never faked",
-            key,
-        )
 
     async def _ensure_sandbox_venv(
         self,
@@ -1405,14 +1478,24 @@ class LearnedTool(ToolPort):
         runner: LearnedToolRunner | None = None,
         requirements: Sequence[str] = (),
         host_call: HostCall | None = None,
+        artifact_id: str = "",
+        usage_recorder: LearnedToolUsageRecorder | None = None,
     ) -> None:
         _validate_manifest(manifest)
         self._manifest = manifest
         self._tool_path = Path(tool_path)
         self._timeout_seconds = timeout_seconds
         self._runner = runner or LocalLearnedToolRunner()
+        # Refuse at load a tool whose declared reach this backend cannot
+        # enforce, so it is never offered for invocation. run() checks again.
+        self._runner.check_reach(manifest.declared_reach)
         self._requirements = list(requirements)
         self._host_call = host_call
+        self._artifact_id = artifact_id
+        # Every path that runs this tool records here — learned_tool_run and a
+        # tool build_tool registered live — so usage evidence does not depend
+        # on which door the call came through.
+        self._usage_recorder = usage_recorder
 
     @property
     def name(self) -> str:
@@ -1462,11 +1545,17 @@ class LearnedTool(ToolPort):
                 detail = f"{detail}\n{result.stderr}"
             if result.infrastructure:
                 raise LearnedToolInfrastructureError(detail)
+            self._record_usage(succeeded=False)
             return ToolResult(tool_call_id="", content=detail, is_error=True)
+        self._record_usage(succeeded=True)
         return ToolResult(
             tool_call_id="",
             content=json.dumps(result.result, indent=2, sort_keys=True),
         )
+
+    def _record_usage(self, *, succeeded: bool) -> None:
+        if self._usage_recorder is not None:
+            self._usage_recorder(self._manifest.name, self._artifact_id, succeeded)
 
 
 def write_learned_tool(
@@ -1528,24 +1617,29 @@ def _link_superseded_artifact(
         ) from exc
     previous_id = str(previous.get("artifact_id") or "")
     previous_supersedes = str(previous.get("supersedes") or "")
+    previous_version = int(previous.get("version") or 1)
     if not previous_id or previous_id == artifact.artifact_id:
-        if previous_supersedes and not artifact.supersedes:
-            # Rewriting the same version (e.g. refreshed provenance) must not
-            # erase the chain link the previous write established.
-            return replace(artifact, supersedes=previous_supersedes)
-        return artifact
+        # Rewriting the same version (e.g. refreshed provenance) must not
+        # erase the chain link or the version number the previous write set.
+        return replace(
+            artifact,
+            supersedes=artifact.supersedes or previous_supersedes,
+            version=previous_version,
+        )
 
     archive_path = superseded_artifact_path(artifacts_dir, artifact.manifest.name, previous_id)
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     archive_path.write_text(json.dumps(previous, indent=2, sort_keys=True), encoding="utf-8")
     if artifact.supersedes:
+        if artifact.supersedes == previous_id:
+            return replace(artifact, version=previous_version + 1)
         return artifact
     if previous_supersedes == artifact.artifact_id:
         # Writing back the exact predecessor the current version superseded is
         # a rollback restore, not a new version — linking it would create a
         # two-artifact cycle that ping-pongs forever.
         return artifact
-    return replace(artifact, supersedes=previous_id)
+    return replace(artifact, supersedes=previous_id, version=previous_version + 1)
 
 
 def find_installed_duplicate(
@@ -1615,61 +1709,6 @@ def capability_key(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", folded)
 
 
-def find_installed_capability(
-    *,
-    artifacts_dir: str | Path,
-    tools_dir: str | Path,
-    capability_id: str = "",
-    name: str = "",
-) -> LearnedToolArtifact | None:
-    """Find an installed tool already serving *capability_id* or called *name*.
-
-    Answerable before any code exists, which is the point: the code-level
-    duplicate check can only run on a finished build, and a commissioned build
-    is a Ting workflow that has already taken half an hour by then. Declared
-    intent — the capability being asked for, or the name being asked for — is
-    all that is available up front, and it is enough to stop the common case.
-
-    Capability match is preferred over name match: it survives a rename, which
-    is the duplication that name-keyed logic misses entirely.
-    """
-    artifacts_path = Path(artifacts_dir)
-    if not artifacts_path.is_dir():
-        return None
-    wanted_capability = capability_id.strip()
-    wanted_name = name.strip()
-    if not wanted_capability and not wanted_name:
-        return None
-
-    by_name: LearnedToolArtifact | None = None
-    by_key: LearnedToolArtifact | None = None
-    wanted_key = capability_key(wanted_capability or wanted_name)
-    for candidate_path in sorted(artifacts_path.glob("*.json")):
-        try:
-            payload = json.loads(candidate_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(payload, dict):
-            continue
-        candidate = LearnedToolArtifact.from_dict(payload)
-        if not learned_tool_path(tools_dir, candidate.manifest.name).is_file():
-            continue
-        if wanted_capability and candidate.source_gap_id.strip() == wanted_capability:
-            return candidate
-        if wanted_name and candidate.manifest.name == wanted_name and by_name is None:
-            by_name = candidate
-        # Last resort: the same capability under a different spelling. Exact
-        # matching alone let one capability fork into several tools, and a
-        # resident that cannot find what it built asks for it again.
-        if by_key is None and wanted_key:
-            candidate_key = capability_key(
-                candidate.source_gap_id.strip() or candidate.manifest.name
-            )
-            if candidate_key == wanted_key:
-                by_key = candidate
-    return by_name or by_key
-
-
 def _manifest_contract(manifest: LearnedToolManifest) -> str:
     """What a caller is promised, ignoring what the tool happens to be called."""
     return json.dumps(
@@ -1700,7 +1739,7 @@ def _link_by_capability(
     if not capability_id or artifact.supersedes:
         return artifact
 
-    newest: tuple[str, str] = ("", "")
+    newest: tuple[str, str, int] = ("", "", 1)
     for candidate_path in sorted(artifacts_dir.glob("*.json")):
         try:
             payload = json.loads(candidate_path.read_text(encoding="utf-8"))
@@ -1717,11 +1756,11 @@ def _link_by_capability(
             continue
         created_at = str(payload.get("created_at") or "")
         if created_at >= newest[0]:
-            newest = (created_at, candidate_id)
+            newest = (created_at, candidate_id, int(payload.get("version") or 1))
 
     if not newest[1]:
         return artifact
-    return replace(artifact, supersedes=newest[1])
+    return replace(artifact, supersedes=newest[1], version=newest[2] + 1)
 
 
 def read_learned_tool_artifact(path: str | Path) -> LearnedToolArtifact:
@@ -1741,6 +1780,7 @@ def load_learned_tool(
     requirements: list[str] | None = None,
     venvs_dir: str | Path | None = None,
     host_call: HostCall | None = None,
+    usage_recorder: LearnedToolUsageRecorder | None = None,
 ) -> LearnedTool:
     """Create an agent-callable ToolPort from a learned artifact.
 
@@ -1760,6 +1800,8 @@ def load_learned_tool(
         runner=runner,
         requirements=resolved_requirements,
         host_call=host_call,
+        artifact_id=artifact.artifact_id,
+        usage_recorder=usage_recorder,
     )
 
 
@@ -1787,6 +1829,52 @@ def superseded_artifact_path(
     stem = _filename_for_tool(tool_name)
     suffix = re.sub(r"[^a-zA-Z0-9_.-]+", "_", artifact_id)
     return Path(artifacts_dir) / SUPERSEDED_ARTIFACTS_DIRNAME / f"{stem}__{suffix}.json"
+
+
+#: Subdirectory (of both the code and the artifacts dir) holding retired tools.
+#: Retirement moves a tool here instead of deleting it, so it is reversible;
+#: nothing that globs ``*.py`` / ``*.json`` at the top level sees it.
+RETIRED_DIRNAME = "_retired"
+
+#: Subdirectory of the artifacts dir for builds that failed verification. They
+#: are kept for audit but never written over the installed tool's envelope: a
+#: failed rebuild used to replace a working tool's envelope, which made the
+#: working code on disk unrunnable.
+FAILED_ARTIFACTS_DIRNAME = "_failed"
+
+#: Subdirectory of the artifacts dir for curation state: the usage ledger,
+#: retirement records, and capability verdicts.
+CURATION_DIRNAME = "_curation"
+
+
+def retired_tool_path(tools_dir: str | Path, tool_name: str) -> Path:
+    """Where a retired tool's code is kept."""
+    return Path(tools_dir) / RETIRED_DIRNAME / f"{_filename_for_tool(tool_name)}.py"
+
+
+def retired_artifact_path(artifacts_dir: str | Path, tool_name: str) -> Path:
+    """Where a retired tool's envelope is kept."""
+    return Path(artifacts_dir) / RETIRED_DIRNAME / f"{_filename_for_tool(tool_name)}.json"
+
+
+def failed_artifact_path(artifacts_dir: str | Path, tool_name: str, artifact_id: str) -> Path:
+    """Where a build that failed verification is kept for audit."""
+    stem = _filename_for_tool(tool_name)
+    suffix = re.sub(r"[^a-zA-Z0-9_.-]+", "_", artifact_id)
+    return Path(artifacts_dir) / FAILED_ARTIFACTS_DIRNAME / f"{stem}__{suffix}.json"
+
+
+def write_failed_learned_tool_artifact(
+    *,
+    artifacts_dir: str | Path,
+    artifact: LearnedToolArtifact,
+) -> Path:
+    """Persist a build that failed verification without touching the installed one."""
+    _validate_artifact(artifact)
+    path = failed_artifact_path(artifacts_dir, artifact.manifest.name, artifact.artifact_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(artifact.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+    return path
 
 
 def _validate_artifact(artifact: LearnedToolArtifact) -> None:
@@ -1953,6 +2041,7 @@ class LearnedToolResolver:
         workspace_root: str | Path | None = None,
         timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
         execution_backend_kwargs: Mapping[str, Any] | None = None,
+        usage_recorder: LearnedToolUsageRecorder | None = None,
     ) -> None:
         if execution_backend not in KNOWN_EXECUTION_BACKENDS:
             raise LearnedToolError(f"unknown learned tool execution backend: {execution_backend!r}")
@@ -1963,6 +2052,7 @@ class LearnedToolResolver:
         self._execution_backend_kwargs = dict(execution_backend_kwargs or {})
         self._code_dir, self._artifacts_dir = learned_tool_storage(self._state_dir)
         self._venvs_dir = learned_tool_venvs_dir(self._state_dir)
+        self._usage_recorder = usage_recorder
 
     @property
     def artifacts_dir(self) -> Path:
@@ -2024,6 +2114,12 @@ class LearnedToolResolver:
             raise LearnedToolError(f"invalid learned tool name: {name!r}")
         artifact_path = learned_tool_artifact_path(self._artifacts_dir, name)
         if not artifact_path.is_file():
+            if retired_artifact_path(self._artifacts_dir, name).is_file():
+                raise LearnedToolError(
+                    f"learned tool {name!r} is retired. Use the installed tool that serves "
+                    "the same capability (capability_list), or ask build_tool for this "
+                    "capability, which restores it when it is still the right tool"
+                )
             raise LearnedToolError(f"no learned tool named {name!r} is installed")
         artifact = read_learned_tool_artifact(artifact_path)
         require_verified_artifact(artifact)
@@ -2037,6 +2133,7 @@ class LearnedToolResolver:
             runner=self._runner(),
             venvs_dir=self._venvs_dir,
             host_call=host_call,
+            usage_recorder=self._usage_recorder,
         )
 
     def _tool_path(self, name: str) -> Path:

@@ -1,6 +1,8 @@
-# Runs on every push to feat/* branches. Publish-only:
+# Runs on every push to feat/* branches and to `regin`, Regin's delivery
+# integration branch (a resident canary needs an image built from it).
+# Publish-only:
 # 1. Builds all container images tagged with the feature name
-#    (e.g. feat/ting-ui -> tag "ting-ui")
+#    (e.g. feat/ting-ui -> tag "ting-ui", regin -> tag "regin")
 # 2. Packages Helm charts as 0.0.0-<feature>.<N> prerelease versions
 #    (e.g. 0.0.0-ting-ui.3)
 #
@@ -11,7 +13,7 @@ name: Feature Build
 
 on:
   push:
-    branches: ["feat/**"]
+    branches: ["feat/**", "regin"]
 
 permissions: read-all
 
@@ -43,7 +45,8 @@ jobs:
         id: tag
         run: |
           # Strip "feat/" prefix -> use remainder as tag
-          # e.g. feat/ting-ui -> ting-ui, feat/auth/oidc -> auth-oidc
+          # e.g. feat/ting-ui -> ting-ui, feat/auth/oidc -> auth-oidc,
+          # regin -> regin
           RAW="${GITHUB_REF_NAME#feat/}"
           # Replace slashes with dashes for valid Docker tag
           TAG="${RAW//\//-}"

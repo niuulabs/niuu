@@ -459,6 +459,8 @@ class VolundrHTTPAdapter(VolundrPort):
                 activity_state=data.get("activity_state"),
                 activity_metadata=data.get("activity_metadata") or {},
                 last_active=_parse_timestamp(data.get("last_active")),
+                activity_state_since=_parse_timestamp(data.get("activity_state_since")),
+                updated_at=_parse_timestamp(data.get("updated_at")),
             )
 
     async def list_sessions(

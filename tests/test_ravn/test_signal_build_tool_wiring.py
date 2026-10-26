@@ -87,6 +87,8 @@ def test_tool_mcp_attaches_build_tool_for_allowed_persona(tmp_path) -> None:
         tmp_path,
         enabled=True,
         settings=settings,
+        # Lexical lesson matching (the default) asks for no meaning-based judge.
+        capability_matcher=None,
     )
     server.run_stdio.assert_awaited_once()
 

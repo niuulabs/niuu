@@ -181,6 +181,7 @@ from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _attach_agent_build_tool,
     _build_executor,
     _build_friction_ledger,
+    _build_capability_matcher,
     _build_learning_consolidation,
     _build_learning_curator,
     _build_self_improvement,
@@ -994,11 +995,23 @@ def tool_mcp(
         allowed_tools = _expand_allowed_tools(
             set(persona_config.allowed_tools or []) if persona_config is not None else set()
         )
+        build_tool_enabled = "build_tool" in allowed_tools
         _attach_agent_build_tool(
             server,
             _resolve_workspace(settings),
-            enabled="build_tool" in allowed_tools,
+            enabled=build_tool_enabled,
             settings=settings,
+            # Same lineage matching as a resident: with semantic lesson
+            # matching configured, a build is tied to the tool it repairs by
+            # meaning, not only by name.
+            capability_matcher=(
+                _build_capability_matcher(
+                    settings, _build_learning_consolidation(settings, _build_llm(settings))
+                )
+                if build_tool_enabled
+                and settings.effective_post_session_reflection_config().matching.mode == "semantic"
+                else None
+            ),
         )
         # What the agent notifies from this server names the channel its turn runs in;
         # asyncio.run copies this context into the server's task.
@@ -1238,6 +1251,42 @@ def learnings_curate(
     for key, value in report.summary().items():
         shown = len(value) if isinstance(value, list) else value
         typer.echo(f"{key:<17}: {shown}")
+
+
+@app.command("learned-tools-plan")
+def learned_tools_plan(
+    config: str = typer.Option("", "--config", help="Path to the ravn config file."),
+) -> None:
+    """Print what the next consolidation dream would retire from the learned tools.
+
+    Read-only: it computes the same plan the dream applies, with the same
+    usage ledger, capability judge and never-used window, and prints it as
+    JSON. Nothing is moved, archived or written; retirement happens only in
+    the dream, so the running resident's lifecycle registry stays the one
+    writer.
+    """
+
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+    settings = Settings()
+    workspace = _resolve_workspace(settings)
+    consolidation = _build_learning_consolidation(settings, _build_llm(settings))
+    from ravn.valkyrie_evolution.tool_curation import LifecycleSnapshot  # noqa: PLC0415
+
+    curator = _build_learned_tool_curator(
+        settings,
+        workspace=workspace,
+        skills=LifecycleSnapshot(
+            _resident_ravn_state_dir(workspace, settings) / "skill_management.json"
+        ),
+        matcher=_build_capability_matcher(settings, consolidation),
+        persist=False,
+    )
+    if curator is None:
+        typer.echo("resident_evolution.tool_curation.enabled is false; nothing to plan.", err=True)
+        raise typer.Exit(1)
+    plan = asyncio.run(curator.plan())
+    typer.echo(json.dumps(plan.to_dict(), indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -1819,6 +1868,7 @@ _RESIDENT_RUNTIME_WIRING_NAMES = frozenset(
         "_build_resident_learning_runtime",
         "_build_realm_capability_sync",
         "_build_resident_wakefulness",
+        "_build_learned_tool_curator",
         "_build_odin_court",
         "_run_odin_court_sweep",
         "_build_feedback_recorder",
@@ -1847,6 +1897,9 @@ _build_realm_capability_sync = _runtime_wrapper(
 )
 _build_resident_wakefulness = _runtime_wrapper(
     _resident_runtime_wiring, "_build_resident_wakefulness", _RESIDENT_RUNTIME_WIRING_NAMES
+)
+_build_learned_tool_curator = _runtime_wrapper(
+    _resident_runtime_wiring, "_build_learned_tool_curator", _RESIDENT_RUNTIME_WIRING_NAMES
 )
 _build_odin_court = _runtime_wrapper(
     _resident_runtime_wiring, "_build_odin_court", _RESIDENT_RUNTIME_WIRING_NAMES

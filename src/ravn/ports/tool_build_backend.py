@@ -60,6 +60,22 @@ class ToolBuildPendingError(ToolBuildError):
         super().__init__(f"A2A task {task_id} is still running")
 
 
+class ToolBuildTaskEndedError(ToolBuildError):
+    """The commissioned remote task reached a terminal state without a result.
+
+    Unlike a transport failure, nothing can resume it: the build tool drops
+    its pending continuation and reports ``reason``, the peer's own account
+    of why the task ended.
+    """
+
+    def __init__(self, *, task_id: str, state: str, reason: str) -> None:
+        self.task_id = task_id
+        self.state = state
+        self.reason = reason
+        detail = f": {reason}" if reason else " (the peer gave no reason)"
+        super().__init__(f"A2A task {task_id} ended in state {state!r}{detail}")
+
+
 @dataclass(frozen=True)
 class ToolBuildRequest:
     """What a resident wants built, handed to a build backend."""

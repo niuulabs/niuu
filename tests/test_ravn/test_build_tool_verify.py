@@ -16,6 +16,7 @@ from ravn.ports.tool_build_backend import (
     ToolBuildInputRequiredError,
     ToolBuildPendingError,
     ToolBuildResult,
+    ToolBuildTaskEndedError,
 )
 from ravn.valkyrie_evolution.tool_verification import VerificationResult
 
@@ -67,7 +68,12 @@ def _tool(
 
 
 def _persisted_provenance(tmp_path: Path) -> dict[str, Any]:
-    arts = list((tmp_path / "arts").glob("*.json"))
+    # A build that failed verification is kept under _failed/, never over the
+    # installed envelope; either way its provenance is on disk.
+    arts = [
+        *(tmp_path / "arts").glob("*.json"),
+        *(tmp_path / "arts" / "_failed").glob("*.json"),
+    ]
     assert arts, "artifact was not persisted"
     return dict(json.loads(arts[0].read_text())["provenance"])
 
@@ -352,9 +358,11 @@ async def test_verify_fails_with_no_backend_returns_error_and_does_not_install(
     assert "verification failed" in result.content
     assert "AssertionError: boom" in result.content
     assert registered == []
-    # Verification outcome still recorded in provenance for the failed build.
+    # Verification outcome still recorded in provenance for the failed build,
+    # outside the installed envelope's path.
     prov = _persisted_provenance(tmp_path)
     assert prov["verification"]["ok"] is False
+    assert not (tmp_path / "arts" / "echo_tool.json").exists()
 
 
 async def test_backend_recommission_repairs_on_verify_failure_then_installs(
@@ -610,6 +618,43 @@ async def test_commissioned_build_push_pending_resumes_without_answer(tmp_path) 
     assert list((tmp_path / "arts" / "pending-builds").glob("*.json")) == []
 
 
+async def test_a_continuation_whose_task_ended_is_dropped_with_the_reason(tmp_path) -> None:
+    """Regin kept pending builds for A2A tasks that had failed or been cancelled
+    days earlier: a resumed build that the peer had ended raised and left its
+    continuation behind, so the resident still held a build nothing could resume."""
+
+    class _Backend:
+        name = "a2a"
+
+        async def build(self, request: Any) -> ToolBuildResult:
+            if not request.continuation:
+                raise ToolBuildPendingError(
+                    task_id="task-push-1",
+                    push_registered=True,
+                    continuation={
+                        "task_id": "task-push-1",
+                        "input_kind": "pending",
+                        "push_registered": True,
+                    },
+                )
+            raise ToolBuildTaskEndedError(
+                task_id="task-push-1",
+                state="TASK_STATE_FAILED",
+                reason="Session idle for over 2 hours without finishing.",
+            )
+
+    tool, registered = _tool(tmp_path, build_backend=_Backend())
+    await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+    assert len(list((tmp_path / "arts" / "pending-builds").glob("*.json"))) == 1
+
+    resumed = await tool.execute({"continuation_task_id": "task-push-1"})
+
+    assert resumed.is_error is True
+    assert "Session idle for over 2 hours without finishing." in resumed.content
+    assert list((tmp_path / "arts" / "pending-builds").glob("*.json")) == []
+    assert registered == []
+
+
 async def test_commissioned_build_rejects_scalar_declared_reach(tmp_path) -> None:
     class _Backend:
         name = "a2a"
@@ -742,8 +787,39 @@ async def test_capability_id_is_recorded_on_the_artifact(tmp_path) -> None:
     assert envelope["source_signal_ids"] == ["signal-1", "signal-2"]
 
 
-async def test_a_rename_with_new_code_chains_on_the_declared_capability(tmp_path) -> None:
-    tool, _ = _tool(tmp_path)
+async def test_a_rename_for_the_same_capability_is_not_a_second_tool(tmp_path) -> None:
+    """Without replace, a renamed build for an owned capability builds nothing."""
+    tool, registered = _tool(tmp_path)
+    await tool.execute(
+        {
+            "manifest": _manifest(),
+            "tool_code": _ECHO_TOOL,
+            "test_code": _ECHO_TEST_LOOSE,
+            "capability_id": "echo.payload",
+        }
+    )
+
+    renamed = await tool.execute(
+        {
+            "manifest": _manifest("echo_payload_v2"),
+            "tool_code": "def run(payload):\n    return {'echo': payload, 'v': 2}\n",
+            "test_code": _ECHO_TEST_LOOSE,
+            "capability_id": "echo.payload",
+        }
+    )
+
+    payload = json.loads(renamed.content)
+    assert payload["status"] == "already_installed"
+    assert payload["tool_name"] == "echo_tool"
+    assert payload["matched_by"] == "capability_id"
+    assert "version 2 of 'echo_tool'" in payload["detail"]
+    assert not (tmp_path / "arts" / "echo_payload_v2.json").exists()
+    assert len(registered) == 1
+
+
+async def test_a_renamed_revision_is_installed_in_place_as_the_next_version(tmp_path) -> None:
+    """With replace, the revision becomes version 2 of the existing tool, not a sibling."""
+    tool, registered = _tool(tmp_path)
     first = await tool.execute(
         {
             "manifest": _manifest(),
@@ -754,17 +830,27 @@ async def test_a_rename_with_new_code_chains_on_the_declared_capability(tmp_path
     )
     first_id = json.loads(first.content)["artifact_id"]
 
-    await tool.execute(
+    revised = await tool.execute(
         {
             "manifest": _manifest("echo_payload_v2"),
             "tool_code": "def run(payload):\n    return {'echo': payload, 'v': 2}\n",
             "test_code": _ECHO_TEST_LOOSE,
             "capability_id": "echo.payload",
+            "replace": True,
         }
     )
 
-    renamed = json.loads((tmp_path / "arts" / "echo_payload_v2.json").read_text())
-    assert renamed["supersedes"] == first_id
+    summary = json.loads(revised.content)
+    assert revised.is_error is False
+    assert summary["tool_name"] == "echo_tool"
+    assert summary["version"] == 2
+    assert summary["supersedes"] == first_id
+    assert summary["repair_of"]["requested_name"] == "echo_payload_v2"
+    assert not (tmp_path / "arts" / "echo_payload_v2.json").exists()
+    envelope = json.loads((tmp_path / "arts" / "echo_tool.json").read_text())
+    assert envelope["version"] == 2
+    assert "'v': 2" in envelope["tool_code"]
+    assert [entry[1] for entry in registered] == [False, True]
 
 
 # ---------------------------------------------------------------------------

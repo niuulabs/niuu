@@ -15,7 +15,9 @@ repeatedly successful private skills when the autonomy policy allows it,
 reopens deferred capability gaps so held builds get another chance, and — when
 a learning curator is wired — curates the resident's recorded learnings
 (merge, supersede, prune, rewrite; see
-:mod:`ravn.adapters.reflection.learning_curation`).
+:mod:`ravn.adapters.reflection.learning_curation`). When a tool curator is
+wired it also retires learned tools that no longer earn their catalog entry
+(:mod:`ravn.valkyrie_evolution.tool_curation`).
 
 Every transition is published as ``valkyrie.state.changed`` and every dream as
 ``valkyrie.dream.started``/``valkyrie.dream.completed`` with a summary, so the
@@ -71,6 +73,7 @@ class ResidentWakefulness:
         review_requester: ReviewRequester | None = None,
         learning_curator: Any | None = None,
         self_improvement: Any | None = None,
+        tool_curator: Any | None = None,
         tick_interval_seconds: float = DEFAULT_TICK_INTERVAL_SECONDS,
         wakeful_window_seconds: float = DEFAULT_WAKEFUL_WINDOW_SECONDS,
         dream_interval_seconds: float = DEFAULT_DREAM_INTERVAL_SECONDS,
@@ -88,6 +91,7 @@ class ResidentWakefulness:
         self._review_requester = review_requester
         self._learning_curator = learning_curator
         self._self_improvement = self_improvement
+        self._tool_curator = tool_curator
         self._tick_interval_seconds = tick_interval_seconds
         self._wakeful_window_seconds = wakeful_window_seconds
         self._dream_interval_seconds = dream_interval_seconds
@@ -274,10 +278,14 @@ class ResidentWakefulness:
             )
 
         learnings = await self._curate_learnings()
+        # After the skill pass: retiring a tool archives its lifecycle skill,
+        # which the stale/promotion loop above must not see half-way through.
+        learned_tools = await self._tool_curator.curate() if self._tool_curator else {}
 
         return {
             "skills_reviewed": len(rows),
             "learnings": learnings,
+            "learned_tools": learned_tools,
             "marked_stale": marked_stale,
             "promoted": promoted,
             "promotion_candidates": promotion_candidates,

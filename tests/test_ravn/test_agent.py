@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -125,6 +126,9 @@ async def test_outcome_repair_is_tool_free_and_does_not_replay_history() -> None
 class _FakeSandboxShell:
     def __init__(self) -> None:
         self.commands: list[str] = []
+        # An isolated sandbox: the forge runner refuses a no-network tool on
+        # a shell whose network mode it cannot see.
+        self._config = SimpleNamespace(network="none")
 
     async def run(self, command: str) -> tuple[str, int]:
         self.commands.append(command)

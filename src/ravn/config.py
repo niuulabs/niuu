@@ -3564,12 +3564,40 @@ class LearnedToolKubernetesConfig(BaseModel):
         default=120.0,
         gt=0,
         description=(
-            "verify()-only: separate budget for a Job's pod to leave Pending and "
-            "start running (scheduling, image pull) before it is treated as an "
-            "infrastructure failure. Decoupled from the verify timeout, which only "
-            "starts counting once the container is actually running, so a slow "
-            "image pull is never confused with the tool's own code hanging. run() "
-            "has no separate pod-start budget and does not consult this field."
+            "Budget for a Job's pod to leave Pending and start running (scheduling, "
+            "image pull) before it is treated as an infrastructure failure, for both "
+            "run() and verify(). Decoupled from the tool and verify timeouts, which "
+            "only start counting once the container is actually running, so a slow "
+            "image pull is never confused with the tool's own code hanging."
+        ),
+    )
+    tool_service_account: str = Field(
+        default="",
+        description=(
+            "Service account a learned-tool Job runs as when its declared reach "
+            "includes the Kubernetes API; its token is mounted only for those runs. "
+            "Bind it to read-only RBAC no wider than the resident's own: it is the "
+            "only cluster identity a learned tool ever holds. Empty refuses every "
+            "tool that declares Kubernetes API reach."
+        ),
+    )
+    dns_service: str = Field(
+        default="",
+        description=(
+            "Cluster DNS Service as 'namespace/name' (e.g. "
+            "'kube-system/rke2-coredns-rke2-coredns'). A Job with targeted reach gets "
+            "egress to the pods behind it so it can resolve its targets. Empty refuses "
+            "every tool that declares targeted network reach."
+        ),
+    )
+    named_targets: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Words a learned tool's reach may use for an in-cluster Service, as "
+            "word -> 'namespace/service[:port]' (e.g. prometheus -> "
+            "'monitoring/kube-prom-kube-prometheus-prometheus:9090'). Matched as a "
+            "whole word in a grant's kind or target when it names no address; "
+            "nothing else is inferred from prose."
         ),
     )
     job_ttl_seconds_after_finished: int = Field(
@@ -3579,6 +3607,35 @@ class LearnedToolKubernetesConfig(BaseModel):
             "Kubernetes ttlSecondsAfterFinished on every learned-tool Job, as a backup "
             "sweep if the explicit post-run delete never executes (process crash). "
             "0 disables the TTL and relies solely on the explicit delete."
+        ),
+    )
+
+
+class LearnedToolCurationConfig(BaseModel):
+    """The consolidation-dream pass that retires learned tools.
+
+    Retires tools that another installed tool supersedes, that can never run,
+    that are named as debug probes and never succeeded, or that were never run
+    for longer than any tool on the resident waited before its first use. That
+    window is derived from the resident's own usage ledger, not configured.
+    Retirement moves the tool under ``_retired/`` and records why; asking
+    build_tool for the capability again restores it.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Retire superseded, unrunnable, debug-leftover and never-used learned tools "
+            "during consolidation dreams. Needs resident_wakefulness. false keeps every "
+            "tool forever."
+        ),
+    )
+    leftover_name_prefixes: list[str] = Field(
+        default_factory=lambda: ["test", "debug", "tmp", "temp", "scratch"],
+        description=(
+            "First name tokens that mark a tool as a probe, not an instrument "
+            "(debug_input, test_tool). Such a tool is retired once it has no successful "
+            "run; one that succeeded is judged like any other."
         ),
     )
 
@@ -3652,8 +3709,11 @@ class ResidentEvolutionConfig(BaseModel):
         description=(
             "Execution backend for learned agent tools authored through build_tool. "
             "'container' runs each invocation in a fail-closed, least-reach OCI "
-            "container; 'local' is an explicit compatibility mode without hard "
-            "reach enforcement; 'k8s_job' creates one locked-down Job per invocation "
+            "container; 'local' runs a subprocess of the resident and enforces only "
+            "the network: a tool whose declared reach is entirely local runs with every "
+            "socket denied (a network namespace on Linux, a Seatbelt profile on macOS; "
+            "refused where the host cannot apply it), while a networked tool gets the resident's "
+            "whole network and filesystem; 'k8s_job' creates one locked-down Job per invocation "
             "after verifying its NetworkPolicies; 'forge'/'devrunner' select the "
             "legacy workspace-mounted persistent container path."
         ),
@@ -3661,6 +3721,10 @@ class ResidentEvolutionConfig(BaseModel):
     learned_tool_k8s: LearnedToolKubernetesConfig = Field(
         default_factory=LearnedToolKubernetesConfig,
         description="Pod-per-run Kubernetes execution and policy coordinates.",
+    )
+    tool_curation: LearnedToolCurationConfig = Field(
+        default_factory=LearnedToolCurationConfig,
+        description="Retirement of learned tools that no longer earn their catalog entry.",
     )
     learned_tool_injection_mode: Literal["dispatch", "bulk"] = Field(
         default="dispatch",

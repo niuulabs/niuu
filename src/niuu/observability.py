@@ -459,6 +459,29 @@ def _resolve_service_name(config: ObservabilityConfig, default_service_name: str
     return default_service_name
 
 
+def _not_from_telemetry_export(record: logging.LogRecord) -> bool:
+    """Keep a record out of OTLP when a telemetry export emitted it.
+
+    A record logged while telemetry is being exported (the exporter's HTTP
+    client, gRPC, the SDK) describes that export. Exporting it queues another
+    export, which logs again: on Ting at debug level this fed itself at
+    ~145-280 exports a second, nearly all urllib3 reporting its own log posts.
+
+    The SDK marks every export by setting the suppress-instrumentation key in
+    the context of whichever thread runs it, the batch worker or the thread
+    ``LoggingHandler.flush`` starts for ``force_flush``, so that mark, not a
+    thread name, is what identifies these records. They still reach the
+    process's other handlers (stdout), so an export failure stays visible;
+    they are only kept off the path they describe.
+    """
+    from opentelemetry.context import (  # noqa: PLC0415 - optional SDK
+        _SUPPRESS_INSTRUMENTATION_KEY,
+        get_value,
+    )
+
+    return not get_value(_SUPPRESS_INSTRUMENTATION_KEY)
+
+
 def configure_observability(
     config: ObservabilityConfig,
     *,
@@ -578,6 +601,7 @@ def configure_observability(
         def __init__(self, provider: Any) -> None:
             logging.Handler.__init__(self, level=logging.NOTSET)
             self._logger_provider = provider
+            self.addFilter(_not_from_telemetry_export)
 
     log_handler = OTLPLoggingHandler(logger_provider)
     logging.getLogger().addHandler(log_handler)

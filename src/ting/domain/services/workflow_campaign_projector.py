@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 from niuu.domain.models import Principal
@@ -79,24 +79,42 @@ class WorkflowCampaignProjector:
     async def _sweep_forever(self) -> None:
         while True:
             await asyncio.sleep(self._sweep_interval)
-            expired = await self.expire_stale_campaigns(now=datetime.now(UTC))
-            if expired:
-                logger.info("Expired %d stale workflow campaign(s)", expired)
+            await self.expire_stale_campaigns(now=datetime.now(UTC))
 
     async def expire_stale_campaigns(self, *, now: datetime) -> int:
-        """Fail campaigns stuck waiting for input or idle; return how many.
+        """Fail campaigns stuck waiting for input or making no progress; return how many.
 
         Events drive every other transition. Nothing emits an event for a
         campaign nobody answers or a session that stops doing anything, so
         those were never closed and their sessions held their nodes for good.
+        Each expiry is an error: it names the bound that was hit, is counted,
+        and reaches the caller through the task's failure and its A2A push.
         """
         expired = 0
         for campaign in await self._repo.list_active_campaigns():
             try:
-                reason = await self._stale_reason(campaign, now=now)
-                if reason:
-                    await self._save_failure(campaign, {"error": reason})
-                    expired += 1
+                expiry = await self._stale_expiry(campaign, now=now)
+                if expiry is None:
+                    continue
+                logger.error(
+                    "Expiring workflow campaign %s (session %s) at a2a.stale_campaigns.%s=%gs: "
+                    "%s Raise the bound if this work legitimately takes longer.",
+                    campaign.slug,
+                    campaign.session_id,
+                    expiry.knob,
+                    expiry.bound_seconds,
+                    expiry.reason,
+                )
+                get_observability().count(
+                    "ting_a2a_campaigns_expired_total",
+                    attributes={"reason": expiry.kind},
+                    description=(
+                        "Workflow campaigns (A2A tasks) failed by the stale-campaign sweep, "
+                        "by the bound that expired them."
+                    ),
+                )
+                await self._save_failure(campaign, {"error": expiry.reason})
+                expired += 1
             except Exception:
                 logger.error(
                     "Could not check workflow campaign %s for expiry",
@@ -105,35 +123,66 @@ class WorkflowCampaignProjector:
                 )
         return expired
 
-    async def _stale_reason(self, campaign: WorkflowCampaign, *, now: datetime) -> str:
+    async def _stale_expiry(
+        self, campaign: WorkflowCampaign, *, now: datetime
+    ) -> _CampaignExpiry | None:
         since = campaign.last_activity_at or campaign.updated_at
         if campaign.status == WorkflowCampaignStatus.BLOCKED:
             wait = timedelta(seconds=self._input_wait_timeout)
             if self._input_wait_timeout <= 0 or now - since <= wait:
-                return ""
-            return (
-                f"No answer to the input request within {_hours(wait)}; the task was "
-                "closed and its session stopped. Start a new task to retry."
+                return None
+            return _CampaignExpiry(
+                kind="input_wait",
+                knob="input_wait_timeout_seconds",
+                bound_seconds=self._input_wait_timeout,
+                reason=(
+                    f"No answer to the input request within {_hours(wait)}; the task was "
+                    "closed and its session stopped. Start a new task to retry."
+                ),
             )
         if campaign.status not in {WorkflowCampaignStatus.PENDING, WorkflowCampaignStatus.RUNNING}:
-            return ""
+            return None
         idle = timedelta(seconds=self._idle_timeout)
         if self._idle_timeout <= 0 or now - since <= idle:
-            return ""
+            return None
         adapter = await self._campaign_adapter(campaign)
         if adapter is None:
-            return ""
+            return None
         session = await adapter.get_session(campaign.session_id)
         if session is None:
-            return f"Session {campaign.session_id} no longer exists; the task cannot finish."
+            return self._idle_expiry(
+                "session_gone",
+                f"Session {campaign.session_id} no longer exists; the task cannot finish.",
+            )
         if str(session.activity_state or "").lower() in _BUSY_ACTIVITY_STATES:
-            return ""
+            # A busy report is re-sent as a heartbeat for as long as the broker
+            # lives, so it proves the broker is alive, not that work is moving.
+            # Progress is entering the busy state or recording work (a usage
+            # report); a heartbeat moves neither.
+            progress_at = _latest(session.activity_state_since, session.updated_at) or since
+            if now - progress_at <= idle:
+                return None
+            return self._idle_expiry(
+                "no_progress",
+                f"Session reported busy with no recorded progress for over {_hours(idle)} "
+                f"(last progress {progress_at.isoformat()}; only heartbeats since); the task "
+                f"was closed and its session stopped.{_last_outcome_note(session)}",
+            )
         last_active = session.last_active or since
         if now - last_active <= idle:
-            return ""
-        return (
+            return None
+        return self._idle_expiry(
+            "idle",
             f"Session idle for over {_hours(idle)} without finishing; the task was "
-            "closed and its session stopped."
+            f"closed and its session stopped.{_last_outcome_note(session)}",
+        )
+
+    def _idle_expiry(self, kind: str, reason: str) -> _CampaignExpiry:
+        return _CampaignExpiry(
+            kind=kind,
+            knob="idle_timeout_seconds",
+            bound_seconds=self._idle_timeout,
+            reason=reason,
         )
 
     async def list_active_owner_ids(self) -> list[str]:
@@ -479,9 +528,38 @@ class WorkflowCampaignProjector:
 _BUSY_ACTIVITY_STATES = frozenset({"active", "tool_executing"})
 
 
+@dataclass(frozen=True)
+class _CampaignExpiry:
+    """Why the stale-campaign sweep fails a campaign, and which bound it hit."""
+
+    kind: str
+    knob: str
+    bound_seconds: float
+    reason: str
+
+
 def _hours(span: timedelta) -> str:
     hours = span.total_seconds() / 3600
     return f"{hours:g} hour" + ("" if hours == 1 else "s")
+
+
+def _latest(*moments: datetime | None) -> datetime | None:
+    present = [moment for moment in moments if moment is not None]
+    return max(present) if present else None
+
+
+def _last_outcome_note(session: object) -> str:
+    """Name the last workflow outcome a flock session reported before going quiet."""
+    metadata = getattr(session, "activity_metadata", None) or {}
+    last = metadata.get("flock_idle") if isinstance(metadata, dict) else None
+    if not isinstance(last, dict) or not last.get("event_type"):
+        return ""
+    verdict = f" (verdict {last['verdict']})" if last.get("verdict") else ""
+    persona = f" from {last['persona']}" if last.get("persona") else ""
+    return (
+        f" The last workflow outcome was {last['event_type']}{verdict}{persona}; "
+        "no stage was working after it."
+    )
 
 
 _PENDING_BLOCKER_STATUSES = frozenset({"", "pending", "open", "waiting", "help_needed", "blocked"})

@@ -2079,6 +2079,20 @@ class TestGetTask:
         result = response.json()["result"]
         assert result["status"]["state"] == "TASK_STATE_FAILED"
         assert result["metadata"]["error"] == "refresh token was already used"
+        # The protocol's own place for why the task ended, which A2A callers read.
+        message = result["status"]["message"]
+        assert message["role"] == "ROLE_AGENT"
+        assert message["parts"] == [{"text": "refresh token was already used"}]
+
+    def test_only_a_failed_task_carries_a_failure_status_message(self) -> None:
+        campaign = _make_campaign(
+            status=WorkflowCampaignStatus.RUNNING,
+            metadata={"failure_error": "an earlier attempt failed"},
+        )
+
+        task = campaign_to_task(campaign)
+
+        assert not task.status.HasField("message")
 
     def test_completed_task_projects_only_server_stored_delivery_result(self) -> None:
         campaign = _make_campaign(

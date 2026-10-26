@@ -63,6 +63,37 @@ class ActivityReportingMixin:
             return
         await self._report_activity_state("active")
 
+    async def _report_room_flock_idle(self) -> None:
+        """Report ``idle`` once no flock peer has a task in flight.
+
+        Peer work is the only thing that makes a room-only workflow session
+        ``active``, so when the last started task completes and nothing owns
+        the state instead, the session is idle. Staying ``active`` kept the
+        heartbeat re-asserting work that had stopped: two builder sessions sat
+        "busy" for eleven hours after their last peer finished, and nothing
+        downstream could tell them from sessions still working. The last peer
+        outcome rides along so whoever closes the session can say where the
+        workflow stopped.
+        """
+        if not self._is_room_only_workflow_session():
+            return
+        if any(self._peer_tasks_in_flight.values()):
+            return
+        if self._activity_state not in self._RUNNING_RAW_STATES:
+            return
+        if self._pending_attention:
+            return
+        if any(request.status == "pending" for request in self._pending_help_requests.values()):
+            return
+        if (
+            self._flock_completion_reported
+            or self._flock_failure_reported
+            or self._pending_terminal_activity is not None
+        ):
+            return
+        extra = {"flock_idle": dict(self._last_flock_outcome)} if self._last_flock_outcome else None
+        await self._report_activity_state("idle", extra_metadata=extra)
+
     @classmethod
     def _coarse_bucket(cls, state: str) -> str:
         """Collapse raw active/tool states into the client-visible running bucket."""

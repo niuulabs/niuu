@@ -14,6 +14,7 @@ from niuu.domain.agent_directory import AgentDirectoryEntry
 from niuu.observability import get_observability
 from ravn.adapters.tool_build.http import AsyncJsonHttpClient, normalize_http_origin
 from ravn.cap_telemetry import record_cap_hit
+from ravn.domain.a2a_status import a2a_status_text
 from ravn.domain.models import ToolResult
 from ravn.ports.agent_directory import PeerAgentDirectoryPort
 from ravn.ports.tool import ToolPort
@@ -415,7 +416,7 @@ class A2ATaskTool(ToolPort):
                 "question": _pending_question(task),
                 "prompt": _truncate(str(input.get("prompt") or ""), 500),
                 "status_message": _truncate(
-                    str(status.get("message") or status.get("update") or ""),
+                    a2a_status_text(status),
                     500,
                 ),
                 "source_tool": self.name,
@@ -698,7 +699,7 @@ def _render_response_payload(
     }
     if push_registered is not None:
         payload["push_registered"] = push_registered
-    message = status.get("message") or status.get("update")
+    message = a2a_status_text(status)
     if message:
         payload["status_message"] = _truncate(str(message), 2_000)
     result = task.get("result")

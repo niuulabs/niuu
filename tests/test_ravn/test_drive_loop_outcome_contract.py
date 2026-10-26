@@ -2982,6 +2982,50 @@ reason: needs_context
         assert "help_needed" not in emitted
 
     @pytest.mark.asyncio
+    async def test_a_workflow_persona_question_is_asked_beside_a_resident_runtime(
+        self,
+    ) -> None:
+        """Flock peers run a resident runtime, but it only judges resident Valkyrie
+        outcomes: a workflow persona's outcome reaches it empty and it stops. Its
+        question was dropped, so the workflow waited for an answer nobody was asked
+        for and its A2A task sat WORKING for hours."""
+        dl = _make_drive_loop()
+        dl._mesh = AsyncMock()
+        dl._skuld_channel = AsyncMock()
+        dl._resident_runtime = object()
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="specification-framer",
+            produces=SimpleNamespace(
+                event_type="spec.frame.completed",
+                event_type_map={"framed": "spec.framed", "blocked": "spec.blocked"},
+            ),
+        )
+        task = _make_agent_task(task_id="event_capability_frame_43a506ffdce4c130")
+        response_text = """\
+---outcome---
+verdict: help_needed
+summary: Framed the probe; the fleet table is missing
+question: What are the documented default fleet targets?
+reason: guessing endpoints would produce an unsafe network tool
+---end---
+"""
+
+        await dl._emit_mesh_outcome_event(task, response_text, success=True)
+
+        help_events = [
+            call.args[0]
+            for call in dl._mesh.publish.await_args_list
+            if call.kwargs.get("topic") == "help_needed"
+        ]
+        assert len(help_events) == 1
+        assert help_events[0].payload["summary"] == (
+            "What are the documented default fleet targets?"
+        )
+        emitted = [call.args[0].type for call in dl._skuld_channel.emit.await_args_list]
+        assert "help_needed" in emitted
+
+    @pytest.mark.asyncio
     async def test_help_needed_without_question_is_failed_without_help_or_alias(self) -> None:
         dl = _make_drive_loop()
         mesh = AsyncMock()

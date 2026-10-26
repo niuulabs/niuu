@@ -27,6 +27,7 @@ from ravn.environment_signal_runtime import EnvironmentSignalRuntime
 from ravn.ports.signal_adapter import NormalizedSignal, SignalAdapter
 from ravn.valkyrie_evolution.k8s_tool_runner import KubernetesJobExecutor
 from ravn.valkyrie_evolution.learned_tools import LearnedToolError
+from ravn.valkyrie_evolution.reach_plan import EgressPlan
 from ravn.warden import WardenSpec
 
 
@@ -327,7 +328,7 @@ async def test_job_executor_closes_its_api_client_after_execute(
             entry_point="run",
             requirements=[],
             timeout_seconds=1.0,
-            network_allowed=False,
+            egress=EgressPlan(),
         )
 
     _assert_every_client_closed_once(fake_kubernetes, expected=1)
@@ -366,7 +367,7 @@ async def test_job_executor_refuses_an_unpinned_image_before_opening_a_client(
             entry_point="run",
             requirements=[],
             timeout_seconds=1.0,
-            network_allowed=False,
+            egress=EgressPlan(),
         )
 
     assert fake_kubernetes == []

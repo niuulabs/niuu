@@ -14,20 +14,22 @@ from typing import Any
 from uuid import uuid4
 
 from niuu.observability import get_observability
+from ravn.adapters.reflection.lesson_judge import LessonJudgeError
 from ravn.domain.models import ToolResult
 from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
+from ravn.ports.capability_matching import CapabilityMatcherPort
 from ravn.ports.tool import ToolPort
 from ravn.ports.tool_build_backend import (
     ToolBuildError,
     ToolBuildInputRequiredError,
     ToolBuildPendingError,
+    ToolBuildTaskEndedError,
 )
 from ravn.tool_observability import publish_learned_tool_inventory
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
     capability_key,
-    find_installed_capability,
     find_installed_duplicate,
     learned_tool_artifact_path,
     learned_tool_path,
@@ -36,6 +38,7 @@ from ravn.valkyrie_evolution.learned_tools import (
     load_learned_tool,
     manifest_safety_class,
     read_learned_tool_artifact,
+    write_failed_learned_tool_artifact,
     write_learned_tool,
     write_learned_tool_artifact,
 )
@@ -49,6 +52,16 @@ from ravn.valkyrie_evolution.resident_learning import (
     review_allows_install,
     review_inputs,
     risk_class_for_safety,
+)
+from ravn.valkyrie_evolution.tool_curation import (
+    RETIRED_UNRUNNABLE,
+    LearnedToolUsageLedger,
+    LineageMatch,
+    RetirementRecord,
+    ToolUsage,
+    find_lineage,
+    lineage_problems,
+    restore_learned_tool,
 )
 from ravn.valkyrie_evolution.tool_verification import (
     VerificationResult,
@@ -102,6 +115,8 @@ class BuildTool(ToolPort):
         max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
         flock_confidence: float = SELF_REGISTERED_TOOL_CONFIDENCE,
         installed_artifact_recorder: InstalledArtifactRecorder | None = None,
+        capability_matcher: CapabilityMatcherPort | None = None,
+        skill_manager: Any | None = None,
     ) -> None:
         self._tools_dir = Path(tools_dir)
         self._artifacts_dir = (
@@ -126,6 +141,13 @@ class BuildTool(ToolPort):
         self._max_repair_attempts = max_repair_attempts
         self._flock_confidence = flock_confidence
         self._installed_artifact_recorder = installed_artifact_recorder
+        # Meaning-based lineage lookup; None means only declared capability ids
+        # and names (in any spelling) link a request to an installed tool.
+        self._capability_matcher = capability_matcher
+        # The lifecycle registry, for rolled-back status and restoring the
+        # lifecycle of a tool brought back from retirement.
+        self._skill_manager = skill_manager
+        self._usage_ledger = LearnedToolUsageLedger(self._artifacts_dir)
 
     def _investigation_prompt(self) -> str:
         """The investigation prompt that drove this build, for review provenance."""
@@ -202,7 +224,14 @@ class BuildTool(ToolPort):
                         "declared_reach": {
                             "type": "array",
                             "description": (
-                                "External reach grants. Use [] for pure local computation."
+                                "External reach grants. Use [] for pure local computation. "
+                                "Networking is OFF unless a grant names something off this "
+                                "machine: kinds file, filesystem, path, workspace, "
+                                "credential, secret, native_tool and pure_compute stay "
+                                "local; any other kind (network, http, kubernetes, …) "
+                                "grants outbound network. A tool that calls an API — the "
+                                "Kubernetes API included — must declare it, or its "
+                                "sockets fail."
                             ),
                             "items": {
                                 "oneOf": [
@@ -516,27 +545,14 @@ class BuildTool(ToolPort):
             # workflow that runs for tens of minutes; discovering afterwards
             # that the tool already existed saves an artifact write and a
             # verification venv, and none of the cost that mattered.
-            already = self._already_serves_request(input)
+            #
+            # And a request for a capability the resident already has is a
+            # repair of that tool, never a sibling of it: a failing tool used
+            # to be answered with a new variant (twelve list_pods_in_namespace*
+            # tools on one resident), each one making the next search worse.
+            already, input = await self._resolve_lineage(input)
             if already is not None:
-                telemetry.event(
-                    "ravn.tool_build.duplicate.skipped",
-                    attributes={
-                        "ravn.tool_build.duplicate.name": already.manifest.name,
-                        "ravn.tool_build.duplicate.artifact_id": already.artifact_id,
-                        "ravn.tool_build.duplicate.stage": "pre_commission",
-                    },
-                )
-                telemetry.count(
-                    "ravn.tool_build.duplicate.operations",
-                    attributes={
-                        "ravn.tool_build.duplicate.name": already.manifest.name,
-                        "ravn.tool_build.duplicate.stage": "pre_commission",
-                    },
-                )
-                return ToolResult(
-                    tool_call_id="",
-                    content=_already_serves_summary(input, already),
-                )
+                return already
 
             input = await self._maybe_commission(input)
             artifact = _artifact_from_input(input)
@@ -594,11 +610,23 @@ class BuildTool(ToolPort):
 
             # Persist the artifact (with the recorded verification outcome) even
             # when verification hard-failed, so the failure is auditable, then
-            # fail loudly without installing.
-            artifact_path = write_learned_tool_artifact(
-                artifacts_dir=self._artifacts_dir,
-                artifact=artifact,
-            )
+            # fail loudly without installing. A failed build is kept apart from
+            # the installed envelope: written over it, the working version's
+            # code on disk would no longer match a passing verification and
+            # could never run again.
+            if verify_error is not None:
+                artifact_path = write_failed_learned_tool_artifact(
+                    artifacts_dir=self._artifacts_dir,
+                    artifact=artifact,
+                )
+            else:
+                artifact_path = write_learned_tool_artifact(
+                    artifacts_dir=self._artifacts_dir,
+                    artifact=artifact,
+                )
+                # The writer linked the version chain; carry its version and
+                # supersedes forward instead of the pre-write copy.
+                artifact = read_learned_tool_artifact(artifact_path)
             telemetry.event(
                 "ravn.tool_build.artifact.persisted",
                 attributes={
@@ -709,23 +737,30 @@ class BuildTool(ToolPort):
                     "ravn.tool_build.tool.code.path": str(tool_path),
                 },
             )
-            learned_tool = load_learned_tool(
-                artifact=artifact,
-                tool_path=tool_path,
-                timeout_seconds=self._timeout_seconds,
-                runner=self._runner_for_backend(),
-                # Canonical venv home beside the learned-tools dir: a freshly
-                # built tool with requirements must be runnable on the local
-                # backend, not refuse for want of a venvs_dir.
-                venvs_dir=learned_tool_venvs_dir(self._tools_dir.parent),
-            )
+
+            def _load(*, record_usage: bool) -> Any:
+                return load_learned_tool(
+                    artifact=artifact,
+                    tool_path=tool_path,
+                    timeout_seconds=self._timeout_seconds,
+                    runner=self._runner_for_backend(),
+                    # Canonical venv home beside the learned-tools dir: a freshly
+                    # built tool with requirements must be runnable on the local
+                    # backend, not refuse for want of a venvs_dir.
+                    venvs_dir=learned_tool_venvs_dir(self._tools_dir.parent),
+                    usage_recorder=self._usage_ledger.record_run if record_usage else None,
+                )
+
+            # The canary is the build checking itself, not a use: counted as
+            # one, every built tool would look used the moment it installed.
+            learned_tool = _load(record_usage=True)
 
             if isinstance(canary_input, dict):
                 with telemetry.span(
                     "ravn.tool_build.canary",
                     attributes={"ravn.tool_build.name": artifact.manifest.name},
                 ) as canary_span:
-                    canary = await learned_tool.execute(canary_input)
+                    canary = await _load(record_usage=False).execute(canary_input)
                     canary_outcome = "error" if canary.is_error else "passed"
                     canary_span.set_attribute("ravn.tool_build.canary.outcome", canary_outcome)
                     telemetry.event(
@@ -790,6 +825,11 @@ class BuildTool(ToolPort):
                         attributes=lifecycle_attributes,
                     )
             self._register_tool(learned_tool, replace=replace)  # type: ignore[call-arg]
+            self._usage_ledger.record_install(
+                artifact.manifest.name,
+                artifact.artifact_id,
+                repair="repair_of" in artifact.provenance,
+            )
             publish_learned_tool_inventory([artifact])
             telemetry.event(
                 "ravn.tool_build.registered",
@@ -845,35 +885,108 @@ class BuildTool(ToolPort):
             ),
         )
 
-    def _already_serves_request(self, input: dict) -> LearnedToolArtifact | None:  # noqa: A002
-        """Return an installed tool that already answers this request, if any.
+    async def _resolve_lineage(
+        self,
+        input: dict,  # noqa: A002
+    ) -> tuple[ToolResult | None, dict]:
+        """Tie a build request to the tool that already serves its capability.
 
-        Deliberately narrow, because a false positive here refuses a build the
-        resident genuinely needs:
+        Returns ``(result, input)``. ``result`` is set when nothing should be
+        built because a healthy tool already serves the request (restored
+        first when it had been retired). Otherwise ``input`` is either
+        unchanged — no tool serves this capability yet — or rewritten into a
+        repair: the new build keeps the existing tool's name and capability, so
+        it is installed in place as that tool's next version.
 
-        * only for commissioned builds — an inline build already has its code,
-          so the exact code+contract check downstream is strictly better;
-        * never when resuming a durable task, which is a build in flight;
-        * never when ``replace`` is set, which is how a resident says it means
-          to change the tool's behaviour rather than re-request it.
+        Never applied when resuming a durable task, which is a build in flight.
         """
         if str(input.get("continuation_task_id") or "").strip():
-            return None
-        if bool(input.get("replace")):
-            return None
-        if str(input.get("tool_code") or "").strip():
-            return None
-        if not str(input.get("build_request") or "").strip():
-            return None
-
+            return None, input
         manifest = input.get("manifest")
-        name = str(manifest.get("name") or "") if isinstance(manifest, dict) else ""
-        return find_installed_capability(
-            artifacts_dir=self._artifacts_dir,
-            tools_dir=self._tools_dir,
-            capability_id=str(input.get("capability_id") or ""),
-            name=name,
+        if not isinstance(manifest, dict):
+            return None, input
+        name = str(manifest.get("name") or "").strip()
+        schema = manifest.get("input_schema")
+        properties = schema.get("properties") if isinstance(schema, dict) else None
+        try:
+            match = await find_lineage(
+                tools_dir=self._tools_dir,
+                artifacts_dir=self._artifacts_dir,
+                capability_id=str(input.get("capability_id") or ""),
+                name=name,
+                description=str(manifest.get("description") or ""),
+                inputs=tuple(sorted(properties)) if isinstance(properties, dict) else (),
+                matcher=self._capability_matcher,
+            )
+        except LessonJudgeError as exc:
+            raise LearnedToolError(
+                "could not decide whether an installed tool already serves this "
+                f"capability, so nothing was built: {exc}"
+            ) from exc
+        if match is None:
+            return None, input
+
+        telemetry = get_observability()
+        entry = match.entry
+        restored: RetirementRecord | None = None
+        if entry.retired is not None:
+            restored = (
+                restore_learned_tool(
+                    tools_dir=self._tools_dir,
+                    artifacts_dir=self._artifacts_dir,
+                    name=entry.name,
+                    why=f"build_tool was asked for {name!r} ({match.matched_by} match)",
+                )
+                or entry.retired
+            )
+            if (
+                self._skill_manager is not None
+                and self._skill_manager.status(entry.name) == "archived"
+            ):
+                await self._skill_manager.restore(entry.name)
+        usage = self._usage_ledger.get(entry.name)
+        problems = lineage_problems(
+            entry,
+            usage,
+            lifecycle_status=(
+                self._skill_manager.status(entry.name) if self._skill_manager is not None else None
+            ),
         )
+        if restored is not None and restored.reason == RETIRED_UNRUNNABLE:
+            problems.append(f"it had been retired as unrunnable: {restored.detail}")
+
+        replace = bool(input.get("replace"))
+        outcome = "repair" if problems or replace else "already_installed"
+        attributes = {
+            "ravn.tool_build.lineage.outcome": outcome,
+            "ravn.tool_build.lineage.matched_by": match.matched_by,
+            "ravn.tool_build.lineage.restored": restored is not None,
+        }
+        telemetry.event(
+            "ravn.tool_build.lineage.resolved",
+            attributes={
+                **attributes,
+                "ravn.tool_build.name": name,
+                "ravn.tool_build.lineage.tool": entry.name,
+            },
+            content={"reason": match.reason, "problems": problems},
+        )
+        telemetry.count(
+            "ravn.tool_build.lineage.operations",
+            attributes=attributes,
+            description="Build requests tied to an existing learned tool, by outcome.",
+        )
+        if outcome == "already_installed":
+            return (
+                ToolResult(
+                    tool_call_id="",
+                    content=_already_serves_summary(
+                        input, entry.artifact, match=match, usage=usage, restored=restored
+                    ),
+                ),
+                input,
+            )
+        return None, _repair_input(input, entry.artifact, match=match, problems=problems)
 
     async def _maybe_commission(self, input: dict) -> dict:  # noqa: A002
         """Commission a build backend when the agent asked for one.
@@ -1053,6 +1166,17 @@ class BuildTool(ToolPort):
                 signal_context_suffix="",
             )
         except (ToolBuildInputRequiredError, ToolBuildPendingError):
+            raise
+        except ToolBuildTaskEndedError as ended:
+            # The remote task is over, so this continuation can never resume.
+            # Keeping it left the resident holding builds for tasks that had
+            # failed or been cancelled days earlier.
+            self._delete_pending_build(task_id)
+            telemetry.event(
+                "ravn.tool_build.continuation.ended",
+                attributes={**attributes, "a2a.task.state": ended.state},
+                content={"reason": ended.reason},
+            )
             raise
         self._delete_pending_build(task_id)
         telemetry.event(
@@ -1682,6 +1806,8 @@ def attach_build_tool(
     max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
     flock_confidence: float = SELF_REGISTERED_TOOL_CONFIDENCE,
     installed_artifact_recorder: InstalledArtifactRecorder | None = None,
+    capability_matcher: CapabilityMatcherPort | None = None,
+    skill_manager: Any | None = None,
 ) -> BuildTool:
     """Attach build_tool to an agent supporting register_tool()."""
     registrar = getattr(agent, "register_tool", None)
@@ -1708,6 +1834,8 @@ def attach_build_tool(
         max_repair_attempts=max_repair_attempts,
         flock_confidence=flock_confidence,
         installed_artifact_recorder=installed_artifact_recorder,
+        capability_matcher=capability_matcher,
+        skill_manager=skill_manager,
     )
     registrar(tool, replace=replace)
     return tool
@@ -1853,7 +1981,12 @@ def _summary(
         "artifact_envelope_path": str(artifact_path),
         "tests_embedded_in_envelope": bool(artifact.test_code),
         "verification": _verification_payload(artifact),
+        "version": artifact.version,
+        "supersedes": artifact.supersedes,
     }
+    repair_of = artifact.provenance.get("repair_of")
+    if isinstance(repair_of, dict):
+        payload["repair_of"] = repair_of
     if flock_warning:
         payload["flock_publication_warning"] = flock_warning
     return json.dumps(payload, indent=2, sort_keys=True)
@@ -1931,24 +2064,121 @@ def _duplicate_summary(
     )
 
 
-def _already_serves_summary(input: dict, installed: LearnedToolArtifact) -> str:  # noqa: A002
+def _already_serves_summary(
+    input: dict,  # noqa: A002
+    installed: LearnedToolArtifact,
+    *,
+    match: LineageMatch,
+    usage: ToolUsage | None,
+    restored: RetirementRecord | None,
+) -> str:
     """Tell the resident it already owns this, before anything is commissioned."""
     manifest = input.get("manifest")
     requested = str(manifest.get("name") or "") if isinstance(manifest, dict) else ""
-    return json.dumps(
-        {
-            "status": "already_installed",
-            "tool_name": installed.manifest.name,
-            "artifact_id": installed.artifact_id,
-            "capability_id": installed.source_gap_id,
-            "requested_name": requested,
-            "description": installed.manifest.description,
-            "detail": (
-                f"No build was commissioned: {installed.manifest.name!r} is already installed "
-                "and serves this capability. Run it with learned_tool_run, and use "
-                "capability_list with names=[...] for its input schema. If it is genuinely "
-                "inadequate, re-request with replace=true and say what behaviour must change."
-            ),
-        },
-        indent=2,
+    name = installed.manifest.name
+    payload: dict[str, Any] = {
+        "status": "already_installed",
+        "tool_name": name,
+        "artifact_id": installed.artifact_id,
+        "capability_id": installed.source_gap_id,
+        "version": installed.version,
+        "requested_name": requested,
+        "matched_by": match.matched_by,
+        "match_reason": match.reason,
+        "description": installed.manifest.description,
+        "usage": (
+            {
+                "runs": usage.runs,
+                "successes": usage.successes,
+                "failures": usage.failures,
+                "last_used_at": usage.last_used_at,
+            }
+            if usage is not None
+            else {"runs": 0}
+        ),
+        "detail": (
+            f"No build was commissioned: {name!r} is already installed and serves this "
+            "capability. Run it with learned_tool_run, and use capability_list with "
+            "names=[...] for its input schema. If it is genuinely inadequate, re-request "
+            "with replace=true and say what behaviour must change: that builds version "
+            f"{installed.version + 1} of {name!r} in place, not a second tool."
+        ),
+    }
+    if restored is not None:
+        payload["restored_from_retirement"] = {
+            "reason": restored.reason,
+            "detail": restored.detail,
+            "retired_at": restored.retired_at,
+        }
+    return json.dumps(payload, indent=2)
+
+
+def _repair_input(
+    input: dict,  # noqa: A002
+    target: LearnedToolArtifact,
+    *,
+    match: LineageMatch,
+    problems: list[str],
+) -> dict:
+    """Rewrite a build request into the next version of *target*."""
+    repaired = dict(input)
+    manifest = dict(input.get("manifest") or {})
+    requested = str(manifest.get("name") or "")
+    manifest["name"] = target.manifest.name
+    repaired["manifest"] = manifest
+    repaired["capability_id"] = target.source_gap_id.strip() or capability_key(target.manifest.name)
+    repaired["replace"] = True
+    provenance = dict(input.get("provenance") or {})
+    provenance["repair_of"] = {
+        "artifact_id": target.artifact_id,
+        "version": target.version,
+        "requested_name": requested,
+        "matched_by": match.matched_by,
+        "match_reason": match.reason,
+        "problems": list(problems),
+    }
+    repaired["provenance"] = provenance
+    commissioned = bool(str(input.get("build_request") or "").strip()) and not bool(
+        str(input.get("tool_code") or "").strip()
+    )
+    if commissioned:
+        brief = _lineage_repair_brief(target, problems=problems, requested=requested)
+        context = str(input.get("signal_context") or "")
+        repaired["signal_context"] = f"{context}\n\n{brief}" if context else brief
+    return repaired
+
+
+def _lineage_repair_brief(
+    target: LearnedToolArtifact,
+    *,
+    problems: list[str],
+    requested: str,
+) -> str:
+    """What the builder needs to produce the next version instead of a sibling."""
+    name = target.manifest.name
+    why = "; ".join(problems) if problems else "the resident asked to change it (replace=true)"
+    renamed = (
+        f" The request named it {requested!r}; it is built as {name!r} so the resident keeps "
+        "one tool for this capability."
+        if requested and requested != name
+        else ""
+    )
+    verification = target.provenance.get("verification")
+    logs = str(verification.get("logs") or "") if isinstance(verification, dict) else ""
+    failed_logs = (
+        f"\nLast verification logs:\n{logs}"
+        if isinstance(verification, dict) and verification.get("ok") is not True and logs
+        else ""
+    )
+    return (
+        f"This build REPAIRS the installed learned tool {name!r}; it is not a new tool. "
+        f"Produce version {target.version + 1} of {name!r}: keep its name and the capability "
+        f"it serves, and change what this request needs.{renamed}\n"
+        f"Why the installed version does not already serve the request: {why}.\n"
+        "Installed manifest:\n"
+        f"{json.dumps(target.manifest.to_dict(), indent=2, sort_keys=True)}\n"
+        f"Installed implementation:\n```python\n{target.tool_code}\n```\n"
+        f"Installed tests:\n```python\n{target.test_code}\n```\n"
+        f"Installed requirements: {json.dumps(list(target.requirements))}"
+        f"{failed_logs}"
     )

@@ -232,13 +232,17 @@ a2a:
     adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
     kwargs: {}
   # Unfinished campaigns keep their session pod. Fail (and stop) ones that wait
-  # for an answer nobody sends, or whose session sits idle. 0 disables a check.
+  # for an answer nobody sends, or whose session makes no progress. Each expiry
+  # logs at error, counts on ting_a2a_campaigns_expired_total{reason}, and
+  # reaches the caller as FAILED with the reason. 0 disables a check.
   staleCampaigns:
     # -- Seconds between sweeps of active campaigns; 0 disables the sweep.
     sweepIntervalSeconds: 300
     # -- Fail a campaign waiting this long for an answer (INPUT_REQUIRED).
     inputWaitTimeoutSeconds: 21600
-    # -- Fail a submitted/working campaign whose session is idle or gone this long.
+    # -- Fail a submitted/working campaign whose session is idle, gone, or busy
+    # with nothing recorded (heartbeats only) this long. Must exceed the longest
+    # single agent turn; workflows declare no run timeout to derive it from.
     idleTimeoutSeconds: 7200
 
 workflowExecution:

@@ -68,6 +68,8 @@ def _attach_agent_build_tool(
     drive_loop: Any | None = None,
     a2a_activity_emitter: Any | None = None,
     installed_artifact_recorder: Any | None = None,
+    capability_matcher: Any | None = None,
+    skill_manager: Any | None = None,
 ) -> Any:
     """Attach build_tool when the active persona explicitly allows it."""
     if not enabled:
@@ -152,6 +154,8 @@ def _attach_agent_build_tool(
             max_repair_attempts=settings.resident_evolution.build_repair_attempts,
             flock_confidence=settings.resident_evolution.self_registered_tool_confidence,
             installed_artifact_recorder=installed_artifact_recorder,
+            capability_matcher=capability_matcher,
+            skill_manager=skill_manager,
         )
     except TypeError:
         logger.debug("build_tool not attached: executor does not support dynamic tools")
@@ -702,6 +706,34 @@ def _build_learning_consolidation(settings: Settings, llm: Any) -> LearningConso
             attempts=reflection.matching.judge_attempts,
             excerpt_chars=reflection.matching.judge_excerpt_chars,
         ),
+    )
+
+
+def _build_capability_matcher(
+    settings: Settings,
+    consolidation: LearningConsolidation | None,
+) -> Any | None:
+    """Meaning-based learned-tool matching, on the lesson-matching machinery.
+
+    Present exactly when lessons are matched semantically
+    (``reflection.matching.mode: semantic``): the same embedding shortlist,
+    threshold and judge decide whether two tools serve one capability. With
+    lexical matching only declared capability ids and names link tools, which
+    is what that setting asks for.
+    """
+    reflection = settings.effective_post_session_reflection_config()
+    if reflection.matching.mode != "semantic" or consolidation is None:
+        return None
+    from ravn.adapters.reflection.capability_matching import (  # noqa: PLC0415
+        SemanticCapabilityMatcher,
+    )
+
+    return SemanticCapabilityMatcher(
+        lessons=consolidation.lessons,
+        judge=consolidation.judge,
+        similarity_threshold=reflection.matching.similarity_threshold,
+        max_candidates=reflection.matching.max_related,
+        excerpt_chars=reflection.matching.judge_excerpt_chars,
     )
 
 

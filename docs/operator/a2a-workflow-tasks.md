@@ -62,6 +62,35 @@ are unaffected. Returns a Task in `SUBMITTED`.
 | failed | `FAILED` |
 | canceled via A2A | `CANCELED` |
 
+A `FAILED` task says why in `status.message` (an agent message whose text part
+is the reason); `metadata.error` carries the same text.
+
+#### Tasks that stop progressing
+
+Events drive every transition, and nothing emits one for a task nobody answers
+or a session that stops doing anything. A sweep (`a2a.stale_campaigns`) closes
+those, stops their session, and pushes the failure to the caller:
+
+| Expiry reason | When | Bound |
+|---|---|---|
+| `input_wait` | `INPUT_REQUIRED` with no answer | `input_wait_timeout_seconds` (6 h) |
+| `idle` | session idle (no agent working) | `idle_timeout_seconds` (2 h) |
+| `no_progress` | session reports busy but recorded nothing: no state change, no usage report, only heartbeats | `idle_timeout_seconds` |
+| `session_gone` | the session no longer exists | `idle_timeout_seconds` |
+
+A flock workflow session reports `idle` as soon as no peer has a task in
+flight, and names the last peer outcome; the failure reason repeats it (for
+example "The last workflow outcome was code.completed (verdict help_needed)
+from coder"). Each expiry logs at error with the knob that fired and counts on
+`ting_a2a_campaigns_expired_total{reason}`. Workflow graphs declare no run
+timeout, so the idle bound is configuration: the time an owner gets to notice
+and nudge a stalled session before its pod is reclaimed. Keep it above the
+longest single agent turn.
+
+A workflow agent that returns `verdict: help_needed` asks its question through
+the session even when the peer runs a resident runtime, so the task goes to
+`INPUT_REQUIRED` with the question rather than sitting in `WORKING`.
+
 ### Gate replies
 
 When a task is `INPUT_REQUIRED`, send a message **with the `taskId` set**:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from niuu.domain.agent_directory import AgentSkill
@@ -39,6 +39,8 @@ class CapabilityListTool(ToolPort):
         skill_manager: SkillManagementRegistry | None = None,
         workflow_sources: Sequence[WorkflowCapabilityPort] | None = None,
         learned_tools_provider: Callable[[], Sequence[Any]] | None = None,
+        learned_tool_usage: Callable[[], Mapping[str, Any]] | None = None,
+        retired_learned_tools: Callable[[], Sequence[Any]] | None = None,
         agent_directory: PeerAgentDirectoryPort | None = None,
     ) -> None:
         self._tools_provider = tools_provider
@@ -48,6 +50,14 @@ class CapabilityListTool(ToolPort):
         # Returns learned-tool artifact envelopes (manifest name/description/
         # schema) read from disk — never loaded as callables here (NIU-1118).
         self._learned_tools_provider = learned_tools_provider
+        # Per-tool usage from the ledger beside the artifacts (runs, successes,
+        # last use, the installed version's own record): the evidence that says
+        # which of two similar tools actually works.
+        self._learned_tool_usage = learned_tool_usage
+        # Retired tools stay out of the listing — that is what retiring is for —
+        # but a query that matches one says so, because asking build_tool for
+        # it restores it instead of building it again.
+        self._retired_learned_tools = retired_learned_tools
         self._agent_directory = agent_directory
 
     @property
@@ -61,7 +71,10 @@ class CapabilityListTool(ToolPort):
             "resident learned tools, resident skills, configured remote workflows, "
             "and peer Agent Card skills. Use this before building new tools so existing "
             "capabilities are not duplicated. Entries tagged 'learned' are not native "
-            "tools — execute them by name with learned_tool_run. Listing is compact and "
+            "tools — execute them by name with learned_tool_run; their usage (runs, "
+            "successes, last use) says which ones work. To fix or extend one, call "
+            "build_tool for the same capability with replace=true: it builds the next "
+            "version of that tool in place. Listing is compact and "
             "omits input schemas; pass names: [...] for the full entry, including schema "
             "and lifecycle/usage/failure/supersession evidence, of the ones you care "
             "about. Pass query: '<substring>' to check whether something already exists. "
@@ -181,6 +194,9 @@ class CapabilityListTool(ToolPort):
             payload["not_found"] = missing
         if query:
             payload["query"] = query
+            retired = self._retired_matches(query)
+            if retired:
+                payload["retired_matches"] = retired
         telemetry = get_observability()
         telemetry.set_attributes(
             {
@@ -258,6 +274,7 @@ class CapabilityListTool(ToolPort):
                         if self._skill_manager.status(artifact.manifest.name) != "archived"
                     ]
                 publish_learned_tool_inventory(learned_artifacts)
+                usage = dict(self._learned_tool_usage()) if self._learned_tool_usage else {}
                 for artifact in learned_artifacts:
                     manifest = artifact.manifest
                     verification = artifact.provenance.get("verification")
@@ -287,7 +304,9 @@ class CapabilityListTool(ToolPort):
                                 "has_tests": bool(artifact.test_code),
                                 "requirements_count": len(artifact.requirements),
                                 "supersedes": artifact.supersedes,
+                                "version": artifact.version,
                                 "lifecycle": self._learned_tool_lifecycle(manifest.name),
+                                "usage": _usage_metadata(usage.get(manifest.name)),
                             },
                         )
                     )
@@ -393,6 +412,35 @@ class CapabilityListTool(ToolPort):
 
         return capabilities, errors
 
+    def _retired_matches(self, query: str) -> list[dict[str, Any]]:
+        if self._retired_learned_tools is None:
+            return []
+        needle = query.casefold()
+        matches: list[dict[str, Any]] = []
+        for entry in self._retired_learned_tools():
+            manifest = entry.artifact.manifest
+            if needle not in manifest.name.casefold() and needle not in (
+                manifest.description.casefold()
+            ):
+                continue
+            record = entry.retired
+            matches.append(
+                {
+                    "name": manifest.name,
+                    "description": manifest.description,
+                    "retired_reason": record.reason if record else "",
+                    "retired_detail": record.detail if record else "",
+                    "superseded_by": record.superseded_by if record else "",
+                    "next_step": (
+                        f"Use {record.superseded_by!r} instead."
+                        if record and record.superseded_by
+                        else "Call build_tool for this capability (its name or capability_id): "
+                        "it restores this tool instead of building a new one."
+                    ),
+                }
+            )
+        return matches
+
     def _learned_tool_lifecycle(self, name: str) -> dict[str, Any]:
         if self._skill_manager is None:
             return {"status": "unmanaged"}
@@ -491,13 +539,41 @@ def _index_entry(capability: Capability) -> dict[str, Any]:
         if metadata.get(key):
             entry[key] = metadata[key]
     lifecycle = metadata.get("lifecycle")
-    if isinstance(lifecycle, dict) and lifecycle.get("status"):
+    usage = metadata.get("usage")
+    if isinstance(usage, dict):
+        entry["usage"] = {
+            "runs": usage.get("runs"),
+            "successes": usage.get("successes"),
+            "last_used": usage.get("last_used_at") or None,
+        }
+        if isinstance(lifecycle, dict) and lifecycle.get("status"):
+            entry["usage"]["status"] = lifecycle.get("status")
+    elif isinstance(lifecycle, dict) and lifecycle.get("status"):
         entry["usage"] = {
             "status": lifecycle.get("status"),
             "runs": lifecycle.get("run_count"),
             "failures": lifecycle.get("failure_count"),
         }
     return entry
+
+
+def _usage_metadata(usage: Any | None) -> dict[str, Any] | None:
+    """The ledger's record for one learned tool, as catalog metadata."""
+    if usage is None:
+        return None
+    return {
+        "runs": usage.runs,
+        "successes": usage.successes,
+        "failures": usage.failures,
+        "consecutive_failures": usage.consecutive_failures,
+        "first_used_at": usage.first_used_at,
+        "last_used_at": usage.last_used_at,
+        "last_success_at": usage.last_success_at,
+        "installed_at": usage.installed_at,
+        "version_runs": usage.version_runs,
+        "version_successes": usage.version_successes,
+        "repairs": usage.repairs,
+    }
 
 
 #: Names-and-kinds only, so a miss can show the whole catalog cheaply. Bounded

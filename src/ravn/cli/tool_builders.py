@@ -146,7 +146,15 @@ def _build_tools(
 
     resolver = runtime_ctx.get("learned_tool_resolver")
     if resolver is not None:
+        from ravn.valkyrie_evolution.tool_curation import (  # noqa: PLC0415
+            LearnedToolUsageLedger,
+        )
+
         runtime_ctx["learned_tools_provider"] = resolver.list_artifacts
+        runtime_ctx["learned_tool_usage"] = LearnedToolUsageLedger(resolver.artifacts_dir).snapshot
+        runtime_ctx["retired_learned_tools"] = _retired_learned_tools(
+            _resident_ravn_state_dir(workspace, settings)
+        )
 
     if "workflow" in include_groups:
         workflow_sources = _build_workflow_capability_sources(settings)
@@ -422,11 +430,14 @@ def _build_learned_tool_resolver(settings: Settings, workspace: Path) -> Any | N
     from ravn.valkyrie_evolution.learned_tools import (  # noqa: PLC0415
         LearnedToolError,
         LearnedToolResolver,
+        learned_tool_storage,
     )
+    from ravn.valkyrie_evolution.tool_curation import LearnedToolUsageLedger  # noqa: PLC0415
 
+    state_dir = _resident_ravn_state_dir(workspace, settings)
     try:
         resolver = LearnedToolResolver(
-            state_dir=_resident_ravn_state_dir(workspace, settings),
+            state_dir=state_dir,
             execution_backend=settings.resident_evolution.learned_tool_execution_backend,
             execution_backend_kwargs=(
                 settings.resident_evolution.learned_tool_k8s.model_dump()
@@ -435,6 +446,7 @@ def _build_learned_tool_resolver(settings: Settings, workspace: Path) -> Any | N
             ),
             workspace_root=workspace,
             timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
+            usage_recorder=LearnedToolUsageLedger(learned_tool_storage(state_dir)[1]).record_run,
         )
     except LearnedToolError as exc:
         logger.warning("Skipping learned tools: %s", exc)
@@ -444,6 +456,25 @@ def _build_learned_tool_resolver(settings: Settings, workspace: Path) -> Any | N
 
     publish_learned_tool_inventory(resolver.list_artifacts())
     return resolver
+
+
+def _retired_learned_tools(state_dir: Path) -> Any:
+    """List the retired learned tools under *state_dir*, read fresh each call."""
+    from ravn.valkyrie_evolution.learned_tools import learned_tool_storage  # noqa: PLC0415
+    from ravn.valkyrie_evolution.tool_curation import tool_inventory  # noqa: PLC0415
+
+    code_dir, artifacts_dir = learned_tool_storage(state_dir)
+
+    def retired() -> list[Any]:
+        return [
+            entry
+            for entry in tool_inventory(
+                tools_dir=code_dir, artifacts_dir=artifacts_dir, include_retired=True
+            )
+            if entry.retired is not None
+        ]
+
+    return retired
 
 
 def _load_resident_learned_tools(

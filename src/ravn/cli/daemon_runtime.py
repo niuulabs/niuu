@@ -70,6 +70,7 @@ async def _run_daemon(
     daemon_mimir = _build_mimir(settings)
     memory = _with_mimir_fact_capture(memory, daemon_mimir)
     learning_consolidation = _build_learning_consolidation(settings, llm)
+    capability_matcher = _build_capability_matcher(settings, learning_consolidation)
     friction_ledger = _build_friction_ledger(
         settings, mimir=daemon_mimir, consolidation=learning_consolidation
     )
@@ -157,6 +158,12 @@ async def _run_daemon(
         workspace=workspace,
     )
     if resident_runtime is not None and resident_learning_runtime is not None:
+        from ravn.valkyrie_evolution.tool_curation import learned_tool_health  # noqa: PLC0415
+
+        learned_tool_state_dir = _resident_ravn_state_dir(workspace, settings)
+        resident_runtime.bind_learned_tool_health(
+            lambda: learned_tool_health(learned_tool_state_dir)
+        )
         resident_runtime.bind_review_requester(resident_learning_runtime.review_requester)
         resident_learning_runtime.bind_operator_answerer(resident_runtime.submit_operator_answer)
 
@@ -404,6 +411,10 @@ async def _run_daemon(
                 resident_learning_runtime.register_installed_artifact
                 if resident_learning_runtime is not None
                 else None
+            ),
+            capability_matcher=capability_matcher,
+            skill_manager=(
+                resident_learning_runtime.skills if resident_learning_runtime is not None else None
             ),
         )
 
@@ -661,6 +672,18 @@ async def _run_daemon(
             else settings.environment.resident_name or settings.environment.id
         ),
     )
+    # Only a resident that adopts and builds learned tools has a library to
+    # curate; an ordinary daemon has neither the tools nor the dream.
+    tool_curator = (
+        _build_learned_tool_curator(
+            settings,
+            workspace=workspace,
+            skills=resident_learning_runtime.skills,
+            matcher=capability_matcher,
+        )
+        if resident_learning_runtime is not None
+        else None
+    )
     resident_wakefulness = _build_resident_wakefulness(
         settings,
         resident_learning_runtime=resident_learning_runtime,
@@ -668,7 +691,15 @@ async def _run_daemon(
         memory=memory,
         learning_curator=learning_curator,
         self_improvement=self_improvement,
+        tool_curator=tool_curator,
     )
+    if tool_curator is not None and resident_wakefulness is None:
+        raise RuntimeError(
+            "resident_evolution.tool_curation.enabled is true, but learned-tool curation "
+            "runs inside the resident consolidation dream and resident wakefulness is not "
+            "running. Enable resident_wakefulness (with a mesh publisher), or set "
+            "resident_evolution.tool_curation.enabled: false."
+        )
     if learning_curator is not None and resident_wakefulness is None:
         raise RuntimeError(
             "reflection.curation.enabled is true, but learning curation runs inside "

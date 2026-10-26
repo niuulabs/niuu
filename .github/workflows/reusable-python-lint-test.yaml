@@ -90,6 +90,13 @@ jobs:
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
 
+      # Ravn runs a learned tool that declares no network reach inside its own
+      # user + network namespace, and refuses it where the host cannot create
+      # one. ubuntu-24.04 blocks unprivileged user namespaces through AppArmor;
+      # lift that so the boundary is exercised for real, not refused.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Run tests with coverage
         run: |
           set -o pipefail

@@ -26,6 +26,7 @@ from ravn.adapters.tool_build._contract import (
 )
 from ravn.adapters.tool_build.gate_review import GateReviewer, QuestionAnswerer
 from ravn.adapters.tool_build.http import AsyncJsonHttpClient, client_from_workload_identity
+from ravn.domain.a2a_status import a2a_status_text
 from ravn.domain.capability_catalog import (
     WorkflowCapability,
     WorkflowSelector,
@@ -38,6 +39,7 @@ from ravn.ports.tool_build_backend import (
     ToolBuildPendingError,
     ToolBuildRequest,
     ToolBuildResult,
+    ToolBuildTaskEndedError,
 )
 
 logger = logging.getLogger(__name__)
@@ -349,7 +351,9 @@ class A2AToolBuildBackend(ToolBuildBackend):
             )
         state = _task_state(final)
         if state in _FAILED_STATES:
-            raise ToolBuildError(f"A2A task {task_id} ended in state {state!r}")
+            raise ToolBuildTaskEndedError(
+                task_id=task_id, state=state, reason=_task_end_reason(final)
+            )
         if state != _COMPLETED_STATE:
             raise ToolBuildError(
                 f"A2A task {task_id} did not finish within "
@@ -1281,7 +1285,19 @@ def _task_status_message(task: dict[str, Any]) -> str:
     status = task.get("status")
     if not isinstance(status, dict):
         return ""
-    return str(status.get("message") or status.get("update") or "")[:500]
+    return a2a_status_text(status)[:500]
+
+
+def _task_end_reason(task: dict[str, Any]) -> str:
+    """The peer's full account of why a task ended, from its status or metadata."""
+    status = task.get("status")
+    reason = a2a_status_text(status if isinstance(status, dict) else None)
+    if reason:
+        return reason
+    metadata = task.get("metadata")
+    if isinstance(metadata, dict):
+        return str(metadata.get("error") or "").strip()
+    return ""
 
 
 def _activity_question(task: dict[str, Any]) -> str:

@@ -89,6 +89,12 @@ class VolundrSession:
     activity_state: str | None = None
     activity_metadata: dict = field(default_factory=dict)
     last_active: datetime | None = None
+    # When the session entered its current activity state. Heartbeats re-report
+    # the state without moving this, so it ages while nothing changes.
+    activity_state_since: datetime | None = None
+    # Advanced by recorded work (usage reports, session changes), never by an
+    # activity heartbeat, unlike ``last_active``.
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)

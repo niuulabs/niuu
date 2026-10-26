@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-import logging
 import os
 import sys
 from dataclasses import replace
@@ -56,6 +56,7 @@ from ravn.valkyrie_evolution.tool_runtime import (
     ToolRunResult,
     ToolVenvError,
     ensure_tool_venv,
+    network_isolation_unavailable_reason,
     run_tool,
     tool_path_for_skill,
     tool_venv_python,
@@ -932,6 +933,9 @@ async def test_learned_tool_threads_requirements_and_reach_to_its_runner(tmp_pat
             )
             return ToolRunResult(ok=True, result={"ok": True})
 
+        def check_reach(self, declared_reach: Any) -> None:
+            self.calls.append({"checked_reach": list(declared_reach)})
+
     artifact = replace(_learned_tool_artifact(), requirements=["httpx>=0.27"])
     tool_path = write_learned_tool(tools_dir=tmp_path, artifact=artifact)
     recorder = _RecordingRunner()
@@ -940,14 +944,19 @@ async def test_learned_tool_threads_requirements_and_reach_to_its_runner(tmp_pat
     result = await tool.execute({"query": "up"})
 
     assert not result.is_error
-    assert recorder.calls[0]["requirements"] == ["httpx>=0.27"]
-    assert recorder.calls[0]["declared_reach"] == artifact.manifest.declared_reach
+    # Reach is checked when the tool is loaded, before it can ever be invoked.
+    assert recorder.calls[0] == {"checked_reach": artifact.manifest.declared_reach}
+    assert recorder.calls[1]["requirements"] == ["httpx>=0.27"]
+    assert recorder.calls[1]["declared_reach"] == artifact.manifest.declared_reach
 
 
 async def test_learned_tool_surfaces_runner_failures_with_stderr(tmp_path) -> None:
     class _FailingRunner:
         async def run(self, tool_path: Path, payload: dict[str, Any], **_: Any) -> ToolRunResult:
             return ToolRunResult(ok=False, error="venv exploded", stderr="trace: boom")
+
+        def check_reach(self, declared_reach: Any) -> None:
+            return None
 
     artifact = _learned_tool_artifact()
     tool_path = write_learned_tool(tools_dir=tmp_path, artifact=artifact)
@@ -970,11 +979,25 @@ def test_reach_allows_network_derivation() -> None:
     http_prefixed = [ToolReachGrant(kind="HTTP_GET", access="read")]
     compute_only = [ToolReachGrant(kind="pure_compute", access="read")]
     filesystem = [ToolReachGrant(kind="filesystem", access="read_write")]
+    local_only = [
+        ToolReachGrant(kind="file", target="/var/run/secrets/x", access="read"),
+        ToolReachGrant(kind="credential", target="TOKEN", access="read"),
+        ToolReachGrant(kind="native_tool", target="kubernetes_inspect", access="read"),
+    ]
+    # Residents describe cluster reach in their own words; every such kind
+    # names something off this machine, so it is network reach.
+    cluster = [ToolReachGrant(kind="kubernetes", target="pods/log", access="read")]
+    free_text = [ToolReachGrant(kind="kubernetes api in-cluster read via service account")]
+    declined = [ToolReachGrant(kind="network", access="none")]
 
     assert reach_allows_network(network) is True
     assert reach_allows_network(http_prefixed) is True
+    assert reach_allows_network(cluster) is True
+    assert reach_allows_network(free_text) is True
     assert reach_allows_network(compute_only) is False
     assert reach_allows_network(filesystem) is False
+    assert reach_allows_network(local_only) is False
+    assert reach_allows_network(declined) is False
     assert reach_allows_network([]) is False
 
 
@@ -1110,6 +1133,15 @@ async def test_contained_runner_fails_closed_for_unenforceable_reach(tmp_path) -
     assert not runtime_socket.ok
     assert "container escape boundary" in runtime_socket.error
     assert calls == 0
+
+
+def test_contained_runner_refuses_unenforceable_reach_at_load(tmp_path) -> None:
+    runner = ContainedLearnedToolRunner(workspace_root=tmp_path)
+
+    runner.check_reach([])
+    runner.check_reach([ToolReachGrant(kind="k8s", access="read_write")])
+    with pytest.raises(LearnedToolError, match="target-specific network reach"):
+        runner.check_reach([ToolReachGrant(kind="kubernetes-api", target="in-cluster API")])
 
 
 async def test_contained_runner_provisions_dependencies_in_separate_bounded_runs(tmp_path) -> None:
@@ -1275,40 +1307,183 @@ async def test_contained_runner_live_prevents_undeclared_reach(tmp_path, monkeyp
     assert writable.read_text(encoding="utf-8") == "after"
 
 
-async def test_local_runner_is_honest_about_reach_and_warns_once(tmp_path, caplog) -> None:
+_CONNECT_TOOL = (
+    "import socket\n"
+    "\n"
+    "def run(signal):\n"
+    "    sock = socket.socket()\n"
+    "    sock.settimeout(5)\n"
+    "    try:\n"
+    "        sock.connect(('127.0.0.1', signal['port']))\n"
+    "    except OSError as exc:\n"
+    "        return {'connected': False, 'error': str(exc)}\n"
+    "    sock.close()\n"
+    "    return {'connected': True}\n"
+)
+
+
+async def test_local_runner_takes_the_network_away_from_a_no_reach_tool(tmp_path) -> None:
+    """The boundary itself: the same tool reaches a live listener only when
+    its declared reach grants network."""
+    reason = network_isolation_unavailable_reason()
+    if reason is not None and not os.environ.get("CI"):
+        pytest.skip(f"this host cannot isolate a tool from the network: {reason}")
+
+    accepted: list[bool] = []
+
+    async def _accept(reader, writer) -> None:
+        accepted.append(True)
+        writer.close()
+
+    server = await asyncio.start_server(_accept, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    path = write_tool(tools_dir=tmp_path, skill_name="connect_probe", tool_code=_CONNECT_TOOL)
+    runner = LocalLearnedToolRunner()
+    try:
+        assert runner.enforces_reach is True
+        isolated = await runner.run(path, {"port": port}, entry_point="run", timeout_seconds=10.0)
+        networked = await runner.run(
+            path,
+            {"port": port},
+            entry_point="run",
+            timeout_seconds=10.0,
+            declared_reach=[ToolReachGrant(kind="kubernetes", access="read")],
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert isolated.ok, isolated.error
+    assert isolated.result["connected"] is False
+    assert isolated.enforcement == REACH_ENFORCEMENT_ENFORCED
+    assert networked.ok, networked.error
+    assert networked.result == {"connected": True}
+    assert accepted == [True]  # only the networked run ever reached the listener
+
+
+async def test_local_runner_refuses_a_no_reach_tool_where_it_cannot_isolate(tmp_path) -> None:
     path = write_tool(
         tools_dir=tmp_path,
         skill_name="no_net_probe",
         tool_code="def run(signal):\n    return {'ok': True}\n",
     )
-    runner = LocalLearnedToolRunner()
+    runner = LocalLearnedToolRunner(network_isolation_probe=lambda: "user namespaces disabled")
     assert runner.enforces_reach is False
 
-    with caplog.at_level(logging.WARNING, logger="ravn.valkyrie_evolution.learned_tools"):
-        first = await runner.run(path, {}, entry_point="run", timeout_seconds=5.0)
-        second = await runner.run(path, {}, entry_point="run", timeout_seconds=5.0)
-    assert first.ok and second.ok
-    warnings = [rec for rec in caplog.records if "NOT enforced" in rec.message]
-    assert len(warnings) == 1  # one-time honesty warning, not a flood
+    result = await runner.run(path, {}, entry_point="run", timeout_seconds=5.0)
+
+    assert not result.ok
+    assert result.infrastructure
+    assert result.enforcement == REACH_ENFORCEMENT_UNAVAILABLE
+    assert "user namespaces disabled" in result.error
+    assert "learned_tool_execution_backend" in result.error  # the remedy
 
 
-async def test_local_runner_does_not_warn_for_network_granting_tools(tmp_path, caplog) -> None:
+async def test_load_refuses_a_no_reach_tool_the_local_backend_cannot_isolate(tmp_path) -> None:
+    artifact = replace(
+        _learned_tool_artifact(),
+        manifest=replace(_learned_tool_artifact().manifest, declared_reach=[]),
+    )
+    tool_path = write_learned_tool(tools_dir=tmp_path, artifact=artifact)
+    runner = LocalLearnedToolRunner(network_isolation_probe=lambda: "seccomp blocks unshare")
+
+    with pytest.raises(LearnedToolError, match="seccomp blocks unshare"):
+        load_learned_tool(artifact=artifact, tool_path=tool_path, runner=runner)
+
+
+async def test_local_runner_runs_a_networked_tool_without_isolation(tmp_path) -> None:
+    def _no_probe() -> str | None:
+        raise AssertionError("a networked tool needs no isolation probe")
+
     path = write_tool(
         tools_dir=tmp_path,
         skill_name="net_probe",
         tool_code="def run(signal):\n    return {'ok': True}\n",
     )
-    runner = LocalLearnedToolRunner()
-    with caplog.at_level(logging.WARNING, logger="ravn.valkyrie_evolution.learned_tools"):
-        result = await runner.run(
-            path,
-            {},
-            entry_point="run",
-            timeout_seconds=5.0,
-            declared_reach=[ToolReachGrant(kind="network", access="read")],
-        )
+    runner = LocalLearnedToolRunner(network_isolation_probe=_no_probe)
+
+    result = await runner.run(
+        path,
+        {},
+        entry_point="run",
+        timeout_seconds=5.0,
+        declared_reach=[ToolReachGrant(kind="network", access="read")],
+    )
+
     assert result.ok
-    assert not [rec for rec in caplog.records if "NOT enforced" in rec.message]
+    assert result.enforcement == ""  # no claim: the grant's target is not narrowed
+
+
+async def test_run_tool_reports_a_failed_isolation_as_infrastructure(tmp_path, monkeypatch) -> None:
+    path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="probe",
+        tool_code="def run(signal):\n    return {'ok': True}\n",
+    )
+    failing = (
+        "import os, sys\n"
+        f"sys.stderr.write({tool_runtime_mod.NETWORK_ISOLATION_FAILURE_MARKER!r} + ' EPERM')\n"
+        "sys.stderr.flush()\n"
+        f"os._exit({tool_runtime_mod.NETWORK_ISOLATION_FAILURE_EXIT})\n"
+    )
+    monkeypatch.setattr(
+        tool_runtime_mod,
+        "network_isolated_command",
+        lambda interpreter, script, *args: [interpreter, "-I", "-c", failing, *args],
+    )
+
+    result = await run_tool(path, {}, deny_network=True)
+
+    assert not result.ok
+    assert result.infrastructure
+    assert result.enforcement == REACH_ENFORCEMENT_UNAVAILABLE
+    assert "EPERM" in result.error
+
+
+async def test_run_tool_refuses_isolation_on_an_unsupported_platform(tmp_path, monkeypatch) -> None:
+    path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="probe",
+        tool_code="def run(signal):\n    return {'ok': True}\n",
+    )
+    monkeypatch.setattr(tool_runtime_mod.sys, "platform", "win32")
+
+    result = await run_tool(path, {}, deny_network=True)
+
+    assert not result.ok
+    assert result.infrastructure
+    assert "win32" in result.error
+
+
+def test_isolation_probe_explains_an_unsupported_platform(monkeypatch) -> None:
+    monkeypatch.setattr(tool_runtime_mod.sys, "platform", "win32")
+    tool_runtime_mod.network_isolation_unavailable_reason.cache_clear()
+    try:
+        assert "win32" in (tool_runtime_mod.network_isolation_unavailable_reason() or "")
+    finally:
+        tool_runtime_mod.network_isolation_unavailable_reason.cache_clear()
+
+
+def test_isolation_probe_reports_why_the_boundary_did_not_hold(monkeypatch) -> None:
+    marker = tool_runtime_mod.NETWORK_ISOLATION_FAILURE_MARKER
+    monkeypatch.setattr(
+        tool_runtime_mod,
+        "network_isolated_command",
+        lambda interpreter, script, *args: [
+            interpreter,
+            "-I",
+            "-c",
+            f"import sys; sys.stderr.write({marker!r} + ' loopback connect succeeded'); "
+            "sys.exit(97)",
+        ],
+    )
+    tool_runtime_mod.network_isolation_unavailable_reason.cache_clear()
+    try:
+        assert tool_runtime_mod.network_isolation_unavailable_reason() == (
+            "loopback connect succeeded"
+        )
+    finally:
+        tool_runtime_mod.network_isolation_unavailable_reason.cache_clear()
 
 
 class _FakeDockerShell:
@@ -1376,10 +1551,8 @@ async def test_forge_runner_scopes_container_network_to_declared_reach(
     assert len(created) == 2  # shells are cached per network mode
 
 
-async def test_forge_runner_records_unavailable_enforcement_for_opaque_shell(
-    tmp_path, caplog
-) -> None:
-    shell = _FakeDockerShell()  # no _config: network mode is unknowable
+async def test_forge_runner_refuses_a_no_reach_tool_on_an_opaque_shell(tmp_path) -> None:
+    shell = _RecordingDockerShell()  # no _config: network mode is unknowable
     tool_path = write_tool(
         tools_dir=tmp_path,
         skill_name="probe",
@@ -1388,18 +1561,15 @@ async def test_forge_runner_records_unavailable_enforcement_for_opaque_shell(
     runner = ForgeSandboxLearnedToolRunner(workspace_root=tmp_path, shell=shell)
     assert runner.enforces_reach is False
 
-    with caplog.at_level(logging.WARNING, logger="ravn.valkyrie_evolution.learned_tools"):
-        first = await runner.run(
-            tool_path, {}, entry_point="run", timeout_seconds=5.0, declared_reach=[]
-        )
-        second = await runner.run(
-            tool_path, {}, entry_point="run", timeout_seconds=5.0, declared_reach=[]
-        )
-    assert first.ok and second.ok
-    assert first.enforcement == REACH_ENFORCEMENT_UNAVAILABLE
-    assert second.enforcement == REACH_ENFORCEMENT_UNAVAILABLE
-    warnings = [rec for rec in caplog.records if "cannot express network isolation" in rec.message]
-    assert len(warnings) == 1
+    with pytest.raises(LearnedToolError, match="network mode 'unknown'"):
+        runner.check_reach([])
+    result = await runner.run(
+        tool_path, {}, entry_point="run", timeout_seconds=5.0, declared_reach=[]
+    )
+    assert not result.ok
+    assert result.infrastructure
+    assert result.enforcement == REACH_ENFORCEMENT_UNAVAILABLE
+    assert shell.commands == []  # the tool never ran
 
 
 async def test_forge_runner_injected_isolated_shell_counts_as_enforced(tmp_path) -> None:
@@ -1438,8 +1608,12 @@ async def test_forge_runner_injected_networked_shell_cannot_enforce_isolation(tm
         timeout_seconds=5.0,
         declared_reach=[ToolReachGrant(kind="api", access="read")],
     )
-    # A networked shell cannot deny reach the tool never declared…
+    # A networked shell cannot deny reach the tool never declared, so it refuses…
+    assert not no_reach.ok
+    assert no_reach.infrastructure
     assert no_reach.enforcement == REACH_ENFORCEMENT_UNAVAILABLE
+    with pytest.raises(LearnedToolError, match="'bridge'"):
+        runner.check_reach([])
     # …but it satisfies a tool whose reach grants network access.
     assert with_reach.enforcement == REACH_ENFORCEMENT_ENFORCED
 
@@ -1469,7 +1643,12 @@ async def test_forge_runner_provisions_sandbox_venv_for_requirements(tmp_path) -
     runner = ForgeSandboxLearnedToolRunner(workspace_root=tmp_path, shell=shell)
 
     result = await runner.run(
-        tool_path, {}, entry_point="run", timeout_seconds=5.0, requirements=["httpx"]
+        tool_path,
+        {},
+        entry_point="run",
+        timeout_seconds=5.0,
+        requirements=["httpx"],
+        declared_reach=[ToolReachGrant(kind="network", access="read")],
     )
 
     assert result.ok
@@ -1498,7 +1677,12 @@ async def test_forge_runner_skips_provisioning_when_stamp_matches(tmp_path) -> N
     runner = ForgeSandboxLearnedToolRunner(workspace_root=tmp_path, shell=shell)
 
     result = await runner.run(
-        tool_path, {}, entry_point="run", timeout_seconds=5.0, requirements=["httpx"]
+        tool_path,
+        {},
+        entry_point="run",
+        timeout_seconds=5.0,
+        requirements=["httpx"],
+        declared_reach=[ToolReachGrant(kind="network", access="read")],
     )
 
     assert result.ok

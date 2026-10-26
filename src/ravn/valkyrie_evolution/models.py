@@ -154,6 +154,10 @@ class LearnedToolArtifact:
     #: build). Maintained automatically by the artifact writer so rollback can
     #: walk back to the previous working version.
     supersedes: str = ""
+    #: Position in the tool's version chain: 1 for a first build, one more than
+    #: the version it supersedes for every repair or revision written in place.
+    #: Maintained by the artifact writer alongside ``supersedes``.
+    version: int = 1
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     @property
@@ -176,6 +180,7 @@ class LearnedToolArtifact:
             test_code=str(data.get("test_code") or ""),
             requirements=[str(item) for item in list(data.get("requirements") or [])],
             supersedes=str(data.get("supersedes") or ""),
+            version=int(data.get("version") or 1),
             created_at=str(data.get("created_at") or datetime.now(UTC).isoformat()),
         )
 
@@ -193,6 +198,7 @@ class LearnedToolArtifact:
             "test_code": self.test_code,
             "requirements": list(self.requirements),
             "supersedes": self.supersedes,
+            "version": self.version,
             "created_at": self.created_at,
         }
 

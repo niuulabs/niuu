@@ -150,6 +150,136 @@ class TestFlockPeerWorkReportsActive:
         broker._report_activity_state.assert_not_awaited()
 
 
+class TestFlockGoesIdleWhenNoPeerWorks:
+    """Two builder sessions heartbeated ``active`` for eleven hours after their last
+    peer finished, so nothing could tell them from sessions still working."""
+
+    @pytest.fixture
+    def working_broker(self, flock_broker):
+        async def _report(state, *, extra_metadata=None):
+            flock_broker._activity_state = state
+            return True
+
+        flock_broker._report_activity_state = AsyncMock(side_effect=_report)
+        flock_broker._room_bridge.participants = {
+            "flock-coder": MagicMock(persona="coder"),
+            "flock-reviewer": MagicMock(persona="reviewer"),
+        }
+        flock_broker._emit_peer_outcome_pipeline_event = AsyncMock()
+        flock_broker._maybe_report_flock_completion = AsyncMock()
+        return flock_broker
+
+    @staticmethod
+    async def _event(broker, peer_id, event_type, task_id, data=None):
+        await broker._observe_room_peer_event(
+            peer_id,
+            event_type,
+            {"data": data or {}, "metadata": {"task_id": task_id}},
+        )
+
+    @pytest.mark.asyncio
+    async def test_last_peer_task_completing_reports_idle_with_its_outcome(self, working_broker):
+        await self._event(working_broker, "flock-coder", "task_started", "build-1")
+        await working_broker._observe_room_peer_event(
+            "flock-coder",
+            "outcome",
+            {
+                "data": {"event_type": "code.completed", "verdict": "help_needed"},
+                "metadata": {"event_type": "code.completed", "task_id": "build-1"},
+            },
+        )
+        await self._event(working_broker, "flock-coder", "task_complete", "build-1")
+
+        assert working_broker._activity_state == "idle"
+        working_broker._report_activity_state.assert_awaited_with(
+            "idle",
+            extra_metadata={
+                "flock_idle": {
+                    "event_type": "code.completed",
+                    "verdict": "help_needed",
+                    "persona": "coder",
+                }
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_outcome_without_an_event_type_is_not_named(self, working_broker):
+        await self._event(working_broker, "flock-coder", "task_started", "build-1")
+        await working_broker._observe_room_peer_event(
+            "flock-coder", "outcome", {"data": "plain text", "metadata": {}}
+        )
+        await self._event(working_broker, "flock-coder", "task_complete", "build-1")
+
+        working_broker._report_activity_state.assert_awaited_with("idle", extra_metadata=None)
+
+    @pytest.mark.asyncio
+    async def test_session_stays_active_while_another_peer_task_runs(self, working_broker):
+        await self._event(working_broker, "flock-coder", "task_started", "build-1")
+        await self._event(working_broker, "flock-reviewer", "task_started", "review-1")
+        await self._event(working_broker, "flock-reviewer", "task_started", "review-2")
+
+        await self._event(working_broker, "flock-coder", "task_complete", "build-1")
+        await self._event(working_broker, "flock-reviewer", "task_complete", "review-1")
+        assert working_broker._activity_state == "active"
+
+        await self._event(working_broker, "flock-reviewer", "task_complete", "review-2")
+        assert working_broker._activity_state == "idle"
+        working_broker._report_activity_state.assert_awaited_with("idle", extra_metadata=None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "blocker",
+        [
+            "pending_help",
+            "pending_attention",
+            "completion_reported",
+            "failure_reported",
+            "terminal_pending",
+        ],
+    )
+    async def test_idle_never_overrides_owned_state(self, working_broker, blocker):
+        await self._event(working_broker, "flock-coder", "task_started", "build-1")
+        match blocker:
+            case "pending_help":
+                working_broker._pending_help_requests = {"req-1": MagicMock(status="pending")}
+            case "pending_attention":
+                working_broker._pending_attention = {"q-1": "question"}
+            case "completion_reported":
+                working_broker._flock_completion_reported = True
+            case "failure_reported":
+                working_broker._flock_failure_reported = True
+            case "terminal_pending":
+                working_broker._pending_terminal_activity = {"kind": "completion", "payload": {}}
+        working_broker._report_activity_state.reset_mock()
+
+        await self._event(working_broker, "flock-coder", "task_complete", "build-1")
+
+        working_broker._report_activity_state.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_already_idle_session_is_not_reported_again(self, working_broker):
+        working_broker._activity_state = "idle"
+
+        await self._event(working_broker, "flock-coder", "task_complete", "build-1")
+
+        working_broker._report_activity_state.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_flock_idle_ignored_outside_flock_workflow_sessions(self, tmp_path):
+        broker = Broker(
+            settings=SkuldSettings(
+                session={"id": "plain", "workspace_dir": str(tmp_path)},
+                chronicle_watcher_enabled=False,
+            )
+        )
+        broker._activity_state = "active"
+        broker._report_activity_state = AsyncMock(return_value=True)
+
+        await broker._report_room_flock_idle()
+
+        broker._report_activity_state.assert_not_awaited()
+
+
 class TestRoomRoutedStartupLeavesProvisioning:
     async def _startup(self, broker: Broker) -> AsyncMock:
         report = AsyncMock(return_value=True)
