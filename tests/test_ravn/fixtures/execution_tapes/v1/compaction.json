@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "case": "compaction",
+  "capabilities": [
+    "tool:read"
+  ],
+  "events": [
+    {
+      "kind": "model",
+      "response": {
+        "text": "opaque",
+        "tool_calls": []
+      },
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 2
+      }
+    },
+    {
+      "kind": "compaction",
+      "protected_message_ids": [
+        "recent-1",
+        "recent-2"
+      ],
+      "removed_message_ids": [
+        "old-1"
+      ]
+    },
+    {
+      "kind": "final",
+      "outcome": "success"
+    }
+  ],
+  "expected": {
+    "event_kinds": [
+      "model",
+      "compaction",
+      "final"
+    ],
+    "tool_order": [],
+    "paired_tool_ids": [],
+    "resume_points": [],
+    "outcome": "success",
+    "usage_shape": "reported",
+    "context_safe": true,
+    "capability_violations": 0,
+    "unknown_side_effect": false
+  }
+}

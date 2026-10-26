@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "case": "unknown_side_effect",
+  "capabilities": [
+    "tool:read"
+  ],
+  "events": [
+    {
+      "kind": "model",
+      "response": {
+        "text": "opaque",
+        "tool_calls": [
+          {
+            "id": "call-1",
+            "name": "scripted",
+            "input": {}
+          }
+        ]
+      },
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 2
+      }
+    },
+    {
+      "kind": "dispatch",
+      "tool_call_id": "call-1",
+      "capability": "tool:read"
+    },
+    {
+      "kind": "unknown_side_effect"
+    },
+    {
+      "kind": "result",
+      "tool_call_id": "call-1",
+      "is_error": false
+    },
+    {
+      "kind": "final",
+      "outcome": "partial"
+    }
+  ],
+  "expected": {
+    "event_kinds": [
+      "model",
+      "dispatch",
+      "unknown_side_effect",
+      "result",
+      "final"
+    ],
+    "tool_order": [
+      "call-1"
+    ],
+    "paired_tool_ids": [
+      "call-1"
+    ],
+    "resume_points": [],
+    "outcome": "partial",
+    "usage_shape": "reported",
+    "context_safe": true,
+    "capability_violations": 0,
+    "unknown_side_effect": true
+  }
+}

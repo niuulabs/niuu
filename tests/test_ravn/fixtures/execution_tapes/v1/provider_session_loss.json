@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "case": "provider_session_loss",
+  "capabilities": [
+    "tool:read"
+  ],
+  "events": [
+    {
+      "kind": "model",
+      "response": {
+        "text": "opaque",
+        "tool_calls": []
+      },
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 2
+      }
+    },
+    {
+      "kind": "provider_session_lost"
+    },
+    {
+      "kind": "resume"
+    },
+    {
+      "kind": "model",
+      "response": {
+        "text": "opaque",
+        "tool_calls": []
+      },
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 2
+      }
+    },
+    {
+      "kind": "final",
+      "outcome": "success"
+    }
+  ],
+  "expected": {
+    "event_kinds": [
+      "model",
+      "provider_session_lost",
+      "resume",
+      "model",
+      "final"
+    ],
+    "tool_order": [],
+    "paired_tool_ids": [],
+    "resume_points": [
+      "provider_session_lost"
+    ],
+    "outcome": "success",
+    "usage_shape": "reported",
+    "context_safe": true,
+    "capability_violations": 0,
+    "unknown_side_effect": false
+  }
+}

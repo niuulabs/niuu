@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "case": "multiple_tool_calls",
+  "capabilities": [
+    "tool:read"
+  ],
+  "events": [
+    {
+      "kind": "model",
+      "response": {
+        "text": "opaque",
+        "tool_calls": [
+          {
+            "id": "call-1",
+            "name": "scripted",
+            "input": {}
+          },
+          {
+            "id": "call-2",
+            "name": "scripted",
+            "input": {}
+          }
+        ]
+      },
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 2
+      }
+    },
+    {
+      "kind": "dispatch",
+      "tool_call_id": "call-1",
+      "capability": "tool:read"
+    },
+    {
+      "kind": "result",
+      "tool_call_id": "call-1",
+      "is_error": false
+    },
+    {
+      "kind": "dispatch",
+      "tool_call_id": "call-2",
+      "capability": "tool:read"
+    },
+    {
+      "kind": "result",
+      "tool_call_id": "call-2",
+      "is_error": false
+    },
+    {
+      "kind": "final",
+      "outcome": "success"
+    }
+  ],
+  "expected": {
+    "event_kinds": [
+      "model",
+      "dispatch",
+      "result",
+      "dispatch",
+      "result",
+      "final"
+    ],
+    "tool_order": [
+      "call-1",
+      "call-2"
+    ],
+    "paired_tool_ids": [
+      "call-1",
+      "call-2"
+    ],
+    "resume_points": [],
+    "outcome": "success",
+    "usage_shape": "reported",
+    "context_safe": true,
+    "capability_violations": 0,
+    "unknown_side_effect": false
+  }
+}
