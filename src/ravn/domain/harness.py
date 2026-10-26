@@ -75,6 +75,21 @@ class HarnessCapabilityProfile:
     supports_dynamic_tools: bool
 
     def __post_init__(self) -> None:
+        if not isinstance(self.kind, HarnessKind):
+            raise HarnessContractError("harness kind must be a HarnessKind")
+        if not isinstance(self.steering_mode, SteeringMode):
+            raise HarnessContractError("steering mode must be a SteeringMode")
+        for field_name in (
+            "supports_tools",
+            "supports_reasoning",
+            "supports_attachments",
+            "supports_images",
+            "supports_interrupt",
+            "supports_session_resume",
+            "supports_dynamic_tools",
+        ):
+            if not isinstance(getattr(self, field_name), bool):
+                raise HarnessContractError(f"{field_name} must be a bool")
         if self.supports_images and not self.supports_attachments:
             raise HarnessContractError("image input requires attachment input support")
         if self.supports_dynamic_tools and not self.supports_tools:

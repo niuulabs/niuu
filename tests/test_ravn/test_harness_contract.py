@@ -55,6 +55,12 @@ def test_native_and_cli_harness_profiles_are_representable_without_runtime_types
             },
             "interrupt-resume steering requires interrupt support",
         ),
+        (
+            {
+                "steering_mode": "interrupt_resume",
+            },
+            "steering mode must be a SteeringMode",
+        ),
     ],
 )
 def test_invalid_harness_capability_profiles_fail_deterministically(
