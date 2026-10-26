@@ -15,6 +15,13 @@ from ravn.adapters.executors.cli import (
 )
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.events import RavnEvent
+from ravn.domain.harness import (
+    HarnessControl,
+    HarnessControlKind,
+    HarnessLifecycleError,
+    HarnessTurnInput,
+    HarnessTurnResult,
+)
 from ravn.domain.models import Message, Session, ToolResult
 from ravn.domain.notification_channel import current_notification_channel
 from ravn.ports.tool import ToolPort
@@ -240,6 +247,41 @@ async def test_cli_executor_runs_turn_and_emits_ravn_events() -> None:
     transport = agent._transport
     assert transport is not None
     assert transport.sent_messages == ["Review the patch"]
+
+
+@pytest.mark.asyncio
+async def test_cli_harness_returns_canonical_turn_and_provider_diagnostics() -> None:
+    agent, _ = _make_agent(binding=_TransportBinding(FakeResumableTransport, True))
+
+    with pytest.raises(HarnessLifecycleError, match="started"):
+        await agent.run_turn(HarnessTurnInput("Review the patch"))
+
+    await agent.start()
+    result = await agent.run_turn(HarnessTurnInput("Review the patch", provider_session_id="old"))
+
+    assert isinstance(result, HarnessTurnResult)
+    assert result.turn.response == "Done"
+    assert result.turn.episode is not None
+    assert result.turn.episode.outcome.value == "success"
+    assert result.turn.usage.input_tokens == 10
+    assert [(call.id, call.name) for call in result.turn.tool_calls] == [("tool-1", "Bash")]
+    assert [(item.tool_call_id, item.content) for item in result.turn.tool_results] == [
+        ("tool-1", "ok")
+    ]
+    assert result.provider_session_id == ""
+    assert result.metadata["transport"] == "FakeResumableTransport"
+    assert result.metadata["provider_result"] == agent._transport.last_result
+
+
+@pytest.mark.asyncio
+async def test_cli_harness_rejects_inactive_controls() -> None:
+    agent, _ = _make_agent(binding=_TransportBinding(FakeResumableTransport, True))
+    await agent.start()
+
+    with pytest.raises(HarnessLifecycleError, match="active turn"):
+        await agent.control(
+            HarnessControl(HarnessControlKind.INTERRUPT, interrupt_reason=InterruptReason.SIGINT)
+        )
 
 
 @pytest.mark.asyncio

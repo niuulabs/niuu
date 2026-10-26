@@ -31,6 +31,15 @@ from ravn.domain.exceptions import (
     PermissionDeniedError,
     PromptBudgetExceededError,
 )
+from ravn.domain.harness import (
+    HarnessCapabilityProfile,
+    HarnessContractError,
+    HarnessControl,
+    HarnessControlKind,
+    HarnessLifecycleError,
+    HarnessTurnInput,
+    HarnessTurnResult,
+)
 from ravn.domain.harness_telemetry import HarnessStepTelemetryRecord
 from ravn.domain.models import (
     Episode,
@@ -273,6 +282,37 @@ class RavnAgent:
         self._last_usage: TokenUsage | None = None
         # NIU-1118: cap one tool result's contribution to history; 0 disables
         self._max_tool_result_chars = max_tool_result_chars
+        self._harness_started = False
+        self._harness_closed = False
+        self._harness_turn_active = False
+
+    @property
+    def profile(self) -> HarnessCapabilityProfile:
+        """Return this in-process runtime's canonical harness profile."""
+        return HarnessCapabilityProfile.native_ravn_agent()
+
+    async def start(self) -> None:
+        """Mark the in-process harness available to canonical callers."""
+        if self._harness_closed:
+            raise HarnessLifecycleError("cannot start a closed harness")
+        self._harness_started = True
+
+    async def close(self) -> None:
+        """Close the canonical harness lifecycle.
+
+        The native loop owns no separate runtime resource, but a closed harness
+        must not accept another canonical turn.
+        """
+        self._harness_closed = True
+
+    async def control(self, control: HarnessControl) -> bool:
+        """Apply a canonical control during an active native turn."""
+        if not self._harness_turn_active:
+            raise HarnessLifecycleError("harness control requires an active turn")
+        if control.kind is HarnessControlKind.INTERRUPT:
+            self.interrupt(control.interrupt_reason)
+            return True
+        return False
 
     @property
     def session(self) -> Session:
@@ -489,7 +529,36 @@ class RavnAgent:
             usage=response.usage,
         )
 
-    async def run_turn(self, user_input: str, *, recall_query: str | None = None) -> TurnResult:
+    async def run_turn(
+        self, user_input: str | HarnessTurnInput, *, recall_query: str | None = None
+    ) -> TurnResult | HarnessTurnResult:
+        """Run a legacy string turn or a canonical provider-neutral turn."""
+        if isinstance(user_input, HarnessTurnInput):
+            if self._harness_closed:
+                raise HarnessLifecycleError("cannot run a turn on a closed harness")
+            if not self._harness_started:
+                raise HarnessLifecycleError("harness must be started before running a turn")
+            if user_input.attachments:
+                raise HarnessContractError("native Ravn harness does not support attachments")
+            if user_input.provider_session_id is not None:
+                raise HarnessContractError(
+                    "native Ravn harness does not support provider session resume"
+                )
+            self._harness_turn_active = True
+            try:
+                result = await self._run_turn(
+                    user_input.user_input,
+                    recall_query=user_input.recall_query,
+                )
+            finally:
+                self._harness_turn_active = False
+            return HarnessTurnResult(
+                turn=result,
+                metadata={"provider_adapter": type(self._llm).__name__},
+            )
+        return await self._run_turn(user_input, recall_query=recall_query)
+
+    async def _run_turn(self, user_input: str, *, recall_query: str | None = None) -> TurnResult:
         """Process one user turn and return the result.
 
         *recall_query* is what memory is searched with, when it differs from what the model is

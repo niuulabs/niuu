@@ -60,6 +60,7 @@ from ravn.domain.exceptions import (
     PromptBudgetExceededError,
     UnboundOperatorReplyError,
 )
+from ravn.domain.harness import HarnessTurnInput
 from ravn.domain.help_needed import build_help_needed_event
 from ravn.domain.models import (
     IDLE_TRIAGE_TRIGGER,
@@ -80,6 +81,7 @@ from ravn.domain.valkyrie_contracts import (
 )
 from ravn.ports.channel import ChannelPort
 from ravn.ports.event_publisher import EventPublisherPort
+from ravn.ports.executor import RavnHarnessPort
 from ravn.ports.resident_budget import ResidentBudgetPort
 from ravn.ports.trigger import TriggerPort
 from ravn.prompt_builder import build_initiative_prompt
@@ -3282,12 +3284,17 @@ class DriveLoop:
         self._active_agents[task.task_id] = agent
         try:
             try:
-                # Only passed when there IS one. `run_turn(prompt)` stays the call for every
-                # trigger whose prompt is already the thing that was asked, which is all of them
-                # except a room message — so nothing that implements the old signature has to
-                # learn a keyword that would always be None.
-                recall_kwargs = {"recall_query": task.recall_query} if task.recall_query else {}
-                turn_result = await agent.run_turn(prompt, **recall_kwargs)  # type: ignore[attr-defined]
+                if isinstance(agent, RavnHarnessPort):
+                    await agent.start()
+                    harness_result = await agent.run_turn(
+                        HarnessTurnInput(prompt, recall_query=task.recall_query)
+                    )
+                    turn_result = harness_result.turn
+                else:
+                    # Third-party legacy executors retain their public string-turn
+                    # API until their callers migrate to the canonical harness.
+                    recall_kwargs = {"recall_query": task.recall_query} if task.recall_query else {}
+                    turn_result = await agent.run_turn(prompt, **recall_kwargs)  # type: ignore[attr-defined]
                 success = True
                 telemetry.event(
                     "ravn.task.lifecycle",
@@ -3425,7 +3432,7 @@ class DriveLoop:
                     )
                 )
                 emit_fn = getattr(agent, "emit_session_ended", None)
-                if emit_fn is not None and asyncio.iscoroutinefunction(emit_fn):
+                if emit_fn is not None and inspect.iscoroutinefunction(emit_fn):
                     try:
                         await emit_fn("interrupted")
                     except Exception:
@@ -3485,7 +3492,7 @@ class DriveLoop:
                 },
             )
             emit_fn = getattr(agent, "emit_session_ended", None)
-            if emit_fn is not None and asyncio.iscoroutinefunction(emit_fn):
+            if emit_fn is not None and inspect.iscoroutinefunction(emit_fn):
                 try:
                     await emit_fn(outcome)
                 except Exception:
@@ -3669,7 +3676,7 @@ class DriveLoop:
                 "to repair; the model turn failed and must be diagnosed, not reformatted"
             )
         repair_outcome = getattr(agent, "repair_outcome", None)
-        if repair_outcome is None or not asyncio.iscoroutinefunction(repair_outcome):
+        if repair_outcome is None or not inspect.iscoroutinefunction(repair_outcome):
             return None
 
         logger.warning(
@@ -3745,7 +3752,7 @@ class DriveLoop:
         if canonical_event_type in allowed_topics or alias_event_type in allowed_topics:
             return None
         run_turn = getattr(agent, "run_turn", None)
-        if run_turn is None or not asyncio.iscoroutinefunction(run_turn):
+        if run_turn is None or not inspect.iscoroutinefunction(run_turn):
             return None
 
         telemetry = get_observability()
@@ -3820,7 +3827,7 @@ class DriveLoop:
         if agent is None or not str(task.workflow_node_id or "").strip():
             return None
         run_turn = getattr(agent, "run_turn", None)
-        if run_turn is None or not asyncio.iscoroutinefunction(run_turn):
+        if run_turn is None or not inspect.iscoroutinefunction(run_turn):
             return None
 
         telemetry = get_observability()
@@ -3883,7 +3890,7 @@ class DriveLoop:
     ) -> object | None:
         """Give a graph workflow one chance to produce its declared typed outcome."""
         run_turn = getattr(agent, "run_turn", None)
-        if run_turn is None or not asyncio.iscoroutinefunction(run_turn):
+        if run_turn is None or not inspect.iscoroutinefunction(run_turn):
             return None
         telemetry = get_observability()
         attributes = {

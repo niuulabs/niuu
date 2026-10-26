@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
+from ravn.adapters.permission.allow_deny import AllowAllPermission
+from ravn.agent import RavnAgent
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.harness import (
     HarnessCapabilityProfile,
@@ -9,8 +13,14 @@ from ravn.domain.harness import (
     HarnessControl,
     HarnessControlKind,
     HarnessKind,
+    HarnessLifecycleError,
+    HarnessTurnInput,
+    HarnessTurnResult,
     SteeringMode,
 )
+from ravn.domain.models import TokenUsage
+from ravn.ports.llm import LLMPort
+from tests.test_ravn.conftest import InMemoryChannel, make_simple_llm
 
 
 def test_native_and_cli_harness_profiles_are_representable_without_runtime_types() -> None:
@@ -149,3 +159,52 @@ def test_ravn_domain_and_ports_do_not_import_skuld_implementations() -> None:
                     violations.append(str(path.relative_to(source_root)))
 
     assert violations == []
+
+
+@pytest.mark.asyncio
+async def test_native_harness_returns_the_same_canonical_turn_shape_as_cli() -> None:
+    llm = make_simple_llm("Done")
+    agent = RavnAgent(
+        llm=llm,
+        tools=[],
+        channel=InMemoryChannel(),
+        permission=AllowAllPermission(),
+        system_prompt="You are a reviewer.",
+        model="fake-model",
+        max_tokens=100,
+        max_iterations=2,
+    )
+
+    with pytest.raises(HarnessLifecycleError, match="started"):
+        await agent.run_turn(HarnessTurnInput("Review the patch"))
+
+    await agent.start()
+    result = await agent.run_turn(HarnessTurnInput("Review the patch"))
+
+    assert isinstance(result, HarnessTurnResult)
+    assert result.turn.response == "Done"
+    assert result.turn.episode is not None
+    assert result.turn.usage == TokenUsage(input_tokens=10, output_tokens=5)
+    assert result.metadata == {"provider_adapter": "AsyncMock"}
+
+
+@pytest.mark.asyncio
+async def test_native_harness_rejects_resume_and_inactive_controls() -> None:
+    agent = RavnAgent(
+        llm=AsyncMock(spec=LLMPort),
+        tools=[],
+        channel=InMemoryChannel(),
+        permission=AllowAllPermission(),
+        system_prompt="You are a reviewer.",
+        model="fake-model",
+        max_tokens=100,
+        max_iterations=2,
+    )
+    await agent.start()
+
+    with pytest.raises(HarnessContractError, match="session resume"):
+        await agent.run_turn(HarnessTurnInput("Review", provider_session_id="old"))
+    with pytest.raises(HarnessLifecycleError, match="active turn"):
+        await agent.control(
+            HarnessControl(HarnessControlKind.INTERRUPT, interrupt_reason=InterruptReason.SIGINT)
+        )

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.models import TurnResult
@@ -172,6 +173,19 @@ class HarnessTurnInput:
     user_input: str
     attachments: tuple[HarnessAttachment, ...] = ()
     provider_session_id: str | None = None
+    recall_query: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.user_input, str):
+            raise HarnessContractError("turn user_input must be a str")
+        if not isinstance(self.attachments, tuple):
+            raise HarnessContractError("turn attachments must be a tuple")
+        if not all(isinstance(attachment, HarnessAttachment) for attachment in self.attachments):
+            raise HarnessContractError("turn attachments must contain HarnessAttachment values")
+        if self.provider_session_id is not None and not isinstance(self.provider_session_id, str):
+            raise HarnessContractError("provider session id must be a str or None")
+        if self.recall_query is not None and not isinstance(self.recall_query, str):
+            raise HarnessContractError("turn recall_query must be a str or None")
 
 
 @dataclass(frozen=True)
@@ -218,4 +232,4 @@ class HarnessTurnResult:
     turn: TurnResult
     provider_session_id: str | None = None
     reasoning: str = ""
-    metadata: dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)

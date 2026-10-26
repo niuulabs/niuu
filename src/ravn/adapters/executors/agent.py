@@ -6,16 +6,24 @@ import inspect
 from typing import Any
 
 from ravn.agent import RavnAgent
-from ravn.ports.executor import ExecutionAgentPort, ExecutorPort
+from ravn.ports.executor import (
+    ExecutionAgentPort,
+    ExecutorPort,
+    HarnessExecutorPort,
+    RavnHarnessPort,
+)
 
 
-class AgentExecutor(ExecutorPort):
+class AgentExecutor(ExecutorPort, HarnessExecutorPort):
     """Build the default tool-driven RavnAgent runtime."""
 
     def __init__(self, **_: Any) -> None:
         return None
 
     def build(self, **kwargs: Any) -> ExecutionAgentPort:
+        return self.build_harness(**kwargs)
+
+    def build_harness(self, **kwargs: Any) -> RavnHarnessPort:
         sig = inspect.signature(RavnAgent)
         filtered = {key: value for key, value in kwargs.items() if key in sig.parameters}
         return RavnAgent(**filtered)

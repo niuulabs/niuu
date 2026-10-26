@@ -25,9 +25,10 @@ from typing import Any
 
 from ravn.config import GatewayConfig
 from ravn.domain.events import RavnEvent, RavnEventType
+from ravn.domain.harness import HarnessTurnInput
 from ravn.domain.profile import RavnProfile
 from ravn.ports.channel import ChannelPort
-from ravn.ports.executor import ExecutionAgentPort
+from ravn.ports.executor import ExecutionAgentPort, RavnHarnessPort
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +201,7 @@ class RavnGateway:
             self._interaction_tracker.touch()
         session = self.get_or_create_session(session_id)
         async with session.lock:
-            await session.agent.run_turn(text)
+            await self._run_turn(session.agent, text)
             return await session.channel.collect_response()
 
     async def handle_message_stream(self, session_id: str, text: str) -> AsyncIterator[RavnEvent]:
@@ -226,9 +227,18 @@ class RavnGateway:
     async def _run_and_signal(self, session: GatewaySession, text: str) -> None:
         """Run agent turn then push a sentinel so :meth:`stream` unblocks."""
         try:
-            await session.agent.run_turn(text)
+            await self._run_turn(session.agent, text)
         finally:
             await session.channel.signal_done()
+
+    @staticmethod
+    async def _run_turn(agent: ExecutionAgentPort, text: str) -> None:
+        """Use the canonical harness where an executor implements it."""
+        if isinstance(agent, RavnHarnessPort):
+            await agent.start()
+            await agent.run_turn(HarnessTurnInput(text))
+            return
+        await agent.run_turn(text)
 
     # ------------------------------------------------------------------
     # Broadcast (GET /events)

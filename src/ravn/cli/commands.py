@@ -26,6 +26,7 @@ from ravn.cli.mcp_runtime import (  # noqa: F401
 )
 from ravn.config import ProjectConfig, Settings
 from ravn.domain.checkpoint import InterruptReason
+from ravn.domain.harness import HarnessTurnInput
 from ravn.domain.models import (
     AgentTask as AgentTask,
 )
@@ -42,7 +43,7 @@ from ravn.domain.models import (
 from ravn.domain.notification_channel import current_notification_channel
 from ravn.domain.profile import RavnProfile
 from ravn.ports.checkpoint import CheckpointPort
-from ravn.ports.executor import ExecutionAgentPort
+from ravn.ports.executor import ExecutionAgentPort, RavnHarnessPort
 from ravn.workflow_runtime import (  # noqa: F401
     _dedupe_preserve_order,
     _join_mode_to_fan_in,
@@ -913,7 +914,11 @@ async def _run_turn(
     single_turn: bool = False,
 ) -> None:
     try:
-        result = await agent.run_turn(user_input)
+        if isinstance(agent, RavnHarnessPort):
+            await agent.start()
+            result = (await agent.run_turn(HarnessTurnInput(user_input))).turn
+        else:
+            result = await agent.run_turn(user_input)
         channel.finish()
         if show_usage:
             _print_usage(result.usage)

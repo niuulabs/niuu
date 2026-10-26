@@ -22,6 +22,16 @@ from niuu.ports.cli import CLITransport
 from niuu.utils import import_class
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.events import RavnEvent
+from ravn.domain.harness import (
+    HarnessCapabilityProfile,
+    HarnessContractError,
+    HarnessControl,
+    HarnessControlKind,
+    HarnessLifecycleError,
+    HarnessTurnInput,
+    HarnessTurnResult,
+    SteeringMode,
+)
 from ravn.domain.harness_telemetry import HarnessStepTelemetryRecord
 from ravn.domain.models import (
     Episode,
@@ -38,7 +48,12 @@ from ravn.domain.permission_mode import PermissionMode, parse_permission_mode
 from ravn.harness_telemetry import emit_harness_step
 from ravn.ports.channel import ChannelPort
 from ravn.ports.checkpoint import CheckpointPort
-from ravn.ports.executor import ExecutionAgentPort, ExecutorPort
+from ravn.ports.executor import (
+    ExecutionAgentPort,
+    ExecutorPort,
+    HarnessExecutorPort,
+    RavnHarnessPort,
+)
 from ravn.tool_observability import tool_argument_attributes
 
 logger = logging.getLogger(__name__)
@@ -299,6 +314,48 @@ class CliTransportAgent(ExecutionAgentPort):
         self._turn_duration_ms: float | None = None
         self._turn_context_message_count = 0
         self._turn_result_payload: dict[str, Any] = {}
+        # Construction is configuration-only. Read the capability declaration
+        # now so callers can inspect the canonical profile before ``start``.
+        self._harness_capabilities = self._create_transport().capabilities
+        self._harness_turn_active = False
+        self._harness_closed = False
+
+    @property
+    def profile(self) -> HarnessCapabilityProfile:
+        """Return the CLI transport's provider-neutral capability declaration."""
+        capabilities = self._harness_capabilities
+        try:
+            steering_mode = SteeringMode(capabilities.steering_mode)
+        except ValueError as exc:
+            raise HarnessContractError(
+                f"CLI transport declared unknown steering mode {capabilities.steering_mode!r}"
+            ) from exc
+        return HarnessCapabilityProfile.cli_backed(
+            supports_tools=True,
+            supports_reasoning=False,
+            supports_interrupt=capabilities.interrupt,
+            steering_mode=steering_mode,
+            supports_session_resume=capabilities.session_resume,
+        )
+
+    async def start(self) -> None:
+        """Start the CLI runtime for canonical harness callers."""
+        if self._harness_closed:
+            raise HarnessLifecycleError("cannot start a closed harness")
+        await self._ensure_transport()
+
+    async def control(self, control: HarnessControl) -> bool:
+        """Apply a declared control while a canonical turn is active."""
+        if not self._harness_turn_active:
+            raise HarnessLifecycleError("harness control requires an active turn")
+        if control.kind is HarnessControlKind.INTERRUPT:
+            if not self.profile.supports_interrupt:
+                return False
+            self.interrupt(control.interrupt_reason)
+            return True
+        if not self.profile.supports_steering:
+            return False
+        return await self.steer(control.content)
 
     @property
     def session(self) -> Session:
@@ -360,10 +417,41 @@ class CliTransportAgent(ExecutionAgentPort):
         transport, self._transport = self._transport, None
         self._turn_runner = None
         self._started = False
+        self._harness_closed = True
         if transport is not None:
             await transport.stop()
 
-    async def run_turn(self, user_input: str) -> TurnResult:
+    async def run_turn(self, user_input: str | HarnessTurnInput) -> TurnResult | HarnessTurnResult:
+        """Run a legacy string turn or a canonical provider-neutral turn."""
+        if isinstance(user_input, HarnessTurnInput):
+            return await self._run_harness_turn(user_input)
+        return await self._run_legacy_turn(user_input)
+
+    async def _run_harness_turn(self, turn: HarnessTurnInput) -> HarnessTurnResult:
+        if self._harness_closed:
+            raise HarnessLifecycleError("cannot run a turn on a closed harness")
+        if not self._started:
+            raise HarnessLifecycleError("harness must be started before running a turn")
+        if turn.attachments:
+            raise HarnessContractError("CLI harness does not support attachments")
+        if turn.provider_session_id is not None and not self.profile.supports_session_resume:
+            raise HarnessContractError("CLI harness does not support provider session resume")
+        self._harness_turn_active = True
+        try:
+            result = await self._run_legacy_turn(turn.user_input)
+        finally:
+            self._harness_turn_active = False
+        provider_session_id = self._transport.session_id if self._transport is not None else None
+        return HarnessTurnResult(
+            turn=result,
+            provider_session_id=provider_session_id,
+            metadata={
+                "transport": self._transport_binding.cls.__name__,
+                "provider_result": dict(self._turn_result_payload),
+            },
+        )
+
+    async def _run_legacy_turn(self, user_input: str) -> TurnResult:
         if self._interrupt_reason is not None:
             raise RuntimeError(f"turn interrupted: {self._interrupt_reason}")
 
@@ -998,7 +1086,7 @@ class CliTransportAgent(ExecutionAgentPort):
         return suffix if suffix in self._tools else tool_name
 
 
-class CliTransportExecutor(ExecutorPort):
+class CliTransportExecutor(ExecutorPort, HarnessExecutorPort):
     """Build a persona execution agent backed by a CLI transport."""
 
     def __init__(
@@ -1030,6 +1118,9 @@ class CliTransportExecutor(ExecutorPort):
         )
 
     def build(self, **kwargs: Any) -> ExecutionAgentPort:
+        return self.build_harness(**kwargs)
+
+    def build_harness(self, **kwargs: Any) -> RavnHarnessPort:
         workspace_dir = str(kwargs.get("workspace_dir", ""))
         session: Session = kwargs["session"]
         task_id = str(kwargs.get("task_id") or session.id)
