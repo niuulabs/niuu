@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from ravn.adapters.permission.allow_deny import AllowAllPermission, DenyAllPermission
 from ravn.adapters.skill.file_registry import FileSkillRegistry
+from ravn.adapters.tools.capability_catalog import CapabilityListTool
 from ravn.adapters.tools.learned_tool_run import LearnedToolRunTool
+from ravn.domain.models import ToolResult
+from ravn.ports.tool import ToolPort
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.learned_tools import (
     ContainedLearnedToolRunner,
@@ -24,6 +28,7 @@ from ravn.valkyrie_evolution.learned_tools import (
     write_learned_tool_artifact,
 )
 from ravn.valkyrie_evolution.models import LearnedToolArtifact, LearnedToolManifest
+from ravn.valkyrie_evolution.tool_runtime import run_tool
 
 
 def _install_tool(
@@ -114,6 +119,141 @@ class TestLearnedToolResolver:
 
         assert not result.is_error
         assert '"ok": true' in result.content
+
+    @pytest.mark.asyncio
+    async def test_container_backend_hides_sdk_tool_and_refuses_dispatch(
+        self, tmp_path: Path
+    ) -> None:
+        """Discovery must not promise a host-SDK tool on a backend without a route.
+
+        This is deliberately an installed tool rather than a synthetic catalog
+        row: both discovery and dispatch inspect the same persisted source.
+        """
+        _install_tool(
+            tmp_path,
+            "read_configmap_key_tail",
+            tool_code=(
+                "from ravn.sdk import tool\n"
+                "def run(input):\n"
+                "    return tool.kubernetes_inspect(**input)\n"
+            ),
+        )
+        _install_tool(tmp_path, "self_contained_probe")
+        resolver = LearnedToolResolver(
+            state_dir=tmp_path,
+            execution_backend="container",
+            workspace_root=tmp_path,
+        )
+        catalog = CapabilityListTool(
+            tools_provider=lambda: [],
+            learned_tools_provider=resolver.list_artifacts,
+            learned_tool_compatibility=resolver.incompatibility_reason,
+        )
+
+        discovery = json.loads(
+            (await catalog.execute({"kind": "tool", "query": "read_configmap_key_tail"})).content
+        )
+
+        assert discovery["capabilities"] == []
+        assert discovery["errors"] == [
+            {
+                "kind": "learned_tool",
+                "name": "read_configmap_key_tail",
+                "error": (
+                    "the configured 'container' execution backend cannot provide the ravn.sdk "
+                    "host-tool route required by this learned tool; rebuild it self-contained "
+                    "or use an execution backend with an authorized host-tool route"
+                ),
+            }
+        ]
+        available = json.loads((await catalog.execute({"kind": "tool"})).content)
+        assert [entry["name"] for entry in available["capabilities"]] == ["self_contained_probe"]
+        executable = json.loads(
+            (await catalog.execute({"kind": "tool", "names": ["self_contained_probe"]})).content
+        )
+        assert executable["capabilities"][0]["metadata"]["invoke_via"] == "learned_tool_run"
+
+        result = await LearnedToolRunTool(
+            resolver=resolver,
+            permission=AllowAllPermission(),
+        ).execute({"name": "read_configmap_key_tail", "input": {}})
+
+        assert result.is_error
+        assert "is incompatible" in result.content
+        assert "ravn.sdk host-tool route" in result.content
+
+
+class TestHostToolAuthorization:
+    @pytest.mark.asyncio
+    async def test_sdk_bridge_preserves_selected_cluster_single_key_read(
+        self, tmp_path: Path
+    ) -> None:
+        """The compatibility gate does not widen the existing host-tool boundary."""
+
+        class HostPermission(AllowAllPermission):
+            def allows(self, permission: str) -> bool:
+                return permission == "kubernetes:read"
+
+        selected_read = {
+            "cluster": "teleport.niuu.world-ymir",
+            "namespace": "nats",
+            "name": "valkyrie-ymir-k8s-config",
+            "key": "config.yaml",
+            "tail_bytes": 128,
+        }
+
+        class SelectedClusterReadTool(ToolPort):
+            @property
+            def name(self) -> str:
+                return "kubernetes_inspect"
+
+            @property
+            def description(self) -> str:
+                return "Read one key from the selected cluster."
+
+            @property
+            def input_schema(self) -> dict:
+                return {"type": "object"}
+
+            @property
+            def required_permission(self) -> str:
+                return "kubernetes:read"
+
+            async def execute(self, input: dict) -> ToolResult:
+                if input != selected_read:
+                    return ToolResult(
+                        tool_call_id="", content="selected cluster denied", is_error=True
+                    )
+                return ToolResult(tool_call_id="", content=json.dumps({"value": "tail"}))
+
+        dispatch = LearnedToolRunTool(
+            resolver=LearnedToolResolver(state_dir=tmp_path),
+            permission=HostPermission(),
+            host_tools_provider=lambda: [SelectedClusterReadTool()],
+        )
+        tool_path = tmp_path / "read_configmap_key_tail.py"
+        tool_path.write_text(
+            "from ravn.sdk import tool\n"
+            "def run(input):\n"
+            "    return tool.kubernetes_inspect(**input)\n",
+            encoding="utf-8",
+        )
+
+        allowed = await run_tool(
+            tool_path,
+            selected_read,
+            host_call=dispatch._host_call("read_configmap_key_tail"),
+        )
+        denied = await run_tool(
+            tool_path,
+            {**selected_read, "cluster": "other-cluster"},
+            host_call=dispatch._host_call("read_configmap_key_tail"),
+        )
+
+        assert allowed.ok is True
+        assert allowed.result == {"value": "tail"}
+        assert denied.ok is False
+        assert "selected cluster denied" in (denied.error + denied.stderr)
 
 
 class TestLearnedToolRunTool:

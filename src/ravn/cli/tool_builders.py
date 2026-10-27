@@ -151,6 +151,7 @@ def _build_tools(
         )
 
         runtime_ctx["learned_tools_provider"] = resolver.list_artifacts
+        runtime_ctx["learned_tool_compatibility"] = resolver.incompatibility_reason
         runtime_ctx["learned_tool_usage"] = LearnedToolUsageLedger(resolver.artifacts_dir).snapshot
         runtime_ctx["retired_learned_tools"] = _retired_learned_tools(
             _resident_ravn_state_dir(workspace, settings)

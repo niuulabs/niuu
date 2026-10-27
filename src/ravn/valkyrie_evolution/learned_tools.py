@@ -2104,6 +2104,35 @@ class LearnedToolResolver:
             artifacts.append(artifact)
         return artifacts
 
+    def incompatibility_reason(self, artifact: LearnedToolArtifact) -> str | None:
+        """Return why *artifact* cannot run on this resolver's backend.
+
+        Catalog discovery must not advertise an SDK-dependent tool through
+        ``learned_tool_run`` when its execution backend has no path back to
+        the resident.  The implementation is the authority here rather than
+        manifest reach: installed artifacts predate the host-SDK reach
+        declaration and the import is what actually requires the route.
+        """
+        tool_path = self._tool_path(artifact.manifest.name)
+        try:
+            tool_code = tool_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return (
+                "backend compatibility cannot be determined because the learned tool "
+                f"implementation cannot be read: {exc}"
+            )
+        if not learned_tool_requires_host_sdk(tool_code):
+            return None
+        runner = self._runner()
+        if getattr(runner, "supports_host_call", False):
+            return None
+        return (
+            f"the configured {self._execution_backend or 'local'!r} execution backend "
+            "cannot provide the ravn.sdk host-tool route required by this learned tool; "
+            "rebuild it self-contained or use an execution backend with an authorized "
+            "host-tool route"
+        )
+
     def load(self, name: str, *, host_call: HostCall | None = None) -> LearnedTool:
         """Load one learned tool as an executable ToolPort, by manifest name.
 
@@ -2126,6 +2155,9 @@ class LearnedToolResolver:
         tool_path = self._tool_path(artifact.manifest.name)
         if not tool_path.exists():
             raise LearnedToolError(f"learned tool {name!r} has no code file at {tool_path}")
+        incompatibility = self.incompatibility_reason(artifact)
+        if incompatibility is not None:
+            raise LearnedToolError(f"learned tool {name!r} is incompatible: {incompatibility}")
         return load_learned_tool(
             artifact=artifact,
             tool_path=tool_path,
@@ -2146,6 +2178,27 @@ class LearnedToolResolver:
             venvs_dir=self._venvs_dir,
             backend_kwargs=self._execution_backend_kwargs,
         )
+
+
+def learned_tool_requires_host_sdk(tool_code: str) -> bool:
+    """Whether source imports the resident-only ``ravn.sdk`` host bridge.
+
+    The bridge exists only when the runner has an authorized return channel.
+    Syntax failures remain normal artifact-validation failures, which provide
+    a more useful diagnostic than a compatibility claim.
+    """
+    try:
+        tree = ast.parse(tool_code)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if node.module == "ravn" or node.module.startswith("ravn."):
+                return True
+        elif isinstance(node, ast.Import):
+            if any(alias.name == "ravn" or alias.name.startswith("ravn.") for alias in node.names):
+                return True
+    return False
 
 
 def learned_tool_storage(state_dir: str | Path) -> tuple[Path, Path]:
