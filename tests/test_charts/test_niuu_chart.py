@@ -105,6 +105,20 @@ def test_observatory_image_tag_overrides_global_default() -> None:
     )
 
 
+def test_observatory_directory_renders_ting_static_card_with_allowed_origin() -> None:
+    rendered = _render_niuu_chart()
+    config = _configmap_data(rendered, "niuu-test-observatory")["config.yaml"]
+    directory = yaml.safe_load(config)["observatory"]["directory"]
+
+    assert directory["static_cards"] == [
+        {
+            "url": "http://niuu-test-ting/.well-known/agent-card.json",
+            "visibility": "system",
+        }
+    ]
+    assert directory["allowed_card_origins"] == ["http://niuu-test-ting"]
+
+
 def test_guild_envoy_accepts_websocket_upgrades() -> None:
     envoy_template = (GUILD_CHART_DIR / "templates" / "envoy-configmap.yaml").read_text()
 
@@ -168,6 +182,15 @@ def _service_for_path(rendered_yaml: str, path: str) -> str:
                 if route["path"] == path:
                     return route["backend"]["service"]["name"]
     raise AssertionError(f"route path not found: {path}")
+
+
+def _configmap_data(rendered_yaml: str, name: str) -> dict[str, str]:
+    for document in yaml.safe_load_all(rendered_yaml):
+        if document.get("kind") != "ConfigMap":
+            continue
+        if document["metadata"]["name"] == name:
+            return document["data"]
+    raise AssertionError(f"ConfigMap {name} not found")
 
 
 def _deployment_image(rendered_yaml: str, name: str) -> str:

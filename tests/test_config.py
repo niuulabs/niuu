@@ -130,6 +130,12 @@ class TestSettings:
                     "local_max_concurrency": 3,
                     "guild_max_concurrency": 4,
                     "signature_algorithms": ["ES256"],
+                    "static_cards": [
+                        {
+                            "url": "https://ting.example.test/.well-known/agent-card.json",
+                            "visibility": "system",
+                        }
+                    ],
                     "authenticated_card_origins": ["https://agents.example.test"],
                     "allowed_card_origins": ["https://agents.example.test"],
                 }
@@ -148,6 +154,10 @@ class TestSettings:
         assert settings.observatory.directory.allowed_card_origins == [
             "https://agents.example.test"
         ]
+        assert settings.observatory.directory.static_cards[0].url == (
+            "https://ting.example.test/.well-known/agent-card.json"
+        )
+        assert settings.observatory.directory.static_cards[0].visibility == "system"
 
     def test_forge_stream_defaults_match_the_merged_session_stream(self):
         """Guild's merged /sessions/stream timing is configured, not hardcoded."""

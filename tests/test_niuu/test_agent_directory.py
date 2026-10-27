@@ -139,6 +139,26 @@ def _page(instance_id: str, *entries: AgentDirectoryEntry) -> AgentDirectoryPage
     )
 
 
+def _static_ting_entry(
+    visibility: str = "system",
+    source_agent_id: str = "ting-card",
+) -> AgentDirectoryEntry:
+    entry = _entry(
+        "observatory-a",
+        source_agent_id,
+        name="Ting",
+        owner_id="",
+        tenant_id="",
+    )
+    return entry.model_copy(
+        update={
+            "canonical_id": "configured:https://ting.example.test/.well-known/agent-card.json",
+            "card_url": "https://ting.example.test/.well-known/agent-card.json",
+            "visibility": visibility,
+        }
+    )
+
+
 def _principal(user_id: str = "user-a", tenant_id: str = "tenant-a") -> Principal:
     return Principal(user_id=user_id, email="", tenant_id=tenant_id, roles=["member"])
 
@@ -318,6 +338,29 @@ async def test_aggregate_rechecks_visibility_filters_and_detail() -> None:
     assert detail is not None
     assert detail.source_agent_id == "visible"
     assert client.calls[0][2].instance_ids == ()
+
+
+@pytest.mark.asyncio
+async def test_aggregate_propagates_static_ting_card_without_broadening_visibility() -> None:
+    instance = _instance("observatory-a", "cluster-a")
+    client = _StubClient(
+        {
+            "observatory-a": _page(
+                "observatory-a",
+                _static_ting_entry(),
+                _static_ting_entry("private", "private-card"),
+            )
+        }
+    )
+    service = AgentDirectoryAggregationService(client=client, max_concurrency=1)  # type: ignore[arg-type]
+
+    page = await service.list_agents(
+        [instance], _principal("other-user", "other-tenant"), headers={}
+    )
+
+    assert [entry.name for entry in page.items] == ["Ting"]
+    assert page.items[0].card_url == "https://ting.example.test/.well-known/agent-card.json"
+    assert page.items[0].visibility == "system"
 
 
 @pytest.mark.asyncio

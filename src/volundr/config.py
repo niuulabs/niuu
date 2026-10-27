@@ -2465,6 +2465,18 @@ class ObservatoryGuildConfig(BaseModel):
     )
 
 
+class StaticAgentCardConfig(BaseModel):
+    """One deployment-curated Agent Card exposed by the local directory."""
+
+    url: str = Field(
+        min_length=1,
+        description="Agent Card URL resolved through the directory's allowlisted HTTP resolver.",
+    )
+    visibility: Literal["system", "public", "tenant", "user", "private"] = Field(
+        description="Directory visibility applied before the Agent Card is fetched.",
+    )
+
+
 class AgentDirectoryConfig(BaseModel):
     """Local card resolution and Guild fan-out bounds for the Agent Directory."""
 
@@ -2524,6 +2536,10 @@ class AgentDirectoryConfig(BaseModel):
             "Deployment-owned HTTP(S) origins permitted for Agent Card and JWKS retrieval. "
             "Empty denies all outbound card retrieval."
         ),
+    )
+    static_cards: list[StaticAgentCardConfig] = Field(
+        default_factory=list,
+        description="Deployment-curated Agent Cards added without topology discovery.",
     )
 
 

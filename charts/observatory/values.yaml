@@ -205,6 +205,11 @@ podDisruptionBudget:
 # -- Principal-aware A2A Agent Directory card resolution and fan-out bounds.
 directory:
   instanceId: ""
+  # -- Curated A2A cards resolved without adding duplicate topology entities.
+  # The default is the Ting service installed by this release.
+  staticCards:
+    - url: "http://{{ .Release.Name }}-ting/.well-known/agent-card.json"
+      visibility: system
   cardTimeoutSeconds: 4.0
   cardCacheTtlSeconds: 300.0
   localMaxConcurrency: 8
@@ -220,7 +225,8 @@ directory:
   # -- Card origins explicitly trusted to receive forwarded caller authentication.
   authenticatedCardOrigins: []
   # -- Card and JWKS retrieval is denied until a deployment owner allowlists exact origins.
-  allowedCardOrigins: []
+  allowedCardOrigins:
+    - "http://{{ .Release.Name }}-ting"
 
 nodeSelector: {}
 tolerations: []
