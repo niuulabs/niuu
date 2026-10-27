@@ -2028,7 +2028,10 @@ class OpenShellGatewayPodManager(
                 "belongs to the old sandbox)"
             ) from exc
 
-    async def stop(self, session: Session) -> bool:
+    async def _release_session_handles(
+        self, session: Session
+    ) -> tuple[str, OpenShellSandbox | None, tuple[OpenShellProviderGrant, ...]]:
+        """Close this process's handles on a session's sandbox and find its grants."""
         forwarder = self._resident_forwarders.pop(str(session.id), None)
         if forwarder is not None:
             await asyncio.to_thread(forwarder.close)
@@ -2043,6 +2046,29 @@ class OpenShellGatewayPodManager(
                 for name in sandbox.providers
                 if name.startswith("volundr-")
             )
+        return sandbox_name, sandbox, grants
+
+    async def destroy(self, session: Session) -> bool:
+        """Delete the session's sandbox, service and grants, whatever phase it is in.
+
+        ``stop`` only suspends a sandbox whose storage the gateway owns, so a
+        deleted session would leave its Sandbox CR and workspace volume behind.
+        Deletion does not wait for a stop: a sandbox whose pod already failed
+        never reaches STOPPED, but DeleteSandbox removes it all the same.
+        """
+        sandbox_name, _, grants = await self._release_session_handles(session)
+        try:
+            return await self._cleanup_resources(sandbox_name, grants)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not delete OpenShell sandbox {sandbox_name} for session {session.id}: "
+                f"{exc}. The session is kept so the delete can be retried; check the "
+                "OpenShell gateway's DeleteSandbox for this sandbox, then delete the "
+                "session again"
+            ) from exc
+
+    async def stop(self, session: Session) -> bool:
+        sandbox_name, sandbox, grants = await self._release_session_handles(session)
         if sandbox is not None and (sandbox.labels or {}).get("volundr.niuu.io/storage") != "forge":
             # Legacy volumes are owned by the Sandbox CR: deleting it also
             # deletes history. Native stop removes compute but retains storage.
