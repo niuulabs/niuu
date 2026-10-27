@@ -349,6 +349,58 @@ class TestContributorOutput:
         assert "tcp://127.0.0.1:" in config_text
         assert {"name": "flock-ipc", "empty_dir": {}} in result.values["openshell"]["volumes"]
         assert workload["volume_mounts"][0]["mount_path"] == "/tmp/niuu-mesh"
+        # Exactly the fields OpenShell's Kubernetes driver accepts on a peer.
+        for peer in workloads:
+            assert set(peer) <= {
+                "name",
+                "image",
+                "command",
+                "environment",
+                "resources",
+                "volume_mounts",
+            }
+            assert "readiness_port" not in peer
+            assert not any(key.startswith("OPENSHELL_") for key in peer["environment"])
+
+    @pytest.mark.parametrize(
+        ("persona", "message"),
+        [
+            ("Code_Reviewer", "DNS-1123 label"),
+            ("a" * 40, "at most 40 characters"),
+        ],
+    )
+    async def test_openshell_backend_refuses_personas_openshell_cannot_name(
+        self, session, persona, message
+    ):
+        provider = MagicMock()
+        provider.get.return_value = LaunchSpec(
+            name="ravn-flock",
+            workload_type="ravn_flock",
+            workload_config={"personas": [persona], "mesh": {"transport": "nng"}},
+        )
+        contributor = _flock_contributor(launch_spec_provider=provider)
+
+        with pytest.raises(ValueError, match=message):
+            await contributor.contribute(
+                session, SessionContext(launch_spec="ravn-flock", runtime_backend="openshell")
+            )
+
+    async def test_openshell_backend_refuses_more_peers_than_openshell_runs(self, session):
+        provider = MagicMock()
+        provider.get.return_value = LaunchSpec(
+            name="ravn-flock",
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": [f"peer-{index}" for index in range(17)],
+                "mesh": {"transport": "nng"},
+            },
+        )
+        contributor = _flock_contributor(launch_spec_provider=provider)
+
+        with pytest.raises(ValueError, match="at most 16 peer workloads"):
+            await contributor.contribute(
+                session, SessionContext(launch_spec="ravn-flock", runtime_backend="openshell")
+            )
 
     async def test_openshell_bootstrap_uses_projected_config_and_streams_logs(
         self, session, flock_template, tmp_path

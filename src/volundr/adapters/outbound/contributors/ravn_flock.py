@@ -28,6 +28,10 @@ import yaml
 from niuu.domain.llm_merge import _SECURITY_KEYS, is_empty, merge_llm
 from niuu.mesh import nng_gateway_port_for as _gateway_port_for
 from niuu.mesh import nng_ports_for as _ports_for
+from volundr.adapters.outbound.openshell_contract import (
+    check_peer_workload_name,
+    check_peer_workloads,
+)
 from volundr.adapters.outbound.resident_container_spec import PLATFORM_ACCESS_TOKEN_ENV
 from volundr.domain.models import (
     LaunchSpec,
@@ -1431,9 +1435,11 @@ class RavnFlockContributor(SessionContributor):
                     }
                 )
                 process_env.pop(self._workload_identity_token_file_env, None)
+                # An OpenShell peer workload: exactly the fields the driver
+                # accepts (openshell_contract.PEER_WORKLOAD_FIELDS).
                 openshell_workloads.append(
                     {
-                        "name": f"ravn-{persona}",
+                        "name": check_peer_workload_name(f"ravn-{persona}"),
                         "image": self._ravn_image,
                         "command": list(_RAVN_COMMAND),
                         "environment": process_env,
@@ -1520,6 +1526,7 @@ class RavnFlockContributor(SessionContributor):
                         "read_only": False,
                     }
                 )
+            check_peer_workloads(openshell_workloads, volumes)
             values["openshell"] = {
                 "workloads": openshell_workloads,
                 "files": openshell_files,
