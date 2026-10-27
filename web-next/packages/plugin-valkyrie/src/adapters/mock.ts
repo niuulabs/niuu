@@ -121,6 +121,8 @@ const valkyries: ValkyrieResident[] = [
       lessons: {
         reviewed: 38,
         neighbourhoodsJudged: 6,
+        remaining: 0,
+        rewritesRemaining: 0,
         merged: ['lessons/oom-restart-loop.md', 'lessons/oom-after-deploy.md'],
         superseded: ['lessons/evict-on-pressure.md'],
         pruned: [],

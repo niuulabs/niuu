@@ -21,12 +21,26 @@ from niuu.domain.models import (
     ChangedFile,
     CommitDetail,
     CommitSummary,
+    ImageProvenance,
+    InvalidImageDigestError,
     Principal,
     PullRequest,
     RefChecks,
     RefComparison,
+    VerifiedProvenance,
 )
-from niuu.ports.git import GitAuthError, GitProviderResponseError, GitRepoNotFoundError
+from niuu.ports.git import (
+    AttestationNotFoundError,
+    GitAuthError,
+    GitOperationUnsupportedError,
+    GitProviderResponseError,
+    GitRepoNotFoundError,
+)
+from niuu.ports.provenance import (
+    ProvenanceNotConfiguredError,
+    ProvenanceVerificationError,
+    ProvenanceVerifierUnavailableError,
+)
 
 if TYPE_CHECKING:
     from niuu.domain.services.repo import RepoService
@@ -271,6 +285,57 @@ class RefChecksResponse(BaseModel):
         )
 
 
+class VerifiedProvenanceResponse(BaseModel):
+    """What one verified attestation proves; every field comes from the signed material."""
+
+    subject_name: str = Field(description="Image repository the attestation names for the digest")
+    subject_digest: str = Field(description="sha256:<hex> manifest digest that was attested")
+    source_repository: str = Field(description="Repository the build ran from (certificate)")
+    commit_sha: str = Field(description="Commit the build ran at (certificate)")
+    ref: str = Field(description="Git ref the build ran for, e.g. refs/heads/dev (certificate)")
+    workflow: str = Field(description="Signing workflow file and ref (certificate build signer)")
+    run_url: str = Field(description="URL of the workflow run that built and signed the image")
+
+    @classmethod
+    def from_provenance(cls, provenance: VerifiedProvenance) -> VerifiedProvenanceResponse:
+        return cls(
+            subject_name=provenance.subject_name,
+            subject_digest=provenance.subject_digest,
+            source_repository=provenance.source_repository,
+            commit_sha=provenance.commit_sha,
+            ref=provenance.ref,
+            workflow=provenance.workflow,
+            run_url=provenance.run_url,
+        )
+
+
+class ImageProvenanceResponse(BaseModel):
+    """A digest whose build provenance verified. Anything unverified is an error, not this."""
+
+    repo_url: str
+    digest: str
+    verified: Literal[True] = Field(
+        default=True, description="Always true: unverified provenance is never returned"
+    )
+    attestations: list[VerifiedProvenanceResponse] = Field(
+        description="Every attestation that verified (at least one)"
+    )
+    rejected: list[str] = Field(
+        description="Why each attestation the host returned but verification refused was refused"
+    )
+
+    @classmethod
+    def from_provenance(cls, provenance: ImageProvenance) -> ImageProvenanceResponse:
+        return cls(
+            repo_url=provenance.repo_url,
+            digest=provenance.digest,
+            attestations=[
+                VerifiedProvenanceResponse.from_provenance(a) for a in provenance.attestations
+            ],
+            rejected=list(provenance.rejected),
+        )
+
+
 @contextmanager
 def _git_host_errors(repo_url: str) -> Iterator[None]:
     """Translate Git-host failures on pull-request routes into typed HTTP errors.
@@ -322,6 +387,39 @@ def _git_read_errors(repo_url: str) -> Iterator[None]:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"The Git provider could not serve this read: {exc}",
         ) from exc
+
+
+@contextmanager
+def _provenance_errors(repo_url: str) -> Iterator[None]:
+    """Translate image-provenance failures into typed HTTP errors.
+
+    Each outcome is distinct so a caller can tell "there is no attestation" (404)
+    from "there is one and it failed verification" (422), and both from a host
+    outage (502), a verifier that could not run (503) and an operator decision
+    to run without verification (503). Host errors share ``_git_read_errors``.
+    """
+    with _git_read_errors(repo_url):
+        try:
+            yield
+        except InvalidImageDigestError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+        except AttestationNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except GitOperationUnsupportedError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)
+            ) from exc
+        except ProvenanceVerificationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Provenance verification failed: {exc.reason}",
+            ) from exc
+        except (ProvenanceNotConfiguredError, ProvenanceVerifierUnavailableError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+            ) from exc
 
 
 def create_repos_router(repo_service: RepoService) -> APIRouter:
@@ -460,6 +558,26 @@ def create_repos_router(repo_service: RepoService) -> APIRouter:
         with _git_read_errors(repo_url):
             result = await _repo_service().get_ref_checks(repo_url, ref, user_id=principal.user_id)
         return RefChecksResponse.from_checks(result)
+
+    @router.get("/repos/provenance", response_model=ImageProvenanceResponse)
+    async def verify_image_provenance(
+        repo_url: str = Query(..., description="Repository URL the image was built from"),
+        digest: str = Query(..., description="Image manifest digest, sha256:<64 hex>"),
+        principal: Principal = Depends(extract_principal),
+    ) -> ImageProvenanceResponse:
+        """Verify the build provenance of an image digest, server-side.
+
+        The platform fetches the repository's GitHub attestations with its own
+        credentials and verifies them cryptographically; 200 means at least one
+        attestation verified. 404: no attestation exists. 422: attestations
+        exist but none verified (or the digest is malformed). 501: the host has
+        no attestation API (GitLab).
+        """
+        with _provenance_errors(repo_url):
+            result = await _repo_service().verify_image_provenance(
+                repo_url, digest, user_id=principal.user_id
+            )
+        return ImageProvenanceResponse.from_provenance(result)
 
     @router.get("/repos/prs", response_model=list[PullRequestResponse])
     async def list_pull_requests(

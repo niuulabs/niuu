@@ -20,6 +20,7 @@ from niuu.adapters.inbound.rest_credentials_settings import create_credentials_s
 from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
 from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.adapters.inbound.rest_realms import create_realms_router
+from niuu.adapters.outbound.git_registry import create_provenance_verifier
 from niuu.adapters.postgres_credential_refresh_lock import PostgresCredentialRefreshLock
 from niuu.adapters.postgres_realms import PostgresRealmRepository
 from niuu.build_identity import build_identity
@@ -1411,6 +1412,7 @@ def create_app(
             repo_service = RepoService(
                 git_registry,
                 user_integration=user_integration_service,
+                provenance_verifier=create_provenance_verifier(settings.git.provenance),
             )
 
             chronicle_repository = PostgresChronicleRepository(pool)

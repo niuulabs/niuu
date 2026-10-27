@@ -39,6 +39,8 @@ def _completed_outcome(*, finished_at: datetime) -> dict:
         "learnings": {
             "lessons_reviewed": 40,
             "neighbourhoods_judged": 6,
+            "lessons_remaining": 120,
+            "rewrites_remaining": 2,
             "merged": ["lessons/a.md", "lessons/b.md"],
             "superseded": ["lessons/c.md"],
             "pruned": [],
@@ -101,6 +103,8 @@ def test_completed_dream_carries_time_duration_and_summary_counts() -> None:
         "promotionCandidates": ["held-probe"],
     }
     assert dream["lessons"]["reviewed"] == 40
+    assert dream["lessons"]["remaining"] == 120
+    assert dream["lessons"]["rewritesRemaining"] == 2
     assert dream["lessons"]["merged"] == ["lessons/a.md", "lessons/b.md"]
     assert dream["lessons"]["superseded"] == ["lessons/c.md"]
     assert dream["lessons"]["rewritten"] == ["lessons/d.md"]

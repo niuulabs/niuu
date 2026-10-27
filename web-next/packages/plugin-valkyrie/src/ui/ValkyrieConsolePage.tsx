@@ -24,6 +24,7 @@ import {
   decisionHeadline,
   decisionNeedsApproval,
   decisionSubject,
+  dreamCurationBacklog,
   dreamLessonsCurated,
   dreamProposalsFiled,
   environmentKindLabel,
@@ -1628,7 +1629,12 @@ export function DreamPanel({ valkyrie }: { valkyrie: ValkyrieResident }) {
               value={dream.lessons ? String(dreamLessonsCurated(dream)) : 'not due'}
               detail={
                 dream.lessons
-                  ? `${dream.lessons.merged.length} merged of ${dream.lessons.reviewed} reviewed`
+                  ? [
+                      `${dream.lessons.merged.length} merged of ${dream.lessons.reviewed} reviewed`,
+                      dreamCurationBacklog(dream),
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')
                   : 'lesson curation did not run this dream'
               }
             />

@@ -74,6 +74,22 @@ git:
     existingSecret: ""
     # -- Key in existingSecret containing the token
     tokenKey: "token"
+  # Image build provenance (volundr_git verify_image_provenance): the platform
+  # fetches a repository's GitHub build attestations and verifies them with
+  # Sigstore, so residents never reach GitHub's attestation storage themselves.
+  provenance:
+    # -- Verify image provenance. Needs the `provenance` extra in the image (the
+    # niuu image has it) and egress to tuf-repo-cdn.sigstore.dev for the trust
+    # root; false answers the endpoint with 503.
+    enabled: true
+    # -- Seconds allowed to download an attestation bundle from the Git host's
+    # storage; a slower download fails the request with a 502.
+    bundleFetchTimeoutSeconds: 30
+    # -- Verifier constructor kwargs (`issuer`, `workflow_paths`, optional
+    # `trusted_root_file`). Empty keeps the defaults (GitHub Actions issuer;
+    # reusable-container-build.yaml and dev.yaml as the signing workflows).
+    # Setting any key replaces ALL defaults, so restate `issuer` and `workflow_paths`.
+    kwargs: {}
 
 database:
   name: niuu_shared

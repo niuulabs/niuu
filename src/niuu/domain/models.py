@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -413,6 +414,80 @@ class RefChecks:
         for check in self.checks:
             tally[check.conclusion.value] = tally.get(check.conclusion.value, 0) + 1
         return tally
+
+
+_SHA256_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+
+
+class InvalidImageDigestError(ValueError):
+    """An image digest that is not ``sha256:`` followed by 64 hex characters."""
+
+
+def normalize_image_digest(value: str) -> str:
+    """Return *value* as a lower-case ``sha256:<64 hex>`` digest, or raise.
+
+    Only SHA-256 is accepted: it is the algorithm GitHub attestation subjects and
+    OCI manifest digests use here, and a digest in another form (a bare hex
+    string, a tag, a truncated prefix) names no image, so it is rejected rather
+    than guessed at.
+
+    Raises:
+        InvalidImageDigestError: *value* is not a full SHA-256 digest.
+    """
+    digest = value.strip().lower()
+    if _SHA256_DIGEST.fullmatch(digest) is None:
+        raise InvalidImageDigestError(
+            f"{value!r} is not an image digest: expected 'sha256:' followed by 64 hex "
+            "characters (the manifest digest, e.g. from `docker buildx imagetools inspect`)"
+        )
+    return digest
+
+
+@dataclass(frozen=True)
+class ProvenanceAttestation:
+    """One Sigstore bundle a provider holds for an artifact digest, not yet verified.
+
+    ``bundle`` is the bundle's JSON text exactly as the provider stored it.
+    Nothing here has been checked: it becomes evidence only once a provenance
+    verifier accepts it.
+    """
+
+    bundle: str
+
+
+@dataclass(frozen=True)
+class VerifiedProvenance:
+    """What one cryptographically verified build attestation proves.
+
+    Every field comes from the verified signing certificate or from the signed
+    in-toto statement, never from the provider's response around the bundle.
+    ``workflow`` is the build signer URI: the workflow file and ref that ran the
+    signing job (for a reusable workflow, the reusable workflow's own file).
+    """
+
+    subject_name: str
+    subject_digest: str
+    source_repository: str
+    commit_sha: str
+    ref: str
+    workflow: str
+    run_url: str
+
+
+@dataclass(frozen=True)
+class ImageProvenance:
+    """The verified provenance of one image digest in one repository.
+
+    ``attestations`` holds every attestation that verified (at least one);
+    ``rejected`` holds the reason each attestation the provider returned but the
+    verifier refused, so a partially trusted set is visible rather than silently
+    reduced.
+    """
+
+    repo_url: str
+    digest: str
+    attestations: tuple[VerifiedProvenance, ...]
+    rejected: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -83,6 +83,10 @@ export interface DreamOutcome {
   lessons: {
     reviewed: number;
     neighbourhoodsJudged: number;
+    /** Uncurated lessons the pass did not reach before the next dream was due. */
+    remaining: number;
+    /** Promoted learnings still without a procedure when the pass stopped. */
+    rewritesRemaining: number;
     merged: string[];
     superseded: string[];
     pruned: string[];
@@ -120,6 +124,24 @@ export function dreamLessonsCurated(dream: DreamOutcome): number {
     lessons.promoted.length +
     lessons.rewritten.length
   );
+}
+
+/**
+ * What lesson curation left for the next dream, or null when it finished.
+ * A pass stops when the next dream is due, so a large backlog is curated
+ * over several dreams; this says how much is still waiting.
+ */
+export function dreamCurationBacklog(dream: DreamOutcome): string | null {
+  const lessons = dream.lessons;
+  if (!lessons) return null;
+  const parts = [
+    lessons.remaining ? `${lessons.remaining} lesson${lessons.remaining === 1 ? '' : 's'}` : '',
+    lessons.rewritesRemaining
+      ? `${lessons.rewritesRemaining} procedure${lessons.rewritesRemaining === 1 ? '' : 's'}`
+      : '',
+  ].filter(Boolean);
+  if (parts.length === 0) return null;
+  return `${parts.join(' and ')} left for the next dream`;
 }
 
 /** Proposals the dream filed: held skill promotions plus self-improvement actions. */

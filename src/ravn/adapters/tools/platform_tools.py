@@ -372,10 +372,12 @@ class VolundrGitTool(_PlatformAuthMixin, ToolPort):
       ``include_patch``).
     - ``ref_checks``    — CI results for a branch, tag or commit, no PR needed (requires
       ``repo_url``, ``ref``).
+    - ``verify_image_provenance`` — cryptographically verified build provenance of an image
+      digest (requires ``repo_url``, ``digest``).
 
-    The three read actions go through the platform's authenticated Git credentials,
-    so they are the route for commits, diffs and CI. Fetching ``api.github.com``
-    anonymously is rate limited per egress IP and fails.
+    The read actions go through the platform's authenticated Git credentials, so they
+    are the route for commits, diffs, CI and image provenance. Fetching
+    ``api.github.com`` anonymously is rate limited per egress IP and fails.
     """
 
     def __init__(
@@ -416,7 +418,18 @@ class VolundrGitTool(_PlatformAuthMixin, ToolPort):
             "compare return the file list WITHOUT patches; set include_patch=true "
             "and pass path (a file or directory, or a list) to read the diff of "
             "just the files you need. files_total is the full count of changed "
-            "files and unmatched_paths lists requested paths the change did not touch."
+            "files and unmatched_paths lists requested paths the change did not touch. "
+            "To learn whether a container image digest is provenance-bound use "
+            "verify_image_provenance (repo_url of the repository that built it + digest "
+            "as sha256:<64 hex>, the manifest or index digest, not a tag): the "
+            "platform fetches the repository's GitHub build attestations itself and "
+            "verifies their signatures, so never fetch api.github.com or attestation "
+            "storage yourself. It returns, per verified attestation, the source "
+            "repository, commit_sha, ref, signing workflow and run_url; the digest is "
+            "provenance-bound only when it succeeds. An error means NOT bound: 404 no "
+            "attestation exists for that digest, 422 attestations exist but failed "
+            "verification (the message says why). Check commit_sha and ref are the "
+            "ones you expect before relying on it. GitHub repositories only."
         )
 
     @property
@@ -437,6 +450,7 @@ class VolundrGitTool(_PlatformAuthMixin, ToolPort):
                         "get_commit",
                         "compare",
                         "ref_checks",
+                        "verify_image_provenance",
                     ],
                     "description": "Operation to perform.",
                 },
@@ -480,6 +494,13 @@ class VolundrGitTool(_PlatformAuthMixin, ToolPort):
                     "type": "string",
                     "description": (
                         "Commit SHA, branch or tag (required for get_commit, ref_checks)."
+                    ),
+                },
+                "digest": {
+                    "type": "string",
+                    "description": (
+                        "Image manifest digest, sha256:<64 hex> (required for "
+                        "verify_image_provenance). repo_url is the repository that built it."
                     ),
                 },
                 "base": {
@@ -538,6 +559,8 @@ class VolundrGitTool(_PlatformAuthMixin, ToolPort):
                     return await self._compare(client, input)
                 case "ref_checks":
                     return await self._ref_checks(client, input)
+                case "verify_image_provenance":
+                    return await self._verify_image_provenance(client, input)
                 case _:
                     return _err(f"Unknown action: {action!r}")
         raise AssertionError("Unreachable execute fallthrough")
@@ -697,6 +720,24 @@ class VolundrGitTool(_PlatformAuthMixin, ToolPort):
             return _ok(resp.json())
         except Exception as exc:
             return _err(f"Failed to read checks for {ref!r}: {_http_failure(exc)}")
+
+    async def _verify_image_provenance(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
+        repo_url = input.get("repo_url", "")
+        digest = input.get("digest", "")
+        if not repo_url or not digest:
+            return _err("repo_url and digest are required for verify_image_provenance")
+        try:
+            resp = await client.get(
+                f"{_NIUU_REPOS_PATH}/provenance",
+                params={"repo_url": repo_url, "digest": digest},
+            )
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(
+                f"Provenance of {digest!r} is NOT verified, do not treat it as bound: "
+                f"{_http_failure(exc)}"
+            )
 
 
 # ---------------------------------------------------------------------------

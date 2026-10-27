@@ -31,6 +31,7 @@ from niuu.domain.models import (
     CommitDetail,
     CommitSummary,
     GitProviderType,
+    ProvenanceAttestation,
     PullRequest,
     PullRequestStatus,
     RefChecks,
@@ -40,6 +41,7 @@ from niuu.domain.models import (
 from niuu.ports.delivery import DeliveryForgeProvider
 from niuu.ports.git import (
     GitAuthError,
+    GitOperationUnsupportedError,
     GitProvider,
     GitProviderResponseError,
     GitRepoNotFoundError,
@@ -757,6 +759,21 @@ class GitLabProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
         except RuntimeError as exc:
             raise GitProviderResponseError(str(exc)) from exc
         return RefChecks(repo_url=repo_url, ref=ref, sha=sha, checks=tuple(checks))
+
+    async def get_image_attestations(
+        self, repo_url: str, subject_digest: str
+    ) -> tuple[ProvenanceAttestation, ...]:
+        """GitLab has no GitHub-style attestation API, so this read cannot be answered.
+
+        Raises:
+            GitOperationUnsupportedError: always.
+        """
+        raise GitOperationUnsupportedError(
+            f"Image provenance cannot be verified for {repo_url}: GitLab has no build "
+            "attestation API (the GitHub artifact attestations that `verify_image_provenance` "
+            "reads). Only images built from a GitHub repository by an attesting workflow can "
+            "be verified."
+        )
 
     # --- GitWorkflowProvider methods ---
 

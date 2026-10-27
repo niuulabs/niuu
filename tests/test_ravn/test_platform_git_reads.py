@@ -1,4 +1,4 @@
-"""volundr_git reads: commits, comparisons and branch CI through the platform."""
+"""volundr_git reads: commits, comparisons, branch CI and image provenance via the platform."""
 
 from __future__ import annotations
 
@@ -163,3 +163,94 @@ async def test_failures_carry_the_platforms_explanation(
     assert result.is_error
     assert label in result.content
     assert "Not found: ref 'ghost'" in result.content
+
+
+# --- verify_image_provenance ---------------------------------------------------------
+
+DIGEST = "sha256:" + "ab" * 32
+
+
+def test_schema_and_description_teach_the_model_to_verify_provenance(tool: VolundrGitTool) -> None:
+    properties = tool.input_schema["properties"]
+
+    assert "verify_image_provenance" in properties["action"]["enum"]
+    assert properties["digest"]["type"] == "string"
+    description = tool.description
+    assert "verify_image_provenance" in description
+    assert "sha256:<64 hex>" in description
+    # What an error means is part of the contract, so a model does not read it as "unknown".
+    assert "NOT bound" in description
+    assert "never fetch api.github.com or attestation storage yourself" in description
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_verify_image_provenance_returns_the_platforms_verified_facts(
+    tool: VolundrGitTool,
+) -> None:
+    facts = {
+        "repo_url": REPO,
+        "digest": DIGEST,
+        "verified": True,
+        "attestations": [{"commit_sha": "a" * 40, "ref": "refs/heads/dev"}],
+        "rejected": [],
+    }
+    route = respx.get(f"{NIUU_REPOS_URL}/provenance").mock(
+        return_value=httpx.Response(200, json=facts)
+    )
+
+    result = await tool.execute(
+        {"action": "verify_image_provenance", "repo_url": REPO, "digest": DIGEST}
+    )
+
+    assert not result.is_error
+    assert json.loads(result.content) == facts
+    params = route.calls.last.request.url.params
+    assert params["repo_url"] == REPO
+    assert params["digest"] == DIGEST
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "input",
+    [
+        {"action": "verify_image_provenance", "repo_url": REPO},
+        {"action": "verify_image_provenance", "digest": DIGEST},
+    ],
+)
+async def test_verify_image_provenance_requires_repo_and_digest(
+    tool: VolundrGitTool, input: dict
+) -> None:
+    result = await tool.execute(input)
+
+    assert result.is_error
+    assert "repo_url and digest are required for verify_image_provenance" in result.content
+
+
+@pytest.mark.asyncio
+@respx.mock
+@pytest.mark.parametrize(
+    ("status", "detail"),
+    [
+        (404, "No build provenance found for sha256:abab in niuulabs/niuu"),
+        (422, "Provenance verification failed: DSSE: invalid signature"),
+        (501, "GitLab has no build attestation API"),
+        (503, "Image provenance verification is turned off"),
+        (502, "The Git provider could not serve this read"),
+    ],
+)
+async def test_unverified_provenance_is_an_error_that_says_not_bound(
+    tool: VolundrGitTool, status: int, detail: str
+) -> None:
+    respx.get(f"{NIUU_REPOS_URL}/provenance").mock(
+        return_value=httpx.Response(status, json={"detail": detail})
+    )
+
+    result = await tool.execute(
+        {"action": "verify_image_provenance", "repo_url": REPO, "digest": DIGEST}
+    )
+
+    # An unverified digest is never a successful tool result a model could act on.
+    assert result.is_error
+    assert "NOT verified, do not treat it as bound" in result.content
+    assert detail in result.content

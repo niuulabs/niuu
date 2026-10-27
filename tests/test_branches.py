@@ -79,6 +79,9 @@ class _StubProvider(GitProvider):
     async def get_ref_checks(self, repo_url: str, ref: str):
         raise NotImplementedError("not exercised by branch listing tests")
 
+    async def get_image_attestations(self, repo_url: str, subject_digest: str):
+        raise NotImplementedError("not exercised by branch listing tests")
+
 
 class _StubRegistry:
     """Minimal registry that delegates to a single provider."""

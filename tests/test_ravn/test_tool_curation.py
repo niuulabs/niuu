@@ -1002,7 +1002,7 @@ async def test_the_dream_curates_tools_before_learnings(tmp_path: Path) -> None:
         def due(self) -> bool:
             return True
 
-        async def curate(self) -> Any:
+        async def curate(self, *, budget_seconds: float | None = None) -> Any:
             order.append("learnings")
             raise RuntimeError("Mímir mount failed during list_pages: 503")
 

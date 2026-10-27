@@ -2,7 +2,7 @@
 
 import logging
 
-from niuu.config import GitConfig
+from niuu.config import GitConfig, ProvenanceConfig
 from niuu.domain.delivery import (
     BranchPublicationReceipt,
     BranchPublicationRequest,
@@ -19,6 +19,7 @@ from niuu.domain.models import (
     CIStatus,
     CommitDetail,
     GitProviderType,
+    ProvenanceAttestation,
     PullRequest,
     RefChecks,
     RefComparison,
@@ -26,6 +27,8 @@ from niuu.domain.models import (
 )
 from niuu.ports.delivery import DeliveryForgeProvider
 from niuu.ports.git import GitProvider, GitWorkflowProvider
+from niuu.ports.provenance import ProvenanceVerifier
+from niuu.utils import import_class
 
 from .github import GitHubProvider
 from .gitlab import GitLabProvider
@@ -393,6 +396,21 @@ class GitProviderRegistry:
         """Read CI / check results for a ref via the appropriate provider."""
         return await self._require_provider(repo_url).get_ref_checks(repo_url, ref)
 
+    async def get_image_attestations(
+        self, repo_url: str, subject_digest: str
+    ) -> tuple[ProvenanceAttestation, ...]:
+        """Fetch (unverified) image attestations via the appropriate provider.
+
+        Raises:
+            ValueError: If no provider supports the URL.
+            AttestationNotFoundError: If the provider holds none for the digest.
+            GitOperationUnsupportedError: If the provider has no attestation API.
+            GitAuthError: If authentication fails.
+        """
+        return await self._require_provider(repo_url).get_image_attestations(
+            repo_url, subject_digest
+        )
+
     async def close(self) -> None:
         """Close all provider HTTP clients."""
         for provider in self._providers:
@@ -428,6 +446,7 @@ def create_git_registry(config: GitConfig) -> GitProviderRegistry:
                 base_url=instance.base_url,
                 token=instance.token,
                 orgs=instance.orgs,
+                bundle_fetch_timeout_seconds=config.provenance.bundle_fetch_timeout_seconds,
             )
         )
 
@@ -458,3 +477,33 @@ def create_git_registry(config: GitConfig) -> GitProviderRegistry:
         else "none",
     )
     return registry
+
+
+def create_provenance_verifier(config: ProvenanceConfig) -> ProvenanceVerifier | None:
+    """Build the configured image-provenance verifier, or ``None`` when disabled.
+
+    ``enabled: false`` is the operator's decision to go without verification
+    and yields ``None``. Enabled but impossible (the adapter's package is not
+    installed, its kwargs are wrong) raises: provenance is never quietly
+    skipped.
+
+    Raises:
+        TypeError: The adapter rejected its configured ``kwargs``.
+        ImportError: The adapter or one of its dependencies is not installed.
+    """
+    if not config.enabled:
+        logger.info("Image provenance verification disabled (git.provenance.enabled=false)")
+        return None
+    try:
+        adapter_class = import_class(config.adapter)
+    except ImportError as exc:
+        raise ImportError(
+            f"git.provenance.adapter {config.adapter!r} cannot be imported: {exc}. Install "
+            "the 'provenance' extra (uv sync --extra provenance), or set "
+            "git.provenance.enabled to false to go without image provenance verification."
+        ) from exc
+    verifier = adapter_class(**config.kwargs)
+    if not isinstance(verifier, ProvenanceVerifier):
+        raise TypeError(f"git.provenance.adapter {config.adapter!r} is not a ProvenanceVerifier")
+    logger.info("Image provenance verification enabled: %s", config.adapter)
+    return verifier

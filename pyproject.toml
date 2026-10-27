@@ -64,6 +64,15 @@ nats = [
 embeddings = [
     "sentence-transformers>=6.0.1",
 ]
+# Image provenance verification (`volundr_git verify_image_provenance`): the
+# platform fetches a repository's GitHub build attestations and verifies them
+# with Sigstore. cramjam decodes the Snappy-compressed bundles GitHub stores
+# behind `bundle_url`. Images that host the platform install this extra;
+# `git.provenance.enabled: true` (the default) without it is fatal at startup.
+provenance = [
+    "sigstore>=4.5.1,<5",
+    "cramjam>=2.14.0,<3",
+]
 test = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
@@ -110,6 +119,9 @@ cli = [
     # (no-fallbacks), turning on tracing into a broken local platform. The
     # CLI binary always carries the otel packages so that choice always works.
     "volundr[otel]",
+    # Likewise git.provenance.enabled defaults to true in the platform the CLI
+    # hosts, and enabled without sigstore is fatal.
+    "volundr[provenance]",
 ]
 tui = [
     "textual>=8.2.8",
@@ -127,6 +139,7 @@ dev = [
     "typer>=0.27.2",
     "nats-py[nkeys]>=2.15.0",
     "aiohttp>=3.14.4",
+    "volundr[provenance]",
 ]
 
 [project.scripts]

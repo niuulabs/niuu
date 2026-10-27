@@ -368,6 +368,12 @@ data:
         {{- else }}
         instances: []
         {{- end }}
+      provenance:
+        enabled: {{ .Values.git.provenance.enabled }}
+        bundle_fetch_timeout_seconds: {{ .Values.git.provenance.bundleFetchTimeoutSeconds }}
+        {{- if .Values.git.provenance.kwargs }}
+        kwargs: {{ .Values.git.provenance.kwargs | toJson }}
+        {{- end }}
 
     storage:
       adapter: {{ .Values.storageAdapter.adapter | quote }}

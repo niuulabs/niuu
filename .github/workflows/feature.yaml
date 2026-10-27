@@ -76,6 +76,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
       containers: '["niuu"]'
@@ -97,6 +99,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
       containers: '["skuld"]'
@@ -118,6 +122,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
       containers: '["agent","openshell","devrunner","niuu-web"]'

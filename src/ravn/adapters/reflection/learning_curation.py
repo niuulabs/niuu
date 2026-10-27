@@ -21,9 +21,19 @@ The pass is incremental. Each lesson's neighbourhood — its nearest learnings
 and nearest candidates — is judged once, in one model call that names every
 lesson saying the same thing and every one contradicting it; the lesson is
 then marked ``curated`` and never judged again. Work therefore grows with new
-lessons, not with the square of all of them, and nothing has to be capped to
-keep a pass affordable. (A fixed budget of pairs per day is what left noatun
-with dozens of duplicate learnings: the backlog only ever grew.)
+lessons, not with the square of all of them. (A fixed budget of pairs per day is
+what left noatun with dozens of duplicate learnings: the backlog only ever grew.)
+
+A large backlog still takes many hours on a shared judge model, longer than the
+gap between rollouts. A pass that could only finish all-or-nothing never
+finished: valhalla's resident judged 158 lessons in ten hours, was restarted,
+and showed "dreaming" with no result for a day. So the dream gives the pass a
+deadline, the time its next dream is due. Judging stops there; what was judged
+is settled and the rest waits for the next dream, which is reported and counted
+as a cap hit rather than read as "nothing left". A lesson is marked
+``curated`` only after the contradictions and promotions its judgment found are
+settled, so a pass cut off by a restart leaves its lessons uncurated to be
+judged again, instead of marked done with their verdicts lost.
 
 Nothing is deleted. Retired pages keep their content with a ``status`` of
 ``merged``, ``superseded`` or ``pruned`` and a ``curation_reason``, and every
@@ -61,6 +71,7 @@ from ravn.adapters.reflection.post_session import (
     promote_candidate,
     set_procedure,
 )
+from ravn.cap_telemetry import record_cap_hit
 from ravn.resident_text import compact_line, timestamp_slug
 
 if TYPE_CHECKING:
@@ -71,6 +82,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ACTIONS = ("merged", "superseded", "pruned", "promoted", "rewritten")
+#: The knob that bounds a pass: it runs until the resident's next dream is due.
+DEADLINE_KNOB = "resident_wakefulness.dream_interval_seconds"
 
 
 @dataclass(frozen=True)
@@ -86,6 +99,10 @@ class CurationReport:
     started_at: datetime
     lessons_reviewed: int = 0
     neighbourhoods_judged: int = 0
+    #: Uncurated lessons left unjudged, and promoted learnings left without a
+    #: procedure, when the pass reached its deadline. The next dream continues.
+    lessons_remaining: int = 0
+    rewrites_remaining: int = 0
     actions: list[CurationAction] = field(default_factory=list)
     audit_path: str = ""
     error: str = ""
@@ -100,6 +117,8 @@ class CurationReport:
         return {
             "lessons_reviewed": self.lessons_reviewed,
             "neighbourhoods_judged": self.neighbourhoods_judged,
+            "lessons_remaining": self.lessons_remaining,
+            "rewrites_remaining": self.rewrites_remaining,
             **{action: self.paths(action) for action in _ACTIONS},
             "audit_path": self.audit_path,
         }
@@ -140,13 +159,19 @@ class LearningCurator:
         elapsed = (self._clock() - self._last_run).total_seconds()
         return elapsed >= self._config.min_interval_seconds
 
-    async def curate(self) -> CurationReport:
-        """Run one curation pass. Raises after auditing whatever it changed."""
+    async def curate(self, *, budget_seconds: float | None = None) -> CurationReport:
+        """Run one curation pass. Raises after auditing whatever it changed.
+
+        With *budget_seconds*, no lesson is judged and no procedure rewritten
+        once that long has passed; the report says how many are left for the
+        next pass. Without it the pass runs until the backlog is empty.
+        """
         now = self._clock()
         self._last_run = now
         report = CurationReport(started_at=now)
+        deadline = None if budget_seconds is None else now + timedelta(seconds=budget_seconds)
         try:
-            await self._run(report, now=now)
+            await self._run(report, now=now, deadline=deadline)
         except Exception as exc:
             report.error = f"{type(exc).__name__}: {exc}"
             await self._write_audit(report)
@@ -154,7 +179,12 @@ class LearningCurator:
         await self._write_audit(report)
         return report
 
-    async def _run(self, report: CurationReport, *, now: datetime) -> None:
+    def _past(self, deadline: datetime | None) -> bool:
+        return deadline is not None and self._clock() >= deadline
+
+    async def _run(
+        self, report: CurationReport, *, now: datetime, deadline: datetime | None
+    ) -> None:
         pool = [
             lesson
             for lesson in await self._lessons.load(self._mimir)
@@ -170,7 +200,13 @@ class LearningCurator:
         )
         merged_into: set[str] = set()
         contradictions: list[tuple[str, str, str]] = []
-        for lesson in fresh:
+        judged: list[str] = []
+        for index, lesson in enumerate(fresh):
+            if self._past(deadline):
+                report.lessons_remaining = sum(
+                    1 for rest in fresh[index:] if rest.path in state.live
+                )
+                break
             subject = state.live.get(lesson.path)
             if subject is None:  # already folded into a lesson judged earlier
                 continue
@@ -194,7 +230,7 @@ class LearningCurator:
             contradictions.extend(
                 (survivor.path, other.path, verdict.reason) for other in verdict.contradicts
             )
-            state.live[survivor.path] = await mark_curated(self._mimir, survivor, now=now)
+            judged.append(survivor.path)
 
         # Promote after every merge, so promotion weighs all the evidence and a
         # candidate never promotes beside a learning that says the same thing.
@@ -203,13 +239,45 @@ class LearningCurator:
             if lesson is not None and lesson.category == CANDIDATE_CATEGORY:
                 await self._maybe_promote(lesson, state, report, now=now)
         # Settle contradictions last, between the survivors, on all their evidence.
+        # A pass cut off by its deadline has not merged the paraphrases of the
+        # lessons it did not reach, so a contradiction with one of those waits:
+        # the judged side stays uncurated and the next pass finds it again.
+        judged_now = {lesson.path for path in judged if (lesson := state.current(path))}
+        held: set[str] = set()
         for left_path, right_path, reason in contradictions:
+            other = state.current(right_path)
+            if other is not None and not is_curated(other) and other.path not in judged_now:
+                held.add(left_path)
+                continue
             pair = state.pair(left_path, right_path)
             if pair is not None:
                 await self._supersede(*pair, reason, state, report)
+        report.lessons_remaining += len(held)
+        # Only now, with every verdict acted on, is a judged lesson done.
+        for path in judged:
+            lesson = state.current(path)
+            if lesson is None or path in held or is_curated(lesson):
+                continue
+            state.live[lesson.path] = await mark_curated(self._mimir, lesson, now=now)
 
         await self._prune(state.live, report, now=now)
-        await self._rewrite(state.live, report, now=now)
+        await self._rewrite(state.live, report, now=now, deadline=deadline)
+        self._report_deferred(report)
+
+    def _report_deferred(self, report: CurationReport) -> None:
+        """A pass that stopped at its deadline holds work back: say so and count it."""
+        if not report.lessons_remaining and not report.rewrites_remaining:
+            return
+        record_cap_hit(
+            DEADLINE_KNOB,
+            f"learning curation reached its deadline with {report.lessons_remaining} "
+            f"uncurated lesson(s) unjudged and {report.rewrites_remaining} learning(s) "
+            f"without a procedure after judging {report.neighbourhoods_judged} "
+            "neighbourhood(s); the next consolidation dream continues them. A backlog "
+            "that does not shrink across dreams needs more judge throughput "
+            f"(the model behind reflection.matching.judge_llm_alias) or a longer "
+            f"{DEADLINE_KNOB}.",
+        )
 
     # ------------------------------------------------------------------
     # Merge
@@ -344,6 +412,7 @@ class LearningCurator:
         report: CurationReport,
         *,
         now: datetime,
+        deadline: datetime | None,
     ) -> None:
         """Give every promoted learning without one a procedure; each is rewritten once."""
         pending = sorted(
@@ -351,7 +420,10 @@ class LearningCurator:
             key=lambda lesson: lesson.last_observed,
             reverse=True,
         )
-        for lesson in pending:
+        for index, lesson in enumerate(pending):
+            if self._past(deadline):
+                report.rewrites_remaining = len(pending) - index
+                return
             procedure = await self._judge.procedure(
                 lesson, max_chars=self._config.procedure_max_chars
             )

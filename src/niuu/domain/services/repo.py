@@ -13,12 +13,20 @@ from niuu.domain.models import (
     CIStatus,
     CommitDetail,
     GitProviderType,
+    ImageProvenance,
     PullRequest,
     RefChecks,
     RefComparison,
     RepoInfo,
+    VerifiedProvenance,
+    normalize_image_digest,
 )
 from niuu.ports.git import GitProvider, GitWorkflowProvider
+from niuu.ports.provenance import (
+    ProvenanceNotConfiguredError,
+    ProvenanceVerificationError,
+    ProvenanceVerifier,
+)
 
 if TYPE_CHECKING:
     from niuu.adapters.outbound.git_registry import GitProviderRegistry
@@ -79,9 +87,11 @@ class RepoService:
         self,
         git_registry: GitProviderRegistry,
         user_integration: UserIntegrationPort | None = None,
+        provenance_verifier: ProvenanceVerifier | None = None,
     ):
         self._git_registry = git_registry
         self._user_integration = user_integration
+        self._provenance_verifier = provenance_verifier
 
     def list_providers(self) -> list[ProviderInfo]:
         """List all configured git providers."""
@@ -223,6 +233,69 @@ class RepoService:
         if provider is not None:
             return await provider.get_ref_checks(repo_url, ref)
         return await self._git_registry.get_ref_checks(repo_url, ref)
+
+    async def verify_image_provenance(
+        self,
+        repo_url: str,
+        digest: str,
+        user_id: str | None = None,
+    ) -> ImageProvenance:
+        """Verified build provenance of an image digest built from *repo_url*.
+
+        The provider supplies the attestation bundles; the configured verifier
+        decides which of them prove anything. Only verified attestations are
+        returned, and each refused one is reported by reason, never dropped
+        silently.
+
+        Raises:
+            InvalidImageDigestError: *digest* is not ``sha256:`` plus 64 hex.
+            ProvenanceNotConfiguredError: Verification is turned off.
+            ValueError: No connected Git host serves *repo_url*.
+            AttestationNotFoundError: The provider holds no provenance for the digest.
+            GitOperationUnsupportedError: The provider has no attestation API.
+            ProvenanceVerificationError: Attestations exist but none verified.
+            ProvenanceVerifierUnavailableError: Verification could not run.
+        """
+        if self._provenance_verifier is None:
+            raise ProvenanceNotConfiguredError(
+                "Image provenance verification is turned off (git.provenance.enabled is false). "
+                "Set it to true, with the sigstore extra installed, to verify image digests."
+            )
+        subject_digest = normalize_image_digest(digest)
+        provider = await self._user_git_provider(repo_url, user_id)
+        if provider is not None:
+            info = provider.parse_repo(repo_url)
+            attestations = await provider.get_image_attestations(repo_url, subject_digest)
+        else:
+            info = self._git_registry.parse_repo(repo_url)
+            attestations = await self._git_registry.get_image_attestations(repo_url, subject_digest)
+        if info is None:
+            raise ValueError(f"Cannot parse repository URL: {repo_url}")
+
+        verified: list[VerifiedProvenance] = []
+        rejected: list[str] = []
+        for attestation in attestations:
+            try:
+                verified.append(
+                    await self._provenance_verifier.verify(
+                        attestation.bundle,
+                        subject_digest=subject_digest,
+                        repository=f"{info.org}/{info.name}",
+                    )
+                )
+            except ProvenanceVerificationError as exc:
+                rejected.append(exc.reason)
+        if not verified:
+            raise ProvenanceVerificationError(
+                f"None of the {len(attestations)} attestation(s) for {subject_digest} in "
+                f"{repo_url} verified: " + "; ".join(rejected)
+            )
+        return ImageProvenance(
+            repo_url=repo_url,
+            digest=subject_digest,
+            attestations=tuple(verified),
+            rejected=tuple(rejected),
+        )
 
     async def _user_git_provider(
         self,

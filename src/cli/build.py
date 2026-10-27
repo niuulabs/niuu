@@ -65,6 +65,9 @@ INCLUDE_PACKAGE_DATA = [
     "cli",
     "rich",
     "textual",
+    # The embedded TUF root.json files sigstore bootstraps its trust root from
+    # (image provenance verification).
+    "sigstore",
 ]
 
 # Data directories mapped into the binary

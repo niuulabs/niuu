@@ -37,6 +37,7 @@ from niuu.config import (
     GitLabInstance,
     HttpAuthAdapterConfig,
     InstanceRegistryConfig,
+    ProvenanceConfig,
 )
 from niuu.config_models import (
     DatabaseConfig,
@@ -2409,6 +2410,7 @@ class GitConfig(BaseModel):
 
     github: GitHubConfig = Field(default_factory=GitHubConfig)
     gitlab: GitLabConfig = Field(default_factory=GitLabConfig)
+    provenance: ProvenanceConfig = Field(default_factory=ProvenanceConfig)
     validate_on_create: bool = Field(default=True)
     workflow: GitWorkflowConfig = Field(default_factory=GitWorkflowConfig)
 

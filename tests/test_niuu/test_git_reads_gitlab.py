@@ -11,7 +11,12 @@ import respx
 from niuu.adapters.outbound.gitlab import GitLabProvider
 from niuu.domain.delivery import CheckConclusion
 from niuu.domain.models import CIStatus
-from niuu.ports.git import GitAuthError, GitProviderResponseError, GitRepoNotFoundError
+from niuu.ports.git import (
+    GitAuthError,
+    GitOperationUnsupportedError,
+    GitProviderResponseError,
+    GitRepoNotFoundError,
+)
 
 REPO = "https://gitlab.com/niuulabs/niuu"
 API = "https://gitlab.com/api/v4/projects/niuulabs%2Fniuu"
@@ -419,3 +424,13 @@ async def test_get_commit_diff_page_failure_is_typed(provider: GitLabProvider) -
 
     with pytest.raises(GitRepoNotFoundError, match="diff of commit"):
         await provider.get_commit(REPO, "regin")
+
+
+@respx.mock
+async def test_image_attestations_are_unsupported_and_say_why(provider: GitLabProvider) -> None:
+    with pytest.raises(GitOperationUnsupportedError, match="no build attestation API") as caught:
+        await provider.get_image_attestations(REPO, "sha256:" + "ab" * 32)
+
+    # An honest "this host cannot", never an empty result and never a request.
+    assert REPO in str(caught.value)
+    assert len(respx.calls) == 0

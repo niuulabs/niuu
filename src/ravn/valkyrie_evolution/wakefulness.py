@@ -393,10 +393,15 @@ class ResidentWakefulness:
         }
 
     async def _curate_learnings(self) -> dict[str, Any]:
-        """Curate recorded learnings when a curator is wired and its interval elapsed."""
+        """Curate recorded learnings when a curator is wired and its interval elapsed.
+
+        The pass may run until the next dream is due and no longer: a backlog
+        that takes longer is continued by the next dream, so every dream
+        finishes and reports instead of one dream running until a restart.
+        """
         if self._learning_curator is None or not self._learning_curator.due():
             return {}
-        report = await self._learning_curator.curate()
+        report = await self._learning_curator.curate(budget_seconds=self._dream_interval_seconds)
         summary = report.summary()
         if self._self_improvement is not None:
             # Acts on friction with the learnings this pass just curated.

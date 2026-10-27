@@ -1,4 +1,4 @@
-"""Registry, service and REST routing of the commit / compare / checks reads."""
+"""Registry, service and REST routing of the commit / compare / checks / provenance reads."""
 
 from __future__ import annotations
 
@@ -12,18 +12,44 @@ from fastapi.testclient import TestClient
 
 from niuu.adapters.inbound.auth import extract_principal
 from niuu.adapters.inbound.rest_repos import create_repos_router
-from niuu.adapters.outbound.git_registry import GitProviderRegistry
+from niuu.adapters.outbound.git_registry import (
+    GitProviderRegistry,
+    create_git_registry,
+    create_provenance_verifier,
+)
+from niuu.adapters.outbound.sigstore_provenance import SigstoreProvenanceVerifier
+from niuu.config import (
+    DEFAULT_BUNDLE_FETCH_TIMEOUT_SECONDS,
+    GitConfig,
+    GitHubConfig,
+    ProvenanceConfig,
+)
 from niuu.domain.delivery import CheckConclusion, CheckRecord
 from niuu.domain.models import (
     ChangedFile,
     CommitDetail,
     CommitSummary,
+    InvalidImageDigestError,
     Principal,
+    ProvenanceAttestation,
     RefChecks,
     RefComparison,
+    VerifiedProvenance,
 )
 from niuu.domain.services.repo import RepoService
-from niuu.ports.git import GitAuthError, GitProviderResponseError, GitRepoNotFoundError
+from niuu.ports.git import (
+    AttestationNotFoundError,
+    GitAuthError,
+    GitOperationUnsupportedError,
+    GitProviderResponseError,
+    GitRepoNotFoundError,
+)
+from niuu.ports.provenance import (
+    ProvenanceNotConfiguredError,
+    ProvenanceVerificationError,
+    ProvenanceVerifier,
+    ProvenanceVerifierUnavailableError,
+)
 from tests.conftest import MockGitProvider
 
 REPO = "https://github.com/niuulabs/niuu"
@@ -378,3 +404,343 @@ def test_ref_checks_aggregate_status(conclusions: tuple, expected: str) -> None:
     checks = tuple(CheckRecord(name=f"c{i}", conclusion=c) for i, c in enumerate(conclusions))
 
     assert RefChecks(REPO, "r", SHA, checks).status.value == expected
+
+
+# --- Image provenance --------------------------------------------------------------
+
+DIGEST = "sha256:" + "ab" * 32
+WORKFLOW = "https://github.com/niuulabs/niuu/.github/workflows/reusable-container-build.yaml"
+
+
+def _verified(commit: str = SHA, ref: str = "refs/heads/dev") -> VerifiedProvenance:
+    return VerifiedProvenance(
+        subject_name="ghcr.io/niuulabs/niuu",
+        subject_digest=DIGEST,
+        source_repository="https://github.com/niuulabs/niuu",
+        commit_sha=commit,
+        ref=ref,
+        workflow=f"{WORKFLOW}@{ref}",
+        run_url="https://github.com/niuulabs/niuu/actions/runs/7/attempts/1",
+    )
+
+
+class _ScriptedVerifier(ProvenanceVerifier):
+    """A verifier that answers each bundle from a script: a result, or an error to raise."""
+
+    def __init__(self, answers: dict[str, VerifiedProvenance | Exception]) -> None:
+        self._answers = answers
+        self.calls: list[tuple[str, str, str]] = []
+
+    async def verify(self, bundle: str, *, subject_digest: str, repository: str):
+        self.calls.append((bundle, subject_digest, repository))
+        answer = self._answers[bundle]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def _attesting_provider(*bundles: str) -> MockGitProvider:
+    provider = MockGitProvider()
+    provider.attestations_result = tuple(ProvenanceAttestation(bundle=b) for b in bundles)
+    return provider
+
+
+def _provenance_service(
+    verifier: ProvenanceVerifier | None, provider: MockGitProvider | None = None, **kwargs
+) -> RepoService:
+    return RepoService(
+        _registry(provider or _attesting_provider("b1")), provenance_verifier=verifier, **kwargs
+    )
+
+
+async def test_registry_routes_attestation_reads_to_the_serving_provider() -> None:
+    provider = _attesting_provider("b1")
+
+    result = await _registry(provider).get_image_attestations(REPO, DIGEST)
+
+    assert result == (ProvenanceAttestation("b1"),)
+    assert provider.read_calls == [("get_image_attestations", REPO, DIGEST)]
+
+
+async def test_registry_attestation_read_with_no_serving_provider_is_a_value_error() -> None:
+    with pytest.raises(ValueError, match="No git provider found"):
+        await GitProviderRegistry().get_image_attestations(REPO, DIGEST)
+
+
+async def test_service_returns_only_what_verified_with_the_normalised_digest() -> None:
+    verifier = _ScriptedVerifier({"b1": _verified()})
+    service = _provenance_service(verifier)
+
+    result = await service.verify_image_provenance(REPO, f"  sha256:{'AB' * 32}  ")
+
+    assert result.digest == DIGEST
+    assert result.attestations == (_verified(),)
+    assert result.rejected == ()
+    # The verifier is told the repository to pin the signer to, not the caller's URL spelling.
+    assert verifier.calls == [("b1", DIGEST, "niuulabs/niuu")]
+
+
+async def test_service_reports_each_refused_attestation_beside_the_verified_one() -> None:
+    verifier = _ScriptedVerifier(
+        {
+            "stale": ProvenanceVerificationError("signing workflow 'x.yml' is not trusted"),
+            "good": _verified(),
+        }
+    )
+    service = _provenance_service(verifier, _attesting_provider("stale", "good"))
+
+    result = await service.verify_image_provenance(REPO, DIGEST)
+
+    assert result.attestations == (_verified(),)
+    assert result.rejected == ("signing workflow 'x.yml' is not trusted",)
+
+
+async def test_service_with_no_verified_attestation_is_a_failed_verification() -> None:
+    verifier = _ScriptedVerifier(
+        {
+            "b1": ProvenanceVerificationError("DSSE: invalid signature"),
+            "b2": ProvenanceVerificationError("wrong repository"),
+        }
+    )
+    service = _provenance_service(verifier, _attesting_provider("b1", "b2"))
+
+    with pytest.raises(ProvenanceVerificationError) as caught:
+        await service.verify_image_provenance(REPO, DIGEST)
+
+    # Never "unverified but returned": the error carries every reason instead.
+    assert "None of the 2 attestation(s)" in caught.value.reason
+    assert "DSSE: invalid signature; wrong repository" in caught.value.reason
+
+
+async def test_service_does_not_turn_a_verifier_outage_into_a_verdict() -> None:
+    verifier = _ScriptedVerifier({"b1": ProvenanceVerifierUnavailableError("TUF unreachable")})
+
+    with pytest.raises(ProvenanceVerifierUnavailableError):
+        await _provenance_service(verifier).verify_image_provenance(REPO, DIGEST)
+
+
+async def test_service_without_a_verifier_refuses_before_reading_anything() -> None:
+    provider = _attesting_provider("b1")
+
+    with pytest.raises(ProvenanceNotConfiguredError, match="git.provenance.enabled"):
+        await _provenance_service(None, provider).verify_image_provenance(REPO, DIGEST)
+
+    assert provider.read_calls == []
+
+
+@pytest.mark.parametrize(
+    "digest", ["", "latest", "sha256:abc", "ab" * 32, "sha512:" + "ab" * 32, "sha256:" + "zz" * 32]
+)
+async def test_service_rejects_anything_that_is_not_a_full_sha256_digest(digest: str) -> None:
+    provider = _attesting_provider("b1")
+    service = _provenance_service(_ScriptedVerifier({"b1": _verified()}), provider)
+
+    with pytest.raises(InvalidImageDigestError, match="not an image digest"):
+        await service.verify_image_provenance(REPO, digest)
+
+    assert provider.read_calls == []
+
+
+async def test_service_prefers_the_callers_own_provider_for_attestations() -> None:
+    shared = _attesting_provider("shared")
+    personal = _attesting_provider("personal")
+    integrations = AsyncMock()
+    integrations.find_git_provider_for = AsyncMock(return_value=personal)
+    verifier = _ScriptedVerifier({"personal": _verified()})
+    service = _provenance_service(verifier, shared, user_integration=integrations)
+
+    await service.verify_image_provenance(REPO, DIGEST, user_id="u1")
+
+    assert [c[0] for c in personal.read_calls] == ["get_image_attestations"]
+    assert shared.read_calls == []
+    assert verifier.calls[0][0] == "personal"
+
+
+async def test_service_with_no_serving_provider_is_a_value_error() -> None:
+    service = RepoService(GitProviderRegistry(), provenance_verifier=_ScriptedVerifier({}))
+
+    with pytest.raises(ValueError, match="No git provider found"):
+        await service.verify_image_provenance(REPO, DIGEST)
+
+
+async def test_service_with_an_unparseable_repo_url_is_a_value_error() -> None:
+    provider = _attesting_provider("b1")
+    provider.parse_repo = lambda url: None  # type: ignore[method-assign]
+    service = _provenance_service(_ScriptedVerifier({"b1": _verified()}), provider)
+
+    with pytest.raises(ValueError, match="Cannot parse repository URL"):
+        await service.verify_image_provenance(REPO, DIGEST)
+
+
+async def test_service_passes_through_a_provider_that_holds_nothing() -> None:
+    provider = _provider()
+    provider.get_image_attestations = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AttestationNotFoundError("No build provenance found for x")
+    )
+
+    with pytest.raises(AttestationNotFoundError):
+        await _provenance_service(_ScriptedVerifier({}), provider).verify_image_provenance(
+            REPO, DIGEST
+        )
+
+
+# --- Provenance REST ---------------------------------------------------------------
+
+PROVENANCE_URL = "/api/v1/niuu/repos/provenance"
+PROVENANCE_PARAMS = {"repo_url": REPO, "digest": DIGEST}
+
+
+def test_provenance_route_returns_the_verified_facts() -> None:
+    service = _provenance_service(_ScriptedVerifier({"b1": _verified()}))
+
+    response = _client(service).get(PROVENANCE_URL, params=PROVENANCE_PARAMS)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "repo_url": REPO,
+        "digest": DIGEST,
+        "verified": True,
+        "attestations": [
+            {
+                "subject_name": "ghcr.io/niuulabs/niuu",
+                "subject_digest": DIGEST,
+                "source_repository": "https://github.com/niuulabs/niuu",
+                "commit_sha": SHA,
+                "ref": "refs/heads/dev",
+                "workflow": f"{WORKFLOW}@refs/heads/dev",
+                "run_url": "https://github.com/niuulabs/niuu/actions/runs/7/attempts/1",
+            }
+        ],
+        "rejected": [],
+    }
+
+
+def test_provenance_route_reports_refused_attestations() -> None:
+    verifier = _ScriptedVerifier(
+        {"bad": ProvenanceVerificationError("wrong repository"), "good": _verified()}
+    )
+    service = _provenance_service(verifier, _attesting_provider("bad", "good"))
+
+    response = _client(service).get(PROVENANCE_URL, params=PROVENANCE_PARAMS)
+
+    assert response.status_code == 200
+    assert response.json()["rejected"] == ["wrong repository"]
+    assert len(response.json()["attestations"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("failure", "status", "needle"),
+    [
+        (
+            AttestationNotFoundError("No build provenance found for sha256:ab in x"),
+            404,
+            "No build provenance found",
+        ),
+        (
+            ProvenanceVerificationError("None of the 1 attestation(s) verified: bad signature"),
+            422,
+            "Provenance verification failed: None of the 1 attestation(s) verified",
+        ),
+        (InvalidImageDigestError("'x' is not an image digest"), 422, "not an image digest"),
+        (GitOperationUnsupportedError("GitLab has no build attestation API"), 501, "GitLab has no"),
+        (ProvenanceNotConfiguredError("provenance is turned off"), 503, "turned off"),
+        (ProvenanceVerifierUnavailableError("trust root unreachable"), 503, "trust root"),
+        (ValueError("No git provider found for: x"), 404, "No connected Git host serves"),
+        (GitRepoNotFoundError("Not found: repo"), 404, "Not found: repo"),
+        (GitAuthError("token refused"), 403, "token refused"),
+        (httpx.ConnectError("unreachable"), 502, "unreachable"),
+        (GitProviderResponseError("bundle storage said HTTP 403"), 502, "bundle storage said"),
+    ],
+)
+def test_provenance_failures_map_to_typed_http_errors(
+    failure: Exception, status: int, needle: str
+) -> None:
+    service = RepoService(_registry(), provenance_verifier=_ScriptedVerifier({}))
+    service.verify_image_provenance = AsyncMock(side_effect=failure)  # type: ignore[method-assign]
+
+    response = _client(service).get(PROVENANCE_URL, params=PROVENANCE_PARAMS)
+
+    assert response.status_code == status
+    assert needle in response.json()["detail"]
+
+
+def test_a_missing_digest_is_a_validation_error() -> None:
+    response = _client(RepoService(_registry())).get(PROVENANCE_URL, params={"repo_url": REPO})
+
+    assert response.status_code == 422
+
+
+def test_provenance_without_a_repo_service_is_unavailable() -> None:
+    assert _client(None).get(PROVENANCE_URL, params=PROVENANCE_PARAMS).status_code == 503
+
+
+# --- Provenance wiring -------------------------------------------------------------
+
+
+def test_provenance_is_on_by_default_with_the_workflows_that_sign_our_images() -> None:
+    config = ProvenanceConfig()
+
+    assert config.enabled is True
+    assert config.kwargs == {
+        "issuer": "https://token.actions.githubusercontent.com",
+        "workflow_paths": [
+            ".github/workflows/reusable-container-build.yaml",
+            ".github/workflows/dev.yaml",
+        ],
+    }
+    assert config.bundle_fetch_timeout_seconds == DEFAULT_BUNDLE_FETCH_TIMEOUT_SECONDS
+
+
+def test_a_disabled_provenance_config_builds_no_verifier() -> None:
+    assert create_provenance_verifier(ProvenanceConfig(enabled=False)) is None
+
+
+def test_the_default_provenance_config_builds_the_sigstore_verifier() -> None:
+    verifier = create_provenance_verifier(ProvenanceConfig())
+
+    assert isinstance(verifier, SigstoreProvenanceVerifier)
+
+
+def test_an_adapter_that_cannot_be_imported_is_fatal_and_names_the_remedy() -> None:
+    config = ProvenanceConfig(adapter="niuu.adapters.outbound.no_such_module.Verifier")
+
+    with pytest.raises(ImportError, match="git.provenance.enabled to false"):
+        create_provenance_verifier(config)
+
+
+def test_an_adapter_that_is_not_a_verifier_is_fatal() -> None:
+    config = ProvenanceConfig(
+        adapter="niuu.domain.models.VerifiedProvenance",
+        kwargs={
+            "subject_name": "a",
+            "subject_digest": "b",
+            "source_repository": "c",
+            "commit_sha": "d",
+            "ref": "e",
+            "workflow": "f",
+            "run_url": "g",
+        },
+    )
+
+    with pytest.raises(TypeError, match="is not a ProvenanceVerifier"):
+        create_provenance_verifier(config)
+
+
+def test_adapter_kwargs_the_verifier_rejects_are_fatal() -> None:
+    config = ProvenanceConfig(kwargs={"issuer": "https://x", "workers": 4})
+
+    with pytest.raises(TypeError, match="workers"):
+        create_provenance_verifier(config)
+
+
+def test_the_configured_bundle_timeout_reaches_the_github_provider() -> None:
+    config = GitConfig(
+        github=GitHubConfig(
+            instances=[{"name": "GitHub", "base_url": "https://api.github.com", "token": "t"}]
+        ),
+        provenance=ProvenanceConfig(bundle_fetch_timeout_seconds=12.5),
+    )
+
+    registry = create_git_registry(config)
+
+    assert registry.providers[0]._bundle_fetch_timeout == 12.5

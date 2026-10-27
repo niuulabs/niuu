@@ -1,5 +1,7 @@
 """GitHub git provider adapter."""
 
+import asyncio
+import json
 import logging
 import re
 from collections.abc import AsyncIterator
@@ -11,6 +13,7 @@ from uuid import NAMESPACE_URL, uuid5
 import httpx
 
 from niuu.adapters.outbound.git_branch_publisher import AuthenticatedGitBranchPublisher
+from niuu.config import DEFAULT_BUNDLE_FETCH_TIMEOUT_SECONDS
 from niuu.domain.delivery import (
     BranchPublicationReceipt,
     BranchPublicationRequest,
@@ -32,6 +35,7 @@ from niuu.domain.models import (
     CommitDetail,
     CommitSummary,
     GitProviderType,
+    ProvenanceAttestation,
     PullRequest,
     PullRequestStatus,
     RefChecks,
@@ -40,6 +44,7 @@ from niuu.domain.models import (
 )
 from niuu.ports.delivery import DeliveryForgeProvider
 from niuu.ports.git import (
+    AttestationNotFoundError,
     GitAuthError,
     GitProvider,
     GitProviderResponseError,
@@ -51,6 +56,11 @@ logger = logging.getLogger(__name__)
 
 # GitHub's maximum page size for list endpoints.
 _READ_PAGE_SIZE = 100
+
+# The predicate type `actions/attest-build-provenance` signs. Asking GitHub for
+# only this type keeps SBOM, release and other attestations of the same digest
+# out of a provenance read.
+_SLSA_PROVENANCE_PREDICATE_TYPE = "https://slsa.dev/provenance/v1"
 
 # Least to most severe. A check-run and a commit status can legitimately share
 # a name (the same CI context reported through both APIs, or a rerun history);
@@ -75,6 +85,37 @@ def _merge_worst_check(
         or _CHECK_SEVERITY[record.conclusion] > _CHECK_SEVERITY[existing.conclusion]
     ):
         checks_by_name[name] = record
+
+
+class _QueryStringRedactionFilter(logging.Filter):
+    """Strip query strings from the URLs httpx logs.
+
+    httpx logs every request at INFO with its full URL, and the storage link of
+    an attestation bundle carries its access signature in the query string. The
+    link is a time-limited read capability and must not reach the logs, so the
+    query is dropped from every URL httpx logs (the path still identifies the
+    request).
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(self._without_query(arg) for arg in record.args)
+        return True
+
+    @staticmethod
+    def _without_query(arg: object) -> object:
+        if isinstance(arg, httpx.URL):
+            return arg.copy_with(query=None)
+        if isinstance(arg, str) and arg.startswith(("http://", "https://")):
+            return arg.partition("?")[0]
+        return arg
+
+
+def _redact_httpx_log_urls() -> None:
+    """Install :class:`_QueryStringRedactionFilter` on httpx's logger, once."""
+    httpx_logger = logging.getLogger("httpx")
+    if not any(isinstance(f, _QueryStringRedactionFilter) for f in httpx_logger.filters):
+        httpx_logger.addFilter(_QueryStringRedactionFilter())
 
 
 class _GitHubReadError(RuntimeError):
@@ -115,11 +156,13 @@ class GitHubProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
         token: str | None = None,
         orgs: tuple[str, ...] | list[str] | str = (),
         branch_publisher: AuthenticatedGitBranchPublisher | None = None,
+        bundle_fetch_timeout_seconds: float = DEFAULT_BUNDLE_FETCH_TIMEOUT_SECONDS,
         **_extra: object,
     ):
         self._name = name
         self._base_url = base_url.rstrip("/")
         self._token = token
+        self._bundle_fetch_timeout = bundle_fetch_timeout_seconds
         self._branch_publisher = branch_publisher or AuthenticatedGitBranchPublisher()
         if isinstance(orgs, str):
             self._orgs = tuple(o.strip() for o in orgs.split(",") if o.strip())
@@ -747,6 +790,121 @@ class GitHubProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
             key=lambda check: (-_CHECK_SEVERITY[check.conclusion], check.name),
         )
         return RefChecks(repo_url=repo_url, ref=ref, sha=sha, checks=tuple(checks))
+
+    async def get_image_attestations(
+        self, repo_url: str, subject_digest: str
+    ) -> tuple[ProvenanceAttestation, ...]:
+        """SLSA build-provenance bundles GitHub holds for *subject_digest* in the repository.
+
+        Reads ``GET /repos/{owner}/{repo}/attestations/{digest}`` with this
+        provider's own credentials. An attestation that carries its bundle
+        inline is used as is; one that only names a ``bundle_url`` has its
+        bundle downloaded here. The bundles are returned unverified.
+        """
+        path = self._read_path(repo_url)
+        subject = f"attestations for {subject_digest} in {repo_url}"
+        client = await self._get_client()
+        response = await client.get(
+            f"{path}/attestations/{subject_digest}",
+            params={
+                "per_page": _READ_PAGE_SIZE,
+                "predicate_type": _SLSA_PROVENANCE_PREDICATE_TYPE,
+            },
+        )
+        # GitHub answers a digest with no attestations either with a 404 or, when
+        # the predicate filter excludes them all, with an empty list.
+        not_found = AttestationNotFoundError(
+            f"No build provenance found for {subject_digest} in {repo_url}. The image was "
+            "not built with an attestation (images built before attestations were enabled "
+            "have none), the digest is not that of a manifest built from this repository, "
+            "or the repository is not visible to the token."
+        )
+        if response.status_code == 404:
+            raise not_found
+        if response.status_code != 200:
+            self._raise_read_error(response, subject)
+        entries: list[dict] = []
+        async for body in self._page_bodies(client, response, subject):
+            entries.extend(body.get("attestations") or [])
+        if not entries:
+            raise not_found
+        # Every download runs to completion before the first failure is raised, so no
+        # task is left running (and unobserved) behind an error.
+        results = await asyncio.gather(
+            *(self._attestation_bundle(e, subject) for e in entries), return_exceptions=True
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return tuple(ProvenanceAttestation(bundle=str(bundle)) for bundle in results)
+
+    async def _attestation_bundle(self, entry: dict, subject: str) -> str:
+        """The bundle JSON of one attestation entry: inline, or downloaded from its storage link."""
+        inline = entry.get("bundle")
+        if inline:
+            return json.dumps(inline)
+        location = entry.get("bundle_url")
+        if not location:
+            raise GitProviderResponseError(
+                f"GitHub returned an attestation for {subject} with neither a bundle nor a "
+                "bundle_url"
+            )
+        return await self._download_bundle(str(location), subject)
+
+    async def _download_bundle(self, location: str, subject: str) -> str:
+        """Download a bundle from the pre-signed storage link GitHub supplied.
+
+        The link grants access by itself, so it is requested without this
+        provider's credentials and is never logged or put in an error message
+        (it would hand a time-limited read capability to whoever reads the
+        message). Failures name the status or the error class only.
+        """
+        if urlparse(location).scheme != "https":
+            raise GitProviderResponseError(
+                f"GitHub supplied a bundle location for {subject} that is not https; "
+                "refusing to download it"
+            )
+        _redact_httpx_log_urls()
+        try:
+            async with httpx.AsyncClient(timeout=self._bundle_fetch_timeout) as client:
+                response = await client.get(location)
+        except httpx.HTTPError as exc:
+            raise GitProviderResponseError(
+                f"Could not download the attestation bundle for {subject}: "
+                f"{type(exc).__name__}. The download timeout is "
+                f"git.provenance.bundle_fetch_timeout_seconds={self._bundle_fetch_timeout}."
+            ) from None
+        if response.status_code != 200:
+            raise GitProviderResponseError(
+                f"The attestation bundle storage answered HTTP {response.status_code} for "
+                f"{subject}; the time-limited link may have expired, retry the read."
+            )
+        return self._bundle_text(response, subject)
+
+    @staticmethod
+    def _bundle_text(response: httpx.Response, subject: str) -> str:
+        """Decode a downloaded bundle: GitHub stores them Snappy-compressed."""
+        content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
+        if content_type == "application/json":
+            return response.text
+        if content_type != "application/x-snappy":
+            raise GitProviderResponseError(
+                f"The attestation bundle storage returned content type {content_type!r} for "
+                f"{subject}; expected application/x-snappy or application/json"
+            )
+        try:
+            import cramjam
+        except ImportError as exc:
+            raise GitProviderResponseError(
+                "Attestation bundles are Snappy-compressed and the 'cramjam' package is not "
+                "installed. Install the 'provenance' extra (uv sync --extra provenance)."
+            ) from exc
+        try:
+            return bytes(cramjam.snappy.decompress_raw(response.content)).decode("utf-8")
+        except (cramjam.DecompressionError, UnicodeDecodeError) as exc:
+            raise GitProviderResponseError(
+                f"The attestation bundle for {subject} is not valid Snappy-compressed JSON: {exc}"
+            ) from exc
 
     # --- GitWorkflowProvider methods ---
 

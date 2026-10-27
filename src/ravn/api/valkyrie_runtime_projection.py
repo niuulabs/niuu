@@ -58,6 +58,8 @@ def _dream_lessons(learnings: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "reviewed": _as_int(learnings.get("lessons_reviewed")),
         "neighbourhoodsJudged": _as_int(learnings.get("neighbourhoods_judged")),
+        "remaining": _as_int(learnings.get("lessons_remaining")),
+        "rewritesRemaining": _as_int(learnings.get("rewrites_remaining")),
         "merged": _as_string_list(learnings.get("merged")),
         "superseded": _as_string_list(learnings.get("superseded")),
         "pruned": _as_string_list(learnings.get("pruned")),

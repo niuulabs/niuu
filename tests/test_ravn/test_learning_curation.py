@@ -7,6 +7,7 @@ learning, and the contradicting "all routes 403" candidate is superseded.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -17,6 +18,7 @@ from typer.testing import CliRunner
 
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from ravn.adapters.reflection.learning_curation import (
+    DEADLINE_KNOB,
     CurationReport,
     LearningCurator,
     _PassState,
@@ -336,6 +338,90 @@ async def test_each_lesson_is_judged_once_and_never_again(tmp_path: Path) -> Non
     assert llm.judge_calls == calls + 1
     for page in await mimir.list_pages(category="learnings"):
         assert "curated: " in await mimir.read_page(page.path)
+
+
+def _clock_after(checks: int, *, past: datetime):
+    """Reads NOW for the pass start and *checks* deadline checks, then *past*."""
+    reads = iter([NOW] * (checks + 1))
+    return lambda: next(reads, past)
+
+
+async def test_a_pass_stops_at_its_deadline_and_the_next_one_continues(tmp_path: Path) -> None:
+    """valhalla's resident: a backlog longer than a dream finished in no dream at all."""
+    mimir = MarkdownMimirAdapter(root=tmp_path)
+    await _seed_regin(mimir)
+    hits = cap_hit_counts().get(DEADLINE_KNOB, 0)
+    cut = _curator(mimir, clock=_clock_after(1, past=NOW + timedelta(hours=2)))
+
+    report = await cut.curate(budget_seconds=3600)
+
+    # One judgment: the "all routes 403" claim, which contradicts three
+    # paraphrases nobody has merged yet. Settled now, one newer observation
+    # would beat three, so it waits uncurated and is counted as left over.
+    assert report.neighbourhoods_judged == 1
+    assert report.paths("superseded") == []
+    assert report.lessons_remaining == 5
+    assert report.summary()["lessons_remaining"] == 5
+    assert cap_hit_counts()[DEADLINE_KNOB] == hits + 1
+    for page in await mimir.list_pages(category="learning-candidates"):
+        assert "curated: " not in await mimir.read_page(page.path)
+
+    final = await _curator(mimir).curate(budget_seconds=3600)
+
+    assert final.lessons_remaining == 0
+    assert final.paths("superseded") == ["learning-candidates/general/s-0230.md"]
+    assert len(final.paths("merged")) == 2
+    assert len(await mimir.list_pages(category="learnings")) == 1
+    assert cap_hit_counts()[DEADLINE_KNOB] == hits + 1
+
+
+async def test_a_pass_cut_off_by_a_restart_loses_no_verdict(tmp_path: Path) -> None:
+    """Marked curated before its contradiction was settled, a lesson kept it forever."""
+    mimir = MarkdownMimirAdapter(root=tmp_path)
+    await _seed_regin(mimir)
+    curator = _curator(mimir)
+    classify = curator._judge.classify
+    calls = 0
+
+    async def restart_on_the_second_judgment(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise asyncio.CancelledError
+        return await classify(**kwargs)
+
+    curator._judge.classify = restart_on_the_second_judgment  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        await curator.curate()
+
+    for page in await mimir.list_pages(category="learning-candidates"):
+        assert "curated: " not in await mimir.read_page(page.path)
+    final = await _curator(mimir).curate()
+    assert final.paths("superseded") == ["learning-candidates/general/s-0230.md"]
+
+
+async def test_procedures_not_written_by_the_deadline_wait_for_the_next_pass(
+    tmp_path: Path,
+) -> None:
+    mimir = MarkdownMimirAdapter(root=tmp_path)
+    learning = candidate_page(
+        DIFF_ROUTE, session_id="s-1", evidence="diff ok", date=datetime(2026, 10, 23, tzinfo=UTC)
+    ).replace("category: learning-candidates", "category: learnings")
+    await mimir.upsert_page(
+        "learnings/general/diff.md", learning.replace("status: candidate", "status: promoted")
+    )
+
+    cut = await _curator(mimir, clock=_clock_after(1, past=NOW + timedelta(hours=2))).curate(
+        budget_seconds=3600
+    )
+
+    assert cut.lessons_remaining == 0
+    assert cut.rewrites_remaining == 1
+    assert cut.paths("rewritten") == []
+    final = await _curator(mimir).curate(budget_seconds=3600)
+    assert final.rewrites_remaining == 0
+    assert final.paths("rewritten") == ["learnings/general/diff.md"]
 
 
 async def test_a_failed_pass_is_audited_and_raised(tmp_path: Path) -> None:
@@ -658,6 +744,8 @@ async def test_consolidation_dream_curates_learnings_when_due() -> None:
 
     assert summary["learnings"]["merged"] == ["a"]
     assert machine.state == "watching"
+    # The pass may run until the next dream is due, and no longer.
+    curator.curate.assert_awaited_once_with(budget_seconds=machine._dream_interval_seconds)
 
 
 async def test_consolidation_dream_skips_curation_between_intervals() -> None:

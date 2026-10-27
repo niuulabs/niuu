@@ -8,6 +8,7 @@ from niuu.domain.models import (
     CIStatus,
     CommitDetail,
     GitProviderType,
+    ProvenanceAttestation,
     PullRequest,
     RefChecks,
     RefComparison,
@@ -157,6 +158,31 @@ class GitProvider(ABC):
             GitAuthError: The credentials cannot read the repository.
         """
 
+    @abstractmethod
+    async def get_image_attestations(
+        self, repo_url: str, subject_digest: str
+    ) -> tuple[ProvenanceAttestation, ...]:
+        """Fetch the build-provenance attestations the provider holds for an image digest.
+
+        The bundles are returned exactly as stored and are **not verified**:
+        verification is the job of a provenance verifier, never of the provider.
+
+        Args:
+            repo_url: Repository URL or shorthand the image was built from.
+            subject_digest: Manifest digest as ``sha256:<64 hex>``.
+
+        Returns:
+            At least one attestation.
+
+        Raises:
+            AttestationNotFoundError: The provider holds no build provenance for
+                the digest in this repository.
+            GitOperationUnsupportedError: The provider has no attestation API.
+            GitRepoNotFoundError: The repository does not exist or is not visible.
+            GitAuthError: The credentials cannot read the repository.
+            GitProviderResponseError: The provider answered something unusable.
+        """
+
 
 class GitWorkflowProvider(ABC):
     """Port for git workflow operations (branches, PRs, CI status).
@@ -222,4 +248,21 @@ class GitProviderResponseError(RuntimeError):
     For example an incomplete comparison, a missing identity field or a
     pagination that never advances. The caller must treat the read as failed;
     the message names what the provider got wrong.
+    """
+
+
+class AttestationNotFoundError(GitRepoNotFoundError):
+    """Raised when a provider holds no build provenance for a digest.
+
+    A subtype of :class:`GitRepoNotFoundError` because GitHub answers an
+    unknown digest and an unreadable repository with the same HTTP 404; the
+    message says which of the causes apply.
+    """
+
+
+class GitOperationUnsupportedError(NotImplementedError):
+    """Raised when a provider has no equivalent of the requested operation.
+
+    The honest answer for a provider that lacks a feature (for example GitLab
+    has no GitHub attestation API); never a stand-in result.
     """

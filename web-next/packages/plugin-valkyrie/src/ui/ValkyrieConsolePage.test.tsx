@@ -955,6 +955,22 @@ describe('DreamPanel', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('failed without reporting an error');
   });
 
+  it('says how much lesson curation left for the next dream', () => {
+    const sigrun = byId('valkyrie-valhalla-sigrun');
+    const dream = sigrun.lastDream!;
+    render(
+      <DreamPanel
+        valkyrie={{
+          ...sigrun,
+          lastDream: { ...dream, lessons: { ...dream.lessons!, remaining: 127 } },
+        }}
+      />,
+    );
+    expect(screen.getByTestId('valkyrie-last-dream')).toHaveTextContent(
+      '2 merged of 38 reviewed · 127 lessons left for the next dream',
+    );
+  });
+
   it('notes a curator run that retired nothing', () => {
     const sigrun = byId('valkyrie-valhalla-sigrun');
     const dream = sigrun.lastDream!;

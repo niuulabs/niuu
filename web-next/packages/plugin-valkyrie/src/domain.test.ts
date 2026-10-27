@@ -16,6 +16,7 @@ import {
   decisionNeedsApproval,
   decisionSkillName,
   decisionSubject,
+  dreamCurationBacklog,
   dreamLessonsCurated,
   dreamProposalsFiled,
   formatDreamDuration,
@@ -870,6 +871,17 @@ describe('consolidation dream summaries', () => {
   it('counts every lesson the dream changed', () => {
     expect(dreamLessonsCurated(completed)).toBe(4);
     expect(dreamLessonsCurated(failed)).toBe(0);
+  });
+
+  it('says what lesson curation left for the next dream', () => {
+    expect(dreamCurationBacklog(completed)).toBeNull();
+    expect(dreamCurationBacklog(failed)).toBeNull();
+    const lessons = completed.lessons!;
+    const backlog = (remaining: number, rewritesRemaining: number) =>
+      dreamCurationBacklog({ ...completed, lessons: { ...lessons, remaining, rewritesRemaining } });
+    expect(backlog(1, 0)).toBe('1 lesson left for the next dream');
+    expect(backlog(0, 1)).toBe('1 procedure left for the next dream');
+    expect(backlog(127, 2)).toBe('127 lessons and 2 procedures left for the next dream');
   });
 
   it('counts held promotions and self-improvement actions as filed proposals', () => {
