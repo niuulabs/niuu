@@ -64,6 +64,10 @@ class ForgeApiError(Exception):
         self.status = status
 
 
+class FlockError(Exception):
+    """A flock tool could not hand work to, or hear from, the brokered flock."""
+
+
 @dataclass(frozen=True)
 class ToolResult:
     """One MCP ``tools/call`` result, before transport encoding."""

@@ -675,6 +675,30 @@ class TestContributorOutput:
         assert env_names["SKULD__WORKFLOW_TRIGGER__EVENT_TYPE"] == "run.requested"
         assert env_names["SKULD__WORKFLOW_TRIGGER__NODE_ID"] == "dispatch-root"
 
+    async def test_plain_flock_launches_skuld_as_its_broker(self, session):
+        """Without a workflow trigger Skuld still brokers; it is never the coder peer."""
+        template = LaunchSpec(
+            name="pair-flock",
+            workload_type="ravn_flock",
+            workload_config={"personas": ["coder", "reviewer"]},
+        )
+        provider = MagicMock()
+        provider.get.return_value = template
+        c = _flock_contributor(launch_spec_provider=provider)
+        result = await c.contribute(session, SessionContext(launch_spec="pair-flock"))
+
+        env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
+        assert env_names["SKULD__MESH__FLOCK_BROKER"] == "true"
+        assert env_names["SKULD__MESH__PERSONA"] == "skuld"
+        assert env_names["SKULD__MESH__CONSUMES_EVENT_TYPES"] == "[]"
+        assert "SKULD__WORKFLOW_TRIGGER__ENABLED" not in env_names
+        assert [e["name"] for e in result.pod_spec.env].count(
+            "SKULD__MESH__CONSUMES_EVENT_TYPES"
+        ) == 1
+        peers = json.loads(env_names["SKULD__MESH__ADAPTERS"])[0]["peers"]
+        skuld_peer = next(peer for peer in peers if peer["persona"] == "Skuld")
+        assert skuld_peer["emits_event_types"] == []
+
     async def test_mimir_volume_not_added_without_explicit_local(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template

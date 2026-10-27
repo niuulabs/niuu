@@ -129,6 +129,9 @@ class TransportLifecycleMixin:
             "dsh_prompt_timeout_s": self._settings.dsh.prompt_timeout_s,
             "model_gateway_url": self._settings.model_gateway.url,
             "model_gateway_token": self._settings.model_gateway.token,
+            # A flock broker's agent must hand work to the flock's Ravns; native
+            # sub-agents let it play those roles itself and report as them.
+            "multi_agent_enabled": False if self._settings.mesh.flock_broker else None,
         }
 
     def _create_codex_auth_provider(self) -> CodexAuthProviderPort:

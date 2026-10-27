@@ -86,3 +86,37 @@ class ForgeMcpHost(ABC):
     @abstractmethod
     async def notify(self, draft: NotificationDraft) -> dict[str, Any]:
         """Record a notification; return ``{notification_id, turn_id, session_seq, state}``."""
+
+
+class ForgeMcpFlock(ABC):
+    """A Ravn flock the caller brokers. Transport only: its members do the work.
+
+    Every outcome an implementation returns must be one a member published on
+    the mesh, attributed to the member it arrived from. Implementations raise
+    :class:`niuu.forge_mcp.models.FlockError` when a hand-off is refused.
+    """
+
+    @property
+    @abstractmethod
+    def max_wait_s(self) -> float:
+        """Longest one :meth:`activity` call may wait."""
+
+    @abstractmethod
+    async def members(self) -> list[dict[str, Any]]:
+        """The flock's Ravns: ``peer_id``, ``persona`` and live ``status`` each."""
+
+    @abstractmethod
+    async def delegate(self, peer_id: str, content: str) -> dict[str, Any]:
+        """Hand ``content`` to one member as its next task over the mesh.
+
+        Returns ``{message_id, peer_id, persona, cursor}``; ``cursor`` marks the
+        activity log position before the hand-off, for :meth:`activity`.
+        """
+
+    @abstractmethod
+    async def activity(self, *, after: int, peer_id: str, wait_s: float) -> dict[str, Any]:
+        """``{cursor, activity}``: outcomes and failures members published after ``after``.
+
+        Waits up to ``wait_s`` for the first one; an empty ``activity`` means
+        none arrived in that time.
+        """

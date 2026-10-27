@@ -10,9 +10,12 @@ import pytest
 
 from niuu.domain.notifications import NotificationDraft
 from niuu.forge_mcp import (
+    FLOCK_TOOL_SPECS,
     TOOL_NAMES,
+    FlockError,
     ForgeApiError,
     ForgeClient,
+    ForgeMcpFlock,
     ForgeMcpGrant,
     ForgeMcpHost,
     ForgeMcpLimits,
@@ -572,3 +575,105 @@ class TestFeedNotify:
         assert result.structured["grants"] == []
         assert "send_message" not in result.structured["tools"]
         assert "notify" in result.structured["tools"]
+
+
+class FakeFlock(ForgeMcpFlock):
+    def __init__(self) -> None:
+        self.delegated: list[tuple[str, str]] = []
+        self.waits: list[float] = []
+        self.activity_result: dict[str, Any] = {"cursor": 0, "activity": []}
+        self.refuse: FlockError | None = None
+
+    @property
+    def max_wait_s(self) -> float:
+        return 30.0
+
+    async def members(self) -> list[dict[str, Any]]:
+        return [{"peer_id": "flock-coder", "persona": "coder", "status": "idle"}]
+
+    async def delegate(self, peer_id: str, content: str) -> dict[str, Any]:
+        if self.refuse is not None:
+            raise self.refuse
+        self.delegated.append((peer_id, content))
+        return {"message_id": "m1", "peer_id": peer_id, "persona": "coder", "cursor": 4}
+
+    async def activity(self, *, after: int, peer_id: str, wait_s: float) -> dict[str, Any]:
+        self.waits.append(wait_s)
+        return self.activity_result
+
+
+def _flock_toolbox() -> tuple[ForgeMcpToolbox, FakeFlock]:
+    flock = FakeFlock()
+    toolbox = ForgeMcpToolbox(
+        client=FakeClient(), host=FakeHost(), grants=(), limits=LIMITS, flock=flock
+    )
+    return toolbox, flock
+
+
+class TestFlockTools:
+    def test_flock_tools_exist_only_for_a_flock_broker(self) -> None:
+        plain, _, _ = _toolbox()
+        assert not {spec.name for spec in FLOCK_TOOL_SPECS} & {
+            tool["name"] for tool in plain.list_tools()
+        }
+        toolbox, _ = _flock_toolbox()
+        names = [tool["name"] for tool in toolbox.list_tools()]
+        assert names[-3:] == ["flock_members", "flock_delegate", "flock_outcomes"]
+
+    async def test_flock_tool_on_a_non_broker_is_refused(self) -> None:
+        plain, _, _ = _toolbox()
+        with pytest.raises(UnknownToolError):
+            await plain.call("flock_delegate", {"peer_id": "flock-coder", "content": "x"})
+
+    async def test_members(self) -> None:
+        toolbox, _ = _flock_toolbox()
+        result = await toolbox.call("flock_members", {})
+        assert result.structured == {
+            "members": [{"peer_id": "flock-coder", "persona": "coder", "status": "idle"}]
+        }
+
+    async def test_delegate_hands_over_and_returns_a_cursor(self) -> None:
+        toolbox, flock = _flock_toolbox()
+        result = await toolbox.call(
+            "flock_delegate", {"peer_id": "flock-coder", "content": "Write add.py"}
+        )
+        assert not result.is_error
+        assert result.structured["cursor"] == 4
+        assert flock.delegated == [("flock-coder", "Write add.py")]
+
+    async def test_refused_delegation_is_a_tool_error(self) -> None:
+        toolbox, flock = _flock_toolbox()
+        flock.refuse = FlockError("the hand-off to flock-coder was not accepted: offline")
+        result = await toolbox.call(
+            "flock_delegate", {"peer_id": "flock-coder", "content": "Write add.py"}
+        )
+        assert result.is_error and "not accepted: offline" in result.text
+
+    async def test_blank_delegation_is_rejected(self) -> None:
+        toolbox, flock = _flock_toolbox()
+        result = await toolbox.call("flock_delegate", {"peer_id": "flock-coder", "content": " "})
+        assert result.is_error and flock.delegated == []
+
+    async def test_outcomes_returns_member_results(self) -> None:
+        toolbox, flock = _flock_toolbox()
+        flock.activity_result = {
+            "cursor": 6,
+            "activity": [{"seq": 6, "persona": "reviewer", "verdict": "pass"}],
+        }
+        result = await toolbox.call("flock_outcomes", {"after": 4})
+        assert not result.is_error
+        assert result.structured["activity"][0]["verdict"] == "pass"
+        assert flock.waits == [30.0]
+
+    async def test_outcomes_wait_is_bounded_by_the_host(self) -> None:
+        toolbox, flock = _flock_toolbox()
+        flock.activity_result = {"cursor": 5, "activity": [{"seq": 5}]}
+        await toolbox.call("flock_outcomes", {"after": 4, "wait_s": 900})
+        await toolbox.call("flock_outcomes", {"after": 4, "wait_s": 2})
+        assert flock.waits == [30.0, 2.0]
+
+    async def test_no_outcome_is_a_failure_not_a_result(self) -> None:
+        toolbox, _ = _flock_toolbox()
+        result = await toolbox.call("flock_outcomes", {"after": 4, "wait_s": 1})
+        assert result.is_error
+        assert "do not report a verdict" in result.text

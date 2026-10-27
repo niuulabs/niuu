@@ -98,6 +98,7 @@ from skuld.file_routes import (  # noqa: F401
     upload_file_raw,
     upload_files,
 )
+from skuld.flock_outcomes import FlockActivityLog
 from skuld.forge_mcp.integration import ForgeSessionMixin
 from skuld.history_hydration import fetch_durable_history, merge_history_turns
 from skuld.service_manager import (  # noqa: F401
@@ -642,6 +643,12 @@ class Broker(
         # evidence projection. Persona identity comes from the registered room
         # participant, never from model-authored fields.
         self._attested_review_outcomes: dict[str, dict[str, Any]] = {}
+        # What the brokered flock published, for the broker agent's flock tools.
+        self._flock_activity: FlockActivityLog | None = (
+            FlockActivityLog(capacity=settings.mesh.flock_outcome_history)
+            if settings.mesh.flock_broker
+            else None
+        )
         self._review_attestation = _workflow_review_attestation(self._settings.workflow.graph)
         # Durable full-fidelity event log (session_event_log). Every CLI frame is
         # buffered here and flushed to Volundr by a background worker, independent
@@ -1160,7 +1167,7 @@ class Broker(
                     persona="Skuld",
                     display_name="Skuld",
                     subscribes_to=list(mesh_cfg.consumes_event_types),
-                    emits=["code.changed"],
+                    emits=[] if mesh_cfg.flock_broker else ["code.changed"],
                     tools=list(mesh_cfg.tools),
                     participant_type="skuld",
                     participant_kind="mesh",
@@ -1783,6 +1790,14 @@ class Broker(
             await self._report_peer_help_needed_activity(peer_id, frame)
             await self._emit_peer_help_needed_sleipnir_event(peer_id, frame)
         elif event_type == "error":
+            if self._flock_activity is not None and participant is not None:
+                await self._flock_activity.record(
+                    kind="error",
+                    peer_id=peer_id,
+                    persona=participant.persona,
+                    task_id=str(frame.get("task_id") or ""),
+                    error=_peer_error_message(frame),
+                )
             await self._maybe_report_flock_failure(peer_id, frame)
         elif event_type in self._PEER_WORK_EVENT_TYPES:
             await self._report_room_peer_working()
@@ -2013,6 +2028,20 @@ class Broker(
         files_changed = data.get("files_changed") or fields.get("files_changed")
         if isinstance(files_changed, list) and files_changed:
             payload["files_changed"] = files_changed
+
+        if self._flock_activity is not None and participant is not None:
+            await self._flock_activity.record(
+                kind="outcome",
+                peer_id=peer_id,
+                persona=participant.persona,
+                event_type=event_type,
+                verdict=str(verdict or ""),
+                summary=str(summary or ""),
+                valid=bool(payload["valid"]),
+                routing_only=bool(data.get("routing_only")),
+                task_id=str(metadata.get("task_id") or ""),
+                fields=dict(fields),
+            )
 
         if not data.get("routing_only") and data.get("bubble_up") is not False:
             await self._emit_pipeline_event("outcome", payload)

@@ -53,6 +53,19 @@ ravn_flock_llm_config:
       base_url: https://vllm.example.internal
 ```
 
+### The broker hands work to the flock
+
+In a flock session, Skuld is the flock's **broker**, not one of its members. Volundr launches it with `mesh.flock_broker: true`. With that setting:
+
+- The broker's CLI agent gets three `forge` MCP tools. `flock_members` lists the Ravns. `flock_delegate` hands one a task over the mesh, and it runs as that Ravn's persona. `flock_outcomes` returns the outcomes and failures members published, attributed to the room participant each came from.
+- Members react to each other's outcomes on their own. A change handed to the coder reaches the reviewer through the coder's `code.changed`, with no second hand-off.
+- The broker reports only what `flock_outcomes` returned. When nothing arrives within `forge_mcp.flock_outcome_wait_max_s`, the tool returns an error rather than an empty success.
+- Skuld never republishes the broker's own turns as `code.changed`, consumes no peer events, and runs Codex without its native sub-agents. A sub-agent playing "the reviewer" could otherwise produce a verdict no Ravn gave.
+
+A broker that cannot reach its flock does not start. That covers `mesh.flock_broker` set with the room, the mesh or the `forge` MCP server off, and a configured MCP server that replaces the built-in `forge` one.
+
+A persona's `fan_in.strategy` describes how its output combines with the other contributors to its `contributes_to` target. For a persona with `contributes_to`, it does not make that persona wait for all of its own consumed event types. Those event types are alternative triggers: the reviewer runs on `code.changed` *or* `review.requested`.
+
 A standalone `ravn flock init` (outside the Forge) writes the `llm:` section of `~/.ravn/config.yaml` into every node config, or the section of the file you pass with `--llm-config`. With neither, the node configs carry no `llm:` section, and init reports that the nodes run on Ravn's built-in default.
 
 ---

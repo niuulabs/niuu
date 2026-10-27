@@ -35,13 +35,14 @@ from niuu.forge_mcp.guidance import (
     NOTIFICATION_TRIGGER_GUIDANCE,
 )
 from niuu.forge_mcp.models import (
+    FlockError,
     ForgeApiError,
     ForgeMcpGrant,
     ForgeMcpLimits,
     ForgeMcpNotifyMode,
     ToolResult,
 )
-from niuu.forge_mcp.ports import ForgeClient, ForgeMcpHost
+from niuu.forge_mcp.ports import ForgeClient, ForgeMcpFlock, ForgeMcpHost
 
 # Wire-format patterns Forge itself enforces (request ids) or that keep ids from
 # being spliced into a REST path; they are protocol shape, not tunables.
@@ -179,6 +180,24 @@ class _CreateSessionArgs(_Args):
         if value is not None and not value.startswith("/"):
             raise ValueError("local_path must be absolute")
         return value
+
+
+class _FlockDelegateArgs(_Args):
+    peer_id: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1)
+
+    @field_validator("content")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("content must not be blank")
+        return value
+
+
+class _FlockOutcomesArgs(_Args):
+    after: int = Field(ge=0)
+    peer_id: str = Field(default="", max_length=200)
+    wait_s: float | None = Field(default=None, ge=0)
 
 
 # --------------------------------------------------------------------------- schemas
@@ -561,6 +580,69 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
 
 TOOL_NAMES: tuple[str, ...] = tuple(spec.name for spec in TOOL_SPECS)
 
+#: Offered only when the host brokers a Ravn flock (see :class:`ForgeMcpFlock`).
+FLOCK_TOOL_SPECS: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="flock_members",
+        description=(
+            "List the Ravns of the flock this session brokers: each member's peer_id, "
+            "persona and status. These Ravns do the flock's work; you hand it to them "
+            "with flock_delegate and do not do it yourself or with sub-agents."
+        ),
+        input_schema=_object({}),
+        args_model=_NoArgs,
+    ),
+    ToolSpec(
+        name="flock_delegate",
+        description=(
+            "Hand a task to one flock member over the mesh. It runs as that Ravn's "
+            "persona; when it finishes the Ravn publishes its outcome, and members that "
+            "consume that outcome react on their own (a coder's change reaches the "
+            "reviewer without another hand-off). Write the task in full, as the member "
+            "sees only this content. Returns a cursor: pass it to flock_outcomes."
+        ),
+        input_schema=_object(
+            {
+                "peer_id": {
+                    "type": "string",
+                    "description": "The member's peer_id from flock_members.",
+                },
+                "content": {"type": "string", "minLength": 1},
+            },
+            required=("peer_id", "content"),
+        ),
+        args_model=_FlockDelegateArgs,
+    ),
+    ToolSpec(
+        name="flock_outcomes",
+        description=(
+            "Outcomes and failures flock members published on the mesh after `after` "
+            "(a cursor from flock_delegate or a previous flock_outcomes call), oldest "
+            "first, each with the member it came from, its event type, verdict and "
+            "summary. Waits up to wait_s for the first one and fails when none "
+            "arrives. These are the only results you may report as the flock's: if "
+            "a verdict is not here, no member gave it. Call again with the returned "
+            "cursor to follow later stages."
+        ),
+        input_schema=_object(
+            {
+                "after": {"type": "integer", "minimum": 0},
+                "peer_id": {
+                    "type": "string",
+                    "description": "Only this member's activity.",
+                },
+                "wait_s": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Seconds to wait for the first result (bounded by the host).",
+                },
+            },
+            required=("after",),
+        ),
+        args_model=_FlockOutcomesArgs,
+    ),
+)
+
 #: ``notify`` as the Forge-hosted HTTP endpoint serves it (direct feed submit).
 FEED_NOTIFY_SPEC = ToolSpec(
     name="notify",
@@ -683,12 +765,14 @@ class ForgeMcpToolbox:
         grants: Iterable[ForgeMcpGrant | str],
         limits: ForgeMcpLimits,
         notify_mode: ForgeMcpNotifyMode = ForgeMcpNotifyMode.TRANSCRIPT,
+        flock: ForgeMcpFlock | None = None,
     ) -> None:
         self._client = client
         self._host = host
+        self._flock = flock
         self._grants = frozenset(ForgeMcpGrant(grant) for grant in grants)
         self._limits = limits
-        self._tool_specs = _specs_for(notify_mode)
+        self._tool_specs = _specs_for(notify_mode) + (FLOCK_TOOL_SPECS if flock else ())
         self._specs = {spec.name: spec for spec in self._tool_specs}
         notify = self._notify if notify_mode is ForgeMcpNotifyMode.TRANSCRIPT else self._feed_notify
         self._handlers: dict[str, Callable[[Any], Awaitable[ToolResult]]] = {
@@ -703,6 +787,9 @@ class ForgeMcpToolbox:
             "create_session": self._create_session,
             "start_session": self._start_session,
             "stop_session": self._stop_session,
+            "flock_members": self._flock_members,
+            "flock_delegate": self._flock_delegate,
+            "flock_outcomes": self._flock_outcomes,
         }
 
     @property
@@ -732,6 +819,8 @@ class ForgeMcpToolbox:
             return await self._handlers[name](args)
         except ForgeApiError as exc:
             return ToolResult.error(_forge_error_text(name, exc))
+        except FlockError as exc:
+            return ToolResult.error(f"{name} failed: {exc}")
 
     def _ok(self, payload: dict[str, Any]) -> ToolResult:
         return ToolResult.of(payload, max_chars=self._limits.output_max_chars)
@@ -968,3 +1057,32 @@ class ForgeMcpToolbox:
             return refused
         stopped = await self._client.stop_session(args.session_id, instance_id=args.instance_id)
         return self._ok({"session": _session_summary(stopped)})
+
+    # -- brokered flock
+
+    def _require_flock(self) -> ForgeMcpFlock:
+        if self._flock is None:
+            raise FlockError("this session brokers no flock")
+        return self._flock
+
+    async def _flock_members(self, _args: _NoArgs) -> ToolResult:
+        members = await self._require_flock().members()
+        return self._ok({"members": members})
+
+    async def _flock_delegate(self, args: _FlockDelegateArgs) -> ToolResult:
+        handed = await self._require_flock().delegate(args.peer_id, args.content)
+        return self._ok(handed)
+
+    async def _flock_outcomes(self, args: _FlockOutcomesArgs) -> ToolResult:
+        flock = self._require_flock()
+        wait_s = flock.max_wait_s if args.wait_s is None else min(args.wait_s, flock.max_wait_s)
+        result = await flock.activity(after=args.after, peer_id=args.peer_id, wait_s=wait_s)
+        if not result.get("activity"):
+            who = f"member {args.peer_id}" if args.peer_id else "no flock member"
+            return ToolResult.error(
+                f"flock_outcomes: {who} published an outcome or failure after cursor "
+                f"{args.after} within {wait_s:g}s. The flock may still be working; call "
+                "flock_outcomes again with the same cursor. Until a result arrives here, "
+                "no member has produced one: do not report a verdict or outcome."
+            )
+        return self._ok(result)

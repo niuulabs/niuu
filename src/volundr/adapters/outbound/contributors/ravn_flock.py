@@ -493,13 +493,14 @@ def _build_static_mesh_peers(
     skuld_peer_id: str,
     base_port: int,
 ) -> list[dict[str, Any]]:
+    # Skuld brokers the flock: it hands work to members and emits no outcome
+    # of its own, so it must not advertise one a member would trust.
     peers = [
         _mesh_peer_entry(
             peer_id=skuld_peer_id,
             persona="Skuld",
             index=0,
             base_port=base_port,
-            emits_event_types=["code.changed"],
         )
     ]
     for i, persona_dict in enumerate(persona_dicts, start=1):
@@ -1127,6 +1128,12 @@ class RavnFlockContributor(SessionContributor):
             {"name": "SKULD__MESH__ENABLED", "value": "true"},
             {"name": "SKULD__MESH__TRANSPORT", "value": mesh_transport},
             {"name": "SKULD__MESH__PEER_ID", "value": skuld_peer_id},
+            # Skuld brokers this flock; the persona Ravns do its work. Without
+            # this Skuld joined as a "coder" peer: it took code.requested itself
+            # and announced its own turns as the coder's code.changed.
+            {"name": "SKULD__MESH__FLOCK_BROKER", "value": "true"},
+            {"name": "SKULD__MESH__PERSONA", "value": "skuld"},
+            {"name": "SKULD__MESH__CONSUMES_EVENT_TYPES", "value": "[]"},
             {"name": "SKULD__ROOM__ENABLED", "value": "true"},
             {
                 "name": "SKULD__ROOM__MAX_PARTICIPANTS",
@@ -1231,10 +1238,6 @@ class RavnFlockContributor(SessionContributor):
                         # and need a higher ceiling than the generic 120s mesh default.
                         "name": "SKULD__MESH__DEFAULT_WORK_TIMEOUT_S",
                         "value": "420",
-                    },
-                    {
-                        "name": "SKULD__MESH__CONSUMES_EVENT_TYPES",
-                        "value": "[]",
                     },
                     {
                         "name": "SKULD__WORKFLOW_TRIGGER__ENABLED",
