@@ -190,10 +190,6 @@ class TestHostToolAuthorization:
     ) -> None:
         """The compatibility gate does not widen the existing host-tool boundary."""
 
-        class HostPermission(AllowAllPermission):
-            def allows(self, permission: str) -> bool:
-                return permission == "kubernetes:read"
-
         selected_read = {
             "cluster": "teleport.niuu.world-ymir",
             "namespace": "nats",
@@ -228,7 +224,7 @@ class TestHostToolAuthorization:
 
         dispatch = LearnedToolRunTool(
             resolver=LearnedToolResolver(state_dir=tmp_path),
-            permission=HostPermission(),
+            permission=AllowAllPermission(),
             host_tools_provider=lambda: [SelectedClusterReadTool()],
         )
         tool_path = tmp_path / "read_configmap_key_tail.py"
@@ -249,11 +245,24 @@ class TestHostToolAuthorization:
             {**selected_read, "cluster": "other-cluster"},
             host_call=dispatch._host_call("read_configmap_key_tail"),
         )
+        permission_denied = await run_tool(
+            tool_path,
+            selected_read,
+            host_call=LearnedToolRunTool(
+                resolver=LearnedToolResolver(state_dir=tmp_path),
+                permission=DenyAllPermission(),
+                host_tools_provider=lambda: [SelectedClusterReadTool()],
+            )._host_call("read_configmap_key_tail"),
+        )
 
         assert allowed.ok is True
         assert allowed.result == {"value": "tail"}
         assert denied.ok is False
         assert "selected cluster denied" in (denied.error + denied.stderr)
+        assert permission_denied.ok is False
+        assert "requires permission 'kubernetes:read'" in (
+            permission_denied.error + permission_denied.stderr
+        )
 
 
 class TestLearnedToolRunTool:

@@ -115,7 +115,7 @@ class LearnedToolRunTool(ToolPort):
                     f"{name!r} is not a tool this resident exposes to learned tools; "
                     f"available: {', '.join(sorted(available)) or 'none'}"
                 )
-            if not self._permission.allows(tool.required_permission):
+            if not await self._permission.check(tool.required_permission):
                 raise PermissionError(
                     f"{name!r} requires permission {tool.required_permission!r}, "
                     f"which this resident does not hold"
