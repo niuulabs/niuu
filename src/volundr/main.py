@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -203,6 +204,13 @@ BROADCAST_INTERVAL = 30
 logger = logging.getLogger(__name__)
 
 
+# Only "could not reach Bifrost" is retried: in mini mode the catalog is served by
+# this same process and is not listening yet when the lifespan starts. Any other
+# failure (HTTP error, bad payload, bad auth) means a reachable catalog answered
+# wrongly, which is a misconfiguration and must surface instead of being retried.
+_BIFROST_NOT_READY_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout)
+
+
 async def _load_bifrost_catalog(
     pricing_provider: HardcodedPricingProvider,
     bifrost_catalog: HttpBifrostCatalogAdapter,
@@ -211,18 +219,34 @@ async def _load_bifrost_catalog(
     while True:
         try:
             models = await bifrost_catalog.list_models()
-            pricing_provider.replace_models(models)
-            logger.info("Loaded %s model(s) from configured Bifrost catalog", len(models))
-            return
-        except Exception:
+        except _BIFROST_NOT_READY_ERRORS as exc:
             logger.warning(
-                "Bifrost catalog not ready yet at %s; retrying in %.1fs",
+                "Bifrost catalog not ready yet at %s (%s); retrying in %.1fs",
                 bifrost_catalog._base_url,  # noqa: SLF001
+                exc,
                 delay_seconds,
-                exc_info=True,
             )
             await asyncio.sleep(delay_seconds)
             delay_seconds = min(delay_seconds * 2, 5.0)
+            continue
+        pricing_provider.replace_models(models)
+        logger.info("Loaded %s model(s) from configured Bifrost catalog", len(models))
+        return
+
+
+def _log_bifrost_catalog_task_failure(task: asyncio.Task[None]) -> None:
+    """Make a dead catalog refresh task loud: without this it would die silently."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is None:
+        return
+    logger.error(
+        "Bifrost catalog refresh stopped: %s. Fix the catalog at bifrost.url (and bifrost.auth) "
+        "and restart Volundr; the model catalog will not refresh until then",
+        exc,
+        exc_info=exc,
+    )
 
 
 async def _refresh_bifrost_catalog(
@@ -832,6 +856,7 @@ def create_app(
                     interval_seconds=settings.bifrost.catalog_refresh_interval_seconds,
                 )
             )
+            bifrost_catalog_task.add_done_callback(_log_bifrost_catalog_task_failure)
             resident_profile_provider = ConfigResidentDeploymentProfileProvider(
                 settings.resident_runtimes.profiles,
                 pricing_provider,
