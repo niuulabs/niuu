@@ -12,6 +12,21 @@ from ravn.domain.events import RavnEvent, RavnEventType
 # ruff: noqa: F821
 
 
+def _consumer_fan_in_strategy(fan_in: Any) -> str:
+    """Strategy for joining the event types this persona itself consumes.
+
+    A persona that ``contributes_to`` a target declares how its *output* is
+    aggregated with the other contributors of that target (producer
+    aggregation). Its consumed event types are alternative triggers — the
+    reviewer runs on ``code.changed`` *or* ``review.requested`` — so applying
+    that strategy to them made a reviewer wait forever for both. Only a
+    persona that contributes to nothing joins its own inputs with it.
+    """
+    if fan_in.contributes_to:
+        return "merge"
+    return fan_in.strategy
+
+
 def _wire_mimir_triggers(
     drive_loop: Any,
     mimir: Any,
@@ -622,12 +637,12 @@ def _wire_cascade(
                     target,
                 )
 
+        fan_in_contributes_to = persona_config.fan_in.contributes_to if persona_config else ""
         fan_in_strategy = (
             str(workflow_runtime["fan_in_strategy"])
             if workflow_runtime is not None
-            else persona_config.fan_in.strategy
+            else _consumer_fan_in_strategy(persona_config.fan_in)
         )
-        fan_in_contributes_to = persona_config.fan_in.contributes_to if persona_config else ""
 
         async def _handle_outcome_event(event: RavnEvent) -> None:
             """Handle incoming outcome events, respecting fan-in accumulation."""

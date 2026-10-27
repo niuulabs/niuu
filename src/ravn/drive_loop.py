@@ -1100,6 +1100,11 @@ class FanInBuffer:
         required = self._contributor_names.get(contributes_to)
         if not required or len(required) <= 1:
             return None
+        # Only a registered contributor's outcome counts toward the target; an
+        # upstream event (the coder's code.changed reaching a reviewer) would
+        # otherwise open a slot nothing can ever complete.
+        if producer_persona not in required:
+            return None
 
         cycle_id = cycle_correlation_id or root_correlation_id
         group_key = f"producer:{contributes_to}:{cycle_id}"
