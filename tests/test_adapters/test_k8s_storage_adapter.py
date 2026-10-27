@@ -405,3 +405,91 @@ class TestBuildPvcManifest:
         )
 
         assert pvc.spec.storage_class_name is None
+
+
+_OPENSHELL_ATTACH_LABELS = {
+    "openshell.ai/sandbox-attachable": "true",
+    "openshell.ai/sandbox-attachable-workspace": "default",
+}
+
+
+def _labelled_adapter(mock_core_api: AsyncMock) -> K8sStorageAdapter:
+    adapter = K8sStorageAdapter(namespace="test-ns", pvc_labels=_OPENSHELL_ATTACH_LABELS)
+    adapter._api_client = mock_core_api
+    return adapter
+
+
+async def test_configured_pvc_labels_go_on_every_created_claim(mock_core_api):
+    """OpenShell mounts a session's claims only when they carry its admission labels."""
+    adapter = _labelled_adapter(mock_core_api)
+
+    await adapter.provision_user_storage("user-1", StorageQuota())
+    await adapter.create_session_workspace("s1", user_id="user-1")
+
+    home, workspace = (
+        call.kwargs["body"].metadata.labels
+        for call in mock_core_api.create_namespaced_persistent_volume_claim.call_args_list
+    )
+    for labels in (home, workspace):
+        assert _OPENSHELL_ATTACH_LABELS.items() <= labels.items()
+        assert labels["volundr/owner"] == "user-1"
+    assert workspace["volundr/session-id"] == "s1"
+
+
+async def test_configured_pvc_labels_never_replace_ownership_labels(mock_core_api):
+    adapter = K8sStorageAdapter(namespace="test-ns", pvc_labels={"volundr/owner": "someone"})
+    adapter._api_client = mock_core_api
+
+    await adapter.provision_user_storage("user-1", StorageQuota())
+
+    body = mock_core_api.create_namespaced_persistent_volume_claim.call_args.kwargs["body"]
+    assert body.metadata.labels["volundr/owner"] == "user-1"
+
+
+async def test_an_existing_home_gets_the_configured_labels_before_expanding(mock_core_api):
+    adapter = _labelled_adapter(mock_core_api)
+    adapter._home_size_gb = 64
+    mock_core_api.create_namespaced_persistent_volume_claim.side_effect = Exception(
+        "409 AlreadyExists"
+    )
+    mock_core_api.read_namespaced_persistent_volume_claim.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(labels={"volundr/owner": "user-1"}, resource_version="7"),
+        spec=SimpleNamespace(resources=SimpleNamespace(requests={"storage": "1Gi"})),
+    )
+    mock_core_api.patch_namespaced_persistent_volume_claim.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(
+            labels={"volundr/owner": "user-1", **_OPENSHELL_ATTACH_LABELS},
+            resource_version="8",
+        ),
+        spec=SimpleNamespace(resources=SimpleNamespace(requests={"storage": "1Gi"})),
+    )
+
+    await adapter.provision_user_storage("user-1", StorageQuota())
+
+    label_patch, expansion = (
+        call.kwargs["body"]
+        for call in mock_core_api.patch_namespaced_persistent_volume_claim.call_args_list
+    )
+    assert label_patch == {"metadata": {"labels": _OPENSHELL_ATTACH_LABELS}}
+    # The expansion carries the version the label patch produced, so it does not conflict.
+    assert expansion == {
+        "metadata": {"resourceVersion": "8"},
+        "spec": {"resources": {"requests": {"storage": "64Gi"}}},
+    }
+
+
+async def test_an_already_labelled_home_is_not_patched(mock_core_api):
+    adapter = _labelled_adapter(mock_core_api)
+    mock_core_api.create_namespaced_persistent_volume_claim.side_effect = Exception(
+        "409 AlreadyExists"
+    )
+    mock_core_api.read_namespaced_persistent_volume_claim.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(
+            labels={"volundr/owner": "user-1", **_OPENSHELL_ATTACH_LABELS}, resource_version="7"
+        ),
+        spec=SimpleNamespace(resources=SimpleNamespace(requests={"storage": "1Gi"})),
+    )
+
+    await adapter.provision_user_storage("user-1", StorageQuota())
+
+    mock_core_api.patch_namespaced_persistent_volume_claim.assert_not_awaited()
