@@ -32,6 +32,7 @@ from ravn.api.valkyries import (
     create_valkyrie_router,
 )
 from ravn.api.warden_stream import WardenStreamBroker
+from ravn.cap_telemetry import degraded_counts, reset_cap_hits
 from ravn.config import ValkyrieTelemetryConfig
 from ravn.ports.warden_deployer import (
     WardenDeploymentError,
@@ -42,6 +43,7 @@ from ravn.warden import WardenSpec, WardenStore
 from ravn.warden.artifacts import service_label, start_command, write_runtime_config
 from ravn.warden.models import WardenObservation, WardenSupervisor
 from sleipnir.domain.events import SleipnirEvent
+from sleipnir.ports.events import StreamNotFoundError
 
 
 def TestClient(app, **kwargs):  # noqa: N802 — test client factory
@@ -2191,6 +2193,92 @@ def test_valkyrie_dashboard_telemetry_subscription_starts_streams_concurrently()
         await subscription.stop()
 
     asyncio.run(start_and_check())
+
+
+class _FakeTelemetrySubscription:
+    def __init__(self) -> None:
+        self.unsubscribed = False
+
+    async def unsubscribe(self) -> None:
+        self.unsubscribed = True
+
+
+class _ScriptedTelemetrySubscriber:
+    """A telemetry subscriber whose subscribe calls fail in a scripted order."""
+
+    def __init__(self, *failures: BaseException | None) -> None:
+        self._failures = list(failures)
+        self.attempts = 0
+        self.stopped = False
+        self.subscription = _FakeTelemetrySubscription()
+
+    async def start(self) -> None:
+        return None
+
+    async def subscribe(self, event_types, handler):
+        del event_types, handler
+        self.attempts += 1
+        failure = self._failures.pop(0) if self._failures else None
+        if failure is not None:
+            raise failure
+        return self.subscription
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+
+def _telemetry_subscription(*subscribers) -> ValkyrieTelemetrySubscription:
+    return ValkyrieTelemetrySubscription(
+        projection=ValkyrieDashboardProjection(),
+        subscribers=list(subscribers),
+        event_types=["*"],
+        startup_delay_seconds=0,
+        subscriber_start_timeout_seconds=1,
+        retry_interval_seconds=30,
+    )
+
+
+def test_valkyrie_dashboard_does_not_start_when_a_configured_stream_is_missing():
+    present = _ScriptedTelemetrySubscriber()
+    missing = _ScriptedTelemetrySubscriber(StreamNotFoundError("stream gone"))
+    subscription = _telemetry_subscription(
+        ("obs-valaskjalf-events/obs.valaskjalf", present),
+        ("obs-vanaheim-events/obs.vanaheim", missing),
+    )
+
+    with pytest.raises(StreamNotFoundError) as raised:
+        asyncio.run(subscription.start())
+
+    message = str(raised.value)
+    assert "obs-vanaheim-events/obs.vanaheim is configured but does not exist" in message
+    assert "valkyrie.telemetry.nats_streams" in message
+    assert present.subscription.unsubscribed
+    assert present.stopped and missing.stopped
+
+
+def test_valkyrie_dashboard_reports_a_stream_found_missing_on_retry():
+    reset_cap_hits()
+    flaky = _ScriptedTelemetrySubscriber(
+        ConnectionError("hub unreachable"),
+        StreamNotFoundError("stream gone"),
+        None,
+    )
+    subscription = _telemetry_subscription(("obs-vanaheim-events/obs.vanaheim", flaky))
+
+    subscription._retry_interval_seconds = 0
+
+    async def run() -> None:
+        await subscription.start()
+        assert flaky.attempts == 1
+        assert subscription._retry_task is not None
+        await subscription._retry_task
+        assert degraded_counts() == {"valkyrie_dashboard.telemetry_stream": 1}
+        assert flaky.attempts == 3
+        await subscription.stop()
+
+    asyncio.run(run())
+
+    assert flaky.subscription.unsubscribed
 
 
 def test_valkyrie_dashboard_mutations(client: TestClient):

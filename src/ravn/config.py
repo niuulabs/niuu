@@ -4904,6 +4904,12 @@ class ValkyrieTelemetryConfig(_LegacyAliasSettings):
     )
     nats_streams: str = Field(
         default="",
+        description=(
+            "Comma-separated stream:subject_prefix:user:password_env entries the "
+            "dashboard reads telemetry from. Every listed stream must exist on the "
+            "server: one that does not fails the dashboard's startup, while one "
+            "that is only unreachable is retried every retry_seconds."
+        ),
         validation_alias=AliasChoices(
             "nats_streams",
             "RAVN_VALKYRIE_TELEMETRY_NATS_STREAMS",

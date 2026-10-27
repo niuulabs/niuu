@@ -1337,6 +1337,11 @@ def create_app(
             warmup = getattr(store, "warmup", None)
             if warmup is not None:
                 await warmup()
+        # A configured telemetry stream the server does not have raises here
+        # and fails startup: carrying on would show that environment's
+        # residents as never observed, with nothing else saying why.
+        if valkyrie_telemetry is not None:
+            await valkyrie_telemetry.start()
         review_sweep_task = asyncio.create_task(
             _run_review_sweep(),
             name="odin_review_sweep",
@@ -1346,11 +1351,6 @@ def create_app(
             if brief_interval > 0
             else None
         )
-        if valkyrie_telemetry is not None:
-            try:
-                await valkyrie_telemetry.start()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("valkyrie telemetry subscription did not start: %s", exc)
         try:
             await valkyrie_learning_commands.start()
         except Exception as exc:  # noqa: BLE001
