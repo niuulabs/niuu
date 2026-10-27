@@ -78,6 +78,15 @@ def test_agent_directory_chart_config_exposes_bounded_runtime_settings(chart: st
     assert ".Values.directory.signatureAlgorithms" in template
     assert ".Values.directory.authenticatedCardOrigins" in template
     assert ".Values.directory.allowedCardOrigins" in template
+    if chart == "observatory":
+        assert values["directory"]["staticCards"] == [
+            {
+                "url": "http://{{ .Release.Name }}-ting/.well-known/agent-card.json",
+                "visibility": "system",
+            }
+        ]
+        assert "static_cards:" in template
+        assert "tpl .url $" in template
 
 
 def test_mimir_probes_use_constant_time_health_endpoint() -> None:

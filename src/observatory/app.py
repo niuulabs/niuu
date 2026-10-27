@@ -29,7 +29,7 @@ from niuu.settings_schema import (
     SettingsSectionSchema,
 )
 from observatory.a2a_cards import HttpAgentCardResolver
-from observatory.agent_directory import AgentDirectoryService
+from observatory.agent_directory import AgentDirectoryService, StaticAgentCard
 from observatory.discovery import ObservatoryDiscoveryService
 from observatory.entity_discovery import build_discovery_adapter
 from observatory.registry import (
@@ -420,6 +420,10 @@ def create_app(
             instance_id=directory_cfg.instance_id,
             cluster_id=directory_cfg.cluster_id,
             max_concurrency=directory_cfg.local_max_concurrency,
+            static_cards=[
+                StaticAgentCard(url=card.url, visibility=card.visibility)
+                for card in directory_cfg.static_cards
+            ],
         )
 
     @asynccontextmanager

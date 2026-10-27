@@ -98,6 +98,10 @@ The Observatory and Guild Helm charts expose the same `directory` settings:
 ```yaml
 directory:
   instanceId: observatory-noatun
+  # Curated cards are directory entries only; they do not add topology nodes.
+  staticCards:
+    - url: https://ting.internal.example/.well-known/agent-card.json
+      visibility: system
   cardTimeoutSeconds: 4.0
   cardCacheTtlSeconds: 300.0
   localMaxConcurrency: 8
@@ -105,7 +109,7 @@ directory:
   guildMaxConcurrency: 8
   signatureAlgorithms: [ES256, ES384, RS256, RS384, PS256, EdDSA]
   # Exact origins for both Agent Card and JWKS retrieval. Empty denies all retrieval.
-  allowedCardOrigins: [https://agents.internal.example]
+  allowedCardOrigins: [https://agents.internal.example, https://ting.internal.example]
   # A subset of allowedCardOrigins that may receive caller authentication.
   authenticatedCardOrigins: [https://agents.internal.example]
 ```
@@ -113,5 +117,9 @@ directory:
 `global.niuu.cluster` supplies the deployment cluster. Guild only queries enabled,
 principal-visible registered instances whose kind is `observatory`. Observatory discovery
 adapters remain dynamically configured under `observatory.discovery`; no seeded agents or
-special demo discovery path is used. Keep `authenticatedCardOrigins` empty unless a card service
-requires caller authentication, and list only origins controlled by the deployment operator.
+special demo discovery path is used. `staticCards` is the minimal curated source for a platform
+agent such as Ting: each URL is still fetched only through `HttpAgentCardResolver`, and its exact
+origin must also be present in `allowedCardOrigins`. The Observatory chart registers its release's
+in-cluster Ting card at `http://<release>-ting/.well-known/agent-card.json` with `system`
+visibility. Keep `authenticatedCardOrigins` empty unless a card service requires caller
+authentication, and list only origins controlled by the deployment operator.

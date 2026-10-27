@@ -410,9 +410,7 @@ async def test_cli_harness_interrupt_waits_for_delivery_and_propagates_failure()
     assert isinstance(second_transport, DelayedInterruptTransport)
     second_transport.fail_interrupt_delivery = True
 
-    second_turn = asyncio.create_task(
-        second_agent.run_turn(HarnessTurnInput("Review the patch"))
-    )
+    second_turn = asyncio.create_task(second_agent.run_turn(HarnessTurnInput("Review the patch")))
     await second_transport.turn_started.wait()
     failed_interrupt = asyncio.create_task(
         second_agent.control(

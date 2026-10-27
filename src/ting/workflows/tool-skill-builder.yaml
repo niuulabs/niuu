@@ -3,7 +3,7 @@ id: 3c217e0a-1ff0-56d6-ba27-54cd43bff8e6
 name: Tool & Skill Builder
 description: Resident capability workflow that designs, implements, reviews, canaries, and publishes a
   missing Valkyrie/Ravn tool or skill.
-version: 1.0.5
+version: 1.0.6
 persona_dependencies:
   capability-publisher:
     id: capability-publisher
@@ -157,6 +157,16 @@ graph:
     position:
       x: 1760
       y: 280
+  - id: capability-blocked
+    kind: gate
+    label: Capability publication blocked
+    condition: Review the publisher's blocking diagnosis, correct the external capability publication dependency, then re-commission the workflow.
+    mode: human_approval
+    pendingBehavior: help_needed
+    instructions: Publication did not complete. Preserve the publisher's stated cause, resolve it outside this workflow, then re-commission the capability build.
+    position:
+      x: 1408
+      y: 480
   edges:
   - id: edge-capability-request-to-frame
     source: capability-request
@@ -186,6 +196,10 @@ graph:
     source: capability-review
     target: capability-publish
     label: security.passed -> security.passed
+  - id: edge-capability-publish-to-blocked
+    source: capability-publish
+    target: capability-blocked
+    label: capability.blocked -> capability.blocked
   - id: edge-capability-publish-to-end
     source: capability-publish
     target: capability-complete

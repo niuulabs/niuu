@@ -95,10 +95,7 @@ class HarnessCapabilityProfile:
             raise HarnessContractError("image input requires attachment input support")
         if self.supports_dynamic_tools and not self.supports_tools:
             raise HarnessContractError("dynamic tool exposure requires tool execution support")
-        if (
-            self.steering_mode is SteeringMode.INTERRUPT_RESUME
-            and not self.supports_interrupt
-        ):
+        if self.steering_mode is SteeringMode.INTERRUPT_RESUME and not self.supports_interrupt:
             raise HarnessContractError("interrupt-resume steering requires interrupt support")
 
     @property

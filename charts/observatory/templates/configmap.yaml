@@ -68,6 +68,14 @@ data:
 
     observatory:
       directory:
+        {{- $staticCards := list }}
+        {{- range .Values.directory.staticCards }}
+        {{- $staticCards = append $staticCards (dict "url" (tpl .url $) "visibility" .visibility) }}
+        {{- end }}
+        {{- $allowedCardOrigins := list }}
+        {{- range .Values.directory.allowedCardOrigins }}
+        {{- $allowedCardOrigins = append $allowedCardOrigins (tpl . $) }}
+        {{- end }}
         instance_id: {{ .Values.directory.instanceId | default (printf "%s-observatory" .Release.Name) | quote }}
         cluster_id: {{ .Values.global.niuu.cluster | default "unknown" | quote }}
         card_timeout_seconds: {{ .Values.directory.cardTimeoutSeconds | default 4.0 }}
@@ -77,7 +85,8 @@ data:
         guild_max_concurrency: {{ .Values.directory.guildMaxConcurrency | default 8 }}
         signature_algorithms: {{ .Values.directory.signatureAlgorithms | toJson }}
         authenticated_card_origins: {{ .Values.directory.authenticatedCardOrigins | toJson }}
-        allowed_card_origins: {{ .Values.directory.allowedCardOrigins | toJson }}
+        allowed_card_origins: {{ $allowedCardOrigins | toJson }}
+        static_cards: {{ $staticCards | toJson }}
       guild:
         url: {{ .Values.guild.url | default (printf "http://%s-guild" .Release.Name) | quote }}
       discovery:

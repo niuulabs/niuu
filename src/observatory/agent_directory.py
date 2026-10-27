@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from niuu.domain.agent_directory import (
@@ -14,6 +15,7 @@ from niuu.domain.agent_directory import (
     AgentDirectorySourceHealth,
     AgentDirectoryWarning,
     AgentProvenance,
+    configured_agent_id,
     is_agent_scope_visible,
     matches_agent_filters,
 )
@@ -26,6 +28,15 @@ from niuu.ports.agent_cards import (
 from observatory.entity_discovery import DiscoveredEntity, DiscoveryResult
 
 _AGENT_KINDS = {"steward", "resident", "workflow-session"}
+_CONFIGURED_CARD_SOURCE_KIND = "configured-agent-card"
+
+
+@dataclass(frozen=True)
+class StaticAgentCard:
+    """A deployment-curated card that is not a discovered topology entity."""
+
+    url: str
+    visibility: str
 
 
 class DiscoveryResultProvider(Protocol):
@@ -68,12 +79,14 @@ class AgentDirectoryService:
         instance_id: str,
         cluster_id: str,
         max_concurrency: int,
+        static_cards: list[StaticAgentCard] | None = None,
     ) -> None:
         self._discovery = discovery
         self._card_resolver = card_resolver
         self._instance_id = instance_id
         self._cluster_id = cluster_id
         self._max_concurrency = max_concurrency
+        self._static_cards = tuple(static_cards or ())
 
     async def list_agents(
         self,
@@ -85,9 +98,10 @@ class AgentDirectoryService:
         """Return visible entries and bounded per-card warnings."""
         active_filters = filters or AgentDirectoryFilters()
         result = await self._discovery.get_discovery_result()
+        entities = [*result.entities, *self._static_card_entities()]
         candidates = [
             entity
-            for entity in result.entities
+            for entity in entities
             if entity.endpoints.get("a2aCard") and self._entity_may_match(entity, active_filters)
         ]
         semaphore = asyncio.Semaphore(self._max_concurrency)
@@ -137,6 +151,26 @@ class AgentDirectoryService:
             partial=bool(warnings),
             revision=revision,
         )
+
+    def _static_card_entities(self) -> list[DiscoveredEntity]:
+        """Adapt curated cards to the existing resolution projection only."""
+        return [
+            DiscoveredEntity(
+                id=f"agent-card:{configured_agent_id(card.url).removeprefix('agent-')}",
+                kind="ting",
+                name=card.url,
+                cluster=self._cluster_id,
+                status="healthy",
+                source_kind=_CONFIGURED_CARD_SOURCE_KIND,
+                source_uid=configured_agent_id(card.url).removeprefix("agent-"),
+                endpoints={"a2aCard": card.url},
+                metadata={
+                    "visibility": card.visibility,
+                    "agentKind": "workflow-session",
+                },
+            )
+            for card in self._static_cards
+        ]
 
     async def get_agent(
         self,
@@ -253,10 +287,18 @@ class AgentDirectoryService:
         cluster_id = entity.cluster or self._cluster_id
         environment_id = _string_metadata(metadata, "environmentId", "environment_id") or None
         fingerprint_identity = ",".join(card.signature_key_fingerprints)
+        is_configured_card = entity.source_kind == _CONFIGURED_CARD_SOURCE_KIND
         canonical_id = (
-            f"a2a-card:{card.card_hash}:keys:{fingerprint_identity}"
-            if card.signature_verified and card.card_hash and fingerprint_identity
-            else f"a2a-source:{self._instance_id}:{entity.id}"
+            f"configured:{card_url}"
+            if is_configured_card
+            else (
+                f"a2a-card:{card.card_hash}:keys:{fingerprint_identity}"
+                if card.signature_verified and card.card_hash and fingerprint_identity
+                else f"a2a-source:{self._instance_id}:{entity.id}"
+            )
+        )
+        entry_id = (
+            configured_agent_id(card_url) if is_configured_card else _stable_agent_id(canonical_id)
         )
         provenance = AgentProvenance(
             sourceAgentId=source_agent_id,
@@ -266,7 +308,7 @@ class AgentDirectoryService:
             topologyNodeId=entity.id,
         )
         return AgentDirectoryEntry(
-            id=_stable_agent_id(canonical_id),
+            id=entry_id,
             canonicalId=canonical_id,
             sourceAgentId=source_agent_id,
             sourceInstanceId=self._instance_id,

@@ -14,11 +14,11 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from google.protobuf.json_format import MessageToDict
 from jwt.algorithms import RSAAlgorithm
 
-from niuu.domain.agent_directory import AgentDirectoryFilters
+from niuu.domain.agent_directory import AgentDirectoryFilters, configured_agent_id
 from niuu.domain.models import Principal
 from niuu.ports.agent_cards import AgentCardResolutionError, ResolvedAgentCard
 from observatory.a2a_cards import HttpAgentCardResolver
-from observatory.agent_directory import AgentDirectoryService
+from observatory.agent_directory import AgentDirectoryService, StaticAgentCard
 from observatory.discovery import ObservatoryDiscoveryService
 from observatory.entity_discovery import DiscoveredEntity, DiscoveryResult
 
@@ -154,6 +154,7 @@ def _entity(
 def _service(
     entities: list[DiscoveredEntity],
     resolver: _StubCardResolver,
+    static_cards: list[StaticAgentCard] | None = None,
 ) -> AgentDirectoryService:
     discovery = ObservatoryDiscoveryService(
         guild_url="http://guild.test",
@@ -165,6 +166,7 @@ def _service(
         instance_id="observatory-noatun",
         cluster_id="noatun",
         max_concurrency=2,
+        static_cards=static_cards,
     )
 
 
@@ -225,6 +227,44 @@ async def test_directory_filters_before_card_fetch_and_preserves_topology_identi
             {"authorization": "Bearer principal-a"},
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_directory_projects_allowed_static_card_without_topology_duplication() -> None:
+    ting_url = "https://ting.example.test/.well-known/agent-card.json"
+    private_url = "https://private.example.test/.well-known/agent-card.json"
+    resolver = _StubCardResolver(
+        {
+            ting_url: _resolved_card(
+                "Ting",
+                skill="workflow",
+                tag="automation",
+                card_hash="ting-hash",
+            ),
+            private_url: _resolved_card(
+                "Private",
+                skill="hidden",
+                tag="restricted",
+                card_hash="private-hash",
+            ),
+        }
+    )
+    service = _service(
+        [],
+        resolver,
+        static_cards=[
+            StaticAgentCard(url=ting_url, visibility="system"),
+            StaticAgentCard(url=private_url, visibility="private"),
+        ],
+    )
+
+    page = await service.list_agents(_principal("other-user", "other-tenant"), headers={})
+
+    assert [entry.id for entry in page.items] == [configured_agent_id(ting_url)]
+    assert page.items[0].name == "Ting"
+    assert page.items[0].visibility == "system"
+    assert page.items[0].topology_node_id == "agent-card:" + configured_agent_id(ting_url)[6:]
+    assert [call[0] for call in resolver.calls] == [ting_url]
 
 
 @pytest.mark.asyncio
