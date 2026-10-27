@@ -2104,7 +2104,12 @@ class LearnedToolResolver:
             artifacts.append(artifact)
         return artifacts
 
-    def incompatibility_reason(self, artifact: LearnedToolArtifact) -> str | None:
+    def incompatibility_reason(
+        self,
+        artifact: LearnedToolArtifact,
+        *,
+        host_call_available: bool = True,
+    ) -> str | None:
         """Return why *artifact* cannot run on this resolver's backend.
 
         Catalog discovery must not advertise an SDK-dependent tool through
@@ -2124,13 +2129,18 @@ class LearnedToolResolver:
         if not learned_tool_requires_host_sdk(tool_code):
             return None
         runner = self._runner()
-        if getattr(runner, "supports_host_call", False):
+        if not getattr(runner, "supports_host_call", False):
+            return (
+                f"the configured {self._execution_backend or 'local'!r} execution backend "
+                "cannot provide the ravn.sdk host-tool route required by this learned tool; "
+                "rebuild it self-contained or use an execution backend with an authorized "
+                "host-tool route"
+            )
+        if host_call_available:
             return None
         return (
-            f"the configured {self._execution_backend or 'local'!r} execution backend "
-            "cannot provide the ravn.sdk host-tool route required by this learned tool; "
-            "rebuild it self-contained or use an execution backend with an authorized "
-            "host-tool route"
+            "this learned-tool invocation has no authorized ravn.sdk host-tool route; "
+            "use learned_tool_run or rebuild it self-contained"
         )
 
     def load(self, name: str, *, host_call: HostCall | None = None) -> LearnedTool:
@@ -2155,7 +2165,10 @@ class LearnedToolResolver:
         tool_path = self._tool_path(artifact.manifest.name)
         if not tool_path.exists():
             raise LearnedToolError(f"learned tool {name!r} has no code file at {tool_path}")
-        incompatibility = self.incompatibility_reason(artifact)
+        incompatibility = self.incompatibility_reason(
+            artifact,
+            host_call_available=host_call is not None,
+        )
         if incompatibility is not None:
             raise LearnedToolError(f"learned tool {name!r} is incompatible: {incompatibility}")
         return load_learned_tool(

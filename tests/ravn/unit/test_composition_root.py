@@ -498,7 +498,12 @@ class TestBuildTools:
         assert tools == []
 
     @staticmethod
-    def _write_learned_artifact(tmp_path: Path, name: str) -> None:
+    def _write_learned_artifact(
+        tmp_path: Path,
+        name: str,
+        *,
+        tool_code: str = "def run(input):\n    return {'ok': True}\n",
+    ) -> None:
         from ravn.valkyrie_evolution.learned_tools import (
             write_learned_tool,
             write_learned_tool_artifact,
@@ -514,7 +519,7 @@ class TestBuildTools:
                 required_permission="mimir:read",
                 declared_reach=[],
             ),
-            tool_code="def run(input):\n    return {'ok': True}\n",
+            tool_code=tool_code,
             # An installed tool carries the verification the build path
             # performs; loading refuses anything else.
             provenance={"verification": {"ok": True, "logs": "fixture"}},
@@ -549,6 +554,43 @@ class TestBuildTools:
         )
 
         assert "persisted_metric_window" in {tool.name for tool in tools}
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_bulk_mode_omits_sdk_tools_without_an_authorized_host_route(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Bulk loading has no host callback, so SDK tools are not advertised."""
+        from ravn.cli.commands import _build_tools
+        from ravn.domain.models import Session
+
+        settings.resident_evolution.learned_tool_injection_mode = "bulk"
+        settings.resident_evolution.learned_tool_execution_backend = "local"
+        self._write_learned_artifact(
+            tmp_path,
+            "read_configmap_key_tail",
+            tool_code=(
+                "from ravn.sdk import tool\n"
+                "def run(input):\n"
+                "    return tool.kubernetes_inspect(**input)\n"
+            ),
+        )
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=None,
+        )
+
+        assert "read_configmap_key_tail" not in {tool.name for tool in tools}
+        assert "no authorized ravn.sdk host-tool route" in caplog.text
 
     @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
     def test_dispatch_mode_keeps_learned_tools_out_of_the_toolbox(

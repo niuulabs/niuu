@@ -502,6 +502,13 @@ def _load_resident_learned_tools(
             continue
         if name in seen:
             continue
+        incompatibility = resolver.incompatibility_reason(
+            artifact,
+            host_call_available=False,
+        )
+        if incompatibility is not None:
+            logger.warning("Skipping learned tool %s: %s", name, incompatibility)
+            continue
         try:
             tool = resolver.load(name)
         except Exception as exc:
