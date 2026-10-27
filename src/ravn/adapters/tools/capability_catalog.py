@@ -40,6 +40,7 @@ class CapabilityListTool(ToolPort):
         workflow_sources: Sequence[WorkflowCapabilityPort] | None = None,
         learned_tools_provider: Callable[[], Sequence[Any]] | None = None,
         learned_tool_compatibility: Callable[[Any], str | None] | None = None,
+        learned_tool_dispatch_available: Callable[[], bool] | None = None,
         learned_tool_usage: Callable[[], Mapping[str, Any]] | None = None,
         retired_learned_tools: Callable[[], Sequence[Any]] | None = None,
         agent_directory: PeerAgentDirectoryPort | None = None,
@@ -55,6 +56,10 @@ class CapabilityListTool(ToolPort):
         # host-SDK tools therefore remain a discovery error, not an executable
         # advertisement.
         self._learned_tool_compatibility = learned_tool_compatibility
+        # Learned artifacts have one invocation route. The runtime supplies a
+        # final-tool-list callback because persona and permission filtering can
+        # remove that route after this catalog object is constructed.
+        self._learned_tool_dispatch_available = learned_tool_dispatch_available
         # Per-tool usage from the ledger beside the artifacts (runs, successes,
         # last use, the installed version's own record): the evidence that says
         # which of two similar tools actually works.
@@ -282,6 +287,21 @@ class CapabilityListTool(ToolPort):
                 usage = dict(self._learned_tool_usage()) if self._learned_tool_usage else {}
                 for artifact in learned_artifacts:
                     manifest = artifact.manifest
+                    if (
+                        self._learned_tool_dispatch_available is not None
+                        and not self._learned_tool_dispatch_available()
+                    ):
+                        errors.append(
+                            {
+                                "kind": "learned_tool",
+                                "name": manifest.name,
+                                "error": (
+                                    "this resident does not expose learned_tool_run, the only "
+                                    "authorized invocation route for learned tools"
+                                ),
+                            }
+                        )
+                        continue
                     if self._learned_tool_compatibility is not None:
                         incompatibility = self._learned_tool_compatibility(artifact)
                         if incompatibility is not None:

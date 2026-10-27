@@ -561,6 +561,7 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "workflow_sources": ctx.get("workflow_sources") or [],
             "learned_tools_provider": ctx.get("learned_tools_provider"),
             "learned_tool_compatibility": ctx.get("learned_tool_compatibility"),
+            "learned_tool_dispatch_available": ctx.get("learned_tool_dispatch_available"),
             "learned_tool_usage": ctx.get("learned_tool_usage"),
             "retired_learned_tools": ctx.get("retired_learned_tools"),
             "agent_directory": ctx.get("agent_directory"),

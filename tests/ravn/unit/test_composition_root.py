@@ -704,14 +704,19 @@ class TestBuildTools:
         assert '"ok": true' in executed.content
 
     @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
-    def test_learned_tool_run_skipped_without_permission_port(
+    async def test_catalog_explains_when_dispatcher_is_unavailable(
         self,
         settings: Settings,
         tmp_path: Path,
     ) -> None:
+        """The resident catalog must not promise a route filtering removed."""
+        import json
+
         from ravn.cli.commands import _build_tools
         from ravn.domain.models import Session
 
+        settings.resident_evolution.learned_tool_execution_backend = "local"
+        self._write_learned_artifact(tmp_path, "persisted_metric_window")
         tools = _build_tools(
             settings,
             tmp_path,
@@ -723,7 +728,92 @@ class TestBuildTools:
             persona_config=None,
         )
 
-        assert "learned_tool_run" not in {tool.name for tool in tools}
+        by_name = {tool.name: tool for tool in tools}
+        assert "learned_tool_run" not in by_name
+
+        result = await by_name["capability_list"].execute(
+            {"kind": "tool", "query": "persisted_metric_window"}
+        )
+
+        assert not result.is_error
+        payload = json.loads(result.content)
+        assert payload["capabilities"] == []
+        assert payload["errors"] == [
+            {
+                "kind": "learned_tool",
+                "name": "persisted_metric_window",
+                "error": (
+                    "this resident does not expose learned_tool_run, the only authorized "
+                    "invocation route for learned tools"
+                ),
+            }
+        ]
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    @pytest.mark.parametrize("execution_backend", ["container", "k8s_job"])
+    async def test_resident_catalog_hides_sdk_tools_for_an_incompatible_backend(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+        execution_backend: str,
+    ) -> None:
+        """The composed resident catalog uses the dispatch backend compatibility gate."""
+        import json
+
+        from ravn.adapters.permission.allow_deny import AllowAllPermission
+        from ravn.cli.commands import _build_tools
+        from ravn.domain.models import Session
+
+        settings.resident_evolution.learned_tool_execution_backend = execution_backend
+        if execution_backend == "k8s_job":
+            settings.resident_evolution.learned_tool_k8s.namespace = "ravn"
+            settings.resident_evolution.learned_tool_k8s.deny_policy_name = "tool-deny"
+            settings.resident_evolution.learned_tool_k8s.allow_policy_name = "tool-allow"
+        self._write_learned_artifact(
+            tmp_path,
+            "read_configmap_key_tail",
+            tool_code=(
+                "from ravn.sdk import tool\n"
+                "def run(input):\n"
+                "    return tool.kubernetes_inspect(**input)\n"
+            ),
+        )
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=None,
+            permission=AllowAllPermission(),
+        )
+        by_name = {tool.name: tool for tool in tools}
+
+        listed = await by_name["capability_list"].execute(
+            {"kind": "tool", "query": "read_configmap_key_tail"}
+        )
+        invoked = await by_name["learned_tool_run"].execute(
+            {"name": "read_configmap_key_tail", "input": {}}
+        )
+
+        catalog = json.loads(listed.content)
+        assert catalog["capabilities"] == []
+        assert catalog["errors"] == [
+            {
+                "kind": "learned_tool",
+                "name": "read_configmap_key_tail",
+                "error": (
+                    f"the configured {execution_backend!r} execution backend cannot provide "
+                    "the ravn.sdk host-tool route required by this learned tool; rebuild it "
+                    "self-contained or use an execution backend with an authorized host-tool "
+                    "route"
+                ),
+            }
+        ]
+        assert invoked.is_error
+        assert "is incompatible" in invoked.content
 
     def test_learned_tool_resolver_skipped_on_unknown_backend(
         self,

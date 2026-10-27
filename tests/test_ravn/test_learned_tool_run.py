@@ -222,31 +222,43 @@ class TestHostToolAuthorization:
                     )
                 return ToolResult(tool_call_id="", content=json.dumps({"value": "tail"}))
 
+        _install_tool(
+            tmp_path,
+            "read_configmap_key_tail",
+            tool_code=(
+                "from ravn.sdk import tool\n"
+                "def run(input):\n"
+                "    return tool.kubernetes_inspect(**input)\n"
+            ),
+            required_permission="tool:run",
+        )
+        resolver = LearnedToolResolver(state_dir=tmp_path, execution_backend="local")
         dispatch = LearnedToolRunTool(
-            resolver=LearnedToolResolver(state_dir=tmp_path),
+            resolver=resolver,
             permission=AllowAllPermission(),
             host_tools_provider=lambda: [SelectedClusterReadTool()],
         )
-        tool_path = tmp_path / "read_configmap_key_tail.py"
-        tool_path.write_text(
-            "from ravn.sdk import tool\n"
-            "def run(input):\n"
-            "    return tool.kubernetes_inspect(**input)\n",
-            encoding="utf-8",
+        catalog = CapabilityListTool(
+            tools_provider=lambda: [dispatch, SelectedClusterReadTool()],
+            learned_tools_provider=resolver.list_artifacts,
+            learned_tool_compatibility=resolver.incompatibility_reason,
         )
 
-        allowed = await run_tool(
-            tool_path,
-            selected_read,
-            host_call=dispatch._host_call("read_configmap_key_tail"),
+        discovery = json.loads(
+            (await catalog.execute({"kind": "tool", "query": "read_configmap_key_tail"})).content
         )
-        denied = await run_tool(
-            tool_path,
-            {**selected_read, "cluster": "other-cluster"},
-            host_call=dispatch._host_call("read_configmap_key_tail"),
+        allowed = await dispatch.execute(
+            {"name": "read_configmap_key_tail", "input": selected_read}
         )
+        denied = await dispatch.execute(
+            {
+                "name": "read_configmap_key_tail",
+                "input": {**selected_read, "cluster": "other-cluster"},
+            }
+        )
+        code_dir, _ = learned_tool_storage(tmp_path)
         permission_denied = await run_tool(
-            tool_path,
+            code_dir / "read_configmap_key_tail.py",
             selected_read,
             host_call=LearnedToolRunTool(
                 resolver=LearnedToolResolver(state_dir=tmp_path),
@@ -255,10 +267,16 @@ class TestHostToolAuthorization:
             )._host_call("read_configmap_key_tail"),
         )
 
-        assert allowed.ok is True
-        assert allowed.result == {"value": "tail"}
-        assert denied.ok is False
-        assert "selected cluster denied" in (denied.error + denied.stderr)
+        discovered_tool = next(
+            capability
+            for capability in discovery["capabilities"]
+            if capability["name"] == "read_configmap_key_tail"
+        )
+        assert discovered_tool["invoke_via"] == "learned_tool_run"
+        assert not allowed.is_error
+        assert json.loads(allowed.content) == {"value": "tail"}
+        assert denied.is_error
+        assert "selected cluster denied" in denied.content
         assert permission_denied.ok is False
         assert "requires permission 'kubernetes:read'" in (
             permission_denied.error + permission_denied.stderr
