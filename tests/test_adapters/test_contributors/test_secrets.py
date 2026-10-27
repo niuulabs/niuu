@@ -686,6 +686,8 @@ async def test_openshell_managed_http_mcp_uses_dynamic_provider(session):
     assert mapping["envMappings"] == {mcp_token_env("conn-1"): "token"}
     assert mapping["fileMappings"] == {}
     assert mapping["provider"]["endpoints"][0]["host"] == "mcp.example.test"
+    # No tls: OpenShell v0.1.6 rejects "terminate" and auto-terminates when omitted.
+    assert "tls" not in mapping["provider"]["endpoints"][0]
     assert mapping["provider"]["authStyle"] == "bearer"
     assert "private-access" not in repr(result)
 

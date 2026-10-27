@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import tarfile
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import IO, Any
 
@@ -222,11 +222,19 @@ def workspace_migration_state(pvc: Any) -> WorkspaceMigrationState | None:
 class ResidentWorkspaceClaims:
     """Create, read, annotate and delete residents' workspace claims in one namespace."""
 
-    def __init__(self, api: Callable[[], Awaitable[Any]], namespace: str) -> None:
+    def __init__(
+        self,
+        api: Callable[[], Awaitable[Any]],
+        namespace: str,
+        *,
+        attach_labels: Mapping[str, str] | None = None,
+    ) -> None:
+        """``attach_labels`` approve the claim for OpenShell's resource admission."""
         if not namespace:
             raise ValueError("Resident workspace claims need the OpenShell sandbox namespace")
         self._api = api
         self.namespace = namespace
+        self._attach_labels = dict(attach_labels or {})
 
     async def read(self, name: str) -> Any | None:
         api = await self._api()
@@ -249,7 +257,9 @@ class ResidentWorkspaceClaims:
         """The resident's claim, created when missing; True when this call created it.
 
         An existing claim must carry this resident's labels. One smaller than the
-        configured size is expanded; a claim is never shrunk.
+        configured size is expanded; a claim is never shrunk. One without the
+        OpenShell attach labels (created before the gateway enforced resource
+        admission) gets them, or the gateway would refuse to mount it.
         """
         api = await self._api()
         manifest = build_pvc_manifest(
@@ -264,6 +274,7 @@ class ResidentWorkspaceClaims:
                 LABEL_RESIDENT_ID: str(runtime.id),
                 LABEL_RESIDENT_OWNER_ID: runtime.owner_id,
                 LABEL_RESIDENT_TENANT_ID: runtime.tenant_id,
+                **self._attach_labels,
             },
         )
         if annotations:
@@ -285,14 +296,22 @@ class ResidentWorkspaceClaims:
                 f"{runtime.id}'s own workspace; delete or rename it before deploying"
             )
         requested = str(existing.spec.resources.requests["storage"])
-        if _storage_bytes(requested) < claim.size_bytes:
+        current_labels = existing.metadata.labels or {}
+        missing_labels = {
+            key: value
+            for key, value in self._attach_labels.items()
+            if current_labels.get(key) != value
+        }
+        grow = _storage_bytes(requested) < claim.size_bytes
+        if grow or missing_labels:
+            metadata: dict[str, Any] = {"resourceVersion": existing.metadata.resource_version}
+            if missing_labels:
+                metadata["labels"] = missing_labels
+            body: dict[str, Any] = {"metadata": metadata}
+            if grow:
+                body["spec"] = {"resources": {"requests": {"storage": claim.size}}}
             existing = await api.patch_namespaced_persistent_volume_claim(
-                name=claim.name,
-                namespace=self.namespace,
-                body={
-                    "metadata": {"resourceVersion": existing.metadata.resource_version},
-                    "spec": {"resources": {"requests": {"storage": claim.size}}},
-                },
+                name=claim.name, namespace=self.namespace, body=body
             )
         return existing, False
 

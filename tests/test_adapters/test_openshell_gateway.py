@@ -6,6 +6,7 @@ import base64
 import importlib
 import io
 import json
+import re
 import socket
 import sys
 import tarfile
@@ -81,6 +82,17 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
 
     struct_pb2_mod.Struct = Struct
     protobuf_mod.struct_pb2 = struct_pb2_mod
+    duration_pb2_mod = types.ModuleType("google.protobuf.duration_pb2")
+
+    class Duration:
+        def __init__(self):
+            self.nanos_total = 0
+
+        def FromNanoseconds(self, value):  # noqa: N802 - protobuf compatibility shim.
+            self.nanos_total = int(value)
+
+    duration_pb2_mod.Duration = Duration
+    protobuf_mod.duration_pb2 = duration_pb2_mod
     google_mod.protobuf = protobuf_mod
 
     openshell_mod = types.ModuleType("openshell")
@@ -97,6 +109,10 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
     openshell_pb2_mod.SANDBOX_PHASE_DELETING = 4
     openshell_pb2_mod.SANDBOX_PHASE_STOPPED = 5
     openshell_pb2_mod.SANDBOX_PHASE_STOPPING = 6
+    openshell_pb2_mod.DELETION_OUTCOME_UNSPECIFIED = 0
+    openshell_pb2_mod.DELETION_OUTCOME_COMPLETED = 1
+    openshell_pb2_mod.DELETION_OUTCOME_ACCEPTED = 2
+    openshell_pb2_mod.DELETION_OUTCOME_ALREADY_ABSENT = 3
     openshell_pb2_mod.PROVIDER_PROFILE_CATEGORY_AGENT = 3
     openshell_pb2_mod.PROVIDER_PROFILE_CATEGORY_SOURCE_CONTROL = 4
 
@@ -123,8 +139,6 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
         "StopSandboxRequest",
         "StartSandboxRequest",
         "ExposeServiceRequest",
-        "CreateSshSessionRequest",
-        "RevokeSshSessionRequest",
         "TcpForwardFrame",
         "TcpForwardInit",
         "TcpRelayTarget",
@@ -139,6 +153,31 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
         setattr(openshell_pb2_mod, name, _Proto)
 
     openshell_pb2_grpc_mod.OpenShellStub = lambda _channel: object()
+
+    for index, name in enumerate(
+        (
+            "NETWORK_TLS_MODE_UNSPECIFIED",
+            "NETWORK_TLS_MODE_SKIP",
+        )
+    ):
+        setattr(sandbox_pb2_mod, name, index)
+    for index, name in enumerate(
+        (
+            "NETWORK_ENFORCEMENT_MODE_UNSPECIFIED",
+            "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+            "NETWORK_ENFORCEMENT_MODE_AUDIT",
+        )
+    ):
+        setattr(sandbox_pb2_mod, name, index)
+    for index, name in enumerate(
+        (
+            "NETWORK_ACCESS_PRESET_UNSPECIFIED",
+            "NETWORK_ACCESS_PRESET_READ_ONLY",
+            "NETWORK_ACCESS_PRESET_READ_WRITE",
+            "NETWORK_ACCESS_PRESET_FULL",
+        )
+    ):
+        setattr(sandbox_pb2_mod, name, index)
 
     for name in (
         "SandboxPolicy",
@@ -162,6 +201,7 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
         "google": google_mod,
         "google.protobuf": protobuf_mod,
         "google.protobuf.struct_pb2": struct_pb2_mod,
+        "google.protobuf.duration_pb2": duration_pb2_mod,
         "openshell": openshell_mod,
         "openshell._proto": proto_mod,
         "openshell._proto.datamodel_pb2": datamodel_pb2_mod,
@@ -218,7 +258,7 @@ class _FakeOpenShellGatewayClient:
         self.closed = False
         self.sandbox_exists = True
         self.sandbox_labels: dict[str, str] = {"volundr.niuu.io/storage": "forge"}
-        # The sandbox template's image and annotations, as the gateway keeps them.
+        # The sandbox template's image and the sandbox's annotations, as the gateway keeps them.
         self.sandbox_image = ""
         self.sandbox_annotations: dict[str, str] = {}
         # Deleted sandboxes created again under the same name.
@@ -311,10 +351,7 @@ class _FakeOpenShellGatewayClient:
     def get_provider_profile(self, _profile_id: str):
         return self.grant_profile
 
-    def get_provider_environment(self, _sandbox_id: str):
-        return dict(self.provider_environment)
-
-    def get_sandbox_logs(self, _sandbox_id: str, **_kwargs):
+    def get_sandbox_logs(self, _sandbox: str, **_kwargs):
         return self._adapter.ResidentLogPage(
             entries=[
                 self._adapter.ResidentLogEntry(
@@ -384,39 +421,36 @@ def test_native_tcp_forward_uses_authenticated_sandbox_relay(
     adapter = _import_adapter(monkeypatch)
     requests: list[object] = []
 
-    def create_ssh_session(request, **_kwargs):
-        requests.append(request)
-        return types.SimpleNamespace(token="short-lived-forward-token")
-
     def forward_tcp(frames, **_kwargs):
         requests.extend(list(frames))
         return [adapter.openshell_pb2.TcpForwardFrame(data=b"HTTP/1.1 204 OK\r\n\r\n")]
 
-    def revoke_ssh_session(request, **_kwargs):
-        requests.append(request)
+    def no_ssh_session(*_args, **_kwargs):
+        raise AssertionError("a TCP forward is authorized by the gateway principal alone")
 
     client = object.__new__(adapter.OpenShellGatewayClient)
     client._stub = types.SimpleNamespace(
-        CreateSshSession=create_ssh_session,
+        CreateSshSession=no_ssh_session,
         ForwardTcp=forward_tcp,
-        RevokeSshSession=revoke_ssh_session,
+        RevokeSshSession=no_ssh_session,
     )
     client._timeout = 30.0
+    client._workspace_scope = types.SimpleNamespace(workspace="default")
     client._metadata = lambda: (("authorization", "Bearer oidc"),)
     bridge, caller = socket.socketpair()
     caller.sendall(b"GET /health HTTP/1.1\r\nHost: hermes\r\n\r\n")
     caller.shutdown(socket.SHUT_WR)
 
-    client._forward_tcp_connection(bridge, sandbox_id="sandbox-id", target_port=18789)
+    client._forward_tcp_connection(bridge, sandbox="r-sandbox", target_port=18789)
 
     assert caller.recv(1024) == b"HTTP/1.1 204 OK\r\n\r\n"
-    init = requests[1].init
-    assert init.sandbox_id == "sandbox-id"
+    init = requests[0].init
+    assert init.sandbox == "r-sandbox"
+    assert init.workspace == "default"
     assert init.tcp.host == "127.0.0.1"
     assert init.tcp.port == 18789
-    assert init.authorization_token == "short-lived-forward-token"
-    assert requests[2].data.startswith(b"GET /health")
-    assert requests[3].token == "short-lived-forward-token"
+    assert not hasattr(init, "authorization_token")
+    assert requests[1].data.startswith(b"GET /health")
     caller.close()
     bridge.close()
 
@@ -849,7 +883,7 @@ def test_native_lifecycle_calls_authenticated_gateway(monkeypatch, method, rpc):
 
     adapter = _import_adapter(monkeypatch)
     raw = types.SimpleNamespace(
-        metadata=types.SimpleNamespace(id="id", name="forge", labels={}),
+        metadata=types.SimpleNamespace(id="id", name="forge", labels={}, annotations={}),
         status=types.SimpleNamespace(
             phase=adapter.openshell_pb2.SANDBOX_PHASE_STOPPED, conditions=[]
         ),
@@ -1032,9 +1066,12 @@ async def test_start_uses_gateway_client_without_host_cli(
     assert client.created is not None
     assert client.created["name"] == expected_sandbox_name
     assert client.created["image"] == adapter.DEFAULT_SANDBOX_IMAGE
-    assert client.created["labels"]["volundr.niuu.io/workload"] == "forge"
-    assert client.created["annotations"]["volundr.niuu.io/source"] == "test"
-    assert "vault.hashicorp.com/agent-inject" not in client.created["annotations"]
+    # Völundr's own labels are sandbox metadata; the pod spec's go onto the Pod.
+    assert client.created["labels"]["volundr.niuu.io/session"] == str(session.id)
+    assert "volundr.niuu.io/session" not in client.created["pod_labels"]
+    assert client.created["pod_labels"] == {"volundr.niuu.io/workload": "forge"}
+    assert client.created["pod_annotations"]["volundr.niuu.io/source"] == "test"
+    assert "vault.hashicorp.com/agent-inject" not in client.created["pod_annotations"]
     assert client.created["env"]["SKULD__SESSION__ID"] == str(session.id)
     assert client.created["env"]["SKULD__SESSION__WORKSPACE_DIR"] == "/sandbox/workspace"
     assert client.created["env"]["SKULD__CLI_TYPE"] == "codex"
@@ -1047,7 +1084,7 @@ async def test_start_uses_gateway_client_without_host_cli(
     assert client.created["driver_config"]["pod"]["runtime_class_name"] == "nvidia"
     assert len(client.bootstrap_execs) == 1
     bootstrap = client.bootstrap_execs[0]
-    assert bootstrap["sandbox_id"] == "sandbox-id"
+    assert bootstrap["sandbox"] == expected_sandbox_name
     assert "WORKSPACE=/sandbox/workspace" in bootstrap["script"]
     assert "CLONE_URL=https://github.com/niuulabs/volundr" in bootstrap["script"]
     assert "BRANCH=dev" in bootstrap["script"]
@@ -1056,7 +1093,7 @@ async def test_start_uses_gateway_client_without_host_cli(
     assert bootstrap["env"] == client.created["env"]
     assert client.execs == [
         {
-            "sandbox_id": "sandbox-id",
+            "sandbox": expected_sandbox_name,
             "command": (
                 [
                     "env",
@@ -1201,7 +1238,7 @@ async def test_hermes_deploy_uses_persisted_process_only_credential_and_generic_
         connect_host="127.0.0.1",
         connect_port=43210,
     )
-    assert client.forwarded == [{"sandbox_id": "sandbox-id", "target_port": 18789}]
+    assert client.forwarded == [{"sandbox": observation.backend_ref["name"], "target_port": 18789}]
 
 
 @pytest.mark.asyncio
@@ -1413,7 +1450,9 @@ def test_dynamic_provider_accepts_configured_tcp_route(
     assert profile.endpoints[0].host == "nats-noatun.nats.svc.cluster.local"
     assert profile.endpoints[0].port == 4222
     assert profile.endpoints[0].protocol == ""
-    assert profile.endpoints[0].tls == "skip"
+    assert profile.endpoints[0].tls == adapter.sandbox_pb2.NETWORK_TLS_MODE_SKIP
+    assert profile.endpoints[0].enforcement == adapter.sandbox_pb2.NETWORK_ENFORCEMENT_MODE_ENFORCE
+    assert profile.endpoints[0].access == adapter.sandbox_pb2.NETWORK_ACCESS_PRESET_FULL
     assert list(profile.endpoints[0].allowed_ips) == ["10.191.72.34"]
     assert [binary.path for binary in profile.binaries] == ["/opt/niuu/bin/python"]
 
@@ -1539,7 +1578,7 @@ def _store_locked_error(adapter):
 
 def _raw_sandbox(adapter, name: str):
     return types.SimpleNamespace(
-        metadata=types.SimpleNamespace(id=f"id-{name}", name=name, labels={}),
+        metadata=types.SimpleNamespace(id=f"id-{name}", name=name, labels={}, annotations={}),
         status=types.SimpleNamespace(
             phase=adapter.openshell_pb2.SANDBOX_PHASE_READY, conditions=[]
         ),
@@ -2176,7 +2215,9 @@ def test_legacy_names_use_authenticated_native_tunnel(monkeypatch, kind):
         target = manager.resident_proxy_target(workload)
     assert target.service_url == "http://skuld.internal"
     assert target.connect_host == "127.0.0.1"
-    assert client.forwarded[0]["sandbox_id"] == "sandbox-id"
+    # The gateway resolves a TCP forward by sandbox name.
+    expected = workload.pod_name if kind == "session" else workload.backend_ref["name"]
+    assert client.forwarded[0]["sandbox"] == expected
     assert client.exposed is None
 
 
@@ -2531,7 +2572,7 @@ async def test_start_projects_non_agent_file_mapping_into_sandbox(
 
     assert client.written_files == [
         {
-            "sandbox_id": "sandbox-id",
+            "sandbox": f"forge-{session.id.hex[:13]}",
             "files": {"/run/secrets/tool/credentials.json": b'{"token":"opaque"}'},
         }
     ]
@@ -2696,7 +2737,7 @@ def test_exec_script_sends_multiline_script_over_stdin(monkeypatch: pytest.Monke
     )
 
     exit_code, output = client.exec_script(
-        sandbox_id="sandbox-id",
+        sandbox="r-sandbox",
         script="echo one\necho two\n",
         env={"A": "B"},
     )
@@ -2708,6 +2749,9 @@ def test_exec_script_sends_multiline_script_over_stdin(monkeypatch: pytest.Monke
     assert request.stdin == b"echo one\necho two\n"
     assert all("\n" not in arg and "\r" not in arg for arg in request.command)
     assert request.environment == {"A": "B"}
+    assert request.sandbox == "r-sandbox"
+    assert request.workspace_scope.workspace == "default"
+    assert request.execution_timeout.nanos_total == adapter.BOOTSTRAP_TIMEOUT_SECONDS * 10**9
 
 
 def test_write_files_includes_projection_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2743,10 +2787,11 @@ def test_write_files_includes_projection_stderr(monkeypatch: pytest.MonkeyPatch)
 
     with pytest.raises(RuntimeError, match="permission denied"):
         client.write_files(
-            sandbox_id="sandbox-id",
+            sandbox="r-sandbox",
             files={"/sandbox/.volundr/skuld.yaml": b"session: {}\n"},
         )
     assert recorded["request"].command == ["tar", "-xf", "-", "-C", "/sandbox"]
+    assert recorded["request"].sandbox == "r-sandbox"
 
 
 def test_exec_detached_sends_only_process_command_over_stdin(
@@ -2776,7 +2821,7 @@ def test_exec_detached_sends_only_process_command_over_stdin(
     )
 
     exit_code = client.exec_detached(
-        sandbox_id="sandbox-id",
+        sandbox="r-sandbox",
         command=["skuld", "serve"],
         env={"SKULD__PORT": "9200"},
         log_path="/sandbox/.volundr/skuld.log",
@@ -2788,6 +2833,8 @@ def test_exec_detached_sends_only_process_command_over_stdin(
     assert request.environment == {"SKULD__PORT": "9200"}
     assert b"nohup skuld serve" in request.stdin
     assert b"OPENAI_API_KEY" not in request.stdin
+    assert request.sandbox == "r-sandbox"
+    assert request.execution_timeout.nanos_total == adapter.DETACHED_EXEC_TIMEOUT_SECONDS * 10**9
 
 
 def test_sandbox_policy_is_built_from_adapter_config(
@@ -2812,7 +2859,6 @@ def test_sandbox_policy_is_built_from_adapter_config(
                             "host": "registry.npmjs.org",
                             "port": 443,
                             "protocol": "rest",
-                            "tls": "terminate",
                             "enforcement": "enforce",
                             "access": "full",
                         }
@@ -2829,6 +2875,37 @@ def test_sandbox_policy_is_built_from_adapter_config(
     npm = policy.network_policies["npm_https"]
     assert [endpoint.host for endpoint in npm.endpoints] == ["registry.npmjs.org"]
     assert [binary.path for binary in npm.binaries] == ["/usr/bin/node"]
+    (endpoint,) = npm.endpoints
+    assert endpoint.tls == adapter.sandbox_pb2.NETWORK_TLS_MODE_UNSPECIFIED
+    assert endpoint.enforcement == adapter.sandbox_pb2.NETWORK_ENFORCEMENT_MODE_ENFORCE
+    assert endpoint.access == adapter.sandbox_pb2.NETWORK_ACCESS_PRESET_FULL
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "message"),
+    [
+        ({"tls": "terminate"}, "omit tls to keep automatic TLS termination"),
+        ({"tls": "passthrough"}, "omit tls to keep automatic TLS termination"),
+        ({"enforcement": "strict"}, "enforcement: 'strict' is not one of"),
+        ({"access": "everything"}, "access: 'everything' is not one of"),
+    ],
+)
+def test_sandbox_policy_rejects_endpoint_modes_the_gateway_rejects(
+    monkeypatch: pytest.MonkeyPatch, endpoint, message
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    config = {
+        "version": 1,
+        "network_policies": {
+            "api": {
+                "endpoints": [{"host": "api.example.com", "port": 443, **endpoint}],
+                "binaries": [{"path": "/usr/bin/curl"}],
+            }
+        },
+    }
+
+    with pytest.raises(ValueError, match=re.escape(message)):
+        adapter._sandbox_policy_from_config(config)
 
 
 def test_sandbox_policy_requires_supported_version(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3275,7 +3352,7 @@ def test_gitlab_token_uses_bearer_provider_route():
 
 
 def test_linear_api_key_uses_scoped_inspected_header_route():
-    from volundr.adapters.outbound.openshell_gateway import _provider_profile
+    from volundr.adapters.outbound.openshell_gateway import _provider_profile, sandbox_pb2
 
     profile = _provider_profile(
         profile_id="linear-test",
@@ -3290,8 +3367,9 @@ def test_linear_api_key_uses_scoped_inspected_header_route():
     assert len(profile.endpoints) == 1
     endpoint = profile.endpoints[0]
     assert (endpoint.host, endpoint.port) == ("api.linear.app", 443)
-    assert endpoint.tls == "terminate"
-    assert endpoint.enforcement == "enforce"
+    # Unspecified TLS: OpenShell detects and terminates it, so the header is injected.
+    assert endpoint.tls == sandbox_pb2.NETWORK_TLS_MODE_UNSPECIFIED
+    assert endpoint.enforcement == sandbox_pb2.NETWORK_ENFORCEMENT_MODE_ENFORCE
     assert not getattr(endpoint, "allow_uninspected_credentials", False)
 
 
@@ -3391,8 +3469,8 @@ def test_additional_runtime_credentials_use_scoped_inspected_routes(monkeypatch,
     assert (endpoint.host, endpoint.port, endpoint.tls, endpoint.enforcement) == (
         host,
         443,
-        "terminate",
-        "enforce",
+        adapter.sandbox_pb2.NETWORK_TLS_MODE_UNSPECIFIED,
+        adapter.sandbox_pb2.NETWORK_ENFORCEMENT_MODE_ENFORCE,
     )
     assert all(binary.path != "**" for binary in profile.binaries)
 
@@ -3486,7 +3564,8 @@ def test_large_workflow_configs_do_not_expand_pod_driver_config(monkeypatch):
                 f"/sandbox/workspace/.flock/config/peer-{i}.yaml": "x" * 32768 for i in range(6)
             },
             "workloads": [
-                {"name": f"peer-{i}", "command": ["python", "-m", "ravn"]} for i in range(6)
+                {"name": f"peer-{i}", "image": "ravn:pinned", "command": ["python", "-m", "ravn"]}
+                for i in range(6)
             ],
         }
     }
@@ -3528,19 +3607,123 @@ def test_workload_start_waits_for_marker_and_executes(monkeypatch, tmp_path):
     assert b"did not finish workload bootstrap" in result.stderr
 
 
+_PEER = {"name": "ravn-reviewer", "image": "ravn:pinned", "command": ["python"]}
+
+
 @pytest.mark.parametrize(
     ("workload", "message"),
     [
-        ({"command": []}, "explicit command"),
-        ({"command": ["python"], "readiness_port": 8000}, "cannot gate pod readiness"),
+        ({**_PEER, "command": []}, "explicit command"),
+        # The fork's driver dropped readiness gating: it is an unknown field.
+        ({**_PEER, "readiness_port": 8000}, "fields the driver rejects: readiness_port"),
+        ({**_PEER, "args": ["x"]}, "fields the driver rejects: args"),
+        ({**_PEER, "image": ""}, "needs an image reference"),
+        ({**_PEER, "name": "ravn-" + "a" * 36}, "at most 40 characters"),
+        ({**_PEER, "name": "Ravn_Reviewer"}, "DNS-1123 label"),
+        ({**_PEER, "name": "agent"}, "is reserved"),
+        ({**_PEER, "name": "supervisor"}, "is reserved"),
+        ({**_PEER, "name": "openshell-peer"}, "is reserved"),
+        ({**_PEER, "environment": {"OPENSHELL_TOKEN": "x"}}, "reserved OPENSHELL_ prefix"),
+        ({**_PEER, "environment": {"A=B": "x"}}, "contains '='"),
+        ({**_PEER, "resources": {"requests": {"cpu": 1}}}, "quantities must be strings"),
+        (
+            {**_PEER, "volume_mounts": [{"name": "missing", "mount_path": "/data"}]},
+            "mounts undeclared volume 'missing'",
+        ),
     ],
 )
-def test_peer_container_rejects_invalid_startup(monkeypatch, workload, message):
+def test_peer_container_rejects_what_the_driver_rejects(monkeypatch, workload, message):
     adapter = _import_adapter(monkeypatch)
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match=re.escape(message)):
         adapter._driver_config_from_values(
             {"openshell": {"workloads": [workload]}}, workload_start_file="/workspace/ready"
         )
+
+
+@pytest.mark.parametrize(
+    ("openshell", "message"),
+    [
+        (
+            {
+                "volumes": [{"name": "ipc", "empty_dir": {"medium": "Memory"}}],
+                "workloads": [_PEER],
+            },
+            "empty_dir takes no options",
+        ),
+        (
+            {
+                "volumes": [{"name": "openshell-peer-0-run", "empty_dir": {}}],
+                "workloads": [_PEER],
+            },
+            "reserved prefix",
+        ),
+        (
+            {
+                "volumes": [{"name": "ipc", "empty_dir": {}}],
+                "workloads": [
+                    {**_PEER, "volume_mounts": [{"name": "ipc", "mount_path": "/run/ipc"}]}
+                ],
+            },
+            "overlaps /run",
+        ),
+        (
+            {
+                "volumes": [{"name": "ipc", "empty_dir": {}}],
+                "volumeMounts": [{"name": "ipc", "mount_path": "/.openshell/x"}],
+                "workloads": [_PEER],
+            },
+            "overlaps /.openshell",
+        ),
+        (
+            {"workloads": [{**_PEER, "name": f"peer-{i}"} for i in range(17)]},
+            "at most 16 peer workloads",
+        ),
+        ({"workloads": [_PEER, _PEER]}, "is used twice"),
+    ],
+)
+def test_peer_volumes_and_counts_match_the_driver(monkeypatch, openshell, message):
+    adapter = _import_adapter(monkeypatch)
+    with pytest.raises(ValueError, match=re.escape(message)):
+        adapter._driver_config_from_values(
+            {"openshell": openshell}, workload_start_file="/workspace/ready"
+        )
+
+
+def test_peer_workloads_send_only_the_fields_the_driver_accepts(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    driver = adapter._driver_config_from_values(
+        {
+            "openshell": {
+                "volumes": [{"name": "ipc", "empty_dir": {}}],
+                "volumeMounts": [{"name": "ipc", "mount_path": "/tmp/mesh", "read_only": False}],
+                "workloads": [
+                    {
+                        **_PEER,
+                        "resources": {"limits": {"memory": "512Mi"}},
+                        "volume_mounts": [
+                            {"name": "ipc", "mount_path": "/tmp/mesh", "read_only": False}
+                        ],
+                    }
+                ],
+            }
+        },
+        workload_start_file="/workspace/ready",
+        workload_environment={"OPENSHELL_SANDBOX": "x", "HOME": "/sandbox"},
+    )
+    (workload,) = driver["containers"]["workloads"]
+    assert set(workload) == {
+        "name",
+        "image",
+        "command",
+        "environment",
+        "resources",
+        "volume_mounts",
+    }
+    assert workload["environment"] == {"HOME": "/sandbox"}
+    assert driver["volumes"] == [{"name": "ipc", "empty_dir": {}}]
+    assert driver["containers"]["agent"]["volume_mounts"] == [
+        {"name": "ipc", "mount_path": "/tmp/mesh", "read_only": False}
+    ]
 
 
 @pytest.mark.asyncio
@@ -3875,21 +4058,25 @@ async def test_ravn_sessions_reach_the_shim_over_the_native_tcp_tunnel(
     runtime = _resident_runtime()
     assert manager.resident_openclaw_target(runtime, 18790) is None
 
-    runtime = runtime.model_copy(update={"backend_ref": {"id": "sandbox-id"}})
+    runtime = runtime.model_copy(update={"backend_ref": {"id": "sandbox-id", "name": "r-resident"}})
     target = manager.resident_openclaw_target(runtime, 18790)
     again = manager.resident_openclaw_target(runtime, 18790)
 
     assert target is not None and again is not None
     assert (target.connect_host, target.connect_port) == ("127.0.0.1", 43210)
     assert target.service_url == "http://ravn-openclaw.internal:18790/"
-    assert client.forwarded == [{"sandbox_id": "sandbox-id", "target_port": 18790}]
+    # The gateway resolves the forward by name; the id tells a new sandbox apart.
+    assert client.forwarded == [{"sandbox": "r-resident", "target_port": 18790}]
 
-    redeployed = runtime.model_copy(update={"backend_ref": {"id": "sandbox-2"}})
+    redeployed = runtime.model_copy(
+        update={"backend_ref": {"id": "sandbox-2", "name": "r-resident"}}
+    )
     manager.resident_openclaw_target(redeployed, 18790)
-    assert client.closed_forwarders == [{"sandbox_id": "sandbox-id", "target_port": 18790}]
+    assert client.closed_forwarders == [{"sandbox": "r-resident", "target_port": 18790}]
+    assert len(client.forwarded) == 2
 
     await manager.delete(redeployed)
-    assert {"sandbox_id": "sandbox-2", "target_port": 18790} in client.closed_forwarders
+    assert client.closed_forwarders.count({"sandbox": "r-resident", "target_port": 18790}) == 2
 
 
 _CURRENT_SANDBOX_IMAGE = "ghcr.io/niuulabs/openshell:niu-1099-openshell-resident"
@@ -4018,7 +4205,7 @@ async def test_restart_of_an_unpersisted_resident_restarts_in_place_and_never_re
         "/sandbox/.volundr/skuld.pid",
         "/sandbox/.volundr/ravn.pid",
     ] * 2
-    assert {process["sandbox_id"] for process in client.execs} == {"sandbox-id"}
+    assert {process["sandbox"] for process in client.execs} == {runtime.backend_ref["name"]}
     for restarted in (observation, again):
         assert restarted.observed_state is ResidentObservedState.ACTIVE
         assert restarted.backend_ref["image"] == _OLD_SANDBOX_IMAGE

@@ -35,7 +35,7 @@ from uuid import UUID, uuid4
 import grpc
 import httpx
 import yaml
-from google.protobuf import struct_pb2
+from google.protobuf import duration_pb2, struct_pb2
 from openshell._proto import datamodel_pb2, openshell_pb2, openshell_pb2_grpc, sandbox_pb2
 
 from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
@@ -51,6 +51,14 @@ from niuu.ports.workload_identity import WorkloadTokenIssuer
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
 from volundr.adapters.outbound.k8s_storage_adapter import _storage_bytes
 from volundr.adapters.outbound.local_process import LocalProcessPodManager
+from volundr.adapters.outbound.openshell_contract import (
+    DEFAULT_SANDBOX_ATTACHABLE_LABELS,
+    OPENSHELL_WORKSPACE,
+    check_peer_workloads,
+    check_pod_metadata_keys,
+    check_volume_mounts,
+    network_mode,
+)
 from volundr.adapters.outbound.openshell_resident_workspace import (
     ANNOTATION_MIGRATION_DIGEST,
     ANNOTATION_MIGRATION_HOLDER,
@@ -161,7 +169,7 @@ DEFAULT_RESIDENT_SANDBOX_DELETE_TIMEOUT_SECONDS = 180.0
 TCP_FORWARD_BUFFER_BYTES = 64 * 1024
 # The gateway decodes at most 1 MiB per gRPC message; streamed stdin stays well below.
 EXEC_STDIN_CHUNK_BYTES = 256 * 1024
-#: The image Völundr created a resident's sandbox with (sandbox template annotation).
+#: The image Völundr created a resident's sandbox with (sandbox annotation).
 SANDBOX_IMAGE_ANNOTATION = "volundr.niuu.io/image"
 #: The image of the sandbox this one replaced on an upgrade. A Völundr that still
 #: renders it (the old replica while Völundr itself rolls out) must not move back.
@@ -197,6 +205,10 @@ DEFAULT_WORKSPACE_MIGRATION_TIMEOUT_SECONDS = 1800.0
 # a concurrent write (SQLITE_BUSY); several resident deployments at once hit it.
 GATEWAY_BUSY_RETRY_DELAYS = (0.25, 0.5, 1.0, 2.0, 4.0)
 BOOTSTRAP_TIMEOUT_SECONDS = 600
+#: Backgrounding a process with nohup returns at once; this bounds a wedged exec.
+DETACHED_EXEC_TIMEOUT_SECONDS = 10
+#: Unpacking one projected-file tar archive into the sandbox.
+WRITE_FILES_TIMEOUT_SECONDS = 30.0
 BOOTSTRAP_GIT_ATTEMPTS = 20
 MAX_SANDBOX_ROUTING_NAME_LENGTH = 19
 OAUTH_CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
@@ -254,7 +266,7 @@ class OpenShellSandbox:
     ready: bool = False
     labels: dict[str, str] | None = None
     providers: tuple[str, ...] = ()
-    #: The image and annotations of the sandbox's template, as the gateway keeps them.
+    #: The image of the sandbox's template and the sandbox's own annotations.
     image: str = ""
     annotations: dict[str, str] | None = None
 
@@ -458,7 +470,7 @@ class OpenShellGatewayClient:
         )
         self._channel = channel
         self._stub = _BusyRetryingStub(openshell_pb2_grpc.OpenShellStub(channel))
-        self._workspace_scope = datamodel_pb2.WorkspaceSelector(workspace="default")
+        self._workspace_scope = datamodel_pb2.WorkspaceSelector(workspace=OPENSHELL_WORKSPACE)
 
     def close(self) -> None:
         self._channel.close()
@@ -476,15 +488,28 @@ class OpenShellGatewayClient:
         env: dict[str, str],
         labels: dict[str, str],
         annotations: dict[str, str] | None = None,
+        pod_labels: dict[str, str] | None = None,
+        pod_annotations: dict[str, str] | None = None,
         resources: dict[str, Any] | None = None,
         driver_config: dict[str, Any] | None = None,
         providers: Sequence[str] = (),
         policy: Any | None = None,
     ) -> OpenShellSandbox:
+        """Create a sandbox.
+
+        ``labels``/``annotations`` are the sandbox's own gateway metadata, which
+        Völundr reads back. ``pod_labels``/``pod_annotations`` go onto the
+        sandbox Pod and must be admitted by the gateway's ``allowed_pod_labels``
+        / ``allowed_pod_annotations``; only what something on the Pod reads
+        belongs there.
+        """
+        check_pod_metadata_keys("labels", (pod_labels or {}).keys())
+        check_pod_metadata_keys("annotations", (pod_annotations or {}).keys())
         template = openshell_pb2.SandboxTemplate(image=image)
-        template.labels.update(labels)
-        if annotations:
-            template.annotations.update(annotations)
+        if pod_labels:
+            template.labels.update(pod_labels)
+        if pod_annotations:
+            template.annotations.update(pod_annotations)
         template.environment.update(env)
         if resources:
             template.resources.CopyFrom(_protobuf_struct(resources))
@@ -497,7 +522,11 @@ class OpenShellGatewayClient:
             providers=list(providers),
         )
         request = openshell_pb2.CreateSandboxRequest(
-            workspace_scope=self._workspace_scope, spec=spec, name=name, labels=labels
+            workspace_scope=self._workspace_scope,
+            spec=spec,
+            name=name,
+            labels=labels,
+            annotations=annotations or {},
         )
         response = self._stub.CreateSandbox(
             request,
@@ -553,37 +582,36 @@ class OpenShellGatewayClient:
         return _sandbox_from_proto(response.sandbox)
 
     def delete_sandbox(self, name: str) -> bool:
-        try:
-            response = self._stub.DeleteSandbox(
-                openshell_pb2.DeleteSandboxRequest(
-                    workspace_scope=self._workspace_scope, name=name
-                ),
-                timeout=self._timeout,
-                metadata=self._metadata(),
-            )
-        except grpc.RpcError as exc:
-            if exc.code() == grpc.StatusCode.NOT_FOUND:
-                return False
-            raise
-        return bool(response.deleted)
+        """Delete a sandbox by name; False when it was already gone.
+
+        ACCEPTED (the gateway record still exists while the pod goes) and
+        COMPLETED both mean this call deleted it; callers that need it gone
+        poll ``get_sandbox`` until it disappears.
+        """
+        response = self._stub.DeleteSandbox(
+            openshell_pb2.DeleteSandboxRequest(
+                workspace_scope=self._workspace_scope, name=name, allow_missing=True
+            ),
+            timeout=self._timeout,
+            metadata=self._metadata(),
+        )
+        return _deletion_outcome(response.outcome, f"sandbox {name!r}")
 
     def delete_service(self, *, sandbox_name: str, service: str) -> bool:
         if len(sandbox_name) > MAX_SANDBOX_ROUTING_NAME_LENGTH:
             return False
 
-        try:
-            response = self._stub.DeleteService(
-                openshell_pb2.DeleteServiceRequest(
-                    workspace_scope=self._workspace_scope, sandbox=sandbox_name, service=service
-                ),
-                timeout=self._timeout,
-                metadata=self._metadata(),
-            )
-        except grpc.RpcError as exc:
-            if exc.code() == grpc.StatusCode.NOT_FOUND:
-                return False
-            raise
-        return bool(response.deleted)
+        response = self._stub.DeleteService(
+            openshell_pb2.DeleteServiceRequest(
+                workspace_scope=self._workspace_scope,
+                sandbox=sandbox_name,
+                name=service,
+                allow_missing=True,
+            ),
+            timeout=self._timeout,
+            metadata=self._metadata(),
+        )
+        return _deletion_outcome(response.outcome, f"service {service!r} of {sandbox_name!r}")
 
     def get_provider(self, name: str) -> Any | None:
         try:
@@ -695,7 +723,7 @@ class OpenShellGatewayClient:
             openshell_pb2.ExposeServiceRequest(
                 workspace_scope=self._workspace_scope,
                 sandbox=sandbox_name,
-                service=service,
+                name=service,
                 target_port=int(target_port),
                 domain=True,
             ),
@@ -704,31 +732,26 @@ class OpenShellGatewayClient:
         )
         return str(response.url or "")
 
-    def start_tcp_forward(self, *, sandbox_id: str, target_port: int) -> OpenShellTcpForwarder:
+    def start_tcp_forward(self, *, sandbox: str, target_port: int) -> OpenShellTcpForwarder:
         """Open a local listener backed by OpenShell's authenticated ForwardTcp RPC."""
-        return OpenShellTcpForwarder(self, sandbox_id=sandbox_id, target_port=target_port)
+        return OpenShellTcpForwarder(self, sandbox=sandbox, target_port=target_port)
 
     def _forward_tcp_connection(
         self,
         connection: socket.socket,
         *,
-        sandbox_id: str,
+        sandbox: str,
         target_port: int,
     ) -> None:
-        session = self._stub.CreateSshSession(
-            openshell_pb2.CreateSshSessionRequest(sandbox_id=sandbox_id),
-            timeout=self._timeout,
-            metadata=self._metadata(),
-        )
-        token = str(session.token)
-
+        # A TCP target is authorized by this client's gateway principal; only
+        # SSH targets need a CreateSshSession token, so none is minted here.
         def frames():
             yield openshell_pb2.TcpForwardFrame(
                 init=openshell_pb2.TcpForwardInit(
-                    sandbox_id=sandbox_id,
-                    service_id=f"volundr-resident:{sandbox_id}:{target_port}",
+                    sandbox=sandbox,
+                    workspace=self._workspace_scope.workspace,
+                    service_id=f"volundr-resident:{sandbox}:{target_port}",
                     tcp=openshell_pb2.TcpRelayTarget(host="127.0.0.1", port=target_port),
-                    authorization_token=token,
                 )
             )
             while True:
@@ -737,25 +760,15 @@ class OpenShellGatewayClient:
                     return
                 yield openshell_pb2.TcpForwardFrame(data=data)
 
-        try:
-            responses = self._stub.ForwardTcp(frames(), metadata=self._metadata())
-            for response in responses:
-                if response.HasField("data"):
-                    connection.sendall(response.data)
-        finally:
-            try:
-                self._stub.RevokeSshSession(
-                    openshell_pb2.RevokeSshSessionRequest(token=token),
-                    timeout=self._timeout,
-                    metadata=self._metadata(),
-                )
-            except grpc.RpcError:
-                logger.debug("OpenShell TCP forward session revocation failed", exc_info=True)
+        responses = self._stub.ForwardTcp(frames(), metadata=self._metadata())
+        for response in responses:
+            if response.HasField("data"):
+                connection.sendall(response.data)
 
     def exec_detached(
         self,
         *,
-        sandbox_id: str,
+        sandbox: str,
         command: Sequence[str],
         env: dict[str, str],
         log_path: str,
@@ -768,11 +781,12 @@ class OpenShellGatewayClient:
         script = f"mkdir -p {log_dir}\nnohup {command_line} >{quoted_log_path} 2>&1 &\n{pid_write}"
         stream = self._stub.ExecSandbox(
             openshell_pb2.ExecSandboxRequest(
-                sandbox_id=sandbox_id,
+                workspace_scope=self._workspace_scope,
+                sandbox=sandbox,
                 command=["sh", "-s"],
                 environment=env,
                 stdin=script.encode(),
-                timeout_seconds=10,
+                execution_timeout=_duration(DETACHED_EXEC_TIMEOUT_SECONDS),
             ),
             timeout=self._timeout,
             metadata=self._metadata(),
@@ -783,17 +797,9 @@ class OpenShellGatewayClient:
                 exit_code = int(event.exit.exit_code)
         return exit_code
 
-    def get_provider_environment(self, sandbox_id: str) -> dict[str, str]:
-        response = self._stub.GetSandboxProviderEnvironment(
-            openshell_pb2.GetSandboxProviderEnvironmentRequest(sandbox_id=sandbox_id),
-            timeout=self._timeout,
-            metadata=self._metadata(),
-        )
-        return {str(key): str(value) for key, value in response.environment.items()}
-
     def get_sandbox_logs(
         self,
-        sandbox_id: str,
+        sandbox: str,
         *,
         lines: int,
         sources: Sequence[str],
@@ -802,7 +808,7 @@ class OpenShellGatewayClient:
         response = self._stub.GetSandboxLogs(
             openshell_pb2.GetSandboxLogsRequest(
                 workspace_scope=self._workspace_scope,
-                sandbox_id=sandbox_id,
+                sandbox=sandbox,
                 lines=lines,
                 sources=list(sources),
                 min_level=min_level,
@@ -813,7 +819,9 @@ class OpenShellGatewayClient:
         return ResidentLogPage(
             entries=[
                 ResidentLogEntry(
-                    timestamp_ms=int(entry.timestamp_ms),
+                    timestamp_ms=(
+                        entry.event_time.ToMilliseconds() if entry.HasField("event_time") else 0
+                    ),
                     level=str(entry.level),
                     source=str(entry.source),
                     target=str(entry.target),
@@ -828,18 +836,19 @@ class OpenShellGatewayClient:
     def exec_script(
         self,
         *,
-        sandbox_id: str,
+        sandbox: str,
         script: str,
         env: dict[str, str],
     ) -> tuple[int, str]:
         stdin = script.encode()
         stream = self._stub.ExecSandbox(
             openshell_pb2.ExecSandboxRequest(
-                sandbox_id=sandbox_id,
+                workspace_scope=self._workspace_scope,
+                sandbox=sandbox,
                 command=["sh", "-s"],
                 environment=env,
                 stdin=stdin,
-                timeout_seconds=BOOTSTRAP_TIMEOUT_SECONDS,
+                execution_timeout=_duration(BOOTSTRAP_TIMEOUT_SECONDS),
             ),
             timeout=max(self._timeout, float(BOOTSTRAP_TIMEOUT_SECONDS)),
             metadata=self._metadata(),
@@ -858,7 +867,7 @@ class OpenShellGatewayClient:
     def exec_to_file(
         self,
         *,
-        sandbox_id: str,
+        sandbox: str,
         script: str,
         destination: IO[bytes],
         max_bytes: int,
@@ -871,10 +880,11 @@ class OpenShellGatewayClient:
         """
         stream = self._stub.ExecSandbox(
             openshell_pb2.ExecSandboxRequest(
-                sandbox_id=sandbox_id,
+                workspace_scope=self._workspace_scope,
+                sandbox=sandbox,
                 command=["sh", "-s"],
                 stdin=script.encode(),
-                timeout_seconds=int(timeout_seconds),
+                execution_timeout=_duration(timeout_seconds),
                 no_login_shell=True,
             ),
             timeout=max(self._timeout, float(timeout_seconds)),
@@ -901,7 +911,7 @@ class OpenShellGatewayClient:
     def exec_from_file(
         self,
         *,
-        sandbox_id: str,
+        sandbox: str,
         command: Sequence[str],
         source: IO[bytes],
         timeout_seconds: float,
@@ -924,9 +934,10 @@ class OpenShellGatewayClient:
         source.seek(position)
         remote = f"head -c {size} | {shlex.join(str(part) for part in command)}"
         start = openshell_pb2.ExecSandboxRequest(
-            sandbox_id=sandbox_id,
+            workspace_scope=self._workspace_scope,
+            sandbox=sandbox,
             command=["sh", "-c", remote],
-            timeout_seconds=int(timeout_seconds),
+            execution_timeout=_duration(timeout_seconds),
             no_login_shell=True,
         )
         deadline = max(self._timeout, float(timeout_seconds))
@@ -961,16 +972,17 @@ class OpenShellGatewayClient:
             finished.set()
         return OpenShellTransfer(exit_code=exit_code, stderr="".join(output), size=sent)
 
-    def write_files(self, *, sandbox_id: str, files: dict[str, bytes]) -> None:
+    def write_files(self, *, sandbox: str, files: dict[str, bytes]) -> None:
         for extraction_root, archive in _credential_file_archives(files):
             stream = self._stub.ExecSandbox(
                 openshell_pb2.ExecSandboxRequest(
-                    sandbox_id=sandbox_id,
+                    workspace_scope=self._workspace_scope,
+                    sandbox=sandbox,
                     command=["tar", "-xf", "-", "-C", extraction_root],
                     stdin=archive,
-                    timeout_seconds=30,
+                    execution_timeout=_duration(WRITE_FILES_TIMEOUT_SECONDS),
                 ),
-                timeout=max(self._timeout, 30.0),
+                timeout=max(self._timeout, WRITE_FILES_TIMEOUT_SECONDS),
                 metadata=self._metadata(),
             )
             output: list[str] = []
@@ -1001,11 +1013,11 @@ class OpenShellTcpForwarder:
         self,
         client: OpenShellGatewayClient,
         *,
-        sandbox_id: str,
+        sandbox: str,
         target_port: int,
     ) -> None:
         self._client = client
-        self._sandbox_id = sandbox_id
+        self._sandbox = sandbox
         self._target_port = target_port
         self._closed = threading.Event()
         self._connections: set[socket.socket] = set()
@@ -1036,7 +1048,7 @@ class OpenShellTcpForwarder:
         try:
             self._client._forward_tcp_connection(
                 connection,
-                sandbox_id=self._sandbox_id,
+                sandbox=self._sandbox,
                 target_port=self._target_port,
             )
         except (OSError, grpc.RpcError):
@@ -1129,6 +1141,7 @@ class OpenShellGatewayPodManager(
             DEFAULT_WORKSPACE_MIGRATION_TIMEOUT_SECONDS
         ),
         resident_workspace_migration_holder: str = "",
+        sandbox_attachable_labels: dict[str, str] | None = None,
         client: OpenShellGatewayClient | None = None,
         **_extra: object,
     ) -> None:
@@ -1142,8 +1155,19 @@ class OpenShellGatewayPodManager(
             raise ValueError("resident_sandbox_delete_timeout_seconds must be positive")
         # Each resident's own workspace claim, in the namespace where the gateway runs
         # sandboxes. Unset, residents keep their workspace in the sandbox only.
+        # The gateway mounts a claim only when it carries the labels its resource
+        # admission requires (``required_labels``; OpenShell's defaults unless
+        # the operator changed them on the gateway).
         self._workspace_claims = (
-            ResidentWorkspaceClaims(self._get_core_api, resident_workspace_namespace)
+            ResidentWorkspaceClaims(
+                self._get_core_api,
+                resident_workspace_namespace,
+                attach_labels=(
+                    DEFAULT_SANDBOX_ATTACHABLE_LABELS
+                    if sandbox_attachable_labels is None
+                    else sandbox_attachable_labels
+                ),
+            )
             if resident_workspace_namespace
             else None
         )
@@ -1322,13 +1346,13 @@ class OpenShellGatewayPodManager(
 
     async def _read_resident_openclaw_token(self, runtime: ResidentRuntime) -> str | None:
         """Read RAVN_OPENCLAW_TOKEN back from the running Ravn process, if it has one."""
-        sandbox_id = str(runtime.backend_ref.get("id") or "")
-        if not sandbox_id:
+        sandbox_name = str(runtime.backend_ref.get("name") or "")
+        if not sandbox_name:
             return None
         try:
             exit_code, output = await asyncio.to_thread(
                 self._client.exec_script,
-                sandbox_id=sandbox_id,
+                sandbox=sandbox_name,
                 script=_resident_process_env_script("ravn", RAVN_OPENCLAW_TOKEN_ENV),
                 env={},
             )
@@ -1386,7 +1410,7 @@ class OpenShellGatewayPodManager(
         if self._resident_process_lock(runtime).locked():
             return
         port = _resident_openclaw_port(values)
-        listening = await self._resident_processes_ready(sandbox.id, (), service_port=port)
+        listening = await self._resident_processes_ready(sandbox.name, (), service_port=port)
         self._resident_openclaw_checked.add(runtime_id)
         if listening:
             return
@@ -1410,7 +1434,8 @@ class OpenShellGatewayPodManager(
     ) -> SessionProxyTarget | None:
         """The shim's sandbox port over the same native TCP tunnel Hermes residents use."""
         sandbox_id = str(runtime.backend_ref.get("id") or "")
-        if not sandbox_id:
+        sandbox_name = str(runtime.backend_ref.get("name") or "")
+        if not sandbox_id or not sandbox_name:
             return None
         key = _openclaw_forwarder_key(runtime, sandbox_id)
         forwarder = self._resident_forwarders.get(key)
@@ -1418,7 +1443,7 @@ class OpenShellGatewayPodManager(
             # A redeployed resident has a new sandbox: retire the old one's tunnel.
             for stale in [k for k in self._resident_forwarders if _is_openclaw_key(k, runtime)]:
                 self._resident_forwarders.pop(stale).close()
-            forwarder = self._client.start_tcp_forward(sandbox_id=sandbox_id, target_port=port)
+            forwarder = self._client.start_tcp_forward(sandbox=sandbox_name, target_port=port)
             self._resident_forwarders[key] = forwarder
         return SessionProxyTarget(
             service_url=f"http://ravn-openclaw.internal:{port}/",
@@ -1499,7 +1524,7 @@ class OpenShellGatewayPodManager(
             ready = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
             config_exit, _ = await asyncio.to_thread(
                 self._client.exec_script,
-                sandbox_id=ready.id,
+                sandbox=ready.name,
                 script=(
                     "umask 077\n"
                     f"mkdir -p {shlex.quote(CODEX_ENROLLMENT_HOME)} "
@@ -1513,7 +1538,7 @@ class OpenShellGatewayPodManager(
                 raise RuntimeError("Codex enrollment home initialization failed")
             launch_exit = await asyncio.to_thread(
                 self._client.exec_detached,
-                sandbox_id=ready.id,
+                sandbox=ready.name,
                 command=("codex", "login", "--device-auth"),
                 env=environment,
                 log_path=CODEX_ENROLLMENT_LOG_PATH,
@@ -1522,7 +1547,7 @@ class OpenShellGatewayPodManager(
             if launch_exit != 0:
                 raise RuntimeError("Codex device login failed to start")
             verification_uri, user_code = await self._wait_for_codex_device_challenge(
-                ready.id,
+                ready.name,
                 environment,
             )
         except Exception:
@@ -1553,8 +1578,8 @@ class OpenShellGatewayPodManager(
                 state=CredentialEnrollmentState.FAILED,
                 error_code="unsupported_method",
             )
-        sandbox_id = enrollment.runner_ref.get("sandbox_id", "")
-        if not sandbox_id:
+        enrollment_sandbox = enrollment.runner_ref.get("sandbox_name", "")
+        if not enrollment_sandbox:
             return CredentialEnrollmentPoll(
                 state=CredentialEnrollmentState.FAILED,
                 error_code="runner_missing",
@@ -1572,7 +1597,7 @@ class OpenShellGatewayPodManager(
         )
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox_id,
+            sandbox=enrollment_sandbox,
             script=script,
             env={"CODEX_HOME": CODEX_ENROLLMENT_HOME},
         )
@@ -1611,14 +1636,14 @@ class OpenShellGatewayPodManager(
 
     async def _wait_for_codex_device_challenge(
         self,
-        sandbox_id: str,
+        sandbox_name: str,
         environment: dict[str, str],
     ) -> tuple[str, str]:
         deadline = time.monotonic() + self._credential_enrollment_challenge_timeout_seconds
         while time.monotonic() < deadline:
             exit_code, output = await asyncio.to_thread(
                 self._client.exec_script,
-                sandbox_id=sandbox_id,
+                sandbox=sandbox_name,
                 script=(
                     f"if [ -f {shlex.quote(CODEX_ENROLLMENT_LOG_PATH)} ]; then "
                     f"sed -n '1,120p' {shlex.quote(CODEX_ENROLLMENT_LOG_PATH)}; fi\n"
@@ -1717,7 +1742,7 @@ class OpenShellGatewayPodManager(
             sandbox = self._client.get_sandbox(self._sandbox_name(session))
             if sandbox is None or not sandbox.ready:
                 return None
-            return self._tcp_proxy_target(str(session.id), sandbox.id, self._service_port)
+            return self._tcp_proxy_target(str(session.id), sandbox.name, self._service_port)
         base = self._service_urls.get(str(session.id))
         if not base and session.chat_endpoint:
             parsed = urlparse(session.chat_endpoint)
@@ -1731,12 +1756,12 @@ class OpenShellGatewayPodManager(
         if runtime.engine is ResidentEngine.HERMES:
             return self._hermes_proxy_target(runtime)
         if len(self._resident_sandbox_name(runtime)) > MAX_SANDBOX_ROUTING_NAME_LENGTH:
-            sandbox_id = str(runtime.backend_ref.get("id") or "")
-            if not sandbox_id:
+            sandbox_name = str(runtime.backend_ref.get("name") or "")
+            if not sandbox_name:
                 return None
             return self._tcp_proxy_target(
                 str(runtime.id),
-                sandbox_id,
+                sandbox_name,
                 int(runtime.backend_ref.get("service_port") or self._service_port),
             )
         base = self._service_urls.get(str(runtime.id)) or str(
@@ -1748,14 +1773,14 @@ class OpenShellGatewayPodManager(
         runtime_id = str(runtime.id)
         forwarder = self._resident_forwarders.get(runtime_id)
         if forwarder is None:
-            sandbox_id = str(runtime.backend_ref.get("id") or "")
+            sandbox_name = str(runtime.backend_ref.get("name") or "")
             service_port = int(
                 runtime.backend_ref.get("service_port") or HERMES_API_SERVER_DEFAULT_PORT
             )
-            if not sandbox_id:
+            if not sandbox_name:
                 return None
             forwarder = self._client.start_tcp_forward(
-                sandbox_id=sandbox_id,
+                sandbox=sandbox_name,
                 target_port=service_port,
             )
             self._resident_forwarders[runtime_id] = forwarder
@@ -1765,12 +1790,14 @@ class OpenShellGatewayPodManager(
             connect_port=forwarder.port,
         )
 
-    def _tcp_proxy_target(self, workload_id: str, sandbox_id: str, port: int) -> SessionProxyTarget:
+    def _tcp_proxy_target(
+        self, workload_id: str, sandbox_name: str, port: int
+    ) -> SessionProxyTarget:
         # Existing long sandbox names predate the workspace-aware DNS limit.
         # Reuse the authenticated native tunnel rather than renaming live pods.
         forwarder = self._resident_forwarders.get(workload_id)
         if forwarder is None:
-            forwarder = self._client.start_tcp_forward(sandbox_id=sandbox_id, target_port=port)
+            forwarder = self._client.start_tcp_forward(sandbox=sandbox_name, target_port=port)
             self._resident_forwarders[workload_id] = forwarder
         return SessionProxyTarget(
             service_url="http://skuld.internal",
@@ -1817,10 +1844,13 @@ class OpenShellGatewayPodManager(
         }
         if spec.values.get("persistence", {}).get("existingClaim"):
             labels["volundr.niuu.io/storage"] = "forge"
-        annotations: dict[str, str] = {}
+        pod_labels: dict[str, str] = {}
+        pod_annotations: dict[str, str] = {}
         if spec.pod_spec:
-            labels.update({str(key): str(value) for key, value in spec.pod_spec.labels.items()})
-            annotations.update(self._supported_annotations_from_pod_spec(spec.pod_spec.annotations))
+            pod_labels.update({str(key): str(value) for key, value in spec.pod_spec.labels.items()})
+            pod_annotations.update(
+                self._supported_annotations_from_pod_spec(spec.pod_spec.annotations)
+            )
         self._warn_unsupported_pod_spec(session, spec)
         try:
             platform_providers = await self._resolve_platform_provider(
@@ -1861,7 +1891,7 @@ class OpenShellGatewayPodManager(
                 for name in provider_names
             )
             if legacy is not None:
-                sandbox = await asyncio.to_thread(self._client.start_sandbox, sandbox_name)
+                sandbox = await self._resume_legacy_sandbox(sandbox_name)
             else:
                 sandbox = await asyncio.to_thread(
                     self._client.create_sandbox,
@@ -1869,7 +1899,8 @@ class OpenShellGatewayPodManager(
                     image=self._sandbox_image,
                     env=env,
                     labels=labels,
-                    annotations=annotations,
+                    pod_labels=pod_labels,
+                    pod_annotations=pod_annotations,
                     resources=self._resources_from_spec(spec),
                     driver_config=driver_config,
                     providers=provider_names,
@@ -1882,11 +1913,11 @@ class OpenShellGatewayPodManager(
             if projected_files:
                 await asyncio.to_thread(
                     self._client.write_files,
-                    sandbox_id=ready.id,
+                    sandbox=ready.name,
                     files=projected_files,
                 )
             await self._bootstrap_workspace(
-                ready.id,
+                ready.name,
                 session,
                 spec,
                 env,
@@ -1900,13 +1931,13 @@ class OpenShellGatewayPodManager(
                 }
                 await asyncio.to_thread(
                     self._client.write_files,
-                    sandbox_id=ready.id,
+                    sandbox=ready.name,
                     files={**workload_files, workload_start_file: b"ready"},
                 )
             for process in runtime_processes:
                 process_exit = await asyncio.to_thread(
                     self._client.exec_detached,
-                    sandbox_id=ready.id,
+                    sandbox=ready.name,
                     command=process.command,
                     env={**process_env, **process.env},
                     log_path=process.log_path,
@@ -1932,7 +1963,7 @@ class OpenShellGatewayPodManager(
             )
             exit_code = await asyncio.to_thread(
                 self._client.exec_detached,
-                sandbox_id=ready.id,
+                sandbox=ready.name,
                 command=command,
                 env=process_env,
                 log_path=self._command_log_path,
@@ -1973,6 +2004,23 @@ class OpenShellGatewayPodManager(
             pod_name=sandbox_name,
         )
 
+    async def _resume_legacy_sandbox(self, sandbox_name: str) -> OpenShellSandbox:
+        """Start a stopped sandbox that owns its own storage.
+
+        OpenShell v0.1.6 re-admits a sandbox's attachments on start and refuses
+        state recorded by earlier gateways without admission provenance, so a
+        session stopped on an older gateway cannot be resumed in place.
+        """
+        try:
+            return await asyncio.to_thread(self._client.start_sandbox, sandbox_name)
+        except grpc.RpcError as exc:
+            raise RuntimeError(
+                f"OpenShell could not resume sandbox {sandbox_name}: {_rpc_error_text(exc)}. "
+                "A session stopped on an OpenShell gateway older than v0.1.6 cannot be "
+                "resumed; archive what it needs and start a new session (its storage "
+                "belongs to the old sandbox)"
+            ) from exc
+
     async def stop(self, session: Session) -> bool:
         forwarder = self._resident_forwarders.pop(str(session.id), None)
         if forwarder is not None:
@@ -2000,7 +2048,7 @@ class OpenShellGatewayPodManager(
                 # read-only Git caches, retaining the previous home as a backup.
                 exit_code, _ = await asyncio.to_thread(
                     self._client.exec_script,
-                    sandbox_id=sandbox.id,
+                    sandbox=sandbox.name,
                     script=(
                         "set -eu\n"
                         f"HOME_ROOT={shlex.quote(self._sandbox_home)}\n"
@@ -2246,10 +2294,11 @@ class OpenShellGatewayPodManager(
                         "volundr.niuu.io/resident": str(runtime.id),
                         "volundr.niuu.io/runtime": runtime.engine.value,
                         **resident_flock_labels(runtime, prefix="volundr.niuu.io"),
-                        **mesh_labels,
                     },
+                    # Ravn's Kubernetes discovery reads these from the Pod.
+                    pod_labels=mesh_labels,
+                    pod_annotations=mesh_annotations,
                     annotations={
-                        **mesh_annotations,
                         SANDBOX_IMAGE_ANNOTATION: image,
                         **(
                             {SANDBOX_REPLACED_IMAGE_ANNOTATION: replaced_image}
@@ -2289,7 +2338,7 @@ class OpenShellGatewayPodManager(
                 files.update(_shared_resident_process_files(runtime, process.files))
             await asyncio.to_thread(
                 self._client.write_files,
-                sandbox_id=ready.id,
+                sandbox=ready.name,
                 files=files,
             )
             process_env = {**env, **credential_context.process_environment}
@@ -2302,11 +2351,11 @@ class OpenShellGatewayPodManager(
                 await self._verify_resident_workspace_link(ready)
                 await self._ensure_resident_home_links(runtime, ready)
             if resumed_deployment and not relaunch:
-                await self._launch_missing_resident_processes(ready.id, process_env, processes)
+                await self._launch_missing_resident_processes(ready.name, process_env, processes)
             else:
-                await self._launch_resident_processes(ready.id, process_env, processes)
+                await self._launch_resident_processes(ready.name, process_env, processes)
             await self._wait_for_resident_processes(
-                ready.id,
+                ready.name,
                 processes,
                 service_port=service_port,
             )
@@ -2872,7 +2921,7 @@ class OpenShellGatewayPodManager(
         """Bytes used by each source directory that exists in the sandbox."""
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox.id,
+            sandbox=sandbox.name,
             script=_workspace_size_script(tuple(source for source, _ in sources)),
             env={},
         )
@@ -2894,7 +2943,7 @@ class OpenShellGatewayPodManager(
     ) -> None:
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox.id,
+            sandbox=sandbox.name,
             script=_resident_stop_script(tuple(process.name for process in processes)),
             env={},
         )
@@ -2911,7 +2960,7 @@ class OpenShellGatewayPodManager(
     ) -> WorkspaceManifest:
         transfer = await asyncio.to_thread(
             self._client.exec_to_file,
-            sandbox_id=sandbox.id,
+            sandbox=sandbox.name,
             script=f"set -eu\ncd {shlex.quote(source)}\nexec tar -cf - .\n",
             destination=archive,
             max_bytes=self._workspace_migration_max_bytes,
@@ -2940,7 +2989,7 @@ class OpenShellGatewayPodManager(
         """Empty the claim (a resumed attempt's partial copy), then extract each archive."""
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox.id,
+            sandbox=sandbox.name,
             script=_workspace_clear_script(self._sandbox_workspace),
             env={},
         )
@@ -2954,7 +3003,7 @@ class OpenShellGatewayPodManager(
             try:
                 transfer = await asyncio.to_thread(
                     self._client.exec_from_file,
-                    sandbox_id=sandbox.id,
+                    sandbox=sandbox.name,
                     command=["sh", "-c", _workspace_extract_script(target)],
                     source=archive,
                     timeout_seconds=self._workspace_migration_timeout,
@@ -2979,7 +3028,7 @@ class OpenShellGatewayPodManager(
         readback = spools.enter_context(tempfile.TemporaryFile())
         transfer = await asyncio.to_thread(
             self._client.exec_to_file,
-            sandbox_id=sandbox.id,
+            sandbox=sandbox.name,
             script=(
                 f"set -eu\ncd {shlex.quote(self._sandbox_workspace)}\n"
                 "exec tar --exclude=./lost+found -cf - .\n"
@@ -3008,7 +3057,7 @@ class OpenShellGatewayPodManager(
         target = str(PurePosixPath(self._sandbox_workspace, RAVN_PERSISTED_HOME_DIR))
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox.id,
+            sandbox=sandbox.name,
             script=_home_link_script(link, target),
             env={},
         )
@@ -3025,7 +3074,7 @@ class OpenShellGatewayPodManager(
         """Point the workspace path at the resident's volume before anything uses it."""
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox.id,
+            sandbox=sandbox.name,
             script=_workspace_link_script(self._sandbox_workspace, RESIDENT_WORKSPACE_VOLUME_PATH),
             env={},
         )
@@ -3053,7 +3102,7 @@ class OpenShellGatewayPodManager(
     ) -> None:
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox.id,
+            sandbox=sandbox.name,
             script=_resident_stop_script(tuple(process.name for process in processes)),
             env={},
         )
@@ -3063,7 +3112,7 @@ class OpenShellGatewayPodManager(
     async def _resident_workspace_link_state(self, sandbox: OpenShellSandbox) -> str:
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox.id,
+            sandbox=sandbox.name,
             script=_workspace_link_state_script(
                 self._sandbox_workspace, RESIDENT_WORKSPACE_VOLUME_PATH
             ),
@@ -3138,14 +3187,12 @@ class OpenShellGatewayPodManager(
                 files, env = await self._resident_launch_inputs(runtime, values, processes)
                 await self._stop_resident_processes_in(current, processes)
                 await self._ensure_resident_workspace_link(current)
-                await asyncio.to_thread(
-                    self._client.write_files, sandbox_id=current.id, files=files
-                )
+                await asyncio.to_thread(self._client.write_files, sandbox=current.name, files=files)
                 await self._verify_resident_workspace_link(current)
                 await self._ensure_resident_home_links(runtime, current)
-                await self._launch_resident_processes(current.id, env, processes)
+                await self._launch_resident_processes(current.name, env, processes)
                 await self._wait_for_resident_processes(
-                    current.id, processes, service_port=service_port
+                    current.name, processes, service_port=service_port
                 )
             except Exception as exc:
                 error = str(exc) or type(exc).__name__
@@ -3302,7 +3349,7 @@ class OpenShellGatewayPodManager(
                 return self._going_sandbox_observation(runtime, profile, sandbox.name)
         if sandbox.ready:
             processes_ready = await self._resident_processes_ready(
-                sandbox.id,
+                sandbox.name,
                 processes,
                 service_port=service_port,
             )
@@ -3618,12 +3665,10 @@ class OpenShellGatewayPodManager(
         async with lock:
             try:
                 files, env = await self._resident_launch_inputs(runtime, values, processes)
-                await asyncio.to_thread(
-                    self._client.write_files, sandbox_id=sandbox.id, files=files
-                )
+                await asyncio.to_thread(self._client.write_files, sandbox=sandbox.name, files=files)
                 if on_claim:
                     await self._ensure_resident_home_links(runtime, sandbox)
-                await self._launch_missing_resident_processes(sandbox.id, env, processes)
+                await self._launch_missing_resident_processes(sandbox.name, env, processes)
             except Exception:
                 logger.warning(
                     "Could not start missing OpenShell resident processes for %s",
@@ -3728,7 +3773,7 @@ class OpenShellGatewayPodManager(
         files, env = await self._resident_launch_inputs(runtime, values, processes)
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox.id,
+            sandbox=sandbox.name,
             script=_resident_stop_script(tuple(process.name for process in processes)),
             env={},
         )
@@ -3740,19 +3785,19 @@ class OpenShellGatewayPodManager(
             await self._ensure_resident_workspace_link(sandbox)
         await asyncio.to_thread(
             self._client.write_files,
-            sandbox_id=sandbox.id,
+            sandbox=sandbox.name,
             files=files,
         )
         if on_claim:
             await self._verify_resident_workspace_link(sandbox)
         if claim is not None:
             await self._ensure_resident_home_links(runtime, sandbox)
-        await self._launch_resident_processes(sandbox.id, env, processes)
+        await self._launch_resident_processes(sandbox.name, env, processes)
         service_name, service_port = _resident_service(
             values, self._service_name, self._service_port
         )
         await self._wait_for_resident_processes(
-            sandbox.id,
+            sandbox.name,
             processes,
             service_port=service_port,
         )
@@ -3856,7 +3901,7 @@ class OpenShellGatewayPodManager(
             raise RuntimeError("OpenShell resident sandbox does not exist")
         native_page = await asyncio.to_thread(
             self._client.get_sandbox_logs,
-            sandbox.id,
+            sandbox.name,
             lines=lines,
             sources=sources,
             min_level=min_level,
@@ -3876,7 +3921,7 @@ class OpenShellGatewayPodManager(
             return native_page
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox.id,
+            sandbox=sandbox.name,
             script=_resident_process_log_script(lines, process_sources),
             env={},
         )
@@ -3902,14 +3947,14 @@ class OpenShellGatewayPodManager(
 
     async def _launch_resident_processes(
         self,
-        sandbox_id: str,
+        sandbox_name: str,
         env: dict[str, str],
         processes: Sequence[OpenShellRuntimeProcess],
     ) -> None:
         for process in processes:
             exit_code = await asyncio.to_thread(
                 self._client.exec_detached,
-                sandbox_id=sandbox_id,
+                sandbox=sandbox_name,
                 command=process.command,
                 env={**env, **process.env},
                 log_path=process.log_path,
@@ -3922,14 +3967,14 @@ class OpenShellGatewayPodManager(
 
     async def _launch_missing_resident_processes(
         self,
-        sandbox_id: str,
+        sandbox_name: str,
         env: dict[str, str],
         processes: Sequence[OpenShellRuntimeProcess],
     ) -> None:
         for process in processes:
-            if await self._resident_processes_ready(sandbox_id, (process,)):
+            if await self._resident_processes_ready(sandbox_name, (process,)):
                 continue
-            await self._launch_resident_processes(sandbox_id, env, (process,))
+            await self._launch_resident_processes(sandbox_name, env, (process,))
 
     def _resident_processes(
         self,
@@ -3973,14 +4018,14 @@ class OpenShellGatewayPodManager(
 
     async def _resident_processes_ready(
         self,
-        sandbox_id: str,
+        sandbox_name: str,
         processes: Sequence[OpenShellRuntimeProcess],
         *,
         service_port: int | None = None,
     ) -> bool:
         exit_code, _ = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox_id,
+            sandbox=sandbox_name,
             script=_resident_health_script(
                 tuple(process.name for process in processes),
                 service_port=service_port,
@@ -3991,7 +4036,7 @@ class OpenShellGatewayPodManager(
 
     async def _wait_for_resident_processes(
         self,
-        sandbox_id: str,
+        sandbox_name: str,
         processes: Sequence[OpenShellRuntimeProcess],
         *,
         service_port: int | None = None,
@@ -3999,7 +4044,7 @@ class OpenShellGatewayPodManager(
         deadline = time.monotonic() + self._ready_timeout
         while time.monotonic() < deadline:
             if await self._resident_processes_ready(
-                sandbox_id,
+                sandbox_name,
                 processes,
                 service_port=service_port,
             ):
@@ -4195,7 +4240,7 @@ class OpenShellGatewayPodManager(
             raise RuntimeError("OpenClaw resident sandbox is not ready for device pairing")
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox.id,
+            sandbox=sandbox.name,
             script=f"openclaw devices approve {shlex.quote(request_id)}",
             env={
                 "OPENCLAW_GATEWAY_TOKEN": gateway_token,
@@ -4615,7 +4660,7 @@ class OpenShellGatewayPodManager(
 
     async def _bootstrap_workspace(
         self,
-        sandbox_id: str,
+        sandbox_name: str,
         session: Session,
         spec: SessionSpec,
         env: dict[str, str],
@@ -4625,7 +4670,7 @@ class OpenShellGatewayPodManager(
             return
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox_id,
+            sandbox=sandbox_name,
             script=script,
             env=env,
         )
@@ -5404,11 +5449,6 @@ def _driver_config_from_values(
             command = workload.get("command")
             if not isinstance(command, list) or not command:
                 raise ValueError("OpenShell workload containers require an explicit command")
-            if workload.get("readiness_port"):
-                raise ValueError(
-                    "OpenShell session workloads cannot gate pod readiness "
-                    "before workspace bootstrap"
-                )
             environment = {
                 key: value
                 for key, value in (workload_environment or {}).items()
@@ -5427,8 +5467,12 @@ def _driver_config_from_values(
                 *command,
             ]
         mounts.extend(shared_mounts)
+        # Peers need the gateway's allow_driver_config = true; the driver rejects
+        # anything but the fields openshell_contract lists.
+        check_peer_workloads(workloads, volumes)
         config["containers"] = {"workloads": workloads}
     if volumes:
+        check_volume_mounts("agent", mounts, volumes)
         config["volumes"] = volumes
         config.setdefault("containers", {})["agent"] = {"volume_mounts": mounts}
     return config
@@ -5896,17 +5940,18 @@ def _provider_profile(
             audience=audience,
             jwt_svid_audience=token_endpoint,
             client_assertion_type=OAUTH_CLIENT_ASSERTION_TYPE,
-            cache_ttl_seconds=cache_ttl_seconds,
+            cache_ttl=_duration(cache_ttl_seconds),
         ),
     )
     endpoints = target.get("endpoints") or [
-        sandbox_pb2.NetworkEndpoint(
-            host=host,
-            port=443,
-            protocol="rest",
-            tls="terminate",
-            enforcement="enforce",
-            access="full",
+        _network_endpoint(
+            {
+                "host": host,
+                "port": 443,
+                "protocol": "rest",
+                "enforcement": "enforce",
+                "access": "full",
+            }
         )
         for host in target["hosts"]
     ]
@@ -5962,13 +6007,14 @@ def _codex_enrollment_profile(profile_id: str) -> Any:
         ),
     }
     endpoints = [
-        sandbox_pb2.NetworkEndpoint(
-            host=host,
-            port=443,
-            protocol="rest",
-            tls="terminate",
-            enforcement="enforce",
-            access="full",
+        _network_endpoint(
+            {
+                "host": host,
+                "port": 443,
+                "protocol": "rest",
+                "enforcement": "enforce",
+                "access": "full",
+            }
         )
         for host in target["hosts"]
     ]
@@ -6018,17 +6064,20 @@ def _platform_provider_profile(
             audience=audience,
             jwt_svid_audience=token_endpoint,
             client_assertion_type=OAUTH_CLIENT_ASSERTION_TYPE,
-            cache_ttl_seconds=0,
+            # No cache_ttl override: the gateway caches for the token's own expires_in.
         ),
     )
+    # TLS is left unspecified: OpenShell detects it per connection and
+    # terminates HTTPS for inspection, while plain HTTP is inspected as is.
     endpoints = [
-        sandbox_pb2.NetworkEndpoint(
-            host=parsed.hostname,
-            port=port,
-            protocol="rest",
-            tls="terminate" if parsed.scheme == "https" else "",
-            enforcement="enforce",
-            access="full",
+        _network_endpoint(
+            {
+                "host": parsed.hostname,
+                "port": port,
+                "protocol": "rest",
+                "enforcement": "enforce",
+                "access": "full",
+            }
         )
         for parsed, port in parsed_urls
     ]
@@ -6067,16 +6116,23 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
             if not isinstance(allowed_ips, list):
                 raise RuntimeError("OpenShell credential provider allowed_ips must be a list")
             endpoints.append(
-                sandbox_pb2.NetworkEndpoint(
-                    host=str(raw["host"]),
-                    port=int(raw["port"]),
-                    path=str(raw.get("path") or ""),
-                    protocol=str(raw.get("protocol") or ""),
-                    tls=str(raw.get("tls") or "skip"),
-                    enforcement=str(raw.get("enforcement") or "enforce"),
-                    access=str(raw.get("access") or "full"),
-                    allowed_ips=[str(item) for item in allowed_ips],
-                    allow_uninspected_credentials=raw.get("allow_uninspected_credentials") is True,
+                _network_endpoint(
+                    {
+                        "host": str(raw["host"]),
+                        "port": int(raw["port"]),
+                        "path": str(raw.get("path") or ""),
+                        "protocol": str(raw.get("protocol") or ""),
+                        # Unspecified TLS is OpenShell's automatic detection and
+                        # termination: the credential is injected into inspected
+                        # traffic. "skip" must be asked for explicitly.
+                        "tls": str(raw.get("tls") or ""),
+                        "enforcement": str(raw.get("enforcement") or "enforce"),
+                        "access": str(raw.get("access") or "full"),
+                        "allowed_ips": [str(item) for item in allowed_ips],
+                        "allow_uninspected_credentials": (
+                            raw.get("allow_uninspected_credentials") is True
+                        ),
+                    }
                 )
             )
         binaries = [
@@ -6224,7 +6280,13 @@ def _profiles_equivalent(existing: Any, expected: Any) -> bool:
         profile.resource_version = 0
         profile.source = ""
         profile.scope = ""
+        for endpoint in profile.endpoints:
+            # Gateway-derived on import; user-authored values are ignored.
+            endpoint.token_grant_owner = ""
+            endpoint.provider_credentialed = False
         for credential in profile.credentials:
+            # Output-only endpoint authorities the gateway resolves for a grant.
+            del credential.token_grant_owners[:]
             if credential.HasField("token_grant") and not credential.token_grant.grant_type:
                 # OpenShell canonicalizes an omitted grant type on import.
                 credential.token_grant.grant_type = (
@@ -6332,6 +6394,36 @@ def _with_read_write_path(config: dict[str, Any], path: str) -> dict[str, Any]:
     return {**config, "filesystem": {**filesystem, "read_write": read_write}}
 
 
+#: NetworkEndpoint mode enums by their policy-YAML spelling (openshell_contract).
+_NETWORK_MODE_ENUMS = {
+    "tls": {
+        "": sandbox_pb2.NETWORK_TLS_MODE_UNSPECIFIED,
+        "skip": sandbox_pb2.NETWORK_TLS_MODE_SKIP,
+    },
+    "enforcement": {
+        "": sandbox_pb2.NETWORK_ENFORCEMENT_MODE_UNSPECIFIED,
+        "enforce": sandbox_pb2.NETWORK_ENFORCEMENT_MODE_ENFORCE,
+        "audit": sandbox_pb2.NETWORK_ENFORCEMENT_MODE_AUDIT,
+    },
+    "access": {
+        "": sandbox_pb2.NETWORK_ACCESS_PRESET_UNSPECIFIED,
+        "read-only": sandbox_pb2.NETWORK_ACCESS_PRESET_READ_ONLY,
+        "read-write": sandbox_pb2.NETWORK_ACCESS_PRESET_READ_WRITE,
+        "full": sandbox_pb2.NETWORK_ACCESS_PRESET_FULL,
+    },
+}
+
+
+def _network_endpoint(fields: dict[str, Any]) -> Any:
+    """A NetworkEndpoint from its policy-YAML form, mode strings mapped to enums."""
+    if not isinstance(fields, dict):
+        raise ValueError("OpenShell network endpoint must be a mapping")
+    endpoint = dict(fields)
+    for field, enums in _NETWORK_MODE_ENUMS.items():
+        endpoint[field] = enums[network_mode(field, endpoint.get(field))]
+    return sandbox_pb2.NetworkEndpoint(**endpoint)
+
+
 def _sandbox_policy_from_config(config: dict[str, Any]) -> Any:
     if int(config.get("version") or 0) != 1:
         raise ValueError("OpenShell sandbox_policy.version must be 1")
@@ -6340,9 +6432,7 @@ def _sandbox_policy_from_config(config: dict[str, Any]) -> Any:
     network_policies = {
         str(key): sandbox_pb2.NetworkPolicyRule(
             name=str(value.get("name") or key),
-            endpoints=[
-                sandbox_pb2.NetworkEndpoint(**endpoint) for endpoint in value.get("endpoints", [])
-            ],
+            endpoints=[_network_endpoint(endpoint) for endpoint in value.get("endpoints", [])],
             binaries=[sandbox_pb2.NetworkBinary(**binary) for binary in value.get("binaries", [])],
         )
         for key, value in (config.get("network_policies") or {}).items()
@@ -6362,7 +6452,7 @@ def _sandbox_from_proto(raw: Any) -> OpenShellSandbox:
     template = getattr(raw.spec, "template", None)
     return OpenShellSandbox(
         id=str(metadata.id or ""),
-        name=str(metadata.name or status.sandbox_name or ""),
+        name=str(metadata.name or ""),
         phase=int(status.phase),
         ready=any(
             condition.type == "Ready" and condition.status == "True"
@@ -6371,10 +6461,7 @@ def _sandbox_from_proto(raw: Any) -> OpenShellSandbox:
         labels={str(key): str(value) for key, value in metadata.labels.items()},
         providers=tuple(str(name) for name in raw.spec.providers),
         image=str(getattr(template, "image", "") or ""),
-        annotations={
-            str(key): str(value)
-            for key, value in (getattr(template, "annotations", None) or {}).items()
-        },
+        annotations={str(key): str(value) for key, value in metadata.annotations.items()},
     )
 
 
@@ -6390,6 +6477,31 @@ def _status_from_sandbox(sandbox: OpenShellSandbox) -> SessionStatus:
     if sandbox.phase == openshell_pb2.SANDBOX_PHASE_DELETING:
         return SessionStatus.STOPPING
     return SessionStatus.PROVISIONING
+
+
+def _duration(seconds: float) -> duration_pb2.Duration:
+    duration = duration_pb2.Duration()
+    duration.FromNanoseconds(int(float(seconds) * 1_000_000_000))
+    return duration
+
+
+def _deletion_outcome(outcome: int, target: str) -> bool:
+    """Whether a delete removed its target (True) or found it already gone (False).
+
+    ACCEPTED means the gateway still holds the record while the platform tears
+    it down: the delete was issued, and callers that need it gone keep polling.
+    """
+    if outcome in (
+        openshell_pb2.DELETION_OUTCOME_COMPLETED,
+        openshell_pb2.DELETION_OUTCOME_ACCEPTED,
+    ):
+        return True
+    if outcome == openshell_pb2.DELETION_OUTCOME_ALREADY_ABSENT:
+        return False
+    raise RuntimeError(
+        f"OpenShell gateway returned no deletion outcome for {target}; "
+        "the gateway predates DeletionOutcome — upgrade it to the pinned OpenShell release"
+    )
 
 
 def _protobuf_struct(value: dict[str, Any]) -> struct_pb2.Struct:
