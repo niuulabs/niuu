@@ -300,6 +300,12 @@ database:
 #       spiffe_subject_prefix: "spiffe://niuu.world/openshell/sandbox/"
 #       spiffe_ca_cert_path: "/etc/spire/ca.crt"
 #       service_port: 9200
+#       # Labels Völundr puts on residents' workspace claims so the gateway's
+#       # resource admission lets sandboxes mount them; match the gateway's
+#       # required_labels (these are OpenShell's defaults).
+#       sandbox_attachable_labels:
+#         openshell.ai/sandbox-attachable: "true"
+#         openshell.ai/sandbox-attachable-workspace: "default"
 #     secretKwargs:
 #       - kwarg: "client_secret"
 #         secretName: "openshell-volundr-agent-oidc"
