@@ -645,8 +645,8 @@ class Broker(
         self._attested_review_outcomes: dict[str, dict[str, Any]] = {}
         # What the brokered flock published, for the broker agent's flock tools.
         self._flock_activity: FlockActivityLog | None = (
-            FlockActivityLog(capacity=settings.mesh.flock_outcome_history)
-            if settings.mesh.flock_broker
+            FlockActivityLog(capacity=self._settings.mesh.flock_outcome_history)
+            if self._settings.mesh.flock_broker
             else None
         )
         self._review_attestation = _workflow_review_attestation(self._settings.workflow.graph)
