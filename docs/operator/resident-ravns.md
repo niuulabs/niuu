@@ -451,6 +451,12 @@ The outcome contract now enforces this:
   repair turn (write the question, or choose a decision that needs no human
   answer such as `watch` with `continuation: sleep`), and a turn that is still
   invalid after repair is counted against its observations as usual.
+- `continuation: ask_operator` (or `verdict: help_needed`) with an empty
+  `question` is rejected the same way. The runtime never writes a question on
+  the resident's behalf: there is no placeholder, and `open_questions`,
+  `recommendation` and `selected_next_action` are not turned into one. A turn
+  that reaches the runtime without a question anyway is recorded as an invalid
+  outcome with an error log.
 - `decision: escalate` with a `question` is persisted as an operator question
   and delivered through the same path as `continuation: ask_operator`
   (`/resident/operator-needed`, pending questions, the review inbox), whatever

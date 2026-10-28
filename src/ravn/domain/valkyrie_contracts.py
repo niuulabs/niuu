@@ -104,14 +104,21 @@ _JUDGMENT_REQUIRED_FIELDS = (
 
 
 # Shown to the model wherever it is shown the outcome block, and returned to it
-# as the validation error when it escalates without asking. One text, so the
-# instruction and the rejection cannot disagree about what escalating means.
+# as the validation error when it asks the operator without asking anything. One
+# text per way of asking, so the instruction and the rejection cannot disagree
+# about what asking the operator means.
 VALKYRIE_ESCALATE_REQUIRES_QUESTION = (
     "resident judgment decision 'escalate' asks the operator and requires a "
     "non-empty 'question': write the one precise question the operator must "
     "answer (with continuation 'ask_operator' and next_action_timing "
     "'operator_input'), or choose a decision that needs no human answer, such "
     "as 'watch' with continuation 'sleep'"
+)
+VALKYRIE_ASK_OPERATOR_REQUIRES_QUESTION = (
+    "resident judgment continuation 'ask_operator' (or verdict 'help_needed') "
+    "asks the operator and requires a non-empty 'question': write the one "
+    "precise question the operator must answer, or choose continuation 'sleep' "
+    "or 'stop' if no human answer is needed"
 )
 
 RESIDENT_ESCALATION_GUIDANCE = (
@@ -122,16 +129,29 @@ RESIDENT_ESCALATION_GUIDANCE = (
     "`continuation: ask_operator` and `next_action_timing: operator_input`; "
     "the case then waits for their reply. An escalation with an empty "
     "`question` is rejected. If no human answer is needed, do not escalate: "
-    "use `watch` with `continuation: sleep`."
+    "use `watch` with `continuation: sleep`. Likewise `continuation: "
+    "ask_operator` (or `verdict: help_needed`) requires a non-empty `question`; "
+    "the runtime never writes one for you, and the turn is rejected without it."
 )
 
 
-def escalates_without_question(fields: Mapping[str, Any]) -> bool:
-    """Return whether *fields* escalate to the operator without asking anything."""
+def asks_operator(fields: Mapping[str, Any]) -> bool:
+    """Return whether *fields* hand the case to the operator by continuation or verdict."""
+    continuation = str(fields.get("continuation") or "").strip().casefold()
+    verdict = str(fields.get("verdict") or "").strip().casefold()
+    return continuation == "ask_operator" or verdict == "help_needed"
+
+
+def operator_question_error(fields: Mapping[str, Any]) -> str:
+    """Return the remedy when *fields* ask the operator without a question, else ``""``."""
+    if str(fields.get("question") or "").strip():
+        return ""
     decision = str(fields.get("decision") or "").strip().casefold()
-    if decision != VALKYRIE_DECISION_ESCALATE:
-        return False
-    return not str(fields.get("question") or "").strip()
+    if decision == VALKYRIE_DECISION_ESCALATE:
+        return VALKYRIE_ESCALATE_REQUIRES_QUESTION
+    if asks_operator(fields):
+        return VALKYRIE_ASK_OPERATOR_REQUIRES_QUESTION
+    return ""
 
 
 def _choices(options: Sequence[str]) -> str:
@@ -394,7 +414,8 @@ def validate_valkyrie_outcome(event_type: str, fields: Mapping[str, Any]) -> lis
     if "correlation_ids" in fields and not isinstance(fields["correlation_ids"], dict):
         errors.append("resident judgment correlation_ids must be an object")
 
-    if escalates_without_question(fields):
-        errors.append(VALKYRIE_ESCALATE_REQUIRES_QUESTION)
+    question_error = operator_question_error(fields)
+    if question_error:
+        errors.append(question_error)
 
     return errors

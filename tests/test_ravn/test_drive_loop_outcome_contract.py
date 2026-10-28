@@ -15,6 +15,7 @@ from ravn.domain.events import RavnEventType
 from ravn.domain.models import TokenUsage, ToolCall, ToolResult, TurnResult
 from ravn.domain.valkyrie_contracts import (
     RESIDENT_ESCALATION_GUIDANCE,
+    VALKYRIE_ASK_OPERATOR_REQUIRES_QUESTION,
     VALKYRIE_ESCALATE_REQUIRES_QUESTION,
     normalize_valkyrie_outcome,
 )
@@ -833,6 +834,52 @@ findings: "[{severity: high}]"
         assert repaired_errors == []
         assert repaired["decision"] == "escalate"
         assert repaired["question"] == "May I restart etcd member qftlj?"
+
+    @pytest.mark.asyncio
+    async def test_ask_operator_without_a_question_is_repaired_with_the_remedy(self) -> None:
+        dl = _make_drive_loop()
+        dl._persona_config = SimpleNamespace(
+            name="k8s-valkyrie", produces=_valkyrie_judgment_produces()
+        )
+        task = _make_agent_task(task_id="task-valkyrie-ask")
+        unasked = _valid_valkyrie_judgment_text().replace(
+            "decision: propose_action",
+            "decision: propose_action\n"
+            "continuation: ask_operator\n"
+            "next_action_timing: operator_input\n"
+            "open_questions:\n  - Which scope is authorized?",
+        )
+        asked = unasked.replace(
+            "open_questions:", "question: Which scope is authorized?\nopen_questions:"
+        )
+
+        _, _, errors = _resident_valkyrie_validation_result(unasked, dl._persona_config)
+        assert errors == [VALKYRIE_ASK_OPERATOR_REQUIRES_QUESTION]
+
+        class RepairAgent:
+            def __init__(self) -> None:
+                self.prompts: list[str] = []
+
+            async def repair_outcome(self, prompt: str) -> TurnResult:
+                self.prompts.append(prompt)
+                return TurnResult(
+                    response=asked,
+                    tool_calls=[],
+                    tool_results=[],
+                    usage=TokenUsage(input_tokens=8, output_tokens=12),
+                )
+
+        agent = RepairAgent()
+        repair_result = await dl._maybe_repair_resident_valkyrie_outcome(
+            agent=agent, task=task, response_text=unasked
+        )
+
+        assert repair_result is not None
+        assert VALKYRIE_ASK_OPERATOR_REQUIRES_QUESTION in agent.prompts[0]
+        _, _, repaired_errors = _resident_valkyrie_validation_result(
+            repair_result.response, dl._persona_config
+        )
+        assert repaired_errors == []
 
     def test_an_escalation_with_a_question_is_valid_whatever_the_continuation(self) -> None:
         produces = _valkyrie_judgment_produces()

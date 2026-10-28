@@ -24,7 +24,12 @@ from ravn.drive_loop import DriveLoop
 from ravn.odin.review import JsonReviewStore, ReviewRequester
 from ravn.resident_continuation import _scheduled_wake_at
 from ravn.resident_inbox import LocalResidentInbox, MimirResidentInbox, ResidentInboxStatus
-from ravn.resident_runtime import ResidentHomeTrigger, ResidentRuntime, _metadata
+from ravn.resident_runtime import (
+    ResidentHomeTrigger,
+    ResidentRuntime,
+    _metadata,
+    _operator_question,
+)
 
 
 def _result(
@@ -739,6 +744,62 @@ async def test_an_escalation_without_a_question_never_sleeps_as_if_it_had_asked(
     assert await runtime.pending_questions() == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"continuation": "ask_operator", "next_action_timing": "operator_input"},
+        {"continuation": "ask_operator", "question": "  "},
+        {"verdict": "help_needed", "reason": "operator intent changes the boundary"},
+        # What the old fallback turned into a question; none of these is one.
+        {"continuation": "ask_operator", "open_questions": ["Which scope is authorized?"]},
+        {"continuation": "ask_operator", "recommendation": "Use the staging environment"},
+        {
+            "continuation": "ask_operator",
+            "selected_next_action": "Merge the release branch",
+            "next_action_timing": "operator_input",
+        },
+    ],
+    ids=[
+        "ask-operator",
+        "blank-question",
+        "help-needed",
+        "open-questions-only",
+        "recommendation-only",
+        "selected-action-only",
+    ],
+)
+async def test_asking_the_operator_without_a_question_is_an_invalid_outcome(
+    tmp_path, fields
+) -> None:
+    """No placeholder or paraphrase is written for the resident: the operator would be
+    asked something they cannot answer, from a case that did not say what it needs."""
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state, resident_id="regin")
+
+    disposition = await runtime.handle_completed_turn(
+        task=_task(),
+        prompt="prompt",
+        result=_result(fields),
+        response_text="response",
+        outcome_valid=True,
+    )
+
+    assert disposition.kind is ContinuationDecisionKind.STOP
+    assert disposition.reason == "resident outcome contract was invalid"
+    assert not disposition.question
+    assert await state.read_operator_needed(disposition.case_id) is None
+    assert await runtime.pending_questions() == []
+
+
+def test_an_operator_question_is_never_written_on_the_residents_behalf() -> None:
+    assert _operator_question({"question": " May I merge? "}) == "May I merge?"
+
+    for fields in ({}, {"question": ""}, {"open_questions": ["x"]}, {"recommendation": "y"}):
+        with pytest.raises(ValueError, match="no 'question'"):
+            _operator_question(fields)
+
+
 async def _ask(runtime: ResidentRuntime, case_id: str, question: str) -> None:
     await runtime.handle_completed_turn(
         task=_task(task_id=f"task-{case_id}", root_correlation_id=case_id),
@@ -914,7 +975,7 @@ async def test_operator_answer_resumes_same_case_and_is_consumed_after_success(t
         result=_result(
             {
                 "verdict": "help_needed",
-                "open_questions": ["Which customer environment is in scope?"],
+                "question": "Which customer environment is in scope?",
                 "reason": "operator intent changes the safe boundary",
             }
         ),
