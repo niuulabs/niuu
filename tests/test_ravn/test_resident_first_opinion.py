@@ -39,7 +39,7 @@ def _task(*, case_id: str = "case-1", context: str = "printer 3 reports nozzle 2
         task_id="t1",
         title="Environment signal",
         initiative_context=context,
-        triggered_by="resident:home",
+        triggered_by="resident:scheduled_wake",
         output_mode=OutputMode.SILENT,
         resident_case_id=case_id,
         resident_mandate="keep the workshop's printers healthy",
@@ -105,7 +105,7 @@ class TestJudge:
         assert purpose == PURPOSE
         assert state == {
             "mandate": "keep the workshop's printers healthy",
-            "trigger": "resident:home",
+            "trigger": "resident:scheduled_wake",
             "title": "Environment signal",
             "observation": "printer 3 reports nozzle 240C",
         }

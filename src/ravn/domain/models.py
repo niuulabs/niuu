@@ -483,6 +483,9 @@ class AgentTask:
     #: inbox acknowledges against it so observations that arrive mid-turn stay
     #: pending instead of being acknowledged unseen.
     resident_inbox_expected: dict[str, str] = field(default_factory=dict)
+    #: System One opinion per inbox slot, taken when the home turn selected it
+    #: (``ravn.resident_attention``). Compared with the turn's outcome afterwards.
+    resident_slot_opinions: dict[str, dict[str, Any]] = field(default_factory=dict)
     resident_answer_ref: str = ""
     resident_wake_ref: str = ""
     resident_help_published: bool = False

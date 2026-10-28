@@ -35,7 +35,7 @@ from typing import Any
 
 from niuu.observability import get_observability
 from ravn.cap_telemetry import record_truncation
-from ravn.domain.models import AgentTask
+from ravn.domain.models import RESIDENT_HOME_TRIGGER, AgentTask
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_ATTENTION_TIER_ORDER,
     VALKYRIE_DECISION_ORDER,
@@ -128,10 +128,20 @@ class ResidentFirstOpinion:
         self._decisions = decisions
         self._max_observation_chars = max_observation_chars
 
+    @property
+    def decisions(self) -> DecisionPort:
+        return self._decisions
+
     @staticmethod
     def applies_to(task: AgentTask) -> bool:
-        """Only resident cases produce the tier/decision outcome being compared."""
-        return bool(task.resident_case_id)
+        """Resident cases other than home turns, whose slots are judged one by one.
+
+        Only resident cases produce the tier/decision outcome being compared. A home turn
+        covers many inbox slots; judging its whole prompt at once is the distractor-laden
+        state the decision model handles worst, so ``ravn.resident_attention`` judges each
+        slot when it is selected instead.
+        """
+        return bool(task.resident_case_id) and task.triggered_by != RESIDENT_HOME_TRIGGER
 
     async def judge(self, task: AgentTask) -> FirstOpinion:
         result = await self._decisions.decide(

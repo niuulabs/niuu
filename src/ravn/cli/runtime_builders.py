@@ -729,6 +729,26 @@ def build_resident_first_opinion(settings: Settings, *, has_resident_runtime: bo
     )
 
 
+def build_resident_slot_attention(settings: Settings, first_opinion: Any) -> Any:
+    """Per-slot opinions (and the gate, when enabled) sharing the first opinion's decision port."""
+    from ravn.resident_attention import (  # noqa: PLC0415
+        AttentionGatePolicy,
+        ResidentSlotAttention,
+    )
+
+    config = settings.decision.resident_first_opinion
+    return ResidentSlotAttention(
+        first_opinion.decisions,
+        policy=AttentionGatePolicy(
+            skip_tiers=frozenset(config.gate.skip_tiers),
+            skip_decisions=frozenset(config.gate.skip_decisions),
+            min_skip_probability=config.gate.min_skip_probability,
+        ),
+        gate_enabled=config.gate.enabled,
+        max_observation_chars=config.max_observation_chars,
+    )
+
+
 @dataclass(frozen=True)
 class LearningConsolidation:
     """Lesson index and judge shared by reflection, curation, and injection."""

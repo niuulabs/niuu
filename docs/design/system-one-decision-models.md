@@ -1,7 +1,8 @@
 # System One decision models in the Niuu stack
 
-Status: analysis, 2026-10-28. Step 1 of §5 (port, adapter, telemetry) and an
-observe-only §3.1 first opinion are implemented — see §6. Nothing acts on a
+Status: analysis, 2026-10-28. Step 1 of §5 (port, adapter, telemetry), the
+observe-only §3.1 opinion per inbox slot, the §5 step 2 calibration command and
+the §3.1 gate are implemented — see §6. The gate is off; nothing acts on a
 decision-model answer yet.
 
 Question: where can a fast decision model — TypeSafe **Jev**, Cloudflare
@@ -393,7 +394,10 @@ decision-model work.
 | Port and typed questions/answers | [ports/decision.py](../../src/ravn/ports/decision.py) |
 | `/v1/systemone` adapter (Jev, Clef, Ollama), strict response validation | [adapters/decision/systemone.py](../../src/ravn/adapters/decision/systemone.py) |
 | Telemetry wrapper applied to every configured adapter | [decision_observability.py](../../src/ravn/decision_observability.py) |
-| Observe-only first opinion on resident turns | [resident_first_opinion.py](../../src/ravn/resident_first_opinion.py), hooked in `DriveLoop._run_task_observed` |
+| Observe-only first opinion on resident turns other than home turns | [resident_first_opinion.py](../../src/ravn/resident_first_opinion.py), hooked in `DriveLoop._run_task_observed` |
+| Observe-only opinion per inbox slot, taken when a home turn selects it, compared with the turn after | [resident_attention.py](../../src/ravn/resident_attention.py), called from `ResidentRuntime.next_home_task` / `handle_completed_turn` |
+| §3.1 attention gate (built, **off**) | `ResidentSlotAttention.select` and `decision.resident_first_opinion.gate` |
+| §5 step 2 offline calibration | `ravn resident attention-calibrate`, [resident_attention_calibration.py](../../src/ravn/resident_attention_calibration.py) |
 | Config (`decision:` in ravn `Settings`) and composition | `DecisionConfig` in [config.py](../../src/ravn/config.py), `build_decision_port` in [runtime_builders.py](../../src/ravn/cli/runtime_builders.py) |
 
 ### Turning it on
@@ -417,6 +421,58 @@ secret that is unset, an adapter that cannot be built, and
 `resident_first_opinion` enabled while `decision` is off or no resident runtime
 exists. While running, a failed decision request fails that resident task
 before its model turn starts, with the error on the `ravn.decision` span.
+
+### Per slot, not per turn
+
+A home turn covers up to `resident_inbox.max_signals_per_wake` slots. Judging
+its whole prompt is the distractor-laden state §1 warns about, so home turns are
+judged one slot at a time, when the slot is selected. The state is the slot
+itself (count, span, ranges and distinct values computed in code, newest
+payload), the charter and personality, and the resident's last working state.
+Options are ordered wake-first (`urgent` and `escalate` first), so the
+first-option bias leans toward attention.
+
+The turn reports one tier and decision for all its slots, so the comparison
+label is conservative: a routine conclusion (`silent`/`ambient` with
+`ignore`/`watch`) means every slot in that turn could have been skipped, and any
+other conclusion means every slot needed the turn. Errors in that labelling
+only ever push toward waking.
+
+A decision request that fails raises. In a home wake that ends the resident
+process, the same as its own model failing; there is no path that carries on
+without the opinion.
+
+### The gate (off until calibrated)
+
+`skip_probability` is the model's probability mass on the routine side of all
+three questions at once: routine tier, routine decision, and no investigation
+needed. With `gate.enabled`, an eligible slot at or above
+`gate.min_skip_probability` gets no turn of its own. It stays **pending** and
+appears in a "since you last thought" receipt (count, span, ranges, the
+opinion) on the next turn that runs, which acknowledges it. Nothing is
+acknowledged without a turn having seen it, and a wholly routine inbox yields no
+home turn while stewardship wakes still fire. Never eligible: critical
+observations (including any folded into the slot), operator messages, A2A
+updates, `-novel` slots, and slots whose severity is high-cardinality.
+`min_skip_probability` has no default; enabling the gate without it is a startup
+error.
+
+### Calibrating (§5 step 2)
+
+Run inside the resident's pod, so it reads the live inbox and state through the
+daemon's own builders:
+
+```bash
+ravn resident attention-calibrate --out /tmp/attention.json
+```
+
+Each judged slot in `processed/` names the turn that acknowledged it. The
+command replays that slot through the same state the live opinion uses, with
+the working state the resident held before that turn. At every skip
+probability present in the data, it reports coverage (eligible slots skipped)
+and misses (skipped slots whose turn was not routine), plus the lowest
+zero-miss threshold. It spends one decision request per slot. Run it once with
+Jev and once with a Clef config to compare them on our own data.
 
 ### What you can see
 
@@ -446,6 +502,18 @@ For the resident first opinion specifically:
 When the resident's own outcome is missing or invalid, its answer is recorded
 as `unavailable` with no `agreed` attribute, so a broken turn never counts as
 a disagreement.
+
+Per slot:
+
+- `ravn.decision.slot_opinion.comparisons`, counted by question, first
+  opinion, resident answer, `agreed`, `ravn.decision.turn_needed`,
+  `ravn.decision.gate.eligible`, and `ravn.decision.gate.would_skip` once a
+  threshold is set.
+- `ravn.decision.slot_opinion.skip_probability`, a histogram by
+  `turn_needed`: the live calibration curve.
+- A `ravn.decision.slot_opinion` span event per slot with the full opinion.
+- With the gate on, `ravn.decision.attention_gate.slots` by `turn` or
+  `receipt`.
 
 ## Sources
 
