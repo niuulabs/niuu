@@ -1451,7 +1451,8 @@ class ResidentRuntime:
             reason=reason,
             operator_ref=operator_ref,
             root_correlation_id=record.root_correlation_id,
-            turn_index=str(record.turn_index),
+            turn_ref=turn_ref,
+            new_question=True,
         )
         task.resident_case_id = record.case_id
         return ResidentTurnDisposition(
@@ -1532,7 +1533,7 @@ class ResidentRuntime:
         for entry in await self._state.list_operator_needed():
             pending = _pending_view(entry)
             item = await self._request_operator_review(
-                **pending, turn_index=_metadata(entry.content, "turn")
+                **pending, turn_ref=_metadata(entry.content, "turn_ref")
             )
             filed += item is not None
         return filed
@@ -1599,7 +1600,7 @@ class ResidentRuntime:
         if self._review_requester is None:
             return
         item = self._operator_review_item(
-            **_pending_view(question), turn_index=_metadata(question.content, "turn")
+            **_pending_view(question), turn_ref=_metadata(question.content, "turn_ref")
         )
         await self._review_requester.withdraw(item, outcome=outcome, detail=detail)
 
@@ -1611,7 +1612,8 @@ class ResidentRuntime:
         reason: str,
         operator_ref: str,
         root_correlation_id: str,
-        turn_index: str,
+        turn_ref: str,
+        new_question: bool = False,
     ) -> ReviewItem | None:
         if self._review_requester is None:
             return None
@@ -1621,8 +1623,22 @@ class ResidentRuntime:
             reason=reason,
             operator_ref=operator_ref,
             root_correlation_id=root_correlation_id,
-            turn_index=turn_index,
+            turn_ref=turn_ref,
         )
+        settled = self._review_requester.settled_item(item.item_id)
+        if settled is not None and not new_question:
+            # Re-announcing a question the queue already settled (answered, the
+            # case has not consumed it yet): filing it again would flip the
+            # outbox copy back to pending for a request the queue ignores.
+            return None
+        if settled is not None:
+            # The queue keeps a settled id settled, so this request would be
+            # dropped there and the question would never reach the operator.
+            raise RuntimeError(
+                f"operator question for case {case_id!r} maps to review item "
+                f"{item.item_id!r}, which is already {settled.status}; the question "
+                "was saved but cannot be filed. Its turn_ref must be unique per question."
+            )
         # A question nobody can see in the review queue is one the operator will
         # never answer: fail the turn loudly. The question itself is already
         # persisted and its attention raised before this, so nothing is lost.
@@ -1636,14 +1652,20 @@ class ResidentRuntime:
         reason: str,
         operator_ref: str,
         root_correlation_id: str,
-        turn_index: str,
+        turn_ref: str,
     ) -> ReviewItem:
-        # One item per question: the turn that asked is part of its identity, so a
-        # case that asks again after an answer or a withdrawal files a new item the
-        # queue shows, instead of one it already holds as settled.
-        digest = hashlib.sha256(
-            f"{self._resident_id}\0{case_id}\0{turn_index}".encode()
-        ).hexdigest()[:24]
+        # One item per question: the turn record that asked is its identity, so a
+        # case that asks again files a new item the queue shows, instead of one it
+        # already holds as settled. The turn record path, not the turn number:
+        # long-lived cases such as a resident's operator room restart their turn
+        # numbering, and turn 1 of today collided with yesterday's answered turn 1.
+        if not turn_ref:
+            raise ValueError(
+                f"operator question for case {case_id!r} has no turn_ref; "
+                "its review item cannot be identified"
+            )
+        identity = f"{self._resident_id}\0{case_id}\0{turn_ref}"
+        digest = hashlib.sha256(identity.encode()).hexdigest()[:24]
         return ReviewItem(
             item_id=f"review:{ReviewKind.COURT_ESCALATION.value}:operator:{digest}",
             kind=ReviewKind.COURT_ESCALATION.value,

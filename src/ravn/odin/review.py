@@ -367,6 +367,9 @@ class JsonReviewStore:
                 return item
         return None
 
+    def find(self, item_id: str) -> ReviewItem | None:
+        return self._items.get(item_id)
+
     def find_pending_by_id(self, item_id: str) -> ReviewItem | None:
         item = self._items.get(item_id)
         if item is None or not item.is_pending:
@@ -433,6 +436,15 @@ class ReviewRequester:
                 return None
             self._store.save(item)
         await self._publisher.publish(review_requested_event(item, source=self._source))
+        return item
+
+    def settled_item(self, item_id: str) -> ReviewItem | None:
+        """The outbox copy of ``item_id`` if it is no longer pending, else None."""
+        if self._store is None:
+            return None
+        item = self._store.find(item_id)
+        if item is None or item.is_pending:
+            return None
         return item
 
     def has_pending(self, dedupe_key: str) -> bool:

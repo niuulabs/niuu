@@ -2491,3 +2491,110 @@ async def test_a_case_that_asks_again_files_a_new_review_item(tmp_path) -> None:
     items = store.list()
     assert len({item.item_id for item in items}) == 2
     assert sorted(item.status for item in items) == ["pending", "withdrawn"]
+
+
+class _PinnedDatetime(datetime):
+    """``datetime`` whose ``now`` is set by the test: turn records stamp their path with it."""
+
+    pinned = datetime(2026, 10, 28, 13, 10, 41, tzinfo=UTC)
+
+    @classmethod
+    def now(cls, tz=None):  # noqa: ARG003 - the pinned instant is already UTC
+        return cls.pinned
+
+
+async def _ask_in_turn(runtime: ResidentRuntime, case_id: str, question: str, turn: int) -> None:
+    await runtime.handle_completed_turn(
+        task=_task(
+            task_id=f"task-{case_id}-{question}",
+            root_correlation_id=case_id,
+            resident_case_id=case_id,
+            resident_turn_index=turn,
+        ),
+        prompt="prompt",
+        result=_result({}),
+        response_text="needs input",
+        outcome_fields={
+            "continuation": "ask_operator",
+            "question": question,
+            "next_action_timing": "operator_input",
+        },
+        outcome_valid=True,
+    )
+
+
+def _settle_in_queue(store: JsonReviewStore, item_id: str) -> None:
+    item = store.get(item_id)
+    item.status = "applied"
+    store.save(item)
+
+
+@pytest.mark.asyncio
+async def test_a_room_case_whose_turns_restart_still_files_each_new_question(
+    tmp_path, monkeypatch
+) -> None:
+    """Regin's operator room is one long-lived case whose turn numbering restarts.
+
+    Its 15:21 question was turn 1 again, hashed to the id of the 13:10 turn-1
+    question the operator had already answered, and the queue dropped it.
+    """
+    monkeypatch.setattr("ravn.domain.resident_continuation.datetime", _PinnedDatetime)
+    runtime, publisher, store = _review_runtime(tmp_path)
+    runtime.bind_enqueue(AsyncMock(return_value=True))
+
+    await _ask_in_turn(runtime, "regin-operator-room", "Push test (Mac)?", turn=1)
+    [first] = store.list()
+    _settle_in_queue(store, first.item_id)
+    await runtime.submit_operator_answer(
+        case_id="regin-operator-room", answer="yes", via_review=True
+    )
+    publisher.reset_mock()
+
+    _PinnedDatetime.pinned = datetime(2026, 10, 28, 15, 21, 41, tzinfo=UTC)
+    await _ask_in_turn(runtime, "regin-operator-room", "Push test (iPhone)?", turn=1)
+
+    [second] = [item for item in store.list() if item.item_id != first.item_id]
+    assert second.status == "pending"
+    assert store.get(first.item_id).status == "applied"
+    requested = [
+        call.args[0].payload["item_id"]
+        for call in publisher.publish.await_args_list
+        if call.args[0].event_type == "odin.review.requested"
+    ]
+    assert requested == [second.item_id]
+
+
+@pytest.mark.asyncio
+async def test_a_new_question_onto_a_settled_review_item_fails_loudly(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("ravn.domain.resident_continuation.datetime", _PinnedDatetime)
+    _PinnedDatetime.pinned = datetime(2026, 10, 28, 13, 10, 41, tzinfo=UTC)
+    runtime, publisher, store = _review_runtime(tmp_path)
+    runtime.bind_enqueue(AsyncMock(return_value=True))
+    await _ask_in_turn(runtime, "case-collide", "First?", turn=1)
+    [first] = store.list()
+    _settle_in_queue(store, first.item_id)
+    await runtime.submit_operator_answer(case_id="case-collide", answer="yes", via_review=True)
+    publisher.reset_mock()
+
+    # Same instant, same turn number: the same turn record, so the same id.
+    with pytest.raises(RuntimeError, match="already applied"):
+        await _ask_in_turn(runtime, "case-collide", "Second?", turn=1)
+
+    assert store.get(first.item_id).status == "applied"
+    publisher.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_restart_re_announces_an_answered_question_without_raising(tmp_path) -> None:
+    """Between the queue's answer and the case consuming it, a restart must not crash."""
+    runtime, _publisher, store = _review_runtime(tmp_path)
+    await _ask(runtime, "case-window", "Which scope?")
+    [item] = store.list()
+    _settle_in_queue(store, item.item_id)
+
+    restarted, _publisher, store = _review_runtime(tmp_path)
+    await restarted.publish_pending_questions()
+
+    assert store.get(item.item_id).status == "applied"

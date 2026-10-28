@@ -546,3 +546,18 @@ async def test_promotion_of_unknown_skill_fails_loudly(tmp_path) -> None:
     assert len(resolved) == 1
     assert resolved[0].payload["apply_outcome"] == "apply_failed"
     await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_settled_item_reports_only_items_the_outbox_holds_as_settled(tmp_path) -> None:
+    store = JsonReviewStore(tmp_path / "reviews.json")
+    requester = ReviewRequester(publisher=AsyncMock(), store=store)
+    pending = await requester.request(_item(dedupe_key="pending"))
+    applied = await requester.request(_item(dedupe_key="applied"))
+    applied.status = ReviewStatus.APPLIED.value
+    store.save(applied)
+
+    assert requester.settled_item(pending.item_id) is None
+    assert requester.settled_item("review:unknown") is None
+    assert requester.settled_item(applied.item_id).status == "applied"
+    assert ReviewRequester(publisher=AsyncMock()).settled_item(applied.item_id) is None
