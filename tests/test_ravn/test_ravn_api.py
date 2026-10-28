@@ -3250,3 +3250,35 @@ def test_workshop_inventory_and_telemetry_share_environment_id(monkeypatch):
     assert dashboard["environments"][0]["identitySource"] == "observed"
     assert dashboard["valkyries"][0]["environmentId"] == env_id
     assert dashboard["telemetry"]["runtime"][0]["environmentId"] == env_id
+
+
+@respx.mock
+@pytest.mark.parametrize("status", [401, 403])
+def test_resident_list_answers_the_platforms_refusal_of_the_caller(client: TestClient, status):
+    """A credential the platform Forge refuses is the caller's answer, never a 500.
+
+    Ymir's Observatory polled this with a site principal that has no local tenant
+    membership; the Forge's 401 surfaced as an unhandled 500 for weeks.
+    """
+    respx.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+        return_value=httpx.Response(status, json={"detail": "Local tenant membership is required"})
+    )
+
+    resp = client.get("/api/v1/ravn/ravens")
+
+    assert resp.status_code == status
+    assert resp.json() == {"detail": "Local tenant membership is required"}
+
+
+@respx.mock
+def test_resident_list_reports_a_platform_failure_as_a_bad_gateway(client: TestClient):
+    respx.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+        return_value=httpx.Response(500, text="boom")
+    )
+
+    resp = client.get("/api/v1/ravn/ravens")
+
+    assert resp.status_code == 502
+    assert resp.json() == {
+        "detail": "platform answered HTTP 500 for /api/v1/forge/resident-runtimes"
+    }

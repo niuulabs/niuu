@@ -34,7 +34,7 @@ from niuu.settings_schema import (
     SettingsSectionSchema,
 )
 from niuu.utils import import_class
-from ravn.adapters.platform_runtime import HttpPlatformRuntimeAdapter
+from ravn.adapters.platform_runtime import HttpPlatformRuntimeAdapter, PlatformRequestError
 from ravn.api.persistence_wiring import aclose_stores, build_budget_ledger, build_trigger_store
 from ravn.api.residents import (
     ResidentDirectory,
@@ -120,6 +120,9 @@ class ResidentCreateRequest(BaseModel):
     realm_id: UUID | None = None
 
 
+_FORWARDED_PLATFORM_STATUSES = frozenset({401, 403, 404, 409, 422})
+
+
 def _raise_platform_error(exc: httpx.HTTPStatusError) -> None:
     try:
         payload = exc.response.json()
@@ -188,6 +191,17 @@ def create_app(
             filesystem-backed location when omitted.
     """
     app = FastAPI(title="Ravn API", docs_url=None, redoc_url=None)
+
+    @app.exception_handler(PlatformRequestError)
+    async def platform_request_failed(request: Request, exc: PlatformRequestError) -> JSONResponse:
+        # The platform's refusal of the caller's credential is the caller's
+        # answer; anything else it could not serve is an upstream failure.
+        status_code = (
+            exc.status_code
+            if exc.status_code in _FORWARDED_PLATFORM_STATUSES
+            else http_status.HTTP_502_BAD_GATEWAY
+        )
+        return JSONResponse(status_code=status_code, content={"detail": exc.detail})
 
     @app.exception_handler(StandaloneDiscoveryUnavailableError)
     async def standalone_discovery_unavailable(
