@@ -1,4 +1,5 @@
-{{- if and .Values.wsAuth.enforce_ownership .Values.envoy.enabled }}
+{{- include "skuld.roomGatewayValidate" . -}}
+{{- if include "skuld.authEnforced" . }}
 {{- if has .Values.wsAuth.authorization.adapter (list "volundr.adapters.outbound.authorization.AllowAllAuthorizationAdapter" "identity.adapters.authorization.AllowAllAuthorizationAdapter") }}
 {{- fail "Enforced Skuld requires a resource authorization adapter" }}
 {{- end }}

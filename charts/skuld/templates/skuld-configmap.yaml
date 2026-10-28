@@ -1,3 +1,4 @@
+{{- if not (include "skuld.roomGatewayEnabled" .) }}
 {{- if .Values.wsAuth.enforce_ownership }}
 {{- if not (or (and .Values.envoy.enabled .Values.envoy.jwt.enabled) (and .Values.gateway.enabled .Values.gateway.jwt.enabled)) }}
 {{- fail "WebSocket ownership enforcement requires a JWT-verifying Envoy sidecar or Gateway" }}
@@ -176,3 +177,4 @@ data:
               consumes_event_types: []
               emits_event_types: []
     {{- end }}
+{{- end }}
