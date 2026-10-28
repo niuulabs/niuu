@@ -91,6 +91,7 @@ from sleipnir.domain.events import SleipnirEvent
 if TYPE_CHECKING:
     from ravn.adapters.personas.loader import PersonaConfig
     from ravn.ports.mesh import MeshPort
+    from ravn.resident_first_opinion import ResidentFirstOpinion
 
 try:
     from sleipnir.domain.catalog import (
@@ -1448,6 +1449,7 @@ class DriveLoop:
         self._telemetry_refreshers: list[Callable[[], None]] = []
         self._reflex_initialised = False
         self._resident_runtime: object | None = None
+        self._first_opinion: ResidentFirstOpinion | None = None
         self._shutting_down = False
         self._current_task_var: contextvars.ContextVar[AgentTask | None] = contextvars.ContextVar(
             "ravn_current_task",
@@ -1935,6 +1937,10 @@ class DriveLoop:
         bind = getattr(runtime, "bind_enqueue", None)
         if bind is not None:
             bind(self.enqueue)
+
+    def set_first_opinion(self, first_opinion: ResidentFirstOpinion | None) -> None:
+        """Attach the observe-only System One first opinion on resident turns."""
+        self._first_opinion = first_opinion
 
     def set_workflow_allowed_outcomes_resolver(
         self,
@@ -3298,6 +3304,11 @@ class DriveLoop:
                 # except a room message — so nothing that implements the old signature has to
                 # learn a keyword that would always be None.
                 recall_kwargs = {"recall_query": task.recall_query} if task.recall_query else {}
+                first_opinion = (
+                    await self._first_opinion.judge(task)
+                    if self._first_opinion is not None and self._first_opinion.applies_to(task)
+                    else None
+                )
                 turn_result = await agent.run_turn(prompt, **recall_kwargs)  # type: ignore[attr-defined]
                 success = True
                 telemetry.event(
@@ -3382,6 +3393,12 @@ class DriveLoop:
                                 "ravn.valkyrie.outcome_valid",
                             )
                         },
+                    )
+                if first_opinion is not None and self._first_opinion is not None:
+                    self._first_opinion.compare(
+                        first_opinion,
+                        structured_outcome if isinstance(structured_outcome, Mapping) else None,
+                        outcome_valid=bool(resident_outcome_valid),
                     )
                 if self._resident_runtime is not None:
                     resident_disposition = await self._resident_runtime.handle_completed_turn(

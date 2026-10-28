@@ -489,6 +489,66 @@ class RerankerConfig(BaseModel):
     )
 
 
+class ResidentFirstOpinionConfig(BaseModel):
+    """Observe-only System One opinion on every resident turn (``ravn.resident_first_opinion``).
+
+    Before each resident turn the decision model is asked for its tier and decision on the same
+    observation; after the turn both are recorded side by side in telemetry. The turn always runs
+    and its own outcome is the only one the ODIN court sees.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Ask the decision model for a first opinion on every resident turn and record it "
+            "beside the turn's own judgment. Requires decision.enabled."
+        ),
+    )
+    max_observation_chars: int = Field(
+        default=24000,
+        gt=0,
+        description=(
+            "Characters of the turn's observation sent as decision state; longer observations "
+            "are cut and the cut is reported. Jev answers at most 32k tokens per question."
+        ),
+    )
+
+
+class DecisionConfig(BaseModel):
+    """System One decision model (TypeSafe Jev, Cloudflare Clef, Ollama ``/v1/systemone``).
+
+    Off by default. ``adapter`` is a fully-qualified class path and ``kwargs`` its constructor
+    arguments, e.g. ``base_url`` and ``model`` (``jev-latest`` on ``https://api.typesafe.ai``,
+    or ``clef-flash`` on a local Ollama). The API key is never written in config: map it in
+    ``secret_kwargs_env`` and it is resolved from the environment at composition. When
+    enabled, a backend that cannot be built or reached raises; nothing carries on without it.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Build the decision model port for the features below that use it.",
+    )
+    adapter: str = Field(
+        default="ravn.adapters.decision.systemone.SystemOneDecisionAdapter",
+        description="Fully-qualified class path for the decision adapter.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extra kwargs forwarded to the decision adapter constructor.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Maps kwarg names to env var names for credential injection, e.g. "
+            "{api_key: TYPESAFE_API_KEY}. Empty for keyless local servers; a mapped variable "
+            "that is unset or empty is a startup error."
+        ),
+    )
+    resident_first_opinion: ResidentFirstOpinionConfig = Field(
+        default_factory=ResidentFirstOpinionConfig,
+    )
+
+
 class EmbeddingConfig(BaseModel):
     """Embedding backend configuration for semantic memory search."""
 
@@ -5596,6 +5656,7 @@ class Settings(BaseSettings):
     # NIU-436: semantic memory
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
+    decision: DecisionConfig = Field(default_factory=DecisionConfig)
     skill: SkillConfig = Field(default_factory=SkillConfig)
 
     # NIU-501: self-improvement loop
