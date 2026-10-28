@@ -121,6 +121,10 @@ def _headers() -> dict[str, str]:
     }
 
 
+_SESSION_ID = "543dc339-d1b9-4267-9b19-b33190d380e6"
+_UNKNOWN_SESSION_ID = "00000000-0000-4000-8000-000000000000"
+
+
 DELIVERY_OPERATIONS = (
     "refs/resolve",
     "forge/reviews",
@@ -554,18 +558,45 @@ def test_get_session_searches_visible_instances() -> None:
             _instance("beta", base_url="http://beta"),
         ]
     )
-    respx.get("http://alpha/api/v1/forge/sessions/s2").mock(return_value=Response(404))
-    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
-        return_value=Response(200, json={"id": "s2", "name": "Session 2", "status": "running"})
+    respx.get(f"http://alpha/api/v1/forge/sessions/{_SESSION_ID}").mock(return_value=Response(404))
+    respx.get(f"http://beta/api/v1/forge/sessions/{_SESSION_ID}").mock(
+        return_value=Response(
+            200,
+            json={"id": _SESSION_ID, "name": "Session 2", "status": "running"},
+        )
     )
 
-    response = client.get("/api/v1/forge/sessions/s2", headers=_headers())
+    response = client.get(f"/api/v1/forge/sessions/{_SESSION_ID}", headers=_headers())
 
     assert response.status_code == 200
     payload: dict[str, Any] = response.json()
-    assert payload["id"] == "s2"
+    assert payload["id"] == _SESSION_ID
     assert payload["instance_id"] == "beta"
     assert payload["instance_name"] == "Instance beta"
+
+
+@respx.mock
+def test_get_session_rejects_malformed_uuid_before_owner_lookup() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+
+    response = client.get("/api/v1/forge/sessions/2f2530f3", headers=_headers())
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Session ID must be a full UUID"
+    assert not respx.calls
+
+
+@respx.mock
+def test_get_session_returns_404_for_unknown_well_formed_uuid() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get(f"http://alpha/api/v1/forge/sessions/{_UNKNOWN_SESSION_ID}").mock(
+        return_value=Response(404)
+    )
+
+    response = client.get(f"/api/v1/forge/sessions/{_UNKNOWN_SESSION_ID}", headers=_headers())
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == f"Session not found: {_UNKNOWN_SESSION_ID}"
 
 
 @pytest.mark.parametrize("resource", ["sessions", "resident-runtimes"])
@@ -577,13 +608,14 @@ def test_owner_lookup_finds_resource_despite_unreachable_instance(resource: str)
             _instance("noatun", base_url="http://noatun"),
         ]
     )
-    respx.get(f"http://offline/api/v1/forge/{resource}/s2").mock(
+    resource_id = _SESSION_ID if resource == "sessions" else "s2"
+    respx.get(f"http://offline/api/v1/forge/{resource}/{resource_id}").mock(
         side_effect=ConnectTimeout("offline")
     )
-    respx.get(f"http://noatun/api/v1/forge/{resource}/s2").mock(
-        return_value=Response(200, json={"id": "s2", "status": "running"})
+    respx.get(f"http://noatun/api/v1/forge/{resource}/{resource_id}").mock(
+        return_value=Response(200, json={"id": resource_id, "status": "running"})
     )
-    response = client.get(f"/api/v1/forge/{resource}/s2", headers=_headers())
+    response = client.get(f"/api/v1/forge/{resource}/{resource_id}", headers=_headers())
     assert response.status_code == 200
     assert response.json()["instance_id"] == "noatun"
 
@@ -596,9 +628,11 @@ def test_incomplete_owner_lookup_is_not_reported_as_missing() -> None:
             _instance("noatun", base_url="http://noatun"),
         ]
     )
-    respx.get("http://offline/api/v1/forge/sessions/s2").mock(side_effect=ConnectTimeout("offline"))
-    respx.get("http://noatun/api/v1/forge/sessions/s2").mock(return_value=Response(404))
-    response = client.get("/api/v1/forge/sessions/s2", headers=_headers())
+    respx.get(f"http://offline/api/v1/forge/sessions/{_SESSION_ID}").mock(
+        side_effect=ConnectTimeout("offline")
+    )
+    respx.get(f"http://noatun/api/v1/forge/sessions/{_SESSION_ID}").mock(return_value=Response(404))
+    response = client.get(f"/api/v1/forge/sessions/{_SESSION_ID}", headers=_headers())
     assert response.status_code == 502
 
 
@@ -640,21 +674,23 @@ async def test_owner_lookup_cancels_stalled_probes_after_finding_owner(monkeypat
 @respx.mock
 def test_get_session_rebases_target_relative_chat_endpoint() -> None:
     client = _client([_instance("noatun", base_url="https://niuu.noatun.asgard.niuu.world")])
-    respx.get("https://niuu.noatun.asgard.niuu.world/api/v1/forge/sessions/s2").mock(
+    respx.get(f"https://niuu.noatun.asgard.niuu.world/api/v1/forge/sessions/{_SESSION_ID}").mock(
         return_value=Response(
             200,
             json={
-                "id": "s2",
+                "id": _SESSION_ID,
                 "status": "running",
-                "chat_endpoint": "/s/s2/session",
+                "chat_endpoint": f"/s/{_SESSION_ID}/session",
             },
         )
     )
 
-    response = client.get("/api/v1/forge/sessions/s2", headers=_headers())
+    response = client.get(f"/api/v1/forge/sessions/{_SESSION_ID}", headers=_headers())
 
     assert response.status_code == 200
-    assert response.json()["chat_endpoint"] == ("wss://niuu.noatun.asgard.niuu.world/s/s2/session")
+    assert response.json()["chat_endpoint"] == (
+        f"wss://niuu.noatun.asgard.niuu.world/s/{_SESSION_ID}/session"
+    )
 
 
 @respx.mock
@@ -808,19 +844,23 @@ def test_get_session_returns_404_when_no_visible_instance_owns_it() -> None:
             _instance("beta", base_url="http://beta"),
         ]
     )
-    respx.get("http://alpha/api/v1/forge/sessions/missing").mock(return_value=Response(404))
-    respx.get("http://beta/api/v1/forge/sessions/missing").mock(return_value=Response(403))
+    respx.get(f"http://alpha/api/v1/forge/sessions/{_UNKNOWN_SESSION_ID}").mock(
+        return_value=Response(404)
+    )
+    respx.get(f"http://beta/api/v1/forge/sessions/{_UNKNOWN_SESSION_ID}").mock(
+        return_value=Response(403)
+    )
 
-    response = client.get("/api/v1/forge/sessions/missing", headers=_headers())
+    response = client.get(f"/api/v1/forge/sessions/{_UNKNOWN_SESSION_ID}", headers=_headers())
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "Session not found: missing"
+    assert response.json()["detail"] == f"Session not found: {_UNKNOWN_SESSION_ID}"
 
 
 def test_get_session_rejects_invalid_remote_base_urls() -> None:
     client = _client([_instance("alpha", base_url="ftp://alpha")])
 
-    response = client.get("/api/v1/forge/sessions/s2", headers=_headers())
+    response = client.get(f"/api/v1/forge/sessions/{_SESSION_ID}", headers=_headers())
 
     assert response.status_code == 502
     assert "http or https" in response.json()["detail"]

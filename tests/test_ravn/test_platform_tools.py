@@ -143,6 +143,24 @@ class TestVolundrSessionTool:
         assert data["id"] == session_id
 
     @pytest.mark.asyncio
+    @respx.mock
+    async def test_get_session_reports_malformed_id_validation_error(self):
+        session_id = "2f2530f3"
+        respx.get(f"{FORGE_SESSIONS_URL}/{session_id}").mock(
+            return_value=httpx.Response(
+                400,
+                json={"detail": "Session ID must be a full UUID"},
+            )
+        )
+
+        result = await self.tool.execute({"action": "get", "session_id": session_id})
+
+        assert result.is_error
+        assert "400" in result.content
+        assert "full UUID" in result.content
+        assert "502" not in result.content
+
+    @pytest.mark.asyncio
     async def test_create_session_missing_name(self):
         result = await self.tool.execute({"action": "create"})
         assert result.is_error

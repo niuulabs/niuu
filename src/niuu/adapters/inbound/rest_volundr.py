@@ -1833,11 +1833,18 @@ def create_volundr_router(
         session_id: str = Path(description="Volundr session identifier"),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
+        try:
+            session_uuid = UUID(session_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Session ID must be a full UUID",
+            ) from None
         _, payload = await _find_session_owner(
             service,
             principal,
             request,
-            session_id,
+            str(session_uuid),
             embedded_app=embedded_forge_app,
         )
         return payload
