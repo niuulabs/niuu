@@ -1122,13 +1122,7 @@ export type ReviewKind =
   | 'morning_brief';
 
 export type ReviewStatus =
-  | 'pending'
-  | 'approved'
-  | 'rejected'
-  | 'expired'
-  | 'applied'
-  | 'apply_failed'
-  | 'withdrawn';
+  'pending' | 'approved' | 'rejected' | 'expired' | 'applied' | 'apply_failed' | 'withdrawn';
 
 export type ReviewRiskClass = 'low' | 'medium' | 'high' | 'critical';
 
