@@ -540,6 +540,31 @@ sleipnir:
 #   extraEnv:
 #     - name: FORGE_OPS_WEBHOOK_SECRET
 #       valueFrom: {secretKeyRef: {name: forge-notification-sinks, key: ops-webhook-secret}}
+#
+# Resident questions (notifications.odin_review_relay, off by default): Forge follows the
+# ODIN review queue that niuu-ravn serves and records one notification per pending
+# `answer_operator_question` item for each owner in `owner_ids`, which the owner's
+# "Needs-input pushes" rule (`push.enabled`) delivers to their phone with the Reply
+# category. Questions already waiting when an owner is first followed reach the feed
+# without a push; one digest push says how many wait. Enabled but unable to run
+# (no owner_ids, unreadable source config) stops Forge at startup. It reads niuu-ravn
+# with the credential `source.kwargs.auth_adapter` supplies; for a Forge in the cluster
+# that is the workload-identity exchange of a projected ServiceAccount token
+# (mount it with extraVolumes/extraVolumeMounts, and give the exchange a mapping for
+# Forge's ServiceAccount under workloadIdentity.mappings). Example:
+#   notifications:
+#     odin_review_relay:
+#       enabled: true
+#       owner_ids: ["<the owner's Forge user id>"]
+#       poll_interval_seconds: 30
+#       source:
+#         kwargs:
+#           base_url: https://yggdrasil.niuu.world
+#           auth_adapter: niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter
+#           auth_kwargs:
+#             exchange_url: https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange
+#             token_file: /var/run/secrets/niuu-workload/token
+#             audiences: [niuu-ravn]
 notifications: {}
 
 # Push to the devices owners register (POST /api/v1/forge/devices), and the

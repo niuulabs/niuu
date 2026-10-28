@@ -1,5 +1,6 @@
 """Tests for Volundr Helm chart templates."""
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -662,6 +663,61 @@ class TestConfigMapTemplate:
         assert parsed.dispatcher.max_attempts == 5
         assert parsed.dispatcher.default_rate_limit is None
         assert parsed.sinks[0]["secret_kwargs_env"] == {"secret": "FORGE_OPS_WEBHOOK_SECRET"}
+
+    def test_odin_review_relay_renders_into_config(self):
+        from volundr.config import NotificationsConfig, Settings
+
+        relay = {
+            "enabled": True,
+            "owner_ids": ["jozef"],
+            "poll_interval_seconds": 20,
+            "source": {
+                "kwargs": {
+                    "base_url": "https://ravn.example",
+                    "auth_adapter": (
+                        "niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter"
+                    ),
+                    "auth_kwargs": {
+                        "exchange_url": "https://forge.example/api/v1/tokens/workload/exchange",
+                        "token_file": "/var/run/secrets/niuu-workload/token",
+                        "audiences": ["niuu-ravn"],
+                    },
+                }
+            },
+        }
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                "--set",
+                "push.enabled=true",
+                "--set-json",
+                f"notifications={json.dumps({'odin_review_relay': relay})}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        configmap = next(
+            doc
+            for doc in yaml.safe_load_all(result.stdout)
+            if doc
+            and doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+        config = yaml.safe_load(configmap["data"]["config.yaml"])
+
+        rendered = config["notifications"]["odin_review_relay"]
+        assert rendered == relay
+        parsed = NotificationsConfig.model_validate(config["notifications"]).odin_review_relay
+        assert parsed.enabled and parsed.owner_ids == ["jozef"]
+        assert parsed.source.kwargs["auth_kwargs"]["audiences"] == ["niuu-ravn"]
+        settings = Settings(push=config["push"], notifications=config["notifications"])
+        assert settings.push.enabled and settings.notifications.odin_review_relay.enabled
+        # the push sink the Needs-input rule delivers through is added next to it
+        assert [sink["name"] for sink in config["notifications"]["sinks"]] == ["push"]
 
     def test_push_renders_with_the_sink_the_needs_input_push_needs(self):
         from volundr.config import Settings
