@@ -189,6 +189,25 @@ class ResidentDirectory:
             ravens.append(self._standalone_to_raven(resident))
         return ravens
 
+    async def list_system_ravens(self) -> list[dict[str, Any]]:
+        """Return only the residents every member of the platform may see.
+
+        For shared views such as the Observatory topology: one picture shown to
+        every signed-in user must not be built from any one user's residents, so
+        this never asks the platform for user-owned runtimes and keeps only the
+        discovered and catalog residents whose visibility is ``system``.
+        """
+        ravens: list[dict[str, Any]] = []
+        claimed_ids: set[str] = set()
+        for resident in [*await self._discover_standalone(), *await self._roster_residents()]:
+            if resident.id in claimed_ids:
+                continue
+            claimed_ids.add(resident.id)
+            if resident.visibility is not InstanceVisibility.SYSTEM:
+                continue
+            ravens.append(self._standalone_to_raven(resident))
+        return ravens
+
     async def list_profiles(
         self,
         auth_headers: dict[str, str],

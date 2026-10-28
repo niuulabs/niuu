@@ -353,6 +353,17 @@ load the channel of an `idle` Valkyrie.
 The id precedence is managed, then discovered, then catalog: a catalog Valkyrie
 never appears twice when Forge or discovery already lists the same id.
 
+### The shared (system) resident list
+
+`GET /api/v1/ravn/ravens?visibility=system` returns only the discovered and
+catalog residents whose visibility is `system`. It never asks Forge for the
+caller's own resident runtimes, so it suits views that one identity builds and
+every signed-in user sees. The Observatory topology uses it: each site's
+Observatory has its own site identity, which owns no residents and, on a Forge
+with `membership_authority: local`, is no tenant member either. A user's own
+residents therefore do not appear on the Observatory map; they stay visible to
+their owner in Lexi and the Residents page.
+
 ## Ownership
 
 Skuld enforces session ownership at WebSocket accept (`ws_auth` in the

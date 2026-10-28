@@ -3282,3 +3282,24 @@ def test_resident_list_reports_a_platform_failure_as_a_bad_gateway(client: TestC
     assert resp.json() == {
         "detail": "platform answered HTTP 500 for /api/v1/forge/resident-runtimes"
     }
+
+
+@respx.mock
+def test_system_resident_list_serves_a_caller_the_platform_would_refuse(client: TestClient):
+    """Ymir's Observatory site identity has no tenant membership, so the Forge
+    refuses it; the shared system list never asks the Forge and still answers."""
+    forge = respx.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+        return_value=httpx.Response(401, json={"detail": "Local tenant membership is required"})
+    )
+
+    resp = client.get("/api/v1/ravn/ravens", params={"visibility": "system"})
+
+    assert resp.status_code == 200
+    assert [r["resident_name"] for r in resp.json()] == ["Sigrun"]
+    assert not forge.called
+
+
+def test_resident_list_rejects_an_unknown_visibility(client: TestClient):
+    resp = client.get("/api/v1/ravn/ravens", params={"visibility": "everyone"})
+
+    assert resp.status_code == 422

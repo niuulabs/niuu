@@ -13,7 +13,7 @@ import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 import httpx
@@ -518,8 +518,17 @@ def create_app(
     async def list_ravens_endpoint(
         request: Request,
         principal: Principal = Depends(extract_principal),
+        visibility: Literal["system"] | None = Query(
+            default=None,
+            description=(
+                "`system` lists only residents visible to every platform member, "
+                "without the caller's own; for shared views such as the Observatory."
+            ),
+        ),
     ) -> list[dict]:
         """List durable residents and visible compatibility deployments."""
+        if visibility == "system":
+            return await resident_directory.list_system_ravens()
         auth_headers, auth_params = forward_auth(request)
         return await resident_directory.list_ravens(principal, auth_headers, auth_params)
 

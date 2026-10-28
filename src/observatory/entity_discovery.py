@@ -1403,6 +1403,10 @@ class RavnResidentsDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
     This is also how residents outside Kubernetes reach the graph when the
     Ravn that knows about them is reachable: the projection already carries
     local and container deployments, not only cluster ones.
+
+    Only system-visible residents: the topology is one picture shown to every
+    signed-in user, so it must not carry any one user's own residents (and the
+    Observatory's site identity owns none).
     """
 
     warning_name = "ravn-residents"
@@ -1412,7 +1416,9 @@ class RavnResidentsDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
         client: httpx.AsyncClient,
         headers: dict[str, str],
     ) -> DiscoveryResult:
-        payload = await self._json(client, headers, "/api/v1/ravn/ravens")
+        payload = await self._json(
+            client, headers, "/api/v1/ravn/ravens", params={"visibility": "system"}
+        )
         ravens = payload if isinstance(payload, list) else []
         entities: list[DiscoveredEntity] = []
         edges: list[ObservatoryEdge] = []

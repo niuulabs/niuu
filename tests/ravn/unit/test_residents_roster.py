@@ -420,3 +420,43 @@ class TestResidentSessionsListing:
 
         assert native.called
         assert [session["id"] for session in sessions] == ["native-1"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_the_system_list_keeps_only_residents_every_member_may_see() -> None:
+    """A shared view (the Observatory map) must not carry any user's own residents."""
+    directory = _directory(
+        managed=[{"id": "owned-runtime", "name": "Mine"}],
+        discovery=_Static(
+            [
+                _resident(id="muninn", resident_name="Muninn"),
+                _resident(
+                    id="private",
+                    resident_name="Private",
+                    visibility=InstanceVisibility.USER,
+                    owner_id="user-a",
+                ),
+            ]
+        ),
+        roster=_Static(
+            [
+                _resident(),
+                _resident(id="muninn", resident_name="Muninn (catalog)"),
+                _resident(
+                    id="tenant-only",
+                    visibility=InstanceVisibility.TENANT,
+                    tenant_id="tenant-a",
+                ),
+            ]
+        ),
+    )
+
+    ravens = await directory.list_system_ravens()
+
+    assert [(r["id"], r["resident_name"]) for r in ravens] == [
+        ("muninn", "Muninn"),
+        ("valkyrie-runa", "Runa"),
+    ]
+    # Never asks the platform: user-owned runtimes are not part of a shared view.
+    assert not respx.calls
