@@ -589,9 +589,7 @@ def _payload_to_config(payload: dict[str, Any]) -> PersonaConfig:
             adapter=str((payload.get("executor") or {}).get("adapter", "")),
             kwargs=dict((payload.get("executor") or {}).get("kwargs") or {}),
             requires=(payload.get("executor") or {}).get("requires", []),
-            fallbacks=_parse_executor_fallbacks(
-                (payload.get("executor") or {}).get("fallbacks")
-            ),
+            fallbacks=_parse_executor_fallbacks((payload.get("executor") or {}).get("fallbacks")),
         ),
         llm=PersonaLLMConfig(
             primary_alias="",

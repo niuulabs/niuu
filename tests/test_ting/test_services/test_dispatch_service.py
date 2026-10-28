@@ -1489,9 +1489,7 @@ class TestBuildSpawnRequestPersonaOverrides:
                     {
                         "id": "stage-1",
                         "kind": "stage",
-                        "stageMembers": [
-                            {"personaId": "reviewer", "model": "claude-sonnet-4-6"}
-                        ],
+                        "stageMembers": [{"personaId": "reviewer", "model": "claude-sonnet-4-6"}],
                     }
                 ]
             },

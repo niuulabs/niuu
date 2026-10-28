@@ -466,9 +466,7 @@ class TestHelperNormalization:
                     "adapter": "demo.Adapter",
                     "kwargs": {"foo": "bar"},
                     "requires": ["reasoning"],
-                    "fallbacks": [
-                        {"adapter": "fallback.Adapter", "kwargs": {"mode": "safe"}}
-                    ],
+                    "fallbacks": [{"adapter": "fallback.Adapter", "kwargs": {"mode": "safe"}}],
                 },
                 "iteration_budget": "9",
                 "llm_primary_alias": "fast",
