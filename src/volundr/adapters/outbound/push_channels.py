@@ -219,8 +219,11 @@ class ApnsNotificationChannel(NotificationChannel):
         payload.update(message.data)
         accepted = 0
         failures: list[NotificationDeliveryError] = []
+        # An outbox notification collapses on its id: a retried delivery replaces the alert
+        # it already showed, and the app can post or withdraw the same alert by that id.
+        headers = {"apns-collapse-id": message.notification_id} if message.notification_id else {}
         for device in ios_devices:
-            error = await self._post(client, auth, device, payload, message.owner_id)
+            error = await self._post(client, auth, device, payload, message.owner_id, headers)
             if error is None:
                 accepted += 1
                 continue
@@ -250,6 +253,7 @@ class ApnsNotificationChannel(NotificationChannel):
         device: DeviceToken,
         payload: dict[str, Any],
         owner_id: str,
+        headers: dict[str, str],
     ) -> NotificationDeliveryError | None:
         topic = device.app_bundle_id or self._bundle_id
         try:
@@ -261,6 +265,7 @@ class ApnsNotificationChannel(NotificationChannel):
                     "apns-topic": topic,
                     "apns-push-type": "alert",
                     "apns-priority": "10",
+                    **headers,
                 },
             )
         except Exception as exc:
