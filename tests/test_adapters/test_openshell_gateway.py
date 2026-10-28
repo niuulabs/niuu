@@ -244,6 +244,7 @@ class _FakeOpenShellGatewayClient:
         self.forwarded: list[dict] = []
         self.closed_forwarders: list[dict] = []
         self.deleted: list[str] = []
+        self.delete_deadlines: list[float] = []
         self.deleted_services: list[dict] = []
         self.provider_grants: list[dict] = []
         self.deleted_grants: list[object] = []
@@ -323,8 +324,9 @@ class _FakeOpenShellGatewayClient:
 
         return _Forwarder()
 
-    def delete_sandbox(self, name: str) -> bool:
+    def delete_sandbox(self, name: str, *, timeout: float) -> bool:
         self.deleted.append(name)
+        self.delete_deadlines.append(timeout)
         self.recreated.discard(name)
         return True
 
@@ -2148,6 +2150,52 @@ async def test_sessions_keep_the_short_delete_wait(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
+async def test_delete_sandbox_calls_get_the_delete_budget_as_their_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    monkeypatch.setattr(adapter.asyncio, "sleep", AsyncMock())
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client, resident_sandbox_delete_timeout_seconds=180
+    )
+
+    # The gateway answers DeleteSandbox only once the pod is gone, which for a
+    # flock outlasts the client's default 30s RPC timeout.
+    await manager.destroy(_session())
+    await manager.delete(_resident_runtime())
+
+    assert client.delete_deadlines == [adapter.DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS, 180]
+    assert adapter.DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS == 90.0
+
+
+@pytest.mark.asyncio
+async def test_a_slow_delete_call_spends_the_same_budget_as_the_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.delete_polls_remaining = 10**9
+    sleep = AsyncMock()
+    monkeypatch.setattr(adapter.asyncio, "sleep", sleep)
+    record_delete = client.delete_sandbox
+
+    def slow_delete(name: str, *, timeout: float) -> bool:
+        time.sleep(0.06)
+        return record_delete(name, timeout=timeout)
+
+    client.delete_sandbox = slow_delete
+    manager = adapter.OpenShellGatewayPodManager(client=client, resource_delete_timeout=0.05)
+
+    # The DeleteSandbox call used the whole budget, so the sandbox that is still
+    # there fails the delete at once instead of getting a second budget.
+    with pytest.raises(RuntimeError, match="was not deleted within 0.05s"):
+        await manager._cleanup_resources("s-session", ())
+
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_resident_logs_use_native_gateway_log_buffer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2750,7 +2798,7 @@ async def test_destroy_of_an_absent_sandbox_reports_it_was_already_gone(
     session = _session()
     client = _FakeOpenShellGatewayClient(adapter)
     client.sandbox_exists = False
-    client.delete_sandbox = lambda name: client.deleted.append(name) or False
+    client.delete_sandbox = lambda name, timeout: client.deleted.append(name) or False
     manager = adapter.OpenShellGatewayPodManager(client=client)
 
     assert await manager.destroy(session) is False
@@ -2785,7 +2833,7 @@ async def test_destroy_raises_when_the_gateway_refuses_the_delete(
     session = _session()
     client = _FakeOpenShellGatewayClient(adapter)
 
-    def refuse(name: str) -> bool:
+    def refuse(name: str, *, timeout: float) -> bool:
         raise RuntimeError("gateway unavailable")
 
     client.delete_sandbox = refuse
@@ -3869,6 +3917,36 @@ async def test_peer_containers_reject_materialized_credentials_before_create(mon
             ),
         )
     assert client.created is None
+
+
+@pytest.mark.asyncio
+async def test_start_refuses_a_flock_whose_otlp_egress_the_policy_does_not_allow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client,
+        sandbox_policy={
+            "version": 1,
+            "network_policies": {
+                "otlp": {"endpoints": [{"host": "mimir.example", "port": 443}]},
+            },
+        },
+    )
+    egress = [
+        {"host": "mimir.example", "port": 443, "purpose": "OTLP metric", "passthrough": False},
+        {"host": "loki.example", "port": 443, "purpose": "OTLP log", "passthrough": False},
+    ]
+
+    # Without the rule the exporter would retry for the sandbox's whole life.
+    with pytest.raises(ValueError, match="does not allow the OTLP log endpoint loki.example:443"):
+        await manager.start(
+            _session(),
+            SessionSpec(values={"openshell": {"egress": egress}}, pod_spec=PodSpecAdditions()),
+        )
+    assert client.created is None
+    assert client.provider_grants == []
 
 
 def test_gateway_waits_for_native_channel_readiness(monkeypatch):

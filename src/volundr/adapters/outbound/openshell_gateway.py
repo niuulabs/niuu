@@ -56,6 +56,7 @@ from volundr.adapters.outbound.openshell_contract import (
     OPENSHELL_WORKSPACE,
     check_peer_workloads,
     check_pod_metadata_keys,
+    check_policy_allows_egress,
     check_volume_mounts,
     network_mode,
 )
@@ -161,7 +162,12 @@ DEFAULT_SANDBOX_IMAGE = "ghcr.io/niuulabs/skuld:openshell-codex-openbao-20260709
 DEFAULT_SANDBOX_COMMAND = ["/usr/local/bin/openshell-run-installed-skuld"]
 DEFAULT_SERVICE_PORT = 9200
 READY_POLL_INTERVAL = 1.0
-DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS = 30.0
+#: How long a session's sandbox delete may take, the DeleteSandbox call included.
+#: The OpenShell Kubernetes driver answers DeleteSandbox only once the workload
+#: Pod has gone (its 30s termination grace plus one 30s Kubernetes API timeout)
+#: and it has confirmed the Sandbox CR is gone (another API timeout). A flock Pod
+#: whose processes do not exit on SIGTERM takes that whole grace period.
+DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS = 90.0
 #: How long a resident's deploy or migration waits for a sandbox it removes to go.
 #: Deleting a resident sandbox (its pod, volumes and gateway records) took over
 #: 30s on Noatun, so a rollback gave up on a sandbox that was still going.
@@ -580,18 +586,20 @@ class OpenShellGatewayClient:
         )
         return _sandbox_from_proto(response.sandbox)
 
-    def delete_sandbox(self, name: str) -> bool:
+    def delete_sandbox(self, name: str, *, timeout: float) -> bool:
         """Delete a sandbox by name; False when it was already gone.
 
-        ACCEPTED (the gateway record still exists while the pod goes) and
-        COMPLETED both mean this call deleted it; callers that need it gone
-        poll ``get_sandbox`` until it disappears.
+        The gateway answers only once the sandbox's pod has terminated, so the
+        call takes the caller's delete budget as its deadline, not the default
+        RPC timeout. ACCEPTED (the gateway record still exists while the pod
+        goes) and COMPLETED both mean this call deleted it; callers that need it
+        gone poll ``get_sandbox`` until it disappears.
         """
         response = self._stub.DeleteSandbox(
             openshell_pb2.DeleteSandboxRequest(
                 workspace_scope=self._workspace_scope, name=name, allow_missing=True
             ),
-            timeout=self._timeout,
+            timeout=timeout,
             metadata=self._metadata(),
         )
         return _deletion_outcome(response.outcome, f"sandbox {name!r}")
@@ -1216,6 +1224,7 @@ class OpenShellGatewayPodManager(
         self._sandbox_workspace = sandbox_workspace
         self._sandbox_home = sandbox_home.rstrip("/")
         self._sandbox_policy = _sandbox_policy_from_config(sandbox_policy or {"version": 1})
+        self._network_policies = dict((sandbox_policy or {}).get("network_policies") or {})
         # A resident on its own claim also writes the volume mounted outside /sandbox.
         self._resident_claim_policy = _sandbox_policy_from_config(
             _with_read_write_path(sandbox_policy or {"version": 1}, RESIDENT_WORKSPACE_VOLUME_PATH)
@@ -1670,8 +1679,7 @@ class OpenShellGatewayPodManager(
         grant: OpenShellProviderGrant,
     ) -> None:
         try:
-            await asyncio.to_thread(self._client.delete_sandbox, sandbox_name)
-            await self._wait_for_sandbox_deleted(sandbox_name)
+            await self._delete_sandbox_and_wait(sandbox_name)
         finally:
             if grant.provider_name:
                 await asyncio.to_thread(self._client.delete_provider_grant, grant)
@@ -1824,6 +1832,9 @@ class OpenShellGatewayPodManager(
 
     async def start(self, session: Session, spec: SessionSpec) -> PodStartResult:
         spec = self._with_brokered_credentials(spec)
+        check_policy_allows_egress(
+            self._network_policies, (spec.values.get("openshell") or {}).get("egress") or []
+        )
         sandbox_name = self._sandbox_name(session)
         session_id = str(session.id)
         legacy = None
@@ -2660,7 +2671,9 @@ class OpenShellGatewayPodManager(
                     await asyncio.to_thread(
                         self._client.delete_service, sandbox_name=name, service=service_name
                     )
-                await asyncio.to_thread(self._client.delete_sandbox, name)
+                await asyncio.to_thread(
+                    self._client.delete_sandbox, name, timeout=self._resident_delete_timeout
+                )
                 logger.info(
                     "Removing sandbox %s, left by resident %s's failed workspace migration",
                     name,
@@ -4425,21 +4438,16 @@ class OpenShellGatewayPodManager(
         except Exception as exc:
             errors.append(exc)
         try:
-            deleted = await asyncio.to_thread(self._client.delete_sandbox, sandbox_name)
+            deleted = await self._delete_sandbox_and_wait(sandbox_name, timeout=delete_timeout)
         except Exception as exc:
             errors.append(exc)
             deleted = False
         else:
-            try:
-                await self._wait_for_sandbox_deleted(sandbox_name, timeout=delete_timeout)
-            except Exception as exc:
-                errors.append(exc)
-            else:
-                for grant in reversed(grants):
-                    try:
-                        await asyncio.to_thread(self._client.delete_provider_grant, grant)
-                    except Exception as exc:
-                        errors.append(exc)
+            for grant in reversed(grants):
+                try:
+                    await asyncio.to_thread(self._client.delete_provider_grant, grant)
+                except Exception as exc:
+                    errors.append(exc)
         if errors:
             raise RuntimeError(
                 f"OpenShell resource cleanup failed for {sandbox_name}: "
@@ -4466,11 +4474,29 @@ class OpenShellGatewayPodManager(
             delete_timeout=self._resident_delete_timeout,
         )
 
-    async def _wait_for_sandbox_deleted(
+    async def _delete_sandbox_and_wait(
         self, sandbox_name: str, *, timeout: float | None = None
-    ) -> None:
+    ) -> bool:
+        """Delete a sandbox and wait until it is gone, both within one delete budget.
+
+        False when the sandbox was already gone.
+        """
         limit = self._resource_delete_timeout if timeout is None else timeout
         deadline = time.monotonic() + limit
+        deleted = await asyncio.to_thread(self._client.delete_sandbox, sandbox_name, timeout=limit)
+        await self._wait_for_sandbox_deleted(sandbox_name, timeout=limit, deadline=deadline)
+        return deleted
+
+    async def _wait_for_sandbox_deleted(
+        self,
+        sandbox_name: str,
+        *,
+        timeout: float | None = None,
+        deadline: float | None = None,
+    ) -> None:
+        limit = self._resource_delete_timeout if timeout is None else timeout
+        if deadline is None:
+            deadline = time.monotonic() + limit
         while await asyncio.to_thread(self._client.get_sandbox, sandbox_name) is not None:
             if time.monotonic() >= deadline:
                 raise TimeoutError(

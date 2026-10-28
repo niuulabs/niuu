@@ -234,7 +234,7 @@ claim that already holds a workspace is never overwritten.
 - An OpenShell resident's old sandbox that is slow to go is not a failed
   upgrade. Every removal of a resident sandbox waits
   `resident_sandbox_delete_timeout_seconds` (180s; sessions keep
-  `resource_delete_timeout`, 30s). If the sandbox is still being deleted after
+  `resource_delete_timeout`, 90s). If the sandbox is still being deleted after
   that, the resident reports `PlatformUpgrade` / `Upgrading` and its
   redeployment waits for the sandbox to go, then recreates it on its workspace
   claim, retrying on later passes. If the gateway refuses the delete, the
