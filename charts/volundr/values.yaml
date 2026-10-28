@@ -300,6 +300,12 @@ database:
 #       spiffe_subject_prefix: "spiffe://niuu.world/openshell/sandbox/"
 #       spiffe_ca_cert_path: "/etc/spire/ca.crt"
 #       service_port: 9200
+#       # Labels Völundr puts on residents' workspace claims so the gateway's
+#       # resource admission lets sandboxes mount them; match the gateway's
+#       # required_labels (these are OpenShell's defaults).
+#       sandbox_attachable_labels:
+#         openshell.ai/sandbox-attachable: "true"
+#         openshell.ai/sandbox-attachable-workspace: "default"
 #     secretKwargs:
 #       - kwarg: "client_secret"
 #         secretName: "openshell-volundr-agent-oidc"
@@ -534,6 +540,31 @@ sleipnir:
 #   extraEnv:
 #     - name: FORGE_OPS_WEBHOOK_SECRET
 #       valueFrom: {secretKeyRef: {name: forge-notification-sinks, key: ops-webhook-secret}}
+#
+# Resident questions (notifications.odin_review_relay, off by default): Forge follows the
+# ODIN review queue that niuu-ravn serves and records one notification per pending
+# `answer_operator_question` item for each owner in `owner_ids`, which the owner's
+# "Needs-input pushes" rule (`push.enabled`) delivers to their phone with the Reply
+# category. Questions already waiting when an owner is first followed reach the feed
+# without a push; one digest push says how many wait. Enabled but unable to run
+# (no owner_ids, unreadable source config) stops Forge at startup. It reads niuu-ravn
+# with the credential `source.kwargs.auth_adapter` supplies; for a Forge in the cluster
+# that is the workload-identity exchange of a projected ServiceAccount token
+# (mount it with extraVolumes/extraVolumeMounts, and give the exchange a mapping for
+# Forge's ServiceAccount under workloadIdentity.mappings). Example:
+#   notifications:
+#     odin_review_relay:
+#       enabled: true
+#       owner_ids: ["<the owner's Forge user id>"]
+#       poll_interval_seconds: 30
+#       source:
+#         kwargs:
+#           base_url: https://yggdrasil.niuu.world
+#           auth_adapter: niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter
+#           auth_kwargs:
+#             exchange_url: https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange
+#             token_file: /var/run/secrets/niuu-workload/token
+#             audiences: [niuu-ravn]
 notifications: {}
 
 # Push to the devices owners register (POST /api/v1/forge/devices), and the
@@ -681,6 +712,22 @@ git:
     #       - platform
     #       - infra
     instances: []
+  # Image build provenance (volundr_git verify_image_provenance): the platform
+  # fetches a repository's GitHub build attestations and verifies them with
+  # Sigstore, so residents never reach GitHub's attestation storage themselves.
+  provenance:
+    # -- Verify image provenance. Needs the `provenance` extra in the image (the
+    # niuu image has it) and egress to tuf-repo-cdn.sigstore.dev for the trust
+    # root; false answers the endpoint with 503.
+    enabled: true
+    # -- Seconds allowed to download an attestation bundle from the Git host's
+    # storage; a slower download fails the request with a 502.
+    bundleFetchTimeoutSeconds: 30
+    # -- Verifier constructor kwargs (`issuer`, `workflow_paths`, optional
+    # `trusted_root_file`). Empty keeps the defaults (GitHub Actions issuer;
+    # reusable-container-build.yaml and dev.yaml as the signing workflows).
+    # Setting any key replaces ALL defaults, so restate `issuer` and `workflow_paths`.
+    kwargs: {}
   # Git workflow configuration (PR-based development)
   workflow:
     # -- Auto-create branches for new sessions
@@ -1177,6 +1224,16 @@ ravnFlockImage: ""
 #       kwargs:
 #         base_url: https://vllm.example.internal
 ravnFlockLlmConfig: {}
+
+# -- Per session definition, LLM settings merged over ravnFlockLlmConfig for
+# flocks launched on that definition. Under OpenShell a flock's Ravns run on
+# the session definition's CLI runtime (Codex for skuldCodex, Claude Code for
+# skuldClaude), so a flock launch fails when the resolved model is one that
+# runtime does not serve.
+#   ravnFlockLlmConfigByDefinition:
+#     skuldCodex:
+#       model: gpt-5.6-terra
+ravnFlockLlmConfigByDefinition: {}
 
 sessionContributors:
   - adapter: "volundr.adapters.outbound.contributors.core.CoreSessionContributor"

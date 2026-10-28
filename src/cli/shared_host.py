@@ -19,7 +19,7 @@ from niuu.adapters.inbound.rest_realms import create_realms_router
 from niuu.adapters.inbound.rest_repos import create_repos_router
 from niuu.adapters.inbound.rest_setup import create_setup_router
 from niuu.adapters.inbound.rest_workload_delegations import create_workload_delegations_router
-from niuu.adapters.outbound.git_registry import create_git_registry
+from niuu.adapters.outbound.git_registry import create_git_registry, create_provenance_verifier
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_credential_refresh_lock import PostgresCredentialRefreshLock
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
@@ -215,7 +215,11 @@ def create_app(
                 integration_registry=integration_registry,
                 credential_store=credential_store,
             )
-            repo_service = RepoService(git_registry, user_integration=user_integration_service)
+            repo_service = RepoService(
+                git_registry,
+                user_integration=user_integration_service,
+                provenance_verifier=create_provenance_verifier(cfg.provenance),
+            )
             oauth_clients = create_oauth_client_registry(
                 loaded_settings,
                 credential_store=credential_store,

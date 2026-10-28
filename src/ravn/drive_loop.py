@@ -72,6 +72,7 @@ from ravn.domain.models import (
 )
 from ravn.domain.resident_continuation import validate_resident_working_state
 from ravn.domain.valkyrie_contracts import (
+    RESIDENT_ESCALATION_GUIDANCE,
     VALKYRIE_CONTINUATION_ORDER,
     VALKYRIE_JUDGMENT_REJECTED,
     VALKYRIE_RUNTIME_OWNED_FIELDS,
@@ -808,6 +809,7 @@ def _build_resident_valkyrie_schema_repair_prompt(
         f"{json.dumps(_json_safe(outcome_fields), indent=2)}\n\n"
         "Use only the supplied response and parsed fields. Preserve decisions, evidence, "
         "references and working-state entries; do not invent observations or actions.\n\n"
+        f"{RESIDENT_ESCALATION_GUIDANCE}\n\n"
         # Whole: the outcome block sits at the end, and keeping only the head cut
         # off exactly what is being repaired. The repair call's prompt budget is
         # the bound (agent.repair_outcome raises PromptBudgetExceededError).
@@ -1101,6 +1103,11 @@ class FanInBuffer:
         """
         required = self._contributor_names.get(contributes_to)
         if not required or len(required) <= 1:
+            return None
+        # Only a registered contributor's outcome counts toward the target; an
+        # upstream event (the coder's code.changed reaching a reviewer) would
+        # otherwise open a slot nothing can ever complete.
+        if producer_persona not in required:
             return None
 
         cycle_id = cycle_correlation_id or root_correlation_id

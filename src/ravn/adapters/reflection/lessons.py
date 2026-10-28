@@ -247,26 +247,6 @@ class LessonIndex:
             vectors.extend(embedded)
         return vectors
 
-    async def similar_pairs(
-        self,
-        lessons: list[Lesson],
-        *,
-        threshold: float,
-    ) -> list[tuple[Lesson, Lesson, float]]:
-        """Return lesson pairs at or above *threshold*, most similar first."""
-        vectors = await self._vectors_for(lessons)
-        pairs: list[tuple[Lesson, Lesson, float]] = []
-        for i, left in enumerate(lessons):
-            for right in lessons[i + 1 :]:
-                if left.fingerprint == right.fingerprint:
-                    pairs.append((left, right, 1.0))
-                    continue
-                score = cosine(vectors[left.fingerprint], vectors[right.fingerprint])
-                if score >= threshold:
-                    pairs.append((left, right, score))
-        pairs.sort(key=lambda item: item[2], reverse=True)
-        return pairs
-
     async def _vectors_for(self, lessons: list[Lesson]) -> dict[str, list[float]]:
         missing: dict[str, str] = {}
         for lesson in lessons:

@@ -110,12 +110,9 @@ class ScriptedLLM:
                 answer = self.plan
             else:
                 answer = commission_capability_gaps(prompt)
-        elif "Recorded lessons:" in prompt:
+        elif "\nSubject:\n" in prompt:
             self.judge_calls += 1
-            answer: object = _match(prompt)
-        elif "Compare two lessons" in prompt:
-            self.judge_calls += 1
-            answer = _relate(prompt)
+            answer: object = classify(prompt)
         elif "procedural rule" in prompt:
             self.judge_calls += 1
             answer = {"procedure": PROCEDURE}
@@ -152,24 +149,18 @@ def _same_family(left: str, right: str) -> bool:
     )
 
 
-def _match(prompt: str) -> dict:
-    new = prompt.split("New lesson:", 1)[1].split("Recorded lessons:", 1)[0]
-    recorded = prompt.split("Recorded lessons:", 1)[1].split("Respond with", 1)[0]
-    entries = re.split(r"^\[(\d+)\] ", recorded, flags=re.MULTILINE)[1:]
+def classify(prompt: str) -> dict:
+    """Judge rule: same GitHub-route family is the same lesson, the other family contradicts."""
+    subject = prompt.split("\nSubject:\n", 1)[1].split("\nLessons:\n", 1)[0]
+    shown = prompt.split("\nLessons:\n", 1)[1].split("Respond with", 1)[0]
+    entries = re.split(r"^\[(\d+)\] ", shown, flags=re.MULTILINE)[1:]
+    same, contradicts = [], []
     for number, text in zip(entries[::2], entries[1::2], strict=True):
-        if _same_family(new, text):
-            return {"same": int(number), "reason": "same GitHub route lesson"}
-    return {"same": None, "reason": "no recorded lesson says this"}
-
-
-def _relate(prompt: str) -> dict:
-    left = prompt.split("A:\n", 1)[1].split("\n\nB:\n", 1)[0]
-    right = prompt.split("\n\nB:\n", 1)[1].split("Respond with", 1)[0]
-    if _same_family(left, right):
-        return {"relation": "same", "reason": "same GitHub route lesson"}
-    if is_github(left) and is_github(right):
-        return {"relation": "contradicts", "reason": "one says the route works, one says not"}
-    return {"relation": "distinct", "reason": "different subjects"}
+        if _same_family(subject, text):
+            same.append(int(number))
+        elif is_github(subject) and is_github(text):
+            contradicts.append(int(number))
+    return {"same": same, "contradicts": contradicts, "reason": "by GitHub route family"}
 
 
 def reflection(lesson: tuple[str, str], evidence: str, **extra: object) -> dict:

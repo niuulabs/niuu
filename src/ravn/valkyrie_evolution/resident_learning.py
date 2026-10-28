@@ -60,9 +60,8 @@ from ravn.valkyrie_evolution.models import (
 from ravn.valkyrie_evolution.ports import EvolutionReviewPort
 from ravn.valkyrie_evolution.tool_curation import (
     RETIREMENTS_PEERS_CANNOT_UNDO,
-    LearnedToolRetirements,
-    LearnedToolUsageLedger,
     restore_learned_tool,
+    retire_superseded_predecessor,
 )
 from ravn.valkyrie_evolution.tool_runtime import (
     DEFAULT_TOOL_TIMEOUT_SECONDS,
@@ -1011,7 +1010,7 @@ class ResidentLearningRuntime:
         # payload at the top level while retaining the signal envelope for tools
         # that need event metadata.
         learned_payload = {**payload, **signal.payload}
-        result = await self._learned_tool_runner.run(
+        return await self._learned_tool_runner.run(
             learned_tool_path(code_dir, artifact.manifest.name),
             learned_payload,
             entry_point=artifact.manifest.entry_point,
@@ -1019,13 +1018,6 @@ class ResidentLearningRuntime:
             requirements=artifact.requirements,
             declared_reach=artifact.manifest.declared_reach,
         )
-        if not result.infrastructure:
-            # The same usage evidence a learned_tool_run dispatch records; a
-            # backend outage is not a use of the tool.
-            LearnedToolUsageLedger(artifacts_dir).record_run(
-                artifact.manifest.name, artifact.artifact_id, result.ok
-            )
-        return result
 
     async def _handle_learning_event(self, event: SleipnirEvent) -> None:
         if event.event_type == registry.ODIN_REVIEW_DECIDED:
@@ -1231,7 +1223,10 @@ class ResidentLearningRuntime:
             if not case_id:
                 return "apply_failed", "operator question is missing case_id", None
             detail = item.decision_reason.strip()
-            if item.status == ReviewStatus.REJECTED.value:
+            if item.decision_answer.strip():
+                # A free-text reply goes to the resident exactly as the operator wrote it.
+                answer = item.decision_answer
+            elif item.status == ReviewStatus.REJECTED.value:
                 answer = f"No. {detail}" if detail else "No, do not proceed."
             else:
                 answer = f"Yes. {detail}" if detail else "Yes, proceed."
@@ -1555,25 +1550,25 @@ class ResidentLearningRuntime:
         if artifact.artifact_type != "agent_tool" or self._tools_dir is None:
             return None
         name = str(artifact.learned_tool_manifest.get("name") or artifact.title)
-        tools_dir, artifacts_dir = learned_tool_storage(self._tools_dir.parent)
-        record = LearnedToolRetirements(artifacts_dir).get(name)
-        if record is None:
+        record = self._skills.lifecycle_metadata(name) or {}
+        reason = str(record.get("archived_reason") or "")
+        if record.get("status") != "archived" or not reason:
             return None
-        if record.reason in RETIREMENTS_PEERS_CANNOT_UNDO and not artifact.operator_command:
+        if reason in RETIREMENTS_PEERS_CANNOT_UNDO and not artifact.operator_command:
             return ResidentLearningDecision(
                 "ignored",
-                f"learned tool {name!r} is retired here ({record.reason}: {record.detail}); "
-                "a peer's copy does not bring it back",
+                f"learned tool {name!r} is retired here ({reason}: "
+                f"{record.get('archived_detail') or ''}); a peer's copy does not bring it back",
                 relevant=True,
             )
-        restore_learned_tool(
+        tools_dir, artifacts_dir = learned_tool_storage(self._tools_dir.parent)
+        await restore_learned_tool(
             tools_dir=tools_dir,
             artifacts_dir=artifacts_dir,
+            skills=self._skills,
             name=name,
             why=f"peer proposal {artifact.learning_id} from {artifact.source_valkyrie_id}",
         )
-        if self._skills.status(name) == "archived":
-            await self._skills.restore(name)
         return None
 
     async def _review_canary_install(
@@ -2031,6 +2026,18 @@ class ResidentLearningRuntime:
             )
 
         await self._record_installed_skill(artifact, build, skill_name=skill_name)
+        if build.artifact_type == "agent_tool" and self._tools_dir is not None:
+            # An adopted version that supersedes a differently named tool
+            # replaces it, rather than installing beside it.
+            code_dir, artifacts_dir = learned_tool_storage(self._tools_dir.parent)
+            await retire_superseded_predecessor(
+                tools_dir=code_dir,
+                artifacts_dir=artifacts_dir,
+                skills=self._skills,
+                artifact=read_learned_tool_artifact(
+                    learned_tool_artifact_path(artifacts_dir, skill_name)
+                ),
+            )
         if (
             build.artifact_type != "agent_tool"
             and build.has_tool_implementation

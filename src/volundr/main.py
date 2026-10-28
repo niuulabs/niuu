@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -20,6 +21,7 @@ from niuu.adapters.inbound.rest_credentials_settings import create_credentials_s
 from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
 from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.adapters.inbound.rest_realms import create_realms_router
+from niuu.adapters.outbound.git_registry import create_provenance_verifier
 from niuu.adapters.postgres_credential_refresh_lock import PostgresCredentialRefreshLock
 from niuu.adapters.postgres_realms import PostgresRealmRepository
 from niuu.build_identity import build_identity
@@ -87,6 +89,7 @@ from volundr.adapters.outbound.config_resident_profiles import (
 from volundr.adapters.outbound.git_registry import create_git_registry
 from volundr.adapters.outbound.linear import LinearAdapter
 from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
+from volundr.adapters.outbound.odin_review_notification_relay import OdinReviewNotificationRelay
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.pg_message_delivery import PostgresMessageDelivery
 from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
@@ -110,6 +113,9 @@ from volundr.adapters.outbound.postgres_notifications import (
     PostgresNotificationDeliveryRepository,
     PostgresNotificationRepository,
     PostgresNotificationRuleRepository,
+)
+from volundr.adapters.outbound.postgres_odin_review_relay import (
+    PostgresOdinReviewRelayStateStore,
 )
 from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
 from volundr.adapters.outbound.postgres_resident_runtimes import (
@@ -202,6 +208,13 @@ BROADCAST_INTERVAL = 30
 logger = logging.getLogger(__name__)
 
 
+# Only "could not reach Bifrost" is retried: in mini mode the catalog is served by
+# this same process and is not listening yet when the lifespan starts. Any other
+# failure (HTTP error, bad payload, bad auth) means a reachable catalog answered
+# wrongly, which is a misconfiguration and must surface instead of being retried.
+_BIFROST_NOT_READY_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout)
+
+
 async def _load_bifrost_catalog(
     pricing_provider: HardcodedPricingProvider,
     bifrost_catalog: HttpBifrostCatalogAdapter,
@@ -210,18 +223,34 @@ async def _load_bifrost_catalog(
     while True:
         try:
             models = await bifrost_catalog.list_models()
-            pricing_provider.replace_models(models)
-            logger.info("Loaded %s model(s) from configured Bifrost catalog", len(models))
-            return
-        except Exception:
+        except _BIFROST_NOT_READY_ERRORS as exc:
             logger.warning(
-                "Bifrost catalog not ready yet at %s; retrying in %.1fs",
+                "Bifrost catalog not ready yet at %s (%s); retrying in %.1fs",
                 bifrost_catalog._base_url,  # noqa: SLF001
+                exc,
                 delay_seconds,
-                exc_info=True,
             )
             await asyncio.sleep(delay_seconds)
             delay_seconds = min(delay_seconds * 2, 5.0)
+            continue
+        pricing_provider.replace_models(models)
+        logger.info("Loaded %s model(s) from configured Bifrost catalog", len(models))
+        return
+
+
+def _log_bifrost_catalog_task_failure(task: asyncio.Task[None]) -> None:
+    """Make a dead catalog refresh task loud: without this it would die silently."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is None:
+        return
+    logger.error(
+        "Bifrost catalog refresh stopped: %s. Fix the catalog at bifrost.url (and bifrost.auth) "
+        "and restart Volundr; the model catalog will not refresh until then",
+        exc,
+        exc_info=exc,
+    )
 
 
 async def _refresh_bifrost_catalog(
@@ -258,6 +287,42 @@ def _create_resident_notification_relay(
             reconnect_initial_seconds=config.reconnect_initial_seconds,
             reconnect_max_seconds=config.reconnect_max_seconds,
         ),
+    )
+
+
+def _create_odin_review_relay(
+    settings: Settings,
+    pool: Any,
+    notification_service: NotificationService | None,
+) -> OdinReviewNotificationRelay | None:
+    """Follow the ODIN review queue into the feed (``notifications.odin_review_relay``).
+
+    Enabled but unable to run is fatal: the source adapter is built here, so a bad class
+    path or kwargs stops startup with the remedy instead of leaving questions unannounced.
+    """
+    config = settings.notifications.odin_review_relay
+    if not config.enabled:
+        return None
+    if notification_service is None:
+        raise RuntimeError(
+            "notifications.odin_review_relay.enabled records into the notification feed: "
+            "set notifications.enabled: true, or disable the relay"
+        )
+    if not settings.push.enabled:
+        logger.warning(
+            "ODIN review relay is on but push.enabled is false: resident questions reach the "
+            "notification feed and nothing is pushed to a phone"
+        )
+    source = import_class(config.source.adapter)(
+        **resolve_secret_kwargs(config.source.kwargs, config.source.secret_kwargs_env)
+    )
+    return OdinReviewNotificationRelay(
+        source,
+        PostgresOdinReviewRelayStateStore(pool),
+        notification_service,
+        owner_ids=config.owner_ids,
+        poll_interval_seconds=config.poll_interval_seconds,
+        push_sink=settings.push.attention_sink if settings.push.enabled else None,
     )
 
 
@@ -831,6 +896,7 @@ def create_app(
                     interval_seconds=settings.bifrost.catalog_refresh_interval_seconds,
                 )
             )
+            bifrost_catalog_task.add_done_callback(_log_bifrost_catalog_task_failure)
             resident_profile_provider = ConfigResidentDeploymentProfileProvider(
                 settings.resident_runtimes.profiles,
                 pricing_provider,
@@ -1110,6 +1176,8 @@ def create_app(
                 notification_service,
             )
             app.state.resident_notification_relay = resident_notification_relay
+            odin_review_relay = _create_odin_review_relay(settings, pool, notification_service)
+            app.state.odin_review_relay = odin_review_relay
             notification_delivery = _create_notification_delivery(
                 settings,
                 pool,
@@ -1411,6 +1479,7 @@ def create_app(
             repo_service = RepoService(
                 git_registry,
                 user_integration=user_integration_service,
+                provenance_verifier=create_provenance_verifier(settings.git.provenance),
             )
 
             chronicle_repository = PostgresChronicleRepository(pool)
@@ -1946,6 +2015,8 @@ def create_app(
             )
             if notification_delivery is not None:
                 await notification_delivery.start()
+            if odin_review_relay is not None:
+                await odin_review_relay.start()
             if settings.telegram_ingress.enabled:
                 await telegram_ingress.start()
             else:
@@ -1981,6 +2052,8 @@ def create_app(
                     bifrost_catalog_task.cancel()
                     await asyncio.gather(bifrost_catalog_task, return_exceptions=True)
                 await telegram_ingress.stop()
+                if odin_review_relay is not None:
+                    await odin_review_relay.stop()
                 if notification_delivery is not None:
                     await notification_delivery.stop()
                 background_task.cancel()

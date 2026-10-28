@@ -85,6 +85,9 @@ PostToolHook = Callable[[ToolCall, ToolResult], Coroutine[Any, Any, None]]
 UserInputFn = Callable[[str], Coroutine[Any, Any, str]]
 
 _ASK_USER_TOOL_NAME = "ask_user"
+# Shown in the live thought stream when the model connection dropped after part
+# of an answer had already been displayed and the request is being re-issued.
+_STREAM_RESTART_NOTICE = "\n[model connection interrupted; restarting this response]\n"
 
 
 def _llm_error_category(exc: BaseException) -> str:
@@ -1841,6 +1844,33 @@ class RavnAgent:
                         final_usage = event.usage
                         self._last_usage = event.usage
                         self._last_usage_available = True
+                case StreamEventType.STREAM_RESTART:
+                    # The connection dropped mid-answer and the adapter is sending
+                    # the same request again. What arrived belonged to an answer
+                    # that will not complete, and the new one starts over, so none
+                    # of it may reach the turn -- least of all a tool call, which
+                    # would otherwise run once for each attempt. Tools only run
+                    # after this stream ends, so discarding here is sufficient.
+                    if accumulated_text or accumulated_reasoning:
+                        await self._channel.emit(
+                            RavnEvent.thought(
+                                self._source_id,
+                                _STREAM_RESTART_NOTICE,
+                                self._session.id,
+                                self._session.id,
+                            )
+                        )
+                    accumulated_text = ""
+                    accumulated_reasoning = ""
+                    accumulated_reasoning_details = []
+                    provider_items = []
+                    provider_protocol = ""
+                    tool_calls = []
+                    final_usage = TokenUsage(input_tokens=0, output_tokens=0)
+                    truncated = False
+                    self._last_ttft_ms = None
+                    self._last_usage = None
+                    self._last_usage_available = False
 
         # Decided after the stream rather than inside MESSAGE_DONE, because
         # MESSAGE_DONE is not the last event. Servers that send a usage chunk

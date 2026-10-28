@@ -24,10 +24,13 @@ allow_unauthenticated_users=false
 [openshell.gateway.oidc]
 issuer="https://identity.test/realm"
 [openshell.drivers.docker]
-host_gateway_ip="172.30.0.1"
-network_name="sessions"
+grpc_endpoint="http://172.30.0.1:17670"
 supervisor_image="test/supervisor:version"
+sandbox_runtime_image="test/sandbox:version"
 enable_bind_mounts=true
+allow_driver_config=true
+[openshell.drivers.docker.resource_admission]
+enabled=false
 """
 
 
@@ -57,7 +60,9 @@ def setup(ssh_setup, monkeypatch):  # noqa: F811
     manager.close = AsyncMock()
     manager._cleanup_resources = AsyncMock()
     manager._service_port = 9200
-    manager._client.get_sandbox.return_value = SimpleNamespace(id="sandbox-id", ready=True)
+    manager._client.get_sandbox.return_value = SimpleNamespace(
+        id="sandbox-id", name="forge-sandbox", ready=True
+    )
     manager._tcp_proxy_target.return_value = SessionProxyTarget(
         "http://skuld.internal", "127.0.0.1", 1234
     )
@@ -81,6 +86,10 @@ def test_bootstrap_installs_docker_gateway_without_session_secrets(setup):
     assert "\\n" not in unit and "User=root" in unit
     assert runtime.supports_reuse
     assert runtime._tunnel_options(1234)[-1].startswith("172.30.0.1:")
+    install = machine.commands[-2][-1]
+    # The runtime owns the callback bridge; OpenShell no longer names a network.
+    assert "docker network create --subnet 172.30.0.0/24" in install
+    assert "--gateway 172.30.0.1 niuu-callback" in install
 
 
 async def test_start_restores_before_launch_and_sets_persistent_home(setup):
@@ -93,6 +102,8 @@ async def test_start_restores_before_launch_and_sets_persistent_home(setup):
     assert spec.values["volundr"]["apiUrl"].startswith("http://172.30.0.1:")
     target = await runtime.target(lease, bootstrap)
     assert target.connect_port == 1234
+    # The gateway forwards by sandbox name.
+    assert manager._tcp_proxy_target.call_args.args[1] == "forge-sandbox"
 
 
 async def test_stop_archives_before_recycle_and_cleanup_is_idempotent(setup):
@@ -141,9 +152,18 @@ def test_session_payload_retains_identity_but_machine_has_no_session(setup):
         ("auth", "require authentication"),
         ("oidc", "OIDC"),
         ("tls", "plaintext"),
-        ("address", "bridge address"),
+        ("address", "must be a host address in network_subnet"),
+        ("outside", "must be a host address in network_subnet"),
         ("image", "matching"),
+        ("runtime-image", "sandbox_runtime_image"),
+        ("supervisor-image", "supervisor_image"),
         ("owned", "owns gateway"),
+        ("version", "version = 2"),
+        ("driver-config", "allow_driver_config = true"),
+        ("admission", "resource_admission"),
+        ("network-name", "network_name, which OpenShell v0.1.6 removed"),
+        ("bridge", "host-networked supervisors"),
+        ("endpoint", "grpc_endpoint = 'http://172.30.0.1:17670'"),
     ],
 )
 def test_invalid_gateway_contract_is_rejected_before_provisioning(setup, change, match):
@@ -162,8 +182,31 @@ def test_invalid_gateway_contract_is_rejected_before_provisioning(setup, change,
         config = config.replace("disable_tls=true", "disable_tls=false")
     if change == "address":
         config = config.replace('bind_address="172.30.0.1:17670"', 'bind_address="127.0.0.1:17670"')
+    if change == "outside":
+        config = config.replace('bind_address="172.30.0.1:17670"', 'bind_address="10.0.0.1:17670"')
     if change == "image":
         options["gateway_image"] = ""
+    if change == "runtime-image":
+        config = config.replace('sandbox_runtime_image="test/sandbox:version"\n', "")
+    if change == "supervisor-image":
+        config = config.replace('supervisor_image="test/supervisor:version"\n', "")
+    if change == "version":
+        config = config.replace("version=2", "version=1")
+    if change == "driver-config":
+        config = config.replace("allow_driver_config=true", "allow_driver_config=false")
+    if change == "admission":
+        config = config.replace("enabled=false", "enabled=true")
+    if change == "network-name":
+        config = config.replace(
+            "[openshell.drivers.docker]", '[openshell.drivers.docker]\nnetwork_name="x"'
+        )
+    if change == "bridge":
+        config = config.replace(
+            "[openshell.drivers.docker]",
+            '[openshell.drivers.docker]\nsupervisor_network_mode="bridge"',
+        )
+    if change == "endpoint":
+        config = config.replace('grpc_endpoint="http://172.30.0.1:17670"\n', "")
     if change == "owned":
         options["gateway_kwargs"] = {"gateway_endpoint": "unmanaged.test:1"}
     with pytest.raises(ValueError, match=match):

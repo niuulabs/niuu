@@ -689,6 +689,9 @@ def _create_contributors(
             ravn_kwargs["init_writer_image"] = settings.ravn_flock_init_writer_image
         if settings.ravn_flock_llm_config:
             ravn_kwargs["default_llm_config"] = settings.ravn_flock_llm_config
+        ravn_kwargs["llm_config_by_definition"] = settings.ravn_flock_llm_config_by_definition
+        ravn_kwargs["session_definitions"] = settings.session_definitions
+        ravn_kwargs["default_definition"] = settings.default_definition
         contributors.append(RavnFlockContributor(**ravn_kwargs))
         logger.info("Session contributor: ravn_flock (auto-wired)")
 

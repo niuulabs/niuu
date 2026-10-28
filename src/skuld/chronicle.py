@@ -243,8 +243,13 @@ class ChronicleMixin:
 
         Called after the session completes.  The reviewer ravn subscribes
         to ``code.changed`` and will trigger a review when it receives this.
+
+        A flock broker publishes nothing here: its turns are coordination, not a
+        peer's work, and announcing them as ``code.changed`` under the default
+        ``coder`` persona told the reviewer the coder Ravn had produced a change
+        it never made.
         """
-        if self._mesh_adapter is None:
+        if self._mesh_adapter is None or self._settings.mesh.flock_broker:
             return
 
         from ravn.domain.events import RavnEvent, RavnEventType

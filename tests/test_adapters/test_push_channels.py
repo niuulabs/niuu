@@ -177,6 +177,65 @@ class TestApnsChannel:
         assert client.post.call_args[1]["headers"]["apns-topic"] == "com.niuu.forge.widget"
 
 
+class TestApnsCategory:
+    """A push can name an APNs category and carry custom keys; others are untouched."""
+
+    def _channel(self, client) -> ApnsNotificationChannel:
+        return ApnsNotificationChannel(
+            team_id="TEAM123",
+            key_id="KEY123",
+            private_key=_TEST_P8,
+            bundle_id="com.niuu.forge",
+            client=client,
+        )
+
+    async def test_a_question_push_carries_category_and_custom_keys(self):
+        client = MagicMock()
+        client.post = AsyncMock(return_value=MagicMock(status_code=200))
+        message = PushMessage(
+            owner_id="user-1",
+            title="regin asks",
+            body="Proceed?",
+            session_id="",
+            kind="attention",
+            urgency=0.8,
+            notification_id="n-1",
+            category="NIUU_RESIDENT_QUESTION",
+            data={
+                "odin_review_id": "review:court_escalation:operator:abc",
+                "odin_review_decide_path": "/api/v1/ravn/odin/reviews/x/decide",
+            },
+        )
+
+        await self._channel(client).deliver(message, [_ios_device("d1")])
+
+        body = client.post.call_args[1]["json"]
+        assert body == {
+            "aps": {
+                "alert": {"title": "regin asks", "body": "Proceed?"},
+                "sound": "default",
+                "interruption-level": "time-sensitive",
+                "category": "NIUU_RESIDENT_QUESTION",
+            },
+            "session_id": "",
+            "kind": "attention",
+            "request_id": "",
+            "notification_id": "n-1",
+            "odin_review_id": "review:court_escalation:operator:abc",
+            "odin_review_decide_path": "/api/v1/ravn/odin/reviews/x/decide",
+        }
+
+    async def test_other_pushes_have_no_category_and_no_extra_keys(self):
+        client = MagicMock()
+        client.post = AsyncMock(return_value=MagicMock(status_code=200))
+
+        await self._channel(client).deliver(_message(), [_ios_device("d1")])
+
+        body = client.post.call_args[1]["json"]
+        assert "category" not in body["aps"]
+        assert set(body) == {"aps", "session_id", "kind", "request_id"}
+
+
 class TestApnsDeviceEnvironment:
     async def test_each_device_goes_to_its_own_apns_environment(self):
         client = MagicMock()

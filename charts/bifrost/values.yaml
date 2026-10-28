@@ -62,8 +62,22 @@ securityContext: {}
 # -- Optional priority class name.
 priorityClassName: ""
 
-# -- Seconds the pod has to shut down gracefully.
-terminationGracePeriodSeconds: 30
+# -- Seconds the pod has to shut down gracefully. A rollout must not cut a
+# streamed model answer that is still running, so this has to cover the whole
+# drain: shutdown.drainSeconds (new requests still arrive while endpoints are
+# withdrawn) + config.shutdown_grace_seconds (in-flight requests finish) + time
+# for the lifespan teardown (router, usage store and audit log close). The
+# default is 10 + 300 + 20; the chart refuses to render with less than the
+# first two, since the kubelet would then SIGKILL the process mid-stream.
+terminationGracePeriodSeconds: 330
+
+shutdown:
+  # -- Seconds a terminating pod keeps serving before it is told to stop (a
+  # preStop sleep on every serving container). Kubernetes withdraws the pod
+  # from the Service endpoints at the same moment it starts terminating, and
+  # that takes time to reach every kube-proxy and Envoy; a request routed in
+  # between must still be answered, not refused. 0 disables the sleep.
+  drainSeconds: 10
 
 service:
   # -- Service type.
@@ -351,6 +365,12 @@ externalSecrets:
 # See examples/bifrost.yaml in the repository for all available options.
 config:
   routing_strategy: failover
+  # -- Seconds SIGTERM lets in-flight requests (streamed model answers
+  # included) finish before the rest are cancelled. Bounded by the Envoy
+  # sidecar's upstreamTimeout (300s): it ends any request earlier than this, so
+  # waiting longer saves nothing. terminationGracePeriodSeconds must exceed
+  # shutdown.drainSeconds plus this.
+  shutdown_grace_seconds: 300
   # -- Optional dynamic routing adapter; null keeps existing routing unchanged.
   # Switchyard is embedded in the niuu image built by MR #954, not a sidecar.
   # Set adapter plus targets/routes for model selection, or weights for

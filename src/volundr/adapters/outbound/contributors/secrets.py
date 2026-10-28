@@ -189,7 +189,6 @@ class SecretInjectionContributor(SessionContributor):
                                             "port": endpoint.port or 443,
                                             "path": selector[2],
                                             "protocol": "rest",
-                                            "tls": "terminate",
                                             "enforcement": "enforce",
                                             "access": "full",
                                         }

@@ -7,7 +7,7 @@ Bifrost exposes an Anthropic Messages API-compatible endpoint, providing:
 - Centralised rate limiting (Bifrost handles upstream 429s)
 
 Subclasses AnthropicAdapter — same wire protocol, same SSE parsing, same retry
-logic.  The only differences are that api_key is omitted from headers and two
+and gateway-outage logic.  The only differences are that api_key is omitted from headers and two
 agent-identity headers are injected for usage attribution.
 """
 
@@ -56,9 +56,10 @@ class BifrostAdapter(AnthropicAdapter):
         *,
         base_url: str = _DEFAULT_BASE_URL,
         model: str = "claude-sonnet-4-20250514",
-        max_retries: int = 3,
         retry_base_delay: float = 1.0,
         timeout: float = 120.0,
+        gateway_outage_window_seconds: float = 120.0,
+        gateway_outage_max_backoff_seconds: float = 10.0,
         agent_id: str = "",
         session_id: str = "",
     ) -> None:
@@ -66,9 +67,10 @@ class BifrostAdapter(AnthropicAdapter):
             api_key="",
             base_url=base_url,
             model=model,
-            max_retries=max_retries,
             retry_base_delay=retry_base_delay,
             timeout=timeout,
+            gateway_outage_window_seconds=gateway_outage_window_seconds,
+            gateway_outage_max_backoff_seconds=gateway_outage_max_backoff_seconds,
         )
         self._agent_id = agent_id
         self._session_id = session_id

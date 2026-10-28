@@ -98,6 +98,101 @@ class TestBuildLlm:
         assert kwargs["api_key"] == "custom-key"
 
 
+class TestBuildLlmGatewayOutage:
+    @pytest.mark.usefixtures("_api_key")
+    def test_the_outage_window_and_backoff_reach_the_adapter(self, settings: Settings) -> None:
+        from ravn.cli.commands import _build_llm
+
+        settings.llm.gateway_outage_window_seconds = 300.0
+        settings.llm.gateway_outage_max_backoff_seconds = 15.0
+        settings.llm.retry_base_delay = 2.0
+
+        llm = _build_llm(settings)
+
+        assert llm._gateway_outage_window_seconds == 300.0
+        assert llm._gateway_outage_max_backoff_seconds == 15.0
+        assert llm._retry_base_delay == 2.0
+
+    @pytest.mark.usefixtures("_api_key")
+    def test_a_provider_kwarg_wins_over_the_llm_section(self, settings: Settings) -> None:
+        from ravn.cli.commands import _build_llm
+
+        settings.llm.provider.kwargs = {"gateway_outage_window_seconds": 7.0}
+
+        assert _build_llm(settings)._gateway_outage_window_seconds == 7.0
+
+    def test_defaults_outlast_a_gateway_restart_and_zero_disables_retrying(self) -> None:
+        settings = Settings()
+
+        assert settings.llm.gateway_outage_window_seconds == 120.0
+        assert settings.llm.gateway_outage_max_backoff_seconds == 10.0
+        settings.llm.model_validate({"gateway_outage_window_seconds": 0})
+        with pytest.raises(ValueError):
+            settings.llm.model_validate({"gateway_outage_window_seconds": -1})
+        with pytest.raises(ValueError):
+            settings.llm.model_validate({"gateway_outage_max_backoff_seconds": 0})
+
+
+class TestRemovedLlmRetrySettingsAreRefused:
+    """A config that still sets a retired knob must fail, not run on a bound nobody chose."""
+
+    @pytest.mark.parametrize(
+        ("key", "replacement"),
+        [
+            ("max_retries", "llm.gateway_outage_window_seconds"),
+            ("stream_resume_window_seconds", "llm.gateway_outage_window_seconds"),
+            ("stream_resume_max_backoff_seconds", "llm.gateway_outage_max_backoff_seconds"),
+        ],
+    )
+    def test_the_llm_section_names_the_replacement(self, key: str, replacement: str) -> None:
+        from pydantic import ValidationError
+
+        from ravn.config import LLMConfig
+
+        with pytest.raises(ValidationError) as raised:
+            LLMConfig.model_validate({key: 3})
+
+        assert f"llm.{key} is no longer supported" in str(raised.value)
+        assert replacement in str(raised.value)
+
+    def test_settings_loaded_from_a_config_refuse_it_too(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="llm.max_retries is no longer supported"):
+            Settings(llm={"max_retries": 5})
+
+    def test_provider_kwargs_are_checked_because_they_reach_the_adapter(self) -> None:
+        from pydantic import ValidationError
+
+        from ravn.config import LLMProviderConfig
+
+        with pytest.raises(ValidationError, match="llm.provider.kwargs.max_retries"):
+            LLMProviderConfig(kwargs={"max_retries": 5})
+        with pytest.raises(ValidationError, match="gateway_outage_max_backoff_seconds"):
+            LLMProviderConfig(kwargs={"stream_resume_max_backoff_seconds": 5})
+
+    def test_the_replacements_and_other_kwargs_are_accepted(self) -> None:
+        from ravn.config import LLMConfig, LLMProviderConfig
+
+        LLMConfig.model_validate({"gateway_outage_window_seconds": 60, "retry_base_delay": 2})
+        LLMProviderConfig(kwargs={"gateway_outage_window_seconds": 60, "base_url": "http://x"})
+
+    @pytest.mark.parametrize(
+        "adapter",
+        [
+            "ravn.adapters.llm.anthropic.AnthropicAdapter",
+            "ravn.adapters.llm.bifrost.BifrostAdapter",
+            "ravn.adapters.llm.openai.OpenAICompatibleAdapter",
+            "ravn.adapters.llm.openai_responses.OpenAIResponsesAdapter",
+        ],
+    )
+    def test_no_adapter_still_takes_max_retries(self, adapter: str) -> None:
+        from niuu.utils import import_class
+
+        with pytest.raises(TypeError, match="max_retries"):
+            import_class(adapter)(max_retries=3)
+
+
 class TestBuildExecutor:
     def test_default_returns_agent_executor(self) -> None:
         from ravn.cli.commands import _build_executor
@@ -815,18 +910,118 @@ class TestBuildTools:
         assert invoked.is_error
         assert "is incompatible" in invoked.content
 
-    def test_learned_tool_resolver_skipped_on_unknown_backend(
+    def test_learned_tool_resolver_unknown_backend_stops_startup(
         self,
         settings: Settings,
         tmp_path: Path,
     ) -> None:
         from ravn.cli.tool_builders import _build_learned_tool_resolver
+        from ravn.valkyrie_evolution.learned_tools import LearnedToolError
 
         # The Literal type blocks this via normal config loading; guard the
-        # code path directly for settings objects mutated at runtime.
+        # code path directly for settings objects mutated at runtime. A resolver
+        # that cannot be built is fatal, never "no learned tools".
         object.__setattr__(settings.resident_evolution, "learned_tool_execution_backend", "qemu")
 
-        assert _build_learned_tool_resolver(settings, tmp_path) is None
+        with pytest.raises(
+            LearnedToolError,
+            match="set resident_evolution.learned_tool_execution_backend",
+        ):
+            _build_learned_tool_resolver(settings, tmp_path)
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_build_tools_unknown_backend_stops_startup(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.cli.commands import _build_tools
+        from ravn.domain.models import Session
+        from ravn.valkyrie_evolution.learned_tools import LearnedToolError
+
+        object.__setattr__(settings.resident_evolution, "learned_tool_execution_backend", "qemu")
+
+        with pytest.raises(LearnedToolError, match="qemu"):
+            _build_tools(
+                settings,
+                tmp_path,
+                Session(),
+                MagicMock(),
+                None,
+                None,
+                no_tools=False,
+                persona_config=None,
+                permission=MagicMock(),
+            )
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    async def test_host_sdk_tool_on_a_backend_without_host_call_is_not_advertised(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        """The live defect: a tool that imports ravn.sdk was advertised by
+        capability_list on a backend that cannot provide it, then refused by
+        learned_tool_run, on every turn. It must not be offered, must be
+        reported, and must point at the build_tool repair."""
+        import json
+
+        from ravn.adapters.permission.allow_deny import AllowAllPermission
+        from ravn.cap_telemetry import degraded_counts, reset_cap_hits
+        from ravn.cli.commands import _build_tools
+        from ravn.domain.models import Session
+
+        reset_cap_hits()
+        # 'container' has no channel back to the resident, like k8s_job.
+        settings.resident_evolution.learned_tool_execution_backend = "container"
+        self._write_learned_artifact(tmp_path, "self_contained_tool")
+        self._write_learned_artifact(
+            tmp_path,
+            "read_configmap_key_tail",
+            tool_code=(
+                "from ravn.sdk import tool\n\n"
+                "def run(input):\n    return tool.kubernetes_inspect(**input)\n"
+            ),
+        )
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=None,
+            permission=AllowAllPermission(),
+        )
+        by_name = {tool.name: tool for tool in tools}
+
+        listed = await by_name["capability_list"].execute({"kind": "tool", "tags": ["learned"]})
+        payload = json.loads(listed.content)
+        assert [item["name"] for item in payload["capabilities"]] == ["self_contained_tool"]
+        assert payload["unavailable_learned_tools"] == ["read_configmap_key_tail"]
+        assert "build_tool" in payload["unavailable_next_step"]
+
+        by_query = json.loads(
+            (await by_name["capability_list"].execute({"query": "configmap"})).content
+        )
+        assert by_query["capabilities"] == []
+        (match,) = by_query["unavailable_matches"]
+        assert match["name"] == "read_configmap_key_tail"
+        assert "ravn.sdk" in match["reason"]
+        assert "replace=true" in match["next_step"]
+
+        # Reported on the health surface, once per tool however often it is listed.
+        assert degraded_counts() == {"learned_tool.refused": 1}
+
+        refused = await by_name["learned_tool_run"].execute(
+            {"name": "read_configmap_key_tail", "input": {}}
+        )
+        assert refused.is_error
+        assert "build_tool" in refused.content
+        assert "capability_list" not in refused.content
+        reset_cap_hits()
 
     @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
     def test_memory_tools_added_when_memory_present(

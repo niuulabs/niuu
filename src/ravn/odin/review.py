@@ -61,6 +61,16 @@ class ReviewStatus(StrEnum):
 #: Operator decisions; everything else in ReviewStatus is machine-driven.
 REVIEW_DECISIONS = frozenset({ReviewStatus.APPROVED.value, ReviewStatus.REJECTED.value})
 
+#: ``requested_action`` of an item that asks the operator an open question.
+OPERATOR_QUESTION_ACTION = "answer_operator_question"
+
+#: A free-text reply to an open question. It settles the item as approved (the
+#: question was answered, not refused) and carries the reply in ``decision_answer``.
+ANSWERED_DECISION = "answered"
+
+#: Every decision the operator API accepts.
+OPERATOR_DECISIONS = REVIEW_DECISIONS | {ANSWERED_DECISION}
+
 #: Capability an operator must hold to decide each kind of item.
 REVIEW_CAPABILITIES: dict[str, str] = {
     ReviewKind.AUTONOMY_CHANGE.value: "change_autonomy",
@@ -102,6 +112,9 @@ class ReviewItem:
     decided_by: str = ""
     decided_at: str = ""
     decision_reason: str = ""
+    #: The operator's verbatim reply to an ``answer_operator_question`` item; the
+    #: resident receives exactly this text (never a "Yes."/"No." paraphrase).
+    decision_answer: str = ""
     resolved_at: str = ""
     apply_outcome: str = ""
     apply_detail: str = ""
@@ -158,13 +171,31 @@ class ReviewItem:
     def is_approved(self) -> bool:
         return self.status in {ReviewStatus.APPROVED.value, ReviewStatus.APPLIED.value}
 
-    def decide(self, *, decision: str, operator_id: str, reason: str = "") -> None:
-        if decision not in REVIEW_DECISIONS:
+    def decide(
+        self,
+        *,
+        decision: str,
+        operator_id: str,
+        reason: str = "",
+        answer: str = "",
+    ) -> None:
+        if decision not in OPERATOR_DECISIONS:
             raise ValueError(f"unknown review decision: {decision!r}")
-        self.status = decision
+        if decision == ANSWERED_DECISION:
+            if self.requested_action != OPERATOR_QUESTION_ACTION:
+                raise ValueError(
+                    f"only {OPERATOR_QUESTION_ACTION!r} items can be answered, "
+                    f"not {self.requested_action!r}"
+                )
+            if not answer.strip():
+                raise ValueError("an answer is required to answer a question")
+        elif answer:
+            raise ValueError(f"an answer is only valid with decision {ANSWERED_DECISION!r}")
+        self.status = ReviewStatus.APPROVED.value if decision == ANSWERED_DECISION else decision
         self.decided_by = operator_id
         self.decided_at = datetime.now(UTC).isoformat()
         self.decision_reason = reason
+        self.decision_answer = answer
 
     def resolve(self, *, outcome: str, detail: str = "") -> None:
         self.apply_outcome = outcome

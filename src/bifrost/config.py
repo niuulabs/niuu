@@ -1067,6 +1067,20 @@ class BifrostConfig(BaseModel):
     )
     host: str = Field(default="0.0.0.0", description="Host to bind the gateway server.")
     port: int = Field(default=8088, description="Port to bind the gateway server.")
+    shutdown_grace_seconds: int = Field(
+        default=300,
+        gt=0,
+        description=(
+            "On SIGTERM the server stops accepting connections and lets in-flight "
+            "requests, streamed model answers included, finish for up to this many "
+            "seconds; whatever is still open then is cancelled. Bounded by the longest "
+            "model call worth waiting for: the Envoy sidecar's upstreamTimeout (300s) "
+            "ends any request before that, so waiting longer cannot save one. The "
+            "pod's terminationGracePeriodSeconds must exceed it (the Helm chart "
+            "enforces this); a smaller grace period means the kubelet kills the "
+            "process mid-stream instead."
+        ),
+    )
 
     # ── Authentication ───────────────────────────────────────────────────────
     auth_mode: AuthMode = Field(

@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from ravn.adapters.reflection.post_session import _parse_reflection_json
-from ravn.cap_telemetry import require_complete
+from ravn.cap_telemetry import record_cap_hit, require_complete
 from ravn.domain.exceptions import OutputTruncatedError
 from ravn.resident_text import compact_line
 
@@ -27,49 +27,30 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-Relation = Literal["same", "contradicts", "distinct"]
-_RELATIONS: frozenset[str] = frozenset({"same", "contradicts", "distinct"})
-
 _JUDGE_SYSTEM = (
     "You compare operational lessons an AI agent recorded about its environment. "
     "Respond only with one valid JSON object. No markdown fences, no commentary."
 )
 
-_MATCH_PROMPT = """\
-An agent just recorded a possible lesson. Decide whether one of the already \
-recorded lessons below states the SAME operational lesson: the same situation \
-leading to the same action or conclusion, even when it is worded differently \
-or is more or less specific. Lessons that only share a topic are not the same, \
-and a lesson that contradicts the new one is not the same.
+_CLASSIFY_PROMPT = """\
+An agent recorded the lesson below (the subject). For each numbered lesson \
+that follows, decide how it relates to the subject:
 
-New lesson:
-{new}
-
-Recorded lessons:
-{recorded}
-
-Respond with a single JSON object:
-{{"same": <number of the recorded lesson that states the same lesson, or null>, \
-"reason": "one sentence"}}\
-"""
-
-_RELATE_PROMPT = """\
-Compare two lessons an agent recorded about the same environment.
-
-- "same": they state the same operational lesson (same situation, same action \
-or conclusion), however worded.
-- "contradicts": acting on one means acting against the other, for example one \
+- SAME: it states the same operational lesson — the same situation leading to \
+the same action or conclusion — however it is worded, and whether it is more \
+or less specific.
+- CONTRADICTS: acting on one means acting against the other, for example one \
 says a route is unreachable and the other says it works.
-- "distinct": anything else.
+- distinct: anything else. Lessons that only share a topic are distinct.
 
-A:
-{left}
+Subject:
+{subject}
 
-B:
-{right}
+Lessons:
+{lessons}
 
-Respond with a single JSON object:
-{{"relation": "same" | "contradicts" | "distinct", "reason": "one sentence"}}\
+Respond with a single JSON object listing lesson numbers:
+{{"same": [numbers], "contradicts": [numbers], "reason": "one sentence"}}\
 """
 
 _PROCEDURE_PROMPT = """\
@@ -86,21 +67,25 @@ Respond with a single JSON object:
 """
 
 
+#: What bounds a procedure rewrite: injection shows one learning in at most this
+#: many characters, so a longer rule would be cut where it is used.
+PROCEDURE_KNOB = "reflection.learning_entry_max_chars"
+
+
 class LessonJudgeError(RuntimeError):
     """The judge model gave no usable answer."""
 
 
 @dataclass(frozen=True)
-class LessonMatch:
-    """Which shortlisted lesson, if any, states the same lesson as a new one."""
+class LessonVerdict:
+    """How each lesson in a neighbourhood relates to one subject lesson.
 
-    index: int | None
-    reason: str
+    ``same`` and ``contradicts`` are 0-based indices into the lessons shown;
+    every other lesson shown is distinct.
+    """
 
-
-@dataclass(frozen=True)
-class LessonRelation:
-    relation: Relation
+    same: tuple[int, ...]
+    contradicts: tuple[int, ...]
     reason: str
 
 
@@ -124,42 +109,32 @@ class LessonJudge:
         self._attempts = attempts
         self._excerpt_chars = excerpt_chars
 
-    async def match(self, *, title: str, claim: str, recorded: list[Lesson]) -> LessonMatch:
-        """Return the 0-based index into *recorded* stating the same lesson, if any."""
-        if not recorded:
-            return LessonMatch(index=None, reason="nothing recorded to compare")
+    async def classify(self, *, title: str, claim: str, lessons: list[Lesson]) -> LessonVerdict:
+        """Say which of *lessons* state the same lesson as the subject, and which contradict it.
+
+        One call for the whole neighbourhood: a lesson restated five ways is
+        recognised as one in one judgment, and the caller can choose which of
+        the matches survives instead of taking whichever was listed first.
+        """
+        if not lessons:
+            return LessonVerdict(same=(), contradicts=(), reason="nothing to compare")
         listing = "\n".join(
             f"[{number}] {self._describe(lesson.title, lesson.claim)}"
-            for number, lesson in enumerate(recorded, start=1)
+            for number, lesson in enumerate(lessons, start=1)
         )
         answer = await self._ask(
-            _MATCH_PROMPT.format(new=self._describe(title, claim), recorded=listing)
+            _CLASSIFY_PROMPT.format(subject=self._describe(title, claim), lessons=listing)
         )
-        raw = answer.get("same")
-        reason = str(answer.get("reason") or "")
-        if raw is None:
-            return LessonMatch(index=None, reason=reason)
-        if isinstance(raw, bool) or not isinstance(raw, int | str) or not str(raw).isdigit():
-            raise LessonJudgeError(f"judge named a non-numeric match: {raw!r}")
-        number = int(raw)
-        if not 1 <= number <= len(recorded):
+        same = _indices(answer.get("same"), "same", len(lessons))
+        contradicts = _indices(answer.get("contradicts"), "contradicts", len(lessons))
+        if set(same) & set(contradicts):
             raise LessonJudgeError(
-                f"judge named recorded lesson {number}, but only {len(recorded)} were shown"
+                f"judge called lessons {sorted(set(same) & set(contradicts))} both the same "
+                "as the subject and contradicting it"
             )
-        return LessonMatch(index=number - 1, reason=reason)
-
-    async def relate(self, left: Lesson, right: Lesson) -> LessonRelation:
-        """Classify two lessons as the same, contradictory, or distinct."""
-        answer = await self._ask(
-            _RELATE_PROMPT.format(
-                left=self._describe(left.title, left.claim),
-                right=self._describe(right.title, right.claim),
-            )
+        return LessonVerdict(
+            same=same, contradicts=contradicts, reason=str(answer.get("reason") or "")
         )
-        relation = str(answer.get("relation") or "").strip().casefold()
-        if relation not in _RELATIONS:
-            raise LessonJudgeError(f"judge returned unknown relation {relation!r}")
-        return LessonRelation(relation=relation, reason=str(answer.get("reason") or ""))  # type: ignore[arg-type]
 
     async def procedure(self, lesson: Lesson, *, max_chars: int) -> str:
         """Rewrite *lesson* as one ``When X, do Y`` rule."""
@@ -178,9 +153,13 @@ class LessonJudge:
                 f"judge rewrite is not a 'When X, do Y' rule: {compact_line(procedure)!r}"
             )
         if len(procedure) > max_chars:
-            raise LessonJudgeError(
-                f"judge rewrite is {len(procedure)} characters; the limit is {max_chars}"
+            message = (
+                f"judge rewrite is {len(procedure)} characters; the limit is {max_chars}, "
+                f"the room one injected learning has. Raise {PROCEDURE_KNOB} if rules that "
+                "long are worth injecting whole"
             )
+            record_cap_hit(PROCEDURE_KNOB, message)
+            raise LessonJudgeError(message)
         return procedure
 
     async def ask_json(self, prompt: str) -> dict:
@@ -224,3 +203,22 @@ class LessonJudge:
             "set reflection.matching.judge_llm_alias to a model that follows JSON "
             "instructions, or reflection.matching.mode: lexical to stop judging"
         )
+
+
+def _indices(raw: object, field: str, shown: int) -> tuple[int, ...]:
+    """0-based indices from a judge's list of 1-based lesson numbers."""
+    if raw is None:
+        return ()
+    items = raw if isinstance(raw, list) else [raw]
+    indices: list[int] = []
+    for item in items:
+        if isinstance(item, bool) or not str(item).strip().isdigit():
+            raise LessonJudgeError(f"judge listed a non-numeric lesson in {field!r}: {item!r}")
+        number = int(str(item).strip())
+        if not 1 <= number <= shown:
+            raise LessonJudgeError(
+                f"judge listed lesson {number} in {field!r}, but only {shown} were shown"
+            )
+        if number - 1 not in indices:
+            indices.append(number - 1)
+    return tuple(indices)

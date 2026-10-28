@@ -430,8 +430,13 @@ def _build_resident_wakefulness(
     learning_curator: Any | None = None,
     self_improvement: Any | None = None,
     tool_curator: Any | None = None,
+    state_dir: Path,
 ) -> Any | None:
-    """Build the wakefulness state machine for a resident daemon."""
+    """Build the wakefulness state machine for a resident daemon.
+
+    ``state_dir`` holds the last consolidation dream time, so a restart does
+    not postpone the next dream by a full interval.
+    """
     if not settings.resident_wakefulness.enabled:
         return None
     if resident_learning_runtime is None or publisher is None:
@@ -460,6 +465,8 @@ def _build_resident_wakefulness(
         dream_min_idle_seconds=cfg.dream_min_idle_seconds,
         stale_skill_age_seconds=cfg.stale_skill_age_seconds,
         promote_min_successes=cfg.promote_min_successes,
+        dream_snapshot_interval_seconds=cfg.dream_snapshot_interval_seconds,
+        state_path=state_dir / "consolidation_dream_state.json",
     )
 
 
@@ -470,12 +477,23 @@ def _build_learned_tool_curator(
     skills: Any | None,
     matcher: Any | None,
     persist: bool = True,
+    load_refusal: Any | None = None,
 ) -> Any | None:
-    """Build the dream pass that retires learned tools, when it is enabled."""
+    """Build the dream pass that retires learned tools, when it is enabled.
+
+    *load_refusal* is the resolver's check of whether this resident's execution
+    backend can load a tool; a curator built without one (the read-only plan
+    command) builds the same resolver from the settings, so what it plans to
+    retire is what the running resident would.
+    """
     cfg = settings.resident_evolution.tool_curation
     if not cfg.enabled:
         return None
+    from ravn.cli.tool_builders import learned_tool_resolver_from_settings  # noqa: PLC0415
     from ravn.valkyrie_evolution.tool_curation import LearnedToolCurator  # noqa: PLC0415
+
+    if load_refusal is None:
+        load_refusal = learned_tool_resolver_from_settings(settings, workspace).load_refusal
 
     return LearnedToolCurator(
         state_dir=_resident_ravn_state_dir(workspace, settings),
@@ -483,6 +501,7 @@ def _build_learned_tool_curator(
         matcher=matcher,
         leftover_name_prefixes=cfg.leftover_name_prefixes,
         persist=persist,
+        load_refusal=load_refusal,
     )
 
 

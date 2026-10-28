@@ -76,6 +76,33 @@ def _config_paths() -> tuple[Path, ...]:
 # ---------------------------------------------------------------------------
 
 
+#: LLM retry settings that were replaced by the gateway-outage window. A config that
+#: still sets one is refused (naming the replacement) rather than ignored: ignoring
+#: it would run the model calls on a bound the operator did not choose.
+_REMOVED_LLM_RETRY_KEYS: dict[str, str] = {
+    "max_retries": (
+        "model-call retries are now bounded by wall-clock time, not an attempt count: "
+        "set llm.gateway_outage_window_seconds (default 120) to the longest gateway "
+        "restart to survive, and drop max_retries"
+    ),
+    "stream_resume_window_seconds": (
+        "it was renamed because the window now bounds every retry of a model call, not "
+        "only a cut stream: use llm.gateway_outage_window_seconds"
+    ),
+    "stream_resume_max_backoff_seconds": (
+        "it was renamed: use llm.gateway_outage_max_backoff_seconds"
+    ),
+}
+
+
+def _refuse_removed_llm_retry_keys(where: str, values: object) -> None:
+    if not isinstance(values, dict):
+        return
+    for key, replacement in _REMOVED_LLM_RETRY_KEYS.items():
+        if key in values:
+            raise ValueError(f"{where}{key} is no longer supported: {replacement}")
+
+
 class LLMProviderConfig(BaseModel):
     """A single LLM provider entry in the fallback chain."""
 
@@ -91,6 +118,12 @@ class LLMProviderConfig(BaseModel):
         default_factory=dict,
         description="Maps kwarg names to env var names for credential injection.",
     )
+
+    @field_validator("kwargs")
+    @classmethod
+    def _refuse_removed_retry_kwargs(cls, value: dict[str, Any]) -> dict[str, Any]:
+        _refuse_removed_llm_retry_keys("llm.provider.kwargs.", value)
+        return value
 
 
 class ExtendedThinkingConfig(BaseModel):
@@ -136,14 +169,48 @@ class LLMConfig(BaseModel):
             "and counts on ravn.cap.hits."
         ),
     )
-    max_retries: int = Field(default=3)
-    retry_base_delay: float = Field(default=1.0)
+    retry_base_delay: float = Field(
+        default=1.0,
+        gt=0.0,
+        description=(
+            "Seconds before the first retry of a failed model call; doubles per attempt up "
+            "to gateway_outage_max_backoff_seconds."
+        ),
+    )
+    gateway_outage_window_seconds: float = Field(
+        default=120.0,
+        ge=0.0,
+        description=(
+            "How long one model call keeps being retried while the gateway or provider is "
+            "down (refused or reset connection, 429/500/502/503/504, or a stream cut or "
+            "ended without its terminator), before the response header or mid-answer. "
+            "Bounded by how long a gateway rollout takes: the time the call may spend "
+            "failing, counted from each failure until the gateway answers again (the first "
+            "event of a re-sent stream), so a stream that then runs long does not use it "
+            "up. A cut answer is discarded and the same request sent again, so no tool "
+            "call runs twice. Deterministic failures (other 4xx, truncation, a malformed "
+            "answer) are never retried. Exhausting it raises LLMError naming this knob and "
+            "counts on ravn.cap.hits; each retry logs at warning and counts on ravn.retries. "
+            "0 disables retrying: the first failure fails the call."
+        ),
+    )
+    gateway_outage_max_backoff_seconds: float = Field(
+        default=10.0,
+        gt=0.0,
+        description=("Ceiling for the delay between retries within gateway_outage_window_seconds."),
+    )
     timeout: float = Field(default=120.0)
     provider: LLMProviderConfig = Field(default_factory=LLMProviderConfig)
     extended_thinking: ExtendedThinkingConfig = Field(
         default_factory=ExtendedThinkingConfig,
         description="Extended thinking (deliberate reasoning budget) configuration.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_removed_retry_settings(cls, data: Any) -> Any:
+        _refuse_removed_llm_retry_keys("llm.", data)
+        return data
 
 
 class ToolAdapterConfig(BaseModel):
@@ -1001,19 +1068,6 @@ class ContextManagementConfig(BaseModel):
 # ---------------------------------------------------------------------------
 # Legacy adapter config (kept for backwards compat with NIU-426 wiring)
 # ---------------------------------------------------------------------------
-
-
-class LLMAdapterConfig(BaseModel):
-    """Dynamic LLM adapter configuration (legacy; prefer llm.provider)."""
-
-    adapter: str = Field(
-        default="ravn.adapters.llm.anthropic.AnthropicAdapter",
-        description="Fully-qualified class path for the LLM adapter.",
-    )
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    max_retries: int = Field(default=3)
-    retry_base_delay: float = Field(default=1.0)
-    timeout: float = Field(default=120.0)
 
 
 class EvolutionConfig(BaseModel):
@@ -2867,7 +2921,12 @@ class LearningMatchingConfig(BaseModel):
     max_related: int = Field(
         default=5,
         ge=1,
-        description="Most similar recorded lessons the judge sees for one new candidate.",
+        description=(
+            "Nearest learnings, and separately nearest candidates, above the threshold "
+            "that the judge compares one lesson with. Learnings get their own share so "
+            "a crowd of paraphrased candidates cannot push the trusted learning out of "
+            "view; this is the size of one judge prompt, not a cap on the work done."
+        ),
     )
     judge_llm_alias: str = Field(
         default="",
@@ -2965,24 +3024,13 @@ class LearningCurationConfig(BaseModel):
         description="Curate learnings during resident consolidation dreams.",
     )
     min_interval_seconds: float = Field(
-        default=24 * 3600.0,
+        default=0.0,
         ge=0.0,
-        description="Minimum seconds between curation passes; dreams in between skip it.",
-    )
-    max_judgments: int = Field(
-        default=40,
-        ge=1,
-        description="Most lesson pairs one pass may send to the judge.",
-    )
-    max_rewrites: int = Field(
-        default=10,
-        ge=0,
-        description="Most promoted learnings one pass may rewrite into procedural form.",
-    )
-    procedure_max_chars: int = Field(
-        default=280,
-        ge=40,
-        description="Longest procedural 'When X, do Y' rewrite accepted from the judge.",
+        description=(
+            "Minimum seconds between curation passes; dreams in between skip it. 0 runs "
+            "it in every consolidation dream, which is cheap: a pass judges only lessons "
+            "never consolidated before, one model call each, and marks them `curated`."
+        ),
     )
     prune_after_days: float = Field(
         default=14.0,
@@ -3466,6 +3514,15 @@ class ResidentWakefulnessConfig(BaseModel):
             "promoted to environment scope during a dream, policy permitting."
         ),
     )
+    dream_snapshot_interval_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description=(
+            "How often the last consolidation dream outcome is republished as "
+            "valkyrie.dream.snapshot, so a dashboard restarted without event replay "
+            "shows it within this interval instead of after the next dream."
+        ),
+    )
 
 
 class WorkflowSelectorConfig(BaseModel):
@@ -3617,9 +3674,10 @@ class LearnedToolCurationConfig(BaseModel):
     Retires tools that another installed tool supersedes, that can never run,
     that are named as debug probes and never succeeded, or that were never run
     for longer than any tool on the resident waited before its first use. That
-    window is derived from the resident's own usage ledger, not configured.
-    Retirement moves the tool under ``_retired/`` and records why; asking
-    build_tool for the capability again restores it.
+    window is derived from the resident's lifecycle records, not configured.
+    Retirement moves the envelope into the ``_archive`` directory, removes the
+    code, and archives the lifecycle record with the reason; asking build_tool
+    for the capability again restores it.
     """
 
     enabled: bool = Field(
@@ -4846,6 +4904,12 @@ class ValkyrieTelemetryConfig(_LegacyAliasSettings):
     )
     nats_streams: str = Field(
         default="",
+        description=(
+            "Comma-separated stream:subject_prefix:user:password_env entries the "
+            "dashboard reads telemetry from. Every listed stream must exist on the "
+            "server: one that does not fails the dashboard's startup, while one "
+            "that is only unreachable is retried every retry_seconds."
+        ),
         validation_alias=AliasChoices(
             "nats_streams",
             "RAVN_VALKYRIE_TELEMETRY_NATS_STREAMS",
@@ -5676,7 +5740,6 @@ class Settings(BaseSettings):
     )
 
     # Legacy — kept so existing CLI wiring (NIU-426) continues to work
-    llm_adapter: LLMAdapterConfig = Field(default_factory=LLMAdapterConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
 

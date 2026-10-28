@@ -321,6 +321,19 @@ class TestProducerAggregation:
         assert buf.pending_count == 0
         assert "PASS" in result.merged_context
 
+    def test_non_contributor_outcome_opens_no_slot(self):
+        buf = FanInBuffer()
+        buf.set_contributors("review.verdict", ["reviewer", "security-auditor"])
+        result = buf.try_accept_producer(
+            contributes_to="review.verdict",
+            producer_persona="coder",
+            event_type="code.changed",
+            event_payload={"persona": "coder"},
+            root_correlation_id="root1",
+        )
+        assert result is None
+        assert buf.pending_count == 0
+
     def test_no_contributors_registered_returns_none(self):
         buf = FanInBuffer()
         result = buf.try_accept_producer(

@@ -11,9 +11,16 @@ to run an end-to-end knowledge-base maintenance pass:
 6. Write a dream cycle log entry to ``wiki/log.md``.
 7. Return summary counts; the drive loop emits ``mimir.dream.completed``.
 
-State is persisted to ``<state_dir>/dream_cycle_state.json`` so the
-``last_dream_at`` timestamp survives daemon restarts.  Running the dream
-cycle twice within the same cron minute is deduplicated.
+State is persisted to ``<state_dir>/dream_cycle_state.json``: ``last_dream_at``
+and ``last_checked_at``, the last minute the schedule was evaluated.  Each poll
+evaluates every minute since ``last_checked_at``, so a scheduled run is never
+skipped because the resident was restarting at that minute or a poll slept past
+it; a run missed that way fires on the first poll after it.  Several missed runs
+collapse into one dream, which covers everything since ``last_dream_at``.
+
+The schedule is validated when the trigger is built and a state file that
+cannot be read or written raises: a resident that silently stops dreaming
+looks healthy while it stops consolidating what it learned.
 
 Implements :class:`~ravn.ports.trigger.TriggerPort`.
 """
@@ -25,9 +32,10 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from ravn.adapters.triggers.cron import _cron_matches, validate_cron_fields
 from ravn.config import DreamCycleTriggerConfig
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.ports.trigger import TriggerPort
@@ -51,10 +59,12 @@ class DreamCycleTrigger(TriggerPort):
         config: DreamCycleTriggerConfig,
         state_dir: Path | None = None,
     ) -> None:
+        if config.enabled:
+            validate_cron_fields(config.cron_expression)
         self._config = config
         self._state_dir = state_dir or Path(config.state_dir).expanduser()
         self._last_dream_at: datetime | None = None
-        self._last_cron_minute: str = ""
+        self._last_checked_at: datetime | None = None
 
     @property
     def name(self) -> str:
@@ -76,52 +86,65 @@ class DreamCycleTrigger(TriggerPort):
         )
 
         while True:
-            try:
-                await self._poll_once(enqueue)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning("DreamCycleTrigger: poll error: %s", exc)
-
+            await self._poll_once(enqueue)
             await asyncio.sleep(self._config.poll_interval_seconds)
 
     async def _poll_once(self, enqueue: Callable[[AgentTask], Awaitable[bool]]) -> None:
-        """Single poll cycle: check cron schedule, optionally enqueue dream cycle."""
-        now = datetime.now(UTC)
+        """Enqueue a dream when a scheduled minute passed since the last check."""
+        now = datetime.now(UTC).replace(second=0, microsecond=0)
+        if self._last_checked_at is None:
+            # No state: the schedule starts now, so only this minute can be due.
+            self._last_checked_at = now - timedelta(minutes=1)
 
-        if not self._is_due(now):
+        scheduled_at = self._scheduled_run(self._last_checked_at, now)
+        if scheduled_at is None:
+            self._last_checked_at = now
+            self._save_state()
             return
 
-        minute_key = now.strftime("%Y-%m-%dT%H:%M")
-        if minute_key == self._last_cron_minute:
-            return
-
-        self._last_cron_minute = minute_key
+        if scheduled_at < now:
+            logger.info(
+                "DreamCycleTrigger: the run scheduled for %s was missed (the resident "
+                "was not polling then) — running it now",
+                scheduled_at.isoformat(),
+            )
         logger.info(
-            "DreamCycleTrigger: cron expression %r matched — enqueueing dream cycle",
+            "DreamCycleTrigger: cron expression %r matched %s — enqueueing dream cycle",
             self._config.cron_expression,
+            scheduled_at.isoformat(),
         )
-
-        await self._enqueue_dream_cycle(enqueue, now)
-        self._last_dream_at = now
+        accepted = await self._enqueue_dream_cycle(enqueue, now)
+        self._last_checked_at = now
+        if accepted:
+            self._last_dream_at = now
+        else:
+            logger.info(
+                "DreamCycleTrigger: a dream cycle is already queued or running; it "
+                "covers the run scheduled for %s",
+                scheduled_at.isoformat(),
+            )
         self._save_state()
 
-    def _is_due(self, now: datetime) -> bool:
-        """Return True when the configured cron expression matches *now*."""
-        try:
-            from ravn.adapters.triggers.cron import _cron_matches  # noqa: PLC0415
-        except ImportError:
-            logger.warning("DreamCycleTrigger: cron module unavailable — skipping check")
-            return False
+    def _scheduled_run(self, after: datetime, upto: datetime) -> datetime | None:
+        """Return the latest minute in ``(after, upto]`` the schedule matches.
 
-        return _cron_matches(self._config.cron_expression, now)
+        Walks back one minute at a time from ``upto``; the span is the time
+        since the last poll (or since the last dream for state written before
+        ``last_checked_at`` existed), so it is bounded by real elapsed time.
+        """
+        minute = upto
+        while minute > after:
+            if _cron_matches(self._config.cron_expression, minute):
+                return minute
+            minute -= timedelta(minutes=1)
+        return None
 
     async def _enqueue_dream_cycle(
         self,
         enqueue: Callable[[AgentTask], Awaitable[bool]],
         now: datetime,
-    ) -> None:
-        """Build the dream cycle initiative context and enqueue an AgentTask."""
+    ) -> bool:
+        """Build the dream cycle task and return whether the drive loop accepted it."""
         since_str = self._last_dream_at.isoformat() if self._last_dream_at else "the beginning"
         warden_id = self._state_dir.parent.name or "mimir"
         environment_line = self._config.environment_id or "private"
@@ -203,14 +226,17 @@ class DreamCycleTrigger(TriggerPort):
             task_id,
             since_str,
         )
-        await enqueue(task)
+        return await enqueue(task)
 
     # ------------------------------------------------------------------
     # State persistence
     # ------------------------------------------------------------------
 
     def _load_state(self) -> None:
-        """Load persisted dream cycle state from the state file."""
+        """Load persisted dream cycle state; a missing file means no dream has run.
+
+        :raises ValueError: the state file exists but cannot be parsed.
+        """
         state_file = self._state_dir / _STATE_FILE_NAME
         if not state_file.exists():
             return
@@ -218,17 +244,27 @@ class DreamCycleTrigger(TriggerPort):
             raw = json.loads(state_file.read_text(encoding="utf-8"))
             if "last_dream_at" in raw:
                 self._last_dream_at = datetime.fromisoformat(raw["last_dream_at"])
-        except Exception as exc:
-            logger.warning("DreamCycleTrigger: could not load state: %s", exc)
+            if "last_checked_at" in raw:
+                self._last_checked_at = datetime.fromisoformat(raw["last_checked_at"])
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                f"dream cycle state {state_file} is unreadable ({exc}); fix it, or delete "
+                "it to restart the schedule from now (the next dream then covers all "
+                "lessons since the beginning)"
+            ) from exc
+        if self._last_checked_at is None and self._last_dream_at is not None:
+            # State written before last_checked_at existed: nothing ran since the last dream.
+            self._last_checked_at = self._last_dream_at.replace(second=0, microsecond=0)
 
     def _save_state(self) -> None:
-        """Persist dream cycle state to the state file."""
+        """Persist dream cycle state, replacing the file atomically."""
         self._state_dir.mkdir(parents=True, exist_ok=True)
         state_file = self._state_dir / _STATE_FILE_NAME
         state: dict = {}
         if self._last_dream_at is not None:
             state["last_dream_at"] = self._last_dream_at.isoformat()
-        try:
-            state_file.write_text(json.dumps(state), encoding="utf-8")
-        except Exception as exc:
-            logger.warning("DreamCycleTrigger: could not save state: %s", exc)
+        if self._last_checked_at is not None:
+            state["last_checked_at"] = self._last_checked_at.isoformat()
+        tmp_file = state_file.with_suffix(".json.tmp")
+        tmp_file.write_text(json.dumps(state), encoding="utf-8")
+        tmp_file.replace(state_file)

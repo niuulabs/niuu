@@ -4,9 +4,11 @@ import {
   autonomyModeCopy,
   decisionStatusCopy,
   describeIdleSituation,
+  dreamStatusCopy,
   isLearnedSkillState,
   operationalStateCopy,
   outcomeCopy,
+  retirementReasonCopy,
   reviewKindLabel,
   severityCopy,
   wakefulnessCopy,
@@ -145,5 +147,24 @@ describe('describeIdleSituation', () => {
 
   it('falls back to the default thresholds when unconfigured', () => {
     expect(describeIdleSituation(5, undefined)).toContain('warning or critical');
+  });
+});
+
+describe('dreamStatusCopy', () => {
+  it('names each dream outcome and humanizes unknown ones', () => {
+    expect(dreamStatusCopy('completed').label).toBe('Completed');
+    expect(dreamStatusCopy('noop').label).toBe('Nothing to do');
+    expect(dreamStatusCopy('failed').description).toMatch(/error/);
+    expect(dreamStatusCopy('half_done').label).toBe('Half done');
+  });
+});
+
+describe('retirementReasonCopy', () => {
+  it('explains every learned-tool retirement reason', () => {
+    expect(retirementReasonCopy('superseded').label).toBe('Superseded');
+    expect(retirementReasonCopy('debug_leftover').label).toBe('Debug leftover');
+    expect(retirementReasonCopy('unrunnable').description).toMatch(/verification/);
+    expect(retirementReasonCopy('unused').description).toMatch(/first use/);
+    expect(retirementReasonCopy('replaced_by_peer').label).toBe('Replaced by peer');
   });
 });

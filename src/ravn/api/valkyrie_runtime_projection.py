@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from copy import deepcopy
 from typing import Any
 
 from fastapi import HTTPException
@@ -19,6 +21,142 @@ from ravn.api.valkyrie_projection_common import (
 from ravn.api.valkyrie_requests import HuddleJoinRequest, HuddleSendRequest
 
 Dashboard = dict[str, Any]
+
+#: Dream events that end a dream, and the status each one reports.
+DREAM_OUTCOME_STATUS = {
+    "valkyrie.dream.completed": "completed",
+    "valkyrie.dream.noop": "noop",
+    "valkyrie.dream.failed": "failed",
+}
+#: A resident's republished last outcome (see ``ResidentWakefulness``).
+DREAM_SNAPSHOT_EVENT = "valkyrie.dream.snapshot"
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_number(value: Any) -> float:
+    if isinstance(value, bool):
+        return 0.0
+    return float(value) if isinstance(value, int | float) else 0.0
+
+
+def _retired_tool(entry: dict[str, Any]) -> dict[str, str]:
+    return {
+        "name": str(entry.get("name") or ""),
+        "reason": str(entry.get("reason") or ""),
+        "detail": str(entry.get("detail") or ""),
+        "supersededBy": str(entry.get("superseded_by") or ""),
+    }
+
+
+def _dream_lessons(learnings: dict[str, Any]) -> dict[str, Any] | None:
+    """Lesson curation results; ``None`` when curation did not run this dream."""
+    if not learnings:
+        return None
+    return {
+        "reviewed": _as_int(learnings.get("lessons_reviewed")),
+        "neighbourhoodsJudged": _as_int(learnings.get("neighbourhoods_judged")),
+        "remaining": _as_int(learnings.get("lessons_remaining")),
+        "rewritesRemaining": _as_int(learnings.get("rewrites_remaining")),
+        "merged": _as_string_list(learnings.get("merged")),
+        "superseded": _as_string_list(learnings.get("superseded")),
+        "pruned": _as_string_list(learnings.get("pruned")),
+        "promoted": _as_string_list(learnings.get("promoted")),
+        "rewritten": _as_string_list(learnings.get("rewritten")),
+        "auditPath": str(learnings.get("audit_path") or ""),
+    }
+
+
+def _dream_learned_tools(tools: dict[str, Any]) -> dict[str, Any] | None:
+    """Learned-tool curation results; ``None`` when no tool curator is wired."""
+    if not tools:
+        return None
+    retired = [
+        _retired_tool(entry) for entry in tools.get("retired") or [] if isinstance(entry, dict)
+    ]
+    return {
+        "installedBefore": _as_int(tools.get("installed_before")),
+        "kept": _as_int(tools.get("kept")),
+        "retired": retired,
+        "retiredByReason": dict(Counter(entry["reason"] for entry in retired)),
+        "restored": _as_string_list(tools.get("restored")),
+        "backfilled": len(_as_dict(tools.get("backfilled"))),
+    }
+
+
+def _dream_self_improvement(improvement: dict[str, Any]) -> dict[str, Any] | None:
+    if not improvement:
+        return None
+    return {
+        "evaluated": len(_as_string_list(improvement.get("evaluated"))),
+        "actions": _as_string_list(improvement.get("actions")),
+        "rejected": _as_int(improvement.get("rejected")),
+        "openFriction": _as_int(improvement.get("open_friction")),
+    }
+
+
+def _dream_outcome(
+    event: dict[str, Any],
+    payload: dict[str, Any],
+    timestamp: str,
+) -> dict[str, Any] | None:
+    """Normalize a finished dream from an outcome or snapshot event.
+
+    ``None`` for any other event, and for a snapshot from a resident that has
+    not finished a dream yet. An outcome event without ``finished_at`` (older
+    publishers, the noop event) finished at its own timestamp.
+    """
+    event_type = str(event.get("event_type") or "")
+    if event_type == DREAM_SNAPSHOT_EVENT:
+        raw = payload.get("last_dream")
+        if not isinstance(raw, dict):
+            return None
+        status = str(raw.get("status") or "")
+        finished_at = str(raw.get("finished_at") or "")
+    elif event_type in DREAM_OUTCOME_STATUS:
+        raw = payload
+        status = DREAM_OUTCOME_STATUS[event_type]
+        finished_at = str(raw.get("finished_at") or timestamp)
+    else:
+        return None
+    learnings = _as_dict(raw.get("learnings"))
+    feedback = _as_dict(raw.get("feedback"))
+    return {
+        "dreamId": str(raw.get("dream_id") or ""),
+        "status": status,
+        "startedAt": str(raw.get("started_at") or ""),
+        "finishedAt": finished_at,
+        "durationSeconds": _as_number(raw.get("duration_seconds")),
+        "error": str(raw.get("error") or ""),
+        "skills": {
+            "reviewed": _as_int(raw.get("skills_reviewed")),
+            "promoted": _as_string_list(raw.get("promoted")),
+            "markedStale": _as_string_list(raw.get("marked_stale")),
+            "promotionCandidates": _as_string_list(raw.get("promotion_candidates")),
+        },
+        "lessons": _dream_lessons(learnings),
+        "learnedTools": _dream_learned_tools(_as_dict(raw.get("learned_tools"))),
+        "selfImprovement": _dream_self_improvement(_as_dict(learnings.get("self_improvement"))),
+        "feedback": {
+            "positive": _as_int(feedback.get("positive")),
+            "negative": _as_int(feedback.get("negative")),
+            "delivery": _as_int(feedback.get("delivery")),
+        },
+    }
+
+
+def _apply_last_dreams(dashboard: Dashboard, last_dreams: dict[str, dict[str, Any]]) -> None:
+    """Set each resident's last finished dream and ``lastDreamAt`` from it."""
+    for valkyrie in dashboard.get("valkyries", []):
+        if not isinstance(valkyrie, dict):
+            continue
+        dream = last_dreams.get(str(valkyrie.get("id") or ""))
+        if dream is None:
+            continue
+        valkyrie["lastDream"] = deepcopy(dream)
+        valkyrie["lastDreamAt"] = dream["finishedAt"]
 
 
 def _runtime_entry(
@@ -44,9 +182,6 @@ def _runtime_entry(
         "initiativeEnabled": bool(payload.get("initiative_enabled")),
         "pollIntervalSeconds": payload.get("poll_interval_seconds", 0),
         "wakefulness": wakefulness,
-        "lastDreamAt": timestamp
-        if event_type in {"valkyrie.dream.completed", "valkyrie.dream.noop"}
-        else "",
         "observedAt": timestamp,
     }
 
@@ -233,8 +368,6 @@ def _merge_observed_runtime(dashboard: Dashboard) -> Dashboard:
         )
         if observed and observed.get("wakefulness"):
             valkyrie["wakefulness"] = str(observed["wakefulness"])
-        if observed and observed.get("lastDreamAt"):
-            valkyrie["lastDreamAt"] = str(observed["lastDreamAt"])
 
     for valkyrie_id, observed in observed_by_id.items():
         if valkyrie_id in known_valkyrie_ids:
@@ -255,7 +388,7 @@ def _merge_observed_runtime(dashboard: Dashboard) -> Dashboard:
                 "confidence": 0.0,
                 "inboxSubjects": [],
                 "toolCount": 0,
-                "lastDreamAt": str(observed.get("lastDreamAt") or ""),
+                "lastDreamAt": "",
                 "lastActionAt": "",
                 "identitySource": "observed",
                 "lastObservedAt": str(observed.get("observedAt") or ""),

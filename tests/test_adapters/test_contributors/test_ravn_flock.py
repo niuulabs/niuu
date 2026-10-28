@@ -2,11 +2,13 @@
 
 import json
 import logging
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 import yaml
 
+from niuu.config_models import default_session_definitions
 from volundr.adapters.outbound.contributors.core import CoreSessionContributor
 from volundr.adapters.outbound.contributors.ravn_flock import (
     RavnFlockContributor,
@@ -44,9 +46,28 @@ _FORGE_DEFAULT_LLM = {
 }
 
 
+class _Catalog:
+    """The Bifrost model catalog as the contributor reads it."""
+
+    def __init__(self, *models: SimpleNamespace) -> None:
+        self._models = list(models)
+
+    def list_models(self) -> list[SimpleNamespace]:
+        return self._models
+
+
+_CATALOG = _Catalog(
+    SimpleNamespace(id="test/forge-default-model", vendor="anthropic", provider="cloud")
+)
+
+
 def _flock_contributor(**kwargs) -> RavnFlockContributor:  # noqa: ANN003
-    """Return a contributor wired with a Forge LLM default, as deployments run it."""
+    """Return a contributor wired as deployments run it: Forge LLM default,
+    session definitions and the model catalog."""
     kwargs.setdefault("default_llm_config", _FORGE_DEFAULT_LLM)
+    kwargs.setdefault("session_definitions", default_session_definitions())
+    kwargs.setdefault("default_definition", "skuldClaude")
+    kwargs.setdefault("pricing_provider", _CATALOG)
     return RavnFlockContributor(**kwargs)
 
 
@@ -349,6 +370,58 @@ class TestContributorOutput:
         assert "tcp://127.0.0.1:" in config_text
         assert {"name": "flock-ipc", "empty_dir": {}} in result.values["openshell"]["volumes"]
         assert workload["volume_mounts"][0]["mount_path"] == "/tmp/niuu-mesh"
+        # Exactly the fields OpenShell's Kubernetes driver accepts on a peer.
+        for peer in workloads:
+            assert set(peer) <= {
+                "name",
+                "image",
+                "command",
+                "environment",
+                "resources",
+                "volume_mounts",
+            }
+            assert "readiness_port" not in peer
+            assert not any(key.startswith("OPENSHELL_") for key in peer["environment"])
+
+    @pytest.mark.parametrize(
+        ("persona", "message"),
+        [
+            ("Code_Reviewer", "DNS-1123 label"),
+            ("a" * 40, "at most 40 characters"),
+        ],
+    )
+    async def test_openshell_backend_refuses_personas_openshell_cannot_name(
+        self, session, persona, message
+    ):
+        provider = MagicMock()
+        provider.get.return_value = LaunchSpec(
+            name="ravn-flock",
+            workload_type="ravn_flock",
+            workload_config={"personas": [persona], "mesh": {"transport": "nng"}},
+        )
+        contributor = _flock_contributor(launch_spec_provider=provider)
+
+        with pytest.raises(ValueError, match=message):
+            await contributor.contribute(
+                session, SessionContext(launch_spec="ravn-flock", runtime_backend="openshell")
+            )
+
+    async def test_openshell_backend_refuses_more_peers_than_openshell_runs(self, session):
+        provider = MagicMock()
+        provider.get.return_value = LaunchSpec(
+            name="ravn-flock",
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": [f"peer-{index}" for index in range(17)],
+                "mesh": {"transport": "nng"},
+            },
+        )
+        contributor = _flock_contributor(launch_spec_provider=provider)
+
+        with pytest.raises(ValueError, match="at most 16 peer workloads"):
+            await contributor.contribute(
+                session, SessionContext(launch_spec="ravn-flock", runtime_backend="openshell")
+            )
 
     async def test_openshell_bootstrap_uses_projected_config_and_streams_logs(
         self, session, flock_template, tmp_path
@@ -622,6 +695,30 @@ class TestContributorOutput:
         assert env_names["SKULD__WORKFLOW_TRIGGER__ENABLED"] == "true"
         assert env_names["SKULD__WORKFLOW_TRIGGER__EVENT_TYPE"] == "run.requested"
         assert env_names["SKULD__WORKFLOW_TRIGGER__NODE_ID"] == "dispatch-root"
+
+    async def test_plain_flock_launches_skuld_as_its_broker(self, session):
+        """Without a workflow trigger Skuld still brokers; it is never the coder peer."""
+        template = LaunchSpec(
+            name="pair-flock",
+            workload_type="ravn_flock",
+            workload_config={"personas": ["coder", "reviewer"]},
+        )
+        provider = MagicMock()
+        provider.get.return_value = template
+        c = _flock_contributor(launch_spec_provider=provider)
+        result = await c.contribute(session, SessionContext(launch_spec="pair-flock"))
+
+        env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
+        assert env_names["SKULD__MESH__FLOCK_BROKER"] == "true"
+        assert env_names["SKULD__MESH__PERSONA"] == "skuld"
+        assert env_names["SKULD__MESH__CONSUMES_EVENT_TYPES"] == "[]"
+        assert "SKULD__WORKFLOW_TRIGGER__ENABLED" not in env_names
+        assert [e["name"] for e in result.pod_spec.env].count(
+            "SKULD__MESH__CONSUMES_EVENT_TYPES"
+        ) == 1
+        peers = json.loads(env_names["SKULD__MESH__ADAPTERS"])[0]["peers"]
+        skuld_peer = next(peer for peer in peers if peer["persona"] == "Skuld")
+        assert skuld_peer["emits_event_types"] == []
 
     async def test_mimir_volume_not_added_without_explicit_local(self, session, flock_template):
         provider = MagicMock()
@@ -2527,3 +2624,111 @@ class TestMimirHelpers:
         assert {"prefix": "project/", "mounts": ["hosted"]} in routing["rules"]
         assert {"prefix": "entity/", "mounts": ["hosted"]} in routing["rules"]
         assert routing["default"] == ["hosted"]
+
+
+# ---------------------------------------------------------------------------
+# OpenShell Ravns run on the session's runtime: their model must be one it serves
+# ---------------------------------------------------------------------------
+
+
+def _pair_flock(
+    *, definition: str = "skuldCodex", runtime_backend: str = "openshell", **workload_config
+) -> SessionContext:  # noqa: ANN003
+    return SessionContext(
+        workload_type="ravn_flock",
+        workload_config={"personas": ["coder", "reviewer"], **workload_config},
+        runtime_backend=runtime_backend,
+        definition=definition,
+    )
+
+
+def _openshell_node_model(result, persona: str) -> str:
+    files = result.values["openshell"]["files"]
+    return yaml.safe_load(files[f"/sandbox/workspace/.flock/config/{persona}.yaml"])["llm"]["model"]
+
+
+class TestSessionRuntimeServesNodeModels:
+    """Regression: a Codex flock on noatun ran claude-sonnet-4-6 through Codex.
+
+    OpenShell peers inherit the broker's SKULD__TRANSPORT_ADAPTER, so every
+    Ravn ran on the skuldCodex runtime with the Forge-wide Claude model and
+    failed its first turn with model_not_found.
+    """
+
+    async def test_codex_flock_on_a_claude_model_fails_the_launch(self, session) -> None:
+        contributor = _flock_contributor(default_llm_config={"model": "claude-sonnet-4-6"})
+
+        with pytest.raises(ValueError) as caught:
+            await contributor.contribute(session, _pair_flock())
+
+        message = str(caught.value)
+        assert "skuldCodex" in message
+        assert "claude-sonnet-4-6 (coder, reviewer)" in message
+        assert "ravn_flock_llm_config_by_definition" in message
+
+    async def test_definition_default_names_a_model_the_runtime_serves(self, session) -> None:
+        contributor = _flock_contributor(
+            default_llm_config={"model": "claude-sonnet-4-6"},
+            llm_config_by_definition={"skuldCodex": {"model": "gpt-5.6-terra"}},
+        )
+
+        result = await contributor.contribute(session, _pair_flock())
+
+        assert _openshell_node_model(result, "coder") == "gpt-5.6-terra"
+        assert _openshell_node_model(result, "reviewer") == "gpt-5.6-terra"
+
+    async def test_launch_llm_config_wins_over_the_definition_default(self, session) -> None:
+        contributor = _flock_contributor(
+            default_llm_config={"model": "claude-sonnet-4-6"},
+            llm_config_by_definition={"skuldCodex": {"model": "gpt-5.6-terra"}},
+        )
+
+        result = await contributor.contribute(
+            session, _pair_flock(llm_config={"model": "gpt-5.6-sol"})
+        )
+
+        assert _openshell_node_model(result, "coder") == "gpt-5.6-sol"
+
+    async def test_definition_default_applies_only_to_its_definition(self, session) -> None:
+        contributor = _flock_contributor(
+            default_llm_config={"model": "claude-sonnet-4-6"},
+            llm_config_by_definition={"skuldCodex": {"model": "gpt-5.6-terra"}},
+        )
+        result = await contributor.contribute(session, _pair_flock(definition="skuldClaude"))
+
+        assert _openshell_node_model(result, "coder") == "claude-sonnet-4-6"
+
+    async def test_one_persona_on_an_unserved_model_is_named(self, session) -> None:
+        contributor = _flock_contributor(default_llm_config={"model": "gpt-5.6-terra"})
+        context = _pair_flock(
+            personas=["coder", {"name": "reviewer", "llm": {"model": "claude-sonnet-4-6"}}]
+        )
+
+        with pytest.raises(ValueError, match=r"claude-sonnet-4-6 \(reviewer\)"):
+            await contributor.contribute(session, context)
+
+    async def test_persona_with_its_own_executor_picks_its_own_runtime(self, session) -> None:
+        contributor = _flock_contributor(default_llm_config={"model": "gpt-5.6-terra"})
+        context = _pair_flock(
+            personas=[
+                "coder",
+                {
+                    "name": "reviewer",
+                    "llm": {"model": "claude-sonnet-4-6"},
+                    "executor": {
+                        "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
+                        "kwargs": {"transport_adapter": "skuld.transports.sdk.SDKTransport"},
+                    },
+                },
+            ]
+        )
+
+        result = await contributor.contribute(session, context)
+
+        assert _openshell_node_model(result, "reviewer") == "claude-sonnet-4-6"
+
+    async def test_pod_ravns_use_their_own_llm_adapter_and_are_not_checked(self, session) -> None:
+        contributor = _flock_contributor(default_llm_config={"model": "claude-sonnet-4-6"})
+        result = await contributor.contribute(session, _pair_flock(runtime_backend=""))
+
+        assert result.pod_spec is not None

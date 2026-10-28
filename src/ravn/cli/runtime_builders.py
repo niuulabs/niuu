@@ -395,8 +395,11 @@ def _build_llm(settings: Settings) -> Any:
     kwargs = _inject_secrets(dict(prov.kwargs), prov.secret_kwargs_env)
 
     kwargs.setdefault("model", settings.effective_model())
-    kwargs.setdefault("max_retries", settings.llm.max_retries)
     kwargs.setdefault("retry_base_delay", settings.llm.retry_base_delay)
+    kwargs.setdefault("gateway_outage_window_seconds", settings.llm.gateway_outage_window_seconds)
+    kwargs.setdefault(
+        "gateway_outage_max_backoff_seconds", settings.llm.gateway_outage_max_backoff_seconds
+    )
     kwargs.setdefault("timeout", settings.llm.timeout)
 
     primary: LLMPort = cls(**kwargs)
@@ -884,7 +887,7 @@ def _build_self_improvement(
         lessons=consolidation.lessons,
         judge=consolidation.judge,
         config=reflection.self_improvement,
-        procedure_max_chars=reflection.curation.procedure_max_chars,
+        procedure_max_chars=reflection.learning_entry_max_chars,
         resident_id=resident_id,
         # Improvements that need a tool or a ticket run as ordinary resident tasks.
         dispatch=drive_loop.enqueue if drive_loop is not None else None,
@@ -915,9 +918,11 @@ def _build_learning_curator(
         judge=consolidation.judge,
         config=reflection.curation,
         similarity_threshold=reflection.matching.similarity_threshold,
+        max_related=reflection.matching.max_related,
         evidence_duplicate_similarity=reflection.matching.evidence_duplicate_similarity,
         min_repetitions=reflection.candidate_min_repetitions,
         verified_recovery_promotes=reflection.verified_promotion.route_recovery_promotes,
+        procedure_max_chars=reflection.learning_entry_max_chars,
     )
 
 

@@ -270,7 +270,7 @@ class TestOpenAIAdapterInit:
             "https://api.openai.com/"
         )
         assert adapter._default_model == "gpt-4o"
-        assert adapter._max_retries >= 0
+        assert adapter._gateway_outage_window_seconds >= 0
 
     def test_supports_thinking(self) -> None:
         assert OpenAICompatibleAdapter().supports_thinking is True
@@ -472,7 +472,9 @@ class TestOpenAIAdapterGenerate:
 
     @respx.mock
     async def test_generate_error_status_raises(self) -> None:
-        adapter = OpenAICompatibleAdapter(api_key="k", base_url=_BASE_URL, max_retries=0)
+        adapter = OpenAICompatibleAdapter(
+            api_key="k", base_url=_BASE_URL, gateway_outage_window_seconds=0
+        )
         respx.post(f"{_BASE_URL}/v1/chat/completions").mock(
             return_value=httpx.Response(401, json={"error": "unauthorized"})
         )
@@ -565,13 +567,20 @@ class TestOpenAIAdapterStream:
     async def test_stream_cut_off_before_done_raises(self) -> None:
         """Bifröst aborted the stream after the 200 when the provider rejected the
         request; read as an empty answer, it let schema repair invent an outcome."""
-        adapter = OpenAICompatibleAdapter(api_key="k", base_url=_BASE_URL)
-        respx.post(f"{_BASE_URL}/v1/chat/completions").mock(
+        adapter = OpenAICompatibleAdapter(
+            api_key="k",
+            base_url=_BASE_URL,
+            gateway_outage_window_seconds=0.05,
+            retry_base_delay=0.01,
+        )
+        route = respx.post(f"{_BASE_URL}/v1/chat/completions").mock(
             return_value=httpx.Response(200, content=b"")
         )
 
+        # A cut-off stream is sent again until the outage window is spent, then raises.
         with pytest.raises(LLMError, match="ended before completion"):
             [event async for event in adapter.stream(_MESSAGES, **_KWARGS)]
+        assert route.call_count > 1
 
     @respx.mock
     async def test_stream_error_chunk_raises_with_the_upstream_message(self) -> None:
@@ -741,7 +750,9 @@ class TestOpenAIAdapterStream:
 
     @respx.mock
     async def test_stream_error_status_raises(self) -> None:
-        adapter = OpenAICompatibleAdapter(api_key="k", base_url=_BASE_URL, max_retries=0)
+        adapter = OpenAICompatibleAdapter(
+            api_key="k", base_url=_BASE_URL, gateway_outage_window_seconds=0
+        )
         respx.post(f"{_BASE_URL}/v1/chat/completions").mock(
             return_value=httpx.Response(401, content=b"unauthorized")
         )
@@ -897,7 +908,10 @@ class TestOpenAIAdapterEdgeCases:
     async def test_transport_error_retried(self) -> None:
         """httpx.TransportError is retried and succeeds on next attempt."""
         adapter = OpenAICompatibleAdapter(
-            api_key="k", base_url=_BASE_URL, max_retries=2, retry_base_delay=0.0
+            api_key="k",
+            base_url=_BASE_URL,
+            gateway_outage_window_seconds=5.0,
+            retry_base_delay=0.001,
         )
         call_count = {"n": 0}
 
@@ -916,7 +930,10 @@ class TestOpenAIAdapterEdgeCases:
     async def test_stream_retries_on_429(self) -> None:
         """Stream path retries on 429 (closes previous stream response)."""
         adapter = OpenAICompatibleAdapter(
-            api_key="k", base_url=_BASE_URL, max_retries=2, retry_base_delay=0.0
+            api_key="k",
+            base_url=_BASE_URL,
+            gateway_outage_window_seconds=5.0,
+            retry_base_delay=0.001,
         )
         call_count = {"n": 0}
 
@@ -945,7 +962,10 @@ class TestOpenAIAdapterRetry:
     @respx.mock
     async def test_retries_on_429(self) -> None:
         adapter = OpenAICompatibleAdapter(
-            api_key="k", base_url=_BASE_URL, max_retries=2, retry_base_delay=0.0
+            api_key="k",
+            base_url=_BASE_URL,
+            gateway_outage_window_seconds=5.0,
+            retry_base_delay=0.001,
         )
         route = respx.post(f"{_BASE_URL}/v1/chat/completions")
         route.side_effect = [
@@ -958,9 +978,12 @@ class TestOpenAIAdapterRetry:
         assert result.content is not None
 
     @respx.mock
-    async def test_raises_after_max_retries(self) -> None:
+    async def test_raises_when_the_outage_window_is_spent(self) -> None:
         adapter = OpenAICompatibleAdapter(
-            api_key="k", base_url=_BASE_URL, max_retries=1, retry_base_delay=0.0
+            api_key="k",
+            base_url=_BASE_URL,
+            gateway_outage_window_seconds=0.05,
+            retry_base_delay=0.01,
         )
         respx.post(f"{_BASE_URL}/v1/chat/completions").mock(
             return_value=httpx.Response(503, json={"error": "service unavailable"})
@@ -976,7 +999,10 @@ class TestOpenAIAdapterRetry:
     @respx.mock
     async def test_non_retryable_error_raises_immediately(self) -> None:
         adapter = OpenAICompatibleAdapter(
-            api_key="k", base_url=_BASE_URL, max_retries=3, retry_base_delay=0.0
+            api_key="k",
+            base_url=_BASE_URL,
+            gateway_outage_window_seconds=5.0,
+            retry_base_delay=0.001,
         )
         # 404 is not in _RETRYABLE_STATUS_CODES — must raise immediately.
         respx.post(f"{_BASE_URL}/v1/chat/completions").mock(

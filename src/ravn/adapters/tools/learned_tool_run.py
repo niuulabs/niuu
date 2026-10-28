@@ -32,7 +32,7 @@ from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
     LearnedToolInfrastructureError,
     LearnedToolResolver,
-    LearnedToolUsageError,
+    LearnedToolUnloadableError,
     learned_tool_venvs_dir,
 )
 from ravn.valkyrie_evolution.resident_learning import (
@@ -215,6 +215,20 @@ class LearnedToolRunTool(ToolPort):
 
             try:
                 tool = self._resolver.load(name, host_call=self._host_call(name))
+            except LearnedToolUnloadableError as exc:
+                # Installed, but this resident cannot load it. Not a missing
+                # tool to rediscover through capability_list (which does not
+                # offer it): it needs the repair that rebuilds it.
+                span.set_attribute("ravn.learned_tool.outcome", "unloadable")
+                return ToolResult(
+                    tool_call_id="",
+                    content=(
+                        f"{exc} — {name!r} is installed but cannot be run on this resident. "
+                        "Call build_tool for the same capability with replace=true to rebuild "
+                        "it so it loads here."
+                    ),
+                    is_error=True,
+                )
             except LearnedToolError as exc:
                 span.set_attribute("ravn.learned_tool.outcome", "unavailable")
                 return ToolResult(
@@ -261,11 +275,6 @@ class LearnedToolRunTool(ToolPort):
                     ),
                     is_error=True,
                 )
-            except LearnedToolUsageError:
-                # The tool ran; its usage record could not be written. That is
-                # this resident's storage failing, not the tool, and must
-                # neither count toward rollback nor pass for a tool error.
-                raise
             except Exception as exc:
                 logger.warning("learned_tool_run: %r raised: %s", name, exc)
                 result = ToolResult(

@@ -765,6 +765,12 @@ class MockGitProvider(GitProvider):
         self._orgs = orgs
         self.validate_calls: list[str] = []
         self.list_repos_calls: list[str] = []
+        # Canned answers for the read operations; tests set what they need.
+        self.read_calls: list[tuple] = []
+        self.commit_result: Any = None
+        self.comparison_result: Any = None
+        self.ref_checks_result: Any = None
+        self.attestations_result: Any = ()
 
     @property
     def provider_type(self) -> GitProviderType:
@@ -820,6 +826,22 @@ class MockGitProvider(GitProvider):
 
             raise GitRepoNotFoundError(f"Repository not found: {repo_url}")
         return ["main", "develop", "feature/test"]
+
+    async def get_commit(self, repo_url: str, ref: str):
+        self.read_calls.append(("get_commit", repo_url, ref))
+        return self.commit_result
+
+    async def compare_refs(self, repo_url: str, base: str, head: str):
+        self.read_calls.append(("compare_refs", repo_url, base, head))
+        return self.comparison_result
+
+    async def get_ref_checks(self, repo_url: str, ref: str):
+        self.read_calls.append(("get_ref_checks", repo_url, ref))
+        return self.ref_checks_result
+
+    async def get_image_attestations(self, repo_url: str, subject_digest: str):
+        self.read_calls.append(("get_image_attestations", repo_url, subject_digest))
+        return self.attestations_result
 
 
 class MockGitRegistry:

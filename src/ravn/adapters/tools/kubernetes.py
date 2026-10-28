@@ -12,6 +12,7 @@ from typing import Any
 
 import yaml
 
+from ravn.adapters.kubernetes_pod_logs import read_pod_log
 from ravn.cap_telemetry import record_cap_hit, record_truncation
 from ravn.domain.models import ToolResult
 from ravn.ports.tool import ToolPort
@@ -325,16 +326,14 @@ class KubernetesInspectTool(ToolPort):
         container = str(input.get("container") or "").strip()
         if container:
             kwargs["container"] = container
-        logs = await _maybe_await(
-            clients.core_v1.read_namespaced_pod_log(name, namespace, **kwargs)
-        )
+        logs = await read_pod_log(clients.core_v1, name, namespace, **kwargs)
         return {
             "action": "pod_logs",
             "namespace": namespace,
             "name": name,
             "container": container,
             "tail_lines": tail_lines,
-            "logs": str(logs),
+            "logs": logs,
         }
 
     async def _workload(

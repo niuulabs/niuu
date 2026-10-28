@@ -21,6 +21,7 @@ This page covers how to operate the feature.
 | `agent` (direct) | milestone, decision, attention, error, info | The same direct submit made by the session itself with its own session credential, for example through the Forge-hosted MCP endpoint | `submit:{session}:agent:{owner}:{idempotency_key}` |
 | `system` | attention | A resident is waiting for its owner (an operator question). Read from the resident's notification outbox; see [Residents](#residents). | `resident-attention:{resident}:{channel or room}:{request_id}` |
 | `agent` | milestone, decision, attention, error, info | A resident's agent calls its `notify` tool. Read from the resident's notification outbox. | `resident-notify:{resident}:{channel or room}:{idempotency_key}` |
+| `system` | attention | A resident has a question waiting in the ODIN review queue (`answer_operator_question`). Read from the queue through `niuu-ravn`; see [Resident questions in the ODIN review queue](#resident-questions-in-the-odin-review-queue). | `odin-review:{owner}:{review_id}` (backlog digest: `odin-review-digest:{owner}`) |
 
 The notification id is a uuid5 of the dedupe key, so every retry maps to the same
 notification. A retried log append, activity report or submit never creates a second
@@ -127,6 +128,71 @@ On the resident, `gateway.channels.openclaw.notifications_enabled` (default true
 serves the outbox and offers `notify`; `notifications_max_pending` (default 1000)
 bounds what is kept while Forge does not drain it. A resident whose shim is off
 (`resident.openclaw.enabled: false`) has no outbox.
+
+## Resident questions in the ODIN review queue
+
+Every question a resident asks its owner is also filed in the ODIN review queue that
+`niuu-ravn` serves (`/api/v1/ravn/odin/reviews`, item `requested_action:
+answer_operator_question`). The queue notifies nobody, and it also holds the residents'
+morning briefs and action drafts. The ODIN review relay (`notifications.odin_review_relay`,
+off by default) follows it from Forge and turns each **pending question** into a
+notification for the configured owners, through the same feed, rules and push sink as any
+other. It reaches residents Forge did not create (those deployed by Fleet), which the
+[resident outbox relay](#residents) cannot see.
+
+- **One per question per owner.** The notification is `attention` / `system` /
+  `warning` with no `session_id` and **no** `resident_id` (the ODIN ids are not Forge
+  resident-runtime ids). Title `"<valkyrie_id> asks"`, body the question. Recording is
+  idempotent (dedupe key above), so a poll, a restart or a second replica never makes a
+  second one.
+- **Where to answer.** The feed item carries `odin_review_id` and
+  `odin_review_decide_path` (`/api/v1/ravn/odin/reviews/<url-quoted id>/decide`, on the
+  host serving the queue). `POST` it `{"decision": "answered", "answer": "<text>"}`: the
+  resident receives the text verbatim. Notification metadata also holds `valkyrie_id`,
+  `environment_id` and `input_kind: "question"`.
+- **Push.** A question pushes through the owner's **Needs-input pushes** rule (needs
+  `push.enabled`). Its APNs payload carries `aps.category = NIUU_RESIDENT_QUESTION`, and
+  the custom keys `notification_id`, `odin_review_id` and `odin_review_decide_path`, so the
+  phone offers an inline Reply. Any notification can ask for this by setting
+  `push_category` and `push_data` in its metadata; pushes that do not are unchanged.
+- **Retired when settled.** Once the item leaves `pending` (answered, approved, rejected,
+  expired), the owner's notification is marked read. The relay asks the item itself before
+  retiring, so a listing that missed it never retires a question that is still waiting.
+- **Backlog.** The first time the relay follows the queue for an owner it stores a
+  watermark. The questions already pending then (requested at or before it) are recorded
+  with `feed_only` metadata: they are in the feed but **no rule schedules a delivery for
+  them**, so nothing is pushed one by one. One digest notification ("N resident questions
+  waiting", body "Waiting on you: muninn (3), regin (2)") does push. Questions asked after
+  the watermark push individually. The watermark and the items announced live in
+  `odin_review_relay_owners` / `odin_review_relay_items`, shared by every replica.
+- **Failures are loud.** A failed poll logs at error level and counts on
+  `app.state.odin_review_relay.stats` (`failures`, `consecutive_failures`, `last_error`,
+  `last_success_at`, `malformed`); the next interval retries it. A pending question item
+  with no readable question or timestamp is logged, counted as `malformed`, and not
+  announced. Enabled but unusable configuration stops Forge at startup.
+
+```yaml
+notifications:
+  odin_review_relay:
+    enabled: true
+    owner_ids: ["<Forge user id>"]   # whose feed receives the questions
+    poll_interval_seconds: 30        # the queue has no change stream
+    source:                          # dynamic adapter + kwargs
+      adapter: volundr.adapters.outbound.http_odin_review_source.HttpOdinReviewSource
+      kwargs:
+        base_url: https://yggdrasil.niuu.world
+        auth_adapter: niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter
+        auth_kwargs:
+          exchange_url: https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange
+          token_file: /var/run/secrets/niuu-workload/token
+          audiences: [niuu-ravn]
+```
+
+The source authenticates with an `HttpAuthPort` adapter, the same ones Ting and Observatory
+use for service-to-service calls; Forge creates no token. In the cluster, project a
+ServiceAccount token with the exchange's audience into the Forge pod (`extraVolumes` /
+`extraVolumeMounts`), and give the exchange a `workloadIdentity.mappings` entry for Forge's
+ServiceAccount; `niuu-ravn`'s gateway then accepts the exchanged workload JWT.
 
 ## Live events
 
@@ -497,6 +563,11 @@ notifications:
   integration_sinks:         # integration slug -> NotificationSink class
     telegram: niuu.adapters.notifications.telegram.TelegramNotificationSink
     webhook: niuu.adapters.notifications.webhook.WebhookNotificationSink
+  odin_review_relay:         # resident questions from the ODIN review queue (see above)
+    enabled: false
+    owner_ids: []
+    poll_interval_seconds: 30
+    source: {adapter: volundr.adapters.outbound.http_odin_review_source.HttpOdinReviewSource, kwargs: {}}
   sinks:                     # dynamic adapters: name, label, adapter, then kwargs
     - name: ops-webhook
       label: Ops webhook
@@ -532,6 +603,10 @@ Migration `000084_forge_notifications` creates four tables:
 
 Migration `000085_forge_notification_delivery_rate_index` adds a partial index on
 `(rule_id, delivered_at) WHERE status = 'delivered'` for the per-rule rate limit.
+
+Migration `000089_odin_review_relay` creates `odin_review_relay_owners` (one backlog
+watermark and digest flag per owner) and `odin_review_relay_items` (the review items an
+owner has a notification for, and when it was retired).
 
 Both migrations live in `migrations/`; the Helm migrations configmap and the CLI bundle
 read them from there. Mini mode applies them at startup.

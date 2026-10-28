@@ -42,9 +42,15 @@ ATTR_PATH = "ravn.degraded.path"
 DEGRADED_KEY_PREFIX = "degraded."
 DEGRADED_TOTAL_KEY = "degraded_total"
 
+RETRIES = "ravn.retries"
+ATTR_RETRY_PATH = "ravn.retry.path"
+RETRY_KEY_PREFIX = "retries."
+RETRY_TOTAL_KEY = "retries_total"
+
 _lock = threading.Lock()
 _counts: Counter[str] = Counter()
 _degraded: Counter[str] = Counter()
+_retries: Counter[str] = Counter()
 
 
 def record_cap_hit(knob: str, message: str) -> None:
@@ -95,6 +101,32 @@ def record_degraded(path: str, message: str) -> None:
     )
 
 
+def record_retry(path: str, message: str) -> None:
+    """Report that *path* hit a transient failure and is trying again.
+
+    For a retry that is still inside its bound: a model call whose gateway is
+    restarting, a stream that was cut and is being re-issued. It logs at
+    warning (nothing is lost yet) and counts on ``ravn.retries``, so a resident
+    that keeps losing its gateway shows it on the scorecard instead of only in
+    logs. The retry running out of its bound is not this: that is
+    :func:`record_cap_hit` on the knob that bounds it, followed by a raise.
+    """
+    with _lock:
+        _retries[path] += 1
+    logger.warning("retry [%s]: %s", path, message)
+    get_observability().count(
+        RETRIES,
+        attributes={ATTR_RETRY_PATH: path},
+        description="Transient failures Ravn retried within their configured bound.",
+    )
+
+
+def retry_counts() -> dict[str, int]:
+    """Retries since process start, keyed by path."""
+    with _lock:
+        return dict(_retries)
+
+
 def degraded_counts() -> dict[str, int]:
     """Degraded paths taken since process start, keyed by path."""
     with _lock:
@@ -117,14 +149,18 @@ def health_counts() -> dict[str, int]:
         {f"{DEGRADED_KEY_PREFIX}{path}": count for path, count in sorted(degraded.items())}
     )
     snapshot[DEGRADED_TOTAL_KEY] = sum(degraded.values())
+    retries = retry_counts()
+    snapshot.update({f"{RETRY_KEY_PREFIX}{path}": count for path, count in sorted(retries.items())})
+    snapshot[RETRY_TOTAL_KEY] = sum(retries.values())
     return snapshot
 
 
 def reset_cap_hits() -> None:
-    """Forget every recorded hit and degradation (tests and process re-initialisation only)."""
+    """Forget every recorded hit, degradation and retry (tests and re-initialisation only)."""
     with _lock:
         _counts.clear()
         _degraded.clear()
+        _retries.clear()
 
 
 def require_complete(

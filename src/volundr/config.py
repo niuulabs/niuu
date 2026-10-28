@@ -37,6 +37,7 @@ from niuu.config import (
     GitLabInstance,
     HttpAuthAdapterConfig,
     InstanceRegistryConfig,
+    ProvenanceConfig,
 )
 from niuu.config_models import (
     DatabaseConfig,
@@ -987,6 +988,89 @@ class NotificationDispatcherConfig(BaseModel):
         return self
 
 
+class OdinReviewRelaySourceConfig(BaseModel):
+    """The adapter that reads the ODIN review queue (dynamic adapter + kwargs)."""
+
+    adapter: str = Field(
+        default="volundr.adapters.outbound.http_odin_review_source.HttpOdinReviewSource",
+        description="Fully-qualified OdinReviewSource class path.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Adapter constructor kwargs. HttpOdinReviewSource needs base_url (the origin "
+            "serving /api/v1/ravn/odin/reviews) and, in a cluster, an auth_adapter + "
+            "auth_kwargs (e.g. WorkloadIdentityBearerTokenAuthAdapter)."
+        ),
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Mapping of kwarg names to env var names holding secret values.",
+    )
+
+
+class OdinReviewRelayConfig(BaseModel):
+    """Resident questions waiting in the ODIN review queue, as notifications.
+
+    With ``enabled``, Forge follows the queue (``niuu-ravn``'s review API) and records
+    one notification per pending ``answer_operator_question`` item for each of
+    ``owner_ids``; the owner's "Needs-input pushes" rule then pushes it to their phone
+    (needs ``push.enabled``). Questions already waiting when an owner is first followed
+    are recorded for the feed without a push, announced by one digest push.
+
+    Example YAML::
+
+        notifications:
+          odin_review_relay:
+            enabled: true
+            owner_ids: ["jozef@example.com"]
+            poll_interval_seconds: 30
+            source:
+              kwargs:
+                base_url: "https://yggdrasil.niuu.world"
+                auth_adapter: >-
+                  niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter
+                auth_kwargs:
+                  exchange_url: "https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange"
+                  audiences: ["niuu-ravn"]
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Follow the ODIN review queue and notify owners of resident questions.",
+    )
+    owner_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Forge user ids (the notification owner_id, i.e. the token's sub) whose feed "
+            "receives the questions. Required when enabled."
+        ),
+    )
+    poll_interval_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description=(
+            "Seconds between reads of the review queue; a new question reaches the feed at "
+            "most this late. The queue exposes no change stream, so this is the polling bound."
+        ),
+    )
+    source: OdinReviewRelaySourceConfig = Field(default_factory=OdinReviewRelaySourceConfig)
+
+    @model_validator(mode="after")
+    def _valid(self) -> "OdinReviewRelayConfig":
+        if not self.enabled:
+            return self
+        owners = [owner.strip() for owner in self.owner_ids]
+        if not owners or not all(owners):
+            raise ValueError(
+                "notifications.odin_review_relay.owner_ids must list at least one non-empty "
+                "Forge user id when the relay is enabled (or set enabled: false)"
+            )
+        if len(set(owners)) != len(owners):
+            raise ValueError("notifications.odin_review_relay.owner_ids must not repeat an owner")
+        return self
+
+
 class NotificationsConfig(BaseModel):
     """Forge session notifications: the feed, the projection and external delivery.
 
@@ -1016,6 +1100,7 @@ class NotificationsConfig(BaseModel):
         description="Project notifications and serve the notification API.",
     )
     reply_ready: NotificationReplyReadyConfig = Field(default_factory=NotificationReplyReadyConfig)
+    odin_review_relay: OdinReviewRelayConfig = Field(default_factory=OdinReviewRelayConfig)
     default_page_size: int = Field(default=50, ge=1, description="Feed page size default.")
     max_page_size: int = Field(default=200, ge=1, description="Largest feed page allowed.")
     dispatcher: NotificationDispatcherConfig = Field(default_factory=NotificationDispatcherConfig)
@@ -1073,6 +1158,11 @@ class NotificationsConfig(BaseModel):
     def _valid(self) -> "NotificationsConfig":
         if self.default_page_size > self.max_page_size:
             raise ValueError("notifications.default_page_size must not exceed max_page_size")
+        if self.odin_review_relay.enabled and not self.enabled:
+            raise ValueError(
+                "notifications.odin_review_relay.enabled records into the notification feed: "
+                "set notifications.enabled: true, or disable the relay"
+            )
         names: set[str] = set()
         for sink in self.sinks:
             name, adapter = sink.get("name"), sink.get("adapter")
@@ -2409,6 +2499,7 @@ class GitConfig(BaseModel):
 
     github: GitHubConfig = Field(default_factory=GitHubConfig)
     gitlab: GitLabConfig = Field(default_factory=GitLabConfig)
+    provenance: ProvenanceConfig = Field(default_factory=ProvenanceConfig)
     validate_on_create: bool = Field(default=True)
     workflow: GitWorkflowConfig = Field(default_factory=GitWorkflowConfig)
 
@@ -2865,6 +2956,15 @@ class Settings(BaseSettings):
             "launch fails."
         ),
     )
+    ravn_flock_llm_config_by_definition: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description=(
+            "Per session definition, LLM settings merged over ravn_flock_llm_config for "
+            "flocks launched on that definition, e.g. {skuldCodex: {model: gpt-5.6-terra}}. "
+            "Under OpenShell a flock's Ravns run on its session definition's CLI runtime, "
+            "so one Forge-wide model cannot serve both a Claude and a Codex flock."
+        ),
+    )
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
         default_factory=default_session_definitions,
         description="Session definitions keyed by name (e.g. skuldClaude, skuldCodex).",
@@ -2894,6 +2994,15 @@ class Settings(BaseSettings):
             LLMConfig.model_validate(value)
         return value
 
+    @field_validator("ravn_flock_llm_config_by_definition")
+    @classmethod
+    def _validate_ravn_flock_llm_config_by_definition(
+        cls, value: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        for llm in value.values():
+            LLMConfig.model_validate(llm)
+        return value
+
     @model_validator(mode="after")
     def _needs_input_push_has_its_sink(self) -> "Settings":
         """``push.enabled`` delivers through the outbox; refuse it without one."""
@@ -2918,6 +3027,14 @@ class Settings(BaseSettings):
     def _merge_built_in_session_definitions(self) -> "Settings":
         """Keep built-in session definitions unless config explicitly overrides them."""
         self.session_definitions = merge_session_definitions(self.session_definitions)
+        unknown = sorted(
+            set(self.ravn_flock_llm_config_by_definition) - set(self.session_definitions)
+        )
+        if unknown:
+            raise ValueError(
+                f"ravn_flock_llm_config_by_definition names unknown session definition(s) "
+                f"{', '.join(unknown)}; known: {', '.join(sorted(self.session_definitions))}"
+            )
         return self
 
     @classmethod

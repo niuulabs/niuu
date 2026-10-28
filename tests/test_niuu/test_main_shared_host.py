@@ -126,12 +126,16 @@ def test_create_app_mounts_shared_identity_features_and_personas(
     )
     monkeypatch.setattr(niuu_main, "reconcile_credential_enrollments_loop", _idle_reconcile)
 
-    repo_services: list[tuple[object, object]] = []
+    repo_services: list[tuple[object, object, object]] = []
     real_repo_service = niuu_main.RepoService
 
-    def _spy_repo_service(git_registry, user_integration=None):
-        repo_services.append((git_registry, user_integration))
-        return real_repo_service(git_registry, user_integration=user_integration)
+    def _spy_repo_service(git_registry, user_integration=None, provenance_verifier=None):
+        repo_services.append((git_registry, user_integration, provenance_verifier))
+        return real_repo_service(
+            git_registry,
+            user_integration=user_integration,
+            provenance_verifier=provenance_verifier,
+        )
 
     monkeypatch.setattr(niuu_main, "RepoService", _spy_repo_service)
 
@@ -173,6 +177,8 @@ def test_create_app_mounts_shared_identity_features_and_personas(
         assert response.json()["issuer"] == "https://issuer.example.com"
         # /api/v1/niuu/repos lists the person's own accounts, not only config
         assert repo_services and repo_services[0][1] is not None
+        # Provenance verification is on by default, so the host wires a verifier.
+        assert repo_services[0][2] is not None
 
         paths = set(client.get("/openapi.json").json()["paths"])
         assert "/api/v1/realms" in paths

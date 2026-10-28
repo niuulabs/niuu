@@ -1214,23 +1214,14 @@ def memory_backfill_embeddings(
 @app.command("learnings-curate")
 def learnings_curate(
     config: str = typer.Option("", "--config", help="Path to the ravn config file."),
-    max_judgments: int = typer.Option(
-        0,
-        help="Lesson pairs to judge this run; 0 uses reflection.curation.max_judgments.",
-    ),
-    max_rewrites: int = typer.Option(
-        -1,
-        help="Learnings to rewrite procedurally; -1 uses reflection.curation.max_rewrites.",
-    ),
 ) -> None:
     """Run one learning-curation pass now, outside the dream schedule.
 
-    The dream pass judges a bounded number of lesson pairs per run, so a
-    resident with hundreds of candidates recorded before curation existed
-    would take many dreams to consolidate them. This runs the same pass once
-    with a larger budget — the backfill — and prints what it changed. Every
-    change is also recorded on a Mímir audit page. Safe to repeat: pairs it
-    already resolved are retired and not judged again.
+    The same pass the consolidation dream runs: every lesson not yet curated has
+    its neighbourhood judged once, paraphrases fold into one lesson, and the
+    lesson is marked ``curated``. Useful to consolidate a backlog at once rather
+    than over the next dream, and safe to repeat — a second run only judges
+    lessons recorded since. Every change is recorded on a Mímir audit page.
     """
 
     if config:
@@ -1245,15 +1236,10 @@ def learnings_curate(
         mimir=mimir,
         consolidation=_build_learning_consolidation(settings, _build_llm(settings)),
     )
-    report = asyncio.run(
-        curator.curate(
-            max_judgments=max_judgments or None,
-            max_rewrites=None if max_rewrites < 0 else max_rewrites,
-        )
-    )
+    report = asyncio.run(curator.curate())
     for key, value in report.summary().items():
         shown = len(value) if isinstance(value, list) else value
-        typer.echo(f"{key:<17}: {shown}")
+        typer.echo(f"{key:<21}: {shown}")
 
 
 @app.command("learned-tools-plan")
@@ -1263,7 +1249,7 @@ def learned_tools_plan(
     """Print what the next consolidation dream would retire from the learned tools.
 
     Read-only: it computes the same plan the dream applies, with the same
-    usage ledger, capability judge and never-used window, and prints it as
+    lifecycle usage, capability judge and never-used window, and prints it as
     JSON. Nothing is moved, archived or written; retirement happens only in
     the dream, so the running resident's lifecycle registry stays the one
     writer.

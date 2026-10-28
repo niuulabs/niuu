@@ -104,6 +104,9 @@ class WebhookNotificationChannel(NotificationChannel):
         if message.url:
             payload["url"] = message.url
         payload.update(_resident_fields(message))
+        if message.category:
+            payload["category"] = message.category
+        payload.update(message.data)
         headers = {"content-type": "application/json"}
         if self._secret:
             body = httpx.Request("POST", self._url, json=payload).content
@@ -211,6 +214,9 @@ class ApnsNotificationChannel(NotificationChannel):
         if message.url:
             payload["url"] = message.url
         payload.update(_resident_fields(message))
+        if message.category:
+            payload["aps"]["category"] = message.category
+        payload.update(message.data)
         accepted = 0
         failures: list[NotificationDeliveryError] = []
         for device in ios_devices:

@@ -587,6 +587,19 @@ class PodManager(ABC):
             True if stopped successfully.
         """
 
+    async def destroy(self, session: Session) -> bool:
+        """Permanently remove everything the session's compute owns.
+
+        Called when the session itself is deleted, so nothing is kept for a
+        resume. Backends whose ``stop`` already releases all compute inherit
+        this; a backend whose ``stop`` retains resources for a later resume
+        must override it. Raises when the removal cannot be completed.
+
+        Returns:
+            True when this call removed something, False when it was already gone.
+        """
+        return await self.stop(session)
+
     @abstractmethod
     async def status(self, session: Session) -> SessionStatus:
         """Get the current status of session pods."""

@@ -950,6 +950,37 @@ async def test_learned_tool_threads_requirements_and_reach_to_its_runner(tmp_pat
     assert recorder.calls[1]["declared_reach"] == artifact.manifest.declared_reach
 
 
+@pytest.mark.parametrize(
+    "code",
+    [
+        "from ravn.sdk import tool\n\ndef run(signal):\n    return tool.x()\n",
+        "import ravn.sdk\n\ndef run(signal):\n    return {}\n",
+        "from ravn import sdk\n\ndef run(signal):\n    return {}\n",
+        "def run(signal):\n    from ravn.sdk import tool\n    return tool.x()\n",
+    ],
+)
+def test_a_host_sdk_tool_is_refused_where_there_is_no_channel_back(tmp_path, code: str) -> None:
+    base = _learned_tool_artifact()
+    artifact = replace(base, tool_code=code, manifest=replace(base.manifest, declared_reach=[]))
+    tool_path = write_learned_tool(tools_dir=tmp_path, artifact=artifact)
+
+    with pytest.raises(LearnedToolError, match="ravn.sdk"):
+        load_learned_tool(
+            artifact=artifact,
+            tool_path=tool_path,
+            runner=ContainedLearnedToolRunner(workspace_root=tmp_path),
+        )
+    # The local backend has the channel, so the same tool loads there.
+    load_learned_tool(artifact=artifact, tool_path=tool_path, runner=LocalLearnedToolRunner())
+
+
+def test_host_sdk_detection_ignores_lookalikes() -> None:
+    from ravn.valkyrie_evolution.learned_tools import imports_host_sdk
+
+    assert not imports_host_sdk("import ravn_sdk\nfrom ravn import other\n")
+    assert not imports_host_sdk("def broken(:\n")
+
+
 async def test_learned_tool_surfaces_runner_failures_with_stderr(tmp_path) -> None:
     class _FailingRunner:
         async def run(self, tool_path: Path, payload: dict[str, Any], **_: Any) -> ToolRunResult:

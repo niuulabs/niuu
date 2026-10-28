@@ -1,12 +1,30 @@
 # Reusable: build multi-arch container images and publish manifest tags.
 #
-# Splits into two jobs:
+# Splits into three jobs:
 #   1. build   — per (container × platform), pushes <image>:<tag-prefix>-<platform>
 #   2. manifest — one job; for each container creates multi-arch manifests
 #      pointing at the per-platform tags for every entry in `manifest-tags`
 #      (the platforms in `manifest-platforms`, by default `platforms`).
 #      Skipped when `publish-manifests` is false: dev.yaml builds in parallel
 #      with its tests and publishes the dev manifests itself once both pass.
+#   3. attest  — per container, signed GitHub build provenance for the manifest
+#      list digest the first `manifest-tags` entry resolves to (see below).
+#      Runs whenever manifests are published.
+#
+# Provenance: buildx's own in-manifest provenance stays off (`provenance:
+# false` on build-push-action); the attestation is GitHub's, made by
+# actions/attest-build-provenance and stored in GitHub's attestation API, which
+# is what the platform's `volundr_git verify_image_provenance` reads. Its
+# signing identity is this file's `attest` job: the OIDC `job_workflow_ref` of a
+# job in a reusable workflow is the reusable workflow, whichever workflow called
+# it. The platform pins that path (`git.provenance.kwargs.workflow_paths`, default
+# in `niuu.config.DEFAULT_PROVENANCE_WORKFLOW_PATHS`); renaming or moving this
+# file means changing both in the same change.
+#
+# Every caller must grant `id-token: write` and `attestations: write` (and
+# `packages: write`), even when it publishes no manifests: a caller caps a
+# reusable workflow's permissions when the workflow is loaded, not when a job
+# runs, so a call missing them fails to start.
 #
 # The tag scheme (prefix + manifest list) is deliberately caller-controlled —
 # PR/feature/dev callers all need different tagging.
@@ -226,3 +244,58 @@ jobs:
               echo "::endgroup::"
             done
           done
+
+  # One job per container: the attest action takes a single subject, and
+  # push-to-registry needs the fully-qualified image name of that subject. The
+  # jobs only read a digest and sign it, so they are short and run in parallel.
+  # A failed attestation fails the run: an image the platform cannot verify is
+  # not a published image.
+  attest:
+    name: "Attest ${{ matrix.container }}"
+    needs: manifest
+    if: inputs.push && inputs.publish-manifests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        container: ${{ fromJson(inputs.containers) }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/attest-container-image
+          sparse-checkout-cone-mode: false
+
+      # Every `manifest-tags` entry points at the same manifest list, so the
+      # first one names the digest to attest.
+      - name: Pick the manifest tag
+        id: tag
+        env:
+          MANIFEST_TAGS: ${{ inputs.manifest-tags }}
+        run: |
+          set -euo pipefail
+          read -r first _ <<< "${MANIFEST_TAGS}"
+          if [ -z "${first:-}" ]; then
+            echo "::error title=attest::manifest-tags is empty but publish-manifests is true"
+            exit 1
+          fi
+          echo "value=${first}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        uses: ./.github/actions/attest-container-image
+        with:
+          registry: ${{ inputs.registry }}
+          image: ${{ github.repository_owner }}/${{ matrix.container }}
+          tag: ${{ steps.tag.outputs.value }}
+          username: ${{ github.actor }}
+          token: ${{ secrets.GITHUB_TOKEN }}

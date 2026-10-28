@@ -3,6 +3,7 @@
 import logging
 import re
 from datetime import UTC, datetime
+from typing import NoReturn
 from urllib.parse import quote_plus, urlparse
 from uuid import NAMESPACE_URL, uuid5
 
@@ -25,21 +26,50 @@ from niuu.domain.delivery import (
     ReviewRequest,
 )
 from niuu.domain.models import (
+    ChangedFile,
     CIStatus,
+    CommitDetail,
+    CommitSummary,
     GitProviderType,
+    ProvenanceAttestation,
     PullRequest,
     PullRequestStatus,
+    RefChecks,
+    RefComparison,
     RepoInfo,
 )
 from niuu.ports.delivery import DeliveryForgeProvider
 from niuu.ports.git import (
     GitAuthError,
+    GitOperationUnsupportedError,
     GitProvider,
+    GitProviderResponseError,
     GitRepoNotFoundError,
     GitWorkflowProvider,
 )
 
 logger = logging.getLogger(__name__)
+
+# GitLab's maximum page size for list endpoints.
+_READ_PAGE_SIZE = 100
+
+
+def _parse_gitlab_time(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise GitProviderResponseError(
+            f"GitLab returned an unparseable timestamp: {value!r}"
+        ) from exc
+
+
+def _count_diff_lines(diff: str) -> tuple[int, int]:
+    """Count added and removed lines in a GitLab diff (hunks only, no file headers)."""
+    additions = sum(1 for line in diff.splitlines() if line.startswith("+"))
+    deletions = sum(1 for line in diff.splitlines() if line.startswith("-"))
+    return additions, deletions
 
 
 class _MergeTrainEntryNotFoundError(RuntimeError):
@@ -494,6 +524,256 @@ class GitLabProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
             repo,
         )
         return branches
+
+    # --- Read operations (commit, comparison, checks) ---
+
+    def _read_project(self, repo_url: str) -> tuple[str, str]:
+        """Return the API path and a ``namespace/repo`` label for *repo_url*."""
+        parsed = self._parse_url(repo_url)
+        if parsed is None:
+            raise GitRepoNotFoundError(f"Cannot parse repository URL: {repo_url}")
+        namespace, repo = parsed
+        return f"/projects/{quote_plus(f'{namespace}/{repo}')}", f"{namespace}/{repo}"
+
+    @staticmethod
+    def _raise_read_error(response: httpx.Response, subject: str) -> NoReturn:
+        """Type a failed read: auth, not found, or a provider error (incl. rate limit)."""
+        status = response.status_code
+        if status == 429:
+            raise httpx.HTTPStatusError(
+                f"GitLab rate limit exhausted reading {subject} (HTTP 429). "
+                "Wait for the limit to reset (see the Retry-After header).",
+                request=response.request,
+                response=response,
+            )
+        if status in (401, 403):
+            raise GitAuthError(
+                f"Authentication failed reading {subject}: HTTP {status}. "
+                "Check your GitLab token has read_repository access."
+            )
+        if status == 404:
+            raise GitRepoNotFoundError(
+                f"Not found: {subject} (HTTP 404). The project or the ref does not "
+                "exist, or the token cannot see it."
+            )
+        response.raise_for_status()
+        raise GitProviderResponseError(f"Unexpected HTTP {status} reading {subject}")
+
+    async def _read_pages(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        params: dict[str, str | int | bool],
+        subject: str,
+    ) -> list[dict]:
+        """Read every page of a list endpoint, following ``x-next-page``."""
+        items: list[dict] = []
+        page = 1
+        while True:
+            response = await client.get(
+                url, params={**params, "per_page": _READ_PAGE_SIZE, "page": page}
+            )
+            if response.status_code != 200:
+                self._raise_read_error(response, subject)
+            items.extend(response.json())
+            next_page = response.headers.get("x-next-page", "")
+            if not next_page:
+                return items
+            if not next_page.isascii() or not next_page.isdecimal() or int(next_page) <= page:
+                raise GitProviderResponseError(
+                    f"GitLab pagination did not advance reading {subject}"
+                )
+            page = int(next_page)
+
+    @staticmethod
+    def _changed_file(raw: dict) -> ChangedFile:
+        if raw.get("new_file"):
+            status = "added"
+        elif raw.get("deleted_file"):
+            status = "removed"
+        elif raw.get("renamed_file"):
+            status = "renamed"
+        else:
+            status = "modified"
+        path = str(raw.get("new_path") or raw.get("old_path") or "")
+        previous = str(raw["old_path"]) if raw.get("renamed_file") and raw.get("old_path") else None
+        if raw.get("too_large") or raw.get("collapsed"):
+            return ChangedFile(
+                path=path,
+                status=status,
+                additions=None,
+                deletions=None,
+                previous_path=previous,
+                patch=None,
+                patch_omitted_reason=(
+                    "GitLab marked this diff too large or collapsed and did not return it; "
+                    "additions and deletions are unknown"
+                ),
+            )
+        diff = str(raw.get("diff") or "")
+        additions, deletions = _count_diff_lines(diff)
+        return ChangedFile(
+            path=path,
+            status=status,
+            additions=additions,
+            deletions=deletions,
+            previous_path=previous,
+            patch=diff or None,
+            patch_omitted_reason=(
+                None if diff else "no textual diff (binary file, or a rename or mode change)"
+            ),
+        )
+
+    async def get_commit(self, repo_url: str, ref: str) -> CommitDetail:
+        """Read one commit and every file it changed, following GitLab's diff pagination."""
+        path, label = self._read_project(repo_url)
+        subject = f"commit {ref!r} in {label}"
+        client = await self._get_client()
+        response = await client.get(
+            f"{path}/repository/commits/{quote_plus(ref)}", params={"stats": True}
+        )
+        if response.status_code != 200:
+            self._raise_read_error(response, subject)
+        data = response.json()
+        sha = str(data.get("id") or "")
+        if not sha:
+            raise GitProviderResponseError("GitLab commit response omitted its SHA")
+        diffs = await self._read_pages(
+            client, f"{path}/repository/commits/{sha}/diff", {}, f"diff of {subject}"
+        )
+        files = tuple(self._changed_file(raw) for raw in diffs)
+        stats = data.get("stats") or {}
+        return CommitDetail(
+            repo_url=repo_url,
+            sha=sha,
+            url=str(data.get("web_url") or ""),
+            parents=tuple(str(parent) for parent in data.get("parent_ids") or []),
+            author_name=str(data.get("author_name") or ""),
+            author_email=str(data.get("author_email") or ""),
+            authored_at=_parse_gitlab_time(data.get("authored_date")),
+            message=str(data.get("message") or ""),
+            additions=stats.get("additions"),
+            deletions=stats.get("deletions"),
+            files=files,
+            files_total=len(files),
+        )
+
+    async def compare_refs(self, repo_url: str, base: str, head: str) -> RefComparison:
+        """Compare ``base...head``; ahead/behind come from the two commit ranges."""
+        path, label = self._read_project(repo_url)
+        subject = f"comparison {base!r}...{head!r} in {label}"
+        client = await self._get_client()
+        response = await client.get(
+            f"{path}/repository/compare",
+            params={"from": base, "to": head, "straight": "false"},
+        )
+        if response.status_code != 200:
+            self._raise_read_error(response, subject)
+        data = response.json()
+        if data.get("compare_timeout"):
+            raise GitProviderResponseError(
+                f"GitLab timed out computing {subject}; its diff is incomplete. "
+                "Compare narrower refs."
+            )
+
+        behind_response = await client.get(
+            f"{path}/repository/commits",
+            params={"ref_name": f"{head}..{base}", "per_page": 1},
+        )
+        if behind_response.status_code != 200:
+            self._raise_read_error(behind_response, subject)
+        total_header = behind_response.headers.get("x-total", "")
+        if not total_header.isascii() or not total_header.isdecimal():
+            raise GitProviderResponseError(
+                f"GitLab did not report how many commits {base!r} has that {head!r} lacks "
+                f"in {label} (x-total is omitted above 10000 commits)"
+            )
+        behind_by = int(total_header)
+
+        base_response = await client.get(
+            f"{path}/repository/merge_base", params={"refs[]": [base, head]}
+        )
+        if base_response.status_code != 200:
+            self._raise_read_error(base_response, subject)
+        merge_base = str(base_response.json().get("id") or "")
+        if not merge_base:
+            raise GitProviderResponseError("GitLab merge-base response omitted its SHA")
+
+        commits = tuple(
+            CommitSummary(
+                sha=str(raw["id"]),
+                subject=str(raw.get("title") or ""),
+                author_name=str(raw.get("author_name") or ""),
+                authored_at=_parse_gitlab_time(raw.get("authored_date")),
+                url=str(raw.get("web_url") or ""),
+            )
+            for raw in data.get("commits") or []
+        )
+        files = tuple(self._changed_file(raw) for raw in data.get("diffs") or [])
+        ahead_by = len(commits)
+        if ahead_by and behind_by:
+            status = "diverged"
+        elif ahead_by:
+            status = "ahead"
+        elif behind_by:
+            status = "behind"
+        else:
+            status = "identical"
+        return RefComparison(
+            repo_url=repo_url,
+            base=base,
+            head=head,
+            status=status,
+            ahead_by=ahead_by,
+            behind_by=behind_by,
+            merge_base_sha=merge_base,
+            url=f"{self._base_url}/{label}/-/compare/{base}...{head}",
+            commits=commits,
+            files=files,
+            files_total=len(files),
+        )
+
+    async def get_ref_checks(self, repo_url: str, ref: str) -> RefChecks:
+        """Jobs of the newest pipeline GitLab ran on the commit *ref* resolves to."""
+        path, label = self._read_project(repo_url)
+        subject = f"checks for {ref!r} in {label}"
+        client = await self._get_client()
+        commit_response = await client.get(f"{path}/repository/commits/{quote_plus(ref)}")
+        if commit_response.status_code != 200:
+            self._raise_read_error(commit_response, subject)
+        sha = str(commit_response.json().get("id") or "")
+        if not sha:
+            raise GitProviderResponseError("GitLab commit response omitted its SHA")
+
+        pipelines_response = await client.get(
+            f"{path}/pipelines",
+            params={"sha": sha, "per_page": 1, "order_by": "id", "sort": "desc"},
+        )
+        if pipelines_response.status_code != 200:
+            self._raise_read_error(pipelines_response, subject)
+        pipelines = pipelines_response.json()
+        if not pipelines:
+            return RefChecks(repo_url=repo_url, ref=ref, sha=sha, checks=())
+        try:
+            checks = await self._delivery_pipeline_checks(client, path, pipelines[0]["id"])
+        except RuntimeError as exc:
+            raise GitProviderResponseError(str(exc)) from exc
+        return RefChecks(repo_url=repo_url, ref=ref, sha=sha, checks=tuple(checks))
+
+    async def get_image_attestations(
+        self, repo_url: str, subject_digest: str
+    ) -> tuple[ProvenanceAttestation, ...]:
+        """GitLab has no GitHub-style attestation API, so this read cannot be answered.
+
+        Raises:
+            GitOperationUnsupportedError: always.
+        """
+        raise GitOperationUnsupportedError(
+            f"Image provenance cannot be verified for {repo_url}: GitLab has no build "
+            "attestation API (the GitHub artifact attestations that `verify_image_provenance` "
+            "reads). Only images built from a GitHub repository by an attesting workflow can "
+            "be verified."
+        )
 
     # --- GitWorkflowProvider methods ---
 

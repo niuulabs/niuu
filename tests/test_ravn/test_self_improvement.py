@@ -187,9 +187,11 @@ async def test_replaying_regins_history_ends_the_escalations(tmp_path: Path) -> 
         judge=judge,
         config=LearningCurationConfig(enabled=True),
         similarity_threshold=0.5,
+        max_related=5,
         evidence_duplicate_similarity=0.9,
         min_repetitions=3,
         verified_recovery_promotes=True,
+        procedure_max_chars=600,
         clock=lambda: NOW,
     )
     await curator.curate()
@@ -910,6 +912,7 @@ def test_friction_and_self_improvement_builders() -> None:
         resident_id="regin",
     )
     assert isinstance(built, SelfImprovementPass)
+    assert built._procedure_max_chars == improving.reflection.learning_entry_max_chars
     with pytest.raises(ValueError, match="drive loop"):
         _build_self_improvement(
             improving,

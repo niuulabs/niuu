@@ -16,6 +16,7 @@ from volundr.main import (
     _bootstrap_startup_schema,
     _ensure_preview_cache_dir_writable,
     _load_bifrost_catalog,
+    _log_bifrost_catalog_task_failure,
     _reconcile_active_loop,
     _reconcile_resident_runtimes_loop,
     create_app,
@@ -758,6 +759,81 @@ class TestBifrostCatalogLoading:
 
         assert sleep_calls == [0.1]
         assert [model.id for model in provider.list_models()] == ["gpt-5.5"]
+
+    @pytest.mark.asyncio
+    async def test_load_bifrost_catalog_retries_on_connect_timeout(self):
+        provider = HardcodedPricingProvider()
+        catalog = type(
+            "FakeCatalog",
+            (),
+            {
+                "_base_url": "http://guild.test",
+                "list_models": AsyncMock(
+                    side_effect=[
+                        httpx.ConnectTimeout("slow"),
+                        [ManagedModel(id="gpt-5.5", name="GPT-5.5", vendor="openai")],
+                    ]
+                ),
+            },
+        )()
+
+        with patch("volundr.main.asyncio.sleep", new=AsyncMock()) as sleep:
+            await _load_bifrost_catalog(provider, catalog)
+
+        assert sleep.await_count == 1
+        assert [model.id for model in provider.list_models()] == ["gpt-5.5"]
+
+    @pytest.mark.asyncio
+    async def test_load_bifrost_catalog_raises_on_non_connect_error(self):
+        """A reachable catalog that answers badly is a misconfiguration, not 'not ready'."""
+        provider = HardcodedPricingProvider()
+        request = httpx.Request("GET", "http://guild.test/api/v1/bifrost/models")
+        response = httpx.Response(401, request=request)
+        error = httpx.HTTPStatusError("unauthorized", request=request, response=response)
+        catalog = type(
+            "FakeCatalog",
+            (),
+            {
+                "_base_url": "http://guild.test",
+                "list_models": AsyncMock(side_effect=error),
+            },
+        )()
+
+        with (
+            patch("volundr.main.asyncio.sleep", new=AsyncMock()) as sleep,
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await _load_bifrost_catalog(provider, catalog)
+
+        assert sleep.await_count == 0
+        assert catalog.list_models.await_count == 1
+        assert provider.list_models() == []
+
+    @pytest.mark.asyncio
+    async def test_catalog_task_failure_is_logged_at_error_with_remedy(self, caplog):
+        async def _fail() -> None:
+            raise RuntimeError("boom")
+
+        task = asyncio.create_task(_fail())
+        task.add_done_callback(_log_bifrost_catalog_task_failure)
+        with caplog.at_level("ERROR", logger="volundr.main"):
+            await asyncio.gather(task, return_exceptions=True)
+            await asyncio.sleep(0)
+
+        [record] = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert "bifrost.url" in record.getMessage()
+        assert record.exc_info is not None
+
+    @pytest.mark.asyncio
+    async def test_catalog_task_cancellation_is_not_logged(self, caplog):
+        task = asyncio.create_task(asyncio.sleep(10))
+        task.add_done_callback(_log_bifrost_catalog_task_failure)
+        task.cancel()
+        with caplog.at_level("ERROR", logger="volundr.main"):
+            await asyncio.gather(task, return_exceptions=True)
+            await asyncio.sleep(0)
+
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
 
     def test_lifespan_does_not_block_on_unavailable_bifrost_catalog_startup(self):
         """Volundr should boot and keep retrying when Bifrost is not ready yet."""

@@ -191,6 +191,108 @@ async def test_reject_requires_a_reason_and_settled_items_conflict(tmp_path) -> 
     assert settled.value.status_code == 409
 
 
+def _question(**overrides) -> ReviewItem:
+    data = {
+        "kind": ReviewKind.COURT_ESCALATION.value,
+        "requested_action": "answer_operator_question",
+        "title": "muninn asks: which window?",
+        "summary": "needs a window",
+        "evidence": {"operator_question": {"case_id": "case-1", "question": "Which window?"}},
+    }
+    data.update(overrides)
+    return _item(**data)
+
+
+async def test_answering_a_question_settles_it_with_the_verbatim_answer(tmp_path) -> None:
+    service, publisher = _service(tmp_path)
+    item = _question()
+    await service.ingest_event(review_requested_event(item, source="v"))
+
+    decided, delivery = await service.decide(
+        item.item_id,
+        decision="answered",
+        operator_id="op",
+        answer="  Tuesday, after the backup.\n",
+    )
+
+    assert decided.status == "approved"
+    assert decided.decision_answer == "  Tuesday, after the backup.\n"
+    assert decided.decision_reason == ""
+    assert delivery["published"] is True
+    assert publisher.items[0].decision_answer == "  Tuesday, after the backup.\n"
+    stored = await service.get(item.item_id)
+    assert stored.decision_answer == "  Tuesday, after the backup.\n"
+
+
+async def test_answer_is_422_when_empty_or_on_a_non_question(tmp_path) -> None:
+    service, publisher = _service(tmp_path)
+    question = _question()
+    other = _item()
+    await service.ingest_event(review_requested_event(question, source="v"))
+    await service.ingest_event(review_requested_event(other, source="v"))
+
+    for blank in ("", "   \n"):
+        with pytest.raises(ReviewDecisionError) as empty:
+            await service.decide(
+                question.item_id, decision="answered", operator_id="op", answer=blank
+            )
+        assert empty.value.status_code == 422
+        assert "answer is required" in str(empty.value)
+
+    with pytest.raises(ReviewDecisionError) as wrong_kind:
+        await service.decide(other.item_id, decision="answered", operator_id="op", answer="yes")
+    assert wrong_kind.value.status_code == 422
+    assert "can be answered" in str(wrong_kind.value)
+
+    with pytest.raises(ReviewDecisionError) as stray_answer:
+        await service.decide(question.item_id, decision="approved", operator_id="op", answer="yes")
+    assert stray_answer.value.status_code == 422
+
+    assert publisher.items == []
+    assert (await service.get(question.item_id)).status == "pending"
+    assert (await service.get(other.item_id)).status == "pending"
+
+
+async def test_approved_and_rejected_still_settle_a_question(tmp_path) -> None:
+    service, _publisher = _service(tmp_path)
+    approved, rejected = _question(), _question()
+    await service.ingest_event(review_requested_event(approved, source="v"))
+    await service.ingest_event(review_requested_event(rejected, source="v"))
+
+    yes, _ = await service.decide(approved.item_id, decision="approved", operator_id="op")
+    no, _ = await service.decide(
+        rejected.item_id, decision="rejected", operator_id="op", reason="not now"
+    )
+
+    assert (yes.status, yes.decision_answer) == ("approved", "")
+    assert (no.status, no.decision_answer, no.decision_reason) == ("rejected", "", "not now")
+
+
+async def test_an_answered_question_is_not_answerable_twice(tmp_path) -> None:
+    service, _publisher = _service(tmp_path)
+    item = _question()
+    await service.ingest_event(review_requested_event(item, source="v"))
+    await service.decide(item.item_id, decision="answered", operator_id="op", answer="a")
+
+    with pytest.raises(ReviewDecisionError) as settled:
+        await service.decide(item.item_id, decision="answered", operator_id="op", answer="b")
+    assert settled.value.status_code == 409
+    assert (await service.get(item.item_id)).decision_answer == "a"
+
+
+async def test_decided_event_carries_the_answer_into_the_ledger(tmp_path) -> None:
+    service, _publisher = _service(tmp_path)
+    item = _question()
+    await service.ingest_event(review_requested_event(item, source="v"))
+    answered = ReviewItem.from_payload(item.to_payload())
+    answered.decide(decision="answered", operator_id="human:jozef", answer="Friday")
+
+    await service.ingest_event(review_decided_event(answered, source="resident"))
+
+    stored = await service.get(item.item_id)
+    assert (stored.status, stored.decision_answer) == ("approved", "Friday")
+
+
 async def test_expiry_sweep_uses_per_kind_ttls(tmp_path) -> None:
     service, _publisher = _service(
         tmp_path,
@@ -385,6 +487,49 @@ async def test_rest_reject_requires_reason(tmp_path) -> None:
         json={"decision": "rejected", "participantId": "human:jozef"},
     )
     assert refused.status_code == 422
+
+
+async def test_rest_answers_a_question_and_validates(tmp_path) -> None:
+    service, publisher = _service(tmp_path)
+    question = _question()
+    other = _item()
+    await service.ingest_event(review_requested_event(question, source="v"))
+    await service.ingest_event(review_requested_event(other, source="v"))
+    client = _client(service)
+    decide = "/api/v1/ravn/odin/reviews/{}/decide"
+
+    empty = client.post(
+        decide.format(question.item_id),
+        json={"decision": "answered", "answer": "  ", "participantId": "human:jozef"},
+    )
+    assert empty.status_code == 422
+    assert "answer is required" in empty.json()["detail"]
+
+    missing = client.post(decide.format(question.item_id), json={"decision": "answered"})
+    assert missing.status_code == 422
+
+    wrong_kind = client.post(
+        decide.format(other.item_id),
+        json={"decision": "answered", "answer": "yes", "participantId": "human:jozef"},
+    )
+    assert wrong_kind.status_code == 422
+
+    answered = client.post(
+        decide.format(question.item_id),
+        json={"decision": "answered", "answer": "Tuesday", "participantId": "human:jozef"},
+    )
+    assert answered.status_code == 200
+    body = answered.json()
+    assert body["item"]["status"] == "approved"
+    assert body["item"]["decision_answer"] == "Tuesday"
+    assert body["commandDelivery"]["published"] is True
+    assert publisher.items[0].decision_answer == "Tuesday"
+
+    again = client.post(
+        decide.format(question.item_id),
+        json={"decision": "answered", "answer": "Wednesday", "participantId": "human:jozef"},
+    )
+    assert again.status_code == 409
 
 
 async def test_rest_enforces_the_items_capability(tmp_path) -> None:
