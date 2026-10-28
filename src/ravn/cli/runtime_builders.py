@@ -18,6 +18,12 @@ import httpx
 from niuu.adapters.outbound.http_auth import WorkloadIdentityBearerTokenAuthAdapter
 from ravn.config import PermissionConfig, Settings, ToolGroupConfig
 from ravn.domain.exceptions import ConfigurationError
+from ravn.domain.harness import (
+    HarnessCapabilityProfile,
+    HarnessKind,
+    HarnessRequirementError,
+    HarnessSelection,
+)
 from ravn.domain.permission_mode import PermissionMode, parse_permission_mode
 from ravn.ports.executor import ExecutorPort
 
@@ -418,46 +424,122 @@ def _build_executor(
     loaded_settings = settings or Settings()
     adapter_path = "ravn.adapters.executors.agent.AgentExecutor"
     kwargs: dict[str, Any] = {}
+    requirements = frozenset()
+    fallbacks: list[Any] = []
 
     executor_cfg = getattr(persona_config, "executor", None)
+    if executor_cfg is not None:
+        requirements = getattr(executor_cfg, "requires", frozenset())
+        fallbacks = list(getattr(executor_cfg, "fallbacks", []))
     if executor_cfg is not None and getattr(executor_cfg, "adapter", ""):
-        adapter_path = str(executor_cfg.adapter)
+        adapter_path = str(executor_cfg.adapter).strip()
         raw_kwargs = getattr(executor_cfg, "kwargs", {})
         if isinstance(raw_kwargs, dict):
             kwargs = dict(raw_kwargs)
-        if adapter_path == "ravn.adapters.executors.cli.CliTransportExecutor":
-            transport_adapter = str(kwargs.get("transport_adapter") or "").strip()
-            runtime_kwargs = _runtime_cli_transport_kwargs(
-                transport_adapter,
-                loaded_settings,
-            )
-            configured_kwargs = kwargs.get("transport_kwargs")
-            if runtime_kwargs and (
-                configured_kwargs is None or isinstance(configured_kwargs, dict)
-            ):
-                kwargs["transport_kwargs"] = {
-                    **runtime_kwargs,
-                    **(configured_kwargs or {}),
-                }
-            if kwargs.get("model_gateway"):
-                # The persona asked for the gateway; the session supplies where
-                # it is. The executor refuses to build if it has none.
-                runtime = loaded_settings.runtime_executor
-                kwargs["model_gateway_url"] = runtime.model_gateway_url
-                kwargs["model_gateway_token"] = runtime.model_gateway_token
     else:
         runtime_transport_adapter = loaded_settings.runtime_executor.transport_adapter.strip()
         if runtime_transport_adapter:
             adapter_path = "ravn.adapters.executors.cli.CliTransportExecutor"
             kwargs = {"transport_adapter": runtime_transport_adapter}
-            transport_kwargs = _runtime_cli_transport_kwargs(
-                runtime_transport_adapter, loaded_settings
-            )
-            if transport_kwargs:
-                kwargs["transport_kwargs"] = transport_kwargs
 
-    cls = _import_class(adapter_path)
-    return cls(**kwargs)
+    candidates = [(adapter_path, kwargs, "configured" if executor_cfg is not None else "default")]
+    candidates.extend(
+        (str(fallback.adapter), dict(fallback.kwargs), "fallback") for fallback in fallbacks
+    )
+    failures: list[tuple[str, frozenset[object]]] = []
+    for candidate_path, candidate_kwargs, candidate_reason in candidates:
+        resolved_kwargs = _executor_runtime_kwargs(
+            candidate_path, candidate_kwargs, loaded_settings
+        )
+        cls = _import_class(candidate_path)
+        executor = cls(**resolved_kwargs)
+        profile = getattr(executor, "profile", None)
+        if not isinstance(profile, HarnessCapabilityProfile):
+            raise ValueError(
+                f"Executor {candidate_path!r} must declare a HarnessCapabilityProfile before "
+                "it can be selected"
+            )
+        missing = profile.missing_requirements(requirements)
+        if missing:
+            failures.append((candidate_path, missing))
+            continue
+        runtime_identity = candidate_path
+        binding = getattr(executor, "_binding", None)
+        if binding is not None:
+            runtime_identity = f"{binding.cls.__module__}.{binding.cls.__name__}"
+        reason = candidate_reason
+        if candidate_reason == "fallback":
+            reason = "fallback_after_incompatible_primary"
+        selection = HarnessSelection(
+            adapter=candidate_path,
+            runtime_identity=runtime_identity,
+            profile=profile,
+            requirements=requirements,
+            reason=reason,
+        )
+        setattr(executor, "harness_selection", selection)
+        return executor
+
+    diagnostics = "; ".join(
+        f"{path}: missing {', '.join(sorted(capability.value for capability in missing))}"
+        for path, missing in failures
+    )
+    required = ", ".join(sorted(capability.value for capability in requirements))
+    raise HarnessRequirementError(
+        f"Selected harness {adapter_path!r} is incompatible with required capabilities "
+        f"[{required}]; {diagnostics}"
+    )
+
+
+def _executor_runtime_kwargs(
+    adapter_path: str,
+    raw_kwargs: dict[str, Any],
+    settings: Settings,
+) -> dict[str, Any]:
+    """Apply runtime-owned CLI bindings without opening a provider session."""
+    kwargs = dict(raw_kwargs)
+    if adapter_path != "ravn.adapters.executors.cli.CliTransportExecutor":
+        return kwargs
+
+    transport_adapter = str(kwargs.get("transport_adapter") or "").strip()
+    runtime_kwargs = _runtime_cli_transport_kwargs(transport_adapter, settings)
+    configured_kwargs = kwargs.get("transport_kwargs")
+    if runtime_kwargs and (configured_kwargs is None or isinstance(configured_kwargs, dict)):
+        kwargs["transport_kwargs"] = {
+            **runtime_kwargs,
+            **(configured_kwargs or {}),
+        }
+    if not kwargs.get("model_gateway"):
+        return kwargs
+    runtime = settings.runtime_executor
+    kwargs["model_gateway_url"] = runtime.model_gateway_url
+    kwargs["model_gateway_token"] = runtime.model_gateway_token
+    return kwargs
+
+
+def emit_harness_selection(executor: ExecutorPort, *, model: str) -> HarnessSelection | None:
+    """Publish resolved, content-safe harness facts before a provider session starts."""
+    selection = getattr(executor, "harness_selection", None)
+    if not isinstance(selection, HarnessSelection):
+        return None
+    resolved = selection.with_model(model)
+    from niuu.observability import get_observability  # noqa: PLC0415
+
+    attributes: dict[str, str | bool] = {
+        "ravn.harness.selection.adapter": resolved.adapter,
+        "ravn.harness.selection.runtime_identity": resolved.runtime_identity,
+        "gen_ai.request.model": resolved.model,
+        "ravn.harness.selection.capabilities": ",".join(
+            sorted(capability.value for capability in resolved.capabilities)
+        ),
+        "ravn.harness.selection.reason": resolved.reason,
+    }
+    get_observability().event(
+        "ravn.harness.selection",
+        attributes=attributes,
+        content=resolved.to_dict(),
+    )
+    return resolved
 
 
 def _runtime_cli_transport_kwargs(
@@ -624,6 +706,19 @@ def _uses_cli_transport_executor(
     if adapter_path:
         return adapter_path == "ravn.adapters.executors.cli.CliTransportExecutor"
     return _uses_cli_transport_runtime(settings)
+
+
+def _selected_executor_uses_cli_transport(executor: ExecutorPort) -> bool:
+    """Return whether the resolved executor, rather than its primary config, is CLI-backed.
+
+    Capability selection can replace a configured CLI executor with a native
+    fallback. Runtime resources must follow that selected profile so the native
+    executor receives its LLM before a provider session is opened.
+    """
+    selection = getattr(executor, "harness_selection", None)
+    if isinstance(selection, HarnessSelection):
+        return selection.profile.kind is HarnessKind.CLI_BACKED
+    return False
 
 
 # ---------------------------------------------------------------------------

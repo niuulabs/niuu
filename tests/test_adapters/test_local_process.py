@@ -1751,6 +1751,14 @@ class TestProcessSpawning:
                             "iteration_budget": 40,
                             "consumes_event_types": ["review.requested"],
                             "max_concurrent_tasks": 1,
+                            "executor": {
+                                "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
+                                "kwargs": {"transport_adapter": "tests.CliTransport"},
+                                "requires": ["reasoning"],
+                                "fallbacks": [
+                                    {"adapter": "ravn.adapters.executors.agent.AgentExecutor"}
+                                ],
+                            },
                         }
                     ],
                     "llm_config": {
@@ -1797,6 +1805,11 @@ class TestProcessSpawning:
         assert "enabled: true" in node_config
         assert "broker_url: ws://127.0.0.1:9101/ws/ravn" in node_config
         assert f"workspace_root: {repo_dir}" in node_config
+        parsed_config = yaml.safe_load(node_config)
+        assert parsed_config["persona_overrides"]["executor"]["requires"] == ["reasoning"]
+        assert parsed_config["persona_overrides"]["executor"]["fallbacks"] == [
+            {"adapter": "ravn.adapters.executors.agent.AgentExecutor"}
+        ]
 
     async def _start_single_node_flock(
         self,

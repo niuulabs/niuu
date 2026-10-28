@@ -19,6 +19,7 @@ from ravn.adapters.personas.loader import (
     PersonaFanIn,
     PersonaLLMConfig,
     PersonaProduces,
+    _parse_executor_fallbacks,
     _sanitize_executor_kwargs,
 )
 from ravn.domain.persona_document import (
@@ -521,6 +522,14 @@ def _config_to_payload(config: PersonaConfig | None) -> dict[str, Any]:
         "executor": {
             "adapter": config.executor.adapter,
             "kwargs": _sanitize_executor_kwargs(config.executor.kwargs),
+            "requires": sorted(capability.value for capability in config.executor.requires),
+            "fallbacks": [
+                {
+                    "adapter": fallback.adapter,
+                    "kwargs": _sanitize_executor_kwargs(fallback.kwargs),
+                }
+                for fallback in config.executor.fallbacks
+            ],
         },
         "iteration_budget": config.iteration_budget,
         "llm_primary_alias": "",
@@ -579,6 +588,8 @@ def _payload_to_config(payload: dict[str, Any]) -> PersonaConfig:
         executor=PersonaExecutorConfig(
             adapter=str((payload.get("executor") or {}).get("adapter", "")),
             kwargs=dict((payload.get("executor") or {}).get("kwargs") or {}),
+            requires=(payload.get("executor") or {}).get("requires", []),
+            fallbacks=_parse_executor_fallbacks((payload.get("executor") or {}).get("fallbacks")),
         ),
         llm=PersonaLLMConfig(
             primary_alias="",
@@ -673,12 +684,18 @@ def _normalize_permission_mode(raw: object) -> str:
 
 
 def _normalize_executor(raw: object, fallback: object) -> dict[str, Any]:
-    base = {"adapter": "", "kwargs": {}}
+    base = {"adapter": "", "kwargs": {}, "requires": [], "fallbacks": []}
     if isinstance(fallback, dict):
         base["adapter"] = str(fallback.get("adapter", "")).strip()
         kwargs = fallback.get("kwargs")
         if isinstance(kwargs, dict):
             base["kwargs"] = {str(key): value for key, value in kwargs.items()}
+        requires = fallback.get("requires")
+        if isinstance(requires, list):
+            base["requires"] = list(requires)
+        fallbacks = fallback.get("fallbacks")
+        if isinstance(fallbacks, list):
+            base["fallbacks"] = [dict(candidate) for candidate in fallbacks]
 
     if not isinstance(raw, dict):
         return base
@@ -690,13 +707,23 @@ def _normalize_executor(raw: object, fallback: object) -> dict[str, Any]:
         normalized_kwargs = _sanitize_executor_kwargs(
             {str(key): value for key, value in kwargs.items()}
         )
+    requires = PersonaExecutorConfig(requires=raw.get("requires", [])).requires
+    fallbacks = _parse_executor_fallbacks(raw.get("fallbacks"))
 
-    if not adapter and not normalized_kwargs:
-        return {"adapter": "", "kwargs": {}}
+    if not adapter and not normalized_kwargs and not requires and not fallbacks:
+        return {"adapter": "", "kwargs": {}, "requires": [], "fallbacks": []}
 
     return {
         "adapter": adapter,
         "kwargs": normalized_kwargs,
+        "requires": sorted(capability.value for capability in requires),
+        "fallbacks": [
+            {
+                "adapter": fallback.adapter,
+                "kwargs": _sanitize_executor_kwargs(fallback.kwargs),
+            }
+            for fallback in fallbacks
+        ],
     }
 
 

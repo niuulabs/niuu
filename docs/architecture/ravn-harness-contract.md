@@ -42,6 +42,23 @@ deterministically at construction. A typed input requesting a capability not
 in the profile raises `UnsupportedHarnessCapabilityError`; calling a lifecycle
 operation at the wrong time raises `HarnessLifecycleError`.
 
+## Capability-aware selection
+
+Persona executor bindings may declare `requires` using only the canonical
+names `tools`, `reasoning`, `attachments`, `images`, `interrupt`, `steering`,
+`session_resume`, and `dynamic_tools`. Ravn validates these names when loading
+the persona and compares all of them with the selected `HarnessCapabilityProfile`
+before building or starting a provider session. An incompatible explicit
+binding raises a diagnostic naming the harness and every missing capability.
+
+An executor binding can declare `fallbacks` only as explicit, pre-start
+alternatives. Ravn considers one only when the primary profile cannot meet the
+requirements, and selects it only when it meets the complete set; it never
+uses a fallback after a provider/session failure. The resolved adapter, runtime
+identity, model, capability set, requirements, and reason are available on the
+executor's `harness_selection` and emitted as `ravn.harness.selection` without
+credentials or prompt content.
+
 ## Current mapping and migration
 
 The existing `ExecutionAgentPort` remains the compatibility interface for

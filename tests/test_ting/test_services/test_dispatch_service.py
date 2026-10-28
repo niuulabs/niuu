@@ -1466,6 +1466,60 @@ class TestBuildSpawnRequestPersonaOverrides:
             "transport_kwargs": {"skip_permissions": True},
         }
 
+    def test_workflow_executor_requirements_survive_transport_selection(self):
+        config = DispatchConfig(flock_enabled=False, flock_default_personas=[])
+        saga = self._make_saga()
+        issue = self._make_issue()
+        workflow_snapshot = {
+            "workflow_id": str(uuid4()),
+            "name": "Capability Flow",
+            "version": "1.0.0",
+            "personas": [
+                {
+                    "name": "reviewer",
+                    "model": "claude-sonnet-4-6",
+                    "executor": {
+                        "requires": ["reasoning"],
+                        "fallbacks": [{"adapter": "tests.NativeFallback"}],
+                    },
+                }
+            ],
+            "graph": {
+                "nodes": [
+                    {
+                        "id": "stage-1",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "reviewer", "model": "claude-sonnet-4-6"}],
+                    }
+                ]
+            },
+        }
+
+        svc = MagicMock()
+        svc._config = config
+        svc._flow_provider = None
+        item = DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo")
+        request = DispatchService._build_spawn_request(
+            svc,
+            item=item,
+            saga=saga,
+            issue=issue,
+            effective_model="claude-sonnet-4-6",
+            effective_prompt="",
+            integration_ids=[],
+            workflow_snapshot=workflow_snapshot,
+        )
+
+        assert request.workload_config["personas"][0]["executor"] == {
+            "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
+            "kwargs": {
+                "transport_adapter": "skuld.transports.sdk.SDKTransport",
+                "transport_kwargs": {"turn_timeout_s": 120.0},
+            },
+            "requires": ["reasoning"],
+            "fallbacks": [{"adapter": "tests.NativeFallback"}],
+        }
+
     def test_workflow_snapshot_ignores_incompatible_default_session_definition(self):
         config = DispatchConfig(
             flock_enabled=False,

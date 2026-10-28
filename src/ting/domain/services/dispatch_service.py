@@ -225,10 +225,16 @@ def _resolve_workflow_execution(
                     # session carries the gateway address whatever its personas
                     # run, and a cloud persona must keep its vendor's API.
                     executor_kwargs["model_gateway"] = True
-                runtime_persona["executor"] = {
+                configured_executor = runtime_persona.get("executor")
+                executor_config: dict[str, Any] = {
                     "adapter": _CLI_TRANSPORT_EXECUTOR,
                     "kwargs": executor_kwargs,
                 }
+                if isinstance(configured_executor, dict):
+                    for field in ("requires", "fallbacks"):
+                        if field in configured_executor:
+                            executor_config[field] = configured_executor[field]
+                runtime_persona["executor"] = executor_config
         personas.append(runtime_persona)
 
     if len(resolved_definitions) == 1:

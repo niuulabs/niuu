@@ -192,6 +192,7 @@ from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _build_permission,
     _build_tool_build_backend,
     _effective_permission_mode,
+    emit_harness_selection,
     _constructor_accepts_kwarg,
     _get_tool_group,
     _with_mimir_fact_capture,
@@ -205,6 +206,7 @@ from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _resolve_workspace,
     _run_coro_blocking,
     _runtime_cli_transport_kwargs,
+    _selected_executor_uses_cli_transport,
     _transport_mcp_servers,
     _uses_cli_transport_executor,
     _uses_cli_transport_runtime,
@@ -518,9 +520,10 @@ def _build_agent(
                 max_tokens = persona_config.llm.max_tokens
     resolved_model = _resolve_persona_model(settings, persona_config)
 
+    executor = _build_executor(persona_config)
+    cli_transport_executor = _selected_executor_uses_cli_transport(executor)
     workspace = _resolve_workspace(settings)
     permission_mode = _effective_permission_mode(settings, persona_config)
-    cli_transport_executor = _uses_cli_transport_executor(persona_config)
     llm = None if cli_transport_executor else _build_llm(settings)
     session = session or Session()
     base_channel: CliChannel = CliChannel()
@@ -571,7 +574,7 @@ def _build_agent(
     )
 
     cp_cfg = settings.checkpoint
-    executor = _build_executor(persona_config)
+    emit_harness_selection(executor, model=resolved_model)
     agent = executor.build(
         llm=llm,
         tools=tools,
@@ -1568,9 +1571,11 @@ async def _run_gateway(
                 max_iterations = persona_config.iteration_budget
     resolved_model = _resolve_persona_model(settings, persona_config)
 
+    executor = _build_executor(persona_config)
+    cli_transport_executor = _selected_executor_uses_cli_transport(executor)
+
     # Shared resources (safe to reuse across sessions)
     workspace = _resolve_workspace(settings)
-    cli_transport_executor = _uses_cli_transport_executor(persona_config)
     llm = None if cli_transport_executor else _build_llm(settings)
     memory = _build_memory(settings, llm=llm)
     compressor, native_compaction = (
@@ -1626,7 +1631,7 @@ async def _run_gateway(
             )
             effective_channel = CompositeChannel([channel, sleipnir_ch])
 
-        executor = _build_executor(persona_config)
+        emit_harness_selection(executor, model=resolved_model)
         return executor.build(
             llm=llm,
             tools=tools,

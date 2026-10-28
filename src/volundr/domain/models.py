@@ -1342,6 +1342,7 @@ class WorkloadPersonaOverride:
     llm: dict[str, Any] = field(default_factory=dict)
     system_prompt_extra: str | None = None
     iteration_budget: int | None = None
+    executor: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to the wire dict format consumed by workload_config."""
@@ -1352,6 +1353,8 @@ class WorkloadPersonaOverride:
             d["system_prompt_extra"] = self.system_prompt_extra
         if self.iteration_budget is not None:
             d["iteration_budget"] = self.iteration_budget
+        if self.executor:
+            d["executor"] = dict(self.executor)
         return d
 
 

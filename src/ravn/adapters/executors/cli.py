@@ -1166,6 +1166,32 @@ class CliTransportExecutor(ExecutorPort, HarnessExecutorPort):
             supports_system_prompt="system_prompt" in sig.parameters,
         )
 
+    @property
+    def profile(self) -> HarnessCapabilityProfile:
+        """Declare CLI capabilities without starting a provider session."""
+        probe_kwargs = dict(self._transport_kwargs)
+        parameters = inspect.signature(self._binding.cls).parameters
+        if "workspace_dir" in parameters:
+            probe_kwargs.setdefault("workspace_dir", "")
+        filtered = {key: value for key, value in probe_kwargs.items() if key in parameters}
+        transport = self._binding.cls(**filtered)
+        capabilities = transport.capabilities
+        try:
+            steering_mode = SteeringMode(capabilities.steering_mode)
+        except ValueError as exc:
+            raise HarnessContractError(
+                f"CLI transport declared unknown steering mode {capabilities.steering_mode!r}"
+            ) from exc
+        return HarnessCapabilityProfile.cli_backed(
+            supports_tools=True,
+            supports_reasoning=False,
+            supports_interrupt=capabilities.interrupt,
+            steering_mode=steering_mode,
+            supports_session_resume=(
+                capabilities.session_resume and _accepts_resume_session_id(self._binding.cls)
+            ),
+        )
+
     def build(self, **kwargs: Any) -> ExecutionAgentPort:
         return self.build_harness(**kwargs)
 

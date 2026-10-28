@@ -1630,7 +1630,7 @@ class LocalProcessPodManager(PodManager):
 
             executor_override = persona_override.get("executor")
             if isinstance(executor_override, dict) and executor_override:
-                persona_runtime_overrides["executor"] = {
+                executor_config: dict[str, Any] = {
                     "adapter": str(executor_override.get("adapter") or ""),
                     "kwargs": (
                         dict(executor_override.get("kwargs") or {})
@@ -1638,6 +1638,11 @@ class LocalProcessPodManager(PodManager):
                         else {}
                     ),
                 }
+                if "requires" in executor_override:
+                    executor_config["requires"] = executor_override["requires"]
+                if "fallbacks" in executor_override:
+                    executor_config["fallbacks"] = executor_override["fallbacks"]
+                persona_runtime_overrides["executor"] = executor_config
 
             if persona_runtime_overrides:
                 node_config["persona_overrides"] = persona_runtime_overrides

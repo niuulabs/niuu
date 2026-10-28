@@ -51,6 +51,11 @@ class HarnessExecutorPort(ABC):
     remains below until callers migrate their existing string-turn API.
     """
 
+    @property
+    @abstractmethod
+    def profile(self) -> HarnessCapabilityProfile:
+        """Return the static capability profile used for pre-start selection."""
+
     @abstractmethod
     def build_harness(self, **kwargs: Any) -> RavnHarnessPort:
         """Construct a canonical harness with its declared capability profile."""
