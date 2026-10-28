@@ -9,6 +9,9 @@ from typing import Any
 import pytest
 
 from ravn.decision_observability import (
+    LATENCY_BUCKETS_S,
+    SCORE_BUCKETS,
+    UNIT_BUCKETS,
     ObservedDecisionPort,
     describe_answer,
     describe_question,
@@ -38,6 +41,7 @@ class RecordingTelemetry:
         self.durations: list[tuple[str, float, dict]] = []
         self.events: list[tuple[str, dict, Any]] = []
         self.errors: list[tuple[str, str]] = []
+        self.buckets: dict[str, Any] = {}
 
     @contextmanager
     def span(self, name: str, *, attributes: dict | None = None):
@@ -50,11 +54,17 @@ class RecordingTelemetry:
     def count(self, name: str, value: int = 1, *, attributes: dict | None = None) -> None:
         self.counts.append((name, value, dict(attributes or {})))
 
-    def record(self, name: str, value: float, *, attributes: dict | None = None) -> None:
+    def record(
+        self, name: str, value: float, *, attributes: dict | None = None, buckets=None
+    ) -> None:
         self.records.append((name, value, dict(attributes or {})))
+        self.buckets[name] = buckets
 
-    def duration(self, name: str, seconds: float, *, attributes: dict | None = None) -> None:
+    def duration(
+        self, name: str, seconds: float, *, attributes: dict | None = None, buckets=None
+    ) -> None:
         self.durations.append((name, seconds, dict(attributes or {})))
+        self.buckets[name] = buckets
 
     def event(self, name: str, *, attributes: dict | None = None, content: Any = None) -> None:
         self.events.append((name, dict(attributes or {}), content))
@@ -116,6 +126,7 @@ async def test_passes_through_and_records_the_request(telemetry: RecordingTeleme
     assert ("ravn.decision.requests", 1, base) in telemetry.counts
     assert ("ravn.decision.input_tokens", 120, base) in telemetry.counts
     assert [name for name, _, _ in telemetry.durations] == ["ravn.decision.latency"]
+    assert telemetry.buckets["ravn.decision.latency"] == LATENCY_BUCKETS_S
 
 
 async def test_records_each_answer(telemetry: RecordingTelemetry) -> None:
@@ -133,6 +144,9 @@ async def test_records_each_answer(telemetry: RecordingTelemetry) -> None:
     assert ("ravn.decision.probability", 0.25) in histograms
     assert ("ravn.decision.confidence", 0.9) in histograms
     assert ("ravn.decision.score", 0.5) in histograms
+    assert telemetry.buckets["ravn.decision.confidence"] == UNIT_BUCKETS
+    assert telemetry.buckets["ravn.decision.probability"] == UNIT_BUCKETS
+    assert telemetry.buckets["ravn.decision.score"] == SCORE_BUCKETS
     events = {
         attrs["ravn.decision.question"]: content
         for name, attrs, content in telemetry.events

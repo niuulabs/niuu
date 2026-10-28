@@ -56,6 +56,14 @@ _UNAVAILABLE = "unavailable"
 #: Heading every resident task context uses for its outcome contract
 #: (``environment_signal_runtime`` and ``valkyrie_contracts.resident_outcome_section``).
 _OUTCOME_HEADING = "## Required outcome"
+#: One bucket per possible tier difference (-3..3), so ``le="-0.5"`` counts every turn where
+#: the first opinion under-attended and ``le="0.5"`` minus that counts exact agreement.
+TIER_DELTA_BUCKETS = tuple(
+    delta + 0.5
+    for delta in range(
+        -len(VALKYRIE_ATTENTION_TIER_ORDER) + 1, len(VALKYRIE_ATTENTION_TIER_ORDER) - 1
+    )
+)
 
 #: What each attention tier causes when the ODIN court resolves it (``court._decision_for``).
 TIER_CRITERIA: dict[str, str] = {
@@ -197,6 +205,7 @@ class ResidentFirstOpinion:
                 "ravn.decision.first_opinion.tier_delta",
                 delta,
                 attributes={**base, "ravn.decision.resident": resident_tier},
+                buckets=TIER_DELTA_BUCKETS,
             )
         # On the turn's own span, so TraceQL can find disagreements directly, e.g.
         # { span.ravn.decision.first_opinion.tier_agreed = "false" }.

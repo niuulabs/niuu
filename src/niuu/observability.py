@@ -36,6 +36,7 @@ import atexit
 import json
 import logging
 import re
+from collections.abc import Sequence
 from contextlib import nullcontext
 from contextvars import ContextVar
 from threading import Lock
@@ -271,6 +272,7 @@ class Observability:
         *,
         attributes: dict[str, Any] | None = None,
         description: str = "",
+        buckets: Sequence[float] | None = None,
     ) -> None:
         self.record(
             name,
@@ -278,6 +280,7 @@ class Observability:
             unit="s",
             attributes=attributes,
             description=description,
+            buckets=buckets,
         )
 
     def record(
@@ -288,7 +291,14 @@ class Observability:
         unit: str = "1",
         attributes: dict[str, Any] | None = None,
         description: str = "",
+        buckets: Sequence[float] | None = None,
     ) -> None:
+        """Record *value* on histogram *name*.
+
+        *buckets* sets the explicit bucket boundaries when the instrument is first created. Without
+        it the SDK defaults apply (0, 5, 10, 25 … 10000), which cannot resolve sub-second
+        latencies or values in [0, 1]: every observation lands in one bucket.
+        """
         if self._meter is None:
             return
         key = f"{name}\0{unit}"
@@ -299,6 +309,9 @@ class Observability:
                     name,
                     unit=unit,
                     description=description,
+                    explicit_bucket_boundaries_advisory=(
+                        list(buckets) if buckets is not None else None
+                    ),
                 )
                 self._histograms[key] = instrument
         instrument.record(value, attributes=_clean_attributes(attributes or {}))

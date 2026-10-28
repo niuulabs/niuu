@@ -26,6 +26,7 @@ from ravn.resident_first_opinion import (
     DECISION_CRITERIA,
     PURPOSE,
     TIER_CRITERIA,
+    TIER_DELTA_BUCKETS,
     FirstOpinion,
     ResidentFirstOpinion,
     without_outcome_contract,
@@ -199,6 +200,7 @@ class TestCompare:
         assert name == "ravn.decision.first_opinion.tier_delta"
         assert delta == -2  # ambient (1) minus urgent (3): the cheap model under-attended
         assert attrs["ravn.decision.resident"] == "urgent"
+        assert telemetry.buckets[name] == TIER_DELTA_BUCKETS == (-2.5, -1.5, -0.5, 0.5, 1.5, 2.5)
         assert telemetry.span_attributes == {
             "ravn.decision.first_opinion.tier": "ambient",
             "ravn.decision.first_opinion.decision": "watch",
