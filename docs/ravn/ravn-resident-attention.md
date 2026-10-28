@@ -239,10 +239,11 @@ acknowledging it marked every observation folded into that slot as judged.
   that write fails the restart stops and the journal is left as it was.
 
 A System One pre-attentive gate (`docs/design/system-one-decision-models.md`
-§3.1) plugs in at the same place a stage-3 pattern does: per slot, in
-`ResidentRuntime.next_home_task`, over the slot aggregate. It stays off until
-the offline calibration in §5 of that doc; `decision.resident_first_opinion`
-records the agreement data for it today.
+§3.1, §6) sits at the same place a stage-3 pattern does: per slot, in
+`ResidentRuntime.next_home_task`, over the slot aggregate. Skipped slots stay
+pending and reach the next turn as receipts, as in §5.1. It is built and off
+until `ravn resident attention-calibrate` has fitted a threshold.
+`decision.resident_first_opinion` records per-slot agreement data today.
 
 ## 5. Stage 3 — learned attention, with receipts
 

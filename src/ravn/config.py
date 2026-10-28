@@ -52,6 +52,10 @@ from ravn.domain.permission_mode import (
     parse_optional_permission_mode,
     parse_permission_mode,
 )
+from ravn.domain.valkyrie_contracts import (
+    VALKYRIE_ATTENTION_TIER_ORDER,
+    VALKYRIE_DECISION_ORDER,
+)
 
 # ---------------------------------------------------------------------------
 # Config file resolution
@@ -489,12 +493,63 @@ class RerankerConfig(BaseModel):
     )
 
 
+class ResidentAttentionGateConfig(BaseModel):
+    """Let a routine inbox slot skip a turn of its own (``ravn.resident_attention``).
+
+    Off until calibrated (``docs/design/system-one-decision-models.md`` §5): fit
+    ``min_skip_probability`` on ``ravn resident attention-calibrate`` output first. A skipped slot
+    stays pending and appears as a receipt in the next turn that runs, which acknowledges it;
+    critical observations, operator messages, A2A updates and numerically novel slots are never
+    skipped.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Skip a turn for slots whose routine probability reaches min_skip_probability. "
+            "Requires decision.resident_first_opinion.enabled and a fitted threshold."
+        ),
+    )
+    skip_tiers: list[str] = Field(
+        default_factory=lambda: ["silent", "ambient"],
+        description="Attention tiers that count as routine for the skip probability.",
+    )
+    skip_decisions: list[str] = Field(
+        default_factory=lambda: ["ignore", "watch"],
+        description="Resident decisions that count as routine for the skip probability.",
+    )
+    min_skip_probability: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Probability mass on routine tier, routine decision and no investigation needed — "
+            "all three — at or above which a slot skips its turn. No default: fit it from "
+            "calibration. While unset, observe mode still records the skip probability."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> ResidentAttentionGateConfig:
+        unknown = [tier for tier in self.skip_tiers if tier not in VALKYRIE_ATTENTION_TIER_ORDER]
+        unknown += [d for d in self.skip_decisions if d not in VALKYRIE_DECISION_ORDER]
+        if unknown:
+            raise ValueError(f"unknown attention gate vocabulary: {unknown}")
+        if self.enabled and self.min_skip_probability is None:
+            raise ValueError(
+                "decision.resident_first_opinion.gate.enabled needs min_skip_probability, "
+                "fitted from `ravn resident attention-calibrate`"
+            )
+        return self
+
+
 class ResidentFirstOpinionConfig(BaseModel):
-    """Observe-only System One opinion on every resident turn (``ravn.resident_first_opinion``).
+    """Observe-only System One opinion on resident turns (``ravn.resident_first_opinion``).
 
     Before each resident turn the decision model is asked for its tier and decision on the same
     observation; after the turn both are recorded side by side in telemetry. The turn always runs
-    and its own outcome is the only one the ODIN court sees.
+    and its own outcome is the only one the ODIN court sees. Home turns are judged per inbox slot,
+    when the slot is selected (``ravn.resident_attention``); other resident turns as a whole.
     """
 
     enabled: bool = Field(
@@ -512,6 +567,19 @@ class ResidentFirstOpinionConfig(BaseModel):
             "are cut and the cut is reported. Jev answers at most 32k tokens per question."
         ),
     )
+    gate: ResidentAttentionGateConfig = Field(
+        default_factory=ResidentAttentionGateConfig,
+        description="Per-slot attention gate built on the slot opinions. Off until calibrated.",
+    )
+
+    @model_validator(mode="after")
+    def _gate_needs_opinions(self) -> ResidentFirstOpinionConfig:
+        if self.gate.enabled and not self.enabled:
+            raise ValueError(
+                "decision.resident_first_opinion.gate.enabled requires "
+                "decision.resident_first_opinion.enabled"
+            )
+        return self
 
 
 class DecisionConfig(BaseModel):

@@ -772,3 +772,97 @@ def resident_answer(
 
     ref = _run(_write())
     typer.echo(f"Answered {case_id} at {ref}.")
+
+
+# ---------------------------------------------------------------------------
+# Attention gate calibration
+#
+# Read-only, but it spends decision-model requests: one per replayed slot.
+# ---------------------------------------------------------------------------
+
+
+@resident_app.command("attention-calibrate")
+def resident_attention_calibrate(
+    out: str = typer.Option(..., "--out", "-o", help="Where to write the JSON report."),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+    limit: int = typer.Option(
+        0, "--limit", help="Newest judged slots to replay; 0 replays every one the inbox holds."
+    ),
+) -> None:
+    """Replay this resident's judged inbox slots through the configured decision model.
+
+    Measures, at every skip probability in the data, how many routine slots the attention gate
+    would have skipped and how many of those the resident itself judged worth a turn. Fit
+    ``decision.resident_first_opinion.gate.min_skip_probability`` from this report; nothing here
+    changes the resident. Run it in the resident's pod so it reads the live inbox and state.
+    """
+    import sys  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    from ravn.cli.commands import (  # noqa: PLC0415
+        _build_mimir,
+        _build_resident_inbox,
+        _resolve_workspace,
+    )
+    from ravn.cli.resident_runtime_wiring import _resolve_environment_charter  # noqa: PLC0415
+    from ravn.cli.runtime_builders import build_decision_port  # noqa: PLC0415
+    from ravn.resident_attention import (  # noqa: PLC0415
+        AttentionGatePolicy,
+        ResidentSlotAttention,
+        opinion_mandate,
+    )
+    from ravn.resident_attention_calibration import calibrate  # noqa: PLC0415
+
+    settings = _load_settings(config)
+    if limit < 0:
+        raise typer.BadParameter("--limit must be 0 (every slot) or positive")
+    decisions = build_decision_port(settings)
+    if decisions is None:
+        typer.echo(
+            "decision.enabled is false: configure the decision model to calibrate.", err=True
+        )
+        raise typer.Exit(1)
+    gate = settings.decision.resident_first_opinion.gate
+    attention = ResidentSlotAttention(
+        decisions,
+        policy=AttentionGatePolicy(
+            skip_tiers=frozenset(gate.skip_tiers),
+            skip_decisions=frozenset(gate.skip_decisions),
+        ),
+        gate_enabled=False,
+        max_observation_chars=settings.decision.resident_first_opinion.max_observation_chars,
+    )
+
+    async def _replay() -> Any:
+        state, _resident_id = await _open_state(settings)
+        workspace = _resolve_workspace(settings)
+        mimir = _build_mimir(settings)
+        inbox = _build_resident_inbox(settings, workspace=workspace, mimir=mimir)
+        if inbox is None:
+            raise typer.BadParameter("resident_inbox.enabled is false: there are no slots")
+        charter = await _resolve_environment_charter(settings, mimir)
+        return await calibrate(
+            state=state,
+            inbox=inbox,
+            attention=attention,
+            mandate=opinion_mandate(charter, settings.environment.resident_personality),
+            limit=limit or sys.maxsize,
+        )
+
+    report = _run(_replay())
+    Path(out).write_text(json.dumps(report.to_dict(), indent=2, default=str))
+    typer.echo(f"models:            {', '.join(report.models) or 'none'}")
+    typer.echo(f"judged slots:      {report.judged_slots}")
+    typer.echo(f"replayed:          {report.replayed_slots}")
+    typer.echo(f"  no turn record:  {report.unmatched_slots}")
+    typer.echo(f"  not a home turn: {report.not_home_turn_slots}")
+    typer.echo(f"eligible labelled: {report.labelled_eligible_slots} of {report.eligible_slots}")
+    if report.zero_miss_threshold is None:
+        typer.echo("zero-miss threshold: none — every threshold the data supports misses a slot")
+    else:
+        point = next(p for p in report.sweep if p.threshold == report.zero_miss_threshold)
+        typer.echo(
+            f"zero-miss threshold: {point.threshold:.4f} "
+            f"(would skip {point.skipped}, coverage {point.coverage:.1%})"
+        )
+    typer.echo(f"report: {out}")

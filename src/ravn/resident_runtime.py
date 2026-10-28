@@ -60,6 +60,13 @@ from ravn.odin.review import (
 from ravn.ports.known_resolutions import KnownResolutionPort
 from ravn.ports.resident_notifications import ResidentNotificationOutboxPort
 from ravn.ports.trigger import TriggerPort
+from ravn.resident_attention import (
+    ResidentSlotAttention,
+    SlotOpinion,
+    opinion_mandate,
+    receipt_lines,
+    working_state_from_page,
+)
 from ravn.resident_continuation import (
     _parse_a2a_task,
     _scheduled_wake_at,
@@ -201,6 +208,10 @@ class ResidentRuntime:
         # next turn picks the observation up without waiting a full interval.
         self._home_wake = asyncio.Event()
         self._home_wake_pending = False
+        self._slot_attention: ResidentSlotAttention | None = None
+        # Opinions on slots the gate kept pending, keyed by ref with the archive
+        # position they judged, so an unchanged slot is not asked about again.
+        self._slot_opinion_cache: dict[str, SlotOpinion] = {}
         # Latest durable-health counts, refreshed off the hot path and
         # re-stated as gauges on every telemetry heartbeat so they never age
         # out of the metrics backend between refreshes.
@@ -229,6 +240,10 @@ class ResidentRuntime:
     def bind_learned_tool_health(self, counts: Callable[[], Mapping[str, int]] | None) -> None:
         """Add the learned-tool library's counts (installed, unused, retired) to health."""
         self._learned_tool_health = counts
+
+    def bind_slot_attention(self, attention: ResidentSlotAttention | None) -> None:
+        """Judge every inbox slot a home turn selects (and gate it, when that is enabled)."""
+        self._slot_attention = attention
 
     def bind_notification_outbox(self, outbox: ResidentNotificationOutboxPort | None) -> None:
         """Tell the owner (through Forge's notification feed) when a question waits on them."""
@@ -775,6 +790,12 @@ class ResidentRuntime:
                 question_error,
             )
             outcome_valid = False
+        if self._slot_attention is not None and task.resident_slot_opinions:
+            self._slot_attention.compare(
+                task.resident_slot_opinions,
+                fields if outcome_valid else None,
+                outcome_valid=bool(outcome_valid),
+            )
         action = selected_action_from_outcome(fields)
         telemetry.event(
             "ravn.resident.outcome_interpreted",
@@ -1886,6 +1907,19 @@ class ResidentRuntime:
         origin = _a2a_signal_origin(rows[0][1])
         if origin.get("case_id"):
             rows = rows[:1]
+        opinions: dict[str, SlotOpinion] = {}
+        receipts: list[tuple[str, ResidentInboxSignal]] = []
+        if self._slot_attention is not None:
+            opinions = await self._slot_opinions(self._slot_attention, rows)
+            selection = self._slot_attention.select(rows, opinions)
+            if not selection.turn:
+                # Every slot is routine by the calibrated gate: no turn. They stay
+                # pending and ride along as receipts on the next turn that runs.
+                self._home_wake_pending = False
+                return None
+            receipts = selection.receipts
+            rows = [*selection.turn, *receipts]
+        turn_rows = rows[: len(rows) - len(receipts)]
         refs = [ref for ref, _signal in rows]
         digest = hashlib.sha256("\n".join(sorted(refs)).encode()).hexdigest()[:16]
         case_id = str(origin.get("case_id") or f"resident-home-{digest}")
@@ -1909,7 +1943,7 @@ class ResidentRuntime:
                 context_lines.append(f"- Charter: {self._charter}")
             context_lines.append("")
         context_lines.append("Observations:")
-        for ref, signal in rows:
+        for ref, signal in turn_rows:
             evidence = signal.raw_ref or ", ".join(signal.evidence_refs) or "none"
             context_lines.append(
                 f"- inbox_ref={ref}; source={signal.source}; kind={signal.kind}; "
@@ -1941,6 +1975,8 @@ class ResidentRuntime:
                     getattr(self._inbox, "archive", None),
                 )
             )
+        if self._slot_attention is not None:
+            context_lines.extend(receipt_lines(receipts, opinions, self._slot_attention.policy))
         task = AgentTask(
             task_id=_task_id("resident_home"),
             title=f"Resident home turn ({len(rows)} observations)",
@@ -1963,12 +1999,48 @@ class ResidentRuntime:
             ),
         )
         task.resident_mandate = str(origin.get("mandate") or task.initiative_context)
+        # Only slots the turn judged in full are compared with its outcome; a
+        # receipt line is not a judgment the label can be attributed to.
+        task.resident_slot_opinions = {
+            ref: opinions[ref].to_record() for ref, _signal in turn_rows if ref in opinions
+        }
+        for ref in refs:
+            self._slot_opinion_cache.pop(ref, None)
         task.resident_input_tokens = int(origin.get("case_input_tokens") or 0)
         task.resident_output_tokens = int(origin.get("case_output_tokens") or 0)
         self._inflight_cases.add(case_id)
         self._inflight_refs.update(refs)
         self._home_wake_pending = False
         return task
+
+    async def _slot_opinions(
+        self,
+        attention: ResidentSlotAttention,
+        rows: list[tuple[str, ResidentInboxSignal]],
+    ) -> dict[str, SlotOpinion]:
+        """Judge the selected slots, reusing an opinion while its slot is unchanged."""
+        cached = {
+            ref: self._slot_opinion_cache[ref]
+            for ref, signal in rows
+            if ref in self._slot_opinion_cache
+            and self._slot_opinion_cache[ref].last_archive_ref == signal.last_archive_ref
+        }
+        fresh_rows = [(ref, signal) for ref, signal in rows if ref not in cached]
+        fresh: dict[str, SlotOpinion] = {}
+        if fresh_rows:
+            fresh = await attention.judge(
+                fresh_rows,
+                mandate=opinion_mandate(self._charter, self._resident_personality),
+                working_state=await self._working_state_mapping(),
+            )
+        self._slot_opinion_cache.update(fresh)
+        return {**cached, **fresh}
+
+    async def _working_state_mapping(self) -> dict[str, Any] | None:
+        entry = await self._state.read_working_state(self._resident_id)
+        if entry is None:
+            return None
+        return working_state_from_page(entry.content)
 
     async def next_stewardship_task(
         self,

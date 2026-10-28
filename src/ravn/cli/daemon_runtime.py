@@ -551,13 +551,20 @@ async def _run_daemon(
         )
         if hasattr(drive_loop, "set_persona_config"):
             drive_loop.set_persona_config(persona_config)
-        from ravn.cli.runtime_builders import build_resident_first_opinion  # noqa: PLC0415
+        from ravn.cli.runtime_builders import (  # noqa: PLC0415
+            build_resident_first_opinion,
+            build_resident_slot_attention,
+        )
 
         first_opinion = build_resident_first_opinion(
             settings, has_resident_runtime=resident_runtime is not None
         )
         if first_opinion is not None:
             drive_loop.set_first_opinion(first_opinion)
+            # build_resident_first_opinion refuses to build without a resident runtime.
+            resident_runtime.bind_slot_attention(
+                build_resident_slot_attention(settings, first_opinion)
+            )
         if hasattr(drive_loop, "register_telemetry_refresh"):
             # The inventory is published once while the resolver is built, so
             # the gauge ages out and the fleet reads zero installed tools while

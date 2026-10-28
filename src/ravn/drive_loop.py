@@ -5439,6 +5439,7 @@ class DriveLoop:
             # restored turn would acknowledge observations that arrived after
             # it was rendered, marking them judged when no turn read them.
             "resident_inbox_expected": task.resident_inbox_expected,
+            "resident_slot_opinions": task.resident_slot_opinions,
             "resident_answer_ref": task.resident_answer_ref,
             "resident_wake_ref": task.resident_wake_ref,
             "resident_help_published": task.resident_help_published,
@@ -5564,6 +5565,7 @@ class DriveLoop:
                     resident_parent_turn_ref=rec.get("resident_parent_turn_ref", ""),
                     resident_inbox_refs=rec.get("resident_inbox_refs", []) or [],
                     resident_inbox_expected=dict(rec.get("resident_inbox_expected") or {}),
+                    resident_slot_opinions=dict(rec.get("resident_slot_opinions") or {}),
                     resident_answer_ref=rec.get("resident_answer_ref", ""),
                     resident_wake_ref=rec.get("resident_wake_ref", ""),
                     resident_help_published=rec.get("resident_help_published", False),
