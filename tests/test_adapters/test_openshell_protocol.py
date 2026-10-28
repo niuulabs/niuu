@@ -289,6 +289,22 @@ def check_deletion_outcomes() -> None:
         finally:
             client.close()
 
+    deadlines: list[float] = []
+
+    def _delete(_request, **kwargs):
+        deadlines.append(kwargs["timeout"])
+        return p.DeleteSandboxResponse(outcome=p.DELETION_OUTCOME_COMPLETED)
+
+    client = _client(type("_DeadlineStub", (), {"DeleteSandbox": staticmethod(_delete)})())
+    try:
+        client.delete_sandbox("sandbox")
+        client.delete_sandbox("sandbox", timeout=120.0)
+        client.delete_sandbox("sandbox", timeout=1.0)
+        # The command deadline is the floor; a longer deletion budget extends it.
+        assert deadlines == [30.0, 120.0, 30.0]
+    finally:
+        client.close()
+
     client = _client(_UnaryStub({"DeleteSandbox": lambda _request: p.DeleteSandboxResponse()}))
     try:
         client.delete_sandbox("sandbox")

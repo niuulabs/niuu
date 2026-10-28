@@ -143,6 +143,16 @@ in the image or HTTP-backed; arbitrary ConfigMap/init-container passthrough is
 unsupported. The primary remains the only exec/SSH target. Peer stdout is
 written to `/sandbox/workspace/.flock/logs/<persona>.log`.
 
+A sandbox has no projected service-account token, so a launch that enables
+`gateway.platform` for its personas (Ting does, with a `workload_token_file`
+for Kubernetes) is translated: Völundr drops the token file and exchange URL,
+adds the platform `base_url` and `a2a_trusted_origins` to the sandbox's
+platform grant, and each peer exports the grant's `NIUU_VOLUNDR_ACCESS_TOKEN`
+placeholder as `RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN`, as a resident's Ravn
+does. OpenShell swaps the placeholder for a workload-bound token on those hosts
+only. A peer stops at start, naming the gateway's `volundr_api_url`, when the
+sandbox has no platform grant.
+
 ### Gateway requirements
 
 Peers and every Forge storage mount travel in the sandbox's

@@ -161,7 +161,11 @@ DEFAULT_SANDBOX_IMAGE = "ghcr.io/niuulabs/skuld:openshell-codex-openbao-20260709
 DEFAULT_SANDBOX_COMMAND = ["/usr/local/bin/openshell-run-installed-skuld"]
 DEFAULT_SERVICE_PORT = 9200
 READY_POLL_INTERVAL = 1.0
-DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS = 30.0
+#: How long deleting a session sandbox may take, for the DeleteSandbox call and
+#: then for its record to go. A flock's peer-workload Pod took about 60s to
+#: terminate on Noatun, and the gateway answers DeleteSandbox only after that,
+#: so 30s turned every first flock delete into a 503.
+DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS = 120.0
 #: How long a resident's deploy or migration waits for a sandbox it removes to go.
 #: Deleting a resident sandbox (its pod, volumes and gateway records) took over
 #: 30s on Noatun, so a rollback gave up on a sandbox that was still going.
@@ -580,18 +584,20 @@ class OpenShellGatewayClient:
         )
         return _sandbox_from_proto(response.sandbox)
 
-    def delete_sandbox(self, name: str) -> bool:
+    def delete_sandbox(self, name: str, *, timeout: float | None = None) -> bool:
         """Delete a sandbox by name; False when it was already gone.
 
         ACCEPTED (the gateway record still exists while the pod goes) and
         COMPLETED both mean this call deleted it; callers that need it gone
-        poll ``get_sandbox`` until it disappears.
+        poll ``get_sandbox`` until it disappears. ``timeout`` is the RPC
+        deadline: the Niuu gateway answers only once a peer-workload Pod has
+        terminated, which outlasts the ordinary command deadline.
         """
         response = self._stub.DeleteSandbox(
             openshell_pb2.DeleteSandboxRequest(
                 workspace_scope=self._workspace_scope, name=name, allow_missing=True
             ),
-            timeout=self._timeout,
+            timeout=max(self._timeout, timeout or 0.0),
             metadata=self._metadata(),
         )
         return _deletion_outcome(response.outcome, f"sandbox {name!r}")
@@ -4425,7 +4431,11 @@ class OpenShellGatewayPodManager(
         except Exception as exc:
             errors.append(exc)
         try:
-            deleted = await asyncio.to_thread(self._client.delete_sandbox, sandbox_name)
+            deleted = await asyncio.to_thread(
+                self._client.delete_sandbox,
+                sandbox_name,
+                timeout=self._resource_delete_timeout if delete_timeout is None else delete_timeout,
+            )
         except Exception as exc:
             errors.append(exc)
             deleted = False
@@ -5303,6 +5313,10 @@ def _resident_api_urls(values: dict[str, Any]) -> tuple[str, ...]:
     token_path = (codex_auth.get("kwargs") or {}).get("token_path", "")
     if urlparse(token_path).scheme:
         urls.append(token_path)
+    # Platform origins a flock's personas call with the mediated platform token
+    # (ravn_flock contributor), e.g. the launching Ting on another cluster.
+    openshell = values.get("openshell") if isinstance(values.get("openshell"), dict) else {}
+    urls.extend(str(url) for url in openshell.get("platformApiUrls") or [] if url)
     return tuple(urls)
 
 

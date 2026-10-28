@@ -244,6 +244,7 @@ class _FakeOpenShellGatewayClient:
         self.forwarded: list[dict] = []
         self.closed_forwarders: list[dict] = []
         self.deleted: list[str] = []
+        self.delete_timeouts: list[float | None] = []
         self.deleted_services: list[dict] = []
         self.provider_grants: list[dict] = []
         self.deleted_grants: list[object] = []
@@ -323,7 +324,8 @@ class _FakeOpenShellGatewayClient:
 
         return _Forwarder()
 
-    def delete_sandbox(self, name: str) -> bool:
+    def delete_sandbox(self, name: str, *, timeout: float | None = None) -> bool:
+        self.delete_timeouts.append(timeout)
         self.deleted.append(name)
         self.recreated.discard(name)
         return True
@@ -1994,6 +1996,28 @@ def test_resident_api_urls_include_absolute_codex_broker(monkeypatch, token_path
     assert urls == ((token_path,) if token_path.startswith("https://") else ())
 
 
+def test_session_platform_grant_covers_the_flock_platform_origins(monkeypatch):
+    """A Ting launch points flock personas at the launching platform, possibly
+    on another cluster; the mediated token must be injected there too."""
+    adapter = _import_adapter(monkeypatch)
+
+    urls = adapter._resident_api_urls(
+        {
+            "openshell": {
+                "platformApiUrls": [
+                    "https://volundr.valhalla.example.test",
+                    "https://ting.valhalla.example.test",
+                ]
+            }
+        }
+    )
+
+    assert urls == (
+        "https://volundr.valhalla.example.test",
+        "https://ting.valhalla.example.test",
+    )
+
+
 @pytest.mark.asyncio
 async def test_resident_restart_reuses_sandbox_and_dynamic_provider_environment(
     monkeypatch: pytest.MonkeyPatch,
@@ -2718,6 +2742,28 @@ async def test_destroy_deletes_a_sandbox_whose_storage_stop_retains(
 
 
 @pytest.mark.asyncio
+async def test_destroy_gives_delete_sandbox_the_deletion_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Niuu gateway answers DeleteSandbox only once a flock's peer Pod has
+    terminated (about 60s on Noatun). Under the 30s command deadline the first
+    delete of every flock session came back as a 503."""
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.created = {"providers": ()}
+    client.delete_polls_remaining = 0
+    monkeypatch.setattr(adapter.asyncio, "sleep", AsyncMock())
+
+    await adapter.OpenShellGatewayPodManager(client=client).destroy(_session())
+    await adapter.OpenShellGatewayPodManager(client=client, resource_delete_timeout=45).destroy(
+        _session()
+    )
+
+    assert client.delete_timeouts == [adapter.DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS, 45]
+    assert adapter.DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS > 60
+
+
+@pytest.mark.asyncio
 async def test_destroy_deletes_a_failed_sandbox_without_waiting_for_stopped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2750,7 +2796,7 @@ async def test_destroy_of_an_absent_sandbox_reports_it_was_already_gone(
     session = _session()
     client = _FakeOpenShellGatewayClient(adapter)
     client.sandbox_exists = False
-    client.delete_sandbox = lambda name: client.deleted.append(name) or False
+    client.delete_sandbox = lambda name, **_: client.deleted.append(name) or False
     manager = adapter.OpenShellGatewayPodManager(client=client)
 
     assert await manager.destroy(session) is False
@@ -2785,7 +2831,7 @@ async def test_destroy_raises_when_the_gateway_refuses_the_delete(
     session = _session()
     client = _FakeOpenShellGatewayClient(adapter)
 
-    def refuse(name: str) -> bool:
+    def refuse(name: str, **_: object) -> bool:
         raise RuntimeError("gateway unavailable")
 
     client.delete_sandbox = refuse
