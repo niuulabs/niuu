@@ -435,6 +435,7 @@ async def _run_daemon(
     # Gateway channels (human-initiated turns)
     gw_tasks: list[str] = []
     http_gateway: Any | None = None
+    gw: RavnGateway | None = None
     channels_cfg = settings.gateway.channels
     _any_channel = (
         channels_cfg.telegram.enabled
@@ -617,6 +618,7 @@ async def _run_daemon(
                 llm=llm,
                 interaction_tracker=interaction_tracker,
                 agent_factory=_agent_factory,
+                gateway=gw,
             )
 
         # Wire task dispatch subscription when requested (--listen / --daemon)

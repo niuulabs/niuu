@@ -2885,6 +2885,15 @@ class WakefulnessConfig(BaseModel):
         default=60,
         description="How often (seconds) the trigger checks for silence.",
     )
+    max_transcript_chars: int = Field(
+        default=12000,
+        gt=0,
+        description=(
+            "Upper bound on the characters of operator conversation put into a "
+            "reflection prompt.  The most recent exchange is kept; older text is "
+            "cut first."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

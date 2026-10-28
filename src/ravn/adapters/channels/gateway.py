@@ -21,10 +21,12 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, cast
 
 from ravn.config import GatewayConfig
 from ravn.domain.events import RavnEvent, RavnEventType
+from ravn.domain.models import Message, Session
 from ravn.domain.profile import RavnProfile
 from ravn.ports.channel import ChannelPort
 from ravn.ports.executor import ExecutionAgentPort
@@ -36,6 +38,21 @@ AgentFactory = Callable[[ChannelPort], ExecutionAgentPort]
 
 # Optional broadcast callback invoked on every emitted event.
 BroadcastCallback = Callable[[RavnEvent], Awaitable[None]]
+
+
+def _render_message(message: Message) -> str:
+    """One ``role: text`` line for the plain-text parts of *message*; ``""`` if it has none."""
+    if isinstance(message.content, str):
+        text = message.content.strip()
+    else:
+        text = " ".join(
+            block["text"].strip()
+            for block in message.content
+            if isinstance(block, dict) and block.get("type") == "text" and block.get("text")
+        )
+    if not text:
+        return ""
+    return f"{message.role}: {text}"
 
 
 class GatewayChannel(ChannelPort):
@@ -115,6 +132,7 @@ class GatewaySession:
     agent: ExecutionAgentPort
     channel: GatewayChannel
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    last_message_at: datetime | None = None
 
 
 class RavnGateway:
@@ -186,6 +204,38 @@ class RavnGateway:
             logger.debug("Dropped gateway session %r.", session_id)
         return dropped
 
+    def transcript_since(self, since: datetime | None, max_chars: int) -> str:
+        """Render the operator conversation held by sessions active after *since*.
+
+        These sessions' agents hold the real conversation history; this is the
+        source the wakefulness trigger reflects on.  Sessions are ordered oldest
+        activity first so the newest text comes last, and only the newest
+        *max_chars* characters are kept.  Tool calls and results are left out —
+        the operator-facing exchange is what is reflected on.  ``since=None``
+        means every session that has seen a message.  Returns ``""`` when no
+        session was active after *since*.
+        """
+        active = [
+            (session_id, session)
+            for session_id, session in self._sessions.items()
+            if session.last_message_at is not None
+            and (since is None or session.last_message_at > since)
+        ]
+        active.sort(key=lambda item: cast(datetime, item[1].last_message_at))
+
+        blocks: list[str] = []
+        for session_id, session in active:
+            messages = cast(Session, session.agent.session).messages
+            lines = [_render_message(message) for message in messages]
+            body = "\n".join(line for line in lines if line)
+            if body:
+                blocks.append(f"[session {session_id}]\n{body}")
+
+        transcript = "\n\n".join(blocks)
+        if len(transcript) <= max_chars:
+            return transcript
+        return "[earlier conversation cut]\n" + transcript[-max_chars:]
+
     # ------------------------------------------------------------------
     # Message handling
     # ------------------------------------------------------------------
@@ -199,6 +249,7 @@ class RavnGateway:
         if self._interaction_tracker is not None:
             self._interaction_tracker.touch()
         session = self.get_or_create_session(session_id)
+        session.last_message_at = datetime.now(UTC)
         async with session.lock:
             await session.agent.run_turn(text)
             return await session.channel.collect_response()
@@ -212,6 +263,7 @@ class RavnGateway:
         if self._interaction_tracker is not None:
             self._interaction_tracker.touch()
         session = self.get_or_create_session(session_id)
+        session.last_message_at = datetime.now(UTC)
         async with session.lock:
             run_task: asyncio.Task[object] = asyncio.create_task(
                 self._run_and_signal(session, text)
