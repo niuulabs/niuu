@@ -775,6 +775,116 @@ resident:
     # "resident-<runtime.id>" name — a name no other release can already own.
     create: false
 
+# Room gateway mode: this release runs ONLY the Skuld broker, as an
+# authenticated collaboration room for a Ravn resident that runs elsewhere
+# (possibly on another cluster) and reaches the room over the network.
+#
+# The pod is the broker, the Envoy sidecar and its Cedar ext_authz sidecar. It
+# has no CLI transport or Codex auth, no resident Ravn sidecar, no IDE, nginx,
+# devrunner/local services, home volume, Forge-session reporting or git clone,
+# whatever the values below those features say. Envoy is the only listener
+# reachable from outside the pod; the broker and the authorization service
+# listen on loopback. Every path, /health and CORS preflight included, needs a
+# verified JWT, and the caller must be the room's owner (session.ownerId in
+# session.tenantId) or an administrator of that tenant:
+#   - /session: the operator's IDP token (Lexi, the web UI): envoy.jwt.*
+#   - /ws/ravn/<peer>: the resident's platform workload token: envoy.jwt.workload.*
+#     (an unscoped token whose sub is session.ownerId)
+# Mandatory settings: roomGateway.routeId, roomGateway.room.environmentId,
+# roomGateway.room.defaultTargetPeerId, session.ownerId, session.tenantId,
+# envoy.jwt.* and roomGateway.ingress.host (or ingress.enabled=false). The
+# render fails with the remedy when one is missing. Ownership enforcement and
+# the Envoy sidecar are implied by the mode; envoy.enabled and
+# wsAuth.enforce_ownership need not be set. See the README.
+roomGateway:
+  # -- Deploy this release as a room gateway (broker + authenticated Envoy only)
+  enabled: false
+  # -- Route id: the /rooms/<routeId> path segment clients use on a shared host,
+  # and the session id when session.id is empty. Required, unique per host.
+  # Lowercase letters, digits and '-', at most 63 characters.
+  routeId: ""
+  room:
+    # -- Environment the room's participants belong to; must equal the
+    # resident Ravn's environment id. Required.
+    environmentId: ""
+    # -- Peer id of the resident that connects to /ws/ravn/<peer>; untargeted
+    # chat from Lexi and the web UI is routed to it. Required.
+    defaultTargetPeerId: ""
+  # -- Directory the broker keeps its workspace (conversation history) under
+  dataPath: /var/lib/skuld
+  persistence:
+    # -- Existing PVC for dataPath. Empty means an emptyDir: the room's
+    # conversation history is lost when the pod is replaced.
+    existingClaim: ""
+  # -- Resources for the broker container
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "50m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  # -- Broker probes. They run inside the container against the loopback
+  # listener, because /health and /ready are not reachable unauthenticated
+  # through Envoy in this mode.
+  probes:
+    readiness:
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 5
+    liveness:
+      initialDelaySeconds: 15
+      periodSeconds: 30
+      timeoutSeconds: 10
+  # Telegram mirror of the room. The bot token and chat id come from a named
+  # Secret, injected as SKULD__TELEGRAM__BOT_TOKEN / SKULD__TELEGRAM__CHAT_ID,
+  # never rendered into the ConfigMap.
+  telegram:
+    # -- Mirror the room to a Telegram chat
+    enabled: false
+    # -- Secret holding the bot token and chat id (required when enabled)
+    secretName: ""
+    # -- Key of the bot token in the Secret
+    botTokenKey: bot-token
+    # -- Key of the chat id in the Secret
+    chatIdKey: chat-id
+    # -- Only send notifications; do not relay Telegram replies into the room
+    notifyOnly: false
+    # -- shared_chat, fixed_topic or topic_per_session
+    topicMode: shared_chat
+    # -- Telegram topic thread id (required for topicMode fixed_topic)
+    messageThreadId: null
+  # -- OpenTelemetry export for the broker, rendered verbatim as the broker
+  # config's `observability:` section (same keys as resident.observability).
+  # Omitted by default: the broker exports nothing until this is supplied.
+  observability: {}
+  # Exposure. Many rooms can share one host: each gets /rooms/<routeId>, with
+  # the prefix stripped before the request reaches the broker, so clients use
+  # wss://<host>/rooms/<routeId>/session and /rooms/<routeId>/ws/ravn/<peer>.
+  # Rendered instead of the top-level ingress, whose cert-manager annotation
+  # default would try to take over a TLS Secret the host already uses.
+  ingress:
+    # -- Render an Ingress (and the Traefik prefix-strip Middleware in path
+    # mode). false leaves the room reachable through its Service only.
+    enabled: true
+    # -- path: shared host, /<pathPrefix>/<routeId>. host: the room owns the host.
+    mode: path
+    # -- Path prefix shared by all rooms on the host (path mode)
+    pathPrefix: /rooms
+    # -- Ingress class name
+    className: traefik
+    # -- Public host. Required when enabled. Several releases may share it.
+    host: ""
+    # -- Ingress annotations (controller-specific). Empty by default; do not add
+    # cert-manager.io annotations for a TLS Secret another Ingress already owns.
+    annotations: {}
+    tls:
+      # -- Terminate TLS for the host at the ingress
+      enabled: true
+      # -- TLS Secret for the host (required when enabled); an existing shared
+      # Secret may be named
+      secretName: ""
+
 # -- Secret mapping manifest for file-based credential injection.
 # Rendered into a ConfigMap and mounted at /run/secrets/manifest.json.
 # See containers/skuld/entrypoint.sh for the manifest schema.

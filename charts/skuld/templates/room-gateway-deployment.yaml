@@ -1,0 +1,131 @@
+{{- if include "skuld.roomGatewayEnabled" . -}}
+{{- include "skuld.roomGatewayValidate" . -}}
+{{- $rg := .Values.roomGateway -}}
+{{- $dataPath := $rg.dataPath | trimSuffix "/" -}}
+{{- /*
+Room gateway pod: the broker, Envoy and the Cedar ext_authz sidecar, nothing
+else. Envoy's port is the only one the Service targets; the broker and the
+authorization service listen on loopback.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "skuld.fullname" . }}
+  labels:
+    {{- include "skuld.labels" . | nindent 4 }}
+    niuu.world/kind: room-gateway
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "skuld.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "skuld.labels" . | nindent 8 }}
+        niuu.world/kind: room-gateway
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/room-gateway-configmap.yaml") . | sha256sum }}
+        checksum/authz: {{ include (print $.Template.BasePath "/authz-configmap.yaml") . | sha256sum }}
+        checksum/envoy: {{ include (print $.Template.BasePath "/envoy-configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.runtimeClassName }}
+      runtimeClassName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.serviceAccountName }}
+      serviceAccountName: {{ .Values.serviceAccountName | quote }}
+      {{- end }}
+      # The broker never calls the Kubernetes API.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
+        fsGroup: {{ .Values.securityContext.fsGroup }}
+      {{- include "skuld.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: skuld
+          image: {{ include "skuld.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsUser: {{ .Values.securityContext.runAsUser }}
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: [ALL]
+          {{- if $rg.telegram.enabled }}
+          env:
+            - name: SKULD__TELEGRAM__BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $rg.telegram.secretName | quote }}
+                  key: {{ $rg.telegram.botTokenKey | quote }}
+            - name: SKULD__TELEGRAM__CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $rg.telegram.secretName | quote }}
+                  key: {{ $rg.telegram.chatIdKey | quote }}
+          {{- end }}
+          resources:
+            {{- toYaml $rg.resources | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/ready')"]
+            initialDelaySeconds: {{ $rg.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ $rg.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ $rg.probes.readiness.timeoutSeconds }}
+          livenessProbe:
+            exec:
+              command: ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health')"]
+            initialDelaySeconds: {{ $rg.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ $rg.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ $rg.probes.liveness.timeoutSeconds }}
+          volumeMounts:
+            - name: skuld-config
+              mountPath: /etc/skuld/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            - name: data
+              mountPath: {{ $dataPath }}
+        {{- include "skuld.cedarAuthzContainer" . | nindent 8 }}
+        {{- include "skuld.envoyContainer" . | nindent 8 }}
+      volumes:
+        - name: authz-config
+          configMap:
+            name: {{ include "skuld.fullname" . }}-authz
+        - name: skuld-config
+          configMap:
+            name: {{ include "skuld.fullname" . }}-config
+        - name: envoy-config
+          configMap:
+            name: {{ include "skuld.fullname" . }}-envoy
+        - name: data
+          {{- if $rg.persistence.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ $rg.persistence.existingClaim | quote }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- /* Backing volumes for envoy.extraVolumeMounts, such as a private CA bundle. */}}
+        {{- range .Values.extraVolumes }}
+        - {{- toYaml . | nindent 10 }}
+        {{- end }}
+{{- end }}

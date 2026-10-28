@@ -1,3 +1,4 @@
+{{- if not (include "skuld.roomGatewayEnabled" .) }}
 {{- if and .Values.ingress.enabled (eq (default "host" .Values.ingress.mode) "path") -}}
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
@@ -9,4 +10,5 @@ spec:
   stripPrefix:
     prefixes:
       - /s/{{ include "skuld.routeId" . }}
+{{- end }}
 {{- end }}
