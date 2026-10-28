@@ -185,3 +185,26 @@ async def test_the_ravn_session_controller_gives_a_discovered_resident_channels(
         ResidentCapability.SESSION_DELETE,
     } <= set(runtime.capabilities)
     assert service.list_profiles() == []
+
+
+def test_the_model_catalog_never_hides_a_discovered_profile():
+    """A discovered resident runs its own model; there is nothing for the catalog to gate."""
+    from niuu.domain.model_catalog import ManagedModel
+    from volundr.adapters.outbound.pricing import HardcodedPricingProvider
+
+    profiles = ConfigResidentDeploymentProfileProvider(
+        [
+            ResidentProfileConfig(
+                id="discovered-ravn",
+                display_name="Discovered Ravn",
+                backend=ResidentBackend.DISCOVERED,
+                engine=ResidentEngine.RAVN,
+            )
+        ],
+        HardcodedPricingProvider([ManagedModel(id="gpt-5.6-sol", name="Sol", vendor="openai")]),
+    )
+
+    profile = profiles.get("discovered-ravn")
+
+    assert profile is not None
+    assert (profile.default_model, profile.allowed_models) == ("", [])
