@@ -16,6 +16,7 @@ import respx
 from fastapi.testclient import TestClient as _TestClient
 
 import ravn.api as ravn_api
+from niuu.domain.discovered_residents import discovered_resident_id
 from ravn.api import create_app
 from ravn.api.valkyrie_projection import ValkyrieDashboardProjection
 from sleipnir.domain.events import SleipnirEvent
@@ -35,6 +36,18 @@ def TestClient(app):  # noqa: N802 — test client factory
 
 _PLATFORM = "http://localhost:8080"
 _RUNA_ROOM = "wss://yggdrasil.niuu.world/rooms/runa/ws/ravn"
+
+
+def _undiscovered(*valkyrie_ids: str) -> None:
+    """The Forge keeps no record for these Valkyries (it has not discovered them).
+
+    A catalog id is never sent to the Forge, which only knows UUID records; only
+    the record the Forge would keep for the Valkyrie, by its derived id, is asked for.
+    """
+    for valkyrie_id in valkyrie_ids:
+        respx.get(
+            f"{_PLATFORM}/api/v1/forge/resident-runtimes/{discovered_resident_id(valkyrie_id)}"
+        ).mock(return_value=httpx.Response(404))
 
 
 def _catalog() -> str:
@@ -145,9 +158,7 @@ def test_ravens_lists_the_catalog_with_observed_state(client: TestClient):
 @respx.mock
 def test_get_raven_returns_a_visible_catalog_valkyrie(client: TestClient):
     _mock_forge()
-    respx.get(f"{_PLATFORM}/api/v1/forge/resident-runtimes/valkyrie-runa").mock(
-        return_value=httpx.Response(404)
-    )
+    _undiscovered("valkyrie-runa")
 
     response = client.get("/api/v1/ravn/ravens/valkyrie-runa")
 
@@ -158,9 +169,6 @@ def test_get_raven_returns_a_visible_catalog_valkyrie(client: TestClient):
 @respx.mock
 def test_get_raven_404s_for_a_valkyrie_the_caller_may_not_see(client: TestClient):
     _mock_forge()
-    respx.get(f"{_PLATFORM}/api/v1/forge/resident-runtimes/valkyrie-kara").mock(
-        return_value=httpx.Response(404)
-    )
 
     response = client.get("/api/v1/ravn/ravens/valkyrie-kara")
 
@@ -198,12 +206,7 @@ def test_get_session_returns_the_room_channel(client: TestClient):
 
 @respx.mock
 def test_resident_sessions_listing_yields_the_room(client: TestClient):
-    respx.get(f"{_PLATFORM}/api/v1/forge/resident-runtimes/valkyrie-runa").mock(
-        return_value=httpx.Response(404)
-    )
-    respx.get(f"{_PLATFORM}/api/v1/forge/resident-runtimes/valkyrie-bryn").mock(
-        return_value=httpx.Response(404)
-    )
+    _undiscovered("valkyrie-runa", "valkyrie-bryn")
 
     runa = client.get("/api/v1/ravn/ravens/valkyrie-runa/sessions")
     bryn = client.get("/api/v1/ravn/ravens/valkyrie-bryn/sessions")
