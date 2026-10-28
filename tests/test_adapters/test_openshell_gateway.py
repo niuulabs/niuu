@@ -2686,6 +2686,115 @@ async def test_stop_and_status_map_sandbox_lifecycle(monkeypatch: pytest.MonkeyP
     assert client.deleted == [f"forge-{session.id.hex[:13]}"]
 
 
+@pytest.mark.asyncio
+async def test_destroy_deletes_a_sandbox_whose_storage_stop_retains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    # Gateway-owned storage: stop would only suspend the sandbox and keep its volume.
+    client.sandbox_labels = {}
+    client.created = {"providers": ("volundr-provider", "other-provider")}
+    client.delete_polls_remaining = 2
+    client.stop_sandbox = Mock()
+    monkeypatch.setattr(adapter.asyncio, "sleep", AsyncMock())
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+
+    assert await manager.destroy(session) is True
+
+    name = f"forge-{session.id.hex[:13]}"
+    client.stop_sandbox.assert_not_called()
+    assert client.deleted == [name]
+    assert client.deleted_services == [{"sandbox_name": name, "service": "skuld"}]
+    assert [grant.provider_name for grant in client.deleted_grants] == ["volundr-provider"]
+    # ACCEPTED is not gone: the grants go only once the sandbox has disappeared.
+    assert client.cleanup_events == [
+        "sandbox-present",
+        "sandbox-present",
+        "sandbox-gone",
+        "grant-deleted",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_destroy_deletes_a_failed_sandbox_without_waiting_for_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    name = f"forge-{session.id.hex[:13]}"
+    client = _FakeOpenShellGatewayClient(adapter)
+    failed = adapter.OpenShellSandbox(
+        id="sandbox-id", name=name, phase=adapter.openshell_pb2.SANDBOX_PHASE_ERROR
+    )
+    # The failed sandbox never reaches STOPPED; it is gone once DeleteSandbox ran.
+    client.get_sandbox = Mock(side_effect=[failed, None])
+    client.stop_sandbox = Mock()
+    sleep = AsyncMock()
+    monkeypatch.setattr(adapter.asyncio, "sleep", sleep)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=600)
+
+    assert await manager.destroy(session) is True
+
+    client.stop_sandbox.assert_not_called()
+    assert client.deleted == [name]
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_destroy_of_an_absent_sandbox_reports_it_was_already_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_exists = False
+    client.delete_sandbox = lambda name: client.deleted.append(name) or False
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+
+    assert await manager.destroy(session) is False
+    assert client.deleted == [f"forge-{session.id.hex[:13]}"]
+
+
+@pytest.mark.asyncio
+async def test_destroy_raises_with_a_remedy_when_the_sandbox_is_not_deleted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.created = {"providers": ("volundr-provider",)}
+    client.delete_polls_remaining = 10**9
+    monkeypatch.setattr(adapter.asyncio, "sleep", AsyncMock())
+    manager = adapter.OpenShellGatewayPodManager(client=client, resource_delete_timeout=0.01)
+
+    with pytest.raises(RuntimeError, match="was not deleted within 0.01s") as raised:
+        await manager.destroy(session)
+
+    assert f"session {session.id}" in str(raised.value)
+    assert "delete the session again" in str(raised.value)
+    assert client.deleted_grants == []
+
+
+@pytest.mark.asyncio
+async def test_destroy_raises_when_the_gateway_refuses_the_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+
+    def refuse(name: str) -> bool:
+        raise RuntimeError("gateway unavailable")
+
+    client.delete_sandbox = refuse
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+
+    with pytest.raises(RuntimeError, match="gateway unavailable"):
+        await manager.destroy(session)
+
+
 def test_token_provider_uses_keycloak_client_credentials_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

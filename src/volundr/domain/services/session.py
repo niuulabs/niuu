@@ -984,9 +984,9 @@ class SessionService:
     ) -> bool:
         """Delete a session.
 
-        If the session is running, attempts to stop its pods first. Pod stop
-        failures are logged but do not prevent session deletion, since the
-        primary goal is to clean up the session record.
+        The session's compute is destroyed first. When that fails the
+        exception propagates and the session record is kept, so the delete
+        can be retried instead of leaving infrastructure nobody tracks.
 
         Session-scoped workspace storage is always removed. Optional
         *cleanup_targets* lists additional resources to permanently remove
@@ -1012,19 +1012,9 @@ class SessionService:
 
         durable_compute = self._runtime_backend == "vm" or self._execution_resolver is not None
 
-        try:
-            stopped = await self._pod_manager.stop(session)
-            if durable_compute and not stopped:
-                raise RuntimeError("Compute infrastructure deletion was not confirmed")
-        except Exception as e:
-            if durable_compute:
-                raise
-            logger.warning(
-                "Failed to stop infrastructure for session %s during deletion: %s. "
-                "Proceeding with session deletion.",
-                _sanitize_log(session_id),
-                _sanitize_log(e),
-            )
+        destroyed = await self._pod_manager.destroy(session)
+        if durable_compute and not destroyed:
+            raise RuntimeError("Compute infrastructure deletion was not confirmed")
 
         # Run contributor cleanup in reverse order
         await self._run_cleanup(session, principal, context=cleanup_context)
