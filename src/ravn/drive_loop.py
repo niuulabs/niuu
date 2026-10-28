@@ -1470,7 +1470,10 @@ class DriveLoop:
         # into both this loop's observer and the session_join tool's runtime
         # context, so the tool and the drive loop share one membership set
         # without a module global.
-        from ravn.session_join import build_session_join_manager  # noqa: PLC0415
+        from ravn.session_join import (  # noqa: PLC0415
+            build_room_token_provider,
+            build_session_join_manager,
+        )
 
         self._session_join_manager = build_session_join_manager(settings)
 
@@ -1492,6 +1495,7 @@ class DriveLoop:
                 display_name=settings.skuld.display_name or "",
                 reconnect_delay=settings.skuld.reconnect_delay_seconds,
                 max_reconnect_attempts=settings.skuld.max_reconnect_attempts,
+                auth_token_provider=build_room_token_provider(settings),
             )
 
     # ------------------------------------------------------------------
