@@ -35,6 +35,7 @@ from typing import Any
 
 from niuu.observability import get_observability
 from ravn.cap_telemetry import record_truncation
+from ravn.decision_observability import UNIT_BUCKETS
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_ATTENTION_TIER_ORDER,
     VALKYRIE_DECISION_ORDER,
@@ -439,6 +440,7 @@ class ResidentSlotAttention:
                 "ravn.decision.slot_opinion.skip_probability",
                 skip_probability,
                 attributes=base,
+                buckets=UNIT_BUCKETS,
             )
             telemetry.event(
                 "ravn.decision.slot_opinion",

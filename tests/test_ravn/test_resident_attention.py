@@ -23,6 +23,7 @@ from ravn.config import (
     ResidentFirstOpinionConfig,
     Settings,
 )
+from ravn.decision_observability import UNIT_BUCKETS
 from ravn.domain.models import (
     RESIDENT_HOME_TRIGGER,
     AgentTask,
@@ -66,6 +67,7 @@ class _Telemetry:
         self.counts: list[tuple[str, dict]] = []
         self.records: list[tuple[str, float, dict]] = []
         self.events: list[tuple[str, dict, Any]] = []
+        self.buckets: dict[str, Any] = {}
 
     @contextmanager
     def span(self, *_args: Any, **_kwargs: Any):
@@ -74,8 +76,9 @@ class _Telemetry:
     def count(self, name: str, value: int = 1, *, attributes=None, **_kwargs: Any) -> None:
         self.counts.append((name, dict(attributes or {})))
 
-    def record(self, name: str, value: float, *, attributes=None, **_kwargs: Any) -> None:
+    def record(self, name: str, value: float, *, attributes=None, **kwargs: Any) -> None:
         self.records.append((name, value, dict(attributes or {})))
+        self.buckets[name] = kwargs.get("buckets")
 
     def event(self, name: str, *, attributes=None, content=None, **_kwargs: Any) -> None:
         self.events.append((name, dict(attributes or {}), content))
@@ -263,6 +266,8 @@ async def test_the_turn_records_each_slot_opinion_beside_its_outcome(tmp_path, t
     # No threshold fitted yet, so there is no would-skip to report.
     assert "ravn.decision.gate.would_skip" not in tier
     [(_name, skip_probability, _attrs)] = telemetry.records
+    # Probabilities need [0, 1] resolution; the SDK default buckets put them all in one.
+    assert telemetry.buckets["ravn.decision.slot_opinion.skip_probability"] == UNIT_BUCKETS
     assert skip_probability > 0.9
 
 
