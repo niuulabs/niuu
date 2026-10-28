@@ -10,6 +10,7 @@ behaviour of those mechanisms.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -88,6 +89,7 @@ async def _install(
     verified: bool = True,
     created_days_ago: float = 0.0,
     supersedes: str = "",
+    code: str = _CODE,
     **lifecycle: Any,
 ) -> LearnedToolArtifact:
     provenance: dict[str, Any] = (
@@ -101,7 +103,7 @@ async def _install(
             input_schema={"type": "object", "properties": {"namespace": {"type": "string"}}},
             required_permission="tool:run",
         ),
-        tool_code=_CODE,
+        tool_code=code,
         test_code=_TEST,
         source_gap_id=capability,
         provenance=provenance,
@@ -1226,3 +1228,253 @@ def test_versions_chain_through_the_artifact_writer(tmp_path: Path) -> None:
     write_learned_tool_artifact(artifacts_dir=artifacts_dir, artifact=replacement)
     rewritten = json.loads(learned_tool_artifact_path(artifacts_dir, "chained").read_text())
     assert rewritten["version"] == 2
+
+
+# ---------------------------------------------------------------------------
+# A tool the execution backend refuses to load
+# ---------------------------------------------------------------------------
+
+#: What read_configmap_key_tail looked like on Regin: it reaches the resident's
+#: own tools through the host SDK, which a Job or container has no route to.
+_HOST_SDK_CODE = (
+    "from ravn.sdk import tool\n\n"
+    "def run(payload):\n    return tool.kubernetes_inspect(**payload)\n"
+)
+
+
+def _resolver(state: Path, backend: str = "container") -> LearnedToolResolver:
+    return LearnedToolResolver(state_dir=state, execution_backend=backend)
+
+
+class TestBackendRefusal:
+    async def test_the_resolver_refuses_what_the_loader_refuses(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "self_contained")
+        await _install(tmp_path, skills, "read_configmap_key_tail", code=_HOST_SDK_CODE)
+        resolver = _resolver(tmp_path)
+
+        inventory = resolver.inventory()
+
+        assert [a.manifest.name for a in inventory.loadable] == ["self_contained"]
+        assert [r.name for r in inventory.refused] == ["read_configmap_key_tail"]
+        # The very same refusal the loader raises, not a second opinion.
+        with pytest.raises(LearnedToolError) as loader:
+            resolver.load("read_configmap_key_tail")
+        assert inventory.refused[0].reason == str(loader.value)
+        assert "ravn.sdk" in inventory.refused[0].reason
+        # The local backend can provide the host SDK, so there it loads.
+        assert _resolver(tmp_path, "local").inventory().refused == []
+
+    async def test_a_refused_tool_is_retired_as_unrunnable_and_never_kept(
+        self, tmp_path: Path
+    ) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "self_contained", run_count=2, success_count=2)
+        await _install(tmp_path, skills, "read_configmap_key_tail", code=_HOST_SDK_CODE)
+        curator = LearnedToolCurator(
+            state_dir=tmp_path, skills=skills, load_refusal=_resolver(tmp_path).load_refusal
+        )
+
+        summary = await curator.curate()
+
+        assert summary["installed_before"] == 2
+        assert summary["kept"] == 1
+        (retired,) = summary["retired"]
+        assert (retired["name"], retired["reason"]) == (
+            "read_configmap_key_tail",
+            RETIRED_UNRUNNABLE,
+        )
+        assert "ravn.sdk" in retired["detail"]
+        assert "refuses to load" in retired["detail"]
+        assert skills.status("read_configmap_key_tail") == "archived"
+        code_dir, _ = _dirs(tmp_path)
+        assert not learned_tool_path(code_dir, "read_configmap_key_tail").exists()
+
+    async def test_a_pinned_refused_tool_is_reported_not_kept_and_not_retired(
+        self, tmp_path: Path
+    ) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "self_contained")
+        await _install(
+            tmp_path, skills, "read_configmap_key_tail", code=_HOST_SDK_CODE, pinned=True
+        )
+        curator = LearnedToolCurator(
+            state_dir=tmp_path, skills=skills, load_refusal=_resolver(tmp_path).load_refusal
+        )
+
+        plan = await curator.plan()
+
+        assert plan.retire == []
+        assert plan.keep == ["self_contained"]
+        assert list(plan.refused) == ["read_configmap_key_tail"]
+        assert "ravn.sdk" in plan.refused["read_configmap_key_tail"]
+
+    async def test_a_refused_tool_never_outranks_a_working_sibling(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "configmap_tail_working", capability="k8s.configmap.tail")
+        # Newer and busier, but unloadable here: it must not be the keeper.
+        await _install(
+            tmp_path,
+            skills,
+            "configmap_tail_sdk",
+            capability="k8s.configmap.tail",
+            code=_HOST_SDK_CODE,
+            run_count=40,
+            success_count=40,
+            last_used_at=_iso(0),
+        )
+        curator = LearnedToolCurator(
+            state_dir=tmp_path, skills=skills, load_refusal=_resolver(tmp_path).load_refusal
+        )
+
+        plan = await curator.plan()
+
+        assert plan.groups == [{"keep": "configmap_tail_working", "retire": ["configmap_tail_sdk"]}]
+        assert plan.keep == ["configmap_tail_working"]
+
+    async def test_without_a_backend_check_nothing_is_refused(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "read_configmap_key_tail", code=_HOST_SDK_CODE)
+
+        plan = await LearnedToolCurator(state_dir=tmp_path, skills=skills).plan()
+
+        assert plan.refused == {}
+        assert plan.keep == ["read_configmap_key_tail"]
+
+    async def test_the_health_snapshot_counts_refused_tools(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "self_contained")
+        await _install(tmp_path, skills, "read_configmap_key_tail", code=_HOST_SDK_CODE)
+
+        snapshot = learned_tool_health(tmp_path, skills, refused=_resolver(tmp_path).list_refused)
+
+        assert snapshot["learned_tools_installed"] == 2
+        assert snapshot["learned_tools_refused"] == 1
+        assert "learned_tools_refused" not in learned_tool_health(tmp_path, skills)
+
+    async def test_a_refused_tool_is_reported_once_per_process(self, tmp_path: Path) -> None:
+        from ravn.cap_telemetry import degraded_counts, reset_cap_hits
+
+        reset_cap_hits()
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "read_configmap_key_tail", code=_HOST_SDK_CODE)
+        resolver = _resolver(tmp_path)
+
+        for _ in range(3):
+            resolver.list_loadable_artifacts()
+            resolver.list_refused()
+
+        assert degraded_counts() == {"learned_tool.refused": 1}
+        reset_cap_hits()
+
+    async def test_build_tool_repairs_a_refused_tool_instead_of_calling_it_installed(
+        self, tmp_path: Path
+    ) -> None:
+        skills = _skills(tmp_path)
+        await _install(
+            tmp_path,
+            skills,
+            "read_configmap_key_tail",
+            capability="k8s.configmap.tail",
+            code=_HOST_SDK_CODE,
+        )
+        backend = RecordingBackend()
+        tool, registered = _build_tool(
+            tmp_path, build_backend=backend, skill_manager=skills, execution_backend="container"
+        )
+
+        result = await tool.execute(
+            _request("read_configmap_key_tail", capability_id="k8s.configmap.tail")
+        )
+
+        summary = json.loads(result.content)
+        assert result.is_error is False, result.content
+        assert (summary["tool_name"], summary["version"]) == ("read_configmap_key_tail", 2)
+        (problem,) = summary["repair_of"]["problems"]
+        assert "refuses to load it" in problem and "ravn.sdk" in problem
+        assert "ravn.sdk" in backend.requests[0].signal_context
+        assert registered[0][1] is True
+
+    async def test_the_same_tool_on_the_local_backend_is_already_installed(
+        self, tmp_path: Path
+    ) -> None:
+        skills = _skills(tmp_path)
+        await _install(
+            tmp_path,
+            skills,
+            "read_configmap_key_tail",
+            capability="k8s.configmap.tail",
+            code=_HOST_SDK_CODE,
+        )
+        tool, _ = _build_tool(
+            tmp_path,
+            build_backend=RecordingBackend(),
+            skill_manager=skills,
+            execution_backend="local",
+        )
+
+        result = await tool.execute(
+            _request("read_configmap_key_tail", capability_id="k8s.configmap.tail")
+        )
+
+        assert json.loads(result.content)["status"] == "already_installed"
+
+    async def test_a_retired_refused_tool_comes_back_as_a_repair(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(
+            tmp_path,
+            skills,
+            "read_configmap_key_tail",
+            capability="k8s.configmap.tail",
+            code=_HOST_SDK_CODE,
+        )
+        await LearnedToolCurator(
+            state_dir=tmp_path, skills=skills, load_refusal=_resolver(tmp_path).load_refusal
+        ).curate()
+        backend = RecordingBackend()
+        tool, _ = _build_tool(
+            tmp_path, build_backend=backend, skill_manager=skills, execution_backend="container"
+        )
+
+        result = await tool.execute(
+            _request("read_configmap_key_tail", capability_id="k8s.configmap.tail")
+        )
+
+        summary = json.loads(result.content)
+        assert result.is_error is False, result.content
+        assert summary["version"] == 2
+        assert skills.status("read_configmap_key_tail") == "active"
+        assert any("retired as unrunnable" in p for p in summary["repair_of"]["problems"])
+        # The repaired version loads here, so nothing is refused any more.
+        assert _resolver(tmp_path).inventory().refused == []
+
+    async def test_a_build_the_backend_would_refuse_is_rejected_not_installed(
+        self, tmp_path: Path
+    ) -> None:
+        class SdkBackend(RecordingBackend):
+            async def build(self, request: Any) -> ToolBuildResult:
+                built = await super().build(request)
+                return dataclasses.replace(built, tool_code=_HOST_SDK_CODE)
+
+        tool, registered = _build_tool(
+            tmp_path, build_backend=SdkBackend(), execution_backend="container"
+        )
+
+        result = await tool.execute(_request("count_cluster_nodes"))
+
+        assert result.is_error
+        assert "would refuse to load the tool" in result.content
+        assert "ravn.sdk" in result.content
+        assert registered == []
+        code_dir, _ = _dirs(tmp_path)
+        assert not learned_tool_path(code_dir, "count_cluster_nodes").exists()
+
+    def test_the_builder_is_only_told_about_the_host_sdk_where_it_exists(
+        self, tmp_path: Path
+    ) -> None:
+        local, _ = _build_tool(tmp_path, execution_backend="local")
+        isolated, _ = _build_tool(tmp_path, execution_backend="container")
+
+        assert "from ravn.sdk import tool" in local.description
+        assert "from ravn.sdk import tool" not in isolated.description
+        assert "Do NOT import `ravn.sdk`" in isolated.description

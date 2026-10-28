@@ -477,12 +477,23 @@ def _build_learned_tool_curator(
     skills: Any | None,
     matcher: Any | None,
     persist: bool = True,
+    load_refusal: Any | None = None,
 ) -> Any | None:
-    """Build the dream pass that retires learned tools, when it is enabled."""
+    """Build the dream pass that retires learned tools, when it is enabled.
+
+    *load_refusal* is the resolver's check of whether this resident's execution
+    backend can load a tool; a curator built without one (the read-only plan
+    command) builds the same resolver from the settings, so what it plans to
+    retire is what the running resident would.
+    """
     cfg = settings.resident_evolution.tool_curation
     if not cfg.enabled:
         return None
+    from ravn.cli.tool_builders import learned_tool_resolver_from_settings  # noqa: PLC0415
     from ravn.valkyrie_evolution.tool_curation import LearnedToolCurator  # noqa: PLC0415
+
+    if load_refusal is None:
+        load_refusal = learned_tool_resolver_from_settings(settings, workspace).load_refusal
 
     return LearnedToolCurator(
         state_dir=_resident_ravn_state_dir(workspace, settings),
@@ -490,6 +501,7 @@ def _build_learned_tool_curator(
         matcher=matcher,
         leftover_name_prefixes=cfg.leftover_name_prefixes,
         persist=persist,
+        load_refusal=load_refusal,
     )
 
 

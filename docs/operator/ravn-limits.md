@@ -29,11 +29,15 @@ counted it.
 - Where raising would lose more than continuing, the degradation is an error
   log plus `ravn.degraded` (attribute `ravn.degraded.path`), and appears in
   the health snapshot as `degraded_total` / `degraded.<path>` with the
-  `ravn.resident.degraded` gauge. That covers three paths. An operator reply
+  `ravn.resident.degraded` gauge. That covers four paths. An operator reply
   that could not be saved as an answer (`operator_reply.persist`) is
   delivered as an ordinary task, and its question stays open. A reply naming
   a closed question (`operator_reply.unbound`) and a directed message not
   written to the durable inbox (`directed_message.persist`) are also counted.
+  An installed learned tool that the execution backend refuses to load
+  (`learned_tool.refused`, once per tool per process) is not offered to the
+  model and is routed to the `build_tool` repair; the standing count is
+  `learned_tools_refused` in the same snapshot.
 - A retry still inside its bound (a stream re-issued after a gateway restart, a
   model call retried after a refused connection) logs at warning and counts on
   `ravn.retries` (attribute `ravn.retry.path`); the health snapshot carries
