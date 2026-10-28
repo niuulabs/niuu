@@ -43,6 +43,11 @@ from ravn.domain.resident_continuation import (
     validate_resident_working_state,
 )
 from ravn.domain.resident_state import ResidentStatePort
+from ravn.domain.valkyrie_contracts import (
+    VALKYRIE_DECISION_ESCALATE,
+    asks_operator,
+    operator_question_error,
+)
 from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
 from ravn.ports.known_resolutions import KnownResolutionPort
 from ravn.ports.resident_notifications import ResidentNotificationOutboxPort
@@ -742,6 +747,20 @@ class ResidentRuntime:
         )
         if outcome_valid is None:
             outcome_valid = getattr(episode, "outcome_valid", None) is not False
+        question_error = operator_question_error(fields) if outcome_valid else ""
+        if question_error:
+            # The drive loop rejects this before it gets here; a caller that
+            # skipped that validation must not get a question written for it
+            # (a placeholder asks the operator nothing they can answer) or a
+            # sleep that reads as "escalated". It is an invalid outcome,
+            # handled like any other.
+            logger.error(
+                "resident %s: turn asks the operator without a question and is treated "
+                "as an invalid outcome: %s",
+                self._resident_id,
+                question_error,
+            )
+            outcome_valid = False
         action = selected_action_from_outcome(fields)
         telemetry.event(
             "ravn.resident.outcome_interpreted",
@@ -901,6 +920,34 @@ class ResidentRuntime:
         self._inflight_cases.discard(case_id)
         self._inflight_refs.difference_update(task.resident_inbox_refs)
         control = str(fields.get("continuation") or "").strip().casefold()
+        if _escalates(fields) or asks_operator(fields):
+            # Escalating, asking by continuation, and a help_needed verdict are
+            # all asking: whatever continuation the model also picked, a sleep
+            # or stop here would leave a case that believes it told a human,
+            # with no question anyone could answer. The question is guaranteed
+            # non-empty by the outcome contract. The continuation budget never
+            # swallows a question either: the human's answer is the only way
+            # the case continues.
+            return await self._hand_to_operator(
+                task=task,
+                record=record,
+                fields=fields,
+                case_id=case_id,
+                root_id=root_id,
+                turn_ref=turn_ref,
+                turn_index=turn_index,
+                mandate=mandate,
+                cumulative=cumulative,
+                budget_ref=budget_ref,
+                reason=str(
+                    fields.get("reason")
+                    or (
+                        "resident decided to escalate"
+                        if _escalates(fields)
+                        else "operator input required"
+                    )
+                ),
+            )
         if control == "sleep":
             # No per-case turn or token cap: rechecks are bounded by the daily
             # budget (budget.daily_cap_usd, which prices self-hosted tokens too),
@@ -964,34 +1011,6 @@ class ResidentRuntime:
                 reason="model selected stop",
             )
 
-        if _asks_operator(fields, control):
-            # The continuation budget bounds what the resident does on its own.
-            # A question hands the case to a human, whose answer is the only way
-            # it continues, so the budget never swallows one: stopping here left
-            # the resident needing input with no question anyone could answer.
-            redirected = await self._redirect_to_known_resolution(
-                task=task,
-                record=record,
-                fields=fields,
-                case_id=case_id,
-                root_id=root_id,
-                turn_ref=turn_ref,
-                turn_index=turn_index,
-                mandate=mandate,
-                cumulative=cumulative,
-                budget_ref=budget_ref,
-            )
-            if redirected is not None:
-                return redirected
-            return await self._ask_operator(
-                task=task,
-                record=record,
-                fields=fields,
-                turn_ref=turn_ref,
-                budget_ref=budget_ref,
-                reason=str(fields.get("reason") or "operator input required"),
-            )
-
         if control == "continue":
             return ResidentTurnDisposition(
                 kind=ContinuationDecisionKind.STOP,
@@ -1014,6 +1033,44 @@ class ResidentRuntime:
                 if action is not None
                 else "no selected next action"
             ),
+        )
+
+    async def _hand_to_operator(
+        self,
+        *,
+        task: AgentTask,
+        record: ResidentTurnRecord,
+        fields: dict[str, Any],
+        case_id: str,
+        root_id: str,
+        turn_ref: str,
+        turn_index: int,
+        mandate: str,
+        cumulative: TokenUsage,
+        budget_ref: str,
+        reason: str,
+    ) -> ResidentTurnDisposition:
+        """Put the turn's question to the operator, unless a known resolution answers it."""
+        redirected = await self._redirect_to_known_resolution(
+            task=task,
+            fields=fields,
+            case_id=case_id,
+            root_id=root_id,
+            turn_ref=turn_ref,
+            turn_index=turn_index,
+            mandate=mandate,
+            cumulative=cumulative,
+            budget_ref=budget_ref,
+        )
+        if redirected is not None:
+            return redirected
+        return await self._ask_operator(
+            task=task,
+            record=record,
+            fields=fields,
+            turn_ref=turn_ref,
+            budget_ref=budget_ref,
+            reason=reason,
         )
 
     async def _repeated_decision_reason(
@@ -1278,7 +1335,6 @@ class ResidentRuntime:
         self,
         *,
         task: AgentTask,
-        record: ResidentTurnRecord,
         fields: dict[str, Any],
         case_id: str,
         root_id: str,
@@ -1298,7 +1354,7 @@ class ResidentRuntime:
         """
         if self._known_resolutions is None:
             return None
-        question = _operator_question(fields, record)
+        question = _operator_question(fields)
         resolution = await self._known_resolutions.resolution_for(question)
         if resolution is None:
             return None
@@ -1361,7 +1417,7 @@ class ResidentRuntime:
         budget_ref: str,
         reason: str,
     ) -> ResidentTurnDisposition:
-        question = _operator_question(fields, record)
+        question = _operator_question(fields)
         telemetry = get_observability()
         with telemetry.span("ravn.port.resident_state.write_operator_needed") as span:
             operator_ref = await self._state.write_operator_needed(
@@ -2040,24 +2096,26 @@ def _scheduled_wake_task(
     )
 
 
-def _asks_operator(fields: dict[str, Any], control: str) -> bool:
-    verdict = str(fields.get("verdict") or "").strip().casefold()
-    return control == "ask_operator" or verdict == "help_needed"
+def _escalates(fields: Mapping[str, Any]) -> bool:
+    return str(fields.get("decision") or "").strip().casefold() == VALKYRIE_DECISION_ESCALATE
 
 
-def _operator_question(fields: dict[str, Any], record: ResidentTurnRecord) -> str:
-    direct = str(fields.get("question") or "").strip()
-    if direct:
-        return direct
-    questions = fields.get("open_questions")
-    if isinstance(questions, list):
-        for item in questions:
-            text = str(item).strip()
-            if text:
-                return text
-    if record.selected_next_action is not None:
-        return f"May I proceed with: {record.selected_next_action.action}?"
-    return str(fields.get("recommendation") or "What information should I use to continue?")
+def _operator_question(fields: Mapping[str, Any]) -> str:
+    """Return the question the resident wrote; never one written on its behalf.
+
+    A turn that asks the operator is rejected by the outcome contract without a
+    `question`, and the runtime treats one that slipped past as invalid, so an
+    empty question here is a bug in the caller. A placeholder ("What
+    information should I use to continue?") would reach the operator as a
+    question they cannot answer, from a case that has no idea what it needs.
+    """
+    question = str(fields.get("question") or "").strip()
+    if question:
+        return question
+    raise ValueError(
+        "an operator question was requested but the turn has no 'question': the resident "
+        "must write one, or the caller must pass its own explicit question"
+    )
 
 
 def _reply_case_id(metadata: Mapping[str, Any]) -> str:

@@ -25,7 +25,10 @@ from ravn.domain.environment import (
     apply_environment_metadata,
 )
 from ravn.domain.models import IDLE_TRIAGE_TRIGGER, AgentTask, OutputMode
-from ravn.domain.valkyrie_contracts import resident_outcome_template
+from ravn.domain.valkyrie_contracts import (
+    RESIDENT_ESCALATION_GUIDANCE,
+    resident_outcome_template,
+)
 from ravn.ports.signal_adapter import NormalizedSignal, SignalAdapter
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher
@@ -526,7 +529,8 @@ class EnvironmentSignalRuntime:
             "Finish with exactly one `valkyrie.judgment.proposed` block:\n\n"
             "```text\n"
             f"{outcome_template}\n"
-            "```\n"
+            "```\n\n"
+            f"{RESIDENT_ESCALATION_GUIDANCE}\n"
         )
         digest = hashlib.sha256(
             "\n".join(sorted(str(entry["signal_ref"]) for entry in batch)).encode()
@@ -761,7 +765,8 @@ class EnvironmentSignalRuntime:
             "between them, and no prose after it:\n\n"
             "```text\n"
             f"{outcome_template}\n"
-            "```\n"
+            "```\n\n"
+            f"{RESIDENT_ESCALATION_GUIDANCE}\n"
         )
         task_id = f"task_{int(datetime.now(UTC).timestamp() * 1000):x}_{uuid.uuid4().hex[:8]}"
         root_id = event.correlation_id or signal.correlation_id or task_id
