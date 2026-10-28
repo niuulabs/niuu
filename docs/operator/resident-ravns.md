@@ -310,6 +310,49 @@ Live managed and compatibility residents also appear in
 Nothing auto-stops a resident — it lives until you scale down or delete the
 release.
 
+### The Valkyrie catalog in the resident list
+
+Valkyries are deployed straight from infrastructure, so neither Forge nor
+cluster discovery lists them. The Ravn API lists them from the environment
+catalog that also feeds the Valkyrie dashboard
+(`RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON`, or a file named by
+`RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_FILE`). Each `environments[]` record's
+`valkyrie` object becomes one resident in `GET /api/v1/ravn/ravens`,
+`GET /api/v1/ravn/ravens/{id}`, `GET /api/v1/ravn/ravens/{id}/sessions`,
+`GET /api/v1/ravn/sessions` and `GET /api/v1/ravn/sessions/{id}`, in the same
+shape as a discovered standalone resident:
+
+| Catalog field (on `valkyrie`) | Resident field |
+|---|---|
+| `valkyrieId` | `id` (defaults to `valkyrie-<environment>`; must be unique in the catalog) |
+| `valkyrieName` | `resident_name` |
+| `persona` | `persona_name` |
+| the environment's `name` | `location` |
+| — | `deployment: "valkyrie"`, `kind: "resident"` |
+| `chatEndpoint` (optional) | `chat_endpoint`, and `chat` in `capabilities` |
+| `visibility` (optional) | `system` (default), `tenant` or `user`; same rules as the discovery annotations above |
+| `ownerId`, `tenantId` (optional) | Required owner for `user` visibility, tenant for `tenant` visibility |
+
+`chatEndpoint` is the Valkyrie's room, an absolute `wss://` URL such as
+`wss://yggdrasil.niuu.world/rooms/<id>/ws/ravn`. Without it the Valkyrie is
+still listed, but has no `chat` capability, no `chat_endpoint`, and no entry in
+the sessions listings. A malformed `chatEndpoint` (or an unknown `visibility`)
+fails at config load, as does a catalog that repeats a `valkyrieId`.
+
+Status is what telemetry actually observed, never a configured default. A
+Valkyrie whose telemetry (any runtime, presence or signal-poll event for its
+`valkyrieId`) was last seen within `RAVN_VALKYRIE_DASHBOARD_ROSTER_STALE_AFTER_SECONDS`
+(default `900`) reports `status` and `observed_state` of `active`. One that was
+never observed since the API started, or went quiet for longer, reports `idle`.
+Either way an `Observed` entry in `conditions` says which (`Fresh`, `Stale`,
+`NeverObserved`), with the age and bound for stale ones. Keep the bound above
+the resident telemetry heartbeat, or a healthy Valkyrie flickers to `idle`
+between beats. Clients that only open rooms for running agents (Lexi) will not
+load the channel of an `idle` Valkyrie.
+
+The id precedence is managed, then discovered, then catalog: a catalog Valkyrie
+never appears twice when Forge or discovery already lists the same id.
+
 ## Ownership
 
 Skuld enforces session ownership at WebSocket accept (`ws_auth` in the
@@ -318,6 +361,14 @@ matching `session.ownerId` (Envoy headers, dev params, or bearer token;
 admin roles bypass; unauthenticated loopback stays open for in-pod peers).
 The resident authenticates with its platform identity, so it can join
 exactly the sessions its owner owns — nothing else.
+
+The resident's own room connection (`skuld.broker_url`) presents that same
+platform identity as a bearer token, so a room hosted remotely behind JWT
+(`wss://yggdrasil.niuu.world/rooms/<id>/ws/ravn`) accepts it. A `wss://`
+`skuld.broker_url` therefore requires `gateway.platform.enabled` (with
+`gateway.platform.access_token`, or workload identity); without it the
+resident refuses to start. A plain in-cluster `ws://` broker needs no
+identity.
 
 ## The loop back
 

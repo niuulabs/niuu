@@ -46,6 +46,8 @@ from ravn.api.trigger_validation import (
     check_repo_allowlisted,
     validate_trigger_spec,
 )
+from ravn.api.valkyrie_config import ValkyrieDashboardConfig
+from ravn.api.valkyrie_roster import ValkyrieCatalogRoster
 from ravn.api.valkyries import (
     ValkyrieDashboardProjection,
     build_nats_review_command_publisher_from_env,
@@ -59,6 +61,7 @@ from ravn.domain.trigger_record import TriggerRecord
 from ravn.ports.budget_ledger import BudgetLedgerPort
 from ravn.ports.platform_runtime import PlatformRuntimePort
 from ravn.ports.resident_discovery import ResidentDiscoveryPort
+from ravn.ports.resident_roster import ResidentRosterPort
 from ravn.ports.trigger_store import TriggerStorePort
 from ravn.ports.warden_deployer import WardenDeploymentError
 from ravn.ports.warden_discovery import WardenDiscoveryPort
@@ -172,6 +175,7 @@ def create_app(
     warden_discovery: WardenDiscoveryPort | None = None,
     resident_discovery: ResidentDiscoveryPort | None = None,
     platform_runtime: PlatformRuntimePort | None = None,
+    resident_roster: ResidentRosterPort | None = None,
 ) -> FastAPI:
     """Create and return the Ravn FastAPI sub-application.
 
@@ -208,7 +212,21 @@ def create_app(
         base_url=loaded_settings.gateway.platform.base_url,
         timeout_seconds=loaded_settings.gateway.platform.timeout,
     )
-    resident_directory = ResidentDirectory(platform=platform, discovery=standalone_discovery)
+    # The projection holds the Valkyries' live telemetry-derived state; the
+    # resident roster reads the catalog from the same config and that state
+    # from the projection, so the fleet list and the dashboard cannot disagree.
+    valkyrie_dashboard_config = ValkyrieDashboardConfig()
+    valkyrie_projection = ValkyrieDashboardProjection(valkyrie_dashboard_config)
+    if resident_roster is None:
+        resident_roster = ValkyrieCatalogRoster(
+            dashboard=valkyrie_projection,
+            config=valkyrie_dashboard_config,
+        )
+    resident_directory = ResidentDirectory(
+        platform=platform,
+        discovery=standalone_discovery,
+        roster=resident_roster,
+    )
     trigger_store = build_trigger_store(loaded_settings.trigger_store)
     budget_ledger = build_budget_ledger(loaded_settings.budget_ledger)
     # See TriggerExecutionConfig: this process only stores triggers, it
@@ -590,12 +608,12 @@ def create_app(
     async def list_resident_sessions_endpoint(
         ravn_id: str,
         request: Request,
-        _: Principal = Depends(extract_principal),
+        principal: Principal = Depends(extract_principal),
     ) -> list[dict]:
         auth_headers, auth_params = forward_auth(request)
         try:
             return await resident_directory.list_resident_sessions(
-                ravn_id, auth_headers, auth_params
+                ravn_id, principal, auth_headers, auth_params
             )
         except httpx.HTTPStatusError as exc:
             _raise_platform_error(exc)
@@ -1275,7 +1293,6 @@ def create_app(
     from ravn.api.valkyries import build_skuld_room_client_from_env  # noqa: PLC0415
     from ravn.odin.review_service import OdinReviewService  # noqa: PLC0415
 
-    valkyrie_projection = ValkyrieDashboardProjection()
     valkyrie_learning_commands = build_nats_review_command_publisher_from_env(
         loaded_settings.valkyrie.command,
         loaded_settings.valkyrie.telemetry,

@@ -222,7 +222,9 @@ def test_status_endpoint_reports_live_counts(client: TestClient):
     assert resp.json() == {
         "service": "ravn",
         "session_count": 1,
-        "fleet_member_count": 0,
+        # No managed or discovered residents; the one fleet member is the
+        # catalog Valkyrie (Sigrun) from the client fixture's environment catalog.
+        "fleet_member_count": 1,
         "healthy": True,
     }
 

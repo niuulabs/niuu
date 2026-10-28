@@ -27,6 +27,7 @@ from niuu.adapters.inbound.source_health import SourceFailure, source_failure
 from niuu.domain.models import InstanceVisibility, Principal
 from ravn.ports.platform_runtime import PlatformRuntimePort
 from ravn.ports.resident_discovery import ResidentDiscoveryPort, StandaloneResident
+from ravn.ports.resident_roster import ResidentRosterPort
 
 logger = logging.getLogger(__name__)
 
@@ -137,8 +138,14 @@ class ResidentDirectory:
 
     Durable Volundr records are authoritative for managed residents. A
     :class:`ResidentDiscoveryPort` contributes compatibility deployments that
-    have not yet moved under control-plane management. Forge flock sessions
-    remain ordinary sessions and are merged into the session view.
+    have not yet moved under control-plane management. A
+    :class:`ResidentRosterPort` contributes the configured catalog residents
+    (the Valkyries), which are deployed from infrastructure and so are neither
+    managed nor discoverable. Forge flock sessions remain ordinary sessions
+    and are merged into the session view.
+
+    Id precedence is managed, then discovered, then rostered: a lower source
+    never lists an id a higher one already claims.
     """
 
     def __init__(
@@ -146,9 +153,11 @@ class ResidentDirectory:
         *,
         platform: PlatformRuntimePort,
         discovery: ResidentDiscoveryPort | None = None,
+        roster: ResidentRosterPort | None = None,
     ) -> None:
         self._platform = platform
         self._discovery = discovery
+        self._roster_port = roster
 
     async def aclose(self) -> None:
         await self._platform.aclose()
@@ -168,8 +177,14 @@ class ResidentDirectory:
         managed = await self._platform.list_resident_runtimes(auth_headers, auth_params)
         ravens = [self._managed_to_raven(runtime) for runtime in managed]
         managed_ids = {raven["id"] for raven in ravens}
+        claimed_ids = set(managed_ids)
         for resident in await self._discover_standalone():
+            claimed_ids.add(resident.id)
             if resident.id in managed_ids or not self._is_discovered_visible(resident, principal):
+                continue
+            ravens.append(self._standalone_to_raven(resident))
+        for resident in await self._roster_residents():
+            if resident.id in claimed_ids or not self._is_discovered_visible(resident, principal):
                 continue
             ravens.append(self._standalone_to_raven(resident))
         return ravens
@@ -248,10 +263,23 @@ class ResidentDirectory:
     async def list_resident_sessions(
         self,
         ravn_id: str,
+        principal: Principal,
         auth_headers: dict[str, str],
         auth_params: dict[str, str],
     ) -> list[dict[str, Any]]:
-        """Return native sessions from one managed resident."""
+        """Return native sessions from one managed resident.
+
+        A rostered resident has no engine-owned sessions: its one session is
+        its room, listed only when the catalog gives it a chat endpoint. A
+        managed resident of the same id still wins.
+        """
+        rostered = await self._visible_rostered(ravn_id, principal)
+        if rostered is not None:
+            managed = await self._platform.get_resident_runtime(ravn_id, auth_headers, auth_params)
+            if managed is None:
+                if not rostered.chat_endpoint:
+                    return []
+                return [self._standalone_to_session(rostered)]
         sessions = await self._platform.list_resident_sessions(ravn_id, auth_headers, auth_params)
         return [self._native_session(session, ravn_id) for session in sessions]
 
@@ -353,11 +381,23 @@ class ResidentDirectory:
         residents, discovery_failure = await self._discover_standalone_best_effort()
         if discovery_failure is not None:
             source_failures.append(discovery_failure)
+        claimed_ids = set(known_ids)
+        claimed_ids.update(str(runtime.get("id") or "") for runtime in managed)
         for resident in residents:
+            claimed_ids.add(resident.id)
             if resident.id in known_ids or not self._is_discovered_visible(resident, principal):
                 continue
             mapped = self._standalone_to_session(resident)
             if _is_live_session(mapped):
+                ravn_sessions.append(mapped)
+        rostered, roster_failure = await self._roster_residents_best_effort()
+        if roster_failure is not None:
+            source_failures.append(roster_failure)
+        for resident in rostered:
+            if resident.id in claimed_ids or not self._is_discovered_visible(resident, principal):
+                continue
+            mapped = self._standalone_to_session(resident)
+            if resident.chat_endpoint and _is_live_session(mapped):
                 ravn_sessions.append(mapped)
         return SessionsResult(sessions=ravn_sessions, source_failures=source_failures)
 
@@ -490,6 +530,11 @@ class ResidentDirectory:
                 if not self._is_discovered_visible(resident, principal):
                     return None
                 return self._standalone_to_raven(resident)
+        for resident in await self._roster_residents():
+            if resident.id == ravn_id:
+                if not self._is_discovered_visible(resident, principal):
+                    return None
+                return self._standalone_to_raven(resident)
         return None
 
     async def _discover_standalone(self) -> list[StandaloneResident]:
@@ -497,6 +542,48 @@ class ResidentDirectory:
         if self._discovery is None:
             return []
         return await self._discovery.list_residents()
+
+    async def _roster_residents(self) -> list[StandaloneResident]:
+        """Return the configured roster; a roster that cannot answer raises."""
+        if self._roster_port is None:
+            return []
+        return await self._roster_port.list_residents()
+
+    async def _visible_rostered(
+        self,
+        ravn_id: str,
+        principal: Principal,
+    ) -> StandaloneResident | None:
+        """Return the rostered resident with this id when the caller may see it."""
+        for resident in await self._roster_residents():
+            if resident.id == ravn_id and self._is_discovered_visible(resident, principal):
+                return resident
+        return None
+
+    async def _roster_residents_best_effort(
+        self,
+    ) -> tuple[list[StandaloneResident], SourceFailure | None]:
+        """Roster counterpart of :meth:`_discover_standalone_best_effort`.
+
+        Forge sessions stay authoritative for the session list, so a roster
+        failure does not break it, but it is returned to be reported rather
+        than absorbed into a shorter list.
+        """
+        try:
+            return await self._roster_residents(), None
+        except Exception as exc:
+            message = str(exc) or exc.__class__.__name__
+            logger.error(
+                "Resident roster failed (%s); serving the other sources only. Rostered "
+                "residents will be missing from this session list until the roster answers.",
+                message,
+                exc_info=True,
+            )
+            return [], source_failure(
+                instance_id="resident-roster",
+                name="Resident roster",
+                error=message,
+            )
 
     async def _discover_standalone_best_effort(
         self,
@@ -559,6 +646,14 @@ class ResidentDirectory:
                     return None
                 mapped = self._standalone_to_session(resident)
                 if _is_live_session(mapped):
+                    return mapped
+                return None
+        for resident in await self._roster_residents():
+            if resident.id == session_id:
+                if not self._is_discovered_visible(resident, principal):
+                    return None
+                mapped = self._standalone_to_session(resident)
+                if resident.chat_endpoint and _is_live_session(mapped):
                     return mapped
                 return None
         return None
@@ -714,15 +809,15 @@ class ResidentDirectory:
             "chat_endpoint": resident.chat_endpoint,
             "session_id": resident.id,
             "location": resident.location,
-            "deployment": "standalone",
+            "deployment": resident.deployment,
             "backend": "unknown",
             "engine": "ravn",
             "profile_id": "",
             "desired_state": "running",
             "observed_state": resident.status,
             "backend_ref": {},
-            "capabilities": ["chat"],
-            "conditions": [],
+            "capabilities": list(resident.capabilities),
+            "conditions": list(resident.conditions),
             "managed": False,
         }
 
@@ -738,7 +833,7 @@ class ResidentDirectory:
             "chat_endpoint": resident.chat_endpoint,
             "title": resident.resident_name,
             "engine": "ravn",
-            "capabilities": ["chat"],
+            "capabilities": list(resident.capabilities),
         }
 
     @staticmethod

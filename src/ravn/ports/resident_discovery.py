@@ -8,9 +8,9 @@ Ravn UI lists them alongside Forge-provisioned residents.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from niuu.domain.models import InstanceVisibility
 
@@ -31,6 +31,16 @@ class StandaloneResident(BaseModel):
     visibility: InstanceVisibility = InstanceVisibility.SYSTEM
     owner_id: str = ""
     tenant_id: str = ""
+    # How the resident is deployed, as the fleet UI reports it. Residents read
+    # from a cluster deployment are "standalone"; ones that come from another
+    # authoritative catalog (e.g. the Valkyrie roster) name that source.
+    deployment: str = "standalone"
+    # What the resident can do. Chat is the long-standing default for a
+    # discovered deployment; a source that knows better (no chat endpoint)
+    # states its own list.
+    capabilities: list[str] = Field(default_factory=lambda: ["chat"])
+    # Reconciled lifecycle conditions, in the shape managed runtimes report.
+    conditions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ResidentDiscoveryPort(Protocol):
