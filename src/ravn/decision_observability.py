@@ -4,6 +4,9 @@
 the same visibility without each adapter re-implementing it:
 
 * span ``ravn.decision`` per request — purpose, model, question count, input tokens, errors;
+* a ``ravn.decision.request`` span event carrying exactly what was asked — the state and every
+  question's instructions and answer space — recorded before the call, so a failed request still
+  shows what it sent (content capture rules apply: redacted, bounded, off unless enabled);
 * metrics ``ravn.decision.requests`` / ``.failures`` / ``.input_tokens`` and the
   ``ravn.decision.latency`` histogram, by purpose and model;
 * per answer: ``ravn.decision.answers`` counted by question and (for a Choice) the chosen option,
@@ -25,14 +28,24 @@ from typing import Any
 from niuu.observability import get_observability
 from ravn.ports.decision import (
     ChoiceAnswer,
+    ChoiceQuestion,
     DecisionAnswer,
     DecisionPort,
     DecisionQuestion,
     DecisionResult,
     NoulAnswer,
+    NoulQuestion,
 )
 
 logger = logging.getLogger(__name__)
+
+#: Histogram resolution for decision telemetry. The SDK default buckets (0, 5, 10 … 10000) put
+#: every sub-second latency and every value in [0, 1] into one bucket, which makes quantiles
+#: meaningless. These are reporting resolution, not behaviour.
+LATENCY_BUCKETS_S = (0.025, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1.0, 2.0, 5.0, 10.0)
+UNIT_BUCKETS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+#: Score levels are 0..9 at most; a boundary between each pair of levels.
+SCORE_BUCKETS = (0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5)
 
 
 class ObservedDecisionPort(DecisionPort):
@@ -64,6 +77,14 @@ class ObservedDecisionPort(DecisionPort):
         }
         started = monotonic()
         with telemetry.span("ravn.decision", attributes=span_attributes) as span:
+            telemetry.event(
+                "ravn.decision.request",
+                attributes=span_attributes,
+                content={
+                    "state": state,
+                    "questions": {qid: describe_question(q) for qid, q in questions.items()},
+                },
+            )
             try:
                 result = await self._inner.decide(state, questions, purpose=purpose)
             except Exception as exc:
@@ -83,7 +104,9 @@ class ObservedDecisionPort(DecisionPort):
                 request_attributes["ravn.decision.input_tokens"] = result.input_tokens
             telemetry.set_attributes(request_attributes)
             telemetry.count("ravn.decision.requests", attributes=base)
-            telemetry.duration("ravn.decision.latency", elapsed, attributes=base)
+            telemetry.duration(
+                "ravn.decision.latency", elapsed, attributes=base, buckets=LATENCY_BUCKETS_S
+            )
             if result.input_tokens is not None:
                 telemetry.count("ravn.decision.input_tokens", result.input_tokens, attributes=base)
             for qid, answer in result.answers.items():
@@ -96,6 +119,27 @@ class ObservedDecisionPort(DecisionPort):
             " ".join(f"{qid}={describe_answer(a)}" for qid, a in result.answers.items()),
         )
         return result
+
+
+def describe_question(question: DecisionQuestion) -> dict[str, Any]:
+    """The question as asked: its type, instructions and full answer space."""
+    if isinstance(question, NoulQuestion):
+        return {
+            "type": "noul",
+            "instructions": question.instructions,
+            "criteria": dict(question.criteria) if question.criteria is not None else None,
+        }
+    if isinstance(question, ChoiceQuestion):
+        return {
+            "type": "choice",
+            "instructions": question.instructions,
+            "options": dict(question.options),
+        }
+    return {
+        "type": "score",
+        "instructions": question.instructions,
+        "levels": list(question.levels),
+    }
 
 
 def describe_answer(answer: DecisionAnswer) -> str:
@@ -116,12 +160,22 @@ def _record_answer(
     attributes: dict[str, Any] = {**base, "ravn.decision.question": qid}
     if isinstance(answer, NoulAnswer):
         attributes["ravn.decision.answer_type"] = "noul"
-        telemetry.record("ravn.decision.probability", answer.probability, attributes=attributes)
+        telemetry.record(
+            "ravn.decision.probability",
+            answer.probability,
+            attributes=attributes,
+            buckets=UNIT_BUCKETS,
+        )
         content: dict[str, Any] = {"probability": answer.probability}
     elif isinstance(answer, ChoiceAnswer):
         attributes["ravn.decision.answer_type"] = "choice"
         attributes["ravn.decision.answer"] = answer.choice
-        telemetry.record("ravn.decision.confidence", answer.confidence, attributes=attributes)
+        telemetry.record(
+            "ravn.decision.confidence",
+            answer.confidence,
+            attributes=attributes,
+            buckets=UNIT_BUCKETS,
+        )
         content = {
             "choice": answer.choice,
             "confidence": answer.confidence,
@@ -129,8 +183,15 @@ def _record_answer(
         }
     else:
         attributes["ravn.decision.answer_type"] = "score"
-        telemetry.record("ravn.decision.score", answer.score, attributes=attributes)
-        telemetry.record("ravn.decision.confidence", answer.confidence, attributes=attributes)
+        telemetry.record(
+            "ravn.decision.score", answer.score, attributes=attributes, buckets=SCORE_BUCKETS
+        )
+        telemetry.record(
+            "ravn.decision.confidence",
+            answer.confidence,
+            attributes=attributes,
+            buckets=UNIT_BUCKETS,
+        )
         content = {
             "score": answer.score,
             "confidence": answer.confidence,
