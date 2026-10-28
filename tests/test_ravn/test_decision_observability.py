@@ -164,11 +164,19 @@ async def test_unknown_usage_records_no_token_count(telemetry: RecordingTelemetr
     assert "ravn.decision.input_tokens" not in telemetry.span_attributes
 
 
-async def test_failure_is_marked_counted_and_raised(telemetry: RecordingTelemetry) -> None:
+async def test_failure_is_marked_counted_logged_and_raised(
+    telemetry: RecordingTelemetry, caplog: pytest.LogCaptureFixture
+) -> None:
     port = ObservedDecisionPort(_Port(error=TimeoutError("slow")))
 
-    with pytest.raises(TimeoutError):
-        await port.decide("s", _QUESTIONS, purpose="unit")
+    with caplog.at_level(logging.INFO, logger="ravn.decision_observability"):
+        with pytest.raises(TimeoutError):
+            await port.decide("s", _QUESTIONS, purpose="unit")
+
+    [record] = caplog.records
+    assert record.levelno == logging.ERROR
+    assert record.getMessage().startswith("decision[unit] failed ")
+    assert record.getMessage().endswith("ms error=TimeoutError: slow")
 
     assert telemetry.errors == [("TimeoutError", "slow")]
     assert telemetry.counts == [
@@ -188,7 +196,18 @@ async def test_logs_one_summary_line(
 
     [line] = [r.getMessage() for r in caplog.records]
     assert line.startswith("decision[unit] model=jev-1.14.0 ")
-    assert line.endswith("p=0.25 c=b(0.90) s=0.50(0.40)")
+    assert line.endswith("ms input_tokens=120 p=0.25 c=b(0.90) s=0.50(0.40)")
+
+
+async def test_summary_line_marks_unknown_usage(
+    telemetry: RecordingTelemetry, caplog: pytest.LogCaptureFixture
+) -> None:
+    result = DecisionResult(model="nimble", answers={"p": NoulAnswer(0.5)}, input_tokens=None)
+    with caplog.at_level(logging.INFO, logger="ravn.decision_observability"):
+        await ObservedDecisionPort(_Port(result)).decide("s", {"p": NoulQuestion("x")}, purpose="u")
+
+    [line] = [r.getMessage() for r in caplog.records]
+    assert line.endswith("ms input_tokens=unknown p=0.50")
 
 
 def test_describe_answer() -> None:

@@ -12,7 +12,10 @@ the same visibility without each adapter re-implementing it:
 * per answer: ``ravn.decision.answers`` counted by question and (for a Choice) the chosen option,
   ``ravn.decision.confidence`` / ``.probability`` / ``.score`` histograms, and a
   ``ravn.decision.answer`` span event carrying the full distribution when content capture is on;
-* one INFO log line per request summarising every answer, for deployments without a collector.
+* one INFO log line per request summarising its latency, input tokens and every answer, and one
+  ERROR line per failed request. These lines are the exact per-event record: decisions are sparse
+  (often hourly) and residents restart on every rollout, so counter ``increase()`` drops a new
+  series' first event and any restart that lands on the same value — dashboards count from logs.
 
 Metric attributes are bounded by construction: purposes, question ids and option names are
 defined in code, never taken from state.
@@ -96,6 +99,13 @@ class ObservedDecisionPort(DecisionPort):
                         "error.type": type(exc).__name__,
                     },
                 )
+                logger.error(
+                    "decision[%s] failed %.0fms error=%s: %s",
+                    purpose,
+                    (monotonic() - started) * 1000,
+                    type(exc).__name__,
+                    exc,
+                )
                 raise
             elapsed = monotonic() - started
             base = {"ravn.decision.purpose": purpose, "ravn.decision.model": result.model}
@@ -112,10 +122,11 @@ class ObservedDecisionPort(DecisionPort):
             for qid, answer in result.answers.items():
                 _record_answer(telemetry, base, qid, answer)
         logger.info(
-            "decision[%s] model=%s %.0fms %s",
+            "decision[%s] model=%s %.0fms input_tokens=%s %s",
             purpose,
             result.model,
             elapsed * 1000,
+            "unknown" if result.input_tokens is None else result.input_tokens,
             " ".join(f"{qid}={describe_answer(a)}" for qid, a in result.answers.items()),
         )
         return result
