@@ -52,6 +52,12 @@ _RAVN_TOOLS_BOOTSTRAP_ENV = (
     "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE",
     "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL",
 )
+# The platform bearer, when the runtime supplies one by env (an OpenShell flock
+# persona exports the token its sandbox mediates). Passed through by name, never
+# by value: a value would land in the Codex command line, and off-cluster this
+# is a PAT. Without it the server's platform tools fell back to the projected
+# token file, which an OpenShell sandbox does not have.
+_RAVN_TOOLS_SECRET_ENV = ("RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN",)
 
 
 @dataclass(frozen=True)
@@ -1165,6 +1171,7 @@ def _with_ravn_tool_mcp_server(
     for name in _RAVN_TOOLS_BOOTSTRAP_ENV:
         if value := os.environ.get(name):
             env[name] = value
+    env_vars = [name for name in _RAVN_TOOLS_SECRET_ENV if os.environ.get(name)]
 
     args = ["-m", "ravn", "tool-mcp"]
     if config_path:
@@ -1192,6 +1199,7 @@ def _with_ravn_tool_mcp_server(
             "command": sys.executable,
             "args": args,
             "env": env,
+            **({"env_vars": env_vars} if env_vars else {}),
             # This server exposes the exact ToolPort registry supplied by the
             # persona.  Continuing without it would run a different, less
             # capable agent than the configured workflow requested.

@@ -1356,3 +1356,45 @@ def test_ravn_tools_server_inherits_the_workload_identity_bootstrap(monkeypatch)
     assert server["env"]["NIUU_WORKLOAD_IDENTITY_TOKEN_FILE"] == (
         "/var/run/secrets/niuu-workload/token"
     )
+
+
+def _ravn_tools_server() -> dict:
+    executor = CliTransportExecutor(
+        transport_adapter="tests.test_ravn.test_executor_cli.FakeResumableTransport"
+    )
+    agent = executor.build(
+        channel=_CollectingChannel(),
+        system_prompt="You review code.",
+        session=Session(),
+        model="fake-model",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-review",
+        persona="reviewer",
+        workspace_dir="/tmp/workspace",
+        permission_mode="read_only",
+        tools=[DummyTool()],
+        mcp_servers=[],
+    )
+    (server,) = agent._transport_kwargs["mcp_servers"]
+    return server
+
+
+def test_ravn_tools_server_receives_the_platform_bearer_by_name_only(monkeypatch) -> None:
+    """An OpenShell persona's platform bearer lives in its own env. Codex gives
+    MCP servers a minimal environment, so without a pass-through the server's
+    platform tools fell back to a projected token file the sandbox lacks. The
+    name is passed, never the value: a value would reach Codex's command line,
+    and off-cluster this is a PAT."""
+    monkeypatch.setenv("RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN", "secret-bearer")
+
+    server = _ravn_tools_server()
+
+    assert server["env_vars"] == ["RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN"]
+    assert "secret-bearer" not in repr(server)
+
+
+def test_ravn_tools_server_passes_no_bearer_name_when_none_is_set(monkeypatch) -> None:
+    monkeypatch.delenv("RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN", raising=False)
+
+    assert "env_vars" not in _ravn_tools_server()

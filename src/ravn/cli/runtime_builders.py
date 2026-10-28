@@ -15,8 +15,12 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
-from niuu.adapters.outbound.http_auth import WorkloadIdentityBearerTokenAuthAdapter
-from ravn.config import PermissionConfig, Settings, ToolGroupConfig
+from niuu.adapters.outbound.http_auth import (
+    StaticBearerTokenAuthAdapter,
+    WorkloadIdentityBearerTokenAuthAdapter,
+)
+from niuu.ports.http_auth import HttpAuthPort
+from ravn.config import PermissionConfig, PlatformToolsConfig, Settings, ToolGroupConfig
 from ravn.domain.exceptions import ConfigurationError
 from ravn.domain.permission_mode import PermissionMode, parse_permission_mode
 from ravn.ports.executor import ExecutorPort
@@ -552,16 +556,7 @@ def _codex_auth_provider(settings: Settings) -> Any | None:
     # kubernetes.io service-account token, whose audience the exchange rejects.
     # Handing over the default silently replaced a working credential with one
     # that could only ever 401.
-    # The workload token is exchanged at the platform when one is configured;
-    # only the broker call itself goes to the cluster's Völundr.
-    auth_kwargs: dict[str, Any] = {"base_url": platform_url or base_url}
-    if "workload_token_file" in platform.model_fields_set:
-        auth_kwargs["token_file"] = platform.workload_token_file
-    if "workload_exchange_url" in platform.model_fields_set:
-        auth_kwargs["exchange_url"] = platform.workload_exchange_url
-    if "workload_audiences" in platform.model_fields_set:
-        auth_kwargs["audiences"] = list(platform.workload_audiences)
-    auth = WorkloadIdentityBearerTokenAuthAdapter(**auth_kwargs)
+    auth = _codex_broker_auth(platform, exchange_base_url=platform_url or base_url)
 
     async def _client() -> httpx.AsyncClient:
         # HttpAuthPort.headers() is synchronous — it performs the token
@@ -574,6 +569,28 @@ def _codex_auth_provider(settings: Settings) -> Any | None:
         http_client_provider=_client,
         **dict(settings.runtime_executor.codex_auth_kwargs),
     )
+
+
+def _codex_broker_auth(platform: PlatformToolsConfig, *, exchange_base_url: str) -> HttpAuthPort:
+    """The credential a persona presents to the Codex token broker.
+
+    An explicit platform bearer wins, as it does for every other platform
+    client (``client_from_workload_identity``): it is a PAT off-cluster, or the
+    workload-bound token a sandbox runtime mediates — OpenShell has no projected
+    token to exchange, so a configured token file there can only fail.
+    """
+    if platform.access_token:
+        return StaticBearerTokenAuthAdapter(token=platform.access_token)
+    # The workload token is exchanged at the platform when one is configured;
+    # only the broker call itself goes to the cluster's Völundr.
+    auth_kwargs: dict[str, Any] = {"base_url": exchange_base_url}
+    if "workload_token_file" in platform.model_fields_set:
+        auth_kwargs["token_file"] = platform.workload_token_file
+    if "workload_exchange_url" in platform.model_fields_set:
+        auth_kwargs["exchange_url"] = platform.workload_exchange_url
+    if "workload_audiences" in platform.model_fields_set:
+        auth_kwargs["audiences"] = list(platform.workload_audiences)
+    return WorkloadIdentityBearerTokenAuthAdapter(**auth_kwargs)
 
 
 def _transport_mcp_servers(settings: Settings) -> list[dict[str, Any]]:
