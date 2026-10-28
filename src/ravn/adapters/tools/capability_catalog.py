@@ -40,6 +40,7 @@ class CapabilityListTool(ToolPort):
         workflow_sources: Sequence[WorkflowCapabilityPort] | None = None,
         learned_tools_provider: Callable[[], Sequence[Any]] | None = None,
         retired_learned_tools: Callable[[], Sequence[Any]] | None = None,
+        refused_learned_tools: Callable[[], Sequence[Any]] | None = None,
         agent_directory: PeerAgentDirectoryPort | None = None,
     ) -> None:
         self._tools_provider = tools_provider
@@ -53,6 +54,11 @@ class CapabilityListTool(ToolPort):
         # but a query that matches one says so, because asking build_tool for
         # it restores it instead of building it again.
         self._retired_learned_tools = retired_learned_tools
+        # Installed tools this resident's execution backend refuses to load.
+        # `learned_tools_provider` must already exclude them; they are named
+        # here, apart from the callable catalog, so the resident sees that the
+        # capability exists and needs a repair instead of rediscovering it.
+        self._refused_learned_tools = refused_learned_tools
         self._agent_directory = agent_directory
 
     @property
@@ -69,8 +75,11 @@ class CapabilityListTool(ToolPort):
             "tools — execute them by name with learned_tool_run; their usage (runs, "
             "successes, last use) says which ones work. To fix or extend one, call "
             "build_tool for the same capability with replace=true: it builds the next "
-            "version of that tool in place. Listing is compact and "
-            "omits input schemas; pass names: [...] for the full entry, including schema "
+            "version of that tool in place. Installed learned tools this resident's "
+            "backend cannot load are never listed as capabilities; their names appear "
+            "under unavailable_learned_tools and they need that same build_tool repair. "
+            "Listing is compact and omits input schemas; pass names: [...] for the full "
+            "entry, including schema "
             "and lifecycle/usage/failure/supersession evidence, of the ones you care "
             "about. Pass query: '<substring>' to check whether something already exists. "
             "A filtered miss returns a catalog_preview — read it and broaden before "
@@ -179,6 +188,23 @@ class CapabilityListTool(ToolPort):
             "catalog_preview": _preview(capabilities, limit) if not entries else [],
             "errors": errors,
         }
+        refused = self._refused()
+        if refused:
+            payload["unavailable_learned_tools"] = sorted(item.name for item in refused)
+            payload["unavailable_next_step"] = (
+                "These installed learned tools are NOT callable on this resident: its "
+                "execution backend refuses to load them. Do not call them through "
+                "learned_tool_run. Call build_tool for the same capability with "
+                "replace=true to rebuild the tool self-contained. Pass `query` or "
+                "`names` to see the reason for each."
+            )
+            details = [
+                _unavailable_entry(item)
+                for item in refused
+                if item.name in wanted or (query and _refused_matches(item, query))
+            ]
+            if details:
+                payload["unavailable_matches"] = details
         if truncated:
             payload["next_step"] = (
                 "This list was shortened to stay readable. Narrow it with "
@@ -405,6 +431,11 @@ class CapabilityListTool(ToolPort):
 
         return capabilities, errors
 
+    def _refused(self) -> list[Any]:
+        if self._refused_learned_tools is None:
+            return []
+        return list(self._refused_learned_tools())
+
     def _retired_matches(self, query: str) -> list[dict[str, Any]]:
         if self._retired_learned_tools is None:
             return []
@@ -456,6 +487,25 @@ class CapabilityListTool(ToolPort):
             )
             if key in metadata
         }
+
+
+def _refused_matches(refused: Any, query: str) -> bool:
+    needle = query.casefold()
+    manifest = refused.artifact.manifest
+    return needle in manifest.name.casefold() or needle in manifest.description.casefold()
+
+
+def _unavailable_entry(refused: Any) -> dict[str, Any]:
+    manifest = refused.artifact.manifest
+    return {
+        "name": manifest.name,
+        "description": manifest.description,
+        "reason": refused.reason,
+        "next_step": (
+            f"Call build_tool for this capability ({manifest.name!r}) with replace=true, "
+            "producing a self-contained version that this resident's backend can load."
+        ),
+    }
 
 
 def _parse_kind(value: Any) -> CapabilityKind | None:

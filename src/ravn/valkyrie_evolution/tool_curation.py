@@ -25,7 +25,9 @@ This module repairs those paths instead of adding new stores:
 * :class:`LearnedToolCurator` (the consolidation-dream pass) backfills each
   artifact's capability id through the same matching, then retires superseded,
   unrunnable, debug-leftover and never-used tools, reading usage from the
-  lifecycle registry.
+  lifecycle registry. A tool the execution backend refuses to load is
+  unrunnable like one that fails verification: it is retired with the
+  loader's reason, and ``build_tool`` restores it as a repair of that tool.
 
 The window for "never used" is not a constant: it is the longest time any tool
 on this resident waited between install and first use (observed, or bounded
@@ -39,7 +41,7 @@ import json
 import logging
 import re
 import shutil
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -512,9 +514,17 @@ def _exact_lineage(
     return None
 
 
-def lineage_problems(entry: ToolEntry) -> list[str]:
-    """Why the existing tool does not already serve the need; empty when healthy."""
+def lineage_problems(entry: ToolEntry, *, load_refusal: str | None = None) -> list[str]:
+    """Why the existing tool does not already serve the need; empty when healthy.
+
+    *load_refusal* is the execution backend's reason for refusing to load the
+    tool (:func:`ravn.valkyrie_evolution.learned_tools.backend_load_refusal`),
+    when it does: a tool this resident cannot run does not serve the need,
+    whatever its verification says, and the way to serve it is a repair.
+    """
     problems: list[str] = []
+    if load_refusal:
+        problems.append(f"this resident's execution backend refuses to load it: {load_refusal}")
     verification = entry.artifact.provenance.get("verification")
     if not isinstance(verification, dict):
         problems.append("it has no verification record, so it can never run")
@@ -591,6 +601,10 @@ class CurationPlan:
     keep: list[str] = field(default_factory=list)
     #: Installed tools with no lifecycle record: nothing can hold a retirement.
     unmanaged: list[str] = field(default_factory=list)
+    #: Tools the execution backend refuses to load, name -> the loader's reason.
+    #: Most are also in ``retire``; a pinned or unmanaged one cannot be retired
+    #: and is listed here instead, never counted in ``keep``.
+    refused: dict[str, str] = field(default_factory=dict)
     groups: list[dict[str, Any]] = field(default_factory=list)
     window: FirstUseWindow = field(default_factory=lambda: FirstUseWindow(None, "", 0))
     #: Capability ids taken over by matching in this pass: name -> capability id.
@@ -604,6 +618,7 @@ class CurationPlan:
             "restore": list(self.restore),
             "keep": list(self.keep),
             "unmanaged": list(self.unmanaged),
+            "refused": dict(self.refused),
             "groups": list(self.groups),
             "never_used_window": self.window.to_dict(),
             "backfilled": dict(self.backfilled),
@@ -625,7 +640,10 @@ class LearnedToolCurator:
       member of the group is kept.
     * **debug_leftover** — the name starts with a configured probe prefix and
       the tool never succeeded.
-    * **unrunnable** — no passing verification, or rolled back.
+    * **unrunnable** — no passing verification, rolled back, or refused by the
+      execution backend (``load_refusal``): the tool exists but this resident
+      cannot load it, so it is not kept, and ``build_tool`` repairs it when it
+      restores the retirement.
     * **unused** — never run, and installed longer than the longest
       install-to-first-use wait known here.
 
@@ -640,6 +658,7 @@ class LearnedToolCurator:
         matcher: CapabilityMatcherPort | None = None,
         leftover_name_prefixes: Sequence[str] = (),
         persist: bool = True,
+        load_refusal: Callable[[LearnedToolArtifact], str | None] | None = None,
     ) -> None:
         self._tools_dir, self._artifacts_dir = learned_tool_storage(state_dir)
         self._skills = skills
@@ -648,6 +667,11 @@ class LearnedToolCurator:
             prefix.strip().lower() for prefix in leftover_name_prefixes if prefix.strip()
         )
         self._persist = persist
+        # The execution backend's reason for refusing a tool (the resolver's
+        # `load_refusal`), so curation judges "runnable" by the same loader
+        # check that decides whether the tool is offered to the model.
+        self._load_refusal = load_refusal
+        self._refusals: dict[str, str] = {}
 
     async def plan(self) -> CurationPlan:
         everything = tool_inventory(
@@ -659,6 +683,7 @@ class LearnedToolCurator:
         installed = [entry for entry in everything if not entry.retired]
         plan = CurationPlan(installed=len(installed), window=first_use_window(everything))
         installed = await self._backfill_capabilities(installed, plan)
+        self._refusals = self._backend_refusals(installed)
         candidates = []
         for entry in installed:
             if entry.lifecycle is None:
@@ -694,7 +719,14 @@ class LearnedToolCurator:
                 decided[entry.name] = decision
 
         plan.retire = sorted(decided.values(), key=lambda decision: decision.name)
-        plan.keep = sorted(entry.name for entry in installed if entry.name not in decided)
+        plan.refused = {
+            name: reason for name, reason in sorted(self._refusals.items()) if name not in decided
+        }
+        plan.keep = sorted(
+            entry.name
+            for entry in installed
+            if entry.name not in decided and entry.name not in self._refusals
+        )
         plan.restore = sorted(
             entry.name
             for entry in everything
@@ -735,6 +767,7 @@ class LearnedToolCurator:
             "backfilled": dict(plan.backfilled),
             "kept": len(plan.keep),
             "unmanaged": list(plan.unmanaged),
+            "refused": dict(plan.refused),
             "never_used_window_seconds": plan.window.seconds,
             "judged": plan.judged,
             "migrated_legacy_retirements": migrated,
@@ -846,13 +879,9 @@ class LearnedToolCurator:
                 reason=RETIRED_DEBUG_LEFTOVER,
                 detail=f"named as a {first_token} probe and never succeeded at a real run",
             )
-        if not self._runnable(entry):
-            why = (
-                "rolled back after repeated failures"
-                if entry.verified
-                else "has no passing verification, so learned_tool_run refuses it"
-            )
-            return RetirementDecision(name=entry.name, reason=RETIRED_UNRUNNABLE, detail=why)
+        unrunnable = self._unrunnable_reason(entry)
+        if unrunnable is not None:
+            return RetirementDecision(name=entry.name, reason=RETIRED_UNRUNNABLE, detail=unrunnable)
         if lifecycle.run_count > 0 or window.seconds is None:
             return None
         if not self._exceeds_window(entry, window, now):
@@ -899,10 +928,39 @@ class LearnedToolCurator:
             entry.artifact.created_at,
         )
 
-    @staticmethod
-    def _runnable(entry: ToolEntry) -> bool:
-        status = entry.lifecycle.status if entry.lifecycle else None
-        return entry.verified and status != "archived"
+    def _backend_refusals(self, installed: Sequence[ToolEntry]) -> dict[str, str]:
+        """Installed, verified tools the execution backend refuses to load.
+
+        An unverified tool is already unrunnable on its own, with its own
+        reason; only a tool that would otherwise run is asked of the backend.
+        """
+        if self._load_refusal is None:
+            return {}
+        refusals: dict[str, str] = {}
+        for entry in installed:
+            if not entry.verified:
+                continue
+            reason = self._load_refusal(entry.artifact)
+            if reason is not None:
+                refusals[entry.name] = reason
+        return refusals
+
+    def _unrunnable_reason(self, entry: ToolEntry) -> str | None:
+        """Why *entry* cannot run on this resident, or ``None`` when it can."""
+        if not entry.verified:
+            return "has no passing verification, so learned_tool_run refuses it"
+        if entry.lifecycle is not None and entry.lifecycle.status == "archived":
+            return "rolled back after repeated failures"
+        refusal = self._refusals.get(entry.name)
+        if refusal is not None:
+            return (
+                "this resident's execution backend refuses to load it, so learned_tool_run "
+                f"cannot run it and capability_list does not offer it: {refusal}"
+            )
+        return None
+
+    def _runnable(self, entry: ToolEntry) -> bool:
+        return self._unrunnable_reason(entry) is None
 
 
 def _evidence(keeper: ToolEntry) -> str:
@@ -1031,8 +1089,19 @@ def _fold_legacy_verdicts(tools_dir: Path, artifacts_dir: Path, path: Path, skil
 # ---------------------------------------------------------------------------
 
 
-def learned_tool_health(state_dir: str | Path, skills: LifecycleView) -> dict[str, int]:
-    """Counts for the resident health snapshot, from the lifecycle registry."""
+def learned_tool_health(
+    state_dir: str | Path,
+    skills: LifecycleView,
+    *,
+    refused: Callable[[], Sequence[Any]] | None = None,
+) -> dict[str, int]:
+    """Counts for the resident health snapshot, from the lifecycle registry.
+
+    *refused* lists the installed tools the execution backend refuses to load
+    (the resolver's ``list_refused``); their count is
+    ``learned_tools_refused``. It is a standing condition, recounted on every
+    snapshot, so it reads zero only once each refused tool has been repaired.
+    """
     tools_dir, artifacts_dir = learned_tool_storage(state_dir)
     entries = tool_inventory(
         tools_dir=tools_dir, artifacts_dir=artifacts_dir, skills=skills, include_retired=True
@@ -1052,6 +1121,8 @@ def learned_tool_health(state_dir: str | Path, skills: LifecycleView) -> dict[st
             entry.lifecycle.restore_count for entry in entries if entry.lifecycle
         ),
     }
+    if refused is not None:
+        snapshot["learned_tools_refused"] = len(refused())
     for reason in RETIREMENT_REASONS:
         snapshot[f"learned_tools_retired.{reason}"] = sum(
             1 for entry in retired if entry.retired_reason == reason

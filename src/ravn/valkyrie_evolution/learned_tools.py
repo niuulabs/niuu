@@ -18,6 +18,7 @@ from typing import Any, Protocol
 
 from packaging.requirements import InvalidRequirement, Requirement
 
+from ravn.cap_telemetry import record_degraded
 from ravn.domain.models import ToolResult
 from ravn.ports.tool import ToolPort
 from ravn.valkyrie_evolution.models import (
@@ -109,6 +110,17 @@ REACH_ENFORCEMENT_UNAVAILABLE = "unavailable"
 
 class LearnedToolError(ValueError):
     """Raised when a learned tool artifact cannot be installed or loaded."""
+
+
+class LearnedToolUnloadableError(LearnedToolError):
+    """An installed tool this resident's execution backend refuses to load.
+
+    The tool exists and is not corrupt, but loading it here is refused: it is
+    unverified, its declared reach cannot be enforced on this backend, or it
+    calls the host SDK on a backend with no channel back to the resident. It
+    is the ``rebuild it`` family of :class:`LearnedToolError`, as opposed to
+    "no such tool" and "invalid name".
+    """
 
 
 class LearnedToolInfrastructureError(RuntimeError):
@@ -1449,6 +1461,64 @@ def _is_host_sdk(module: str) -> bool:
     return module == HOST_SDK_MODULE or module.startswith(HOST_SDK_MODULE + ".")
 
 
+def require_backend_support(
+    *,
+    manifest: LearnedToolManifest,
+    tool_code: str,
+    runner: LearnedToolRunner,
+) -> None:
+    """Raise unless *runner* can load a tool with this manifest and code.
+
+    The one rule for "this execution backend cannot load this tool". Every
+    consumer asks here: :class:`LearnedTool` at load, the resolver when it
+    decides what the catalog may advertise, the curation pass, and build_tool
+    when it decides whether an installed tool already serves a request. A
+    second copy of the rule is how the catalog came to advertise tools that
+    ``learned_tool_run`` refused.
+
+    Two things make a backend unable to load a tool: it cannot enforce the
+    tool's declared reach (``runner.check_reach``), or the tool calls the
+    resident's own tools through the host SDK and the backend has no channel
+    back to this process (in a container or Job the import fails, which reads
+    as the tool being broken and would archive a healthy tool).
+
+    Raises:
+        LearnedToolUnloadableError: the backend refuses the tool; the message
+            names the cause and the remedy.
+    """
+    try:
+        runner.check_reach(manifest.declared_reach)
+    except LearnedToolError as exc:
+        raise LearnedToolUnloadableError(str(exc)) from exc
+    if getattr(runner, "supports_host_call", False):
+        return
+    if not imports_host_sdk(tool_code):
+        return
+    raise LearnedToolUnloadableError(
+        f"learned tool {manifest.name!r} calls the resident's own tools through "
+        f"{HOST_SDK_MODULE}, which this execution backend cannot provide; run it on "
+        "the local backend, or rebuild it self-contained"
+    )
+
+
+def backend_load_refusal(
+    *,
+    manifest: LearnedToolManifest,
+    tool_code: str,
+    runner: LearnedToolRunner,
+) -> str | None:
+    """Why *runner* cannot load this tool, or ``None`` when it can.
+
+    :func:`require_backend_support` as an answer instead of a raise, for the
+    callers that must list what is refused rather than stop at it.
+    """
+    try:
+        require_backend_support(manifest=manifest, tool_code=tool_code, runner=runner)
+    except LearnedToolUnloadableError as exc:
+        return str(exc)
+    return None
+
+
 def require_verified_artifact(artifact: LearnedToolArtifact) -> None:
     """Raise unless *artifact* carries a passing independent verification.
 
@@ -1462,7 +1532,7 @@ def require_verified_artifact(artifact: LearnedToolArtifact) -> None:
     verification = artifact.provenance.get("verification")
     name = artifact.manifest.name
     if verification is None:
-        raise LearnedToolError(
+        raise LearnedToolUnloadableError(
             f"learned tool {name!r} has no verification record and will not be run. "
             f"Rebuild it with build_tool, which verifies before installing."
         )
@@ -1470,7 +1540,7 @@ def require_verified_artifact(artifact: LearnedToolArtifact) -> None:
         detail = ""
         if isinstance(verification, dict):
             detail = str(verification.get("error") or verification.get("summary") or "").strip()
-        raise LearnedToolError(
+        raise LearnedToolUnloadableError(
             f"learned tool {name!r} failed verification and will not be run"
             + (f": {detail}" if detail else "")
         )
@@ -1494,22 +1564,16 @@ class LearnedTool(ToolPort):
         self._tool_path = Path(tool_path)
         self._timeout_seconds = timeout_seconds
         self._runner = runner or LocalLearnedToolRunner()
-        # Refuse at load a tool whose declared reach this backend cannot
-        # enforce, so it is never offered for invocation. run() checks again.
-        self._runner.check_reach(manifest.declared_reach)
-        # Likewise a tool that calls the resident's own tools on a backend
-        # with no channel back: in a container or Job the import fails, which
-        # reads as the tool being broken and would archive a healthy tool.
-        if (
-            not getattr(self._runner, "supports_host_call", False)
-            and self._tool_path.is_file()
-            and imports_host_sdk(self._tool_path.read_text(encoding="utf-8"))
-        ):
-            raise LearnedToolError(
-                f"learned tool {manifest.name!r} calls the resident's own tools through "
-                f"{HOST_SDK_MODULE}, which this execution backend cannot provide; run it on "
-                "the local backend, or rebuild it self-contained"
-            )
+        # Refuse at load a tool this backend cannot run (unenforceable reach, or
+        # the host SDK with no channel back), so it is never offered for
+        # invocation. run() checks the reach again.
+        require_backend_support(
+            manifest=manifest,
+            tool_code=(
+                self._tool_path.read_text(encoding="utf-8") if self._tool_path.is_file() else ""
+            ),
+            runner=self._runner,
+        )
         self._requirements = list(requirements)
         self._host_call = host_call
 
@@ -2018,6 +2082,32 @@ def learned_tool_runner_for_backend(
     raise LearnedToolError(f"unknown learned tool execution backend: {execution_backend!r}")
 
 
+@dataclass(frozen=True)
+class RefusedLearnedTool:
+    """An installed learned tool this resident's backend refuses to load."""
+
+    artifact: LearnedToolArtifact
+    #: The loader's own message: the cause and the remedy.
+    reason: str
+
+    @property
+    def name(self) -> str:
+        return self.artifact.manifest.name
+
+
+@dataclass(frozen=True)
+class LearnedToolInventory:
+    """The installed learned tools, split by whether this backend can load them."""
+
+    loadable: list[LearnedToolArtifact]
+    refused: list[RefusedLearnedTool]
+
+
+#: ``ravn.cap_telemetry`` path a refused learned tool is reported under, so it
+#: shows on the resident health snapshot as ``degraded.learned_tool.refused``.
+DEGRADED_PATH_LEARNED_TOOL_REFUSED = "learned_tool.refused"
+
+
 class LearnedToolResolver:
     """Resolve persisted learned tools from resident state on demand.
 
@@ -2039,7 +2129,11 @@ class LearnedToolResolver:
         execution_backend_kwargs: Mapping[str, Any] | None = None,
     ) -> None:
         if execution_backend not in KNOWN_EXECUTION_BACKENDS:
-            raise LearnedToolError(f"unknown learned tool execution backend: {execution_backend!r}")
+            raise LearnedToolError(
+                f"unknown learned tool execution backend: {execution_backend!r}; set "
+                "resident_evolution.learned_tool_execution_backend to one of "
+                f"{sorted(name for name in KNOWN_EXECUTION_BACKENDS if name)}"
+            )
         self._state_dir = Path(state_dir)
         self._execution_backend = execution_backend
         self._workspace_root = Path(workspace_root) if workspace_root else self._state_dir.parent
@@ -2047,6 +2141,13 @@ class LearnedToolResolver:
         self._execution_backend_kwargs = dict(execution_backend_kwargs or {})
         self._code_dir, self._artifacts_dir = learned_tool_storage(self._state_dir)
         self._venvs_dir = learned_tool_venvs_dir(self._state_dir)
+        # Built now, not at first use: a backend that cannot be constructed
+        # from its configuration (k8s_job without a namespace or policy names)
+        # stops the resident at startup instead of failing on the first call.
+        # This runner only answers "can this backend load that tool"; load()
+        # still builds a fresh one per run.
+        self._check_runner = self._runner()
+        self._reported_refusals: set[tuple[str, str]] = set()
 
     @property
     def artifacts_dir(self) -> Path:
@@ -2117,10 +2218,7 @@ class LearnedToolResolver:
                 )
             raise LearnedToolError(f"no learned tool named {name!r} is installed")
         artifact = read_learned_tool_artifact(artifact_path)
-        require_verified_artifact(artifact)
-        tool_path = self._tool_path(artifact.manifest.name)
-        if not tool_path.exists():
-            raise LearnedToolError(f"learned tool {name!r} has no code file at {tool_path}")
+        tool_path = self._require_installed(artifact)
         return load_learned_tool(
             artifact=artifact,
             tool_path=tool_path,
@@ -2129,6 +2227,77 @@ class LearnedToolResolver:
             venvs_dir=self._venvs_dir,
             host_call=host_call,
         )
+
+    def load_refusal(self, artifact: LearnedToolArtifact) -> str | None:
+        """Why :meth:`load` would refuse *artifact* on this backend, or ``None``.
+
+        The loader's own checks, asked without building a callable: it is
+        verified, its code is on disk, and the backend can run it
+        (:func:`require_backend_support`, the same rule :class:`LearnedTool`
+        applies). Whatever calls a tool available must ask this first.
+        """
+        try:
+            tool_path = self._require_installed(artifact)
+            require_backend_support(
+                manifest=artifact.manifest,
+                tool_code=tool_path.read_text(encoding="utf-8"),
+                runner=self._check_runner,
+            )
+        except LearnedToolError as exc:
+            return str(exc)
+        return None
+
+    def inventory(self) -> LearnedToolInventory:
+        """Installed tools split into those this backend can load and those it refuses.
+
+        A refused tool is reported, not dropped: each is an error log and a
+        count on ``degraded.learned_tool.refused`` the first time this process
+        sees it, and the curation pass retires it so ``build_tool`` repairs it.
+        """
+        loadable: list[LearnedToolArtifact] = []
+        refused: list[RefusedLearnedTool] = []
+        for artifact in self.list_artifacts():
+            reason = self.load_refusal(artifact)
+            if reason is None:
+                loadable.append(artifact)
+                continue
+            refused.append(RefusedLearnedTool(artifact=artifact, reason=reason))
+        self._report_refusals(refused)
+        return LearnedToolInventory(loadable=loadable, refused=refused)
+
+    def list_loadable_artifacts(self) -> list[LearnedToolArtifact]:
+        """Installed tools this backend can load: the only ones to tell the model about."""
+        return self.inventory().loadable
+
+    def list_refused(self) -> list[RefusedLearnedTool]:
+        """Installed tools this backend refuses to load, with the reason for each."""
+        return self.inventory().refused
+
+    def _report_refusals(self, refused: Sequence[RefusedLearnedTool]) -> None:
+        for entry in refused:
+            key = (entry.artifact.artifact_id, entry.reason)
+            if key in self._reported_refusals:
+                continue
+            self._reported_refusals.add(key)
+            record_degraded(
+                DEGRADED_PATH_LEARNED_TOOL_REFUSED,
+                f"learned tool {entry.name!r} is installed but the "
+                f"{self._execution_backend or 'local'!r} execution backend refuses to load it, "
+                f"so it is not offered and cannot run: {entry.reason}. Repair it with "
+                "build_tool (replace=true) so it is rebuilt to load here; with "
+                "resident_evolution.tool_curation.enabled the next consolidation dream "
+                "retires it as unrunnable, and build_tool then restores and repairs it.",
+            )
+
+    def _require_installed(self, artifact: LearnedToolArtifact) -> Path:
+        """The code path of *artifact*, raising when it is unverified or has no code."""
+        require_verified_artifact(artifact)
+        tool_path = self._tool_path(artifact.manifest.name)
+        if not tool_path.exists():
+            raise LearnedToolError(
+                f"learned tool {artifact.manifest.name!r} has no code file at {tool_path}"
+            )
+        return tool_path
 
     def _tool_path(self, name: str) -> Path:
         return learned_tool_path(self._code_dir, name)

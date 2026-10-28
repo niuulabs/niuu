@@ -378,7 +378,8 @@ already there: `find_installed_capability`, the `capability_id` version chain
   **superseded** by another runnable tool with the same capability (the
   best-evidenced one is kept), **debug leftovers** (name starts with one of
   `tool_curation.leftover_name_prefixes` and never succeeded), **unrunnable**
-  tools (no passing verification, or rolled back), and **unused** tools —
+  tools (no passing verification, rolled back, or refused by the execution
+  backend, see below), and **unused** tools —
   never run, and installed longer than the longest install-to-first-use wait
   known on this resident (observed first uses, or the created-to-last-use
   bound of tools used before `first_used_at` existed). Retirement moves the
@@ -388,6 +389,24 @@ already there: `find_installed_capability`, the `capability_id` version chain
   `build_tool` for its capability restores it. A peer's copy of a tool retired
   here as superseded or a debug leftover is ignored, and the next dream
   restores an unused retirement the widened window no longer supports.
+- **Tools the backend cannot load.** `capability_list`, the published learned
+  tool inventory and the bulk loader offer only what the configured
+  `learned_tool_execution_backend` can load, using the loader's own check: the
+  tool is verified, its declared reach is enforceable there, and it does not
+  import the host SDK (`ravn.sdk`) on a backend with no channel back to the
+  resident (`container`, `k8s_job`, `forge`). A tool that fails that check is
+  not dropped silently: the first time the process sees it, it is logged at
+  error level and counted as `degraded.learned_tool.refused`; the health
+  snapshot carries `learned_tools_refused` (a standing count that falls to zero
+  once each is repaired); `capability_list` names it under
+  `unavailable_learned_tools` with the reason; and `learned_tool_run` answers
+  with the `build_tool` repair rather than "use capability_list". The dream
+  retires it as `unrunnable` (it is never counted as kept; a pinned or
+  unmanaged one is listed under `refused` in the dream's `learned_tools`
+  summary), and `build_tool` for the same capability restores it as a repair
+  with the refusal as the stated problem. On such a backend `build_tool`'s
+  description tells the builder not to use the host SDK, and a build that
+  would still be refused is rejected before it replaces the working version.
 
 ```yaml
 resident_evolution:

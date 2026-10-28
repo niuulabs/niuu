@@ -30,6 +30,7 @@ from ravn.tool_observability import publish_learned_tool_inventory
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
+    backend_load_refusal,
     capability_key,
     find_installed_duplicate,
     learned_tool_artifact_path,
@@ -158,6 +159,33 @@ class BuildTool(ToolPort):
         except Exception:  # noqa: BLE001 — provenance must never break a build
             return ""
 
+    def _host_sdk_guidance(self) -> str:
+        """What the builder may assume about calling the resident's own tools.
+
+        Depends on the execution backend: one with no channel back to this
+        process refuses (at load, and in the catalog) every tool that imports
+        the host SDK, so telling the builder to use it there produces tools
+        that are installed and then never offered.
+        """
+        if getattr(self._runner_for_backend(), "supports_host_call", False):
+            return (
+                "To use one of YOUR OWN tools from inside the code you write, call it through "
+                "the host SDK: `from ravn.sdk import tool` then "
+                "`tool.<tool_name>(arg=value)`, which returns the tool's parsed result and "
+                "raises on refusal or failure. That module exists only inside the sandbox — "
+                "do not guess at any other host API, and never wrap the import in "
+                "`try/except`: swallowing it produces a tool that reports success while doing "
+                "nothing. "
+            )
+        return (
+            f"This resident runs learned tools on the {self._execution_backend!r} execution "
+            "backend, which has no channel back to the resident: the code you write must be "
+            "self-contained. Do NOT import `ravn.sdk` or call any of the resident's own tools "
+            "from it — a tool that does is refused at load, never offered by capability_list, "
+            "and cannot run. Do the work with the standard library and the tool's declared "
+            "reach instead. "
+        )
+
     @property
     def name(self) -> str:
         return "build_tool"
@@ -193,13 +221,8 @@ class BuildTool(ToolPort):
             "tool for the same purpose, so versions chain instead of forking. A build "
             "whose code and contract match an installed tool is not rebuilt: the result "
             "names the tool you already have. "
-            "To use one of YOUR OWN tools from inside the code you write, call it through "
-            "the host SDK: `from ravn.sdk import tool` then "
-            "`tool.<tool_name>(arg=value)`, which returns the tool's parsed result and "
-            "raises on refusal or failure. That module exists only inside the sandbox — "
-            "do not guess at any other host API, and never wrap the import in "
-            "`try/except`: swallowing it produces a tool that reports success while doing "
-            "nothing. Everything else the code imports must be the standard library or "
+            + self._host_sdk_guidance()
+            + "Everything else the code imports must be the standard library or "
             "listed in requirements, and every name it uses must be one it defines, "
             "imports or is passed — verification rejects the build otherwise."
         )
@@ -602,6 +625,31 @@ class BuildTool(ToolPort):
                 )
                 return ToolResult(tool_call_id="", content=_duplicate_summary(artifact, duplicate))
 
+            # A build this resident's backend would refuse to load is rejected
+            # before it is verified or installed: installed, it would replace the
+            # working version with a tool that is never offered and cannot run.
+            refusal = backend_load_refusal(
+                manifest=artifact.manifest,
+                tool_code=artifact.tool_code,
+                runner=self._runner_for_backend(),
+            )
+            if refusal is not None:
+                telemetry.event(
+                    "ravn.tool_build.rejected.backend_refusal",
+                    attributes={"ravn.tool_build.name": artifact.manifest.name},
+                    content={"reason": refusal},
+                )
+                self._complete_commission(input)
+                return ToolResult(
+                    tool_call_id="",
+                    content=(
+                        "build_tool rejected: this resident's execution backend would refuse "
+                        f"to load the tool, so it was not installed. {refusal}. Rebuild it "
+                        "so it loads here."
+                    ),
+                    is_error=True,
+                )
+
             # Never trust the builder's own "it works": independently verify the
             # returned code in a throwaway venv, repairing on failure, BEFORE the
             # review/install path ever sees it. A hard-failed verification is
@@ -941,7 +989,14 @@ class BuildTool(ToolPort):
                 name=entry.name,
                 why=f"build_tool was asked for {name!r} ({match.matched_by} match)",
             )
-        problems = lineage_problems(entry)
+        problems = lineage_problems(
+            entry,
+            load_refusal=backend_load_refusal(
+                manifest=entry.artifact.manifest,
+                tool_code=entry.artifact.tool_code,
+                runner=self._runner_for_backend(),
+            ),
+        )
         if restored is not None and restored.archived_reason == RETIRED_UNRUNNABLE:
             problems.append(f"it had been retired as unrunnable: {restored.archived_detail}")
 

@@ -593,7 +593,11 @@ class TestBuildTools:
         assert tools == []
 
     @staticmethod
-    def _write_learned_artifact(tmp_path: Path, name: str) -> None:
+    def _write_learned_artifact(
+        tmp_path: Path,
+        name: str,
+        tool_code: str = "def run(input):\n    return {'ok': True}\n",
+    ) -> None:
         from ravn.valkyrie_evolution.learned_tools import (
             write_learned_tool,
             write_learned_tool_artifact,
@@ -609,7 +613,7 @@ class TestBuildTools:
                 required_permission="mimir:read",
                 declared_reach=[],
             ),
-            tool_code="def run(input):\n    return {'ok': True}\n",
+            tool_code=tool_code,
             # An installed tool carries the verification the build path
             # performs; loading refuses anything else.
             provenance={"verification": {"ok": True, "logs": "fixture"}},
@@ -644,6 +648,43 @@ class TestBuildTools:
         )
 
         assert "persisted_metric_window" in {tool.name for tool in tools}
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_bulk_mode_reports_refused_tools_instead_of_skipping_them_quietly(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.cap_telemetry import degraded_counts, reset_cap_hits
+        from ravn.cli.commands import _build_tools
+        from ravn.domain.models import Session
+
+        reset_cap_hits()
+        settings.resident_evolution.learned_tool_injection_mode = "bulk"
+        settings.resident_evolution.learned_tool_execution_backend = "container"
+        self._write_learned_artifact(tmp_path, "self_contained_tool")
+        self._write_learned_artifact(
+            tmp_path,
+            "uses_host_sdk",
+            tool_code="from ravn.sdk import tool\n\ndef run(input):\n    return tool.x()\n",
+        )
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=None,
+        )
+
+        names = {tool.name for tool in tools}
+        assert "self_contained_tool" in names
+        assert "uses_host_sdk" not in names
+        assert degraded_counts() == {"learned_tool.refused": 1}
+        reset_cap_hits()
 
     @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
     def test_dispatch_mode_keeps_learned_tools_out_of_the_toolbox(
@@ -778,18 +819,118 @@ class TestBuildTools:
 
         assert "learned_tool_run" not in {tool.name for tool in tools}
 
-    def test_learned_tool_resolver_skipped_on_unknown_backend(
+    def test_learned_tool_resolver_unknown_backend_stops_startup(
         self,
         settings: Settings,
         tmp_path: Path,
     ) -> None:
         from ravn.cli.tool_builders import _build_learned_tool_resolver
+        from ravn.valkyrie_evolution.learned_tools import LearnedToolError
 
         # The Literal type blocks this via normal config loading; guard the
-        # code path directly for settings objects mutated at runtime.
+        # code path directly for settings objects mutated at runtime. A resolver
+        # that cannot be built is fatal, never "no learned tools".
         object.__setattr__(settings.resident_evolution, "learned_tool_execution_backend", "qemu")
 
-        assert _build_learned_tool_resolver(settings, tmp_path) is None
+        with pytest.raises(
+            LearnedToolError,
+            match="set resident_evolution.learned_tool_execution_backend",
+        ):
+            _build_learned_tool_resolver(settings, tmp_path)
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_build_tools_unknown_backend_stops_startup(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.cli.commands import _build_tools
+        from ravn.domain.models import Session
+        from ravn.valkyrie_evolution.learned_tools import LearnedToolError
+
+        object.__setattr__(settings.resident_evolution, "learned_tool_execution_backend", "qemu")
+
+        with pytest.raises(LearnedToolError, match="qemu"):
+            _build_tools(
+                settings,
+                tmp_path,
+                Session(),
+                MagicMock(),
+                None,
+                None,
+                no_tools=False,
+                persona_config=None,
+                permission=MagicMock(),
+            )
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    async def test_host_sdk_tool_on_a_backend_without_host_call_is_not_advertised(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        """The live defect: a tool that imports ravn.sdk was advertised by
+        capability_list on a backend that cannot provide it, then refused by
+        learned_tool_run, on every turn. It must not be offered, must be
+        reported, and must point at the build_tool repair."""
+        import json
+
+        from ravn.adapters.permission.allow_deny import AllowAllPermission
+        from ravn.cap_telemetry import degraded_counts, reset_cap_hits
+        from ravn.cli.commands import _build_tools
+        from ravn.domain.models import Session
+
+        reset_cap_hits()
+        # 'container' has no channel back to the resident, like k8s_job.
+        settings.resident_evolution.learned_tool_execution_backend = "container"
+        self._write_learned_artifact(tmp_path, "self_contained_tool")
+        self._write_learned_artifact(
+            tmp_path,
+            "read_configmap_key_tail",
+            tool_code=(
+                "from ravn.sdk import tool\n\n"
+                "def run(input):\n    return tool.kubernetes_inspect(**input)\n"
+            ),
+        )
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=None,
+            permission=AllowAllPermission(),
+        )
+        by_name = {tool.name: tool for tool in tools}
+
+        listed = await by_name["capability_list"].execute({"kind": "tool", "tags": ["learned"]})
+        payload = json.loads(listed.content)
+        assert [item["name"] for item in payload["capabilities"]] == ["self_contained_tool"]
+        assert payload["unavailable_learned_tools"] == ["read_configmap_key_tail"]
+        assert "build_tool" in payload["unavailable_next_step"]
+
+        by_query = json.loads(
+            (await by_name["capability_list"].execute({"query": "configmap"})).content
+        )
+        assert by_query["capabilities"] == []
+        (match,) = by_query["unavailable_matches"]
+        assert match["name"] == "read_configmap_key_tail"
+        assert "ravn.sdk" in match["reason"]
+        assert "replace=true" in match["next_step"]
+
+        # Reported on the health surface, once per tool however often it is listed.
+        assert degraded_counts() == {"learned_tool.refused": 1}
+
+        refused = await by_name["learned_tool_run"].execute(
+            {"name": "read_configmap_key_tail", "input": {}}
+        )
+        assert refused.is_error
+        assert "build_tool" in refused.content
+        assert "capability_list" not in refused.content
+        reset_cap_hits()
 
     @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
     def test_memory_tools_added_when_memory_present(

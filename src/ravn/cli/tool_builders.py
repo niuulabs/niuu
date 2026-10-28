@@ -64,8 +64,14 @@ def _build_tools(
     a2a_activity_emitter: Callable[[dict[str, object]], Awaitable[None]] | None = None,
     a2a_activity_finder: Callable[..., Awaitable[list[dict[str, Any]]]] | None = None,
     skill_manager: Any | None = None,
+    learned_tool_resolver: Any | None = None,
 ) -> list[Any]:
     """Build the tool list from the built-in registry, filtered by profile.
+
+    *learned_tool_resolver* is the long-lived resolver a daemon builds once at
+    its composition root and shares with every task, so the venv sweep, the
+    inventory publish and the refusal report happen once per process. Callers
+    that inject nothing (the single-run CLI) get a resolver built here.
 
     The registry (``builtin_registry.BUILTIN_TOOLS``) drives all built-in
     tool construction.  Custom tools from ``settings.tools.custom`` are
@@ -119,9 +125,11 @@ def _build_tools(
     # loads every artifact as a native callable (NIU-1118).
     dispatch_learned_tools = settings.resident_evolution.learned_tool_injection_mode == "dispatch"
     if dispatch_learned_tools:
-        resolver = _build_learned_tool_resolver(settings, workspace)
-        if resolver is not None:
-            runtime_ctx["learned_tool_resolver"] = resolver
+        runtime_ctx["learned_tool_resolver"] = (
+            learned_tool_resolver
+            if learned_tool_resolver is not None
+            else _build_learned_tool_resolver(settings, workspace)
+        )
 
     # One lifecycle registry backs skill discovery, management, and learned-tool
     # execution. Resident daemons inject their long-lived registry; other
@@ -146,7 +154,10 @@ def _build_tools(
 
     resolver = runtime_ctx.get("learned_tool_resolver")
     if resolver is not None:
-        runtime_ctx["learned_tools_provider"] = resolver.list_artifacts
+        # Only what this backend can load is offered; what it refuses is named
+        # separately so it is repaired instead of silently missing.
+        runtime_ctx["learned_tools_provider"] = resolver.list_loadable_artifacts
+        runtime_ctx["refused_learned_tools"] = resolver.list_refused
         runtime_ctx["retired_learned_tools"] = _retired_learned_tools(
             _resident_ravn_state_dir(workspace, settings), runtime_ctx.get("skill_manager")
         )
@@ -361,6 +372,7 @@ def _build_tools(
                 workspace,
                 tools,
                 skill_manager=skill_manager,
+                resolver=learned_tool_resolver,
             )
         )
 
@@ -420,33 +432,40 @@ def _build_tools(
     return tools
 
 
-def _build_learned_tool_resolver(settings: Settings, workspace: Path) -> Any | None:
-    """Construct the on-demand learned-tool resolver, sweeping stale venvs."""
-    from ravn.valkyrie_evolution.learned_tools import (  # noqa: PLC0415
-        LearnedToolError,
-        LearnedToolResolver,
+def learned_tool_resolver_from_settings(settings: Settings, workspace: Path) -> Any:
+    """Construct the learned-tool resolver the settings describe, with no side effects.
+
+    Raises :class:`~ravn.valkyrie_evolution.learned_tools.LearnedToolError`
+    when the configured execution backend cannot be built; the resident does
+    not start without it. The message names the setting to change.
+    """
+    from ravn.valkyrie_evolution.learned_tools import LearnedToolResolver  # noqa: PLC0415
+
+    return LearnedToolResolver(
+        state_dir=_resident_ravn_state_dir(workspace, settings),
+        execution_backend=settings.resident_evolution.learned_tool_execution_backend,
+        execution_backend_kwargs=(
+            settings.resident_evolution.learned_tool_k8s.model_dump()
+            if settings.resident_evolution.learned_tool_execution_backend == "k8s_job"
+            else None
+        ),
+        workspace_root=workspace,
+        timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
     )
 
-    state_dir = _resident_ravn_state_dir(workspace, settings)
-    try:
-        resolver = LearnedToolResolver(
-            state_dir=state_dir,
-            execution_backend=settings.resident_evolution.learned_tool_execution_backend,
-            execution_backend_kwargs=(
-                settings.resident_evolution.learned_tool_k8s.model_dump()
-                if settings.resident_evolution.learned_tool_execution_backend == "k8s_job"
-                else None
-            ),
-            workspace_root=workspace,
-            timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
-        )
-    except LearnedToolError as exc:
-        logger.warning("Skipping learned tools: %s", exc)
-        return None
+
+def _build_learned_tool_resolver(settings: Settings, workspace: Path) -> Any:
+    """Construct the on-demand learned-tool resolver, sweeping stale venvs.
+
+    No fallback: learned tools are always configured (there is no setting that
+    turns them off), so a resolver that cannot be built stops startup with the
+    remedy in the error instead of leaving the resident without its tools.
+    """
+    resolver = learned_tool_resolver_from_settings(settings, workspace)
     resolver.sweep_orphaned_venvs()
     from ravn.tool_observability import publish_learned_tool_inventory  # noqa: PLC0415
 
-    publish_learned_tool_inventory(resolver.list_artifacts())
+    publish_learned_tool_inventory(resolver.list_loadable_artifacts())
     return resolver
 
 
@@ -478,6 +497,7 @@ def _load_resident_learned_tools(
     existing_tools: list[Any],
     *,
     skill_manager: Any | None = None,
+    resolver: Any | None = None,
 ) -> list[Any]:
     """Legacy bulk mode: load every learned tool as a native callable.
 
@@ -485,22 +505,20 @@ def _load_resident_learned_tools(
     default dispatch mode exposes learned tools through capability_list +
     learned_tool_run instead, so the prompt does not grow with the catalog.
     """
-    resolver = _build_learned_tool_resolver(settings, workspace)
     if resolver is None:
-        return []
+        resolver = _build_learned_tool_resolver(settings, workspace)
     seen = {tool.name for tool in existing_tools}
     loaded: list[Any] = []
-    for artifact in resolver.list_artifacts():
+    # Tools this backend refuses are reported by the resolver's inventory
+    # (error log, degraded count) and left to the repair path; they are not
+    # callables, so they are never loaded and never listed.
+    for artifact in resolver.list_loadable_artifacts():
         name = artifact.manifest.name
         if skill_manager is not None and skill_manager.status(name) == "archived":
             continue
         if name in seen:
             continue
-        try:
-            tool = resolver.load(name)
-        except Exception as exc:
-            logger.warning("Failed to load learned tool %s: %s", name, exc)
-            continue
+        tool = resolver.load(name)
         seen.add(tool.name)
         loaded.append(tool)
     return loaded
