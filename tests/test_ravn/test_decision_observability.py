@@ -8,7 +8,11 @@ from typing import Any
 
 import pytest
 
-from ravn.decision_observability import ObservedDecisionPort, describe_answer
+from ravn.decision_observability import (
+    ObservedDecisionPort,
+    describe_answer,
+    describe_question,
+)
 from ravn.ports.decision import (
     ChoiceAnswer,
     ChoiceQuestion,
@@ -129,7 +133,11 @@ async def test_records_each_answer(telemetry: RecordingTelemetry) -> None:
     assert ("ravn.decision.probability", 0.25) in histograms
     assert ("ravn.decision.confidence", 0.9) in histograms
     assert ("ravn.decision.score", 0.5) in histograms
-    events = {attrs["ravn.decision.question"]: content for _, attrs, content in telemetry.events}
+    events = {
+        attrs["ravn.decision.question"]: content
+        for name, attrs, content in telemetry.events
+        if name == "ravn.decision.answer"
+    }
     assert events["c"]["probabilities"] == {"a": 0.1, "b": 0.9}
     assert events["s"]["probabilities"] == {"0": 0.5, "1": 0.5}
 
@@ -189,3 +197,42 @@ async def test_close_closes_the_inner_adapter() -> None:
     assert inner.closed
     assert observed.inner is inner
     await ObservedDecisionPort(_Port(_RESULT)).close()
+
+
+async def test_records_exactly_what_was_asked(telemetry: RecordingTelemetry) -> None:
+    await ObservedDecisionPort(_Port(_RESULT)).decide({"k": 1}, _QUESTIONS, purpose="unit")
+
+    [(attrs, content)] = [
+        (attrs, content)
+        for name, attrs, content in telemetry.events
+        if name == "ravn.decision.request"
+    ]
+    assert attrs == {"ravn.decision.purpose": "unit", "ravn.decision.question_count": 3}
+    assert content == {
+        "state": {"k": 1},
+        "questions": {
+            "p": {"type": "noul", "instructions": "x", "criteria": None},
+            "c": {"type": "choice", "instructions": "y", "options": {"a": None, "b": None}},
+            "s": {"type": "score", "instructions": "z", "levels": ["lo", "hi"]},
+        },
+    }
+
+
+async def test_a_failed_request_still_shows_what_it_sent(telemetry: RecordingTelemetry) -> None:
+    with pytest.raises(TimeoutError):
+        await ObservedDecisionPort(_Port(error=TimeoutError("slow"))).decide(
+            "the state", _QUESTIONS, purpose="unit"
+        )
+
+    [request] = [
+        content for name, _, content in telemetry.events if name == "ravn.decision.request"
+    ]
+    assert request["state"] == "the state"
+
+
+def test_describe_question_keeps_noul_criteria() -> None:
+    assert describe_question(NoulQuestion("x", {"true": "t", "false": "f"})) == {
+        "type": "noul",
+        "instructions": "x",
+        "criteria": {"true": "t", "false": "f"},
+    }

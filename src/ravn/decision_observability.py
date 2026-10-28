@@ -4,6 +4,9 @@
 the same visibility without each adapter re-implementing it:
 
 * span ``ravn.decision`` per request — purpose, model, question count, input tokens, errors;
+* a ``ravn.decision.request`` span event carrying exactly what was asked — the state and every
+  question's instructions and answer space — recorded before the call, so a failed request still
+  shows what it sent (content capture rules apply: redacted, bounded, off unless enabled);
 * metrics ``ravn.decision.requests`` / ``.failures`` / ``.input_tokens`` and the
   ``ravn.decision.latency`` histogram, by purpose and model;
 * per answer: ``ravn.decision.answers`` counted by question and (for a Choice) the chosen option,
@@ -25,11 +28,13 @@ from typing import Any
 from niuu.observability import get_observability
 from ravn.ports.decision import (
     ChoiceAnswer,
+    ChoiceQuestion,
     DecisionAnswer,
     DecisionPort,
     DecisionQuestion,
     DecisionResult,
     NoulAnswer,
+    NoulQuestion,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,6 +69,14 @@ class ObservedDecisionPort(DecisionPort):
         }
         started = monotonic()
         with telemetry.span("ravn.decision", attributes=span_attributes) as span:
+            telemetry.event(
+                "ravn.decision.request",
+                attributes=span_attributes,
+                content={
+                    "state": state,
+                    "questions": {qid: describe_question(q) for qid, q in questions.items()},
+                },
+            )
             try:
                 result = await self._inner.decide(state, questions, purpose=purpose)
             except Exception as exc:
@@ -96,6 +109,27 @@ class ObservedDecisionPort(DecisionPort):
             " ".join(f"{qid}={describe_answer(a)}" for qid, a in result.answers.items()),
         )
         return result
+
+
+def describe_question(question: DecisionQuestion) -> dict[str, Any]:
+    """The question as asked: its type, instructions and full answer space."""
+    if isinstance(question, NoulQuestion):
+        return {
+            "type": "noul",
+            "instructions": question.instructions,
+            "criteria": dict(question.criteria) if question.criteria is not None else None,
+        }
+    if isinstance(question, ChoiceQuestion):
+        return {
+            "type": "choice",
+            "instructions": question.instructions,
+            "options": dict(question.options),
+        }
+    return {
+        "type": "score",
+        "instructions": question.instructions,
+        "levels": list(question.levels),
+    }
 
 
 def describe_answer(answer: DecisionAnswer) -> str:

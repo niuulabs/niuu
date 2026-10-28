@@ -205,6 +205,28 @@ class TestCompare:
         assert content["resident"] == {"tier": "urgent", "decision": "watch", "confidence": 0.9}
         assert content["first_opinion"]["needs_investigation"] == 0.2
 
+    def test_logs_one_line_per_comparison(
+        self, telemetry: RecordingTelemetry, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.INFO, logger="ravn.resident_first_opinion"):
+            ResidentFirstOpinion(_Decisions(), max_observation_chars=100).compare(
+                _opinion(tier="ambient", decision="watch"),
+                {"tier": "silent", "decision": "watch"},
+                outcome_valid=True,
+            )
+            ResidentFirstOpinion(_Decisions(), max_observation_chars=100).compare(
+                _opinion(), None, outcome_valid=False
+            )
+
+        assert [r.getMessage() for r in caplog.records] == [
+            "first_opinion[case-1] model=jev-1.14.0 outcome_valid=True "
+            "tier jev=ambient resident=silent agreed=false "
+            "decision jev=watch resident=watch agreed=true",
+            "first_opinion[case-1] model=jev-1.14.0 outcome_valid=False "
+            "tier jev=ambient resident=unavailable agreed=unavailable "
+            "decision jev=watch resident=unavailable agreed=unavailable",
+        ]
+
     @pytest.mark.parametrize(
         "outcome",
         [None, {}, {"tier": "loud", "decision": 3}],

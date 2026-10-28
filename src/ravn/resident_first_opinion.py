@@ -15,7 +15,9 @@ its outcome is the only one that reaches the court. What it produces is evidence
   and agreement — the agreement matrix per tier and per decision;
 * ``ravn.decision.first_opinion.tier_delta`` — first-opinion tier index minus the resident's,
   so a negative value is the dangerous direction (the cheap model would have under-attended);
-* a ``ravn.decision.first_opinion`` span event with both full judgments.
+* a ``ravn.decision.first_opinion`` span event with both full judgments;
+* one INFO log line per comparison carrying the trace id, so disagreements can be listed and
+  opened from the logs.
 
 The tier and decision descriptions below describe the contract's vocabulary — what each value
 causes downstream — not what any signal means. Their keys are tested against the vocabulary
@@ -24,6 +26,7 @@ tuples so the two cannot drift apart.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -43,6 +46,8 @@ from ravn.ports.decision import (
     NoulAnswer,
     NoulQuestion,
 )
+
+logger = logging.getLogger(__name__)
 
 PURPOSE = "resident.first_opinion"
 _UNAVAILABLE = "unavailable"
@@ -169,6 +174,19 @@ class ResidentFirstOpinion:
             if resident != _UNAVAILABLE:
                 attributes["ravn.decision.agreed"] = first == resident
             telemetry.count("ravn.decision.first_opinion.comparisons", attributes=attributes)
+        logger.info(
+            "first_opinion[%s] model=%s outcome_valid=%s tier jev=%s resident=%s agreed=%s "
+            "decision jev=%s resident=%s agreed=%s",
+            opinion.case_id,
+            opinion.model,
+            outcome_valid,
+            opinion.tier.choice,
+            resident_tier,
+            _agreement(opinion.tier.choice, resident_tier),
+            opinion.decision.choice,
+            resident_decision,
+            _agreement(opinion.decision.choice, resident_decision),
+        )
         if resident_tier != _UNAVAILABLE:
             delta = VALKYRIE_ATTENTION_TIER_ORDER.index(
                 opinion.tier.choice
@@ -237,6 +255,12 @@ def without_outcome_contract(context: str) -> str:
     end = context.find("\n## ", start + len(_OUTCOME_HEADING))
     rest = context[end + 1 :] if end >= 0 else ""
     return (context[:start] + rest).rstrip()
+
+
+def _agreement(first: str, resident: str) -> str:
+    if resident == _UNAVAILABLE:
+        return _UNAVAILABLE
+    return str(first == resident).lower()
 
 
 def _vocabulary_value(
