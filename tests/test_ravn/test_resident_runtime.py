@@ -645,6 +645,100 @@ async def test_explicit_outcome_routes_operator_question_without_an_episode(tmp_
     assert await state.read_operator_needed("root-1") is not None
 
 
+def _escalation(**overrides) -> dict:
+    """What Runa emitted 27 times: an escalation that also chose to sleep."""
+    fields = {
+        "decision": "escalate",
+        "tier": "urgent",
+        "continuation": "sleep",
+        "next_action_timing": "scheduled_time",
+        "wake_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+        "question": "etcd member qftlj stalls every 15m; may I cordon its node?",
+    }
+    fields.update(overrides)
+    return fields
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"continuation": "stop", "next_action_timing": "none"},
+        {"continuation": "", "next_action_timing": ""},
+    ],
+    ids=["sleep", "stop", "no-continuation"],
+)
+async def test_an_escalation_with_a_question_reaches_the_operator_whatever_the_continuation(
+    tmp_path, overrides
+) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state, resident_id="valkyrie-valhalla-k8s")
+
+    disposition = await runtime.handle_completed_turn(
+        task=_task(),
+        prompt="prompt",
+        result=_result(_escalation(**overrides)),
+        response_text="response",
+    )
+
+    assert disposition.kind is ContinuationDecisionKind.ASK_OPERATOR
+    assert disposition.question == "etcd member qftlj stalls every 15m; may I cordon its node?"
+    assert not disposition.wake_ref
+    assert await state.read_operator_needed(disposition.case_id) is not None
+    pending = await runtime.pending_questions()
+    assert [item["question"] for item in pending] == [disposition.question]
+
+
+@pytest.mark.asyncio
+async def test_an_escalation_is_filed_for_review_like_any_operator_question(tmp_path) -> None:
+    publisher = AsyncMock()
+    runtime = ResidentRuntime(
+        state=LocalResidentState(tmp_path / "state"),
+        resident_id="valkyrie-valhalla-k8s",
+        review_requester=ReviewRequester(
+            publisher=publisher, store=JsonReviewStore(tmp_path / "reviews.json")
+        ),
+    )
+
+    await runtime.handle_completed_turn(
+        task=_task(),
+        prompt="prompt",
+        result=_result(_escalation()),
+        response_text="response",
+    )
+
+    item = publisher.publish.await_args.args[0].payload
+    assert item["requested_action"] == "answer_operator_question"
+    assert item["title"].endswith("may I cordon its node?")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("question", ["", "   "])
+async def test_an_escalation_without_a_question_never_sleeps_as_if_it_had_asked(
+    tmp_path, question
+) -> None:
+    """It used to sleep: the resident believed it had escalated and nobody was asked.
+    A caller that skipped the contract check gets an invalid outcome, not an invented
+    question and not a wake."""
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state, resident_id="valkyrie-valhalla-k8s")
+
+    disposition = await runtime.handle_completed_turn(
+        task=_task(),
+        prompt="prompt",
+        result=_result(_escalation(question=question)),
+        response_text="response",
+        outcome_valid=True,
+    )
+
+    assert disposition.kind is ContinuationDecisionKind.STOP
+    assert disposition.reason == "resident outcome contract was invalid"
+    assert not disposition.wake_ref
+    assert await state.read_operator_needed(disposition.case_id) is None
+    assert await runtime.pending_questions() == []
+
+
 async def _ask(runtime: ResidentRuntime, case_id: str, question: str) -> None:
     await runtime.handle_completed_turn(
         task=_task(task_id=f"task-{case_id}", root_correlation_id=case_id),

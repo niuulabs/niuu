@@ -17,6 +17,8 @@ from ravn.domain.resident_continuation import (
 )
 from ravn.domain.valkyrie_contracts import (
     _JUDGMENT_REQUIRED_FIELDS,
+    RESIDENT_ESCALATION_GUIDANCE,
+    VALKYRIE_ESCALATE_REQUIRES_QUESTION,
     VALKYRIE_JUDGMENT_PROPOSED,
     VALKYRIE_RUNTIME_OWNED_FIELDS,
     resident_outcome_section,
@@ -97,3 +99,55 @@ def test_section_keeps_the_delimiters_the_parser_looks_for() -> None:
     section = resident_outcome_section()
     assert "---outcome---" in section
     assert "---end---" in section
+
+
+def _filled_judgment(**overrides: object) -> dict:
+    fields = _template_fields()
+    filled = dict(fields)
+    for key in ("tier", "operational_state", "wakefulness", "action_authority"):
+        filled[key] = fields[key].strip("<>").split(" | ")[0]
+    filled["confidence"] = 0.5
+    filled["correlation_ids"] = {}
+    for runtime_field in VALKYRIE_RUNTIME_OWNED_FIELDS - {"correlation_ids"}:
+        filled[runtime_field] = "runtime-supplied"
+    filled.update(overrides)
+    return filled
+
+
+def test_an_escalation_without_a_question_is_rejected_with_the_remedy() -> None:
+    for question in ("", "   ", None):
+        errors = validate_valkyrie_outcome(
+            VALKYRIE_JUDGMENT_PROPOSED,
+            _filled_judgment(decision="escalate", continuation="sleep", question=question),
+        )
+
+        assert errors == [VALKYRIE_ESCALATE_REQUIRES_QUESTION]
+        assert "requires a non-empty 'question'" in errors[0]
+        assert "'ask_operator'" in errors[0]
+
+
+def test_an_escalation_with_a_question_is_accepted() -> None:
+    errors = validate_valkyrie_outcome(
+        VALKYRIE_JUDGMENT_PROPOSED,
+        _filled_judgment(decision="Escalate", question="May I drain node ymir-3?"),
+    )
+
+    assert errors == []
+
+
+def test_a_decision_that_is_not_an_escalation_needs_no_question() -> None:
+    errors = validate_valkyrie_outcome(
+        VALKYRIE_JUDGMENT_PROPOSED,
+        _filled_judgment(decision="watch", continuation="sleep", question=""),
+    )
+
+    assert errors == []
+
+
+def test_the_prompt_says_escalate_asks_the_operator_and_needs_a_question() -> None:
+    section = resident_outcome_section()
+
+    assert RESIDENT_ESCALATION_GUIDANCE in section
+    assert "`decision: escalate` asks the operator" in section
+    assert "empty `question` is rejected" in section
+    assert "court" in section

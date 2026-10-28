@@ -13,7 +13,11 @@ from niuu.domain.outcome import OutcomeField
 from ravn.cap_telemetry import cap_hit_counts
 from ravn.domain.events import RavnEventType
 from ravn.domain.models import TokenUsage, ToolCall, ToolResult, TurnResult
-from ravn.domain.valkyrie_contracts import normalize_valkyrie_outcome
+from ravn.domain.valkyrie_contracts import (
+    RESIDENT_ESCALATION_GUIDANCE,
+    VALKYRIE_ESCALATE_REQUIRES_QUESTION,
+    normalize_valkyrie_outcome,
+)
 from ravn.drive_loop import (
     _build_resident_valkyrie_schema_repair_prompt,
     _build_workflow_outcome_repair_prompt,
@@ -778,6 +782,75 @@ findings: "[{severity: high}]"
             dl._persona_config,
         )
         assert validation_errors == []
+
+    @pytest.mark.asyncio
+    async def test_an_escalation_without_a_question_is_repaired_with_the_remedy(self) -> None:
+        """Runa recorded 27 escalating turns that slept with an empty question and
+        reached nobody. The contract rejects that turn and the repair turn is told
+        exactly how to fix it; the decision is not converted and no question is
+        invented here."""
+        dl = _make_drive_loop()
+        produces = _valkyrie_judgment_produces()
+        produces.schema["decision"] = OutcomeField(
+            type="enum", description="decision", enum_values=["watch", "escalate"]
+        )
+        dl._persona_config = SimpleNamespace(name="k8s-valkyrie", produces=produces)
+        task = _make_agent_task(task_id="task-valkyrie-escalate")
+        unasked = _valid_valkyrie_judgment_text().replace(
+            "decision: propose_action", 'decision: escalate\nquestion: ""'
+        )
+        asked = unasked.replace('question: ""', "question: May I restart etcd member qftlj?")
+
+        _, _, errors = _resident_valkyrie_validation_result(unasked, dl._persona_config)
+        assert errors == [VALKYRIE_ESCALATE_REQUIRES_QUESTION]
+        assert "requires a non-empty 'question'" in errors[0]
+        assert "'watch' with continuation 'sleep'" in errors[0]
+
+        class RepairAgent:
+            def __init__(self) -> None:
+                self.prompts: list[str] = []
+
+            async def repair_outcome(self, prompt: str) -> TurnResult:
+                self.prompts.append(prompt)
+                return TurnResult(
+                    response=asked,
+                    tool_calls=[],
+                    tool_results=[],
+                    usage=TokenUsage(input_tokens=8, output_tokens=12),
+                )
+
+        agent = RepairAgent()
+        repair_result = await dl._maybe_repair_resident_valkyrie_outcome(
+            agent=agent, task=task, response_text=unasked
+        )
+
+        assert repair_result is not None
+        assert VALKYRIE_ESCALATE_REQUIRES_QUESTION in agent.prompts[0]
+        assert RESIDENT_ESCALATION_GUIDANCE in agent.prompts[0]
+        _, repaired, repaired_errors = _resident_valkyrie_validation_result(
+            repair_result.response, dl._persona_config
+        )
+        assert repaired_errors == []
+        assert repaired["decision"] == "escalate"
+        assert repaired["question"] == "May I restart etcd member qftlj?"
+
+    def test_an_escalation_with_a_question_is_valid_whatever_the_continuation(self) -> None:
+        produces = _valkyrie_judgment_produces()
+        produces.schema["decision"] = OutcomeField(
+            type="enum", description="decision", enum_values=["watch", "escalate"]
+        )
+        persona = SimpleNamespace(name="k8s-valkyrie", produces=produces)
+        text = _valid_valkyrie_judgment_text().replace(
+            "decision: propose_action",
+            "decision: escalate\n"
+            "question: Is the etcd closure gate still the right thing to wait for?\n"
+            "continuation: sleep\n"
+            "next_action_timing: scheduled_time",
+        )
+
+        _, _, errors = _resident_valkyrie_validation_result(text, persona)
+
+        assert errors == []
 
     @pytest.mark.asyncio
     async def test_an_empty_resident_turn_is_not_repaired_into_an_outcome(self) -> None:
