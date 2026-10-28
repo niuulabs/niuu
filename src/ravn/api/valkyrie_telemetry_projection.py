@@ -23,7 +23,11 @@ from ravn.api.valkyrie_learning_projection import (
     _tool_need_entry,
 )
 from ravn.api.valkyrie_projection_common import _empty_telemetry
-from ravn.api.valkyrie_runtime_projection import _merge_runtime_entry, _runtime_entry
+from ravn.api.valkyrie_runtime_projection import (
+    DREAM_SNAPSHOT_EVENT,
+    _merge_runtime_entry,
+    _runtime_entry,
+)
 
 
 def _environment_telemetry_entry(entries: dict[str, dict[str, Any]], env_id: str) -> dict[str, Any]:
@@ -94,6 +98,7 @@ def _aggregate_telemetry(
         if event_type not in {
             "valkyrie.signal_poll.completed",
             "valkyrie.presence.heartbeat",
+            DREAM_SNAPSHOT_EVENT,
         }:
             recent_events.append(_event_log_entry(event, payload))
 

@@ -72,6 +72,16 @@ spec:
               value: {{ .Values.service.targetPort | default 8080 | quote }}
             - name: WORKERS
               value: {{ .Values.config.workers | default 1 | quote }}
+            {{- if .Values.git.provenance.enabled }}
+            # sigstore-python keeps its TUF trust-root cache under XDG_DATA_HOME and
+            # XDG_CACHE_HOME. The runtime user has no home directory and the root
+            # filesystem is read-only, so image provenance verification needs them on
+            # the writable /tmp scratch volume.
+            - name: XDG_DATA_HOME
+              value: /tmp/xdg-data
+            - name: XDG_CACHE_HOME
+              value: /tmp/xdg-cache
+            {{- end }}
             # Database secrets (override YAML config)
             - name: DATABASE__HOST
               value: {{ include "volundr.databaseHost" . | quote }}

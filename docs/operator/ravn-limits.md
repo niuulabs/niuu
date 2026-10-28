@@ -29,11 +29,20 @@ counted it.
 - Where raising would lose more than continuing, the degradation is an error
   log plus `ravn.degraded` (attribute `ravn.degraded.path`), and appears in
   the health snapshot as `degraded_total` / `degraded.<path>` with the
-  `ravn.resident.degraded` gauge. That covers three paths. An operator reply
+  `ravn.resident.degraded` gauge. That covers four paths. An operator reply
   that could not be saved as an answer (`operator_reply.persist`) is
   delivered as an ordinary task, and its question stays open. A reply naming
   a closed question (`operator_reply.unbound`) and a directed message not
   written to the durable inbox (`directed_message.persist`) are also counted.
+  An installed learned tool that the execution backend refuses to load
+  (`learned_tool.refused`, once per tool per process) is not offered to the
+  model and is routed to the `build_tool` repair; the standing count is
+  `learned_tools_refused` in the same snapshot.
+- A retry still inside its bound (a stream re-issued after a gateway restart, a
+  model call retried after a refused connection) logs at warning and counts on
+  `ravn.retries` (attribute `ravn.retry.path`); the health snapshot carries
+  `retries_total` and `retries.<path>`. Running out of the bound is a cap hit
+  on its knob, not a retry.
 - `ravn.cap_telemetry` is the only implementation: `require_complete()` for
   model answers, `record_truncation()` / `record_cap_hit()` for everything else.
 
@@ -93,10 +102,13 @@ in the output and counted. That includes excerpts the prompt announces
 | Discord image caption | same knob | Platform limit | Kept | Error log + counted |
 | Skuld Telegram `TELEGRAM_MAX_MESSAGE_LENGTH` | 4096 | Telegram: 4096 UTF-16 units after entity parsing | Measured in UTF-16 units; HTML chunks never split inside a tag or entity, and open tags are closed and reopened across a split | A failed chunk logs at error, and the event is not marked delivered, so a redelivery resends it |
 | **Retries and time** | | | | |
-| `llm.max_retries` / `llm.retry_base_delay` / `llm.timeout` | 3 / 1.0 s / 120 s | Provider availability | Kept; `timeout` is the bound for an uncapped answer | `LLMError` after the retries |
+| `llm.retry_base_delay` / `llm.timeout` | 1.0 s / 120 s | Backoff start; `timeout` is the bound for an uncapped answer | Kept | Retries are bounded by `llm.gateway_outage_window_seconds` below |
+| `llm.gateway_outage_window_seconds` / `llm.gateway_outage_max_backoff_seconds` | 120 s / 10 s | How long a gateway rollout takes: the time one call may spend failing, from each failure until the gateway answers again (a response header, or the first event of a re-sent stream) | **Replaces** `llm.max_retries` (3 attempts, about 7 s) and the short-lived `llm.stream_resume_*`: any transient failure of a model call is retried under this one wall-clock bound, before the response header or mid-answer: refused or reset connection, 429/500/502/503/504, a stream cut (`RemoteProtocolError`, `ReadError`) or ended without its terminator (`message_stop`, `[DONE]`, `response.completed`). A cut answer is discarded (`STREAM_RESTART`), so a tool call never runs twice. `0` disables retrying. Other 4xx, truncation and malformed answers are never retried. Setting `llm.max_retries` or `llm.stream_resume_*` is refused at config load, naming the replacement | `LLMError` naming `llm.gateway_outage_window_seconds`; counted on `ravn.cap.hits`; each retry is a warning counted on `ravn.retries` (`retries.llm.<provider>`) |
 | `agent.max_iterations` / `iteration_budget.total` | 20 / 90 | `budget.daily_cap_usd` bounds spend, but not how long one task holds its slot | Kept: a turn whose tool loop does not converge must end so the queue moves; `0` (max_iterations) is no cap | `MaxIterationsError` (checkpointed); counted |
 | `reflection.matching.judge_attempts`, post-session reflection 2 attempts, gate review 2 attempts | 2 | — | Kept: one retry on an unparseable answer, never on truncation | Raises after the last attempt |
-| Learned-tool "never used" window (`resident_evolution.tool_curation`) | none configured | The longest install-to-first-use wait known on the resident (usage ledger: observed first uses, and pre-ledger tools' install-to-last-use upper bound) | New, derived rather than set: no window until there is evidence; a retirement the widened window no longer supports is undone | Retirement is recorded, counted (`learned_tool_retirements.unused`) and reversible |
+| Learned-tool "never used" window (`resident_evolution.tool_curation`) | none configured | The longest install-to-first-use wait known on the resident (lifecycle `first_used_at`, or the created-to-last-use bound of tools used before it existed) | New, derived rather than set: no window until there is evidence; a retirement the widened window no longer supports is undone | Retirement is recorded on the lifecycle record, counted (`learned_tools_retired.unused`) and reversible |
+| Lesson curation pass length (`resident_wakefulness.dream_interval_seconds`) | the dream interval, 3600 s | The next consolidation dream is due; one pass longer than that never finished before a rollout restarted it (valhalla's resident: ~300 lessons at ~16 judgments/hour on a shared judge) | New, derived rather than set: judging and procedure rewrites stop at the deadline, what was judged is settled and marked `curated`, the rest continues in the next dream. Contradictions with a lesson not yet judged wait, so a cut-off pass never decides on half the evidence | Counted as a cap hit; the dream result (and the Valkyrie console) shows the lessons and procedures left for the next dream |
+| Procedure rewrite length (`reflection.learning_entry_max_chars`) | 600 characters | What one injected learning may occupy: a longer rule is cut where it is used | Was a separate `reflection.curation.procedure_max_chars: 280`, a guess that failed Runa's and Regin's dreams on 300- and 284-character rules every dream. Removed; the rewrite now fits the injection limit | `LessonJudgeError` naming the knob; counted |
 
 ## Remaining fallbacks (not changed in this sweep)
 

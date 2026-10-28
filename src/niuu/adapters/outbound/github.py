@@ -1,14 +1,19 @@
 """GitHub git provider adapter."""
 
+import asyncio
+import json
 import logging
 import re
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from typing import NoReturn
 from urllib.parse import quote, urlparse
 from uuid import NAMESPACE_URL, uuid5
 
 import httpx
 
 from niuu.adapters.outbound.git_branch_publisher import AuthenticatedGitBranchPublisher
+from niuu.config import DEFAULT_BUNDLE_FETCH_TIMEOUT_SECONDS
 from niuu.domain.delivery import (
     BranchPublicationReceipt,
     BranchPublicationRequest,
@@ -25,21 +30,37 @@ from niuu.domain.delivery import (
     ReviewRequest,
 )
 from niuu.domain.models import (
+    ChangedFile,
     CIStatus,
+    CommitDetail,
+    CommitSummary,
     GitProviderType,
+    ProvenanceAttestation,
     PullRequest,
     PullRequestStatus,
+    RefChecks,
+    RefComparison,
     RepoInfo,
 )
 from niuu.ports.delivery import DeliveryForgeProvider
 from niuu.ports.git import (
+    AttestationNotFoundError,
     GitAuthError,
     GitProvider,
+    GitProviderResponseError,
     GitRepoNotFoundError,
     GitWorkflowProvider,
 )
 
 logger = logging.getLogger(__name__)
+
+# GitHub's maximum page size for list endpoints.
+_READ_PAGE_SIZE = 100
+
+# The predicate type `actions/attest-build-provenance` signs. Asking GitHub for
+# only this type keeps SBOM, release and other attestations of the same digest
+# out of a provenance read.
+_SLSA_PROVENANCE_PREDICATE_TYPE = "https://slsa.dev/provenance/v1"
 
 # Least to most severe. A check-run and a commit status can legitimately share
 # a name (the same CI context reported through both APIs, or a rerun history);
@@ -66,6 +87,61 @@ def _merge_worst_check(
         checks_by_name[name] = record
 
 
+class _QueryStringRedactionFilter(logging.Filter):
+    """Strip query strings from the URLs httpx logs.
+
+    httpx logs every request at INFO with its full URL, and the storage link of
+    an attestation bundle carries its access signature in the query string. The
+    link is a time-limited read capability and must not reach the logs, so the
+    query is dropped from every URL httpx logs (the path still identifies the
+    request).
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(self._without_query(arg) for arg in record.args)
+        return True
+
+    @staticmethod
+    def _without_query(arg: object) -> object:
+        if isinstance(arg, httpx.URL):
+            return arg.copy_with(query=None)
+        if isinstance(arg, str) and arg.startswith(("http://", "https://")):
+            return arg.partition("?")[0]
+        return arg
+
+
+def _redact_httpx_log_urls() -> None:
+    """Install :class:`_QueryStringRedactionFilter` on httpx's logger, once."""
+    httpx_logger = logging.getLogger("httpx")
+    if not any(isinstance(f, _QueryStringRedactionFilter) for f in httpx_logger.filters):
+        httpx_logger.addFilter(_QueryStringRedactionFilter())
+
+
+class _GitHubReadError(RuntimeError):
+    """A GitHub read failed; carries the response so callers can type the failure."""
+
+    def __init__(self, message: str, response: httpx.Response) -> None:
+        super().__init__(message)
+        self.response = response
+
+
+def _parse_github_time(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise GitProviderResponseError(
+            f"GitHub returned an unparseable timestamp: {value!r}"
+        ) from exc
+
+
+def _subject(message: str) -> str:
+    lines = message.splitlines()
+    return lines[0] if lines else ""
+
+
 class GitHubProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
     """GitHub git provider implementation.
 
@@ -80,11 +156,13 @@ class GitHubProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
         token: str | None = None,
         orgs: tuple[str, ...] | list[str] | str = (),
         branch_publisher: AuthenticatedGitBranchPublisher | None = None,
+        bundle_fetch_timeout_seconds: float = DEFAULT_BUNDLE_FETCH_TIMEOUT_SECONDS,
         **_extra: object,
     ):
         self._name = name
         self._base_url = base_url.rstrip("/")
         self._token = token
+        self._bundle_fetch_timeout = bundle_fetch_timeout_seconds
         self._branch_publisher = branch_publisher or AuthenticatedGitBranchPublisher()
         if isinstance(orgs, str):
             self._orgs = tuple(o.strip() for o in orgs.split(",") if o.strip())
@@ -516,6 +594,318 @@ class GitHubProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
         )
         return branches
 
+    # --- Read operations (commit, comparison, checks) ---
+
+    def _read_path(self, repo_url: str) -> str:
+        path = self._repo_api_path(repo_url)
+        if path is None:
+            raise GitRepoNotFoundError(f"Cannot parse repository URL: {repo_url}")
+        return path
+
+    @staticmethod
+    def _rate_limited(response: httpx.Response) -> bool:
+        if response.status_code == 429:
+            return True
+        return response.status_code == 403 and response.headers.get("x-ratelimit-remaining") == "0"
+
+    def _raise_read_error(self, response: httpx.Response, subject: str) -> NoReturn:
+        """Type a failed read: auth, not found, or a provider error (incl. rate limit)."""
+        status = response.status_code
+        if self._rate_limited(response):
+            raise httpx.HTTPStatusError(
+                f"GitHub rate limit exhausted reading {subject} (HTTP {status}). "
+                "Wait for the limit to reset, or connect an account with a token so "
+                "the read is authenticated.",
+                request=response.request,
+                response=response,
+            )
+        if status in (401, 403):
+            raise GitAuthError(
+                f"Authentication failed reading {subject}: HTTP {status}. "
+                "Ensure the token has the 'repo' scope (classic PAT) "
+                "or 'contents:read' permission (fine-grained PAT)."
+            )
+        if status in (404, 422):
+            raise GitRepoNotFoundError(
+                f"Not found: {subject} (HTTP {status}). The repository or the ref does "
+                "not exist, or the token cannot see it."
+            )
+        response.raise_for_status()
+        raise GitProviderResponseError(f"Unexpected HTTP {status} reading {subject}")
+
+    async def _page_bodies(
+        self,
+        client: httpx.AsyncClient,
+        first: httpx.Response,
+        subject: str,
+    ) -> AsyncIterator[dict]:
+        """Yield the JSON body of *first* and of every page its ``Link`` header chains to."""
+        response = first
+        seen: set[str] = set()
+        while True:
+            yield response.json()
+            next_url = self._next_link(response)
+            if next_url is None:
+                return
+            if next_url in seen:
+                raise GitProviderResponseError(
+                    f"GitHub pagination did not advance reading {subject}"
+                )
+            seen.add(next_url)
+            response = await client.get(next_url)
+            if response.status_code != 200:
+                self._raise_read_error(response, subject)
+
+    @staticmethod
+    def _changed_file(raw: dict) -> ChangedFile:
+        additions = raw.get("additions")
+        deletions = raw.get("deletions")
+        patch = raw.get("patch") or None
+        reason = None
+        if patch is None:
+            if (additions or 0) + (deletions or 0) == 0:
+                reason = "no line changes (rename, copy or mode change)"
+            else:
+                reason = (
+                    "GitHub returned no patch for this file (binary, or the diff is too "
+                    "large for GitHub to render); the additions and deletions are still exact"
+                )
+        return ChangedFile(
+            path=str(raw["filename"]),
+            status=str(raw.get("status") or "modified"),
+            additions=additions,
+            deletions=deletions,
+            previous_path=raw.get("previous_filename"),
+            patch=patch,
+            patch_omitted_reason=reason,
+        )
+
+    async def get_commit(self, repo_url: str, ref: str) -> CommitDetail:
+        """Read one commit and every file it changed, following GitHub's file pagination."""
+        path = self._read_path(repo_url)
+        subject = f"commit {ref!r} in {repo_url}"
+        client = await self._get_client()
+        response = await client.get(
+            f"{path}/commits/{quote(ref, safe='/')}", params={"per_page": _READ_PAGE_SIZE}
+        )
+        if response.status_code != 200:
+            self._raise_read_error(response, subject)
+
+        bodies = [body async for body in self._page_bodies(client, response, subject)]
+        head = bodies[0]
+        files: dict[str, ChangedFile] = {}
+        for body in bodies:
+            for raw in body.get("files") or []:
+                files.setdefault(str(raw["filename"]), self._changed_file(raw))
+        sha = str(head.get("sha") or "")
+        if not sha:
+            raise GitProviderResponseError("GitHub commit response omitted its SHA")
+        commit = head.get("commit") or {}
+        author = commit.get("author") or {}
+        stats = head.get("stats") or {}
+        return CommitDetail(
+            repo_url=repo_url,
+            sha=sha,
+            url=str(head.get("html_url") or ""),
+            parents=tuple(str(p["sha"]) for p in head.get("parents") or []),
+            author_name=str(author.get("name") or ""),
+            author_email=str(author.get("email") or ""),
+            authored_at=_parse_github_time(author.get("date")),
+            message=str(commit.get("message") or ""),
+            additions=stats.get("additions"),
+            deletions=stats.get("deletions"),
+            files=tuple(files.values()),
+            files_total=len(files),
+        )
+
+    async def compare_refs(self, repo_url: str, base: str, head: str) -> RefComparison:
+        """Compare ``base...head``, following GitHub's commit and file pagination."""
+        path = self._read_path(repo_url)
+        subject = f"comparison {base!r}...{head!r} in {repo_url}"
+        client = await self._get_client()
+        response = await client.get(
+            f"{path}/compare/{quote(base, safe='/')}...{quote(head, safe='/')}",
+            params={"per_page": _READ_PAGE_SIZE},
+        )
+        if response.status_code != 200:
+            self._raise_read_error(response, subject)
+
+        bodies = [body async for body in self._page_bodies(client, response, subject)]
+        first = bodies[0]
+        commits: dict[str, CommitSummary] = {}
+        files: dict[str, ChangedFile] = {}
+        for body in bodies:
+            for raw in body.get("commits") or []:
+                sha = str(raw["sha"])
+                detail = raw.get("commit") or {}
+                author = detail.get("author") or {}
+                commits.setdefault(
+                    sha,
+                    CommitSummary(
+                        sha=sha,
+                        subject=_subject(str(detail.get("message") or "")),
+                        author_name=str(author.get("name") or ""),
+                        authored_at=_parse_github_time(author.get("date")),
+                        url=str(raw.get("html_url") or ""),
+                    ),
+                )
+            for raw in body.get("files") or []:
+                files.setdefault(str(raw["filename"]), self._changed_file(raw))
+        total_commits = int(first.get("total_commits") or 0)
+        if len(commits) < total_commits:
+            raise GitProviderResponseError(
+                f"GitHub reported {total_commits} commits for {subject} but returned "
+                f"{len(commits)}; the comparison is incomplete"
+            )
+        merge_base = str((first.get("merge_base_commit") or {}).get("sha") or "")
+        return RefComparison(
+            repo_url=repo_url,
+            base=base,
+            head=head,
+            status=str(first.get("status") or ""),
+            ahead_by=int(first.get("ahead_by") or 0),
+            behind_by=int(first.get("behind_by") or 0),
+            merge_base_sha=merge_base,
+            url=str(first.get("html_url") or ""),
+            commits=tuple(commits.values()),
+            files=tuple(files.values()),
+            files_total=len(files),
+        )
+
+    async def get_ref_checks(self, repo_url: str, ref: str) -> RefChecks:
+        """Check-runs and commit statuses for *ref* (branch, tag or SHA); no PR needed."""
+        path = self._read_path(repo_url)
+        subject = f"checks for {ref!r} in {repo_url}"
+        client = await self._get_client()
+        try:
+            sha, checks_by_name = await self._collect_checks(client, path, quote(ref, safe="/"))
+        except _GitHubReadError as exc:
+            self._raise_read_error(exc.response, subject)
+        if not sha:
+            raise GitProviderResponseError(
+                f"GitHub status response for {subject} omitted the commit SHA"
+            )
+        checks = sorted(
+            checks_by_name.values(),
+            key=lambda check: (-_CHECK_SEVERITY[check.conclusion], check.name),
+        )
+        return RefChecks(repo_url=repo_url, ref=ref, sha=sha, checks=tuple(checks))
+
+    async def get_image_attestations(
+        self, repo_url: str, subject_digest: str
+    ) -> tuple[ProvenanceAttestation, ...]:
+        """SLSA build-provenance bundles GitHub holds for *subject_digest* in the repository.
+
+        Reads ``GET /repos/{owner}/{repo}/attestations/{digest}`` with this
+        provider's own credentials. An attestation that carries its bundle
+        inline is used as is; one that only names a ``bundle_url`` has its
+        bundle downloaded here. The bundles are returned unverified.
+        """
+        path = self._read_path(repo_url)
+        subject = f"attestations for {subject_digest} in {repo_url}"
+        client = await self._get_client()
+        response = await client.get(
+            f"{path}/attestations/{subject_digest}",
+            params={
+                "per_page": _READ_PAGE_SIZE,
+                "predicate_type": _SLSA_PROVENANCE_PREDICATE_TYPE,
+            },
+        )
+        # GitHub answers a digest with no attestations either with a 404 or, when
+        # the predicate filter excludes them all, with an empty list.
+        not_found = AttestationNotFoundError(
+            f"No build provenance found for {subject_digest} in {repo_url}. The image was "
+            "not built with an attestation (images built before attestations were enabled "
+            "have none), the digest is not that of a manifest built from this repository, "
+            "or the repository is not visible to the token."
+        )
+        if response.status_code == 404:
+            raise not_found
+        if response.status_code != 200:
+            self._raise_read_error(response, subject)
+        entries: list[dict] = []
+        async for body in self._page_bodies(client, response, subject):
+            entries.extend(body.get("attestations") or [])
+        if not entries:
+            raise not_found
+        # Every download runs to completion before the first failure is raised, so no
+        # task is left running (and unobserved) behind an error.
+        results = await asyncio.gather(
+            *(self._attestation_bundle(e, subject) for e in entries), return_exceptions=True
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return tuple(ProvenanceAttestation(bundle=str(bundle)) for bundle in results)
+
+    async def _attestation_bundle(self, entry: dict, subject: str) -> str:
+        """The bundle JSON of one attestation entry: inline, or downloaded from its storage link."""
+        inline = entry.get("bundle")
+        if inline:
+            return json.dumps(inline)
+        location = entry.get("bundle_url")
+        if not location:
+            raise GitProviderResponseError(
+                f"GitHub returned an attestation for {subject} with neither a bundle nor a "
+                "bundle_url"
+            )
+        return await self._download_bundle(str(location), subject)
+
+    async def _download_bundle(self, location: str, subject: str) -> str:
+        """Download a bundle from the pre-signed storage link GitHub supplied.
+
+        The link grants access by itself, so it is requested without this
+        provider's credentials and is never logged or put in an error message
+        (it would hand a time-limited read capability to whoever reads the
+        message). Failures name the status or the error class only.
+        """
+        if urlparse(location).scheme != "https":
+            raise GitProviderResponseError(
+                f"GitHub supplied a bundle location for {subject} that is not https; "
+                "refusing to download it"
+            )
+        _redact_httpx_log_urls()
+        try:
+            async with httpx.AsyncClient(timeout=self._bundle_fetch_timeout) as client:
+                response = await client.get(location)
+        except httpx.HTTPError as exc:
+            raise GitProviderResponseError(
+                f"Could not download the attestation bundle for {subject}: "
+                f"{type(exc).__name__}. The download timeout is "
+                f"git.provenance.bundle_fetch_timeout_seconds={self._bundle_fetch_timeout}."
+            ) from None
+        if response.status_code != 200:
+            raise GitProviderResponseError(
+                f"The attestation bundle storage answered HTTP {response.status_code} for "
+                f"{subject}; the time-limited link may have expired, retry the read."
+            )
+        return self._bundle_text(response, subject)
+
+    @staticmethod
+    def _bundle_text(response: httpx.Response, subject: str) -> str:
+        """Decode a downloaded bundle: GitHub stores them Snappy-compressed."""
+        content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
+        if content_type == "application/json":
+            return response.text
+        if content_type != "application/x-snappy":
+            raise GitProviderResponseError(
+                f"The attestation bundle storage returned content type {content_type!r} for "
+                f"{subject}; expected application/x-snappy or application/json"
+            )
+        try:
+            import cramjam
+        except ImportError as exc:
+            raise GitProviderResponseError(
+                "Attestation bundles are Snappy-compressed and the 'cramjam' package is not "
+                "installed. Install the 'provenance' extra (uv sync --extra provenance)."
+            ) from exc
+        try:
+            return bytes(cramjam.snappy.decompress_raw(response.content)).decode("utf-8")
+        except (cramjam.DecompressionError, UnicodeDecodeError) as exc:
+            raise GitProviderResponseError(
+                f"The attestation bundle for {subject} is not valid Snappy-compressed JSON: {exc}"
+            ) from exc
+
     # --- GitWorkflowProvider methods ---
 
     def _repo_api_path(self, repo_url: str) -> str | None:
@@ -849,6 +1239,64 @@ class GitHubProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
             created=created,
         )
 
+    async def _collect_checks(
+        self,
+        client: httpx.AsyncClient,
+        path: str,
+        ref: str,
+    ) -> tuple[str, dict[str, CheckRecord]]:
+        """Read every check-run and commit status attached to *ref*.
+
+        Returns the commit SHA GitHub reported for the statuses (empty when it
+        did not say) and one record per check name, the worst conclusion
+        winning when the same name is reported twice.
+
+        Raises:
+            _GitHubReadError: GitHub answered a read with a non-200 status.
+        """
+        checks_by_name: dict[str, CheckRecord] = {}
+        page = 1
+        while True:
+            runs_response = await client.get(
+                f"{path}/commits/{ref}/check-runs",
+                params={"per_page": 100, "page": page},
+            )
+            if runs_response.status_code != 200:
+                raise _GitHubReadError(
+                    f"Cannot inspect GitHub check runs: HTTP {runs_response.status_code}",
+                    runs_response,
+                )
+            runs = runs_response.json().get("check_runs", [])
+            for run in runs:
+                name = str(run.get("name") or "unnamed-check")
+                _merge_worst_check(checks_by_name, name, self._github_check(run))
+            if len(runs) < 100:
+                break
+            page += 1
+
+        resolved_sha = ""
+        page = 1
+        while True:
+            statuses_response = await client.get(
+                f"{path}/commits/{ref}/status",
+                params={"per_page": 100, "page": page},
+            )
+            if statuses_response.status_code != 200:
+                raise _GitHubReadError(
+                    f"Cannot inspect GitHub commit statuses: HTTP {statuses_response.status_code}",
+                    statuses_response,
+                )
+            body = statuses_response.json()
+            resolved_sha = str(body.get("sha") or resolved_sha)
+            statuses = body.get("statuses", [])
+            for status in statuses:
+                name = str(status.get("context") or "unnamed-status")
+                _merge_worst_check(checks_by_name, name, self._github_status(status))
+            if len(statuses) < 100:
+                break
+            page += 1
+        return resolved_sha, checks_by_name
+
     async def inspect_delivery_candidate(
         self,
         repo_url: str,
@@ -879,42 +1327,7 @@ class GitHubProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
         if not current_target_sha:
             raise RuntimeError("GitHub target ref response omitted its commit SHA")
 
-        checks_by_name: dict[str, CheckRecord] = {}
-        page = 1
-        while True:
-            runs_response = await client.get(
-                f"{path}/commits/{candidate_sha}/check-runs",
-                params={"per_page": 100, "page": page},
-            )
-            if runs_response.status_code != 200:
-                raise RuntimeError(
-                    f"Cannot inspect GitHub check runs: HTTP {runs_response.status_code}"
-                )
-            runs = runs_response.json().get("check_runs", [])
-            for run in runs:
-                name = str(run.get("name") or "unnamed-check")
-                _merge_worst_check(checks_by_name, name, self._github_check(run))
-            if len(runs) < 100:
-                break
-            page += 1
-
-        page = 1
-        while True:
-            statuses_response = await client.get(
-                f"{path}/commits/{candidate_sha}/status",
-                params={"per_page": 100, "page": page},
-            )
-            if statuses_response.status_code != 200:
-                raise RuntimeError(
-                    f"Cannot inspect GitHub commit statuses: HTTP {statuses_response.status_code}"
-                )
-            statuses = statuses_response.json().get("statuses", [])
-            for status in statuses:
-                name = str(status.get("context") or "unnamed-status")
-                _merge_worst_check(checks_by_name, name, self._github_status(status))
-            if len(statuses) < 100:
-                break
-            page += 1
+        _, checks_by_name = await self._collect_checks(client, path, candidate_sha)
         for missing in sorted(set(required_checks) - checks_by_name.keys()):
             checks_by_name[missing] = CheckRecord(name=missing, conclusion=CheckConclusion.UNKNOWN)
         checks = tuple(checks_by_name.values())

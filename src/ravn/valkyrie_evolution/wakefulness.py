@@ -20,17 +20,23 @@ wired it also retires learned tools that no longer earn their catalog entry
 (:mod:`ravn.valkyrie_evolution.tool_curation`).
 
 Every transition is published as ``valkyrie.state.changed`` and every dream as
-``valkyrie.dream.started``/``valkyrie.dream.completed`` with a summary, so the
-dashboard's wakefulness and last-dream columns reflect live truth.
+``valkyrie.dream.started`` then ``valkyrie.dream.completed`` (with the summary)
+or ``valkyrie.dream.failed`` (with the error). The last outcome is persisted
+beside the last dream time and republished as ``valkyrie.dream.snapshot`` on
+start and on an interval: the dashboard projects live events only
+(``REPLAY_SECONDS=0``) and keeps a bounded window of them, so without the
+snapshot a dream an hour old has already left it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -50,8 +56,16 @@ DEFAULT_DREAM_MIN_IDLE_SECONDS = 60.0
 DEFAULT_STALE_SKILL_AGE_SECONDS = 7 * 24 * 3600.0
 DEFAULT_PROMOTE_MIN_SUCCESSES = 3
 
+DEFAULT_DREAM_SNAPSHOT_INTERVAL_SECONDS = 300.0
+
 #: How many recent feedback episodes one consolidation dream considers.
 DEFAULT_FEEDBACK_QUERY_LIMIT = 50
+
+DREAM_STARTED_EVENT = "valkyrie.dream.started"
+DREAM_COMPLETED_EVENT = "valkyrie.dream.completed"
+DREAM_FAILED_EVENT = "valkyrie.dream.failed"
+#: The last dream outcome, republished so a restarted dashboard recovers it.
+DREAM_SNAPSHOT_EVENT = "valkyrie.dream.snapshot"
 
 _WAKEFUL = "wakeful"
 _WATCHING = "watching"
@@ -80,8 +94,11 @@ class ResidentWakefulness:
         dream_min_idle_seconds: float = DEFAULT_DREAM_MIN_IDLE_SECONDS,
         stale_skill_age_seconds: float = DEFAULT_STALE_SKILL_AGE_SECONDS,
         promote_min_successes: int = DEFAULT_PROMOTE_MIN_SUCCESSES,
+        dream_snapshot_interval_seconds: float = DEFAULT_DREAM_SNAPSHOT_INTERVAL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
         source: str = "",
+        state_path: Path | None = None,
+        wall_clock: Callable[[], float] = time.time,
     ) -> None:
         self._identity = identity
         self._skills = skills
@@ -98,12 +115,62 @@ class ResidentWakefulness:
         self._dream_min_idle_seconds = dream_min_idle_seconds
         self._stale_skill_age_seconds = stale_skill_age_seconds
         self._promote_min_successes = promote_min_successes
+        self._dream_snapshot_interval_seconds = dream_snapshot_interval_seconds
         self._clock = clock
         self._source = source or identity.valkyrie_id
         self._state = _SLEEPING
         self._last_activity_at = clock()
-        self._last_dream_at = clock()
+        self._state_path = state_path
+        self._wall_clock = wall_clock
+        self._last_dream_at, self._last_dream = self._load_dream_state()
+        self._last_snapshot_at: float | None = None
         self._task: asyncio.Task | None = None
+
+    def _load_dream_state(self) -> tuple[float, dict[str, Any] | None]:
+        """Place the last dream on the monotonic clock and load its outcome.
+
+        Without a state path the interval counts from now. With one, a restart
+        keeps counting from the last dream instead of postponing it a full
+        interval, and a resident with no recorded dream is due at once. The
+        outcome is ``None`` until a dream has recorded one.
+
+        :raises ValueError: the state file exists but cannot be parsed.
+        """
+        now = self._clock()
+        if self._state_path is None:
+            return now, None
+        if not self._state_path.exists():
+            return now - self._dream_interval_seconds, None
+        try:
+            state = json.loads(self._state_path.read_text(encoding="utf-8"))
+            last_wall = float(state["last_dream_at"])
+            outcome = state.get("last_dream")
+            if outcome is not None and not isinstance(outcome, dict):
+                raise TypeError(f"last_dream is {type(outcome).__name__}, not an object")
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise ValueError(
+                f"consolidation dream state {self._state_path} is unreadable ({exc}); fix it, "
+                "or delete it to dream at the next idle minute"
+            ) from exc
+        return now - max(0.0, self._wall_clock() - last_wall), outcome
+
+    def _record_dream(self, outcome: dict[str, Any] | None) -> None:
+        self._last_dream_at = self._clock()
+        self._last_dream = outcome
+        if self._state_path is None:
+            return
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self._state_path.with_suffix(".json.tmp")
+        tmp_path.write_text(
+            json.dumps({"last_dream_at": self._wall_clock(), "last_dream": outcome}),
+            encoding="utf-8",
+        )
+        tmp_path.replace(self._state_path)
+
+    @property
+    def last_dream(self) -> dict[str, Any] | None:
+        """The last finished dream's outcome, or ``None`` before the first."""
+        return self._last_dream
 
     @property
     def identity(self) -> ResidentLearningIdentity:
@@ -125,6 +192,7 @@ class ResidentWakefulness:
         if self._task is not None:
             return
         await self._transition(_WATCHING, reason="resident runtime started")
+        await self.publish_dream_snapshot()
         self._task = asyncio.create_task(self._run(), name="resident_wakefulness")
 
     async def stop(self) -> None:
@@ -144,6 +212,7 @@ class ResidentWakefulness:
             await asyncio.sleep(self._tick_interval_seconds)
             try:
                 await self.tick()
+                await self._publish_due_dream_snapshot()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -168,28 +237,51 @@ class ResidentWakefulness:
             await self._transition(target, reason=reason)
 
     async def dream(self) -> dict[str, Any]:
-        """Run one scheduled consolidation dream and return its summary."""
+        """Run one scheduled consolidation dream and return its summary.
+
+        A failure is recorded and published as ``valkyrie.dream.failed`` with
+        its error, then re-raised.
+        """
         dream_id = f"dream:consolidation:{self.identity.environment_id}:{uuid4().hex[:8]}"
+        started_at = self._wall_iso()
+        started_clock = self._clock()
         await self._transition(_DREAMING, reason="scheduled consolidation dream")
         await self._publish_dream_event(
-            "valkyrie.dream.started",
+            DREAM_STARTED_EVENT,
             dream_id,
-            {"dream_kind": "consolidation"},
+            {"dream_kind": "consolidation", "started_at": started_at},
             summary=f"{self.identity.valkyrie_id} started consolidation dream",
         )
         try:
             summary = await self._consolidate()
-        except BaseException:
+        except Exception as exc:
             # A failed dream must not leave the resident stuck in "dreaming":
             # tick() skips while dreaming, so it would never dream or wake again.
-            self._last_dream_at = self._clock()
+            error = f"{type(exc).__name__}: {exc}"
+            outcome = self._dream_outcome(
+                dream_id, "failed", started_at, started_clock, error=error
+            )
+            self._record_dream(outcome)
+            await self._publish_dream_event(
+                DREAM_FAILED_EVENT,
+                dream_id,
+                outcome,
+                summary=f"{self.identity.valkyrie_id} consolidation dream failed: {error}",
+            )
             await self._transition(_WATCHING, reason="consolidation dream failed")
             raise
-        self._last_dream_at = self._clock()
+        except BaseException:
+            # Cancelled (the runtime is stopping): nothing finished, so neither
+            # the last dream time nor its outcome moves. The interrupted pass
+            # is still due and runs again at the next idle minute after restart.
+            await self._transition(_WATCHING, reason="consolidation dream interrupted")
+            raise
+        outcome = self._dream_outcome(dream_id, "completed", started_at, started_clock, **summary)
+        self._record_dream(outcome)
         await self._publish_dream_event(
-            "valkyrie.dream.completed",
+            DREAM_COMPLETED_EVENT,
             dream_id,
-            {"dream_kind": "consolidation", **summary},
+            outcome,
             summary=(
                 f"{self.identity.valkyrie_id} consolidated "
                 f"{summary['skills_reviewed']} skill(s): "
@@ -277,10 +369,13 @@ class ResidentWakefulness:
                 )
             )
 
-        learnings = await self._curate_learnings()
         # After the skill pass: retiring a tool archives its lifecycle skill,
         # which the stale/promotion loop above must not see half-way through.
+        # Before learning curation, which reads Mímir: the tool library lives
+        # on this resident's disk, and a Mímir outage failing the dream must
+        # not also stop the library from being kept.
         learned_tools = await self._tool_curator.curate() if self._tool_curator else {}
+        learnings = await self._curate_learnings()
 
         return {
             "skills_reviewed": len(rows),
@@ -298,10 +393,15 @@ class ResidentWakefulness:
         }
 
     async def _curate_learnings(self) -> dict[str, Any]:
-        """Curate recorded learnings when a curator is wired and its interval elapsed."""
+        """Curate recorded learnings when a curator is wired and its interval elapsed.
+
+        The pass may run until the next dream is due and no longer: a backlog
+        that takes longer is continued by the next dream, so every dream
+        finishes and reports instead of one dream running until a restart.
+        """
         if self._learning_curator is None or not self._learning_curator.due():
             return {}
-        report = await self._learning_curator.curate()
+        report = await self._learning_curator.curate(budget_seconds=self._dream_interval_seconds)
         summary = report.summary()
         if self._self_improvement is not None:
             # Acts on friction with the learnings this pass just curated.
@@ -437,6 +537,67 @@ class ResidentWakefulness:
             )
         )
 
+    def _wall_iso(self) -> str:
+        return datetime.fromtimestamp(self._wall_clock(), UTC).isoformat()
+
+    def _dream_outcome(
+        self,
+        dream_id: str,
+        status: str,
+        started_at: str,
+        started_clock: float,
+        *,
+        error: str = "",
+        **summary: Any,
+    ) -> dict[str, Any]:
+        return {
+            "dream_kind": "consolidation",
+            "dream_id": dream_id,
+            "status": status,
+            "started_at": started_at,
+            "finished_at": self._wall_iso(),
+            "duration_seconds": round(self._clock() - started_clock, 3),
+            "error": error,
+            **summary,
+        }
+
+    async def publish_dream_snapshot(self) -> None:
+        """Republish the last dream outcome (``None`` before the first dream)."""
+        self._last_snapshot_at = self._clock()
+        outcome = self._last_dream
+        if outcome is None:
+            summary = f"{self.identity.valkyrie_id} has no recorded consolidation dream yet"
+        else:
+            summary = (
+                f"{self.identity.valkyrie_id} last consolidation dream "
+                f"{outcome.get('status')} at {outcome.get('finished_at')}"
+            )
+        await self._publisher.publish(
+            SleipnirEvent(
+                event_type=DREAM_SNAPSHOT_EVENT,
+                source=self._source,
+                payload={
+                    "environment_id": self.identity.environment_id,
+                    "environment_type": self.identity.environment_type,
+                    "valkyrie_id": self.identity.valkyrie_id,
+                    "last_dream": outcome,
+                },
+                summary=summary,
+                urgency=0.1,
+                domain="infrastructure",
+                timestamp=datetime.now(UTC),
+                correlation_id=str(outcome.get("dream_id") or "") if outcome else None,
+            )
+        )
+
+    async def _publish_due_dream_snapshot(self) -> None:
+        if (
+            self._last_snapshot_at is not None
+            and self._clock() - self._last_snapshot_at < self._dream_snapshot_interval_seconds
+        ):
+            return
+        await self.publish_dream_snapshot()
+
     async def _publish_dream_event(
         self,
         event_type: str,
@@ -469,6 +630,11 @@ class ResidentWakefulness:
 __all__ = [
     "DEFAULT_DREAM_INTERVAL_SECONDS",
     "DEFAULT_DREAM_MIN_IDLE_SECONDS",
+    "DEFAULT_DREAM_SNAPSHOT_INTERVAL_SECONDS",
+    "DREAM_COMPLETED_EVENT",
+    "DREAM_FAILED_EVENT",
+    "DREAM_SNAPSHOT_EVENT",
+    "DREAM_STARTED_EVENT",
     "DEFAULT_PROMOTE_MIN_SUCCESSES",
     "DEFAULT_STALE_SKILL_AGE_SECONDS",
     "DEFAULT_TICK_INTERVAL_SECONDS",

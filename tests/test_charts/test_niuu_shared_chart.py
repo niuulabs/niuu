@@ -145,3 +145,47 @@ def test_credential_enrollment_runner_secret_kwargs_reach_the_deployment() -> No
     env = {item["name"]: item for item in container["env"]}
     secret_ref = env["CREDENTIAL_ENROLLMENT_RUNNER_SK_CLIENT_SECRET"]["valueFrom"]["secretKeyRef"]
     assert secret_ref == {"name": "openshell-volundr-agent-oidc", "key": "client-secret"}
+
+
+def _provenance_config_and_env(*extra_args: str) -> tuple[dict, dict]:
+    documents = _rendered_documents(*extra_args)
+    configmap = next(
+        doc
+        for doc in documents
+        if doc.get("kind") == "ConfigMap"
+        and doc.get("metadata", {}).get("name") == "test-niuu-shared"
+    )
+    config = yaml.safe_load(configmap["data"]["config.yaml"])
+    deployment = next(doc for doc in documents if doc.get("kind") == "Deployment")
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    return config["git"]["provenance"], {item["name"]: item for item in container["env"]}
+
+
+def test_image_provenance_is_enabled_by_default_with_a_writable_trust_root_cache() -> None:
+    provenance, env = _provenance_config_and_env()
+
+    # No kwargs rendered: the code's defaults (issuer, signing workflows) apply.
+    assert provenance == {"enabled": True, "bundle_fetch_timeout_seconds": 30}
+    # sigstore-python caches its TUF trust root under XDG dirs; the runtime user has no home.
+    assert env["XDG_DATA_HOME"]["value"] == "/tmp/xdg-data"
+    assert env["XDG_CACHE_HOME"]["value"] == "/tmp/xdg-cache"
+
+
+def test_image_provenance_can_be_turned_off_and_then_needs_no_cache_dirs() -> None:
+    provenance, env = _provenance_config_and_env("--set", "git.provenance.enabled=false")
+
+    assert provenance["enabled"] is False
+    assert "XDG_DATA_HOME" not in env
+    assert "XDG_CACHE_HOME" not in env
+
+
+def test_image_provenance_verifier_kwargs_and_timeout_reach_the_config() -> None:
+    provenance, _ = _provenance_config_and_env(
+        "--set-json",
+        'git.provenance.kwargs={"issuer":"https://issuer.test","workflow_paths":["a.yaml"]}',
+        "--set",
+        "git.provenance.bundleFetchTimeoutSeconds=75",
+    )
+
+    assert provenance["kwargs"] == {"issuer": "https://issuer.test", "workflow_paths": ["a.yaml"]}
+    assert provenance["bundle_fetch_timeout_seconds"] == 75

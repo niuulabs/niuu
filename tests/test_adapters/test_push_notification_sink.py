@@ -138,6 +138,54 @@ class TestPushSink:
         [(push, devices)] = channel.delivered
         assert push.kind == "attention" and len(devices) == 1
 
+    async def test_a_producer_can_ask_for_an_apns_category_and_custom_keys(self):
+        channel = RecordingChannel()
+        sink = PushNotificationSink(device_repository=Devices([ios()]), push_channel=channel)
+
+        await sink.send(
+            outbound(
+                kind=NotificationKind.ATTENTION,
+                source=NotificationSource.SYSTEM,
+                session_id=None,
+                metadata={
+                    "push_category": "NIUU_RESIDENT_QUESTION",
+                    "push_data": {"odin_review_id": "r1", "odin_review_decide_path": "/p"},
+                },
+            )
+        )
+
+        [(push, _devices)] = channel.delivered
+        assert push.category == "NIUU_RESIDENT_QUESTION"
+        assert push.data == {"odin_review_id": "r1", "odin_review_decide_path": "/p"}
+
+    async def test_a_push_without_shaping_metadata_is_unchanged(self):
+        channel = RecordingChannel()
+        sink = PushNotificationSink(device_repository=Devices([ios()]), push_channel=channel)
+
+        await sink.send(outbound())
+
+        [(push, _devices)] = channel.delivered
+        assert push.category == "" and dict(push.data) == {}
+
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            {"push_category": 7},
+            {"push_data": ["odin_review_id"]},
+            {"push_data": {"odin_review_id": 1}},
+            {"push_data": {"aps": "x"}},
+        ],
+    )
+    async def test_malformed_shaping_fails_the_delivery_for_good(self, metadata):
+        channel = RecordingChannel()
+        sink = PushNotificationSink(device_repository=Devices([ios()]), push_channel=channel)
+
+        with pytest.raises(NotificationDeliveryError) as info:
+            await sink.send(outbound(metadata=metadata))
+
+        assert not info.value.retryable
+        assert channel.delivered == []
+
     async def test_channel_failures_propagate(self):
         channel = MagicMock(spec=NotificationChannel)
         channel.deliver = AsyncMock(
@@ -212,6 +260,31 @@ class TestRelayDeliver:
     async def test_default_deliver_calls_send(self):
         detail = await LoggingNotificationChannel().deliver(_message(), [ios()])
         assert detail == "handed to LoggingNotificationChannel"
+
+    async def test_the_relay_gets_the_same_category_and_keys(self):
+        client = _client(MagicMock(status_code=202))
+        channel = WebhookNotificationChannel(url="https://relay.example/push", client=client)
+
+        await channel.deliver(
+            _message(category="NIUU_RESIDENT_QUESTION", data={"odin_review_id": "r1"}), []
+        )
+
+        payload = client.post.call_args[1]["json"]
+        assert payload["category"] == "NIUU_RESIDENT_QUESTION"
+        assert payload["odin_review_id"] == "r1"
+
+    async def test_the_relay_payload_is_unchanged_without_a_category(self):
+        client = _client(MagicMock(status_code=202))
+        channel = WebhookNotificationChannel(url="https://relay.example/push", client=client)
+
+        await channel.deliver(_message(), [])
+
+        assert "category" not in client.post.call_args[1]["json"]
+
+    @pytest.mark.parametrize("key", ["aps", "session_id", "kind", "notification_id", "url"])
+    def test_custom_keys_cannot_overwrite_the_payload(self, key):
+        with pytest.raises(ValueError, match=key):
+            _message(data={key: "x"})
 
 
 class TestApnsDeliver:

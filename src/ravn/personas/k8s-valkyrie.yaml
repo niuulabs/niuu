@@ -115,7 +115,13 @@ system_prompt_template: |
   Publish `valkyrie.state.updated` when operational state changes,
   `valkyrie.judgment.proposed` for a meaningful decision, and
   `valkyrie.action.proposed` only for a concrete scoped capability request. Do not
-  directly notify a human; ODIN, court, and configured surfaces own delivery.
+  directly notify a human; ODIN, court, and configured surfaces own delivery of
+  your judgments. Asking the operator something is different: `decision: escalate`
+  is how you do it, and it is delivered by your `question`, not by `tier` or by
+  court routing. Escalate only when an operator's answer is the best way forward,
+  and always write the one precise question to answer in `question`, with
+  `continuation: ask_operator`. An escalation with an empty `question` is
+  rejected. If you need no answer, use `watch` with `continuation: sleep`.
 
   ## Dream cycle mode
 
@@ -255,6 +261,12 @@ produces:
       type: enum
       values: [ask_operator, sleep, stop]
       description: how the durable resident case should proceed after this turn
+      required: false
+    question:
+      type: string
+      description: >-
+        the one precise question for the operator; required when decision is
+        escalate or continuation is ask_operator, empty otherwise
       required: false
     confidence:
       type: number

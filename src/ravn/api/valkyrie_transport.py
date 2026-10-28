@@ -15,14 +15,26 @@ from ravn.api.valkyrie_routes import (
     _CommandTarget,
     _FanoutSleipnirPublisher,
 )
+from ravn.cap_telemetry import record_degraded
 from ravn.config import Settings, ValkyrieCommandConfig, ValkyrieTelemetryConfig
 from sleipnir.domain.events import SleipnirEvent
+from sleipnir.ports.events import StreamNotFoundError
 
 logger = logging.getLogger(__name__)
 
+_TELEMETRY_DEGRADED_PATH = "valkyrie_dashboard.telemetry_stream"
+
 
 class ValkyrieTelemetrySubscription:
-    """Feed live Sleipnir/NATS telemetry events into the dashboard projection."""
+    """Feed live Sleipnir/NATS telemetry events into the dashboard projection.
+
+    :meth:`start` makes one attempt at every configured stream before it
+    returns. A stream that cannot be reached is retried in the background,
+    since the server may still be coming up. A stream the server does not
+    have raises :class:`StreamNotFoundError` out of :meth:`start`: that is a
+    configuration fault no retry can fix, and carrying on would show that
+    environment's residents as never observed with no other signal.
+    """
 
     def __init__(
         self,
@@ -47,23 +59,20 @@ class ValkyrieTelemetrySubscription:
         self._retry_interval_seconds = max(retry_interval_seconds, 1)
         self._startup_delay_seconds = max(startup_delay_seconds, 0.0)
         self._subscriber_start_timeout_seconds = max(subscriber_start_timeout_seconds, 1.0)
-        self._bootstrap_task: asyncio.Task[None] | None = None
         self._retry_task: asyncio.Task[None] | None = None
         self._started_labels: set[str] = set()
         self._stopping = False
 
     async def start(self) -> None:
         self._stopping = False
-        self._bootstrap_task = asyncio.create_task(self._bootstrap_subscribers())
-        await asyncio.sleep(0)
+        try:
+            await self._bootstrap_subscribers()
+        except StreamNotFoundError:
+            await self.stop()
+            raise
 
     async def stop(self) -> None:
         self._stopping = True
-        if self._bootstrap_task is not None:
-            self._bootstrap_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._bootstrap_task
-            self._bootstrap_task = None
         if self._retry_task is not None:
             self._retry_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -86,11 +95,13 @@ class ValkyrieTelemetrySubscription:
             return
         results = await asyncio.gather(
             *(self._start_subscriber(label, subscriber) for label, subscriber in self._subscribers),
+            return_exceptions=True,
         )
+        _raise_missing_streams(results)
         failed = [
             subscriber_spec
             for subscriber_spec, started in zip(self._subscribers, results, strict=True)
-            if not started
+            if started is not True
         ]
         if failed:
             self._retry_task = asyncio.create_task(self._retry_failed(failed))
@@ -123,6 +134,15 @@ class ValkyrieTelemetrySubscription:
                 self._start_subscriber_subscription(subscriber),
                 timeout=self._subscriber_start_timeout_seconds,
             )
+        except StreamNotFoundError as exc:
+            if hasattr(subscriber, "stop"):
+                with contextlib.suppress(Exception):
+                    await subscriber.stop()
+            raise StreamNotFoundError(
+                f"valkyrie_dashboard: telemetry stream {label} is configured but does"
+                f" not exist ({exc}); declare it on the NATS server, or remove it from"
+                " valkyrie.telemetry.nats_streams"
+            ) from exc
         except Exception as exc:
             logger.warning(
                 "valkyrie_dashboard: telemetry stream %s did not start: %r",
@@ -154,13 +174,37 @@ class ValkyrieTelemetrySubscription:
                 return
             results = await asyncio.gather(
                 *(self._start_subscriber(label, subscriber) for label, subscriber in pending),
+                return_exceptions=True,
             )
+            try:
+                _raise_missing_streams(results)
+            except StreamNotFoundError as exc:
+                # The dashboard is already serving; raising here would only end
+                # this task and stop the retries for every other stream. Keep
+                # retrying (the stream may yet be declared) and stay loud.
+                record_degraded(_TELEMETRY_DEGRADED_PATH, str(exc))
             next_pending = [
                 subscriber_spec
                 for subscriber_spec, started in zip(pending, results, strict=True)
-                if not started
+                if started is not True
             ]
             pending = next_pending
+
+
+def _raise_missing_streams(results: list[bool | BaseException]) -> None:
+    """Re-raise what a concurrent round of subscriber starts could not survive.
+
+    Every start finishes first (``return_exceptions=True``), so none is left
+    running unsupervised when one raises; then a missing stream is raised,
+    naming every stream that was missing, and anything else unexpected is
+    raised as it was.
+    """
+    missing = [result for result in results if isinstance(result, StreamNotFoundError)]
+    if missing:
+        raise StreamNotFoundError("; ".join(str(error) for error in missing)) from missing[0]
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
 
 
 def _safe_consumer_suffix(value: str) -> str:

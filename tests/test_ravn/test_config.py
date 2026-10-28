@@ -17,7 +17,6 @@ from ravn.config import (
     HookConfig,
     HooksConfig,
     KubernetesToolsConfig,
-    LLMAdapterConfig,
     LLMConfig,
     LLMProviderConfig,
     LoggingConfig,
@@ -48,14 +47,6 @@ class TestAgentConfig:
         assert c.system_prompt != ""
 
 
-class TestLLMAdapterConfig:
-    def test_defaults(self) -> None:
-        c = LLMAdapterConfig()
-        assert "AnthropicAdapter" in c.adapter
-        assert c.max_retries >= 0
-        assert c.timeout > 0
-
-
 # ---------------------------------------------------------------------------
 # New NIU-427 config section tests
 # ---------------------------------------------------------------------------
@@ -80,7 +71,8 @@ class TestLLMConfig:
         assert "claude" in c.model
         # No cap by default: the provider's own limit bounds the answer.
         assert c.max_tokens is None
-        assert c.max_retries >= 0
+        assert not hasattr(c, "max_retries")
+        assert c.gateway_outage_window_seconds > 0
         assert c.timeout > 0
         assert isinstance(c.provider, LLMProviderConfig)
 
@@ -505,7 +497,6 @@ class TestSettings:
     def test_defaults(self) -> None:
         s = Settings()
         assert isinstance(s.agent, AgentConfig)
-        assert isinstance(s.llm_adapter, LLMAdapterConfig)
         assert isinstance(s.permission, PermissionConfig)
         assert isinstance(s.logging, LoggingConfig)
         # NIU-427 new sections

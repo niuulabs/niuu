@@ -1,14 +1,16 @@
-"""Learned-tool usage evidence, lineage, and retirement.
+"""Learned-tool lineage and retirement, on the existing lifecycle and archive.
 
 The defect these cover, as measured on the Kubernetes residents: tools were
 built and mostly not used, a failing tool was answered with a new variant
 instead of a repair (twelve ``list_pods_in_namespace*`` on one resident), and
-nothing retired variants, debug probes or never-used adoptions, so every one
-stayed in ``capability_list``.
+nothing retired variants, debug probes or never-used adoptions. The reuse,
+version-chain and usage mechanisms existed; these tests pin the repaired
+behaviour of those mechanisms.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -19,37 +21,38 @@ import pytest
 
 from ravn.adapters.reflection.capability_matching import SemanticCapabilityMatcher
 from ravn.adapters.reflection.lesson_judge import LessonJudgeError
+from ravn.adapters.skill.file_registry import FileSkillRegistry
 from ravn.adapters.tools.build_tool import BuildTool
 from ravn.adapters.tools.capability_catalog import CapabilityListTool
-from ravn.adapters.tools.learned_tool_run import LearnedToolRunTool
 from ravn.ports.capability_matching import CapabilityDescriptor, CapabilityVerdict
 from ravn.ports.tool_build_backend import ToolBuildResult
+from ravn.skills.management import SkillLifecycle, SkillManagementRegistry
 from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
     LearnedToolResolver,
-    LearnedToolUsageError,
     learned_tool_artifact_path,
     learned_tool_path,
     learned_tool_storage,
-    retired_artifact_path,
-    retired_tool_path,
+    superseded_artifact_path,
     write_learned_tool,
     write_learned_tool_artifact,
 )
 from ravn.valkyrie_evolution.models import LearnedToolArtifact, LearnedToolManifest
 from ravn.valkyrie_evolution.tool_curation import (
+    CAPABILITY_MATCHED_KEY,
     RETIRED_DEBUG_LEFTOVER,
     RETIRED_SUPERSEDED,
     RETIRED_UNRUNNABLE,
     RETIRED_UNUSED,
     LearnedToolCurator,
-    LearnedToolRetirements,
-    LearnedToolUsageLedger,
     LifecycleSnapshot,
-    find_lineage,
+    find_installed_capability,
     learned_tool_health,
+    migrate_legacy_curation_state,
     restore_learned_tool,
     retire_learned_tool,
+    retire_superseded_predecessor,
+    tool_inventory,
 )
 
 _CODE = "def run(payload):\n    return {'ok': True}\n"
@@ -60,8 +63,25 @@ def _iso(days_ago: float) -> str:
     return (datetime.now(UTC) - timedelta(days=days_ago)).isoformat()
 
 
-def _install(
+def _skills(state: Path) -> SkillManagementRegistry:
+    skill_dir = state / "skills"
+    return SkillManagementRegistry(
+        FileSkillRegistry(skill_dirs=[str(skill_dir)], write_dir=skill_dir, include_builtin=False),
+        metadata_path=state / "skill_management.json",
+    )
+
+
+def _set(skills: SkillManagementRegistry, name: str, **values: Any) -> None:
+    """Fixture shortcut: give a lifecycle record the history a test needs."""
+    meta = skills._metadata[name.lower()]  # noqa: SLF001 — test fixture
+    for key, value in values.items():
+        setattr(meta, key, value)
+    skills._save()  # noqa: SLF001 — test fixture
+
+
+async def _install(
     state: Path,
+    skills: SkillManagementRegistry | None,
     name: str,
     *,
     capability: str = "",
@@ -69,8 +89,12 @@ def _install(
     verified: bool = True,
     created_days_ago: float = 0.0,
     supersedes: str = "",
-    tool_code: str = _CODE,
+    code: str = _CODE,
+    **lifecycle: Any,
 ) -> LearnedToolArtifact:
+    provenance: dict[str, Any] = (
+        {"verification": {"ok": True, "logs": "fixture"}} if verified else {}
+    )
     artifact = LearnedToolArtifact(
         artifact_id=f"learned-tool:{name}",
         manifest=LearnedToolManifest(
@@ -79,26 +103,20 @@ def _install(
             input_schema={"type": "object", "properties": {"namespace": {"type": "string"}}},
             required_permission="tool:run",
         ),
-        tool_code=tool_code,
+        tool_code=code,
         test_code=_TEST,
         source_gap_id=capability,
-        provenance={"verification": {"ok": True, "logs": "fixture"}} if verified else {},
+        provenance=provenance,
         supersedes=supersedes,
         created_at=_iso(created_days_ago),
     )
     code_dir, artifacts_dir = learned_tool_storage(state)
     write_learned_tool(tools_dir=code_dir, artifact=artifact)
     write_learned_tool_artifact(artifacts_dir=artifacts_dir, artifact=artifact)
+    if skills is not None:
+        await skills.create(name=name, content=f"# learned tool: {name}\n\nTool {name}.")
+        _set(skills, name, created_at=_iso(created_days_ago), **lifecycle)
     return artifact
-
-
-def _ledger(state: Path) -> LearnedToolUsageLedger:
-    return LearnedToolUsageLedger(learned_tool_storage(state)[1])
-
-
-def _write_lifecycle(state: Path, rows: dict[str, dict[str, Any]]) -> None:
-    state.mkdir(parents=True, exist_ok=True)
-    (state / "skill_management.json").write_text(json.dumps(rows), encoding="utf-8")
 
 
 class FakeMatcher:
@@ -130,268 +148,224 @@ class FakeMatcher:
         ]
 
 
+def _dirs(state: Path) -> tuple[Path, Path]:
+    return learned_tool_storage(state)
+
+
 # ---------------------------------------------------------------------------
-# Usage ledger
+# Lifecycle usage evidence
 # ---------------------------------------------------------------------------
 
 
-class TestUsageLedger:
-    def test_first_load_seeds_history_from_the_lifecycle_registry(self, tmp_path: Path) -> None:
-        """Without the seed every pre-ledger tool would read as never used."""
-        _install(tmp_path, "busy", created_days_ago=30)
-        _install(tmp_path, "once", created_days_ago=10)
-        _install(tmp_path, "idle", created_days_ago=20)
-        _write_lifecycle(
+class TestLifecycleUsage:
+    async def test_first_use_is_recorded_and_prior_history_is_bounded(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "fresh")
+        await _install(
             tmp_path,
-            {
-                "busy": {
-                    "run_count": 500,
-                    "success_count": 498,
-                    "failure_count": 2,
-                    "last_used_at": _iso(0.1),
-                    "created_at": _iso(31),
-                },
-                "once": {"run_count": 1, "success_count": 1, "last_used_at": _iso(9)},
-            },
+            skills,
+            "veteran",
+            created_days_ago=30,
+            run_count=500,
+            success_count=500,
+            last_used_at=_iso(2),
         )
 
-        usage = _ledger(tmp_path).snapshot()
+        await skills.record_usage("fresh", success=True)
+        await skills.record_usage("veteran", success=True)
 
-        assert usage["busy"].runs == 500
-        assert usage["busy"].seeded_from == "skill_management"
-        # The lineage install time, not the current version's creation time.
-        assert usage["busy"].installed_at < _iso(30.5)
-        assert usage["busy"].first_use_observed is False
-        # One run: its only use is its first, so its wait is known.
-        assert usage["once"].first_use_observed is True
-        assert usage["idle"].runs == 0
-        assert usage["idle"].seeded_from == "artifact"
-        assert _ledger(tmp_path).path.is_file()
+        fresh = skills.lifecycle_records()["fresh"]
+        veteran = skills.lifecycle_records()["veteran"]
+        assert fresh.first_used_at
+        evidence = fresh.first_use_evidence()
+        assert evidence is not None and evidence[1] == "observed"
+        # Used before first_used_at existed: the bound is frozen at the next run.
+        assert veteran.first_used_at == ""
+        assert veteran.first_use_wait_bound_seconds == pytest.approx(28 * 86400, rel=0.01)
+        await skills.record_usage("veteran", success=True)
+        assert skills.lifecycle_records()["veteran"].first_use_wait_bound_seconds == pytest.approx(
+            28 * 86400, rel=0.01
+        )
 
-    def test_runs_record_first_use_versions_and_failure_streaks(self, tmp_path: Path) -> None:
-        _install(tmp_path, "probe")
-        ledger = _ledger(tmp_path)
+    async def test_archive_reasons_restore_counts_and_old_files_load(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "probe")
+        await skills.archive("probe", reason=RETIRED_UNUSED, detail="never run", artifact_id="a1")
+        record = skills.lifecycle_records()["probe"]
+        assert (record.archived_reason, record.archived_artifact_id) == (RETIRED_UNUSED, "a1")
+        await skills.restore("probe")
+        record = skills.lifecycle_records()["probe"]
+        assert (record.status, record.archived_reason, record.restore_count) == ("active", "", 1)
 
-        ledger.record_run("probe", "v1", True)
-        ledger.record_run("probe", "v1", False)
-        ledger.record_run("probe", "v1", False)
-        usage = ledger.get("probe")
-        assert usage is not None
-        assert (usage.runs, usage.successes, usage.failures) == (3, 1, 2)
-        assert usage.consecutive_failures == 2
-        assert usage.first_use_observed is True
-        assert usage.first_use_wait_seconds() is not None
-
-        ledger.record_install("probe", "v2", repair=True)
-        ledger.record_run("probe", "v2", True)
-        usage = ledger.get("probe")
-        assert usage is not None
-        assert usage.repairs == 1
-        assert (usage.version_artifact_id, usage.version_runs) == ("v2", 1)
-        assert usage.consecutive_failures == 0
-        assert usage.runs == 4
-
-    def test_the_never_used_window_is_the_longest_observed_first_use(self, tmp_path: Path) -> None:
-        ledger = _ledger(tmp_path)
-        assert ledger.first_use_window().seconds is None
-
-        ledger.record_install("quick", "a")
-        ledger.record_run("quick", "a", True)
-        path = ledger.path
-        payload = json.loads(path.read_text())
-        payload["tools"]["slow"] = {
-            "name": "slow",
-            "installed_at": _iso(5),
-            "first_used_at": _iso(2),
-            "first_use_observed": True,
-            "runs": 1,
-        }
-        path.write_text(json.dumps(payload))
-
-        window = ledger.first_use_window()
-        assert window.tool == "slow"
-        assert window.observations == 2
-        assert window.seconds == pytest.approx(3 * 86400, rel=0.01)
-
-    def test_a_read_only_ledger_refuses_to_record(self, tmp_path: Path) -> None:
-        ledger = LearnedToolUsageLedger(learned_tool_storage(tmp_path)[1], persist=False)
-        with pytest.raises(LearnedToolUsageError, match="read-only"):
-            ledger.record_run("probe", "v1", True)
-        assert not ledger.path.exists()
-
-    def test_a_corrupt_ledger_is_never_silently_replaced(self, tmp_path: Path) -> None:
-        ledger = _ledger(tmp_path)
-        ledger.path.parent.mkdir(parents=True)
-        ledger.path.write_text("{not json")
-        with pytest.raises(LearnedToolUsageError, match="never silently replaced"):
-            ledger.record_run("probe", "v1", True)
-        ledger.path.write_text(json.dumps({"version": 7}))
-        with pytest.raises(LearnedToolUsageError, match="unknown layout"):
-            ledger.snapshot()
+        payload = json.loads((tmp_path / "skill_management.json").read_text())
+        payload["probe"]["field_from_a_newer_build"] = True
+        (tmp_path / "skill_management.json").write_text(json.dumps(payload))
+        assert _skills(tmp_path).status("probe") == "active"
 
 
 # ---------------------------------------------------------------------------
-# Retirement
+# Retire and restore through the archive
 # ---------------------------------------------------------------------------
 
 
 class TestRetirement:
-    def test_retiring_moves_the_files_and_restoring_puts_them_back(self, tmp_path: Path) -> None:
-        _install(tmp_path, "old_probe")
-        code_dir, artifacts_dir = learned_tool_storage(tmp_path)
+    async def test_retiring_archives_and_uninstalls_and_restoring_reinstalls(
+        self, tmp_path: Path
+    ) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "old_probe")
+        code_dir, artifacts_dir = _dirs(tmp_path)
 
-        record = retire_learned_tool(
+        await retire_learned_tool(
             tools_dir=code_dir,
             artifacts_dir=artifacts_dir,
+            skills=skills,
             name="old_probe",
             reason=RETIRED_UNUSED,
             detail="never run",
         )
 
-        assert record.artifact_id == "learned-tool:old_probe"
         assert not learned_tool_path(code_dir, "old_probe").exists()
-        assert retired_tool_path(code_dir, "old_probe").is_file()
-        assert retired_artifact_path(artifacts_dir, "old_probe").is_file()
-        # The loader and the catalog no longer see it.
+        assert not learned_tool_artifact_path(artifacts_dir, "old_probe").exists()
+        archived = superseded_artifact_path(artifacts_dir, "old_probe", "learned-tool:old_probe")
+        assert archived.is_file()
+        assert skills.status("old_probe") == "archived"
         assert LearnedToolResolver(state_dir=tmp_path).list_artifacts() == []
-        with pytest.raises(LearnedToolError, match="is retired"):
+        with pytest.raises(LearnedToolError, match="only archived versions"):
             LearnedToolResolver(state_dir=tmp_path).load("old_probe")
-
-        restore_learned_tool(
-            tools_dir=code_dir, artifacts_dir=artifacts_dir, name="old_probe", why="asked"
+        retired = tool_inventory(
+            tools_dir=code_dir, artifacts_dir=artifacts_dir, skills=skills, include_retired=True
         )
+        assert [(entry.name, entry.retired, entry.retired_reason) for entry in retired] == [
+            ("old_probe", True, RETIRED_UNUSED)
+        ]
 
-        assert learned_tool_path(code_dir, "old_probe").is_file()
-        retirements = LearnedToolRetirements(artifacts_dir)
-        assert retirements.get("old_probe") is None
-        assert retirements.counts() == {"retired.unused": 1, "restored": 1}
-
-    def test_retiring_needs_an_installed_tool_and_a_known_reason(self, tmp_path: Path) -> None:
-        code_dir, artifacts_dir = learned_tool_storage(tmp_path)
-        with pytest.raises(LearnedToolError, match="unknown retirement reason"):
-            retire_learned_tool(
-                tools_dir=code_dir, artifacts_dir=artifacts_dir, name="x", reason="bored", detail=""
-            )
-        with pytest.raises(LearnedToolError, match="no installed envelope"):
-            retire_learned_tool(
-                tools_dir=code_dir,
-                artifacts_dir=artifacts_dir,
-                name="x",
-                reason=RETIRED_UNUSED,
-                detail="",
-            )
-        with pytest.raises(LearnedToolError, match="not retired"):
-            restore_learned_tool(tools_dir=code_dir, artifacts_dir=artifacts_dir, name="x", why="")
-
-    def test_restore_never_overwrites_an_installed_tool(self, tmp_path: Path) -> None:
-        _install(tmp_path, "dup")
-        code_dir, artifacts_dir = learned_tool_storage(tmp_path)
-        retire_learned_tool(
+        record = await restore_learned_tool(
             tools_dir=code_dir,
             artifacts_dir=artifacts_dir,
-            name="dup",
-            reason=RETIRED_UNUSED,
-            detail="",
+            skills=skills,
+            name="old_probe",
+            why="x",
         )
-        _install(tmp_path, "dup")
+
+        assert record.archived_reason == RETIRED_UNUSED
+        assert learned_tool_path(code_dir, "old_probe").read_text() == _CODE
+        assert skills.status("old_probe") == "active"
+        assert learned_tool_health(tmp_path, skills)["learned_tool_restores_total"] == 1
+
+    async def test_retiring_and_restoring_refuse_what_they_cannot_record(
+        self, tmp_path: Path
+    ) -> None:
+        skills = _skills(tmp_path)
+        code_dir, artifacts_dir = _dirs(tmp_path)
+        await _install(tmp_path, None, "unmanaged_tool")
+        await _install(tmp_path, skills, "managed_tool")
+        args = {"tools_dir": code_dir, "artifacts_dir": artifacts_dir, "skills": skills}
+
+        with pytest.raises(LearnedToolError, match="unknown retirement reason"):
+            await retire_learned_tool(**args, name="managed_tool", reason="bored", detail="")
+        with pytest.raises(LearnedToolError, match="no lifecycle record"):
+            await retire_learned_tool(
+                **args, name="unmanaged_tool", reason=RETIRED_UNUSED, detail=""
+            )
+        with pytest.raises(LearnedToolError, match="not retired"):
+            await restore_learned_tool(**args, name="managed_tool", why="")
+        await retire_learned_tool(**args, name="managed_tool", reason=RETIRED_UNUSED, detail="")
+        await _install(tmp_path, None, "managed_tool")
         with pytest.raises(LearnedToolError, match="already exists"):
-            restore_learned_tool(
-                tools_dir=code_dir, artifacts_dir=artifacts_dir, name="dup", why=""
-            )
-        with pytest.raises(LearnedToolError, match="retired copy already exists"):
-            retire_learned_tool(
-                tools_dir=code_dir,
-                artifacts_dir=artifacts_dir,
-                name="dup",
-                reason=RETIRED_UNUSED,
-                detail="",
-            )
+            await restore_learned_tool(**args, name="managed_tool", why="")
+
+    async def test_a_new_version_under_a_new_name_retires_its_predecessor(
+        self, tmp_path: Path
+    ) -> None:
+        skills = _skills(tmp_path)
+        old = await _install(tmp_path, skills, "list_k8s_pods", capability="k8s.pods.list")
+        new = await _install(
+            tmp_path,
+            skills,
+            "list_k8s_pod_names",
+            capability="k8s.pods.list",
+            supersedes=old.artifact_id,
+        )
+        code_dir, artifacts_dir = _dirs(tmp_path)
+        args = {"tools_dir": code_dir, "artifacts_dir": artifacts_dir, "skills": skills}
+
+        retired = await retire_superseded_predecessor(**args, artifact=new)
+
+        assert retired == "list_k8s_pods"
+        record = skills.lifecycle_records()["list_k8s_pods"]
+        assert (record.archived_reason, record.superseded_by) == (
+            RETIRED_SUPERSEDED,
+            "list_k8s_pod_names",
+        )
+        assert await retire_superseded_predecessor(**args, artifact=new) == ""
 
 
 # ---------------------------------------------------------------------------
-# Lineage
+# Lineage before commissioning
 # ---------------------------------------------------------------------------
 
 
 class TestLineage:
-    async def test_declared_capability_wins_and_retired_superseded_resolves_to_keeper(
-        self, tmp_path: Path
-    ) -> None:
-        _install(tmp_path, "k8s.pods.list", capability="k8s.pods.list")
-        _install(tmp_path, "list_pods_in_namespace_fixed", capability="k8s.pods.list")
-        code_dir, artifacts_dir = learned_tool_storage(tmp_path)
-        retire_learned_tool(
+    async def test_a_shared_capability_resolves_to_the_tool_that_runs(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(
+            tmp_path, skills, "k8s_pod_logs_since", capability="k8s.logs", verified=False
+        )
+        await _install(tmp_path, skills, "k8s_pod_logs_since_sa", capability="k8s.logs")
+        code_dir, artifacts_dir = _dirs(tmp_path)
+
+        found = await find_installed_capability(
             tools_dir=code_dir,
             artifacts_dir=artifacts_dir,
+            skills=skills,
+            capability_id="k8s.logs",
+            name="k8s_pod_logs_v2",
+        )
+
+        assert found is not None
+        assert (found.entry.name, found.matched_by) == ("k8s_pod_logs_since_sa", "capability_id")
+
+    async def test_spelling_meaning_and_superseded_successors(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "inspect_kubernetes_node_disk_pressure")
+        await _install(tmp_path, skills, "list_pods_in_namespace_sa")
+        await _install(tmp_path, skills, "list_pods_in_namespace_fixed")
+        code_dir, artifacts_dir = _dirs(tmp_path)
+        await retire_learned_tool(
+            tools_dir=code_dir,
+            artifacts_dir=artifacts_dir,
+            skills=skills,
             name="list_pods_in_namespace_fixed",
             reason=RETIRED_SUPERSEDED,
             detail="",
-            superseded_by="k8s.pods.list",
+            superseded_by="list_pods_in_namespace_sa",
+        )
+        args = {"tools_dir": code_dir, "artifacts_dir": artifacts_dir, "skills": skills}
+
+        spelled = await find_installed_capability(
+            **args, capability_id="", name="inspect_k8s_node_disk_pressure"
+        )
+        retired_name = await find_installed_capability(
+            **args, capability_id="", name="list_pods_in_namespace_fixed"
+        )
+        matcher = FakeMatcher({"pods_lister_v3", "list_pods_in_namespace_sa"})
+        meant = await find_installed_capability(
+            **args, capability_id="", name="pods_lister_v3", description="pods", matcher=matcher
+        )
+        unrelated = await find_installed_capability(
+            **args, capability_id="", name="node_memory_pressure", matcher=FakeMatcher()
         )
 
-        found = await find_lineage(
-            tools_dir=code_dir,
-            artifacts_dir=artifacts_dir,
-            capability_id="",
-            name="list_pods_in_namespace_fixed",
-            description="",
-        )
-
-        assert found is not None
-        assert found.entry.name == "k8s.pods.list"
-        assert found.entry.retired is None
-        assert "superseded" in found.reason
-
-    async def test_a_shared_capability_resolves_to_the_tool_that_runs(self, tmp_path: Path) -> None:
-        _install(tmp_path, "k8s_pod_logs_since", capability="k8s.pod_logs_since", verified=False)
-        _install(tmp_path, "k8s_pod_logs_since_sa", capability="k8s.pod_logs_since")
-        code_dir, artifacts_dir = learned_tool_storage(tmp_path)
-
-        found = await find_lineage(
-            tools_dir=code_dir,
-            artifacts_dir=artifacts_dir,
-            capability_id="k8s.pod_logs_since",
-            name="k8s_pod_logs_since_v2",
-            description="",
-        )
-
-        assert found is not None
-        assert found.entry.name == "k8s_pod_logs_since_sa"
-
-    async def test_meaning_links_names_that_spelling_cannot(self, tmp_path: Path) -> None:
-        _install(tmp_path, "list_pods_in_namespace_sa")
-        _install(tmp_path, "get_namespace_events")
-        code_dir, artifacts_dir = learned_tool_storage(tmp_path)
-        matcher = FakeMatcher({"list_pods_in_namespace_safe_v3", "list_pods_in_namespace_sa"})
-
-        found = await find_lineage(
-            tools_dir=code_dir,
-            artifacts_dir=artifacts_dir,
-            capability_id="",
-            name="list_pods_in_namespace_safe_v3",
-            description="list pods",
-            matcher=matcher,
-        )
-
-        assert found is not None
-        assert found.entry.name == "list_pods_in_namespace_sa"
-        assert found.matched_by == "semantic"
+        assert spelled is not None and spelled.matched_by == "spelling"
+        assert retired_name is not None
+        assert retired_name.entry.name == "list_pods_in_namespace_sa"
+        assert "superseded" in retired_name.reason
+        assert meant is not None
+        assert (meant.entry.name, meant.matched_by) == ("list_pods_in_namespace_sa", "semantic")
         # A build request is judged as a possible next version of a tool.
         assert matcher.revisions == [True]
-
-    async def test_no_tools_means_no_lineage(self, tmp_path: Path) -> None:
-        code_dir, artifacts_dir = learned_tool_storage(tmp_path)
-        assert (
-            await find_lineage(
-                tools_dir=code_dir,
-                artifacts_dir=artifacts_dir,
-                capability_id="x",
-                name="y",
-                description="",
-                matcher=FakeMatcher(),
-            )
-            is None
-        )
+        assert unrelated is None
 
 
 # ---------------------------------------------------------------------------
@@ -400,161 +374,265 @@ class TestLineage:
 
 
 class TestCurator:
-    async def test_a_variant_family_keeps_the_tool_that_works(self, tmp_path: Path) -> None:
-        _install(tmp_path, "list_pods_in_namespace_fixed", capability="k8s.pods.list")
-        _install(tmp_path, "list_pods_in_namespace_safe", capability="k8s.pods.list")
-        _install(tmp_path, "k8s.pods.list", capability="k8s.pods.list")
-        ledger = _ledger(tmp_path)
-        ledger.record_run("list_pods_in_namespace_fixed", "a", True)
-        for _ in range(3):
-            ledger.record_run("k8s.pods.list", "b", True)
-
-        plan = await LearnedToolCurator(state_dir=tmp_path).plan()
-
-        decisions = {decision.name: decision for decision in plan.retire}
-        assert set(decisions) == {"list_pods_in_namespace_fixed", "list_pods_in_namespace_safe"}
-        assert {decision.reason for decision in decisions.values()} == {RETIRED_SUPERSEDED}
-        assert {decision.superseded_by for decision in decisions.values()} == {"k8s.pods.list"}
-        assert plan.keep == ["k8s.pods.list"]
-
-    async def test_an_explicit_supersedes_link_and_spelling_group_tools(
+    async def test_backfill_unifies_capabilities_and_records_it_on_the_envelope(
         self, tmp_path: Path
     ) -> None:
-        first = _install(tmp_path, "list_k8s_pods")
-        _install(tmp_path, "list_k8s_pod_names", supersedes=first.artifact_id)
-        _install(tmp_path, "inspect_k8s_node_disk_pressure")
-        _install(tmp_path, "inspect_kubernetes_node_disk_pressure")
-
-        plan = await LearnedToolCurator(state_dir=tmp_path).plan()
-
-        assert len(plan.groups) == 2
-        assert {decision.reason for decision in plan.retire} == {RETIRED_SUPERSEDED}
-
-    async def test_debug_leftovers_unrunnable_and_unused_tools_are_retired(
-        self, tmp_path: Path
-    ) -> None:
-        _install(tmp_path, "debug_k8s_config")
-        _install(tmp_path, "test_tool")
-        _install(tmp_path, "patch_node_labels_via_sa", verified=False)
-        _install(tmp_path, "longhorn_engine_status", created_days_ago=8)
-        _install(tmp_path, "prometheus_rules_query", created_days_ago=1)
-        _install(tmp_path, "debug_but_useful")
-        ledger = _ledger(tmp_path)
-        ledger.record_run("debug_but_useful", "x", True)
-        # One tool waited two days before its first use: that is the window.
-        payload = json.loads(ledger.path.read_text())
-        payload["tools"]["slow_starter"] = {
-            "name": "slow_starter",
-            "installed_at": _iso(4),
-            "first_used_at": _iso(2),
-            "first_use_observed": True,
-            "runs": 1,
-        }
-        ledger.path.write_text(json.dumps(payload))
-
-        plan = await LearnedToolCurator(
-            state_dir=tmp_path, leftover_name_prefixes=["debug", "test"]
-        ).plan()
-
-        reasons = {decision.name: decision.reason for decision in plan.retire}
-        assert reasons == {
-            "debug_k8s_config": RETIRED_DEBUG_LEFTOVER,
-            "test_tool": RETIRED_DEBUG_LEFTOVER,
-            "patch_node_labels_via_sa": RETIRED_UNRUNNABLE,
-            "longhorn_engine_status": RETIRED_UNUSED,
-        }
-        unused = next(d for d in plan.retire if d.name == "longhorn_engine_status")
-        assert "slow_starter" in unused.detail
-        assert sorted(plan.keep) == ["debug_but_useful", "prometheus_rules_query"]
-
-    async def test_without_an_observed_first_use_nothing_is_retired_as_unused(
-        self, tmp_path: Path
-    ) -> None:
-        _install(tmp_path, "ancient_never_used", created_days_ago=60)
-
-        plan = await LearnedToolCurator(state_dir=tmp_path).plan()
-
-        assert plan.retire == []
-        assert plan.window.seconds is None
-
-    async def test_pinned_and_rolled_back_tools(self, tmp_path: Path) -> None:
-        _install(tmp_path, "debug_pinned")
-        _install(tmp_path, "rolled_back_tool")
-        _write_lifecycle(
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "list_pods_in_namespace_working")
+        await _install(
             tmp_path,
-            {
-                "debug_pinned": {"status": "active", "pinned": True},
-                "rolled_back_tool": {"status": "archived"},
-            },
+            skills,
+            "k8s_pods_list_namespace",
+            success_count=58,
+            run_count=58,
+            last_used_at=_iso(1),
         )
-        skills = LifecycleSnapshot(tmp_path / "skill_management.json")
-
-        plan = await LearnedToolCurator(
-            state_dir=tmp_path, skills=skills, leftover_name_prefixes=["debug"]
-        ).plan()
-
-        assert [(d.name, d.reason) for d in plan.retire] == [
-            ("rolled_back_tool", RETIRED_UNRUNNABLE)
-        ]
-        assert plan.installed == 1
-
-    async def test_semantic_groups_are_judged_once_and_cached(self, tmp_path: Path) -> None:
-        _install(tmp_path, "list_pods_in_namespace_working")
-        _install(tmp_path, "k8s_pods_list_namespace")
-        _install(tmp_path, "get_namespace_events")
-        _ledger(tmp_path).record_run("k8s_pods_list_namespace", "x", True)
-        _ledger(tmp_path).record_run("get_namespace_events", "y", True)
+        await _install(tmp_path, skills, "get_namespace_events", run_count=3, success_count=3)
         matcher = FakeMatcher({"list_pods_in_namespace_working", "k8s_pods_list_namespace"})
-        curator = LearnedToolCurator(state_dir=tmp_path, matcher=matcher)
+        curator = LearnedToolCurator(state_dir=tmp_path, skills=skills, matcher=matcher)
 
         plan = await curator.plan()
         calls = matcher.calls
         again = await curator.plan()
 
-        assert [(d.name, d.superseded_by) for d in plan.retire] == [
-            ("list_pods_in_namespace_working", "k8s_pods_list_namespace")
+        assert [(d.name, d.reason, d.superseded_by) for d in plan.retire] == [
+            ("list_pods_in_namespace_working", RETIRED_SUPERSEDED, "k8s_pods_list_namespace")
         ]
-        # Retiring needs a stand-in, not a possible next version.
-        assert set(matcher.revisions) == {False}
-        assert plan.judged_pairs > 0
+        assert plan.backfilled
+        _, artifacts_dir = _dirs(tmp_path)
+        envelope = json.loads(
+            learned_tool_artifact_path(artifacts_dir, "list_pods_in_namespace_working").read_text()
+        )
+        assert CAPABILITY_MATCHED_KEY in envelope["provenance"]
+        assert envelope["source_gap_id"]
+        # Decided once: a second pass judges nothing, and needs no cache file.
+        assert again.judged == 0
         assert matcher.calls == calls
-        assert again.judged_pairs == 0
-        assert [d.name for d in again.retire] == ["list_pods_in_namespace_working"]
+        assert set(matcher.revisions) == {False}
 
     async def test_a_dry_plan_writes_nothing(self, tmp_path: Path) -> None:
-        _install(tmp_path, "a_tool")
-        curator = LearnedToolCurator(state_dir=tmp_path, matcher=FakeMatcher(), persist=False)
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "a_tool")
+        _, artifacts_dir = _dirs(tmp_path)
+        before = learned_tool_artifact_path(artifacts_dir, "a_tool").read_text()
 
-        await curator.plan()
+        await LearnedToolCurator(
+            state_dir=tmp_path, skills=skills, matcher=FakeMatcher(), persist=False
+        ).plan()
 
-        artifacts_dir = learned_tool_storage(tmp_path)[1]
-        assert not (artifacts_dir / "_curation").exists()
+        assert learned_tool_artifact_path(artifacts_dir, "a_tool").read_text() == before
 
-    async def test_curate_retires_and_archives_the_lifecycle(self, tmp_path: Path) -> None:
-        _install(tmp_path, "debug_input")
-        archived: list[str] = []
+    async def test_debug_unrunnable_unused_and_kept_tools(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "debug_k8s_config")
+        await _install(tmp_path, skills, "patch_node_labels_via_sa", verified=False)
+        await _install(tmp_path, skills, "longhorn_engine_status", created_days_ago=8)
+        await _install(tmp_path, skills, "prometheus_rules_query", created_days_ago=1)
+        await _install(tmp_path, skills, "debug_but_useful", run_count=4, success_count=4)
+        await _install(tmp_path, skills, "rolled_back_tool", run_count=3, failure_count=3)
+        await skills.archive("rolled_back_tool")
+        # One tool waited two days before its first use: that is the window.
+        await _install(
+            tmp_path,
+            skills,
+            "slow_starter",
+            created_days_ago=4,
+            run_count=1,
+            success_count=1,
+            first_used_at=_iso(2),
+        )
 
-        class Skills:
-            def status(self, name: str) -> str | None:
-                return "archived" if name in archived else "active"
+        plan = await LearnedToolCurator(
+            state_dir=tmp_path, skills=skills, leftover_name_prefixes=["debug", "test"]
+        ).plan()
 
-            def lifecycle_metadata(self, name: str) -> dict[str, Any]:
-                return {"pinned": False}
+        reasons = {decision.name: decision.reason for decision in plan.retire}
+        assert reasons == {
+            "debug_k8s_config": RETIRED_DEBUG_LEFTOVER,
+            "patch_node_labels_via_sa": RETIRED_UNRUNNABLE,
+            "rolled_back_tool": RETIRED_UNRUNNABLE,
+            "longhorn_engine_status": RETIRED_UNUSED,
+        }
+        assert plan.window.tool == "slow_starter"
+        unused = next(d for d in plan.retire if d.reason == RETIRED_UNUSED)
+        assert "slow_starter" in unused.detail
+        assert sorted(plan.keep) == ["debug_but_useful", "prometheus_rules_query", "slow_starter"]
 
-            async def archive(self, name: str) -> None:
-                archived.append(name)
+    async def test_no_evidence_no_unused_and_pinned_or_unmanaged_are_kept(
+        self, tmp_path: Path
+    ) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "ancient_never_used", created_days_ago=60)
+        await _install(tmp_path, skills, "debug_pinned", pinned=True)
+        await _install(tmp_path, None, "debug_unmanaged")
+
+        plan = await LearnedToolCurator(
+            state_dir=tmp_path, skills=skills, leftover_name_prefixes=["debug"]
+        ).plan()
+
+        assert plan.retire == []
+        assert plan.window.seconds is None
+        assert plan.unmanaged == ["debug_unmanaged"]
+
+    async def test_explicit_supersedes_and_spelling_group(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        first = await _install(tmp_path, skills, "list_k8s_pods")
+        await _install(tmp_path, skills, "list_k8s_pod_names", supersedes=first.artifact_id)
+        await _install(tmp_path, skills, "inspect_k8s_node_disk_pressure")
+        await _install(tmp_path, skills, "inspect_kubernetes_node_disk_pressure")
+
+        plan = await LearnedToolCurator(state_dir=tmp_path, skills=skills).plan()
+
+        assert len(plan.groups) == 2
+        assert {decision.reason for decision in plan.retire} == {RETIRED_SUPERSEDED}
+
+    async def test_curate_retires_and_undoes_what_the_window_no_longer_supports(
+        self, tmp_path: Path
+    ) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "debug_input")
+        await _install(tmp_path, skills, "k8s_quantity_parse", created_days_ago=0.1)
+        await _install(
+            tmp_path,
+            skills,
+            "older",
+            created_days_ago=9,
+            run_count=1,
+            success_count=1,
+            first_used_at=_iso(2),
+        )
+        code_dir, artifacts_dir = _dirs(tmp_path)
+        await retire_learned_tool(
+            tools_dir=code_dir,
+            artifacts_dir=artifacts_dir,
+            skills=skills,
+            name="k8s_quantity_parse",
+            reason=RETIRED_UNUSED,
+            detail="retired on a thin window",
+        )
 
         summary = await LearnedToolCurator(
-            state_dir=tmp_path, skills=Skills(), leftover_name_prefixes=["debug"]
+            state_dir=tmp_path, skills=skills, leftover_name_prefixes=["debug"]
         ).curate()
 
         assert [item["name"] for item in summary["retired"]] == ["debug_input"]
-        assert archived == ["debug_input"]
-        health = learned_tool_health(tmp_path)
-        assert health["learned_tools_installed"] == 0
+        assert summary["restored"] == ["k8s_quantity_parse"]
+        assert learned_tool_path(code_dir, "k8s_quantity_parse").is_file()
+        health = learned_tool_health(tmp_path, skills)
         assert health["learned_tools_retired"] == 1
-        assert health["learned_tool_retirements.debug_leftover"] == 1
-        assert health["learned_tool_retirements_total"] == 1
+        assert health["learned_tools_retired.debug_leftover"] == 1
+        assert health["learned_tools_installed"] == 2
+
+
+async def test_legacy_curation_state_is_folded_into_archive_and_lifecycle(tmp_path: Path) -> None:
+    """dev.352–dev.366 kept retirements and verdicts in their own files."""
+    skills = _skills(tmp_path)
+    await _install(tmp_path, skills, "keeper", run_count=9, success_count=9, last_used_at=_iso(1))
+    await _install(tmp_path, skills, "twin")
+    await _install(tmp_path, skills, "old_variant")
+    code_dir, artifacts_dir = _dirs(tmp_path)
+    await skills.archive("old_variant")
+    (artifacts_dir / "_retired").mkdir()
+    (code_dir / "_retired").mkdir()
+    learned_tool_artifact_path(artifacts_dir, "old_variant").rename(
+        artifacts_dir / "_retired" / "old_variant.json"
+    )
+    learned_tool_path(code_dir, "old_variant").rename(code_dir / "_retired" / "old_variant.py")
+    (artifacts_dir / "_curation").mkdir()
+    (artifacts_dir / "_curation" / "retirements.json").write_text(
+        json.dumps(
+            {
+                "retired": {
+                    "old_variant": {
+                        "reason": RETIRED_SUPERSEDED,
+                        "detail": "'keeper' serves the same capability",
+                        "superseded_by": "keeper",
+                    }
+                }
+            }
+        )
+    )
+    await _install(tmp_path, skills, "triplet")
+    (artifacts_dir / "_curation" / "verdicts.json").write_text(
+        json.dumps(
+            {
+                "pairs": {
+                    # Transitive: twin~keeper and triplet~twin are one capability.
+                    "learned-tool:keeper|learned-tool:twin": {"same": True},
+                    "learned-tool:triplet|learned-tool:twin": {"same": True},
+                }
+            }
+        )
+    )
+    args = {"tools_dir": code_dir, "artifacts_dir": artifacts_dir, "skills": skills}
+
+    moved = await migrate_legacy_curation_state(**args)
+
+    assert moved == 1
+    assert not (artifacts_dir / "_retired").exists()
+    assert not (artifacts_dir / "_curation").exists()
+    record = skills.lifecycle_records()["old_variant"]
+    assert (record.archived_reason, record.superseded_by) == (RETIRED_SUPERSEDED, "keeper")
+    capabilities = {
+        name: json.loads(learned_tool_artifact_path(artifacts_dir, name).read_text())
+        for name in ("keeper", "twin", "triplet")
+    }
+    assert len({envelope["source_gap_id"] for envelope in capabilities.values()}) == 1
+    # Not marked: the dream judges them against today's library.
+    assert all(CAPABILITY_MATCHED_KEY not in e["provenance"] for e in capabilities.values())
+    assert await migrate_legacy_curation_state(**args) == 0
+    plan = await LearnedToolCurator(state_dir=tmp_path, skills=skills).plan()
+    assert sorted((d.name, d.superseded_by) for d in plan.retire) == [
+        ("triplet", "keeper"),
+        ("twin", "keeper"),
+    ]
+
+
+async def test_tools_marked_by_the_first_migration_are_judged_again(tmp_path: Path) -> None:
+    """dev.369 marked migrated tools as matched, which left split families unjoined."""
+    skills = _skills(tmp_path)
+    await _install(
+        tmp_path,
+        skills,
+        "list_pods_in_namespace_incluster",
+        run_count=22,
+        success_count=22,
+        last_used_at=_iso(30),
+    )
+    await _install(
+        tmp_path,
+        skills,
+        "k8s_pods_list_namespace",
+        run_count=58,
+        success_count=58,
+        last_used_at=_iso(1),
+    )
+    _, artifacts_dir = _dirs(tmp_path)
+    for name in ("list_pods_in_namespace_incluster", "k8s_pods_list_namespace"):
+        path = learned_tool_artifact_path(artifacts_dir, name)
+        envelope = json.loads(path.read_text())
+        envelope["provenance"][CAPABILITY_MATCHED_KEY] = {"by": "migration"}
+        path.write_text(json.dumps(envelope))
+    matcher = FakeMatcher({"list_pods_in_namespace_incluster", "k8s_pods_list_namespace"})
+
+    plan = await LearnedToolCurator(state_dir=tmp_path, skills=skills, matcher=matcher).plan()
+
+    assert [(d.name, d.superseded_by) for d in plan.retire] == [
+        ("list_pods_in_namespace_incluster", "k8s_pods_list_namespace")
+    ]
+
+
+async def test_a_lifecycle_snapshot_reads_without_writing(tmp_path: Path) -> None:
+    skills = _skills(tmp_path)
+    await _install(tmp_path, skills, "probe", pinned=True)
+    snapshot = LifecycleSnapshot(tmp_path / "skill_management.json")
+
+    assert snapshot.status("probe") == "active"
+    metadata = snapshot.lifecycle_metadata("probe")
+    assert metadata is not None and metadata["pinned"] is True
+    assert isinstance(snapshot.lifecycle_records()["probe"], SkillLifecycle)
+    assert snapshot.status("missing") is None
+    assert snapshot.lifecycle_metadata("missing") is None
 
 
 # ---------------------------------------------------------------------------
@@ -589,11 +667,7 @@ def _descriptor(name: str) -> CapabilityDescriptor:
 class TestSemanticMatcher:
     def _matcher(self, judge: _Judge) -> tuple[SemanticCapabilityMatcher, _Index]:
         index = _Index(
-            {
-                "pods: pods": [1.0, 0.0],
-                "pods2: pods2": [0.9, 0.1],
-                "events: events": [0.0, 1.0],
-            }
+            {"pods: pods": [1.0, 0.0], "pods2: pods2": [0.9, 0.1], "events: events": [0.0, 1.0]}
         )
         matcher = SemanticCapabilityMatcher(
             lessons=index,  # type: ignore[arg-type]
@@ -615,7 +689,6 @@ class TestSemanticMatcher:
         assert [(v.candidate_key, v.same) for v in verdicts] == [("pods2", True)]
         assert "events" not in judge.prompts[0]
         await matcher.same_capability(_descriptor("pods"), [_descriptor("pods2")])
-        # Descriptions are embedded once per matcher, not once per comparison.
         assert sorted(index.embedded) == ["events: events", "pods2: pods2", "pods: pods"]
 
     async def test_a_build_request_is_judged_as_a_revision(self) -> None:
@@ -636,8 +709,7 @@ class TestSemanticMatcher:
         assert judge.prompts == []
 
     @pytest.mark.parametrize(
-        "answer",
-        [{"same": 1}, {"same": ["one"]}, {"same": [4]}, {"same": [True]}],
+        "answer", [{"same": 1}, {"same": ["one"]}, {"same": [4]}, {"same": [True]}]
     )
     async def test_an_unusable_answer_raises(self, answer: dict[str, Any]) -> None:
         matcher, _ = self._matcher(_Judge(answer))
@@ -679,7 +751,7 @@ class RecordingBackend:
                 "input_schema": {"type": "object"},
                 "required_permission": "tool:run",
             },
-            tool_code="def run(payload):\n    return {'ok': True, 'v': 2}\n",
+            tool_code=f"# {request.name}\ndef run(payload):\n    return {{'ok': True, 'v': 2}}\n",
             test_code=_TEST,
             requirements=[],
             provenance={},
@@ -714,11 +786,18 @@ def _request(name: str, **extra: Any) -> dict[str, Any]:
 
 class TestRepairOverVariant:
     async def test_a_failing_tool_is_repaired_in_place_not_forked(self, tmp_path: Path) -> None:
-        _install(tmp_path, "list_pods_in_namespace", capability="k8s.pods.list")
-        ledger = _ledger(tmp_path)
-        ledger.record_run("list_pods_in_namespace", "learned-tool:list_pods_in_namespace", False)
+        skills = _skills(tmp_path)
+        await _install(
+            tmp_path,
+            skills,
+            "list_pods_in_namespace",
+            capability="k8s.pods.list",
+            consecutive_failures=1,
+            run_count=1,
+            failure_count=1,
+        )
         backend = RecordingBackend()
-        tool, registered = _build_tool(tmp_path, build_backend=backend)
+        tool, registered = _build_tool(tmp_path, build_backend=backend, skill_manager=skills)
 
         result = await tool.execute(
             _request("list_pods_in_namespace_fixed", capability_id="k8s.pods.list")
@@ -726,102 +805,106 @@ class TestRepairOverVariant:
 
         summary = json.loads(result.content)
         assert result.is_error is False, result.content
-        assert summary["tool_name"] == "list_pods_in_namespace"
-        assert summary["version"] == 2
+        assert (summary["tool_name"], summary["version"]) == ("list_pods_in_namespace", 2)
         assert summary["repair_of"]["problems"] == ["its last 1 run(s) failed"]
         request = backend.requests[0]
         assert request.name == "list_pods_in_namespace"
-        assert "REPAIRS the installed learned tool 'list_pods_in_namespace'" in (
-            request.signal_context
-        )
+        assert "REPAIRS the installed learned tool" in request.signal_context
         assert _CODE in request.signal_context
-        code_dir, artifacts_dir = learned_tool_storage(tmp_path)
+        _, artifacts_dir = _dirs(tmp_path)
         assert not learned_tool_artifact_path(
             artifacts_dir, "list_pods_in_namespace_fixed"
         ).exists()
         assert registered[0][1] is True
-        usage = _ledger(tmp_path).get("list_pods_in_namespace")
-        assert usage is not None and usage.repairs == 1
 
-    async def test_a_semantic_match_repairs_the_matched_tool(self, tmp_path: Path) -> None:
-        _install(tmp_path, "k8s_pods_list_namespace", verified=False)
+    async def test_a_semantic_match_repairs_and_a_new_capability_is_marked_matched(
+        self, tmp_path: Path
+    ) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "k8s_pods_list_namespace", verified=False)
         backend = RecordingBackend()
         tool, _ = _build_tool(
             tmp_path,
             build_backend=backend,
+            skill_manager=skills,
             capability_matcher=FakeMatcher(
                 {"list_pods_in_namespace_v2", "k8s_pods_list_namespace"}
             ),
         )
 
-        result = await tool.execute(_request("list_pods_in_namespace_v2"))
+        repaired = json.loads((await tool.execute(_request("list_pods_in_namespace_v2"))).content)
+        brand_new = await tool.execute(_request("count_cluster_nodes"))
 
-        summary = json.loads(result.content)
-        assert summary["tool_name"] == "k8s_pods_list_namespace"
-        assert summary["repair_of"]["matched_by"] == "semantic"
-        assert "Last verification" not in backend.requests[0].signal_context
+        assert repaired["tool_name"] == "k8s_pods_list_namespace"
+        assert repaired["repair_of"]["matched_by"] == "semantic"
+        assert brand_new.is_error is False, brand_new.content
+        _, artifacts_dir = _dirs(tmp_path)
+        envelope = json.loads(
+            learned_tool_artifact_path(artifacts_dir, "count_cluster_nodes").read_text()
+        )
+        assert envelope["provenance"][CAPABILITY_MATCHED_KEY]["by"] == "build_tool"
 
     async def test_a_retired_tool_is_restored_instead_of_rebuilt(self, tmp_path: Path) -> None:
-        _install(tmp_path, "longhorn_engine_status", capability="longhorn.engine.status")
-        code_dir, artifacts_dir = learned_tool_storage(tmp_path)
-        retire_learned_tool(
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "longhorn_engine_status", capability="longhorn.engine")
+        code_dir, artifacts_dir = _dirs(tmp_path)
+        await retire_learned_tool(
             tools_dir=code_dir,
             artifacts_dir=artifacts_dir,
+            skills=skills,
             name="longhorn_engine_status",
             reason=RETIRED_UNUSED,
             detail="never run",
         )
-        restored_lifecycle: list[str] = []
-
-        class Skills:
-            def status(self, name: str) -> str | None:
-                return "active" if restored_lifecycle else "archived"
-
-            async def restore(self, name: str) -> None:
-                restored_lifecycle.append(name)
-
         backend = RecordingBackend()
-        tool, _ = _build_tool(tmp_path, build_backend=backend, skill_manager=Skills())
+        tool, _ = _build_tool(tmp_path, build_backend=backend, skill_manager=skills)
 
         result = await tool.execute(
-            _request("longhorn_engine_state", capability_id="longhorn.engine.status")
+            _request("longhorn_engine_state", capability_id="longhorn.engine")
         )
 
         payload = json.loads(result.content)
         assert payload["status"] == "already_installed"
         assert payload["restored_from_retirement"]["reason"] == RETIRED_UNUSED
         assert backend.requests == []
-        assert restored_lifecycle == ["longhorn_engine_status"]
+        assert skills.status("longhorn_engine_status") == "active"
         assert learned_tool_path(code_dir, "longhorn_engine_status").is_file()
 
     async def test_a_restored_unrunnable_tool_is_repaired(self, tmp_path: Path) -> None:
-        _install(tmp_path, "inspect_persistentvolume", capability="k8s.pv.inspect")
-        code_dir, artifacts_dir = learned_tool_storage(tmp_path)
-        retire_learned_tool(
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "inspect_persistentvolume", capability="k8s.pv")
+        code_dir, artifacts_dir = _dirs(tmp_path)
+        await retire_learned_tool(
             tools_dir=code_dir,
             artifacts_dir=artifacts_dir,
+            skills=skills,
             name="inspect_persistentvolume",
             reason=RETIRED_UNRUNNABLE,
             detail="rolled back",
         )
         backend = RecordingBackend()
-        tool, _ = _build_tool(tmp_path, build_backend=backend)
+        tool, _ = _build_tool(tmp_path, build_backend=backend, skill_manager=skills)
 
-        result = await tool.execute(_request("inspect_pv", capability_id="k8s.pv.inspect"))
+        result = await tool.execute(_request("inspect_pv", capability_id="k8s.pv"))
 
         assert json.loads(result.content)["tool_name"] == "inspect_persistentvolume"
-        assert len(backend.requests) == 1
         assert "retired as unrunnable" in backend.requests[0].signal_context
 
     async def test_a_judge_that_cannot_answer_builds_nothing(self, tmp_path: Path) -> None:
-        _install(tmp_path, "some_tool")
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "some_tool")
 
         class BrokenMatcher:
             async def same_capability(self, *_: Any, **__: Any) -> list[CapabilityVerdict]:
                 raise LessonJudgeError("unusable judge answer")
 
         backend = RecordingBackend()
-        tool, _ = _build_tool(tmp_path, build_backend=backend, capability_matcher=BrokenMatcher())
+        tool, _ = _build_tool(
+            tmp_path,
+            build_backend=backend,
+            skill_manager=skills,
+            capability_matcher=BrokenMatcher(),
+        )
 
         result = await tool.execute(_request("brand_new_capability"))
 
@@ -832,7 +915,7 @@ class TestRepairOverVariant:
     async def test_a_failed_rebuild_never_replaces_the_working_envelope(
         self, tmp_path: Path
     ) -> None:
-        installed = _install(tmp_path, "echo_tool", capability="echo")
+        installed = await _install(tmp_path, None, "echo_tool", capability="echo")
         tool, registered = _build_tool(tmp_path)
 
         result = await tool.execute(
@@ -851,190 +934,102 @@ class TestRepairOverVariant:
         )
 
         assert result.is_error is True
-        _, artifacts_dir = learned_tool_storage(tmp_path)
+        _, artifacts_dir = _dirs(tmp_path)
         envelope = json.loads(learned_tool_artifact_path(artifacts_dir, "echo_tool").read_text())
         assert envelope["artifact_id"] == installed.artifact_id
-        assert envelope["provenance"]["verification"]["ok"] is True
         assert list((artifacts_dir / "_failed").glob("echo_tool__*.json"))
         assert registered == []
 
-    async def test_the_canary_is_not_counted_as_a_use(self, tmp_path: Path) -> None:
-        tool, registered = _build_tool(tmp_path)
-
-        result = await tool.execute(
-            {
-                "manifest": {
-                    "name": "fresh_tool",
-                    "description": "fresh",
-                    "input_schema": {"type": "object"},
-                    "required_permission": "tool:run",
-                },
-                "tool_code": _CODE,
-                "test_code": _TEST,
-                "canary_input": {},
-            }
-        )
-
-        assert result.is_error is False, result.content
-        usage = _ledger(tmp_path).get("fresh_tool")
-        assert usage is not None and usage.runs == 0
-        await registered[0][0].execute({})
-        usage = _ledger(tmp_path).get("fresh_tool")
-        assert usage is not None and usage.runs == 1 and usage.first_use_observed
-
 
 # ---------------------------------------------------------------------------
-# Dispatch and discovery
+# Discovery, dream, health, adoption
 # ---------------------------------------------------------------------------
 
 
-class _Permission:
-    def allows(self, permission: str) -> bool:
-        return True
+async def test_the_catalog_shows_lifecycle_usage_and_retired_matches(tmp_path: Path) -> None:
+    from ravn.cli.tool_builders import _retired_learned_tools
 
-    async def check(self, permission: str) -> bool:
-        return True
-
-
-class TestDispatchAndCatalog:
-    async def test_dispatch_records_usage_and_the_catalog_shows_it(self, tmp_path: Path) -> None:
-        _install(tmp_path, "k8s_pvc_status")
-        ledger = _ledger(tmp_path)
-        resolver = LearnedToolResolver(state_dir=tmp_path, usage_recorder=ledger.record_run)
-        run = LearnedToolRunTool(resolver=resolver, permission=_Permission())  # type: ignore[arg-type]
-
-        result = await run.execute({"name": "k8s_pvc_status", "input": {}})
-
-        assert result.is_error is False, result.content
-        catalog = CapabilityListTool(
-            tools_provider=lambda: [],
-            learned_tools_provider=resolver.list_artifacts,
-            learned_tool_usage=ledger.snapshot,
-        )
-        listing = json.loads((await catalog.execute({})).content)
-        entry = next(item for item in listing["capabilities"] if item["name"] == "k8s_pvc_status")
-        assert entry["usage"]["runs"] == 1
-        assert entry["usage"]["successes"] == 1
-        assert entry["usage"]["last_used"]
-        detail = json.loads((await catalog.execute({"names": ["k8s_pvc_status"]})).content)
-        metadata = detail["capabilities"][0]["metadata"]
-        assert metadata["usage"]["version_runs"] == 1
-        assert metadata["version"] == 1
-
-    async def test_a_usage_write_failure_is_not_a_tool_failure(self, tmp_path: Path) -> None:
-        _install(tmp_path, "k8s_pvc_status")
-
-        def broken(name: str, artifact_id: str, succeeded: bool) -> None:
-            raise LearnedToolUsageError("disk full")
-
-        resolver = LearnedToolResolver(state_dir=tmp_path, usage_recorder=broken)
-        run = LearnedToolRunTool(resolver=resolver, permission=_Permission())  # type: ignore[arg-type]
-
-        with pytest.raises(LearnedToolUsageError, match="disk full"):
-            await run.execute({"name": "k8s_pvc_status", "input": {}})
-
-
-def test_versions_chain_through_the_artifact_writer(tmp_path: Path) -> None:
-    first = _install(tmp_path, "chained")
-    second = _install(tmp_path, "chained", tool_code="def run(payload):\n    return {'v': 2}\n")
-    _, artifacts_dir = learned_tool_storage(tmp_path)
-
-    # Same name, new id: archived predecessor, next version.
-    assert second.artifact_id == first.artifact_id
-    replacement = LearnedToolArtifact.from_dict(
-        {**second.to_dict(), "artifact_id": "learned-tool:chained:v2"}
+    skills = _skills(tmp_path)
+    await _install(
+        tmp_path, skills, "k8s.pods.list", run_count=34, success_count=34, last_used_at=_iso(1)
     )
-    write_learned_tool_artifact(artifacts_dir=artifacts_dir, artifact=replacement)
-    envelope = json.loads(learned_tool_artifact_path(artifacts_dir, "chained").read_text())
-    assert envelope["version"] == 2
-    assert envelope["supersedes"] == first.artifact_id
-    # Rewriting the same version keeps its number.
-    write_learned_tool_artifact(artifacts_dir=artifacts_dir, artifact=replacement)
-    envelope = json.loads(learned_tool_artifact_path(artifacts_dir, "chained").read_text())
-    assert envelope["version"] == 2
-
-
-async def test_a_query_names_retired_tools_and_how_to_get_them_back(tmp_path: Path) -> None:
-    _install(tmp_path, "k8s.pods.list")
-    _install(tmp_path, "list_pods_in_namespace_fixed")
-    _install(tmp_path, "longhorn_engine_status")
-    code_dir, artifacts_dir = learned_tool_storage(tmp_path)
-    retire_learned_tool(
-        tools_dir=code_dir,
-        artifacts_dir=artifacts_dir,
+    await _install(tmp_path, skills, "list_pods_in_namespace_fixed")
+    await _install(tmp_path, skills, "longhorn_engine_status")
+    code_dir, artifacts_dir = _dirs(tmp_path)
+    args = {"tools_dir": code_dir, "artifacts_dir": artifacts_dir, "skills": skills}
+    await retire_learned_tool(
+        **args,
         name="list_pods_in_namespace_fixed",
         reason=RETIRED_SUPERSEDED,
         detail="",
         superseded_by="k8s.pods.list",
     )
-    retire_learned_tool(
-        tools_dir=code_dir,
-        artifacts_dir=artifacts_dir,
-        name="longhorn_engine_status",
-        reason=RETIRED_UNUSED,
-        detail="never run",
+    await retire_learned_tool(
+        **args, name="longhorn_engine_status", reason=RETIRED_UNUSED, detail="never run"
     )
-
-    def retired() -> list[Any]:
-        from ravn.valkyrie_evolution.tool_curation import tool_inventory
-
-        return [
-            entry
-            for entry in tool_inventory(
-                tools_dir=code_dir, artifacts_dir=artifacts_dir, include_retired=True
-            )
-            if entry.retired is not None
-        ]
-
     catalog = CapabilityListTool(
         tools_provider=lambda: [],
+        skill_manager=skills,
         learned_tools_provider=LearnedToolResolver(state_dir=tmp_path).list_artifacts,
-        retired_learned_tools=retired,
+        retired_learned_tools=_retired_learned_tools(tmp_path, skills),
     )
 
     pods = json.loads((await catalog.execute({"query": "pods"})).content)
     longhorn = json.loads((await catalog.execute({"query": "longhorn"})).content)
     unfiltered = json.loads((await catalog.execute({})).content)
 
-    assert [item["name"] for item in pods["capabilities"]] == ["k8s.pods.list"]
+    entry = next(item for item in pods["capabilities"] if item["name"] == "k8s.pods.list")
+    assert (entry["usage"]["runs"], entry["usage"]["successes"]) == (34, 34)
+    assert entry["usage"]["last_used"]
     assert pods["retired_matches"][0]["next_step"] == "Use 'k8s.pods.list' instead."
     assert longhorn["capabilities"] == []
     assert "restores this tool" in longhorn["retired_matches"][0]["next_step"]
     assert "retired_matches" not in unfiltered
 
 
-async def test_the_consolidation_dream_runs_tool_curation(tmp_path: Path) -> None:
-    from ravn.adapters.skill.file_registry import FileSkillRegistry
-    from ravn.skills.management import SkillManagementRegistry
+async def test_the_dream_curates_tools_before_learnings(tmp_path: Path) -> None:
+    """A Mímir outage in learning curation must not stop the tool library being kept."""
     from ravn.valkyrie_evolution.resident_learning import ResidentLearningIdentity
     from ravn.valkyrie_evolution.wakefulness import ResidentWakefulness
     from sleipnir.adapters.in_process import InProcessBus
 
-    class Curator:
-        calls = 0
+    order: list[str] = []
 
+    class ToolCurator:
         async def curate(self) -> dict[str, Any]:
-            Curator.calls += 1
-            return {"retired": [{"name": "debug_input", "reason": RETIRED_DEBUG_LEFTOVER}]}
+            order.append("tools")
+            return {"retired": [{"name": "debug_input"}]}
 
-    skill_dir = tmp_path / "skills"
-    machine = ResidentWakefulness(
-        identity=ResidentLearningIdentity(
-            environment_id="cluster-a", valkyrie_id="valkyrie:a", domain="k8s"
-        ),
-        skills=SkillManagementRegistry(
-            FileSkillRegistry(
-                skill_dirs=[str(skill_dir)], write_dir=skill_dir, include_builtin=False
-            ),
-            metadata_path=tmp_path / "skill_management.json",
-        ),
+    class LearningCurator:
+        def due(self) -> bool:
+            return True
+
+        async def curate(self, *, budget_seconds: float | None = None) -> Any:
+            order.append("learnings")
+            raise RuntimeError("Mímir mount failed during list_pages: 503")
+
+    identity = ResidentLearningIdentity(
+        environment_id="cluster-a", valkyrie_id="valkyrie:a", domain="k8s"
+    )
+    failing = ResidentWakefulness(
+        identity=identity,
+        skills=_skills(tmp_path),
         publisher=InProcessBus(),
-        tool_curator=Curator(),
+        learning_curator=LearningCurator(),
+        tool_curator=ToolCurator(),
     )
 
-    summary = await machine.dream()
+    with pytest.raises(RuntimeError, match="503"):
+        await failing.dream()
+    assert order == ["tools", "learnings"]
 
-    assert Curator.calls == 1
+    healthy = ResidentWakefulness(
+        identity=identity,
+        skills=_skills(tmp_path),
+        publisher=InProcessBus(),
+        tool_curator=ToolCurator(),
+    )
+    summary = await healthy.dream()
     assert summary["learned_tools"]["retired"][0]["name"] == "debug_input"
 
 
@@ -1051,20 +1046,19 @@ async def test_the_health_snapshot_carries_learned_tool_counts(tmp_path: Path) -
         async def read_decision_streak(self, resident_id: str) -> None:
             return None
 
-    _install(tmp_path, "k8s_pvc_status")
+    skills = _skills(tmp_path)
+    await _install(tmp_path, skills, "k8s_pvc_status")
     runtime = ResidentRuntime(state=State())  # type: ignore[arg-type]
-    runtime.bind_learned_tool_health(lambda: learned_tool_health(tmp_path))
+    runtime.bind_learned_tool_health(lambda: learned_tool_health(tmp_path, skills))
 
     snapshot = await runtime.refresh_health_snapshot()
 
     assert snapshot["learned_tools_installed"] == 1
     assert snapshot["learned_tools_never_used"] == 1
-    assert snapshot["learned_tool_retirements_total"] == 0
+    assert snapshot["learned_tools_retired"] == 0
 
 
 async def test_a_peer_copy_does_not_undo_a_retirement_here(tmp_path: Path) -> None:
-    from ravn.adapters.skill.file_registry import FileSkillRegistry
-    from ravn.skills.management import SkillManagementRegistry
     from ravn.valkyrie_evolution.resident_learning import (
         ResidentLearningArtifact,
         ResidentLearningIdentity,
@@ -1073,36 +1067,28 @@ async def test_a_peer_copy_does_not_undo_a_retirement_here(tmp_path: Path) -> No
     from sleipnir.adapters.in_process import InProcessBus
 
     state = tmp_path / "resident"
-    _install(state, "list_pods_in_namespace_safe")
-    _install(state, "k8s_quantity_parse")
-    code_dir, artifacts_dir = learned_tool_storage(state)
-    retire_learned_tool(
-        tools_dir=code_dir,
-        artifacts_dir=artifacts_dir,
-        name="list_pods_in_namespace_safe",
-        reason=RETIRED_SUPERSEDED,
-        detail="",
-        superseded_by="k8s.pods.list",
-    )
-    retire_learned_tool(
-        tools_dir=code_dir,
-        artifacts_dir=artifacts_dir,
-        name="k8s_quantity_parse",
-        reason=RETIRED_UNUSED,
-        detail="never run",
-    )
-    skill_dir = state / "skills"
+    skills = _skills(state)
+    await _install(state, skills, "list_pods_in_namespace_safe")
+    await _install(state, skills, "k8s_quantity_parse")
+    code_dir, artifacts_dir = _dirs(state)
+    for name, reason in (
+        ("list_pods_in_namespace_safe", RETIRED_SUPERSEDED),
+        ("k8s_quantity_parse", RETIRED_UNUSED),
+    ):
+        await retire_learned_tool(
+            tools_dir=code_dir,
+            artifacts_dir=artifacts_dir,
+            skills=skills,
+            name=name,
+            reason=reason,
+            detail="",
+        )
     bus = InProcessBus()
     runtime = ResidentLearningRuntime(
         identity=ResidentLearningIdentity(
             environment_id="valhalla", valkyrie_id="valkyrie:valhalla", domain="k8s"
         ),
-        skills=SkillManagementRegistry(
-            FileSkillRegistry(
-                skill_dirs=[str(skill_dir)], write_dir=skill_dir, include_builtin=False
-            ),
-            metadata_path=state / "skill_management.json",
-        ),
+        skills=skills,
         publisher=bus,
         subscriber=bus,
         tools_dir=state / "tools",
@@ -1143,10 +1129,9 @@ def test_the_capability_matcher_follows_lesson_matching() -> None:
     from ravn.config import Settings
 
     consolidation = SimpleNamespace(lessons=_Index({}), judge=_Judge({}))
-    lexical = Settings()
     semantic = Settings(reflection={"matching": {"mode": "semantic"}})
 
-    assert _build_capability_matcher(lexical, consolidation) is None
+    assert _build_capability_matcher(Settings(), consolidation) is None
     assert _build_capability_matcher(semantic, None) is None
     assert isinstance(_build_capability_matcher(semantic, consolidation), SemanticCapabilityMatcher)
 
@@ -1173,25 +1158,8 @@ def test_the_curator_is_built_only_when_enabled(tmp_path: Path) -> None:
     )
 
 
-def test_retired_tools_are_listed_fresh_for_the_catalog(tmp_path: Path) -> None:
-    from ravn.cli.tool_builders import _retired_learned_tools
-
-    _install(tmp_path, "debug_input")
-    listing = _retired_learned_tools(tmp_path)
-    assert listing() == []
-    code_dir, artifacts_dir = learned_tool_storage(tmp_path)
-    retire_learned_tool(
-        tools_dir=code_dir,
-        artifacts_dir=artifacts_dir,
-        name="debug_input",
-        reason=RETIRED_DEBUG_LEFTOVER,
-        detail="",
-    )
-
-    assert [entry.name for entry in listing()] == ["debug_input"]
-
-
 def test_the_plan_command_prints_the_plan_and_changes_nothing(tmp_path: Path) -> None:
+    import asyncio
     from unittest.mock import patch
 
     from typer.testing import CliRunner
@@ -1199,7 +1167,8 @@ def test_the_plan_command_prints_the_plan_and_changes_nothing(tmp_path: Path) ->
     from ravn.cli import commands
     from ravn.config import Settings
 
-    _install(tmp_path, "debug_input")
+    skills = _skills(tmp_path)
+    asyncio.run(_install(tmp_path, skills, "debug_input"))
     settings = Settings(state_dir=str(tmp_path))
     with (
         patch.object(commands, "Settings", return_value=settings),
@@ -1210,11 +1179,10 @@ def test_the_plan_command_prints_the_plan_and_changes_nothing(tmp_path: Path) ->
         result = CliRunner().invoke(commands.app, ["learned-tools-plan"])
 
     assert result.exit_code == 0, result.output
-    plan = json.loads(result.output)
-    assert [item["name"] for item in plan["retire"]] == ["debug_input"]
-    code_dir, artifacts_dir = learned_tool_storage(tmp_path)
+    assert [item["name"] for item in json.loads(result.output)["retire"]] == ["debug_input"]
+    code_dir, _ = _dirs(tmp_path)
     assert learned_tool_path(code_dir, "debug_input").is_file()
-    assert not (artifacts_dir / "_curation").exists()
+    assert _skills(tmp_path).status("debug_input") == "active"
 
 
 def test_the_plan_command_refuses_when_curation_is_off(tmp_path: Path) -> None:
@@ -1238,125 +1206,275 @@ def test_the_plan_command_refuses_when_curation_is_off(tmp_path: Path) -> None:
     assert result.exit_code == 1
 
 
-def test_pre_ledger_history_bounds_the_window_so_one_fast_first_use_cannot_set_it(
-    tmp_path: Path,
-) -> None:
-    """Live on vanaheim one 29-second first use made every older unused tool look dead."""
-    _install(tmp_path, "busy", created_days_ago=30)
-    _write_lifecycle(
-        tmp_path,
-        {"busy": {"run_count": 500, "last_used_at": _iso(2), "created_at": _iso(30)}},
+def test_versions_chain_through_the_artifact_writer(tmp_path: Path) -> None:
+    artifact = LearnedToolArtifact(
+        artifact_id="learned-tool:chained:v1",
+        manifest=LearnedToolManifest(
+            name="chained",
+            description="Chained tool.",
+            input_schema={"type": "object"},
+            required_permission="tool:run",
+        ),
+        tool_code=_CODE,
     )
-    ledger = _ledger(tmp_path)
-    ledger.record_install("fresh", "f")
-    ledger.record_run("fresh", "f", True)
+    _, artifacts_dir = _dirs(tmp_path)
+    write_learned_tool_artifact(artifacts_dir=artifacts_dir, artifact=artifact)
+    replacement = LearnedToolArtifact.from_dict(
+        {**artifact.to_dict(), "artifact_id": "learned-tool:chained:v2"}
+    )
+    write_learned_tool_artifact(artifacts_dir=artifacts_dir, artifact=replacement)
+    envelope = json.loads(learned_tool_artifact_path(artifacts_dir, "chained").read_text())
+    assert (envelope["version"], envelope["supersedes"]) == (2, "learned-tool:chained:v1")
+    write_learned_tool_artifact(artifacts_dir=artifacts_dir, artifact=replacement)
+    rewritten = json.loads(learned_tool_artifact_path(artifacts_dir, "chained").read_text())
+    assert rewritten["version"] == 2
 
-    window = ledger.first_use_window()
 
-    assert window.tool == "busy"
-    assert window.basis == "bound"
-    assert window.seconds == pytest.approx(28 * 86400, rel=0.01)
-    # Frozen: more use later does not widen it.
-    ledger.record_run("busy", "b", True)
-    assert ledger.first_use_window().seconds == pytest.approx(28 * 86400, rel=0.01)
+# ---------------------------------------------------------------------------
+# A tool the execution backend refuses to load
+# ---------------------------------------------------------------------------
+
+#: What read_configmap_key_tail looked like on Regin: it reaches the resident's
+#: own tools through the host SDK, which a Job or container has no route to.
+_HOST_SDK_CODE = (
+    "from ravn.sdk import tool\n\n"
+    "def run(payload):\n    return tool.kubernetes_inspect(**payload)\n"
+)
 
 
-def test_a_ledger_seeded_before_bounds_existed_gets_them_on_load(tmp_path: Path) -> None:
-    ledger = _ledger(tmp_path)
-    ledger.path.parent.mkdir(parents=True)
-    ledger.path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "tools": {
-                    "busy": {
-                        "name": "busy",
-                        "installed_at": _iso(10),
-                        "last_used_at": _iso(1),
-                        "runs": 40,
-                        "seeded_from": "skill_management",
-                    }
-                },
-            }
+def _resolver(state: Path, backend: str = "container") -> LearnedToolResolver:
+    return LearnedToolResolver(state_dir=state, execution_backend=backend)
+
+
+class TestBackendRefusal:
+    async def test_the_resolver_refuses_what_the_loader_refuses(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "self_contained")
+        await _install(tmp_path, skills, "read_configmap_key_tail", code=_HOST_SDK_CODE)
+        resolver = _resolver(tmp_path)
+
+        inventory = resolver.inventory()
+
+        assert [a.manifest.name for a in inventory.loadable] == ["self_contained"]
+        assert [r.name for r in inventory.refused] == ["read_configmap_key_tail"]
+        # The very same refusal the loader raises, not a second opinion.
+        with pytest.raises(LearnedToolError) as loader:
+            resolver.load("read_configmap_key_tail")
+        assert inventory.refused[0].reason == str(loader.value)
+        assert "ravn.sdk" in inventory.refused[0].reason
+        # The local backend can provide the host SDK, so there it loads.
+        assert _resolver(tmp_path, "local").inventory().refused == []
+
+    async def test_a_refused_tool_is_retired_as_unrunnable_and_never_kept(
+        self, tmp_path: Path
+    ) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "self_contained", run_count=2, success_count=2)
+        await _install(tmp_path, skills, "read_configmap_key_tail", code=_HOST_SDK_CODE)
+        curator = LearnedToolCurator(
+            state_dir=tmp_path, skills=skills, load_refusal=_resolver(tmp_path).load_refusal
         )
-    )
 
-    window = ledger.first_use_window()
+        summary = await curator.curate()
 
-    assert window.basis == "bound"
-    assert window.seconds == pytest.approx(9 * 86400, rel=0.01)
+        assert summary["installed_before"] == 2
+        assert summary["kept"] == 1
+        (retired,) = summary["retired"]
+        assert (retired["name"], retired["reason"]) == (
+            "read_configmap_key_tail",
+            RETIRED_UNRUNNABLE,
+        )
+        assert "ravn.sdk" in retired["detail"]
+        assert "refuses to load" in retired["detail"]
+        assert skills.status("read_configmap_key_tail") == "archived"
+        code_dir, _ = _dirs(tmp_path)
+        assert not learned_tool_path(code_dir, "read_configmap_key_tail").exists()
 
+    async def test_a_pinned_refused_tool_is_reported_not_kept_and_not_retired(
+        self, tmp_path: Path
+    ) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "self_contained")
+        await _install(
+            tmp_path, skills, "read_configmap_key_tail", code=_HOST_SDK_CODE, pinned=True
+        )
+        curator = LearnedToolCurator(
+            state_dir=tmp_path, skills=skills, load_refusal=_resolver(tmp_path).load_refusal
+        )
 
-async def test_an_unused_retirement_the_window_no_longer_supports_is_undone(
-    tmp_path: Path,
-) -> None:
-    _install(tmp_path, "k8s_quantity_parse", created_days_ago=0.1)
-    code_dir, artifacts_dir = learned_tool_storage(tmp_path)
-    retire_learned_tool(
-        tools_dir=code_dir,
-        artifacts_dir=artifacts_dir,
-        name="k8s_quantity_parse",
-        reason=RETIRED_UNUSED,
-        detail="never run",
-    )
-    ledger = _ledger(tmp_path)
-    ledger.record_install("k8s_quantity_parse", "learned-tool:k8s_quantity_parse")
-    payload = json.loads(ledger.path.read_text())
-    payload["tools"]["k8s_quantity_parse"]["installed_at"] = _iso(0.1)
-    payload["tools"]["older"] = {
-        "name": "older",
-        "installed_at": _iso(9),
-        "first_used_at": _iso(2),
-        "first_use_observed": True,
-        "runs": 1,
-    }
-    ledger.path.write_text(json.dumps(payload))
-    restored: list[str] = []
+        plan = await curator.plan()
 
-    class Skills:
-        def status(self, name: str) -> str | None:
-            return "active" if restored else "archived"
+        assert plan.retire == []
+        assert plan.keep == ["self_contained"]
+        assert list(plan.refused) == ["read_configmap_key_tail"]
+        assert "ravn.sdk" in plan.refused["read_configmap_key_tail"]
 
-        def lifecycle_metadata(self, name: str) -> dict[str, Any]:
-            return {}
+    async def test_a_refused_tool_never_outranks_a_working_sibling(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "configmap_tail_working", capability="k8s.configmap.tail")
+        # Newer and busier, but unloadable here: it must not be the keeper.
+        await _install(
+            tmp_path,
+            skills,
+            "configmap_tail_sdk",
+            capability="k8s.configmap.tail",
+            code=_HOST_SDK_CODE,
+            run_count=40,
+            success_count=40,
+            last_used_at=_iso(0),
+        )
+        curator = LearnedToolCurator(
+            state_dir=tmp_path, skills=skills, load_refusal=_resolver(tmp_path).load_refusal
+        )
 
-        async def archive(self, name: str) -> None:
-            raise AssertionError("nothing should be retired")
+        plan = await curator.plan()
 
-        async def restore(self, name: str) -> None:
-            restored.append(name)
+        assert plan.groups == [{"keep": "configmap_tail_working", "retire": ["configmap_tail_sdk"]}]
+        assert plan.keep == ["configmap_tail_working"]
 
-    curator = LearnedToolCurator(state_dir=tmp_path, skills=Skills())
-    plan = await curator.plan()
-    summary = await curator.curate()
+    async def test_without_a_backend_check_nothing_is_refused(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "read_configmap_key_tail", code=_HOST_SDK_CODE)
 
-    assert plan.restore == ["k8s_quantity_parse"]
-    assert summary["restored"] == ["k8s_quantity_parse"]
-    assert restored == ["k8s_quantity_parse"]
-    assert learned_tool_path(code_dir, "k8s_quantity_parse").is_file()
-    assert LearnedToolRetirements(artifacts_dir).get("k8s_quantity_parse") is None
+        plan = await LearnedToolCurator(state_dir=tmp_path, skills=skills).plan()
 
+        assert plan.refused == {}
+        assert plan.keep == ["read_configmap_key_tail"]
 
-async def test_judged_verdicts_survive_a_pass_cut_short(tmp_path: Path) -> None:
-    """A rollout part way through the first pass must not throw its judging away."""
-    _install(tmp_path, "alpha_tool")
-    _install(tmp_path, "beta_tool")
-    _install(tmp_path, "gamma_tool")
+    async def test_the_health_snapshot_counts_refused_tools(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "self_contained")
+        await _install(tmp_path, skills, "read_configmap_key_tail", code=_HOST_SDK_CODE)
 
-    class RolloutError(Exception):
-        pass
+        snapshot = learned_tool_health(tmp_path, skills, refused=_resolver(tmp_path).list_refused)
 
-    class FlakyMatcher(FakeMatcher):
-        async def same_capability(self, subject, candidates, *, as_revision=False):  # type: ignore[no-untyped-def]
-            if self.calls == 1:
-                raise RolloutError
-            return await super().same_capability(subject, candidates, as_revision=as_revision)
+        assert snapshot["learned_tools_installed"] == 2
+        assert snapshot["learned_tools_refused"] == 1
+        assert "learned_tools_refused" not in learned_tool_health(tmp_path, skills)
 
-    first = FlakyMatcher()
-    with pytest.raises(RolloutError):
-        await LearnedToolCurator(state_dir=tmp_path, matcher=first).plan()
-    second = FakeMatcher()
-    await LearnedToolCurator(state_dir=tmp_path, matcher=second).plan()
+    async def test_a_refused_tool_is_reported_once_per_process(self, tmp_path: Path) -> None:
+        from ravn.cap_telemetry import degraded_counts, reset_cap_hits
 
-    # alpha's pairs were saved before the interruption; only the rest are judged.
-    assert second.calls == 1
+        reset_cap_hits()
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "read_configmap_key_tail", code=_HOST_SDK_CODE)
+        resolver = _resolver(tmp_path)
+
+        for _ in range(3):
+            resolver.list_loadable_artifacts()
+            resolver.list_refused()
+
+        assert degraded_counts() == {"learned_tool.refused": 1}
+        reset_cap_hits()
+
+    async def test_build_tool_repairs_a_refused_tool_instead_of_calling_it_installed(
+        self, tmp_path: Path
+    ) -> None:
+        skills = _skills(tmp_path)
+        await _install(
+            tmp_path,
+            skills,
+            "read_configmap_key_tail",
+            capability="k8s.configmap.tail",
+            code=_HOST_SDK_CODE,
+        )
+        backend = RecordingBackend()
+        tool, registered = _build_tool(
+            tmp_path, build_backend=backend, skill_manager=skills, execution_backend="container"
+        )
+
+        result = await tool.execute(
+            _request("read_configmap_key_tail", capability_id="k8s.configmap.tail")
+        )
+
+        summary = json.loads(result.content)
+        assert result.is_error is False, result.content
+        assert (summary["tool_name"], summary["version"]) == ("read_configmap_key_tail", 2)
+        (problem,) = summary["repair_of"]["problems"]
+        assert "refuses to load it" in problem and "ravn.sdk" in problem
+        assert "ravn.sdk" in backend.requests[0].signal_context
+        assert registered[0][1] is True
+
+    async def test_the_same_tool_on_the_local_backend_is_already_installed(
+        self, tmp_path: Path
+    ) -> None:
+        skills = _skills(tmp_path)
+        await _install(
+            tmp_path,
+            skills,
+            "read_configmap_key_tail",
+            capability="k8s.configmap.tail",
+            code=_HOST_SDK_CODE,
+        )
+        tool, _ = _build_tool(
+            tmp_path,
+            build_backend=RecordingBackend(),
+            skill_manager=skills,
+            execution_backend="local",
+        )
+
+        result = await tool.execute(
+            _request("read_configmap_key_tail", capability_id="k8s.configmap.tail")
+        )
+
+        assert json.loads(result.content)["status"] == "already_installed"
+
+    async def test_a_retired_refused_tool_comes_back_as_a_repair(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(
+            tmp_path,
+            skills,
+            "read_configmap_key_tail",
+            capability="k8s.configmap.tail",
+            code=_HOST_SDK_CODE,
+        )
+        await LearnedToolCurator(
+            state_dir=tmp_path, skills=skills, load_refusal=_resolver(tmp_path).load_refusal
+        ).curate()
+        backend = RecordingBackend()
+        tool, _ = _build_tool(
+            tmp_path, build_backend=backend, skill_manager=skills, execution_backend="container"
+        )
+
+        result = await tool.execute(
+            _request("read_configmap_key_tail", capability_id="k8s.configmap.tail")
+        )
+
+        summary = json.loads(result.content)
+        assert result.is_error is False, result.content
+        assert summary["version"] == 2
+        assert skills.status("read_configmap_key_tail") == "active"
+        assert any("retired as unrunnable" in p for p in summary["repair_of"]["problems"])
+        # The repaired version loads here, so nothing is refused any more.
+        assert _resolver(tmp_path).inventory().refused == []
+
+    async def test_a_build_the_backend_would_refuse_is_rejected_not_installed(
+        self, tmp_path: Path
+    ) -> None:
+        class SdkBackend(RecordingBackend):
+            async def build(self, request: Any) -> ToolBuildResult:
+                built = await super().build(request)
+                return dataclasses.replace(built, tool_code=_HOST_SDK_CODE)
+
+        tool, registered = _build_tool(
+            tmp_path, build_backend=SdkBackend(), execution_backend="container"
+        )
+
+        result = await tool.execute(_request("count_cluster_nodes"))
+
+        assert result.is_error
+        assert "would refuse to load the tool" in result.content
+        assert "ravn.sdk" in result.content
+        assert registered == []
+        code_dir, _ = _dirs(tmp_path)
+        assert not learned_tool_path(code_dir, "count_cluster_nodes").exists()
+
+    def test_the_builder_is_only_told_about_the_host_sdk_where_it_exists(
+        self, tmp_path: Path
+    ) -> None:
+        local, _ = _build_tool(tmp_path, execution_backend="local")
+        isolated, _ = _build_tool(tmp_path, execution_backend="container")
+
+        assert "from ravn.sdk import tool" in local.description
+        assert "from ravn.sdk import tool" not in isolated.description
+        assert "Do NOT import `ravn.sdk`" in isolated.description

@@ -580,6 +580,19 @@ class TestDeleteSession:
         get_response = client.get(f"/api/v1/forge/sessions/{session.id}")
         assert get_response.status_code == 404
 
+    async def test_delete_session_reports_undeleted_compute_as_unavailable(
+        self, client: TestClient, service: SessionService, pod_manager: MockPodManager
+    ):
+        """Compute that cannot be removed answers 503 with the remedy and keeps the session."""
+        session = await service.create_session("Test", "claude-sonnet-4")
+        pod_manager.stop_success = False
+
+        response = client.delete(f"/api/v1/forge/sessions/{session.id}")
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Pod stop failed"
+        assert client.get(f"/api/v1/forge/sessions/{session.id}").status_code == 200
+
     def test_delete_session_not_found(self, client: TestClient):
         """Returns 404 for non-existent session."""
         fake_id = uuid4()

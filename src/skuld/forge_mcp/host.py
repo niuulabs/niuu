@@ -12,9 +12,10 @@ from niuu.build_identity import build_identity
 from niuu.domain.notifications import NotificationDraft, build_notification_turn
 from niuu.domain.services.forge_session_token import SESSION_ID_CLAIM
 from niuu.forge_mcp.credentials import is_forge_session_claims, token_scopes, unverified_claims
-from niuu.forge_mcp.models import ForgeApiError
-from niuu.forge_mcp.ports import ForgeClient, ForgeMcpHost
+from niuu.forge_mcp.models import FlockError, ForgeApiError
+from niuu.forge_mcp.ports import ForgeClient, ForgeMcpFlock, ForgeMcpHost
 from skuld.conversation_models import ConversationTurn
+from skuld.flock_outcomes import FlockActivityLog
 
 if TYPE_CHECKING:
     from skuld.broker import Broker
@@ -163,4 +164,68 @@ class BrokerForgeMcpHost(ForgeMcpHost):
             "turn_id": turn_id,
             "session_seq": entry["seq"],
             "state": STATE_COMMITTED if stored else STATE_PENDING,
+        }
+
+
+class BrokerForgeMcpFlock(ForgeMcpFlock):
+    """The Ravn flock a broker hands work to, over the room's existing mesh route.
+
+    Delegation reuses the directed room message path (recorded in the room as
+    the broker's message, delivered over the mesh as a ``directed_message`` the
+    member runs as its persona). Results come only from ``log``, which the
+    broker fills from what members publish.
+    """
+
+    def __init__(self, broker: Broker, log: FlockActivityLog, *, max_wait_s: float) -> None:
+        self._broker = broker
+        self._log = log
+        self._max_wait_s = max_wait_s
+
+    @property
+    def max_wait_s(self) -> float:
+        return self._max_wait_s
+
+    def _ravn_participants(self) -> dict[str, Any]:
+        bridge = self._broker._room_bridge
+        if bridge is None:
+            raise FlockError("room mode is off, so this broker has no flock to reach")
+        return {
+            peer_id: participant
+            for peer_id, participant in bridge.participants.items()
+            if participant.participant_type == "ravn"
+        }
+
+    async def members(self) -> list[dict[str, Any]]:
+        return [
+            {"peer_id": peer_id, "persona": participant.persona, "status": participant.status}
+            for peer_id, participant in sorted(self._ravn_participants().items())
+        ]
+
+    async def delegate(self, peer_id: str, content: str) -> dict[str, Any]:
+        participant = self._ravn_participants().get(peer_id)
+        if participant is None:
+            known = ", ".join(sorted(self._ravn_participants())) or "none"
+            raise FlockError(f"{peer_id!r} is not a member of this flock (members: {known})")
+        cursor = self._log.cursor
+        try:
+            message_id = await self._broker.handle_directed_room_message(
+                peer_id,
+                content,
+                source="broker",
+                metadata={"participant_id": self._broker._observer_peer_id()},
+            )
+        except (LookupError, RuntimeError, ValueError) as exc:
+            raise FlockError(f"the hand-off to {peer_id} was not accepted: {exc}") from exc
+        return {
+            "message_id": message_id,
+            "peer_id": peer_id,
+            "persona": participant.persona,
+            "cursor": cursor,
+        }
+
+    async def activity(self, *, after: int, peer_id: str, wait_s: float) -> dict[str, Any]:
+        entries = await self._log.wait_after(after, peer_id=peer_id, timeout_s=wait_s)
+        return {
+            "cursor": entries[-1].seq if entries else after,
+            "activity": [entry.to_dict() for entry in entries],
         }

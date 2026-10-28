@@ -4,22 +4,65 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from niuu.domain.models import (
+    ChangedFile,
     CIStatus,
+    CommitDetail,
     GitProviderType,
+    ImageProvenance,
     PullRequest,
+    RefChecks,
+    RefComparison,
     RepoInfo,
+    VerifiedProvenance,
+    normalize_image_digest,
 )
-from niuu.ports.git import GitWorkflowProvider
+from niuu.ports.git import GitProvider, GitWorkflowProvider
+from niuu.ports.provenance import (
+    ProvenanceNotConfiguredError,
+    ProvenanceVerificationError,
+    ProvenanceVerifier,
+)
 
 if TYPE_CHECKING:
     from niuu.adapters.outbound.git_registry import GitProviderRegistry
     from niuu.ports.user_integration import UserIntegrationPort
 
 logger = logging.getLogger(__name__)
+
+
+def _path_matches(requested: str, file: ChangedFile) -> bool:
+    """A requested path names a file exactly (also by its old name) or a directory."""
+    wanted = requested.strip().lstrip("/")
+    if not wanted:
+        return False
+    prefix = wanted.rstrip("/") + "/"
+    candidates = (file.path, file.previous_path or "")
+    return any(c == wanted or c.startswith(prefix) for c in candidates)
+
+
+def _shape_files(
+    files: tuple[ChangedFile, ...],
+    paths: Sequence[str],
+    include_patch: bool,
+) -> tuple[tuple[ChangedFile, ...], tuple[str, ...]]:
+    """Narrow *files* to *paths* and drop patches the caller did not ask for.
+
+    Returns the shaped files and the requested paths that matched no file, so a
+    mistyped path is reported instead of reading as "this change did not touch it".
+    """
+    selected = files
+    unmatched: tuple[str, ...] = ()
+    if paths:
+        selected = tuple(f for f in files if any(_path_matches(p, f) for p in paths))
+        unmatched = tuple(p for p in paths if not any(_path_matches(p, f) for f in files))
+    if include_patch:
+        return selected, unmatched
+    return tuple(replace(f, patch=None, patch_omitted_reason=None) for f in selected), unmatched
 
 
 @dataclass(frozen=True)
@@ -44,9 +87,11 @@ class RepoService:
         self,
         git_registry: GitProviderRegistry,
         user_integration: UserIntegrationPort | None = None,
+        provenance_verifier: ProvenanceVerifier | None = None,
     ):
         self._git_registry = git_registry
         self._user_integration = user_integration
+        self._provenance_verifier = provenance_verifier
 
     def list_providers(self) -> list[ProviderInfo]:
         """List all configured git providers."""
@@ -129,6 +174,138 @@ class RepoService:
         """CI status of a branch as the Git host reports it."""
         provider = await self._workflow_provider(repo_url, user_id)
         return await provider.get_ci_status(repo_url, branch)
+
+    async def get_commit(
+        self,
+        repo_url: str,
+        ref: str,
+        paths: Sequence[str] = (),
+        include_patch: bool = False,
+        user_id: str | None = None,
+    ) -> CommitDetail:
+        """Read one commit, with the files narrowed to *paths* and patches only on request."""
+        provider = await self._user_git_provider(repo_url, user_id)
+        if provider is not None:
+            commit = await provider.get_commit(repo_url, ref)
+        else:
+            commit = await self._git_registry.get_commit(repo_url, ref)
+        files, unmatched = _shape_files(commit.files, paths, include_patch)
+        return replace(
+            commit,
+            files=files,
+            files_total=len(commit.files),
+            unmatched_paths=unmatched,
+            patch_included=include_patch,
+        )
+
+    async def compare_refs(
+        self,
+        repo_url: str,
+        base: str,
+        head: str,
+        paths: Sequence[str] = (),
+        include_patch: bool = False,
+        user_id: str | None = None,
+    ) -> RefComparison:
+        """Compare ``base...head``, shaped like :meth:`get_commit`."""
+        provider = await self._user_git_provider(repo_url, user_id)
+        if provider is not None:
+            comparison = await provider.compare_refs(repo_url, base, head)
+        else:
+            comparison = await self._git_registry.compare_refs(repo_url, base, head)
+        files, unmatched = _shape_files(comparison.files, paths, include_patch)
+        return replace(
+            comparison,
+            files=files,
+            files_total=len(comparison.files),
+            unmatched_paths=unmatched,
+            patch_included=include_patch,
+        )
+
+    async def get_ref_checks(
+        self,
+        repo_url: str,
+        ref: str,
+        user_id: str | None = None,
+    ) -> RefChecks:
+        """CI / check results for a branch, tag or commit, as the provider reports them."""
+        provider = await self._user_git_provider(repo_url, user_id)
+        if provider is not None:
+            return await provider.get_ref_checks(repo_url, ref)
+        return await self._git_registry.get_ref_checks(repo_url, ref)
+
+    async def verify_image_provenance(
+        self,
+        repo_url: str,
+        digest: str,
+        user_id: str | None = None,
+    ) -> ImageProvenance:
+        """Verified build provenance of an image digest built from *repo_url*.
+
+        The provider supplies the attestation bundles; the configured verifier
+        decides which of them prove anything. Only verified attestations are
+        returned, and each refused one is reported by reason, never dropped
+        silently.
+
+        Raises:
+            InvalidImageDigestError: *digest* is not ``sha256:`` plus 64 hex.
+            ProvenanceNotConfiguredError: Verification is turned off.
+            ValueError: No connected Git host serves *repo_url*.
+            AttestationNotFoundError: The provider holds no provenance for the digest.
+            GitOperationUnsupportedError: The provider has no attestation API.
+            ProvenanceVerificationError: Attestations exist but none verified.
+            ProvenanceVerifierUnavailableError: Verification could not run.
+        """
+        if self._provenance_verifier is None:
+            raise ProvenanceNotConfiguredError(
+                "Image provenance verification is turned off (git.provenance.enabled is false). "
+                "Set it to true, with the sigstore extra installed, to verify image digests."
+            )
+        subject_digest = normalize_image_digest(digest)
+        provider = await self._user_git_provider(repo_url, user_id)
+        if provider is not None:
+            info = provider.parse_repo(repo_url)
+            attestations = await provider.get_image_attestations(repo_url, subject_digest)
+        else:
+            info = self._git_registry.parse_repo(repo_url)
+            attestations = await self._git_registry.get_image_attestations(repo_url, subject_digest)
+        if info is None:
+            raise ValueError(f"Cannot parse repository URL: {repo_url}")
+
+        verified: list[VerifiedProvenance] = []
+        rejected: list[str] = []
+        for attestation in attestations:
+            try:
+                verified.append(
+                    await self._provenance_verifier.verify(
+                        attestation.bundle,
+                        subject_digest=subject_digest,
+                        repository=f"{info.org}/{info.name}",
+                    )
+                )
+            except ProvenanceVerificationError as exc:
+                rejected.append(exc.reason)
+        if not verified:
+            raise ProvenanceVerificationError(
+                f"None of the {len(attestations)} attestation(s) for {subject_digest} in "
+                f"{repo_url} verified: " + "; ".join(rejected)
+            )
+        return ImageProvenance(
+            repo_url=repo_url,
+            digest=subject_digest,
+            attestations=tuple(verified),
+            rejected=tuple(rejected),
+        )
+
+    async def _user_git_provider(
+        self,
+        repo_url: str,
+        user_id: str | None,
+    ) -> GitProvider | None:
+        """The caller's own connected provider for *repo_url*, when they have one."""
+        if not user_id or not self._user_integration:
+            return None
+        return await self._user_integration.find_git_provider_for(repo_url, user_id)
 
     async def _workflow_provider(
         self,

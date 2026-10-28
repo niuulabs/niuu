@@ -17,6 +17,24 @@ those in place:
 * **rewrite** — a promoted learning gains a short ``When X, do Y`` procedure,
   which is what injection puts in the prompt.
 
+The pass is incremental. Each lesson's neighbourhood — its nearest learnings
+and nearest candidates — is judged once, in one model call that names every
+lesson saying the same thing and every one contradicting it; the lesson is
+then marked ``curated`` and never judged again. Work therefore grows with new
+lessons, not with the square of all of them. (A fixed budget of pairs per day is
+what left noatun with dozens of duplicate learnings: the backlog only ever grew.)
+
+A large backlog still takes many hours on a shared judge model, longer than the
+gap between rollouts. A pass that could only finish all-or-nothing never
+finished: valhalla's resident judged 158 lessons in ten hours, was restarted,
+and showed "dreaming" with no result for a day. So the dream gives the pass a
+deadline, the time its next dream is due. Judging stops there; what was judged
+is settled and the rest waits for the next dream, which is reported and counted
+as a cap hit rather than read as "nothing left". A lesson is marked
+``curated`` only after the contradictions and promotions its judgment found are
+settled, so a pass cut off by a restart leaves its lessons uncurated to be
+judged again, instead of marked done with their verdicts lost.
+
 Nothing is deleted. Retired pages keep their content with a ``status`` of
 ``merged``, ``superseded`` or ``pruned`` and a ``curation_reason``, and every
 pass that changed anything writes an audit page under ``audit_prefix``.
@@ -25,12 +43,19 @@ pass that changed anything writes an audit page under ``audit_prefix``.
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+from ravn.adapters.reflection.lesson_consolidation import (
+    canonical_key,
+    fold_into,
+    is_curated,
+    judge_neighbourhood,
+    mark_curated,
+    retire,
+)
 from ravn.adapters.reflection.lessons import (
     CANDIDATE_CATEGORY,
     Lesson,
@@ -39,19 +64,14 @@ from ravn.adapters.reflection.lessons import (
     parse_lesson,
 )
 from ravn.adapters.reflection.post_session import (
-    _CONFIDENCE_HIGH_THRESHOLD,
-    _CONFIDENCE_MEDIUM_THRESHOLD,
-    _append_related_observation,
-    _escape_yaml,
-    _insert_timeline_entry,
     _matchable,
     _promotion_reason,
     _reflection_owns,
     _set_frontmatter_value,
-    evidence_is_new_by_meaning,
     promote_candidate,
     set_procedure,
 )
+from ravn.cap_telemetry import record_cap_hit
 from ravn.resident_text import compact_line, timestamp_slug
 
 if TYPE_CHECKING:
@@ -62,6 +82,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ACTIONS = ("merged", "superseded", "pruned", "promoted", "rewritten")
+#: The knob that bounds a pass: it runs until the resident's next dream is due.
+DEADLINE_KNOB = "resident_wakefulness.dream_interval_seconds"
 
 
 @dataclass(frozen=True)
@@ -76,7 +98,11 @@ class CurationAction:
 class CurationReport:
     started_at: datetime
     lessons_reviewed: int = 0
-    pairs_judged: int = 0
+    neighbourhoods_judged: int = 0
+    #: Uncurated lessons left unjudged, and promoted learnings left without a
+    #: procedure, when the pass reached its deadline. The next dream continues.
+    lessons_remaining: int = 0
+    rewrites_remaining: int = 0
     actions: list[CurationAction] = field(default_factory=list)
     audit_path: str = ""
     error: str = ""
@@ -90,7 +116,9 @@ class CurationReport:
     def summary(self) -> dict:
         return {
             "lessons_reviewed": self.lessons_reviewed,
-            "pairs_judged": self.pairs_judged,
+            "neighbourhoods_judged": self.neighbourhoods_judged,
+            "lessons_remaining": self.lessons_remaining,
+            "rewrites_remaining": self.rewrites_remaining,
             **{action: self.paths(action) for action in _ACTIONS},
             "audit_path": self.audit_path,
         }
@@ -107,9 +135,11 @@ class LearningCurator:
         judge: LessonJudge,
         config: LearningCurationConfig,
         similarity_threshold: float,
+        max_related: int,
         evidence_duplicate_similarity: float,
         min_repetitions: int,
         verified_recovery_promotes: bool,
+        procedure_max_chars: int,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._mimir = mimir
@@ -117,14 +147,15 @@ class LearningCurator:
         self._judge = judge
         self._config = config
         self._similarity_threshold = similarity_threshold
+        self._max_related = max_related
         self._evidence_duplicate_similarity = evidence_duplicate_similarity
         self._min_repetitions = min_repetitions
         self._verified_recovery_promotes = verified_recovery_promotes
+        # A procedure is what injection puts in the prompt, so it must fit in
+        # the room one injected learning has (reflection.learning_entry_max_chars).
+        self._procedure_max_chars = procedure_max_chars
         self._clock = clock
         self._last_run: datetime | None = None
-        # Pairs the judge already called distinct, by lesson fingerprint, so a
-        # pass spends its judgment budget on pairs it has not seen yet.
-        self._distinct: set[tuple[str, str]] = set()
 
     def due(self) -> bool:
         if self._last_run is None:
@@ -132,25 +163,19 @@ class LearningCurator:
         elapsed = (self._clock() - self._last_run).total_seconds()
         return elapsed >= self._config.min_interval_seconds
 
-    async def curate(
-        self,
-        *,
-        max_judgments: int | None = None,
-        max_rewrites: int | None = None,
-    ) -> CurationReport:
-        """Run one curation pass. Raises after auditing whatever it changed."""
+    async def curate(self, *, budget_seconds: float | None = None) -> CurationReport:
+        """Run one curation pass. Raises after auditing whatever it changed.
+
+        With *budget_seconds*, no lesson is judged and no procedure rewritten
+        once that long has passed; the report says how many are left for the
+        next pass. Without it the pass runs until the backlog is empty.
+        """
         now = self._clock()
         self._last_run = now
         report = CurationReport(started_at=now)
+        deadline = None if budget_seconds is None else now + timedelta(seconds=budget_seconds)
         try:
-            await self._run(
-                report,
-                now=now,
-                max_judgments=self._config.max_judgments
-                if max_judgments is None
-                else max_judgments,
-                max_rewrites=self._config.max_rewrites if max_rewrites is None else max_rewrites,
-            )
+            await self._run(report, now=now, deadline=deadline)
         except Exception as exc:
             report.error = f"{type(exc).__name__}: {exc}"
             await self._write_audit(report)
@@ -158,13 +183,11 @@ class LearningCurator:
         await self._write_audit(report)
         return report
 
+    def _past(self, deadline: datetime | None) -> bool:
+        return deadline is not None and self._clock() >= deadline
+
     async def _run(
-        self,
-        report: CurationReport,
-        *,
-        now: datetime,
-        max_judgments: int,
-        max_rewrites: int,
+        self, report: CurationReport, *, now: datetime, deadline: datetime | None
     ) -> None:
         pool = [
             lesson
@@ -174,113 +197,125 @@ class LearningCurator:
         report.lessons_reviewed = len(pool)
         state = _PassState({lesson.path: lesson for lesson in pool})
 
-        # Judge first, act after. Contradictions are settled only once every
-        # paraphrase has been merged, so a lesson is weighed on all of its
-        # evidence: judged pair by pair, a one-off negative claim could beat
-        # one observation of a lesson that three sessions independently found.
-        same: list[tuple[str, str, str]] = []
-        contradicts: list[tuple[str, str, str]] = []
-        pairs = await self._lessons.similar_pairs(pool, threshold=self._similarity_threshold)
-        for left, right, _score in pairs:
-            if report.pairs_judged >= max_judgments:
-                break
-            key = (
-                min(left.fingerprint, right.fingerprint),
-                max(left.fingerprint, right.fingerprint),
-            )
-            if key in self._distinct:
-                continue
-            verdict = await self._judge.relate(left, right)
-            report.pairs_judged += 1
-            if verdict.relation == "same":
-                same.append((left.path, right.path, verdict.reason))
-            elif verdict.relation == "contradicts":
-                contradicts.append((left.path, right.path, verdict.reason))
-            else:
-                self._distinct.add(key)
-
+        # Strongest first, so the lessons most likely to survive are the ones
+        # whose neighbourhoods are judged, and weaker paraphrases fold into them.
+        fresh = sorted(
+            (lesson for lesson in pool if not is_curated(lesson)), key=canonical_key, reverse=True
+        )
         merged_into: set[str] = set()
-        for left_path, right_path, reason in same:
-            pair = state.pair(left_path, right_path)
-            if pair is not None:
-                merged_into.add(await self._merge(*pair, reason, state, report, now=now))
+        contradictions: list[tuple[str, str, str]] = []
+        judged: list[str] = []
+        for index, lesson in enumerate(fresh):
+            if self._past(deadline):
+                report.lessons_remaining = sum(
+                    1 for rest in fresh[index:] if rest.path in state.live
+                )
+                break
+            subject = state.live.get(lesson.path)
+            if subject is None:  # already folded into a lesson judged earlier
+                continue
+            others = [other for other in state.live.values() if other.path != subject.path]
+            verdict = await judge_neighbourhood(
+                lessons=self._lessons,
+                judge=self._judge,
+                title=subject.title,
+                claim=subject.claim,
+                pool=others,
+                threshold=self._similarity_threshold,
+                per_category=self._max_related,
+            )
+            report.neighbourhoods_judged += verdict.judged
+            survivor = subject
+            if verdict.same:
+                survivor = await self._merge_group(
+                    [subject, *verdict.same], verdict.reason, state, report, now=now
+                )
+                merged_into.add(survivor.path)
+            contradictions.extend(
+                (survivor.path, other.path, verdict.reason) for other in verdict.contradicts
+            )
+            judged.append(survivor.path)
+
+        # Promote after every merge, so promotion weighs all the evidence and a
+        # candidate never promotes beside a learning that says the same thing.
         for path in sorted(merged_into):
             lesson = state.current(path)
             if lesson is not None and lesson.category == CANDIDATE_CATEGORY:
                 await self._maybe_promote(lesson, state, report, now=now)
-        for left_path, right_path, reason in contradicts:
+        # Settle contradictions last, between the survivors, on all their evidence.
+        # A pass cut off by its deadline has not merged the paraphrases of the
+        # lessons it did not reach, so a contradiction with one of those waits:
+        # the judged side stays uncurated and the next pass finds it again.
+        judged_now = {lesson.path for path in judged if (lesson := state.current(path))}
+        held: set[str] = set()
+        for left_path, right_path, reason in contradictions:
+            other = state.current(right_path)
+            if other is not None and not is_curated(other) and other.path not in judged_now:
+                held.add(left_path)
+                continue
             pair = state.pair(left_path, right_path)
             if pair is not None:
                 await self._supersede(*pair, reason, state, report)
+        report.lessons_remaining += len(held)
+        # Only now, with every verdict acted on, is a judged lesson done.
+        for path in judged:
+            lesson = state.current(path)
+            if lesson is None or path in held or is_curated(lesson):
+                continue
+            state.live[lesson.path] = await mark_curated(self._mimir, lesson, now=now)
 
         await self._prune(state.live, report, now=now)
-        await self._rewrite(state.live, report, now=now, limit=max_rewrites)
+        await self._rewrite(state.live, report, now=now, deadline=deadline)
+        self._report_deferred(report)
+
+    def _report_deferred(self, report: CurationReport) -> None:
+        """A pass that stopped at its deadline holds work back: say so and count it."""
+        if not report.lessons_remaining and not report.rewrites_remaining:
+            return
+        record_cap_hit(
+            DEADLINE_KNOB,
+            f"learning curation reached its deadline with {report.lessons_remaining} "
+            f"uncurated lesson(s) unjudged and {report.rewrites_remaining} learning(s) "
+            f"without a procedure after judging {report.neighbourhoods_judged} "
+            "neighbourhood(s); the next consolidation dream continues them. A backlog "
+            "that does not shrink across dreams needs more judge throughput "
+            f"(the model behind reflection.matching.judge_llm_alias) or a longer "
+            f"{DEADLINE_KNOB}.",
+        )
 
     # ------------------------------------------------------------------
     # Merge
     # ------------------------------------------------------------------
 
-    async def _merge(
+    async def _merge_group(
         self,
-        left: Lesson,
-        right: Lesson,
+        group: list[Lesson],
         reason: str,
         state: _PassState,
         report: CurationReport,
         *,
         now: datetime,
-    ) -> str:
-        """Fold the weaker of two same lessons into the stronger; return the survivor."""
-        keep, retire = sorted((left, right), key=_canonical_key, reverse=True)
-        content = keep.content
-        for entry in _timeline_entries(retire.content):
-            session_id = entry.get("session_id", "")
-            if (
-                not session_id
-                or session_id in parse_lesson(keep.path, content, updated_at=now).session_ids
-            ):
-                continue
-            note = entry.get("note", "")
-            # The same fact re-read in another session is one observation
-            # repeated, not corroboration — the guard reflection applies too.
-            if not await evidence_is_new_by_meaning(
-                self._lessons, content, note, threshold=self._evidence_duplicate_similarity
-            ):
-                continue
-            content = _insert_timeline_entry(
-                content,
-                "  - source: curation_merge\n"
-                f"    session_id: {session_id}\n"
-                f"    date: {entry.get('date') or retire.last_observed.isoformat()}\n"
-                f'    merged_from: "{_escape_yaml(retire.path)}"\n'
-                # note last: the timeline writer inserts after the final note line.
-                f'    note: "{_escape_yaml(note)}"',
-            )
-        content = _append_related_observation(
-            content,
-            title=retire.title,
-            claim=retire.claim,
-            session_id=", ".join(sorted(retire.session_ids)) or "unknown",
-            date=retire.last_observed,
-        )
-        if retire.verified and not keep.verified:
-            content = _set_frontmatter_value(content, "verified", "true")
-            verification = frontmatter_values(retire.content).get("verification", "")
-            if verification:
-                content = _set_frontmatter_value(
-                    content, "verification", f'"{_escape_yaml(verification)}"'
-                )
-        sessions = len(parse_lesson(keep.path, content, updated_at=now).session_ids)
-        content = _set_frontmatter_value(content, "evidence_count", str(sessions))
-        content = _set_frontmatter_value(content, "confidence", _confidence(sessions))
-        await self._mimir.upsert_page(keep.path, content)
-
+    ) -> Lesson:
+        """Fold every lesson in *group* into the strongest one; return the survivor."""
+        keep, *others = sorted(group, key=canonical_key, reverse=True)
         why = f"same lesson as {keep.path}: {compact_line(reason)}"
-        await self._retire(retire, status="merged", field="merged_into", target=keep.path, why=why)
-        state.move(retire.path, keep.path)
-        report.record("merged", retire.path, keep.path, why)
-        state.live[keep.path] = parse_lesson(keep.path, content, updated_at=now)
-        return keep.path
+        for other in others:
+            keep = await fold_into(
+                self._mimir,
+                self._lessons,
+                keep=keep,
+                other=other,
+                now=now,
+                evidence_duplicate_similarity=self._evidence_duplicate_similarity,
+                source="curation_merge",
+            )
+            await retire(
+                self._mimir, other, status="merged", field="merged_into", target=keep.path, why=why
+            )
+            state.move(other.path, keep.path)
+            report.record("merged", other.path, keep.path, why)
+        state.live[keep.path] = keep
+        return keep
 
     async def _maybe_promote(
         self,
@@ -329,8 +364,13 @@ class LearningCurator:
             f"contradicted by {winner.path}, which stands on {_decided_by(winner, loser)}: "
             f"{compact_line(reason)}"
         )
-        await self._retire(
-            loser, status="superseded", field="superseded_by", target=winner.path, why=why
+        await retire(
+            self._mimir,
+            loser,
+            status="superseded",
+            field="superseded_by",
+            target=winner.path,
+            why=why,
         )
         state.retire(loser.path)
         report.record("superseded", loser.path, winner.path, why)
@@ -362,7 +402,7 @@ class LearningCurator:
                 f"{self._config.prune_after_days:g} days "
                 f"(last observed {lesson.last_observed.date().isoformat()})"
             )
-            await self._retire(lesson, status="pruned", field="", target="", why=why)
+            await retire(self._mimir, lesson, status="pruned", field="", target="", why=why)
             live.pop(lesson.path, None)
             report.record("pruned", lesson.path, "", why)
 
@@ -376,17 +416,19 @@ class LearningCurator:
         report: CurationReport,
         *,
         now: datetime,
-        limit: int,
+        deadline: datetime | None,
     ) -> None:
+        """Give every promoted learning without one a procedure; each is rewritten once."""
         pending = sorted(
             (lesson for lesson in live.values() if lesson.is_learning and not lesson.procedure),
             key=lambda lesson: lesson.last_observed,
             reverse=True,
         )
-        for lesson in pending[:limit]:
-            procedure = await self._judge.procedure(
-                lesson, max_chars=self._config.procedure_max_chars
-            )
+        for index, lesson in enumerate(pending):
+            if self._past(deadline):
+                report.rewrites_remaining = len(pending) - index
+                return
+            procedure = await self._judge.procedure(lesson, max_chars=self._procedure_max_chars)
             content = set_procedure(lesson.content, procedure)
             content = _set_frontmatter_value(
                 content, "procedure_rewritten", now.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -396,22 +438,8 @@ class LearningCurator:
             report.record("rewritten", lesson.path, "", procedure)
 
     # ------------------------------------------------------------------
-    # Shared
+    # Audit
     # ------------------------------------------------------------------
-
-    async def _retire(
-        self, lesson: Lesson, *, status: str, field: str, target: str, why: str
-    ) -> None:
-        content = _set_frontmatter_value(lesson.content, "status", status)
-        if field:
-            content = _set_frontmatter_value(content, field, f'"{_escape_yaml(target)}"')
-        content = _set_frontmatter_value(content, "curation_reason", f'"{_escape_yaml(why)}"')
-        if frontmatter_values(content).get("status") != status:
-            raise RuntimeError(
-                f"cannot retire lesson {lesson.path!r}: its page has no frontmatter "
-                "this pass knows how to mark"
-            )
-        await self._mimir.upsert_page(lesson.path, content)
 
     async def _write_audit(self, report: CurationReport) -> None:
         if not report.actions and not report.error:
@@ -427,7 +455,8 @@ class LearningCurator:
             "",
             f"# Learning curation — {stamp}",
             "",
-            f"Lessons reviewed: {report.lessons_reviewed}. Pairs judged: {report.pairs_judged}.",
+            f"Lessons reviewed: {report.lessons_reviewed}. "
+            f"Neighbourhoods judged: {report.neighbourhoods_judged}.",
         ]
         for action in _ACTIONS:
             items = [item for item in report.actions if item.action == action]
@@ -480,34 +509,6 @@ class _PassState:
         return current_left, current_right
 
 
-def _timeline_entries(content: str) -> list[dict[str, str]]:
-    """Parse the frontmatter ``timeline`` list into one dict per entry."""
-    end = content.find("\n---", 3) if content.startswith("---") else -1
-    frontmatter = content[:end] if end != -1 else ""
-    entries: list[dict[str, str]] = []
-    for line in frontmatter.splitlines():
-        item = re.match(r"^  - (\w+):\s*(.*)$", line)
-        if item is not None:
-            entries.append({item.group(1): _unquote(item.group(2))})
-            continue
-        field_match = re.match(r"^    (\w+):\s*(.*)$", line)
-        if field_match is not None and entries:
-            entries[-1][field_match.group(1)] = _unquote(field_match.group(2))
-    return entries
-
-
-def _unquote(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] == '"':
-        return value[1:-1].replace('\\"', '"')
-    return value
-
-
-def _canonical_key(lesson: Lesson) -> tuple[bool, bool, int, datetime]:
-    """Which of two same lessons survives a merge: the trusted page, then evidence."""
-    return (lesson.is_learning, lesson.verified, lesson.evidence_count, lesson.last_observed)
-
-
 def _decided_by(winner: Lesson, loser: Lesson) -> str:
     if winner.verified != loser.verified:
         return "verified evidence from a recovered tool route"
@@ -519,11 +520,3 @@ def _decided_by(winner: Lesson, loser: Lesson) -> str:
         f"newer evidence ({winner.last_observed.date().isoformat()} vs "
         f"{loser.last_observed.date().isoformat()})"
     )
-
-
-def _confidence(observations: int) -> str:
-    if observations >= _CONFIDENCE_HIGH_THRESHOLD:
-        return "high"
-    if observations >= _CONFIDENCE_MEDIUM_THRESHOLD:
-        return "medium"
-    return "low"

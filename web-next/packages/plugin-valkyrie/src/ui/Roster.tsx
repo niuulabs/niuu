@@ -62,6 +62,24 @@ function wakefulnessClasses(state: WakefulnessState): string {
   return 'niuu:text-brand';
 }
 
+/** "last dream 12m ago", or "dream failed 12m ago" when the last one failed. */
+export function DreamAge({ valkyrie }: { valkyrie: ValkyrieResident }) {
+  const finishedAt = valkyrie.lastDream?.finishedAt || valkyrie.lastDreamAt;
+  if (!finishedAt) return null;
+  const failed = valkyrie.lastDream?.status === 'failed';
+  return (
+    <span
+      data-testid={`roster-last-dream-${valkyrie.id}`}
+      title={failed ? `${finishedAt} — ${valkyrie.lastDream?.error}` : finishedAt}
+      className={`niuu:mt-0.5 niuu:block niuu:truncate niuu:text-[11px] ${
+        failed ? 'niuu:text-critical' : 'niuu:text-text-muted'
+      }`}
+    >
+      {failed ? 'dream failed' : 'last dream'} {timeAgo(finishedAt)} ago
+    </span>
+  );
+}
+
 function ActivityBars({ entry, bars }: { entry: RosterEntry; bars: number[] }) {
   const health = entry.environment?.health ?? 'healthy';
   return (
@@ -136,6 +154,7 @@ function RosterRow({
           </span>
           <span className={healthClasses(health)}>{health}</span>
         </span>
+        <DreamAge valkyrie={valkyrie} />
       </span>
       <span className="niuu:flex niuu:shrink-0 niuu:flex-col niuu:items-end niuu:gap-1.5">
         <ActivityBars entry={entry} bars={bars} />

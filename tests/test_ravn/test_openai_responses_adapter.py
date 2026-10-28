@@ -51,7 +51,11 @@ def _completed(**usage) -> dict:
 
 
 def _adapter(**kwargs) -> OpenAIResponsesAdapter:
-    return OpenAIResponsesAdapter(base_url=BASE, agent_id="regin", retry_base_delay=0, **kwargs)
+    return OpenAIResponsesAdapter(
+        base_url=BASE,
+        agent_id="regin",
+        **{"retry_base_delay": 0.001, "gateway_outage_window_seconds": 0.05, **kwargs},
+    )
 
 
 async def _collect(adapter, messages, **kwargs):
@@ -397,12 +401,12 @@ class TestStream:
                 httpx.Response(200, content=_sse(_completed())),
             ]
         )
-        events = await _collect(_adapter(max_retries=2), [{"role": "user", "content": "x"}])
+        events = await _collect(_adapter(), [{"role": "user", "content": "x"}])
         assert route.call_count == 3
         assert events[-1].type == StreamEventType.MESSAGE_DONE
         respx.post(URL).mock(return_value=httpx.Response(502))
-        with pytest.raises(LLMError, match="failed after 1 retries"):
-            await _collect(_adapter(max_retries=1), [{"role": "user", "content": "x"}])
+        with pytest.raises(LLMError, match="llm.gateway_outage_window_seconds=0.05s"):
+            await _collect(_adapter(), [{"role": "user", "content": "x"}])
 
     @respx.mock
     async def test_generate_consumes_the_stream(self):

@@ -97,7 +97,8 @@ COPY pyproject.toml uv.lock README.md /app/
 # Dependencies resolve from the lockfile alone, so this layer survives source
 # edits; only the project itself is installed after src/ is copied.
 RUN uv sync --frozen --no-dev --no-editable --no-install-project --extra cli --extra k8s --extra nats \
-    --extra openshell --extra otel --extra switchyard --no-install-package nemo-switchyard
+    --extra openshell --extra otel --extra provenance --extra switchyard \
+    --no-install-package nemo-switchyard
 COPY src/ /app/src/
 # migrations/ is force-included into the wheel as cli/migrations, where
 # Volundr and Ting run them at startup (cli.resources.migration_dir).
@@ -108,7 +109,7 @@ COPY migrations/ /app/migrations/
 # collided with the otel extra installed above.
 COPY vendor/ /app/vendor/
 RUN uv sync --frozen --no-dev --no-editable --extra cli --extra k8s --extra nats --extra openshell \
-    --extra otel --extra switchyard --no-install-package nemo-switchyard \
+    --extra otel --extra provenance --extra switchyard --no-install-package nemo-switchyard \
     && mkdir -p /dist-root/data/mimir
 # cli.resources.web_dist_dir() falls back to the installed package data.
 COPY --from=web-build /app/apps/niuu/dist /opt/venv/lib/python3.14/site-packages/cli/web/dist

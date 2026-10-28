@@ -46,3 +46,15 @@ def test_individual_reads_migration_is_additive_idempotent_and_reader_scoped():
     assert not re.search(r"\b(DELETE|UPDATE|ALTER)\s+(FROM\s+)?forge_notification_read_states", up)
     down = (ROOT / "migrations/000086_forge_notification_reads.down.sql").read_text()
     assert down.strip() == "DROP TABLE IF EXISTS forge_notification_reads;"
+
+
+def test_odin_review_relay_migration_is_idempotent_and_reversible():
+    up = (ROOT / "migrations/000089_odin_review_relay.up.sql").read_text()
+    assert re.findall(r"CREATE (?:TABLE|INDEX)\b(?! IF NOT EXISTS)", up) == []
+    assert "CREATE TABLE IF NOT EXISTS odin_review_relay_owners (" in up
+    assert "CREATE TABLE IF NOT EXISTS odin_review_relay_items (" in up
+    assert "PRIMARY KEY (owner_id, review_id)" in up
+    assert "WHERE retired_at IS NULL" in up
+    down = (ROOT / "migrations/000089_odin_review_relay.down.sql").read_text()
+    assert down.count("IF EXISTS") == 3
+    assert "DROP TABLE" in down and "CREATE" not in down

@@ -1320,3 +1320,26 @@ def test_ravn_flock_llm_config_rejects_a_block_ravn_cannot_load():
 
     with pytest.raises(ValueError, match="max_tokens"):
         Settings(ravn_flock_llm_config={"model": "Qwen/Qwen3.8-27B", "max_tokens": "lots"})
+
+
+def test_ravn_flock_llm_config_by_definition_names_known_definitions():
+    import pytest
+
+    settings = Settings(
+        ravn_flock_llm_config_by_definition={"skuldCodex": {"model": "gpt-5.6-terra"}}
+    )
+    assert settings.ravn_flock_llm_config_by_definition["skuldCodex"]["model"] == "gpt-5.6-terra"
+
+    with pytest.raises(ValueError, match="unknown session definition"):
+        Settings(ravn_flock_llm_config_by_definition={"skuldCodx": {"model": "gpt-5.6-terra"}})
+
+
+def test_ravn_flock_llm_config_by_definition_rejects_a_block_ravn_cannot_load():
+    import pytest
+
+    with pytest.raises(ValueError, match="max_tokens"):
+        Settings(
+            ravn_flock_llm_config_by_definition={
+                "skuldCodex": {"model": "gpt-5.6-terra", "max_tokens": "lots"}
+            }
+        )

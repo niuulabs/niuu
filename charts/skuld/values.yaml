@@ -616,7 +616,13 @@ resident:
   maxConcurrentTasks: 3
   # -- Daily LLM budget cap in USD (float as string, e.g. "100.0"); empty = uncapped
   dailyBudgetUsd: ""
-  # -- Ravn llm config dict rendered verbatim into the node config
+  # -- Ravn llm config dict rendered verbatim into the node config. Besides the
+  # model and provider, it carries the retry bound for a gateway that restarts
+  # under a model call: gateway_outage_window_seconds (default 120: how long one
+  # call is retried while the gateway is down, before the response header or
+  # mid-stream; sized to a gateway rollout; 0 disables), with retry_base_delay
+  # (default 1.0) and gateway_outage_max_backoff_seconds (default 10) shaping
+  # the backoff. llm.max_retries was removed and is refused if set.
   llm: {}
   # -- Secrets injected only into the resident Ravn daemon.
   # Uses the same envVar/secretName/secretKey shape as top-level envSecrets.

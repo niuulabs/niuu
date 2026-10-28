@@ -161,8 +161,13 @@ async def _run_daemon(
         from ravn.valkyrie_evolution.tool_curation import learned_tool_health  # noqa: PLC0415
 
         learned_tool_state_dir = _resident_ravn_state_dir(workspace, settings)
+        learned_tool_skills = resident_learning_runtime.skills
         resident_runtime.bind_learned_tool_health(
-            lambda: learned_tool_health(learned_tool_state_dir)
+            lambda: learned_tool_health(
+                learned_tool_state_dir,
+                learned_tool_skills,
+                refused=learned_tool_resolver.list_refused,
+            )
         )
         resident_runtime.bind_review_requester(resident_learning_runtime.review_requester)
         resident_learning_runtime.bind_operator_answerer(resident_runtime.submit_operator_answer)
@@ -296,6 +301,7 @@ async def _run_daemon(
             skill_manager=(
                 resident_learning_runtime.skills if resident_learning_runtime is not None else None
             ),
+            learned_tool_resolver=learned_tool_resolver,
         )
         if profile_cfg.include_mcp:
             tools.extend(_filter_tools(mcp_tools, settings, resolved_persona))
@@ -544,7 +550,7 @@ async def _run_daemon(
         )
         if hasattr(drive_loop, "set_persona_config"):
             drive_loop.set_persona_config(persona_config)
-        if learned_tool_resolver is not None and hasattr(drive_loop, "register_telemetry_refresh"):
+        if hasattr(drive_loop, "register_telemetry_refresh"):
             # The inventory is published once while the resolver is built, so
             # the gauge ages out and the fleet reads zero installed tools while
             # hundreds sit on disk. Re-state it on every heartbeat.
@@ -553,7 +559,7 @@ async def _run_daemon(
                     publish_learned_tool_inventory,
                 )
 
-                publish_learned_tool_inventory(learned_tool_resolver.list_artifacts())
+                publish_learned_tool_inventory(learned_tool_resolver.list_loadable_artifacts())
 
             drive_loop.register_telemetry_refresh(_refresh_learned_tool_inventory)
         if resident_runtime is not None:
@@ -680,6 +686,7 @@ async def _run_daemon(
             workspace=workspace,
             skills=resident_learning_runtime.skills,
             matcher=capability_matcher,
+            load_refusal=learned_tool_resolver.load_refusal,
         )
         if resident_learning_runtime is not None
         else None
@@ -692,6 +699,7 @@ async def _run_daemon(
         learning_curator=learning_curator,
         self_improvement=self_improvement,
         tool_curator=tool_curator,
+        state_dir=_resident_ravn_state_dir(workspace, settings),
     )
     if tool_curator is not None and resident_wakefulness is None:
         raise RuntimeError(

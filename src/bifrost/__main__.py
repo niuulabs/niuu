@@ -65,7 +65,16 @@ def main() -> None:
         config = config.model_copy(update={"port": args.port})
 
     app = create_app(config)
-    uvicorn.run(app, host=config.host, port=config.port, log_level=args.log_level)
+    # SIGTERM (a rollout) stops accepting new connections and lets streamed
+    # answers already in flight finish, up to the configured grace; without the
+    # timeout uvicorn waits indefinitely and the kubelet's SIGKILL cuts them.
+    uvicorn.run(
+        app,
+        host=config.host,
+        port=config.port,
+        log_level=args.log_level,
+        timeout_graceful_shutdown=config.shutdown_grace_seconds,
+    )
 
 
 if __name__ == "__main__":

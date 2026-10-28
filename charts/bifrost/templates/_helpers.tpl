@@ -22,6 +22,38 @@ Create a default fully qualified app name.
 {{- end }}
 
 {{/*
+The time a terminating pod needs to drain: new requests keep arriving while the
+endpoints are withdrawn (shutdown.drainSeconds), then in-flight requests, streamed
+model answers included, finish (config.shutdown_grace_seconds). A grace period
+shorter than that makes the kubelet SIGKILL the gateway mid-stream, which is the
+failure this drain exists to prevent, so it is a render error rather than a default.
+*/}}
+{{- define "bifrost.drainSeconds" -}}
+{{- int (.Values.shutdown.drainSeconds | default 0) -}}
+{{- end }}
+
+{{- define "bifrost.terminationGracePeriodSeconds" -}}
+{{- $needed := add (int (include "bifrost.drainSeconds" .)) (int .Values.config.shutdown_grace_seconds) -}}
+{{- if le (int .Values.terminationGracePeriodSeconds) $needed -}}
+{{- fail (printf "terminationGracePeriodSeconds (%d) must exceed shutdown.drainSeconds + config.shutdown_grace_seconds (%d): the kubelet would SIGKILL the gateway while streamed answers are still in flight. Raise terminationGracePeriodSeconds, or lower config.shutdown_grace_seconds." (int .Values.terminationGracePeriodSeconds) $needed) -}}
+{{- end -}}
+{{- int .Values.terminationGracePeriodSeconds -}}
+{{- end }}
+
+{{/*
+preStop for a serving container: keep answering for the given seconds while the
+pod is withdrawn from the endpoints.
+*/}}
+{{- define "bifrost.preStopSleep" -}}
+{{- if gt (int .) 0 -}}
+lifecycle:
+  preStop:
+    sleep:
+      seconds: {{ int . }}
+{{- end -}}
+{{- end }}
+
+{{/*
 Create chart name and version as used by the chart label.
 */}}
 {{- define "bifrost.chart" -}}

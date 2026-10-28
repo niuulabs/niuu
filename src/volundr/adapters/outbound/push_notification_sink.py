@@ -22,6 +22,7 @@ from niuu.ports.notifications import (
     OutboundNotification,
 )
 from volundr.domain.models import PushMessage
+from volundr.domain.notifications import PUSH_CATEGORY_KEY, PUSH_DATA_KEY
 from volundr.domain.ports import DeviceTokenRepository, NotificationChannel
 
 PUSH_NOTIFICATION_EVENT = "session.notification"
@@ -43,6 +44,29 @@ def _shorten(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(limit - 1, 0)].rstrip() + "…"
+
+
+def _push_shaping(message: OutboundNotification) -> tuple[str, dict[str, str]]:
+    """The APNs category and custom keys a notification asks its push to carry.
+
+    Set by the producer in the notification's metadata (``PUSH_CATEGORY_KEY``,
+    ``PUSH_DATA_KEY``); absent for every other push. A malformed value is a producer
+    bug that no retry can fix, so it fails the delivery instead of being dropped.
+    """
+    category = message.metadata.get(PUSH_CATEGORY_KEY, "")
+    data = message.metadata.get(PUSH_DATA_KEY, {})
+    if not isinstance(category, str):
+        raise NotificationDeliveryError(
+            f"Notification metadata {PUSH_CATEGORY_KEY!r} must be a string", retryable=False
+        )
+    valid = isinstance(data, dict) and all(
+        isinstance(key, str) and isinstance(value, str) for key, value in data.items()
+    )
+    if not valid:
+        raise NotificationDeliveryError(
+            f"Notification metadata {PUSH_DATA_KEY!r} must map strings to strings", retryable=False
+        )
+    return category, dict(data)
 
 
 class PushNotificationSink(NotificationSink):
@@ -80,20 +104,26 @@ class PushNotificationSink(NotificationSink):
             raise NotificationDeliveryError(
                 "Push needs an owner to find devices for", retryable=False
             )
+        category, data = _push_shaping(message)
         devices = await self._devices.list_for_owner(message.owner_id)
-        push = PushMessage(
-            owner_id=message.owner_id,
-            title=message.title,
-            body=_shorten(message.body, self._max_body_chars),
-            session_id=message.session_id or "",
-            kind=message.kind.value,
-            urgency=self._urgency.get(message.severity.value, 0.0),
-            request_id=str(message.metadata.get("request_id") or ""),
-            event_type=PUSH_NOTIFICATION_EVENT,
-            notification_id=message.notification_id,
-            url=message.url or "",
-            resident_id=message.resident_id or "",
-            resident_session_id=message.resident_session_id or "",
-        )
+        try:
+            push = PushMessage(
+                owner_id=message.owner_id,
+                title=message.title,
+                body=_shorten(message.body, self._max_body_chars),
+                session_id=message.session_id or "",
+                kind=message.kind.value,
+                urgency=self._urgency.get(message.severity.value, 0.0),
+                request_id=str(message.metadata.get("request_id") or ""),
+                event_type=PUSH_NOTIFICATION_EVENT,
+                notification_id=message.notification_id,
+                url=message.url or "",
+                resident_id=message.resident_id or "",
+                resident_session_id=message.resident_session_id or "",
+                category=category,
+                data=data,
+            )
+        except ValueError as exc:
+            raise NotificationDeliveryError(str(exc), retryable=False) from None
         detail = await self._channel.deliver(push, devices)
         return DeliveryResult(detail=detail)

@@ -126,11 +126,77 @@ class GitLabConfig(BaseModel):
         return result
 
 
+DEFAULT_BUNDLE_FETCH_TIMEOUT_SECONDS = 30.0
+
+# The OIDC issuer of GitHub Actions' workflow identity tokens, and the workflow
+# files whose jobs sign this repository's image attestations. A job in a
+# reusable workflow signs as the reusable workflow's own file, whichever
+# workflow called it, so `reusable-container-build.yaml` covers every caller;
+# `dev.yaml` signs the dev manifests it publishes itself. Keep these in step
+# with .github/workflows and .github/actions/attest-container-image.
+GITHUB_ACTIONS_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
+DEFAULT_PROVENANCE_WORKFLOW_PATHS = (
+    ".github/workflows/reusable-container-build.yaml",
+    ".github/workflows/dev.yaml",
+)
+
+
+def _default_provenance_verifier_kwargs() -> dict[str, Any]:
+    return {
+        "issuer": GITHUB_ACTIONS_OIDC_ISSUER,
+        "workflow_paths": list(DEFAULT_PROVENANCE_WORKFLOW_PATHS),
+    }
+
+
+class ProvenanceConfig(BaseModel):
+    """Verification of image build provenance (``volundr_git verify_image_provenance``).
+
+    The platform fetches a repository's attestations from its Git host and
+    verifies them itself, so residents never need network access to GitHub's
+    attestation storage. Verification is real cryptography against the
+    Sigstore public-good trust root; ``enabled: false`` is the operator's
+    decision to go without it (the endpoint then answers 503), never a
+    degraded mode.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Verify image provenance. True requires the `provenance` extra "
+            "(sigstore) in the image; a verifier that cannot be built is fatal."
+        ),
+    )
+    adapter: str = Field(
+        default="niuu.adapters.outbound.sigstore_provenance.SigstoreProvenanceVerifier",
+        description="Fully-qualified ProvenanceVerifier class; `kwargs` are its constructor args.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=_default_provenance_verifier_kwargs,
+        description=(
+            "Verifier constructor kwargs. The Sigstore verifier takes `issuer` (OIDC issuer), "
+            "`workflow_paths` (workflow files in the repository allowed to sign, matched against "
+            "the certificate's job workflow ref) and optional `trusted_root_file` (a Sigstore "
+            "trusted root JSON for air-gapped clusters; empty uses the public-good root over TUF). "
+            "Setting `kwargs` replaces the defaults: restate `issuer` and `workflow_paths`."
+        ),
+    )
+    bundle_fetch_timeout_seconds: float = Field(
+        default=DEFAULT_BUNDLE_FETCH_TIMEOUT_SECONDS,
+        gt=0,
+        description=(
+            "Timeout for downloading an attestation bundle from the Git host's storage. "
+            "A bundle that does not arrive in time fails the request with a 502; "
+            "raise this if the storage host is slow from your cluster."
+        ),
+    )
+
+
 class GitConfig(BaseModel):
     """Git provider configuration (shared across niuu services)."""
 
     github: GitHubConfig = Field(default_factory=GitHubConfig)
     gitlab: GitLabConfig = Field(default_factory=GitLabConfig)
+    provenance: ProvenanceConfig = Field(default_factory=ProvenanceConfig)
 
 
 class HttpAuthAdapterConfig(BaseModel):

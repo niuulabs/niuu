@@ -88,3 +88,28 @@ effective values (`bifrost.config.selection` for the umbrella). Restore any clie
 route aliases or model settings needed for direct routing: `local` is no longer a
 Switchyard route once the adapter is disabled. Reconcile via the infrastructure
 repository; no cluster-side package uninstall is needed.
+
+## Rollouts and in-flight streams
+
+A model answer is a long-lived streamed response, so a rolling update must let
+the old pod finish the streams it holds instead of killing them (a killed
+stream reaches the caller as `peer closed connection without sending complete
+message body`). On `SIGTERM` the pod:
+
+1. keeps serving for `shutdown.drainSeconds` (default 10, a `preStop` sleep) while
+   Kubernetes withdraws it from the Service endpoints, so a request routed just
+   before termination is answered, not refused;
+2. stops accepting connections and lets in-flight requests finish for up to
+   `config.shutdown_grace_seconds` (default 300, passed to uvicorn as
+   `timeout_graceful_shutdown`). 300 is the Envoy sidecar's `upstreamTimeout`,
+   which ends any request earlier, so waiting longer saves nothing;
+3. cancels whatever is still open, closes the router, usage store and audit
+   log, and exits.
+
+`terminationGracePeriodSeconds` (default 330) must exceed the first two or the
+kubelet sends `SIGKILL` mid-stream; the chart fails to render when it does not.
+With `envoy.enabled`, the Envoy container sleeps through both phases so it does
+not drop the connections the gateway is still draining.
+
+Ravn also re-issues a model stream that is cut anyway
+(`llm.gateway_outage_window_seconds`, see `docs/operator/ravn-limits.md`).

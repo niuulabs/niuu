@@ -153,6 +153,45 @@ class TestFeed:
         assert client.get(f"{PREFIX}/notifications").status_code == 401
 
 
+class TestOdinReviewQuestions:
+    async def test_a_resident_question_exposes_where_to_answer_it(self, env):
+        client, service, _, _ = env
+        await service.record_system_attention(
+            "owner-a",
+            dedupe_key="odin-review:owner-a:review:q1",
+            title="regin asks",
+            body="Proceed?",
+            metadata={
+                "odin_review_id": "review:q1",
+                "odin_review_decide_path": "/api/v1/ravn/odin/reviews/review%3Aq1/decide",
+                "valkyrie_id": "regin",
+                "input_kind": "question",
+            },
+        )
+        await service.record_system_attention(
+            "owner-a",
+            dedupe_key="odin-review:owner-a:plain",
+            title="plain",
+            body="",
+            metadata={},
+        )
+
+        items = client.get(f"{PREFIX}/notifications", headers=headers()).json()["items"]
+
+        question = next(item for item in items if item["title"] == "regin asks")
+        assert question["odin_review_id"] == "review:q1"
+        assert question["odin_review_decide_path"] == "/api/v1/ravn/odin/reviews/review%3Aq1/decide"
+        assert question["session_id"] is None and question["resident_id"] is None
+        assert (question["kind"], question["source"], question["severity"]) == (
+            "attention",
+            "system",
+            "warning",
+        )
+        assert "metadata" not in question
+        plain = next(item for item in items if item["title"] == "plain")
+        assert plain["odin_review_id"] is None and plain["odin_review_decide_path"] is None
+
+
 class TestReadState:
     async def test_cas_forward_only_conflict_and_future(self, env):
         client, service, _, sessions = env

@@ -17,13 +17,16 @@ from ravn.budget import IterationBudget
 from ravn.cap_telemetry import (
     CAP_HITS,
     HEALTH_TOTAL_KEY,
+    RETRIES,
     cap_hit_counts,
     degraded_counts,
     health_counts,
     record_cap_hit,
     record_degraded,
+    record_retry,
     record_truncation,
     require_complete,
+    retry_counts,
 )
 from ravn.compression import ContextCompressor
 from ravn.domain.exceptions import (
@@ -75,17 +78,40 @@ class TestRecord:
         assert telemetry.count.call_args.kwargs["attributes"] == {"ravn.cap.knob": "wakefulness"}
 
     def test_health_counts_total_and_per_knob(self) -> None:
-        assert health_counts() == {HEALTH_TOTAL_KEY: 0, "degraded_total": 0}
+        assert health_counts() == {HEALTH_TOTAL_KEY: 0, "degraded_total": 0, "retries_total": 0}
         record_cap_hit("a", "x")
         record_cap_hit("b", "x")
         record_cap_hit("b", "x")
         record_degraded("operator_reply.persist", "x")
+        record_retry("llm.anthropic.stream", "x")
+        record_retry("llm.anthropic.stream", "x")
         assert health_counts() == {
             "cap_hits.a": 1,
             "cap_hits.b": 2,
             HEALTH_TOTAL_KEY: 3,
             "degraded.operator_reply.persist": 1,
             "degraded_total": 1,
+            "retries.llm.anthropic.stream": 2,
+            "retries_total": 2,
+        }
+
+    def test_a_retry_logs_a_warning_and_counts_without_being_a_cap_hit(self, caplog) -> None:
+        with caplog.at_level(logging.WARNING, logger="ravn.cap_telemetry"):
+            record_retry("llm.openai.connect", "refused; retrying in 1.0s")
+        assert retry_counts() == {"llm.openai.connect": 1}
+        assert cap_hit_counts() == {}
+        assert [r.levelno for r in caplog.records] == [logging.WARNING]
+        assert "retry [llm.openai.connect]" in caplog.records[0].getMessage()
+
+    def test_a_retry_emits_the_retries_counter_with_its_path(self, monkeypatch) -> None:
+        telemetry = MagicMock()
+        monkeypatch.setattr("ravn.cap_telemetry.get_observability", lambda: telemetry)
+
+        record_retry("llm.anthropic.stream", "cut")
+
+        assert telemetry.count.call_args.args[0] == RETRIES
+        assert telemetry.count.call_args.kwargs["attributes"] == {
+            "ravn.retry.path": "llm.anthropic.stream"
         }
 
     def test_a_degraded_path_logs_an_error_and_counts(self, caplog) -> None:

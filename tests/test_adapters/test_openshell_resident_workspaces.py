@@ -108,6 +108,7 @@ class _FakeCoreApi:
                 stored.metadata.annotations.pop(key, None)
             else:
                 stored.metadata.annotations[key] = value
+        stored.metadata.labels.update(metadata.get("labels") or {})
         storage = (body.get("spec") or {}).get("resources", {}).get("requests", {}).get("storage")
         if storage:
             stored.spec.resources.requests["storage"] = storage
@@ -170,8 +171,9 @@ class _SandboxFleetClient(_FakeOpenShellGatewayClient):
         self.sandboxes[sandbox.name] = sandbox
         return sandbox
 
-    def by_id(self, sandbox_id: str) -> _Sandbox:
-        return next(item for item in self.sandboxes.values() if item.id == sandbox_id)
+    def by_name(self, name: str) -> _Sandbox:
+        """The gateway addresses exec, files and forwards by sandbox name."""
+        return self.sandboxes[name]
 
     def create_sandbox(self, **kwargs):
         self.created = kwargs
@@ -246,9 +248,9 @@ class _SandboxFleetClient(_FakeOpenShellGatewayClient):
                         if path == WORKSPACE:
                             sandbox.stray = {}
 
-    def write_files(self, *, sandbox_id: str, files: dict[str, bytes]) -> None:
-        self.written_files.append({"sandbox_id": sandbox_id, "files": files})
-        sandbox = self.by_id(sandbox_id)
+    def write_files(self, *, sandbox: str, files: dict[str, bytes]) -> None:
+        self.written_files.append({"sandbox": sandbox, "files": files})
+        sandbox = self.by_name(sandbox)
         self.events.append(f"written:{sandbox.name}")
         self._extract_like_gnu_tar(sandbox, files)
         if self.fail_writes.get(sandbox.name):
@@ -263,14 +265,14 @@ class _SandboxFleetClient(_FakeOpenShellGatewayClient):
 
     def exec_detached(self, **kwargs) -> int:
         self.execs.append(kwargs)
-        sandbox = self.by_id(kwargs["sandbox_id"])
+        sandbox = self.by_name(kwargs["sandbox"])
         sandbox.running = True
         self.events.append(f"launched:{sandbox.name}")
         return 0
 
-    def exec_script(self, *, sandbox_id: str, script: str, env: dict) -> tuple[int, str]:
-        self.bootstrap_execs.append({"sandbox_id": sandbox_id, "script": script, "env": env})
-        sandbox = self.by_id(sandbox_id)
+    def exec_script(self, *, sandbox: str, script: str, env: dict) -> tuple[int, str]:
+        self.bootstrap_execs.append({"sandbox": sandbox, "script": script, "env": env})
+        sandbox = self.by_name(sandbox)
         if "du -sk" in script:
             lines = []
             for source in re.findall(r"(/sandbox/[\w./-]+)", script.split("do")[0]):
@@ -321,8 +323,8 @@ class _SandboxFleetClient(_FakeOpenShellGatewayClient):
         }
         return entries or None
 
-    def exec_to_file(self, *, sandbox_id, script, destination, max_bytes, timeout_seconds):
-        sandbox = self.by_id(sandbox_id)
+    def exec_to_file(self, *, sandbox, script, destination, max_bytes, timeout_seconds):
+        sandbox = self.by_name(sandbox)
         source = re.search(r"cd (\S+)", script).group(1)
         archive = _tar(self._tree(sandbox, source) or {})
         self.events.append(f"archived:{sandbox.name}:{source}")
@@ -332,10 +334,10 @@ class _SandboxFleetClient(_FakeOpenShellGatewayClient):
         destination.write(archive)
         return self._adapter.OpenShellTransfer(0, "", len(archive))
 
-    def exec_from_file(self, *, sandbox_id, command, source, timeout_seconds):
+    def exec_from_file(self, *, sandbox, command, source, timeout_seconds):
         if self.fail_restore_with is not None:
             raise self.fail_restore_with
-        sandbox = self.by_id(sandbox_id)
+        sandbox = self.by_name(sandbox)
         target = re.search(r"target=(\S+)", command[-1]).group(1)
         # Extracted into a fresh directory on the claim, never onto the target.
         assert '-C "$stage"' in command[-1]
@@ -501,6 +503,9 @@ async def test_new_resident_gets_its_own_claim_mounted_at_the_workspace(monkeypa
         "niuu.world/resident-id": str(runtime.id),
         "niuu.world/owner-id": runtime.owner_id,
         "niuu.world/tenant-id": runtime.tenant_id,
+        # OpenShell's resource admission mounts only claims approved for its workspace.
+        "openshell.ai/sandbox-attachable": "true",
+        "openshell.ai/sandbox-attachable-workspace": "default",
     }
     assert claim.spec.resources.requests == {"storage": "2Gi"}
     assert claim.spec.access_modes == ["ReadWriteOnce"]
@@ -1075,6 +1080,7 @@ def _relay_client(adapter, interactive):
     client._stub = types.SimpleNamespace(ExecSandboxInteractive=interactive)
     client._timeout = 30.0
     client._token_provider = types.SimpleNamespace(token=lambda: "token")
+    client._workspace_scope = types.SimpleNamespace(workspace="default")
     return client
 
 
@@ -1123,7 +1129,7 @@ def test_gateway_client_streams_archives_in_bounded_chunks(monkeypatch):
     source.seek(len(b"skipped"))
 
     restored = client.exec_from_file(
-        sandbox_id="sandbox-1",
+        sandbox="sandbox-1",
         command=["sh", "-c", "exec tar -C '/sandbox/my dir' -xf -"],
         source=source,
         timeout_seconds=60,
@@ -1149,7 +1155,7 @@ def test_gateway_client_streams_archives_in_bounded_chunks(monkeypatch):
 
     destination = io.BytesIO()
     truncated = client.exec_to_file(
-        sandbox_id="sandbox-1",
+        sandbox="sandbox-1",
         script="tar -cf - .",
         destination=destination,
         max_bytes=15,
@@ -1169,7 +1175,7 @@ def test_gateway_client_stops_streaming_once_the_command_exits(monkeypatch):
     source = io.BytesIO(b"z" * (adapter.EXEC_STDIN_CHUNK_BYTES * 3))
 
     restored = client.exec_from_file(
-        sandbox_id="sandbox-1", command=["tar", "-xf", "-"], source=source, timeout_seconds=60
+        sandbox="sandbox-1", command=["tar", "-xf", "-"], source=source, timeout_seconds=60
     )
 
     assert restored.exit_code == 2
@@ -1185,7 +1191,7 @@ def test_gateway_client_restores_an_empty_archive_without_stdin(monkeypatch):
     client = _relay_client(adapter, relay)
 
     restored = client.exec_from_file(
-        sandbox_id="sandbox-1", command=["true"], source=io.BytesIO(), timeout_seconds=60
+        sandbox="sandbox-1", command=["true"], source=io.BytesIO(), timeout_seconds=60
     )
 
     assert restored.exit_code == 0
@@ -2391,10 +2397,10 @@ async def test_a_repair_that_keeps_failing_is_logged_once(monkeypatch, caplog):
     real_exec = harness.client.exec_script
     broken = {"on": True}
 
-    def not_ready(*, sandbox_id, script, env):
+    def not_ready(*, sandbox, script, env):
         if broken["on"] and "echo mounted" in script:
             raise RuntimeError("sandbox is not ready")
-        return real_exec(sandbox_id=sandbox_id, script=script, env=env)
+        return real_exec(sandbox=sandbox, script=script, env=env)
 
     harness.client.exec_script = not_ready
     caplog.clear()
@@ -2415,3 +2421,39 @@ async def test_a_repair_that_keeps_failing_is_logged_once(monkeypatch, caplog):
         f"Resident OpenShell Muninn runs on its workspace volume again in sandbox "
         f"{sandbox.name}" in caplog.messages
     )
+
+
+@pytest.mark.asyncio
+async def test_a_claim_from_before_resource_admission_gets_the_attach_labels(monkeypatch):
+    """The gateway refuses to mount a claim without them, so an old claim is labelled."""
+    harness = _Harness(monkeypatch)
+    runtime = _resident_runtime()
+    claim = harness.manager._resident_workspace_claim(runtime, _resident_profile())
+    unlabelled = workspace_module.ResidentWorkspaceClaims(
+        harness.manager._get_core_api, NAMESPACE, attach_labels={}
+    )
+    pvc, created = await unlabelled.ensure(runtime, claim)
+    assert created
+    assert "openshell.ai/sandbox-attachable" not in pvc.metadata.labels
+
+    pvc, created = await harness.manager._workspace_claims.ensure(runtime, claim)
+
+    assert not created
+    labels = harness.core.pvcs[claim.name].metadata.labels
+    assert labels["openshell.ai/sandbox-attachable"] == "true"
+    assert labels["openshell.ai/sandbox-attachable-workspace"] == "default"
+    assert labels["niuu.world/resident-id"] == str(runtime.id)
+    assert harness.core.pvcs[claim.name].spec.resources.requests == {"storage": "2Gi"}
+
+
+@pytest.mark.asyncio
+async def test_attach_labels_follow_the_gateways_required_labels(monkeypatch):
+    harness = _Harness(monkeypatch, sandbox_attachable_labels={"example.com/approved": "yes"})
+    runtime = _resident_runtime()
+    claim = harness.manager._resident_workspace_claim(runtime, _resident_profile())
+
+    await harness.manager._workspace_claims.ensure(runtime, claim)
+
+    labels = harness.core.pvcs[claim.name].metadata.labels
+    assert labels["example.com/approved"] == "yes"
+    assert "openshell.ai/sandbox-attachable" not in labels

@@ -49,6 +49,22 @@ _CLOCK_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 RESIDENT_ID_KEY = "resident_id"
 RESIDENT_SESSION_ID_KEY = "resident_session_id"
 
+#: Metadata keys that anchor a notification to an item of the ODIN review queue,
+#: where the operator answers it (``POST`` to the decide path with the item id).
+ODIN_REVIEW_ID_KEY = "odin_review_id"
+ODIN_REVIEW_DECIDE_PATH_KEY = "odin_review_decide_path"
+
+#: A notification recorded for the feed only: no rule schedules a delivery for it,
+#: so it is never pushed or relayed to an external sink. A producer sets it for
+#: items the owner should be able to see but must not be interrupted by.
+FEED_ONLY_KEY = "feed_only"
+
+#: Per-notification push shaping read by the push sink: ``push_category`` is the
+#: APNs ``aps.category`` (so the phone can offer inline actions) and ``push_data``
+#: a ``{key: str}`` map of extra custom keys carried in the push payload.
+PUSH_CATEGORY_KEY = "push_category"
+PUSH_DATA_KEY = "push_data"
+
 
 def _metadata_text(metadata: dict[str, Any], key: str) -> str | None:
     value = metadata.get(key)
@@ -100,6 +116,16 @@ class Notification(BaseModel):
         """The resident channel it is about; ``None`` is the main room (or no resident)."""
         return _metadata_text(self.metadata, RESIDENT_SESSION_ID_KEY)
 
+    @property
+    def odin_review_id(self) -> str | None:
+        """The ODIN review item this notification asks the operator to answer, if any."""
+        return _metadata_text(self.metadata, ODIN_REVIEW_ID_KEY)
+
+    @property
+    def odin_review_decide_path(self) -> str | None:
+        """The path (on the host serving the review queue) that decides that item."""
+        return _metadata_text(self.metadata, ODIN_REVIEW_DECIDE_PATH_KEY)
+
     def wire(self) -> dict[str, Any]:
         """The ``NotificationResponse`` JSON without the per-reader ``read`` flag.
 
@@ -109,6 +135,8 @@ class Notification(BaseModel):
         data["turn_id"] = self.turn_id
         data["resident_id"] = self.resident_id
         data["resident_session_id"] = self.resident_session_id
+        data["odin_review_id"] = self.odin_review_id
+        data["odin_review_decide_path"] = self.odin_review_decide_path
         return data
 
 
@@ -451,7 +479,10 @@ def rules_matching(
     Pure: the projection calls it inside the insert transaction to schedule outbox
     rows. Quiet hours and rate limits are NOT applied here; the dispatcher evaluates
     them when it claims a delivery, so a held-back message is recorded as suppressed.
+    A feed-only notification (``FEED_ONLY_KEY``) matches no rule at all.
     """
+    if notification.metadata.get(FEED_ONLY_KEY) is True:
+        return []
     return [
         rule
         for rule in rules

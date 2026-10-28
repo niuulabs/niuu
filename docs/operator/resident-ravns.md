@@ -418,6 +418,15 @@ whose normal work involves genuinely long unchanged waits; set `0` only when
 you would rather have silence than the question, and know that a stuck
 resident will then stay stuck until you notice.
 
+Re-checked on 553 sleeping turns of the etcd-watching resident (20-27 Oct).
+Its objectives restate the same closure watch in new words and new anchor
+times every turn: normalising every timestamp in them changes nothing (the
+longest unchanged run stays 4; stripping every digit-bearing token still gives
+4). The objectives component is therefore not what a tool-blind fingerprint
+could be tightened on, and the threshold is left as calibrated. The recorded
+turns carry no tool results, so the tool-result half of the fingerprint could
+not be replayed from them.
+
 The streak is keyed on the resident, not the case, and is persisted at
 `resident/continuation/decision-streak/<resident>.md`, so it survives both
 case boundaries and restarts. Escalations log at WARNING
@@ -425,6 +434,34 @@ case boundaries and restarts. Escalations log at WARNING
 anything new`) and emit `ravn.resident.repeated_decision_escalated`; every
 counted turn increments `ravn.resident.repeated_decisions`, which is the
 metric to watch if you want to tune the threshold from real behaviour.
+
+## Escalating is asking
+
+A resident turn with `decision: escalate` asks the operator, and only its
+`question` reaches anyone. ODIN court routing (`notify`, `open_huddle`) does
+not ask a person anything, so an escalation that relied on `tier` alone ended
+in an empty room: one resident recorded 27 escalating turns with
+`continuation: sleep` and no question, believed it had told someone, and
+nobody was ever asked.
+
+The outcome contract now enforces this:
+
+- `decision: escalate` with an empty `question` is rejected like any other
+  invalid outcome. The model is sent the remedy through the existing schema
+  repair turn (write the question, or choose a decision that needs no human
+  answer such as `watch` with `continuation: sleep`), and a turn that is still
+  invalid after repair is counted against its observations as usual.
+- `continuation: ask_operator` (or `verdict: help_needed`) with an empty
+  `question` is rejected the same way. The runtime never writes a question on
+  the resident's behalf: there is no placeholder, and `open_questions`,
+  `recommendation` and `selected_next_action` are not turned into one. A turn
+  that reaches the runtime without a question anyway is recorded as an invalid
+  outcome with an error log.
+- `decision: escalate` with a `question` is persisted as an operator question
+  and delivered through the same path as `continuation: ask_operator`
+  (`/resident/operator-needed`, pending questions, the review inbox), whatever
+  `continuation` the model also chose. A known resolution still gets its one
+  redirect before the operator is asked.
 
 ## The health scorecard
 

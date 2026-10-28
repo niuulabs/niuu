@@ -45,7 +45,7 @@ spec:
       {{- with .Values.priorityClassName }}
       priorityClassName: {{ . }}
       {{- end }}
-      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 30 }}
+      terminationGracePeriodSeconds: {{ include "bifrost.terminationGracePeriodSeconds" . }}
       {{- $migrate := and .Values.migrations.enabled (include "bifrost.needsDatabase" .) }}
       {{- if or $migrate .Values.initContainers }}
       initContainers:
@@ -204,6 +204,7 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- include "bifrost.preStopSleep" (include "bifrost.drainSeconds" .) | nindent 10 }}
           volumeMounts:
             - name: config
               mountPath: /etc/bifrost
@@ -225,6 +226,12 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- /*
+            Envoy carries every request to the gateway and drops its connections
+            when it exits, so it must outlive the gateway's drain: it sleeps
+            through the drain window and the whole grace period, then stops.
+          */}}
+          {{- include "bifrost.preStopSleep" (add (int (include "bifrost.drainSeconds" .)) (int .Values.config.shutdown_grace_seconds)) | nindent 10 }}
           volumeMounts:
             - name: envoy-config
               mountPath: /etc/envoy

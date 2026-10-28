@@ -19,7 +19,7 @@ class TestAnthropicAdapterInit:
         assert adapter._api_key == "test"
         assert adapter._base_url == "https://api.anthropic.com"
         assert adapter._output_limits == {}
-        assert adapter._max_retries >= 0
+        assert adapter._gateway_outage_window_seconds >= 0
 
     def test_custom_base_url_trailing_slash_stripped(self) -> None:
         adapter = AnthropicAdapter(api_key="k", base_url="http://proxy/")
@@ -292,7 +292,7 @@ async def test_generate_with_tool_use() -> None:
 @respx.mock
 async def test_generate_error_response() -> None:
     adapter = AnthropicAdapter(
-        api_key="test-key", base_url="https://api.anthropic.com", max_retries=0
+        api_key="test-key", base_url="https://api.anthropic.com", gateway_outage_window_seconds=0
     )
 
     respx.post("https://api.anthropic.com/v1/messages").mock(
@@ -358,6 +358,7 @@ def _text_block_sse(text: str, usage: dict | None = None) -> list[str]:
             }
         ),
     ]
+    lines.append(_sse({"type": "message_stop"}))
     return lines
 
 
@@ -393,6 +394,7 @@ def _tool_block_sse(
             }
         )
     )
+    lines.append(_sse({"type": "message_stop"}))
     return lines
 
 
@@ -463,7 +465,9 @@ class TestStreamParsing:
 
     @respx.mock
     async def test_stream_error_response(self) -> None:
-        adapter = AnthropicAdapter(api_key="k", base_url="https://api.anthropic.com", max_retries=0)
+        adapter = AnthropicAdapter(
+            api_key="k", base_url="https://api.anthropic.com", gateway_outage_window_seconds=0
+        )
 
         respx.post("https://api.anthropic.com/v1/messages").mock(
             return_value=httpx.Response(500, text="server error")

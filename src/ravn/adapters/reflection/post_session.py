@@ -37,6 +37,7 @@ from ravn.adapters.reflection.lessons import (
     LessonIndex,
     body_section,
     frontmatter_values,
+    parse_lesson,
 )
 from ravn.cap_telemetry import require_complete
 from ravn.config import PostSessionReflectionConfig
@@ -456,34 +457,26 @@ class PostSessionReflectionService:
         claim = str(learning.get("learning", "") or "").strip()
         recovery = _cited_route_recovery(learning, payload)
         if self._config.matching.mode == "semantic":
-            existing_page = await self._find_semantic_match(title, claim)
-        else:
-            existing_page = await self._find_existing_page(title, repo_slug, claim)
+            return await self._consolidate_on_write(
+                learning,
+                payload,
+                title=title,
+                claim=claim,
+                recovery=recovery,
+                now=now,
+            )
+        existing_page = await self._find_existing_page(title, repo_slug, claim)
 
         if existing_page is not None:
             if existing_page.meta.category == LEARNING_CATEGORY:
                 await self._confirm_learning(existing_page, session_id=session_id, date=now)
                 return existing_page.meta.path
-            evidence = str(learning.get("evidence", "") or "")
             updated = _merge_timeline_entry(
                 existing_page.content,
                 session_id=session_id,
-                evidence=evidence,
+                evidence=str(learning.get("evidence", "") or ""),
                 date=now,
-                evidence_is_new=(
-                    await self._evidence_is_new_by_meaning(existing_page.content, evidence)
-                    if self._config.matching.mode == "semantic"
-                    else None
-                ),
             )
-            if self._config.matching.mode == "semantic":
-                updated = _append_related_observation(
-                    updated,
-                    title=title,
-                    claim=claim,
-                    session_id=session_id,
-                    date=now,
-                )
             if recovery is not None:
                 updated = _apply_verification(updated, recovery)
             await self._persist_candidate_and_maybe_promote(
@@ -496,17 +489,7 @@ class PostSessionReflectionService:
             )
             return existing_page.meta.path
 
-        page_path = _build_candidate_path(title, repo_slug)
-        content = _build_candidate_content(
-            title=title,
-            learning=learning.get("learning", ""),
-            page_type=learning.get("type", "observation"),
-            tags=learning.get("tags", []),
-            evidence=learning.get("evidence", ""),
-            repo_slug=repo_slug,
-            session_id=session_id,
-            date=now,
-        )
+        page_path, content = _fresh_candidate(learning, payload, title=title, now=now)
         if recovery is not None:
             content = _apply_verification(content, recovery)
 
@@ -520,52 +503,125 @@ class PostSessionReflectionService:
         )
         return page_path
 
-    async def _evidence_is_new_by_meaning(self, content: str, evidence: str) -> bool:
-        """Whether *evidence* says something the lesson's timeline does not, by meaning."""
-        assert self._lessons is not None  # noqa: S101 — semantic mode guarantees it
-        return await evidence_is_new_by_meaning(
-            self._lessons,
-            content,
-            evidence,
-            threshold=self._config.matching.evidence_duplicate_similarity,
+    async def _consolidate_on_write(
+        self,
+        learning: dict,
+        payload: dict,
+        *,
+        title: str,
+        claim: str,
+        recovery: dict | None,
+        now: datetime,
+    ) -> str:
+        """Record an observation by meaning: fold it, and its paraphrases, into one lesson.
+
+        The judge sees the nearest learnings and the nearest candidates and names
+        every one that states the same lesson. All of them that this resident
+        writes fold into the strongest — a promoted learning before any
+        candidate — together with the new observation. A paraphrase therefore
+        reinforces the learning it restates instead of growing a sibling
+        candidate into a second learning. With no match, the observation is a new
+        candidate. Failures raise: recording a paraphrase as a new lesson is the
+        outcome this replaces.
+        """
+        from ravn.adapters.reflection.lesson_consolidation import (  # noqa: PLC0415
+            canonical_key,
+            fold_into,
+            judge_neighbourhood,
+            retire,
         )
+
+        assert self._lessons is not None and self._judge is not None  # noqa: S101 — ctor guard
+        repo_slug = str(payload.get("repo_slug") or "")
+        page_path, content = _fresh_candidate(learning, payload, title=title, now=now)
+        if recovery is not None:
+            content = _apply_verification(content, recovery)
+        verdict = await judge_neighbourhood(
+            lessons=self._lessons,
+            judge=self._judge,
+            title=title,
+            claim=claim,
+            pool=[lesson for lesson in await self._lessons.load(self._mimir) if _matchable(lesson)],
+            threshold=self._config.matching.similarity_threshold,
+            per_category=self._config.matching.max_related,
+        )
+        owned = [lesson for lesson in verdict.same if _reflection_owns(lesson.path, lesson.content)]
+        if verdict.same and not owned:
+            logger.info(
+                "PostSessionReflectionService: %r restates %r, which another writer keeps; "
+                "nothing recorded",
+                title,
+                verdict.same[0].path,
+            )
+            return verdict.same[0].path
+        if not owned:
+            await self._persist_candidate_and_maybe_promote(
+                candidate_path=page_path,
+                candidate_content=content,
+                title=title,
+                repo_slug=repo_slug,
+                payload=payload,
+                verified_recovery=recovery is not None,
+            )
+            return page_path
+
+        keep, *paraphrases = sorted(owned, key=canonical_key, reverse=True)
+        duplicate = self._config.matching.evidence_duplicate_similarity
+        keep = await fold_into(
+            self._mimir,
+            self._lessons,
+            keep=keep,
+            other=parse_lesson(page_path, content, updated_at=now),
+            now=now,
+            evidence_duplicate_similarity=duplicate,
+            source="ravn_reflection",
+            record_origin=False,
+        )
+        why = f"same lesson as {keep.path}: {compact_line(verdict.reason)}"
+        for paraphrase in paraphrases:
+            keep = await fold_into(
+                self._mimir,
+                self._lessons,
+                keep=keep,
+                other=paraphrase,
+                now=now,
+                evidence_duplicate_similarity=duplicate,
+                source="curation_merge",
+            )
+            await retire(
+                self._mimir,
+                paraphrase,
+                status="merged",
+                field="merged_into",
+                target=keep.path,
+                why=why,
+            )
+        logger.info(
+            "PostSessionReflectionService: %r restates %r (%d paraphrase(s) folded in): %s",
+            title,
+            keep.path,
+            len(paraphrases),
+            verdict.reason,
+        )
+        if keep.category == CANDIDATE_CATEGORY:
+            await self._persist_candidate_and_maybe_promote(
+                candidate_path=keep.path,
+                candidate_content=keep.content,
+                title=keep.title,
+                repo_slug=repo_slug,
+                payload=payload,
+                verified_recovery=keep.verified,
+            )
+        return keep.path
 
     async def _confirm_learning(self, page: MimirPage, *, session_id: str, date: datetime) -> None:
-        """Note that a promoted learning was observed again.
-
-        Reflection never rewrites a trusted learning's claim. In semantic mode
-        it does record that the lesson was rediscovered, because injection ranks
-        learnings by how recently they were confirmed: a lesson the resident
-        keeps relearning is the one it most needs in front of it.
-        """
-        if self._config.matching.mode != "semantic" or not _reflection_owns(
-            page.meta.path, page.content
-        ):
-            logger.info(
-                "PostSessionReflectionService: trusted learning %r already exists; "
-                "reflection %s cannot mutate it",
-                page.meta.path,
-                session_id,
-            )
-            return
-        confirmed = _set_frontmatter_value(
-            page.content,
-            "last_confirmed",
-            date.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        )
-        if confirmed == page.content:
-            logger.info(
-                "PostSessionReflectionService: learning %r has no frontmatter timeline; "
-                "rediscovery in %s not recorded on it",
-                page.meta.path,
-                session_id,
-            )
-            return
-        await self._mimir.upsert_page(page.meta.path, confirmed)
+        """Lexical matching found a trusted learning; reflection does not rewrite it."""
+        del date
         logger.info(
-            "PostSessionReflectionService: session %s rediscovered learning %r",
-            session_id,
+            "PostSessionReflectionService: trusted learning %r already exists; "
+            "reflection %s cannot mutate it",
             page.meta.path,
+            session_id,
         )
 
     async def _persist_candidate_and_maybe_promote(
@@ -619,41 +675,6 @@ class PostSessionReflectionService:
             learning_path,
             reason,
         )
-
-    async def _find_semantic_match(self, title: str, claim: str) -> MimirPage | None:
-        """Find a recorded lesson that states the same thing, by meaning.
-
-        Embeddings shortlist the closest active lessons; the judge decides
-        whether one of them is the same lesson. A candidate that was already
-        promoted is represented by its learning page, so only open candidates
-        and learnings are compared. Failures raise: recording the paraphrase as
-        a new candidate is exactly the outcome this replaces.
-        """
-        assert self._lessons is not None and self._judge is not None  # noqa: S101 — ctor guard
-        recorded = [
-            lesson for lesson in await self._lessons.load(self._mimir) if _matchable(lesson)
-        ]
-        if not recorded:
-            return None
-        ranked = await self._lessons.rank(f"{title}. {claim}".strip(), recorded)
-        shortlist = [
-            lesson
-            for lesson, score in ranked[: self._config.matching.max_related]
-            if score >= self._config.matching.similarity_threshold
-        ]
-        if not shortlist:
-            return None
-        match = await self._judge.match(title=title, claim=claim, recorded=shortlist)
-        if match.index is None:
-            return None
-        lesson = shortlist[match.index]
-        logger.info(
-            "PostSessionReflectionService: %r restates recorded lesson %r (%s)",
-            title,
-            lesson.path,
-            match.reason,
-        )
-        return await self._mimir.get_page(lesson.path)
 
     async def _find_existing_page(
         self,
@@ -769,6 +790,28 @@ def set_procedure(content: str, procedure: str) -> str:
         return content.rstrip("\n") + "\n\n" + section
     insert_at = heading.end()
     return content[:insert_at] + "\n\n" + section.rstrip("\n") + content[insert_at:]
+
+
+def _fresh_candidate(
+    learning: dict,
+    payload: dict,
+    *,
+    title: str,
+    now: datetime,
+) -> tuple[str, str]:
+    """The path and page a new observation would be written to as a candidate."""
+    repo_slug = str(payload.get("repo_slug") or "")
+    content = _build_candidate_content(
+        title=title,
+        learning=learning.get("learning", ""),
+        page_type=learning.get("type", "observation"),
+        tags=learning.get("tags", []),
+        evidence=learning.get("evidence", ""),
+        repo_slug=repo_slug,
+        session_id=str(payload.get("session_id", "unknown")),
+        date=now,
+    )
+    return _build_candidate_path(title, repo_slug), content
 
 
 def _matchable(lesson: Lesson) -> bool:

@@ -6,6 +6,7 @@
 # 2. In parallel with 1, builds every container image for amd64 and arm64 and
 #    pushes only the per-platform <sha>-<arch> tags
 # 3. Once 1 and 2 pass, publishes the multi-arch dev-<sha> and dev manifests
+#    and attaches signed GitHub build provenance to the dev-<sha> manifest list
 # 4. Determines next version from conventional commits and creates a v*-dev.N prerelease tag
 # 5. Packages Helm charts with the dev version
 #
@@ -270,6 +271,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
       containers: '["agent","skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
@@ -390,6 +393,53 @@ jobs:
           done
 
   # ---------------------------------------------------------------------------
+  # Attest — signed GitHub build provenance for the dev-<sha> manifest list
+  # `publish` just created, one job per image (the attest action takes a single
+  # subject). A rebuilt run is the only one that makes a new manifest list; a
+  # promoted run re-tags digests a PR run already attested (the attestation is
+  # bound to the digest, not the tag), so this job is skipped there. This job's
+  # workflow is dev.yaml, so dev.yaml is one of the signing workflows the
+  # platform pins (`git.provenance.kwargs.workflow_paths`).
+  #
+  # `tag` waits for it: a dev-<sha> the platform cannot verify does not get a
+  # v*-dev.N tag or charts.
+  # ---------------------------------------------------------------------------
+  attest:
+    name: "Attest ${{ matrix.container }}"
+    needs: publish
+    if: ${{ !failure() && !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        container: [agent, skuld, openshell, devrunner, niuu-web, niuu, gbrain]
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/attest-container-image
+          sparse-checkout-cone-mode: false
+
+      - name: Attest build provenance
+        uses: ./.github/actions/attest-container-image
+        with:
+          registry: ${{ env.REGISTRY }}
+          image: ${{ github.repository_owner }}/${{ matrix.container }}
+          tag: dev-${{ github.sha }}
+          username: ${{ github.actor }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
   # Promote — re-tag the digests `resolve` found, without rebuilding: the
   # index dev-<sha> (checked to resolve to the tested digest) and its two
   # children <sha>-amd64 / <sha>-arm64, then :dev once every image has its
@@ -500,6 +550,7 @@ jobs:
       - helm-lint
       - containers
       - publish
+      - attest
       - promote
     if: ${{ !failure() && !cancelled() && (needs.publish.result == 'success' || needs.promote.result == 'success') }}
     runs-on: ubuntu-latest

@@ -58,6 +58,12 @@ from niuu.observability import get_observability
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class
 from ravn.adapters.llm.provider_items import refuse_foreign_compaction, without_provider_keys
+from ravn.adapters.llm.transient import (
+    GatewayOutage,
+    StreamIncompleteError,
+    post_within_window,
+    resumable_stream,
+)
 from ravn.budget import TokenEstimator
 from ravn.domain.exceptions import LLMError
 from ravn.domain.models import (
@@ -72,7 +78,6 @@ from ravn.ports.llm import LLMPort, SystemPrompt
 
 logger = logging.getLogger(__name__)
 
-_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503})
 _DEFAULT_BASE_URL = "https://api.openai.com"
 # The protocol this adapter speaks, as provider_items name it.
 _CHAT_COMPLETIONS = "openai_chat_completions"
@@ -329,9 +334,10 @@ class OpenAICompatibleAdapter(LLMPort):
         api_key: str = "",
         base_url: str = _DEFAULT_BASE_URL,
         model: str = "gpt-4o",
-        max_retries: int = 3,
         retry_base_delay: float = 1.0,
         timeout: float = 120.0,
+        gateway_outage_window_seconds: float = 120.0,
+        gateway_outage_max_backoff_seconds: float = 10.0,
         system_prefix: str = "",
         request_options: dict | None = None,
         thinking_request_options: dict | None = None,
@@ -343,9 +349,10 @@ class OpenAICompatibleAdapter(LLMPort):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._default_model = model
-        self._max_retries = max_retries
         self._retry_base_delay = retry_base_delay
         self._timeout = timeout
+        self._gateway_outage_window_seconds = gateway_outage_window_seconds
+        self._gateway_outage_max_backoff_seconds = gateway_outage_max_backoff_seconds
         self._system_prefix = system_prefix
         self._request_options = copy.deepcopy(request_options or {})
         self._thinking_request_options = copy.deepcopy(thinking_request_options or {})
@@ -482,67 +489,38 @@ class OpenAICompatibleAdapter(LLMPort):
         )
         return body
 
+    def _new_outage(self, payload: dict) -> GatewayOutage:
+        """The retry bound of one model call (``llm.gateway_outage_window_seconds``)."""
+        model_name = str(payload.get("model") or self._default_model)
+        return GatewayOutage(
+            provider="openai",
+            window_seconds=self._gateway_outage_window_seconds,
+            base_delay=self._retry_base_delay,
+            max_backoff_seconds=self._gateway_outage_max_backoff_seconds,
+            context=f"model={model_name}, endpoint={self._base_url}/v1/chat/completions",
+        )
+
     async def _post_with_retry(
         self,
         client: httpx.AsyncClient,
         payload: dict,
         *,
         stream: bool,
+        outage: GatewayOutage | None = None,
     ) -> httpx.Response:
-        url = f"{self._base_url}/v1/chat/completions"
-        last_exc: Exception | None = None
-        last_status_code: int | None = None
-        model_name = str(payload.get("model") or self._default_model)
+        """POST the request, riding out a gateway outage for up to the configured window.
 
-        for attempt in range(self._max_retries + 1):
-            try:
-                if stream:
-                    response = await client.send(
-                        client.build_request("POST", url, json=payload),
-                        stream=True,
-                    )
-                else:
-                    response = await client.post(url, json=payload)
-
-                if response.status_code not in _RETRYABLE_STATUS_CODES:
-                    return response
-
-                last_status_code = response.status_code
-                if stream:
-                    await response.aclose()
-
-                if attempt < self._max_retries:
-                    delay = self._retry_base_delay * (2**attempt)
-                    logger.warning(
-                        "OpenAI-compatible API returned %s, retrying in %.1fs (attempt %d/%d)",
-                        response.status_code,
-                        delay,
-                        attempt + 1,
-                        self._max_retries,
-                    )
-                    await asyncio.sleep(delay)
-                    last_exc = LLMError(
-                        f"OpenAI-compatible API error {response.status_code}",
-                        status_code=response.status_code,
-                    )
-
-            except httpx.TransportError as exc:
-                last_exc = exc
-                if attempt < self._max_retries:
-                    delay = self._retry_base_delay * (2**attempt)
-                    await asyncio.sleep(delay)
-
-        details = [
-            f"model={model_name}",
-            f"endpoint={url}",
-        ]
-        if last_status_code is not None:
-            details.append(f"status={last_status_code}")
-        raise LLMError(
-            "OpenAI-compatible API failed after "
-            f"{self._max_retries} retries ({', '.join(details)})",
-            status_code=last_status_code,
-        ) from last_exc
+        Every attempt carries freshly minted credentials: a retry minutes into
+        a rollout must not reuse a token that has since expired.
+        """
+        return await post_within_window(
+            client,
+            f"{self._base_url}/v1/chat/completions",
+            payload,
+            stream=stream,
+            outage=outage or self._new_outage(payload),
+            headers=self._request_headers,
+        )
 
     # ------------------------------------------------------------------
     # LLMPort implementation
@@ -568,227 +546,248 @@ class OpenAICompatibleAdapter(LLMPort):
             thinking=thinking,
         )
 
-        async with httpx.AsyncClient(
-            headers=await self._request_headers(), timeout=self._timeout
-        ) as client:
-            response = await self._post_with_retry(client, payload, stream=True)
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
 
-            if response.status_code != 200:
-                body = await response.aread()
-                raise LLMError(
-                    f"OpenAI-compatible API error {response.status_code}: {body.decode()}",
-                    status_code=response.status_code,
+            async def open_response(outage: GatewayOutage) -> httpx.Response:
+                return await self._post_with_retry(client, payload, stream=True, outage=outage)
+
+            # A stream the gateway cuts mid-answer is sent again within the
+            # window; the consumer discards the partial answer on STREAM_RESTART.
+            async for event in resumable_stream(
+                outage=self._new_outage(payload),
+                open_response=open_response,
+                read_events=lambda response: self._read_events(
+                    response, messages=messages, system=system, model=model
+                ),
+            ):
+                yield event
+
+    async def _read_events(
+        self,
+        response: httpx.Response,
+        *,
+        messages: list[dict],
+        system: SystemPrompt,
+        model: str,
+    ) -> AsyncIterator[StreamEvent]:
+        """Parse one streaming Chat Completions response into events.
+
+        All per-answer state lives here, so a re-issued request starts clean.
+        """
+        if response.status_code != 200:
+            body = await response.aread()
+            raise LLMError(
+                f"OpenAI-compatible API error {response.status_code}: {body.decode()}",
+                status_code=response.status_code,
+            )
+
+        # Accumulate partial tool arguments keyed by tool index.
+        partial_args: dict[int, str] = {}
+        tool_ids: dict[int, str] = {}
+        tool_names: dict[int, str] = {}
+        tool_calls_emitted = False
+
+        # Accumulate output text for estimation fallback when usage is absent.
+        accumulated_text: list[str] = []
+        accumulated_reasoning: list[str] = []
+        reasoning_details_received = 0
+        usage_emitted = False
+
+        # Bound here, not only inside the loop: a stream can end without ever
+        # delivering a chunk that carries `choices` — every chunk usage-only,
+        # or nothing at all — and the post-loop recovery and logging all read
+        # this. Leaving it unbound made that case die with UnboundLocalError
+        # inside the very branch meant to report an empty stream, so a
+        # resident turn failed with a Python error instead of a diagnosis.
+        finish_reason: str | None = None
+        saw_done = False
+
+        async for line in response.aiter_lines():
+            if not line.startswith("data: "):
+                continue
+            raw = line[len("data: ") :]
+            if raw == "[DONE]":
+                saw_done = True
+                break
+
+            try:
+                event_data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            upstream_error = event_data.get("error")
+            if upstream_error:
+                message = (
+                    upstream_error.get("message")
+                    if isinstance(upstream_error, dict)
+                    else str(upstream_error)
                 )
+                raise LLMError(f"OpenAI-compatible stream error: {message}")
 
-            # Accumulate partial tool arguments keyed by tool index.
-            partial_args: dict[int, str] = {}
-            tool_ids: dict[int, str] = {}
-            tool_names: dict[int, str] = {}
-            tool_calls_emitted = False
-
-            # Accumulate output text for estimation fallback when usage is absent.
-            accumulated_text: list[str] = []
-            accumulated_reasoning: list[str] = []
-            reasoning_details_received = 0
-            usage_emitted = False
-
-            # Bound here, not only inside the loop: a stream can end without ever
-            # delivering a chunk that carries `choices` — every chunk usage-only,
-            # or nothing at all — and the post-loop recovery and logging all read
-            # this. Leaving it unbound made that case die with UnboundLocalError
-            # inside the very branch meant to report an empty stream, so a
-            # resident turn failed with a Python error instead of a diagnosis.
-            finish_reason: str | None = None
-            saw_done = False
-
-            async for line in response.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                raw = line[len("data: ") :]
-                if raw == "[DONE]":
-                    saw_done = True
-                    break
-
-                try:
-                    event_data = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-
-                upstream_error = event_data.get("error")
-                if upstream_error:
-                    message = (
-                        upstream_error.get("message")
-                        if isinstance(upstream_error, dict)
-                        else str(upstream_error)
-                    )
-                    raise LLMError(f"OpenAI-compatible stream error: {message}")
-
-                # Usage-only chunk (stream_options: include_usage)
-                usage_raw = event_data.get("usage")
-                if usage_raw:
-                    usage_emitted = True
-                    yield StreamEvent(
-                        type=StreamEventType.MESSAGE_DONE,
-                        usage=_normalise_usage(
-                            usage_raw,
-                            reasoning_text="".join(accumulated_reasoning),
-                        ),
-                    )
-                    continue
-
-                choices = event_data.get("choices") or []
-                if not choices:
-                    continue
-
-                choice = choices[0]
-                delta = choice.get("delta") or {}
-                finish_reason = choice.get("finish_reason")
-
-                reasoning = delta.get("reasoning") or delta.get("reasoning_content")
-                if reasoning:
-                    accumulated_reasoning.append(reasoning)
-                    yield StreamEvent(type=StreamEventType.THINKING, text=reasoning)
-
-                reasoning_details = _reasoning_details_of(delta)
-                if reasoning_details:
-                    reasoning_details_received += len(reasoning_details)
-                    yield StreamEvent(
-                        type=StreamEventType.REASONING_DETAILS,
-                        reasoning_details=reasoning_details,
-                    )
-
-                # Text content delta.
-                content = delta.get("content")
-                if content:
-                    cleaned = _strip_reasoning_tags(content)
-                    if cleaned:
-                        accumulated_text.append(cleaned)
-                        yield StreamEvent(type=StreamEventType.TEXT_DELTA, text=cleaned)
-
-                # Tool call deltas.
-                for tc_delta in delta.get("tool_calls") or []:
-                    idx = tc_delta.get("index", 0)
-                    tc_id = tc_delta.get("id", "")
-                    func = tc_delta.get("function") or {}
-
-                    if tc_id:
-                        tool_ids[idx] = tc_id
-                    if func.get("name"):
-                        tool_names[idx] = func["name"]
-                    partial_args.setdefault(idx, "")
-                    partial_args[idx] += func.get("arguments", "")
-
-                # When a tool call finishes, emit the complete TOOL_CALL event.
-                if finish_reason == "tool_calls":
-                    for event in _emit_tool_calls(partial_args, tool_ids, tool_names):
-                        yield event
-                    tool_calls_emitted = True
-
-            # A server that ends the stream without a `finish_reason:
-            # "tool_calls"` chunk still chose the tool — the deltas arrived and
-            # were assembled. Emitting only on the finish marker silently threw
-            # that choice away: the agent saw a turn with no tool call, stopped
-            # after one iteration, and produced neither the tool's evidence nor
-            # an outcome block. Trust the accumulated call, not the marker.
-            #
-            # Except on "length": there the model was cut off mid-call, so the
-            # arguments are a truncated JSON fragment. Recovering that would
-            # parse to `{}` and invoke the tool with no arguments at all —
-            # worse than not calling it, and a way to turn a truncated
-            # generation into a real side effect.
-            #
-            # The turn itself is then reported as MAX_TOKENS below, and the
-            # agent refuses it: dropping the call and carrying on would read as
-            # the model having decided not to act.
-            if finish_reason == "length" and tool_names and not tool_calls_emitted:
-                logger.error(
-                    "openai-compatible: %d tool call(s) %s were truncated by the "
-                    "output limit; their arguments are incomplete and they are not run",
-                    len(tool_names),
-                    sorted(tool_names.values()),
-                )
-            elif tool_names and not tool_calls_emitted:
-                logger.warning(
-                    "openai-compatible: stream ended with finish_reason=%r but "
-                    "carried %d assembled tool call(s) %s — emitting them anyway",
-                    finish_reason,
-                    len(tool_names),
-                    sorted(tool_names.values()),
-                )
-                for event in _emit_tool_calls(partial_args, tool_ids, tool_names):
-                    yield event
-
-            # Same reasoning as the non-streaming path: a stream that produced
-            # neither text nor a tool call leaves the agent loop with nothing to
-            # act on, and the cause is not recoverable after the fact.
-            # A stream that ends with neither [DONE] nor a finish_reason was cut
-            # off, not answered. Bifröst used to end the stream this way when the
-            # provider rejected the request after the 200 was sent; reading that
-            # as an empty answer let a resident's schema repair invent an outcome
-            # and consume the operator's reply.
-            if not saw_done and finish_reason is None:
-                raise LLMError(
-                    f"OpenAI-compatible stream for {model or self._default_model!r} ended "
-                    "before completion (no [DONE] and no finish_reason); the server "
-                    "aborted the response"
-                )
-            if not "".join(accumulated_text).strip() and not tool_names:
-                logger.warning(
-                    "openai-compatible: empty stream model=%s finish_reason=%s "
-                    "content_deltas=%d content_len=%d reasoning_deltas=%d "
-                    "reasoning_len=%d tool_call_indices=%d reasoning_head=%r",
-                    model or self._default_model,
-                    finish_reason,
-                    len(accumulated_text),
-                    len("".join(accumulated_text)),
-                    len(accumulated_reasoning),
-                    len("".join(accumulated_reasoning)),
-                    len(tool_names),
-                    "".join(accumulated_reasoning)[:400],
-                )
-            else:
-                # The agent loop streams; `generate` only serves reflection. A
-                # turn that answers in prose, calls nothing and omits the
-                # outcome block looks like success here and fails two calls
-                # later in schema repair, so record the shape of every stream.
-                text = "".join(accumulated_text)
-                logger.info(
-                    "openai-compatible: stream done model=%s finish_reason=%s "
-                    "content_len=%d reasoning_len=%d reasoning_details=%d tool_calls=%d "
-                    "tool_names=%s content_head=%r content_tail=%r",
-                    model or self._default_model,
-                    finish_reason,
-                    len(text),
-                    len("".join(accumulated_reasoning)),
-                    reasoning_details_received,
-                    len(tool_names),
-                    sorted(tool_names.values()),
-                    text[:200],
-                    text[-200:],
-                )
-
-            if finish_reason == "length":
-                yield StreamEvent(
-                    type=StreamEventType.MESSAGE_DONE, stop_reason=StopReason.MAX_TOKENS
-                )
-
-            # Emit a MESSAGE_DONE with estimated usage when the API did not send one.
-            if not usage_emitted:
-                input_text = (
-                    _system_to_string(system)
-                    + " "
-                    + " ".join(str(m.get("content", "")) for m in messages)
-                )
-                output_text = "".join(accumulated_text)
+            # Usage-only chunk (stream_options: include_usage)
+            usage_raw = event_data.get("usage")
+            if usage_raw:
+                usage_emitted = True
                 yield StreamEvent(
                     type=StreamEventType.MESSAGE_DONE,
                     usage=_normalise_usage(
-                        {},
-                        input_text=input_text,
-                        output_text=output_text,
+                        usage_raw,
                         reasoning_text="".join(accumulated_reasoning),
                     ),
                 )
+                continue
+
+            choices = event_data.get("choices") or []
+            if not choices:
+                continue
+
+            choice = choices[0]
+            delta = choice.get("delta") or {}
+            finish_reason = choice.get("finish_reason")
+
+            reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+            if reasoning:
+                accumulated_reasoning.append(reasoning)
+                yield StreamEvent(type=StreamEventType.THINKING, text=reasoning)
+
+            reasoning_details = _reasoning_details_of(delta)
+            if reasoning_details:
+                reasoning_details_received += len(reasoning_details)
+                yield StreamEvent(
+                    type=StreamEventType.REASONING_DETAILS,
+                    reasoning_details=reasoning_details,
+                )
+
+            # Text content delta.
+            content = delta.get("content")
+            if content:
+                cleaned = _strip_reasoning_tags(content)
+                if cleaned:
+                    accumulated_text.append(cleaned)
+                    yield StreamEvent(type=StreamEventType.TEXT_DELTA, text=cleaned)
+
+            # Tool call deltas.
+            for tc_delta in delta.get("tool_calls") or []:
+                idx = tc_delta.get("index", 0)
+                tc_id = tc_delta.get("id", "")
+                func = tc_delta.get("function") or {}
+
+                if tc_id:
+                    tool_ids[idx] = tc_id
+                if func.get("name"):
+                    tool_names[idx] = func["name"]
+                partial_args.setdefault(idx, "")
+                partial_args[idx] += func.get("arguments", "")
+
+            # When a tool call finishes, emit the complete TOOL_CALL event.
+            if finish_reason == "tool_calls":
+                for event in _emit_tool_calls(partial_args, tool_ids, tool_names):
+                    yield event
+                tool_calls_emitted = True
+
+        # A server that ends the stream without a `finish_reason:
+        # "tool_calls"` chunk still chose the tool — the deltas arrived and
+        # were assembled. Emitting only on the finish marker silently threw
+        # that choice away: the agent saw a turn with no tool call, stopped
+        # after one iteration, and produced neither the tool's evidence nor
+        # an outcome block. Trust the accumulated call, not the marker.
+        #
+        # Except on "length": there the model was cut off mid-call, so the
+        # arguments are a truncated JSON fragment. Recovering that would
+        # parse to `{}` and invoke the tool with no arguments at all —
+        # worse than not calling it, and a way to turn a truncated
+        # generation into a real side effect.
+        #
+        # The turn itself is then reported as MAX_TOKENS below, and the
+        # agent refuses it: dropping the call and carrying on would read as
+        # the model having decided not to act.
+        if finish_reason == "length" and tool_names and not tool_calls_emitted:
+            logger.error(
+                "openai-compatible: %d tool call(s) %s were truncated by the "
+                "output limit; their arguments are incomplete and they are not run",
+                len(tool_names),
+                sorted(tool_names.values()),
+            )
+        elif tool_names and not tool_calls_emitted:
+            logger.warning(
+                "openai-compatible: stream ended with finish_reason=%r but "
+                "carried %d assembled tool call(s) %s — emitting them anyway",
+                finish_reason,
+                len(tool_names),
+                sorted(tool_names.values()),
+            )
+            for event in _emit_tool_calls(partial_args, tool_ids, tool_names):
+                yield event
+
+        # Same reasoning as the non-streaming path: a stream that produced
+        # neither text nor a tool call leaves the agent loop with nothing to
+        # act on, and the cause is not recoverable after the fact.
+        # A stream that ends with neither [DONE] nor a finish_reason was cut
+        # off, not answered. Bifröst used to end the stream this way when the
+        # provider rejected the request after the 200 was sent; reading that
+        # as an empty answer let a resident's schema repair invent an outcome
+        # and consume the operator's reply.
+        if not saw_done and finish_reason is None:
+            raise StreamIncompleteError(
+                f"OpenAI-compatible stream for {model or self._default_model!r} ended "
+                "before completion (no [DONE] and no finish_reason); the server "
+                "aborted the response"
+            )
+        if not "".join(accumulated_text).strip() and not tool_names:
+            logger.warning(
+                "openai-compatible: empty stream model=%s finish_reason=%s "
+                "content_deltas=%d content_len=%d reasoning_deltas=%d "
+                "reasoning_len=%d tool_call_indices=%d reasoning_head=%r",
+                model or self._default_model,
+                finish_reason,
+                len(accumulated_text),
+                len("".join(accumulated_text)),
+                len(accumulated_reasoning),
+                len("".join(accumulated_reasoning)),
+                len(tool_names),
+                "".join(accumulated_reasoning)[:400],
+            )
+        else:
+            # The agent loop streams; `generate` only serves reflection. A
+            # turn that answers in prose, calls nothing and omits the
+            # outcome block looks like success here and fails two calls
+            # later in schema repair, so record the shape of every stream.
+            text = "".join(accumulated_text)
+            logger.info(
+                "openai-compatible: stream done model=%s finish_reason=%s "
+                "content_len=%d reasoning_len=%d reasoning_details=%d tool_calls=%d "
+                "tool_names=%s content_head=%r content_tail=%r",
+                model or self._default_model,
+                finish_reason,
+                len(text),
+                len("".join(accumulated_reasoning)),
+                reasoning_details_received,
+                len(tool_names),
+                sorted(tool_names.values()),
+                text[:200],
+                text[-200:],
+            )
+
+        if finish_reason == "length":
+            yield StreamEvent(type=StreamEventType.MESSAGE_DONE, stop_reason=StopReason.MAX_TOKENS)
+
+        # Emit a MESSAGE_DONE with estimated usage when the API did not send one.
+        if not usage_emitted:
+            input_text = (
+                _system_to_string(system)
+                + " "
+                + " ".join(str(m.get("content", "")) for m in messages)
+            )
+            output_text = "".join(accumulated_text)
+            yield StreamEvent(
+                type=StreamEventType.MESSAGE_DONE,
+                usage=_normalise_usage(
+                    {},
+                    input_text=input_text,
+                    output_text=output_text,
+                    reasoning_text="".join(accumulated_reasoning),
+                ),
+            )
 
     async def generate(
         self,
@@ -810,9 +809,7 @@ class OpenAICompatibleAdapter(LLMPort):
             thinking=thinking,
         )
 
-        async with httpx.AsyncClient(
-            headers=await self._request_headers(), timeout=self._timeout
-        ) as client:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await self._post_with_retry(client, payload, stream=False)
 
         if response.status_code != 200:

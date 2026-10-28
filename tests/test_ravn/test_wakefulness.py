@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+
+import pytest
+
 from ravn.adapters.skill.file_registry import FileSkillRegistry
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.resident_learning import (
@@ -338,3 +343,259 @@ async def test_guarded_promotion_candidates_become_review_items(tmp_path) -> Non
     await machine.dream()
     assert len(reloaded.list(kind="skill_promotion")) == 1
     assert len(await recorder.of_type(registry.ODIN_REVIEW_REQUESTED)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Persisted dream time: a restart does not postpone the next dream
+# ---------------------------------------------------------------------------
+
+
+def _persisted_machine(tmp_path, *, wall_now: float) -> tuple[ResidentWakefulness, ManualClock]:
+    clock = ManualClock()
+    machine = ResidentWakefulness(
+        identity=_identity(),
+        skills=_skills(tmp_path),
+        publisher=InProcessBus(),
+        dream_interval_seconds=100.0,
+        dream_min_idle_seconds=20.0,
+        clock=clock,
+        state_path=tmp_path / "state" / "consolidation_dream_state.json",
+        wall_clock=lambda: wall_now,
+    )
+    return machine, clock
+
+
+async def test_resident_with_no_recorded_dream_dreams_at_the_first_idle_tick(tmp_path) -> None:
+    machine, clock = _persisted_machine(tmp_path, wall_now=1_000.0)
+    await machine._transition("watching", reason="test start")
+
+    clock.advance(21.0)
+    await machine.tick()
+
+    assert (tmp_path / "state" / "consolidation_dream_state.json").exists()
+    assert machine.state == "watching"
+    saved = (tmp_path / "state" / "consolidation_dream_state.json").read_text()
+    assert '"last_dream_at": 1000.0' in saved
+
+
+async def test_restart_keeps_counting_from_the_recorded_dream(tmp_path) -> None:
+    state = tmp_path / "state" / "consolidation_dream_state.json"
+    state.parent.mkdir()
+    state.write_text('{"last_dream_at": 1000.0}', encoding="utf-8")
+
+    # Restarted 90s after the last dream: due 10s later, not a full interval later.
+    machine, clock = _persisted_machine(tmp_path, wall_now=1_090.0)
+    await machine._transition("watching", reason="test start")
+    clock.advance(9.0)
+    machine.notify_activity()
+    clock.advance(21.0)
+    await machine.tick()
+
+    assert '"last_dream_at": 1090.0' in state.read_text()
+
+
+async def test_restart_soon_after_a_dream_does_not_dream_again(tmp_path) -> None:
+    state = tmp_path / "state" / "consolidation_dream_state.json"
+    state.parent.mkdir()
+    state.write_text('{"last_dream_at": 1000.0}', encoding="utf-8")
+
+    machine, clock = _persisted_machine(tmp_path, wall_now=1_010.0)
+    await machine._transition("watching", reason="test start")
+    clock.advance(21.0)
+    await machine.tick()
+
+    assert state.read_text() == '{"last_dream_at": 1000.0}'
+
+
+def test_unreadable_dream_state_raises_with_remedy(tmp_path) -> None:
+    state = tmp_path / "state" / "consolidation_dream_state.json"
+    state.parent.mkdir()
+    state.write_text("not json", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="delete it to dream at the next idle minute"):
+        _persisted_machine(tmp_path, wall_now=1_000.0)
+
+
+# ---------------------------------------------------------------------------
+# Dream outcome: published, persisted, and republished as a snapshot
+# ---------------------------------------------------------------------------
+
+
+def _reporting_machine(
+    tmp_path, *, bus: InProcessBus, wall_now: list[float], tool_curator=None
+) -> tuple[ResidentWakefulness, ManualClock]:
+    clock = ManualClock()
+    machine = ResidentWakefulness(
+        identity=_identity(),
+        skills=_skills(tmp_path),
+        publisher=bus,
+        tool_curator=tool_curator,
+        dream_interval_seconds=100.0,
+        dream_min_idle_seconds=20.0,
+        dream_snapshot_interval_seconds=50.0,
+        clock=clock,
+        state_path=tmp_path / "state" / "consolidation_dream_state.json",
+        wall_clock=lambda: wall_now[0],
+    )
+    return machine, clock
+
+
+class _RetiringToolCurator:
+    def __init__(self, clock: list[ManualClock]) -> None:
+        self._clock = clock
+
+    async def curate(self) -> dict:
+        self._clock[0].advance(42.5)
+        return {
+            "installed_before": 3,
+            "retired": [{"name": "probe_v1", "reason": "superseded", "detail": "v2"}],
+            "kept": 2,
+        }
+
+
+class _FailingToolCurator:
+    async def curate(self) -> dict:
+        raise RuntimeError("tool archive unwritable")
+
+
+async def test_completed_dream_reports_timing_and_persists_its_outcome(tmp_path) -> None:
+    bus = InProcessBus()
+    recorder = BusRecorder(bus)
+    await bus.subscribe(["*"], recorder)
+    clocks: list[ManualClock] = []
+    machine, clock = _reporting_machine(
+        tmp_path, bus=bus, wall_now=[1_000.0], tool_curator=_RetiringToolCurator(clocks)
+    )
+    clocks.append(clock)
+
+    await machine.dream()
+
+    started = (await recorder.of_type("valkyrie.dream.started"))[0].payload
+    completed = (await recorder.of_type("valkyrie.dream.completed"))[0].payload
+    assert started["started_at"] == "1970-01-01T00:16:40+00:00"
+    assert completed["status"] == "completed"
+    assert completed["dream_id"] == started["dream_id"]
+    assert completed["started_at"] == started["started_at"]
+    assert completed["duration_seconds"] == 42.5
+    assert completed["error"] == ""
+    assert completed["learned_tools"]["retired"][0]["name"] == "probe_v1"
+
+    state = json.loads((tmp_path / "state" / "consolidation_dream_state.json").read_text())
+    assert state["last_dream"] == machine.last_dream
+    assert completed == {
+        "environment_id": "cluster-a",
+        "environment_type": "k8s",
+        "valkyrie_id": "valkyrie:k8s-a",
+        **machine.last_dream,
+    }
+
+
+async def test_failed_dream_is_published_with_its_error_and_reraised(tmp_path) -> None:
+    bus = InProcessBus()
+    recorder = BusRecorder(bus)
+    await bus.subscribe(["*"], recorder)
+    machine, _clock = _reporting_machine(
+        tmp_path, bus=bus, wall_now=[1_000.0], tool_curator=_FailingToolCurator()
+    )
+    await machine._transition("watching", reason="test start")
+
+    with pytest.raises(RuntimeError, match="tool archive unwritable"):
+        await machine.dream()
+
+    failed = await recorder.of_type("valkyrie.dream.failed")
+    assert len(failed) == 1
+    assert failed[0].payload["status"] == "failed"
+    assert failed[0].payload["error"] == "RuntimeError: tool archive unwritable"
+    assert not await recorder.of_type("valkyrie.dream.completed")
+    assert machine.state == "watching"
+    state = json.loads((tmp_path / "state" / "consolidation_dream_state.json").read_text())
+    assert state["last_dream"]["status"] == "failed"
+
+
+async def test_start_snapshot_reports_no_dream_then_the_restored_outcome(tmp_path) -> None:
+    bus = InProcessBus()
+    recorder = BusRecorder(bus)
+    await bus.subscribe(["*"], recorder)
+    machine, _clock = _reporting_machine(tmp_path, bus=bus, wall_now=[1_000.0])
+    await machine.start()
+    await machine.stop()
+    first = await recorder.of_type("valkyrie.dream.snapshot")
+    assert first[0].payload["last_dream"] is None
+    assert first[0].payload["valkyrie_id"] == "valkyrie:k8s-a"
+
+    await machine.dream()
+    outcome = machine.last_dream
+
+    # A restarted resident republishes the outcome it persisted.
+    restarted, _clock = _reporting_machine(tmp_path, bus=bus, wall_now=[1_010.0])
+    assert restarted.last_dream == outcome
+    await restarted.start()
+    await restarted.stop()
+    snapshots = await recorder.of_type("valkyrie.dream.snapshot")
+    assert snapshots[-1].payload["last_dream"] == outcome
+    assert snapshots[-1].correlation_id == outcome["dream_id"]
+
+
+async def test_snapshot_is_republished_once_its_interval_elapses(tmp_path) -> None:
+    bus = InProcessBus()
+    recorder = BusRecorder(bus)
+    await bus.subscribe(["*"], recorder)
+    machine, clock = _reporting_machine(tmp_path, bus=bus, wall_now=[1_000.0])
+
+    await machine._publish_due_dream_snapshot()
+    clock.advance(49.0)
+    await machine._publish_due_dream_snapshot()
+    assert len(await recorder.of_type("valkyrie.dream.snapshot")) == 1
+
+    clock.advance(1.0)
+    await machine._publish_due_dream_snapshot()
+    assert len(await recorder.of_type("valkyrie.dream.snapshot")) == 2
+
+
+def test_dream_state_with_a_non_object_outcome_raises_with_remedy(tmp_path) -> None:
+    state = tmp_path / "state" / "consolidation_dream_state.json"
+    state.parent.mkdir()
+    state.write_text('{"last_dream_at": 1000.0, "last_dream": "done"}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="delete it to dream at the next idle minute"):
+        _persisted_machine(tmp_path, wall_now=1_000.0)
+
+
+class _BlockingToolCurator:
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+
+    async def curate(self) -> dict:
+        self.entered.set()
+        await asyncio.Event().wait()
+        return {}
+
+
+async def test_cancelled_dream_is_not_recorded_as_a_dream(tmp_path) -> None:
+    state = tmp_path / "state" / "consolidation_dream_state.json"
+    state.parent.mkdir()
+    state.write_text('{"last_dream_at": 1000.0, "last_dream": null}', encoding="utf-8")
+    bus = InProcessBus()
+    recorder = BusRecorder(bus)
+    await bus.subscribe(["*"], recorder)
+    curator = _BlockingToolCurator()
+    machine, _clock = _reporting_machine(
+        tmp_path, bus=bus, wall_now=[2_000.0], tool_curator=curator
+    )
+    await machine._transition("watching", reason="test start")
+
+    task = asyncio.create_task(machine.dream())
+    await curator.entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The interrupted pass did not count: the persisted time is unchanged, so a
+    # restart finds the dream still due.
+    assert state.read_text() == '{"last_dream_at": 1000.0, "last_dream": null}'
+    assert machine.last_dream is None
+    assert machine.state == "watching"
+    assert not await recorder.of_type("valkyrie.dream.completed")
+    assert not await recorder.of_type("valkyrie.dream.failed")
+    restarted, _clock = _reporting_machine(tmp_path, bus=bus, wall_now=[2_000.0])
+    assert restarted._clock() - restarted._last_dream_at >= 100.0

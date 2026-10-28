@@ -276,6 +276,7 @@ class TestAnthropicCap:
                 "delta": {"stop_reason": "max_tokens"},
                 "usage": {"output_tokens": 10},
             },
+            {"type": "message_stop"},
         )
         respx.post(f"{_ANTHROPIC}/v1/messages").mock(
             return_value=httpx.Response(200, content=stream)

@@ -2527,7 +2527,7 @@ def create_router(
     @router.delete(
         "/sessions/{session_id}",
         status_code=status.HTTP_204_NO_CONTENT,
-        responses={404: {"model": ErrorResponse}},
+        responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
         tags=["Sessions"],
     )
     async def delete_session(
@@ -2549,6 +2549,12 @@ def create_router(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access denied to session {session_id}",
             )
+        except RuntimeError as exc:
+            # The session's compute could not be removed; the session is kept.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
         if not deleted:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

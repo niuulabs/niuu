@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -42,6 +42,57 @@ class SkillLifecycle:
     failure_count: int = 0
     consecutive_failures: int = 0
     last_used_at: str = ""
+    #: When the first run was recorded. Empty for a skill first run before this
+    #: field existed; ``first_use_wait_bound_seconds`` covers those.
+    first_used_at: str = ""
+    #: For a skill whose first run predates ``first_used_at``: the longest that
+    #: first use can have taken (created to the last use before the field
+    #: existed). An upper bound, frozen at the next run so it never grows.
+    first_use_wait_bound_seconds: float | None = None
+    #: Why an archived skill was archived ("" for a rollback or a manual
+    #: archive), with the detail, the skill that supersedes it, and the
+    #: learned-tool artifact id kept in the archive, so it can be restored.
+    archived_reason: str = ""
+    archived_detail: str = ""
+    superseded_by: str = ""
+    archived_artifact_id: str = ""
+    restore_count: int = 0
+
+    def first_use_evidence(self) -> tuple[float, str] | None:
+        """``(seconds, basis)``: how long this skill waited before its first run.
+
+        ``observed`` when ``first_used_at`` was recorded; ``bound`` when only an
+        upper bound is known (a first run before ``first_used_at`` existed).
+        """
+        created = _parse_stamp(self.created_at)
+        first = _parse_stamp(self.first_used_at)
+        if created is not None and first is not None and first >= created:
+            return (first - created).total_seconds(), "observed"
+        if self.first_use_wait_bound_seconds is not None:
+            return self.first_use_wait_bound_seconds, "bound"
+        bound = _created_to_last_use(self)
+        return (bound, "bound") if bound is not None else None
+
+
+def _parse_stamp(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _created_to_last_use(meta: SkillLifecycle) -> float | None:
+    """Created-to-last-use, for a skill used before ``first_used_at`` existed."""
+    if meta.first_used_at or meta.run_count <= 0:
+        return None
+    created = _parse_stamp(meta.created_at)
+    last = _parse_stamp(meta.last_used_at)
+    if created is None or last is None or last < created:
+        return None
+    return (last - created).total_seconds()
 
 
 class SkillManagementRegistry:
@@ -72,6 +123,10 @@ class SkillManagementRegistry:
         """Return a read-only lifecycle snapshot for capability discovery."""
         meta = self._metadata.get(self._key(name))
         return asdict(meta) if meta is not None else None
+
+    def lifecycle_records(self) -> dict[str, SkillLifecycle]:
+        """Every lifecycle record, keyed by its normalised name (a copy)."""
+        return {key: SkillLifecycle(**asdict(meta)) for key, meta in self._metadata.items()}
 
     async def create(
         self,
@@ -167,11 +222,23 @@ class SkillManagementRegistry:
         self._save()
         return updated
 
-    async def archive(self, name: str) -> SkillLifecycle:
+    async def archive(
+        self,
+        name: str,
+        *,
+        reason: str = "",
+        detail: str = "",
+        superseded_by: str = "",
+        artifact_id: str = "",
+    ) -> SkillLifecycle:
         await self._require_skill(name, include_archived=True)
         meta = self._metadata_for_name(name)
         meta.status = "archived"
         meta.archived_at = datetime.now(UTC).isoformat()
+        meta.archived_reason = reason
+        meta.archived_detail = detail
+        meta.superseded_by = superseded_by
+        meta.archived_artifact_id = artifact_id
         meta.updated_at = meta.archived_at
         self._save()
         return meta
@@ -179,8 +246,14 @@ class SkillManagementRegistry:
     async def restore(self, name: str) -> SkillLifecycle:
         await self._require_skill(name, include_archived=True)
         meta = self._metadata_for_name(name)
+        if meta.status == "archived":
+            meta.restore_count += 1
         meta.status = "active"
         meta.archived_at = ""
+        meta.archived_reason = ""
+        meta.archived_detail = ""
+        meta.superseded_by = ""
+        meta.archived_artifact_id = ""
         # Same reasoning as update(): a restored skill gets a clean slate,
         # not the failure streak that caused the earlier archive/rollback.
         meta.consecutive_failures = 0
@@ -272,6 +345,12 @@ class SkillManagementRegistry:
     ) -> SkillLifecycle:
         await self._require_skill(name, include_archived=True)
         meta = self._metadata_for_name(name)
+        if meta.run_count == 0 and not meta.first_used_at:
+            meta.first_used_at = datetime.now(UTC).isoformat()
+        elif meta.first_use_wait_bound_seconds is None:
+            # First run since first_used_at existed, of a skill used before:
+            # freeze what is known about its first use before last_used moves.
+            meta.first_use_wait_bound_seconds = _created_to_last_use(meta)
         meta.run_count += 1
         if success:
             meta.success_count += 1
@@ -370,8 +449,11 @@ class SkillManagementRegistry:
             data = json.loads(self._metadata_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return
+        known = {item.name for item in fields(SkillLifecycle)}
         self._metadata = {
-            key: SkillLifecycle(**value) for key, value in data.items() if isinstance(value, dict)
+            key: SkillLifecycle(**{k: v for k, v in value.items() if k in known})
+            for key, value in data.items()
+            if isinstance(value, dict)
         }
 
     def _save(self) -> None:

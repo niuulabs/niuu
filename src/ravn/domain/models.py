@@ -71,6 +71,12 @@ class StreamEventType(StrEnum):
     THINKING = "thinking"  # Provider reasoning content
     REASONING_DETAILS = "reasoning_details"  # Opaque reasoning to hand back next step
     PROVIDER_ITEMS = "provider_items"  # The turn's verbatim output in the provider's protocol
+    # The connection to the model dropped mid-answer and the request is being
+    # re-issued. Everything yielded before this event belonged to an answer
+    # that will not complete and must be discarded -- text, thinking, tool
+    # calls, provider items and usage alike -- because the re-issued request
+    # starts the answer over (a model does not repeat itself word for word).
+    STREAM_RESTART = "stream_restart"
 
 
 # ---------------------------------------------------------------------------

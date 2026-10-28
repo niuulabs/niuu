@@ -45,6 +45,13 @@ class LLMPort(ABC):
         provider has said why it stopped; ``StopReason.MAX_TOKENS`` there means
         the answer, and any tool call in it, was cut off.
 
+        A ``STREAM_RESTART`` event means the connection dropped mid-answer and
+        the adapter re-issued the request within ``llm.gateway_outage_window_seconds``:
+        the consumer must discard everything it received since the stream began
+        (text, thinking, tool calls, provider items, usage) and take the events
+        that follow as the whole answer. A consumer must not act on a tool call
+        before the stream completes, or a restarted answer could run it twice.
+
         ``max_tokens`` caps the answer. ``None`` sends no cap, so the provider's
         own limit applies (the model's maximum output, or the rest of its
         context window); an adapter whose protocol requires the parameter

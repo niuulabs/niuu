@@ -27,8 +27,9 @@ import httpx
 from niuu.forge_mcp.credentials import effective_grants
 from niuu.forge_mcp.models import ForgeApiError, ForgeMcpLimits
 from niuu.forge_mcp.tools import ForgeMcpToolbox
+from skuld.flock_outcomes import FlockActivityLog
 from skuld.forge_mcp.forge_client import HttpForgeClient
-from skuld.forge_mcp.host import BrokerForgeMcpHost
+from skuld.forge_mcp.host import BrokerForgeMcpFlock, BrokerForgeMcpHost
 from skuld.forge_mcp.skill import (
     FORGE_NOTIFY_SKILL,
     materialize_claude_plugin,
@@ -66,6 +67,7 @@ class ForgeSessionMixin:
     _session_runtime_cache: SessionRuntime | None
     _session_tools_cache: SessionTools | None
     _forge_mcp_toolbox_cache: ForgeMcpToolbox | None
+    _flock_activity: FlockActivityLog | None
 
     @property
     def _session_runtime(self) -> SessionRuntime:
@@ -136,6 +138,12 @@ class ForgeSessionMixin:
         runtime = self._session_runtime
         cfg = self._settings.forge_mcp
         server = self._forge_mcp_server_injected()
+        if self._flock_activity is not None and not server:
+            raise RuntimeError(
+                f"mesh.flock_broker needs the built-in {cfg.server_name!r} MCP server for its "
+                "flock tools, but a configured MCP server of that name replaces it. Rename "
+                "the configured server, or unset mesh.flock_broker"
+            )
         plugin_dirs: tuple[Path, ...] = ()
         codex_roots: tuple[Path, ...] = ()
         if server and cfg.skill_enabled:
@@ -147,7 +155,9 @@ class ForgeSessionMixin:
                 PRESENT_FILE_URL_ENV: f"{self._loopback_base_url()}/api/present-file",
                 BROKER_TOKEN_FILE_ENV: str(runtime.token_file),
             },
-            instructions=capability_instructions(forge_mcp_server=server),
+            instructions=capability_instructions(
+                forge_mcp_server=server, flock_broker=self._flock_activity is not None
+            ),
             loopback_authorization=runtime.authorization,
             claude_plugin_dirs=plugin_dirs,
             codex_skill_roots=codex_roots,
@@ -188,6 +198,13 @@ class ForgeSessionMixin:
                 transcript_max_turns=cfg.transcript_max_turns,
                 transcript_turn_max_chars=cfg.transcript_turn_max_chars,
                 output_max_chars=cfg.output_max_chars,
+            ),
+            flock=(
+                BrokerForgeMcpFlock(
+                    self, self._flock_activity, max_wait_s=cfg.flock_outcome_wait_max_s
+                )
+                if self._flock_activity is not None
+                else None
             ),
         )
         return self._forge_mcp_toolbox_cache

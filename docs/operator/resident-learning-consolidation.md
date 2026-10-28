@@ -24,15 +24,26 @@ the next turn still reported that it could not inspect the patch.
 ## What happens now
 
 1. **Matching by meaning** (`reflection.matching.mode: semantic`). A new
-   candidate is compared with the recorded lessons by embedding similarity.
-   The closest lessons above `similarity_threshold` (at most `max_related`)
-   go to a small judge model, which answers "is this the same lesson?". On a
-   match, the new observation is added to the existing candidate: its session,
-   its evidence note, and its wording under `## Related observations`. If the
-   match is a promoted learning, the learning gets a `last_confirmed` date
-   instead. An evidence note that embeds at or above
+   observation is judged against its *neighbourhood*: the nearest
+   `max_related` learnings and, separately, the nearest `max_related`
+   candidates above `similarity_threshold`. Learnings get their own share so
+   a crowd of paraphrased candidates cannot push the trusted learning out of
+   view. One judge call names every lesson that says the same thing and every
+   one that contradicts it. All matches this resident writes fold into the
+   strongest one, which is a promoted learning if there is one: the new
+   observation's session, evidence note and wording (under
+   `## Related observations`), any verification, and the other matches.
+   The other matches are retired as `merged`. A learning that absorbs an
+   observation gets `last_confirmed`. With no match, the observation becomes a
+   new candidate. An evidence note that embeds at or above
    `evidence_duplicate_similarity` against one already recorded counts as the
    same fact read twice, not a second observation.
+
+   Before 2026-10-27 the judge returned only the *first* match, and candidates
+   and learnings competed for one top-5. A paraphrase often fed a sibling
+   candidate until that candidate promoted beside the learning it duplicated.
+   On noatun that happened in 13 of the 21 promotions in the first day of
+   semantic matching.
 2. **Evidence-weighted promotion**. The agent puts *route recoveries* on
    `ravn.session.ended`. A route recovery is a tool call that failed, followed
    in the same turn by a successful call to the same tool with different
@@ -43,8 +54,13 @@ the next turn still reported that it could not inspect the patch.
    `verified_promotion.route_recovery_promotes: false` to turn this off.
    Speculative lessons still need `candidate_min_repetitions` observations.
 3. **Curation in the consolidation dream** (`reflection.curation.enabled`).
-   This runs at most once every `min_interval_seconds`. It judges up to
-   `max_judgments` similar lesson pairs, then:
+   This runs in every consolidation dream, or at most once per
+   `min_interval_seconds` if that is set. It is incremental. Each lesson not
+   yet marked `curated` has its neighbourhood judged once, strongest lesson
+   first; the lesson is then marked `curated: <time>` and never judged again.
+   The work grows with new lessons, not with all pairs of lessons, so nothing
+   is capped. The old fixed budget of 40 pairs a day only let the backlog
+   grow. The pass then:
    - **merges** the lessons the judge calls the same. The survivor is a
      promoted learning if there is one, otherwise the lesson with the
      strongest evidence. If the merged evidence is enough, the survivor
@@ -54,8 +70,8 @@ the next turn still reported that it could not inspect the patch.
      then more observations, then newer evidence.
    - **prunes** candidates seen once, never verified, and not confirmed again
      within `prune_after_days`.
-   - **rewrites** up to `max_rewrites` promoted learnings into a short
-     `When X, do Y.` rule in a `## Procedure` section.
+   - **rewrites** every promoted learning without one into a short
+     `When X, do Y.` rule in a `## Procedure` section, once per learning.
 
    Nothing is deleted. A retired page keeps its content and gets `status:
    merged|superseded|pruned`, a `merged_into` or `superseded_by` field, and a
@@ -188,10 +204,7 @@ reflection:
     audit_prefix: self-improvement
   curation:
     enabled: true                     # needs resident_wakefulness.enabled
-    min_interval_seconds: 86400
-    max_judgments: 40
-    max_rewrites: 10
-    procedure_max_chars: 280
+    min_interval_seconds: 0           # 0 = every consolidation dream
     prune_after_days: 14
     audit_prefix: learning-curation
 
@@ -217,23 +230,19 @@ it raises.
 
 ## Backfilling existing candidates
 
-Candidates recorded before this existed are consolidated by curation. The
-dream pass judges `max_judgments` pairs per run, so a resident with hundreds
-of candidates (Regin had 214) would take many dreams to work through them.
-Run the backfill once instead, inside the resident pod, after deploying with
-`matching.mode: semantic` and `curation.enabled: true`:
+Lessons recorded before this existed are consolidated by curation: the next
+consolidation dream judges every lesson not yet `curated`, one call each. To
+do it at once rather than waiting for the dream, run the same pass inside the
+resident pod:
 
 ```bash
-KUBECONFIG=~/.kube/kubeconfigs/valhalla.yaml kubectl -n nats exec deploy/regin -c ravn -- ravn learnings-curate --max-judgments 1000
+KUBECONFIG=~/.kube/kubeconfigs/valhalla.yaml kubectl -n nats exec deploy/regin -c ravn -- ravn learnings-curate
 ```
 
-The command runs the same pass the dream runs and prints counts for reviewed,
-judged, merged, superseded, pruned, promoted and rewritten lessons. The audit
-page under `learning-curation/` lists every change and its reason. It is safe
-to rerun: retired lessons are not judged again. Run it once more if the first
-run used its whole judgment budget (`pairs_judged` equal to
-`--max-judgments`). Use `--max-rewrites 0` to consolidate without the
-procedural rewrites.
+It prints counts for reviewed lessons, neighbourhoods judged, and merged,
+superseded, pruned, promoted and rewritten lessons. The audit page under
+`learning-curation/` lists every change and its reason. It is safe to rerun:
+a second run only judges lessons recorded since.
 
 Before trusting the result, check the audit page for supersessions. Each line
 says which evidence decided the contradiction.

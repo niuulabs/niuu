@@ -257,6 +257,21 @@ class TestIdentities:
         assert "dedupe_key" not in wire and "metadata" not in wire
         assert wire["kind"] == "milestone" and isinstance(wire["id"], str)
 
+    def test_wire_exposes_the_odin_review_anchor_or_an_explicit_none(self):
+        question = _notification(
+            metadata={
+                "odin_review_id": "review:q1",
+                "odin_review_decide_path": "/api/v1/ravn/odin/reviews/review%3Aq1/decide",
+                "push_category": "NIUU_RESIDENT_QUESTION",
+            }
+        )
+        wire = question.wire()
+        assert wire["odin_review_id"] == "review:q1"
+        assert wire["odin_review_decide_path"] == "/api/v1/ravn/odin/reviews/review%3Aq1/decide"
+        assert "push_category" not in wire and "metadata" not in wire
+        plain = _notification(metadata={"odin_review_id": 7}).wire()
+        assert plain["odin_review_id"] is None and plain["odin_review_decide_path"] is None
+
     def test_wire_exposes_the_anchor_turn_or_an_explicit_none(self):
         assert _notification().wire()["turn_id"] == "x"
         assert _notification(metadata={}).wire()["turn_id"] is None

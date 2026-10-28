@@ -235,10 +235,21 @@ the container runtime does not bootstrap host dependencies and the OpenShell run
 verifies its prepared software instead of running its legacy installer. Build and
 validate a pinned recipe against the exact guest image before admitting sessions.
 
+The OpenShell release is pinned: `openshell_version` (default `v0.1.6-pre.5`)
+selects the release, and `openshell_install_sha256` the SHA-256 of that release's
+`install.sh`, which the runtime verifies before running it. A guest without that
+release gets it installed; a recipe-prepared host running another release is
+refused, naming the version to set. The runtime writes a version 2 Podman gateway
+configuration with `allow_driver_config = true` and
+`[openshell.drivers.podman.resource_admission] enabled = false`, because the
+session's workspace and home are host bind mounts in the sandbox driver config.
+
 OpenShell shutdown requests sandbox deletion once, then polls the complete sandbox
 inventory until absence is confirmed. Runtime adapter kwargs control this wait:
 `sandbox_delete_timeout_seconds` (120), `sandbox_delete_poll_interval_seconds` (2),
-and `sandbox_delete_command_timeout_seconds` (30). Each delete/list command is capped
+and `sandbox_delete_command_timeout_seconds` (30); `sandbox_inventory_page_size`
+(1000, the gateway's maximum) sets the `--page-size` of each inventory page,
+followed by page token until the last page. Each delete/list command is capped
 by both its command timeout and the remaining deletion deadline. Keep the deletion
 budget below the controller's overall cleanup and SSH command timeouts. Transient
 transport failures are retried within that budget; permission errors and malformed
@@ -533,7 +544,7 @@ provider implements the same `MachineBootstrap` contract.
 
 The image or provider bootstrap must supply Docker, Python 3.12+, OpenSSH and
 OpenSSL. The runtime bootstrap installs the native gateway from `gateway_image`,
-creates its Docker network and signing keys, validates `gateway_config` with
+creates the guest's callback bridge and signing keys, validates `gateway_config` with
 OpenShell's preflight, and starts the systemd service. No Kubernetes installation
 is involved. Warm readiness requires an authenticated gateway RPC and a cached
 sandbox image, before a session can claim the guest.
@@ -543,15 +554,54 @@ and callback settings, configure:
 
 | Runtime kwarg | Purpose |
 | --- | --- |
-| `gateway_image` | Gateway image matching the supervisor and SDK versions |
+| `gateway_image` | Gateway image of the same OpenShell build as the TOML's supervisor and sandbox runtime images, matching the SDK (the Niuu fork publishes `ghcr.io/jve/openshell/gateway:<commit>`) |
 | `gateway_config` | OpenShell version 2 TOML, selecting the Docker driver |
-| `network_subnet` | Dedicated Docker bridge subnet inside each guest |
+| `network_subnet` | Subnet of the guest's callback bridge; holds the gateway bind address |
+| `callback_network_name` | Name of that Docker bridge (default `niuu-callback`); no sandbox joins it |
 | `gateway_kwargs` | Existing OpenShell policy, OIDC token URL/client ID, sandbox command and resource limits |
 | `gateway_client_secret` | OIDC client secret; supply through `compute.runtime.secret_kwargs_env` |
 
-The TOML must require OIDC authentication, bind its plaintext endpoint to the
-configured Docker bridge address, and enable Docker bind mounts. Controller
-traffic travels through pinned SSH. Configure the gateway signing-key paths as
+The TOML must require OIDC authentication and bind its plaintext endpoint to a
+host address inside `network_subnet` (the callback bridge address; sandbox
+egress cannot reach loopback). Under `[openshell.drivers.docker]` it must:
+
+- set `sandbox_runtime_image` and `supervisor_image` to the same OpenShell build
+  as `gateway_image` (since v0.1.6 the workload runtime and the supervisor are
+  separate images, e.g. `ghcr.io/jve/openshell/sandbox:<commit>` and
+  `ghcr.io/jve/openshell/supervisor:<commit>`);
+- set `grpc_endpoint = "http://<bind address>"`: supervisors run on the host
+  network and otherwise call back on `127.0.0.1`, where this gateway does not
+  listen. Leave `supervisor_network_mode` unset (or `host`);
+- enable `enable_bind_mounts` and `allow_driver_config`: the runtime mounts the
+  guest's workspace and home into the sandbox as host binds through the driver
+  config;
+- disable `[openshell.drivers.docker.resource_admission]` (`enabled = false`):
+  OpenShell cannot label host paths, so admission would reject those mounts;
+- not set `network_name`, which v0.1.6 removed (sandbox workloads run with
+  `network=none`).
+
+```toml
+[openshell]
+version = 2
+
+[openshell.gateway]
+compute_driver = "docker"
+bind_address   = "172.30.0.1:17670"
+disable_tls    = true
+
+[openshell.drivers.docker]
+grpc_endpoint         = "http://172.30.0.1:17670"
+sandbox_runtime_image = "ghcr.io/jve/openshell/sandbox:<commit>"
+supervisor_image      = "ghcr.io/jve/openshell/supervisor:<commit>"
+enable_bind_mounts    = true
+allow_driver_config   = true
+
+[openshell.drivers.docker.resource_admission]
+enabled = false
+```
+
+The runtime refuses a configuration that misses any of these, naming the key to
+set. Controller traffic travels through pinned SSH. Configure the gateway signing-key paths as
 `/var/lib/openshell/jwt/signing.pem`, `public.pem`, and `kid`. The runtime owns the
 per-guest endpoint and workspace/home mounts; do not duplicate those in
 `gateway_kwargs`. Allow the bridge callback address and required model/broker

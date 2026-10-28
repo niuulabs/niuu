@@ -58,6 +58,19 @@ app.kubernetes.io/part-of: volundr
 {{- end }}
 
 {{/*
+Common labels for a resource that belongs to a component other than the API.
+A second `app.kubernetes.io/component` line after "volundr.labels" is a
+duplicate mapping key: Helm keeps the last value, but strict YAML parsers
+(Fleet's kustomize post-render) reject the manifest.
+Usage: include "volundr.componentLabels" (dict "context" . "component" "x")
+*/}}
+{{- define "volundr.componentLabels" -}}
+{{- $labels := include "volundr.labels" .context | fromYaml -}}
+{{- $_ := set $labels "app.kubernetes.io/component" .component -}}
+{{- toYaml $labels -}}
+{{- end }}
+
+{{/*
 Selector labels
 */}}
 {{- define "volundr.selectorLabels" -}}

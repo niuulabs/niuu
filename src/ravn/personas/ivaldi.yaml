@@ -219,7 +219,9 @@ produces:
       required: false
     question:
       type: string
-      description: one precise question when continuation is ask_operator
+      description: >-
+        one precise question; required when continuation is ask_operator or
+        decision is escalate (escalating asks the operator), empty otherwise
       required: false
     open_questions:
       type: array

@@ -85,6 +85,15 @@ spec:
           env:
             - name: NIUU_CONFIG
               value: "/etc/niuu/config.yaml"
+            {{- if .Values.git.provenance.enabled }}
+            # sigstore-python keeps its TUF trust-root cache under XDG_DATA_HOME and
+            # XDG_CACHE_HOME. The runtime user has no home directory, so image
+            # provenance verification needs them somewhere writable.
+            - name: XDG_DATA_HOME
+              value: /tmp/xdg-data
+            - name: XDG_CACHE_HOME
+              value: /tmp/xdg-cache
+            {{- end }}
             - name: DATABASE__HOST
               value: {{ include "niuu-shared.databaseHost" . | quote }}
             - name: DATABASE__PORT

@@ -313,7 +313,7 @@ async def test_semantic_matching_failures_raise_instead_of_recording_a_duplicate
     async def broken_judge(**_kwargs):
         raise RuntimeError("judge offline")
 
-    service._judge.match = broken_judge  # type: ignore[union-attr,method-assign]
+    service._judge.classify = broken_judge  # type: ignore[union-attr,method-assign]
     with pytest.raises(RuntimeError, match="judge offline"):
         await service._process(_session("s-2"))
     assert len(await mimir.list_pages(category="learning-candidates")) == 1
@@ -758,3 +758,175 @@ async def test_recency_injection_stops_at_max_pages(tmp_path: Path) -> None:
     injected = await fetch_relevant_learnings(mimir, repo_slug="", max_pages=1, token_budget=500)
 
     assert injected.count("### ") == 1
+
+
+# ---------------------------------------------------------------------------
+# Consolidation on write: a paraphrase reinforces the learning it restates
+# (noatun, 2026-10-26: 13 of 21 new learnings duplicated an existing one)
+# ---------------------------------------------------------------------------
+
+
+def _promoted(lesson: tuple[str, str], *, session_id: str, evidence: str, count: int = 3) -> str:
+    return (
+        candidate_page(
+            lesson,
+            session_id=session_id,
+            evidence=evidence,
+            date=datetime(2026, 10, 23, tzinfo=UTC),
+        )
+        .replace("category: learning-candidates", "category: learnings")
+        .replace("status: candidate", "status: promoted")
+        .replace("evidence_count: 1", f"evidence_count: {count}")
+    )
+
+
+async def test_a_paraphrase_folds_into_the_learning_not_a_sibling_candidate(
+    tmp_path: Path,
+) -> None:
+    """The judge names a stray candidate and the learning; the learning survives."""
+    mimir = MarkdownMimirAdapter(root=tmp_path)
+    await mimir.upsert_page(
+        "learnings/general/diff.md", _promoted(DIFF_ROUTE, session_id="s-0", evidence="diff ok")
+    )
+    stray = candidate_page(
+        ALTERNATE_ROUTES,
+        session_id="s-1",
+        evidence="the patch route answered",
+        date=datetime(2026, 10, 23, tzinfo=UTC),
+    )
+    await mimir.upsert_page("learning-candidates/general/stray.md", stray)
+    llm = ScriptedLLM([reflection(DISTINCT_HOSTS, "the web host answered after a 403")])
+
+    landed = await _service(mimir, llm)._write_learning(llm.reflections[0], _session("s-2"))
+
+    assert landed == "learnings/general/diff.md"
+    assert [page.path for page in await mimir.list_pages(category="learnings")] == [landed]
+    learning = await mimir.read_page(landed)
+    assert "evidence_count: 3" in learning  # s-0 plus s-1 and s-2
+    assert "last_confirmed:" in learning
+    assert DISTINCT_HOSTS[0] in learning and ALTERNATE_ROUTES[0] in learning
+    folded = await mimir.read_page("learning-candidates/general/stray.md")
+    assert "status: merged" in folded and 'merged_into: "learnings/general/diff.md"' in folded
+    # No page was written for the new observation itself.
+    assert [page.path for page in await mimir.list_pages(category="learning-candidates")] == [
+        "learning-candidates/general/stray.md"
+    ]
+
+
+async def test_a_verified_paraphrase_does_not_mint_a_second_learning(tmp_path: Path) -> None:
+    mimir = MarkdownMimirAdapter(root=tmp_path)
+    await mimir.upsert_page(
+        "learnings/general/diff.md", _promoted(DIFF_ROUTE, session_id="s-0", evidence="diff ok")
+    )
+    llm = ScriptedLLM(
+        [reflection(ALTERNATE_ROUTES, "the .diff route worked after a 403", verified_by_recovery=1)]
+    )
+
+    await _service(mimir, llm)._process(_session("s-1", route_recoveries=[RECOVERY]))
+
+    assert [p.path for p in await mimir.list_pages(category="learnings")] == [
+        "learnings/general/diff.md"
+    ]
+    assert await mimir.list_pages(category="learning-candidates") == []
+    assert "verified: true" in await mimir.read_page("learnings/general/diff.md")
+
+
+async def test_a_paraphrase_of_a_lesson_another_writer_keeps_records_nothing(
+    tmp_path: Path,
+) -> None:
+    mimir = MarkdownMimirAdapter(root=tmp_path)
+    await mimir.upsert_page(
+        "learnings/shared/diff.md", _promoted(DIFF_ROUTE, session_id="s-0", evidence="diff ok")
+    )
+    llm = ScriptedLLM([reflection(ALTERNATE_ROUTES, "the patch route answered")])
+
+    landed = await _service(mimir, llm)._write_learning(llm.reflections[0], _session("s-1"))
+
+    assert landed == "learnings/shared/diff.md"
+    assert await mimir.list_pages(category="learning-candidates") == []
+    assert "s-1" not in await mimir.read_page("learnings/shared/diff.md")
+
+
+async def test_learnings_get_their_own_share_of_the_neighbourhood() -> None:
+    """A crowd of closer candidates cannot push the learning out of the judge's view."""
+    from ravn.adapters.reflection.lesson_consolidation import judge_neighbourhood
+    from ravn.adapters.reflection.lessons import parse_lesson
+
+    def lesson(path: str, text: str) -> object:
+        return parse_lesson(
+            path,
+            f'---\ntitle: "{text}"\nstatus: x\n---\n## What was learned\n{text}\n',
+            updated_at=datetime(2026, 10, 26, tzinfo=UTC),
+        )
+
+    crowd = [lesson(f"learning-candidates/general/{n}.md", "github 403 diff") for n in range(6)]
+    learning = lesson("learnings/general/l.md", "github 403 diff route host")
+    judge = MagicMock()
+    judge.classify = AsyncMock(return_value=MagicMock(same=(), contradicts=(), reason=""))
+
+    await judge_neighbourhood(
+        lessons=LessonIndex(KeywordEmbedding(), batch_size=64),
+        judge=judge,
+        title="github 403",
+        claim="diff",
+        pool=[*crowd, learning],
+        threshold=0.5,
+        per_category=2,
+    )
+
+    shown = judge.classify.await_args.kwargs["lessons"]
+    assert shown[0] is learning
+    assert len(shown) == 3
+
+
+async def test_noatun_duplicate_learnings_collapse_and_stay_collapsed(tmp_path: Path) -> None:
+    """Existing duplicates merge in the dream; the next paraphrase lands on the survivor."""
+    from ravn.adapters.reflection.learning_curation import LearningCurator
+    from ravn.config import LearningCurationConfig
+
+    mimir = MarkdownMimirAdapter(root=tmp_path)
+    for name, lesson, count in (
+        ("diff", DIFF_ROUTE, 9),
+        ("hosts", DISTINCT_HOSTS, 7),
+        ("routes", ALTERNATE_ROUTES, 3),
+    ):
+        await mimir.upsert_page(
+            f"learnings/general/{name}.md",
+            _promoted(lesson, session_id=f"s-{name}", evidence=f"{name} worked", count=count),
+        )
+    index = LessonIndex(KeywordEmbedding(), batch_size=64)
+    llm = ScriptedLLM([reflection(ALTERNATE_ROUTES, "the .patch route answered once more")])
+    judge = LessonJudge(llm, model="judge", max_tokens=256, attempts=2, excerpt_chars=400)
+    curator = LearningCurator(
+        mimir=mimir,
+        lessons=index,
+        judge=judge,
+        config=LearningCurationConfig(enabled=True),
+        similarity_threshold=0.5,
+        max_related=5,
+        evidence_duplicate_similarity=0.9,
+        min_repetitions=3,
+        verified_recovery_promotes=True,
+        procedure_max_chars=600,
+        clock=lambda: datetime(2026, 10, 27, tzinfo=UTC),
+    )
+
+    report = await curator.curate()
+
+    assert sorted(report.paths("merged")) == [
+        "learnings/general/hosts.md",
+        "learnings/general/routes.md",
+    ]
+    active = [
+        page.path
+        for page in await mimir.list_pages(category="learnings")
+        if "status: promoted" in await mimir.read_page(page.path)
+    ]
+    assert active == ["learnings/general/diff.md"]
+
+    service = PostSessionReflectionService(
+        InProcessBus(), mimir, llm, _config(), lessons=index, judge=judge
+    )
+    landed = await service._write_learning(llm.reflections[0], _session("s-new"))
+    assert landed == "learnings/general/diff.md"
+    assert await mimir.list_pages(category="learning-candidates") == []

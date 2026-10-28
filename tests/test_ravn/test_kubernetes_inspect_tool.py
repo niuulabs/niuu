@@ -11,6 +11,20 @@ from ravn.cli.commands import _filter_tools, _groups_for_persona
 from ravn.config import Settings
 
 
+class RawLogResponse:
+    """What kubernetes_asyncio returns for _preload_content=False."""
+
+    def __init__(self, body: str) -> None:
+        self._body = body
+        self.released = False
+
+    async def text(self) -> str:
+        return self._body
+
+    def release(self) -> None:
+        self.released = True
+
+
 class FakeCoreV1:
     def __init__(self) -> None:
         self.event_selector = ""
@@ -82,7 +96,8 @@ class FakeCoreV1:
         )
 
     async def read_namespaced_pod_log(self, name: str, namespace: str, **kwargs):
-        return f"{namespace}/{name} tail={kwargs['tail_lines']}"
+        assert kwargs.pop("_preload_content") is False  # a JSON log comes back as str(dict)
+        return RawLogResponse(f"{namespace}/{name} tail={kwargs['tail_lines']}")
 
     async def read_node(self, name: str):
         return SimpleNamespace(
@@ -164,6 +179,7 @@ async def test_kubernetes_inspect_events_and_logs_are_read_only() -> None:
     assert core.event_selector == "involvedObject.name=checkout-abc,involvedObject.kind=Pod"
     assert json.loads(events.content)["events"][0]["reason"] == "BackOff"
     assert json.loads(logs.content)["tail_lines"] == 50
+    assert json.loads(logs.content)["logs"] == "shop/checkout-abc tail=50"
 
 
 _TELEPORT_KUBECONFIG = """
@@ -438,3 +454,77 @@ def test_k8s_valkyrie_persona_has_no_shell() -> None:
     assert "terminal" not in surviving
     # The replacements have to still be there, or this just removes capability.
     assert {"kubernetes_inspect", "build_tool", "read_file"} <= surviving
+
+
+#: What a container that logs JSON writes, one object per line.
+_JSON_LOG_LINE = '{"level": "info", "msg": "ready", "ok": true, "trace": null}\n'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        # One JSON line: the whole body parses as JSON, which is what the
+        # client used to turn into str(dict).
+        _JSON_LOG_LINE,
+        _JSON_LOG_LINE + '{"level": "warn", "msg": "slow", "ms": 912}\n',
+        "plain text\n" + _JSON_LOG_LINE,
+    ],
+)
+async def test_pod_logs_returns_json_log_lines_as_written(body: str) -> None:
+    """Through the real kubernetes_asyncio client against a local API server."""
+    client = pytest.importorskip("kubernetes_asyncio.client")
+    from aiohttp import web
+
+    requests: list[dict[str, str]] = []
+
+    async def pod_log(request: web.Request) -> web.Response:
+        requests.append(dict(request.query))
+        return web.Response(text=body, content_type="text/plain")
+
+    app = web.Application()
+    app.router.add_get("/api/v1/namespaces/{namespace}/pods/{name}/log", pod_log)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]  # noqa: SLF001
+    configuration = client.Configuration(host=f"http://127.0.0.1:{port}")
+    api_client = client.ApiClient(configuration)
+    try:
+        core = client.CoreV1Api(api_client)
+        tool = KubernetesInspectTool(
+            core_v1=core, apps_v1=FakeAppsV1(), batch_v1=FakeBatchV1(), max_log_lines=50
+        )
+
+        result = await tool.execute(
+            {"action": "pod_logs", "namespace": "nats", "name": "regin-0", "container": "ravn"}
+        )
+    finally:
+        await api_client.close()
+        await runner.cleanup()
+
+    assert not result.is_error
+    logs = json.loads(result.content)["logs"]
+    assert logs == body
+    assert json.loads(logs.splitlines()[-1])["msg"] in {"ready", "slow"}
+    assert requests == [{"tailLines": "50", "container": "ravn"}]
+
+
+@pytest.mark.asyncio
+async def test_read_pod_log_releases_the_response_when_reading_fails() -> None:
+    from ravn.adapters.kubernetes_pod_logs import read_pod_log
+
+    class _BrokenResponse(RawLogResponse):
+        async def text(self) -> str:
+            raise ConnectionResetError("stream cut")
+
+    response = _BrokenResponse("")
+
+    class _Core:
+        async def read_namespaced_pod_log(self, name, namespace, **kwargs):
+            return response
+
+    with pytest.raises(ConnectionResetError):
+        await read_pod_log(_Core(), "regin-0", "nats")
+    assert response.released
