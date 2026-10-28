@@ -1223,7 +1223,10 @@ class ResidentLearningRuntime:
             if not case_id:
                 return "apply_failed", "operator question is missing case_id", None
             detail = item.decision_reason.strip()
-            if item.status == ReviewStatus.REJECTED.value:
+            if item.decision_answer.strip():
+                # A free-text reply goes to the resident exactly as the operator wrote it.
+                answer = item.decision_answer
+            elif item.status == ReviewStatus.REJECTED.value:
                 answer = f"No. {detail}" if detail else "No, do not proceed."
             else:
                 answer = f"Yes. {detail}" if detail else "Yes, proceed."

@@ -327,6 +327,36 @@ async def test_operator_question_review_resumes_exact_resident_case(tmp_path) ->
     await runtime.stop()
 
 
+async def test_free_text_answer_reaches_the_resident_verbatim(tmp_path) -> None:
+    runtime, bus, _store, _skills = _runtime(tmp_path, autonomy_mode="autonomous")
+    answerer = AsyncMock(return_value={"queued": True})
+    runtime.bind_operator_answerer(answerer)
+    recorder = BusRecorder(bus)
+    await bus.subscribe(["*"], recorder)
+    await runtime.start()
+
+    item = _item(
+        kind=ReviewKind.COURT_ESCALATION.value,
+        requested_action="answer_operator_question",
+        evidence={"operator_question": {"case_id": "case-etcd", "question": "Which window?"}},
+    )
+    item.decide(
+        decision="answered",
+        operator_id="human:jozef",
+        answer="Tuesday 02:00 UTC, after the backup.",
+    )
+    await bus.publish(review_decided_event(item, source="ravn:odin-review"))
+    await bus.flush()
+
+    answerer.assert_awaited_once_with(
+        case_id="case-etcd",
+        answer="Tuesday 02:00 UTC, after the backup.",
+    )
+    resolved = await recorder.of_type(registry.ODIN_REVIEW_RESOLVED)
+    assert resolved[0].payload["apply_outcome"] == "applied"
+    await runtime.stop()
+
+
 async def test_acknowledged_morning_brief_resolves_without_side_effects(tmp_path) -> None:
     runtime, bus, _store, _skills = _runtime(tmp_path)
     recorder = BusRecorder(bus)

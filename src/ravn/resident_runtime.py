@@ -48,7 +48,7 @@ from ravn.domain.valkyrie_contracts import (
     asks_operator,
     operator_question_error,
 )
-from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
+from ravn.odin.review import OPERATOR_QUESTION_ACTION, ReviewItem, ReviewKind, ReviewRequester
 from ravn.ports.known_resolutions import KnownResolutionPort
 from ravn.ports.resident_notifications import ResidentNotificationOutboxPort
 from ravn.ports.trigger import TriggerPort
@@ -1529,7 +1529,7 @@ class ResidentRuntime:
         item = ReviewItem(
             item_id=f"review:{ReviewKind.COURT_ESCALATION.value}:operator:{digest}",
             kind=ReviewKind.COURT_ESCALATION.value,
-            requested_action="answer_operator_question",
+            requested_action=OPERATOR_QUESTION_ACTION,
             environment_id=self._environment_id,
             valkyrie_id=self._resident_id,
             title=f"{self._resident_id} asks: {question}",
