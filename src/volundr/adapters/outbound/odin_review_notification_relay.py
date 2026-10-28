@@ -71,6 +71,7 @@ class OdinReviewNotificationRelay:
         *,
         owner_ids: list[str],
         poll_interval_seconds: float,
+        push_sink: str | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         if not owner_ids or any(not owner.strip() for owner in owner_ids):
@@ -85,6 +86,7 @@ class OdinReviewNotificationRelay:
         self._notifications = notifications
         self._owner_ids = list(dict.fromkeys(owner_ids))
         self._poll_interval = poll_interval_seconds
+        self._push_sink = push_sink
         self._clock = clock or (lambda: datetime.now(UTC))
         self._task: asyncio.Task[None] | None = None
         self.stats = OdinReviewRelayStats()
@@ -92,6 +94,14 @@ class OdinReviewNotificationRelay:
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
+        if self._push_sink is not None:
+            # The owners' devices register with whichever Forge their app talks to,
+            # which need not be this one, so registering never gave them this Forge's
+            # "Needs-input pushes" rule and nothing here was ever pushed. Give it to
+            # every configured owner; one who already routes to the sink (or disabled
+            # that rule) is left alone. An unconfigured sink raises.
+            for owner_id in self._owner_ids:
+                await self._notifications.ensure_attention_push_rule(owner_id, self._push_sink)
         self._task = asyncio.create_task(self._run(), name="odin-review-notification-relay")
         logger.info(
             "Following the ODIN review queue for %d owner(s) every %.0fs",

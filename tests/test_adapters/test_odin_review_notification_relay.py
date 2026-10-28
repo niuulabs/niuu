@@ -20,6 +20,7 @@ from volundr.domain.notifications import (
     NotificationRuleMatch,
     NotificationScope,
     NotificationSinkInfo,
+    NotificationValidationError,
     attention_push_rule,
 )
 from volundr.domain.odin_review import (
@@ -522,3 +523,73 @@ async def _until(condition, *, timeout: float = 5.0) -> None:
         if asyncio.get_running_loop().time() > deadline:
             raise AssertionError("condition never became true")
         await asyncio.sleep(0.01)
+
+
+class TestPushRule:
+    """An owner's devices register with the Forge their app talks to, which may not be this
+    one, so the relay itself gives each owner this Forge's needs-input push rule."""
+
+    async def test_start_gives_each_owner_the_push_rule(self):
+        source, state, clock = FakeSource(), MemoryState(), Clock(T0)
+        service, store = _notifications()
+        relay = OdinReviewNotificationRelay(
+            source,
+            state,
+            service,
+            owner_ids=[OWNER, "other-owner"],
+            poll_interval_seconds=30.0,
+            push_sink="push",
+            clock=clock,
+        )
+
+        await relay.start()
+        await relay.stop()
+
+        assert sorted((rule.owner_id, rule.sink) for rule in store.rules.values()) == sorted(
+            [(OWNER, "push"), ("other-owner", "push")]
+        )
+
+    async def test_an_owner_who_already_routes_to_the_sink_is_left_alone(self):
+        source, state, clock = FakeSource(), MemoryState(), Clock(T0)
+        service, store = _notifications()
+        existing = _give_push_rule(store)
+        relay = OdinReviewNotificationRelay(
+            source,
+            state,
+            service,
+            owner_ids=[OWNER],
+            poll_interval_seconds=30.0,
+            push_sink="push",
+            clock=clock,
+        )
+
+        await relay.start()
+        await relay.stop()
+
+        assert list(store.rules.values()) == [existing]
+
+    async def test_an_unconfigured_push_sink_stops_the_start(self):
+        source, state, clock = FakeSource(), MemoryState(), Clock(T0)
+        service, _store = _notifications()
+        relay = OdinReviewNotificationRelay(
+            source,
+            state,
+            service,
+            owner_ids=[OWNER],
+            poll_interval_seconds=30.0,
+            push_sink="apns-nowhere",
+            clock=clock,
+        )
+
+        with pytest.raises(NotificationValidationError):
+            await relay.start()
+
+    async def test_without_push_no_rule_is_added(self):
+        source, state, clock = FakeSource(), MemoryState(), Clock(T0)
+        service, store = _notifications()
+        relay = _relay(source, state, service, clock=clock)
+
+        await relay.start()
+        await relay.stop()
+
+        assert store.rules == {}

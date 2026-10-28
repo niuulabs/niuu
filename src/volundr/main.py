@@ -322,6 +322,7 @@ def _create_odin_review_relay(
         notification_service,
         owner_ids=config.owner_ids,
         poll_interval_seconds=config.poll_interval_seconds,
+        push_sink=settings.push.attention_sink if settings.push.enabled else None,
     )
 
 
