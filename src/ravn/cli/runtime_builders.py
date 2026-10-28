@@ -670,6 +670,65 @@ def _build_embedding_port(settings: Settings) -> Any:
         ) from exc
 
 
+def build_decision_port(settings: Settings) -> Any:
+    """Construct the configured decision model port, observed, or raise with the remedy.
+
+    Returns None only when ``decision.enabled`` is false. A feature that needs the port while it
+    is disabled is a configuration error, raised here rather than discovered per turn.
+    """
+    from ravn.decision_observability import ObservedDecisionPort  # noqa: PLC0415
+    from ravn.dynamic_adapters import import_adapter  # noqa: PLC0415
+
+    config = settings.decision
+    if not config.enabled:
+        if config.resident_first_opinion.enabled:
+            raise ConfigurationError(
+                "decision.resident_first_opinion.enabled is true but decision.enabled is false; "
+                "enable and configure decision, or turn the first opinion off"
+            )
+        return None
+    kwargs = dict(config.kwargs)
+    for kwarg_name, env_var in config.secret_kwargs_env.items():
+        value = os.environ.get(env_var, "").strip()
+        if not value:
+            raise ConfigurationError(
+                f"decision.secret_kwargs_env maps {kwarg_name!r} to {env_var!r}, which is not "
+                "set; inject the secret, or remove the mapping for a keyless backend"
+            )
+        kwargs[kwarg_name] = value
+    try:
+        adapter = import_adapter(config.adapter)(**kwargs)
+    except Exception as exc:
+        raise ConfigurationError(
+            f"decision.enabled is true but the adapter {config.adapter!r} could not be "
+            f"constructed: {exc}. Fix decision.adapter/kwargs, or set decision.enabled=false"
+        ) from exc
+    return ObservedDecisionPort(adapter)
+
+
+def build_resident_first_opinion(settings: Settings, *, has_resident_runtime: bool) -> Any:
+    """The observe-only resident first opinion, or None when it is not enabled.
+
+    Building it also builds the decision port, so a configured but unbuildable backend fails
+    startup whether or not anything consumes it yet.
+    """
+    decision_port = build_decision_port(settings)
+    config = settings.decision.resident_first_opinion
+    if not config.enabled:
+        return None
+    if not has_resident_runtime:
+        raise ConfigurationError(
+            "decision.resident_first_opinion.enabled is true but this daemon runs no resident "
+            "runtime, so there are no resident turns to give an opinion on"
+        )
+    from ravn.resident_first_opinion import ResidentFirstOpinion  # noqa: PLC0415
+
+    return ResidentFirstOpinion(
+        decision_port,
+        max_observation_chars=config.max_observation_chars,
+    )
+
+
 @dataclass(frozen=True)
 class LearningConsolidation:
     """Lesson index and judge shared by reflection, curation, and injection."""
