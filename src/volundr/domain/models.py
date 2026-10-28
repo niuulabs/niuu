@@ -27,7 +27,12 @@ from identity.models import (  # noqa: F401
 )
 from niuu.domain import models as shared_models
 from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
-from tracker.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue  # noqa: F401
+from tracker.models import (  # noqa: F401
+    ProjectMapping,
+    TrackerComment,
+    TrackerConnectionStatus,
+    TrackerIssue,
+)
 from volundr.domain.projects import SessionCoordination
 from volundr.domain.session_read_state import SessionReadState
 

@@ -1682,6 +1682,8 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
     - ``update``        — rewrite an issue's title and/or description (requires
       ``issue_id`` and at least one of ``title``, ``description``).
     - ``update_status`` — update issue status (requires ``issue_id``, ``status``).
+    - ``create_comment`` — add one Markdown comment (requires ``issue_id``, ``body``;
+      optional ``connection_id``).
     """
 
     def __init__(
@@ -1716,7 +1718,8 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
             "optional labels, priority, connection_id) — files a new issue and returns it; "
             "labels must already exist in the tracker; update (issue_id + title and/or "
             "description) — rewrites the ticket, the description replacing the whole body; "
-            "update_status (issue_id + status)."
+            "update_status (issue_id + status); create_comment (issue_id + body, optional "
+            "connection_id) — adds exactly one Markdown comment without changing the issue."
         )
 
     @property
@@ -1726,7 +1729,14 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["search", "get", "create", "update", "update_status"],
+                    "enum": [
+                        "search",
+                        "get",
+                        "create",
+                        "update",
+                        "update_status",
+                        "create_comment",
+                    ],
                     "description": "Operation to perform.",
                 },
                 "issue_id": {
@@ -1752,6 +1762,10 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
                         "(required for create; for update it replaces the whole body)."
                     ),
                 },
+                "body": {
+                    "type": "string",
+                    "description": "Markdown comment body (required for create_comment).",
+                },
                 "team": {
                     "type": "string",
                     "description": (
@@ -1773,8 +1787,8 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
                 "connection_id": {
                     "type": "string",
                     "description": (
-                        "Tracker connection to create in; required when more than one "
-                        "issue tracker is connected (optional, create)."
+                        "Tracker connection to write through; required when more than one "
+                        "issue tracker is connected (optional, create or create_comment)."
                     ),
                 },
             },
@@ -1801,6 +1815,8 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
                     return await self._update_status(
                         client, input.get("issue_id", ""), input.get("status", "")
                     )
+                case "create_comment":
+                    return await self._create_comment(client, input)
                 case _:
                     return _err(f"Unknown action: {action!r}")
         raise AssertionError("Unreachable execute fallthrough")
@@ -1872,6 +1888,23 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
             return _ok(resp.json())
         except Exception as exc:
             return _err(f"Failed to update issue {issue_id}: {_http_failure(exc)}")
+
+    async def _create_comment(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
+        issue_id = input.get("issue_id", "")
+        body = input.get("body", "")
+        if not issue_id or not body:
+            return _err("issue_id and body are required for create_comment")
+        request_body: dict[str, object] = {"body": body}
+        if input.get("connection_id") is not None:
+            request_body["connection_id"] = input["connection_id"]
+        try:
+            resp = await client.post(
+                f"{_TRACKER_ISSUES_PATH}/{issue_id}/comments", json=request_body
+            )
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(f"Failed to create comment on issue {issue_id}: {_http_failure(exc)}")
 
 
 # ---------------------------------------------------------------------------

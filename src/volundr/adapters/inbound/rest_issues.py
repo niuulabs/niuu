@@ -11,7 +11,7 @@ from niuu.domain.models import IntegrationConnection, IntegrationType, Principal
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from niuu.ports.integrations import IntegrationRepository
 from tracker.factory import TrackerFactory
-from tracker.models import TrackerIssue
+from tracker.models import TrackerComment, TrackerIssue
 from tracker.ports import TrackerRequestError
 from volundr.adapters.inbound.auth import extract_principal
 
@@ -73,6 +73,19 @@ class IssueCreateRequest(BaseModel):
         default=None,
         description=(
             "Issue tracker connection to create the issue in. Required when more "
+            "than one enabled issue tracker connection exists."
+        ),
+    )
+
+
+class IssueCommentCreateRequest(BaseModel):
+    """Request body for creating one Markdown comment on a tracker issue."""
+
+    body: str = Field(min_length=1, description="Comment body as Markdown")
+    connection_id: str | None = Field(
+        default=None,
+        description=(
+            "Issue tracker connection to comment through. Required when more "
             "than one enabled issue tracker connection exists."
         ),
     )
@@ -241,6 +254,47 @@ def _build_issues_router(
             ) from exc
         except Exception as exc:
             raise _tracker_failure(conn.id, f"create an issue in {data.team}", exc) from exc
+
+    @router.post(
+        "/issues/{issue_id}/comments",
+        response_model=TrackerComment,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_comment(
+        issue_id: str,
+        data: IssueCommentCreateRequest,
+        principal: Principal = Depends(extract_principal),
+    ) -> TrackerComment:
+        """Create exactly one Markdown comment on an issue in a selected connection."""
+        connections = await integration_repo.list_connections(
+            principal.user_id,
+            integration_type=IntegrationType.ISSUE_TRACKER,
+        )
+        eligible = [
+            conn for conn in connections if conn.enabled and conn.adapter.startswith("volundr.")
+        ]
+        conn = _select_create_connection(eligible, data.connection_id)
+        try:
+            adapter = await tracker_factory.create(conn)
+            issue = await adapter.get_issue(issue_id)
+            if issue is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Issue not found: {issue_id}",
+                )
+            return await adapter.create_comment(issue_id, data.body)
+        except HTTPException:
+            raise
+        except TrackerRequestError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Issue tracker connection {conn.id} cannot create a comment on "
+                    f"issue {issue_id}: {exc}"
+                ),
+            ) from exc
+        except Exception as exc:
+            raise _tracker_failure(conn.id, f"create a comment on issue {issue_id}", exc) from exc
 
     get_path = "/{issue_id}" if deprecated else "/issues/{issue_id}"
 

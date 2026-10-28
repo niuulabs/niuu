@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from tracker.models import TrackerConnectionStatus, TrackerIssue
+from tracker.models import TrackerComment, TrackerConnectionStatus, TrackerIssue
 from tracker.ports import IssueTrackerProvider, TrackerRequestError
 from volundr.adapters.outbound.jira_adf import adf_to_markdown, text_to_adf
 
@@ -358,6 +358,28 @@ class JiraAdapter(IssueTrackerProvider):
         if created is None:
             raise JiraAPIError(f"Created Jira issue {key} could not be read back")
         return created
+
+    async def create_comment(self, issue_id: str, body: str) -> TrackerComment:
+        """Create one Markdown comment and verify Jira echoed its exact body."""
+        response = await self._request(
+            "POST",
+            f"/issue/{issue_id}/comment",
+            json={"body": text_to_adf(body)},
+        )
+        response.raise_for_status()
+        comment = response.json()
+        comment_id = str(comment.get("id") or "")
+        returned_body = adf_to_markdown(comment.get("body"))
+        if not comment_id:
+            raise JiraAPIError(f"Jira did not return a comment ID for issue {issue_id}")
+        if returned_body != body:
+            raise JiraAPIError(
+                f"Jira comment {comment_id} on issue {issue_id} did not echo the exact body"
+            )
+        resolved = await self.get_issue(issue_id)
+        if resolved is None:
+            raise JiraAPIError(f"Jira issue {issue_id} could not be read after comment creation")
+        return TrackerComment(id=comment_id, issue_id=resolved.id, body=body)
 
     @staticmethod
     def _jql_string(value: str) -> str:

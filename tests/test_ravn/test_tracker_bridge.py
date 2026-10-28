@@ -56,3 +56,30 @@ async def test_tracker_bridge_uses_openshell_platform_proxy(tmp_path, monkeypatc
         assert await tracker_bridge._run_search(argparse.Namespace(query="NIU-1086")) == 0
         # OpenShell injects the session's short-lived credential at the proxy.
         assert "Authorization" not in route.calls[0].request.headers
+
+
+@pytest.mark.asyncio
+async def test_tracker_bridge_creates_comment_with_selected_connection(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("SKULD__VOLUNDR_API_URL", "https://proxy.test")
+    monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_TOKEN_FILE", str(tmp_path / "absent"))
+    monkeypatch.delenv("NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", raising=False)
+    monkeypatch.setattr(tracker_bridge, "_settings", Settings)
+    with respx.mock as router:
+        route = router.post("https://proxy.test/api/v1/tracker/issues/NIU-1153/comments").mock(
+            return_value=httpx.Response(
+                201,
+                json={"id": "comment-1", "issue_id": "issue-1", "body": "## proof"},
+            )
+        )
+        result = await tracker_bridge._run_create_comment(
+            argparse.Namespace(issue_id="NIU-1153", body="## proof", connection_id="conn-1")
+        )
+
+    assert result == 0
+    assert json.loads(route.calls[0].request.content) == {
+        "body": "## proof",
+        "connection_id": "conn-1",
+    }
+    assert json.loads(capsys.readouterr().out)["id"] == "comment-1"

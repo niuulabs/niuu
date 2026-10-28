@@ -15,6 +15,7 @@ from volundr.domain.models import (
     IntegrationConnection,
     IntegrationType,
     Principal,
+    TrackerComment,
     TrackerIssue,
 )
 
@@ -626,3 +627,112 @@ class TestCreateIssue:
         ):
             resp = client.post(f"{PREFIX}/issues", json=body, headers=AUTH)
             assert resp.status_code == 422
+
+
+class TestCreateComment:
+    BODY = {"body": "## Verified\n\n- [x] comment created"}
+
+    def test_creates_exactly_one_comment_without_changing_the_issue(self):
+        app, integration_repo, tracker_factory = _make_app()
+        integration_repo.list_connections.return_value = [_make_connection()]
+        adapter = AsyncMock()
+        issue = _make_issue(issue_id="linear-issue-id", status="Todo")
+        adapter.get_issue.return_value = issue
+        adapter.create_comment.return_value = TrackerComment(
+            id="comment-1",
+            issue_id="linear-issue-id",
+            body=self.BODY["body"],
+        )
+        tracker_factory.create.return_value = adapter
+
+        response = TestClient(app).post(
+            f"{PREFIX}/issues/NIU-1153/comments", json=self.BODY, headers=AUTH
+        )
+
+        assert response.status_code == 201
+        assert response.json() == {
+            "id": "comment-1",
+            "issue_id": "linear-issue-id",
+            "body": self.BODY["body"],
+        }
+        adapter.create_comment.assert_awaited_once_with("NIU-1153", self.BODY["body"])
+        adapter.update_issue.assert_not_called()
+        adapter.update_issue_status.assert_not_called()
+        assert issue.description is None
+        assert issue.status == "Todo"
+
+    def test_requires_connection_id_when_several_connections_are_eligible(self):
+        app, integration_repo, tracker_factory = _make_app()
+        integration_repo.list_connections.return_value = [
+            _make_connection(conn_id="conn-1"),
+            _make_connection(conn_id="conn-2"),
+        ]
+
+        response = TestClient(app).post(
+            f"{PREFIX}/issues/NIU-1153/comments", json=self.BODY, headers=AUTH
+        )
+
+        assert response.status_code == 400
+        assert "More than one issue tracker connection" in response.json()["detail"]
+        tracker_factory.create.assert_not_called()
+
+    def test_rejects_invalid_or_missing_connection(self):
+        app, integration_repo, tracker_factory = _make_app()
+        integration_repo.list_connections.return_value = [_make_connection(conn_id="conn-1")]
+        client = TestClient(app)
+
+        invalid = client.post(
+            f"{PREFIX}/issues/NIU-1153/comments",
+            json={**self.BODY, "connection_id": "conn-9"},
+            headers=AUTH,
+        )
+        assert invalid.status_code == 400
+        assert "connection_id conn-9" in invalid.json()["detail"]
+        tracker_factory.create.assert_not_called()
+
+        integration_repo.list_connections.return_value = []
+        missing = client.post(f"{PREFIX}/issues/NIU-1153/comments", json=self.BODY, headers=AUTH)
+        assert missing.status_code == 400
+        assert "No enabled issue tracker connection" in missing.json()["detail"]
+
+    def test_denies_unauthenticated_call(self):
+        app, integration_repo, tracker_factory = _make_app()
+
+        response = TestClient(app).post(f"{PREFIX}/issues/NIU-1153/comments", json=self.BODY)
+
+        assert response.status_code == 401
+        integration_repo.list_connections.assert_not_called()
+        tracker_factory.create.assert_not_called()
+
+    def test_returns_404_without_creating_a_comment_when_issue_is_missing(self):
+        app, integration_repo, tracker_factory = _make_app()
+        integration_repo.list_connections.return_value = [_make_connection()]
+        adapter = AsyncMock()
+        adapter.get_issue.return_value = None
+        tracker_factory.create.return_value = adapter
+
+        response = TestClient(app).post(
+            f"{PREFIX}/issues/missing/comments", json=self.BODY, headers=AUTH
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Issue not found: missing"
+        adapter.create_comment.assert_not_called()
+
+    def test_surfaces_provider_failure_without_reporting_success(self):
+        app, integration_repo, tracker_factory = _make_app()
+        integration_repo.list_connections.return_value = [_make_connection()]
+        adapter = AsyncMock()
+        adapter.get_issue.return_value = _make_issue(issue_id="issue-1")
+        adapter.create_comment.side_effect = RuntimeError("upstream timeout")
+        tracker_factory.create.return_value = adapter
+
+        response = TestClient(app).post(
+            f"{PREFIX}/issues/issue-1/comments", json=self.BODY, headers=AUTH
+        )
+
+        assert response.status_code == 502
+        assert response.json()["detail"] == (
+            "Issue tracker connection conn-1 failed to create a comment on issue issue-1: "
+            "RuntimeError: upstream timeout"
+        )

@@ -46,6 +46,16 @@ class TrackerIssue(BaseModel):
     model_config = {"frozen": False}
 
 
+class TrackerComment(BaseModel):
+    """A provider-attested Markdown comment on a tracker issue."""
+
+    id: str = Field(description="Comment identifier assigned by the tracker provider")
+    issue_id: str = Field(description="Resolved tracker issue identifier")
+    body: str = Field(description="Exact Markdown body created by the provider")
+
+    model_config = {"frozen": False}
+
+
 class ProjectMapping(BaseModel):
     """Map a git repository URL to an issue tracker project."""
 
@@ -88,6 +98,7 @@ __all__ = [
     "IntegrationConnection",
     "IntegrationType",
     "ProjectMapping",
+    "TrackerComment",
     "TrackerConnectionStatus",
     "TrackerIssue",
 ]

@@ -9,7 +9,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from volundr.adapters.inbound.rest_tracker import _build_tracker_router
-from volundr.domain.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue
+from volundr.domain.models import (
+    ProjectMapping,
+    TrackerComment,
+    TrackerConnectionStatus,
+    TrackerIssue,
+)
 from volundr.domain.ports import IssueTrackerProvider, ProjectMappingRepository
 from volundr.domain.services.tracker import (
     TrackerIssueNotFoundError,
@@ -116,6 +121,11 @@ class InMemoryIssueTracker(IssueTrackerProvider):
         )
         self._issues[identifier] = issue
         return issue
+
+    async def create_comment(self, issue_id: str, body: str) -> TrackerComment:
+        if issue_id not in self._issues:
+            raise TrackerIssueNotFoundError(f"Issue not found: {issue_id}")
+        return TrackerComment(id=f"comment-{issue_id}", issue_id=issue_id, body=body)
 
 
 class InMemoryMappingRepository(ProjectMappingRepository):

@@ -533,6 +533,48 @@ class TestTrackerIssueTool:
             assert field in schema["properties"]
         assert "create (title + description + team" in self.tool.description
 
+    def test_input_schema_offers_create_comment(self):
+        schema = self.tool.input_schema
+        assert "create_comment" in schema["properties"]["action"]["enum"]
+        assert "body" in schema["properties"]
+        assert "create_comment (issue_id + body" in self.tool.description
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_create_comment_posts_exact_markdown_to_selected_connection(self):
+        route = respx.post(f"{TRACKER_ISSUES_URL}/NIU-1153/comments").mock(
+            return_value=httpx.Response(
+                201,
+                json={"id": "comment-1", "issue_id": "issue-1", "body": "## proof"},
+            )
+        )
+
+        result = await self.tool.execute(
+            {
+                "action": "create_comment",
+                "issue_id": "NIU-1153",
+                "body": "## proof",
+                "connection_id": "conn-1",
+            }
+        )
+
+        assert not result.is_error
+        assert json.loads(result.content) == {
+            "id": "comment-1",
+            "issue_id": "issue-1",
+            "body": "## proof",
+        }
+        assert json.loads(route.calls.last.request.content) == {
+            "body": "## proof",
+            "connection_id": "conn-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_create_comment_requires_issue_and_body(self):
+        result = await self.tool.execute({"action": "create_comment", "issue_id": "NIU-1153"})
+        assert result.is_error
+        assert "issue_id and body" in result.content
+
     @pytest.mark.asyncio
     @respx.mock
     async def test_create_issue_posts_the_body(self):

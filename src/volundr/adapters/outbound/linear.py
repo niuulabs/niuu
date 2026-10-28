@@ -11,7 +11,7 @@ import logging
 from niuu.adapters.linear import GraphQLError, LinearGraphQLClient
 from niuu.domain.models import LINEAR_API_URL
 from niuu.domain.models import CacheEntry as _CacheEntry  # noqa: F401 — re-exported for tests
-from tracker.models import TrackerConnectionStatus, TrackerIssue
+from tracker.models import TrackerComment, TrackerConnectionStatus, TrackerIssue
 from tracker.ports import IssueTrackerProvider, TrackerRequestError
 
 __all__ = ["LinearAdapter", "_CacheEntry"]
@@ -167,6 +167,19 @@ mutation CreateIssue($input: IssueCreateInput!) {
       labels { nodes { name } }
       priority
       url
+    }
+  }
+}
+"""
+
+_CREATE_COMMENT_QUERY = """
+mutation CreateComment($input: CommentCreateInput!) {
+  commentCreate(input: $input) {
+    success
+    comment {
+      id
+      body
+      issue { id }
     }
   }
 }
@@ -445,6 +458,24 @@ class LinearAdapter(IssueTrackerProvider):
         self._gql.invalidate_cache("search:")
         self._gql.invalidate_cache("recent:")
         return self._node_to_issue(created)
+
+    async def create_comment(self, issue_id: str, body: str) -> TrackerComment:
+        """Create one Markdown comment and verify Linear echoed its exact body."""
+        data = await self._gql.query(
+            _CREATE_COMMENT_QUERY,
+            {"input": {"issueId": issue_id, "body": body}},
+        )
+        result = data.get("commentCreate") or {}
+        comment = result.get("comment") or {}
+        resolved_issue_id = (comment.get("issue") or {}).get("id")
+        if not result.get("success") or not comment.get("id") or not resolved_issue_id:
+            raise GraphQLError(f"Linear did not create a comment on issue {issue_id}: {result}")
+        if comment.get("body") != body:
+            raise GraphQLError(
+                f"Linear comment {comment['id']} on issue {resolved_issue_id} "
+                "did not echo the exact body"
+            )
+        return TrackerComment(id=comment["id"], issue_id=resolved_issue_id, body=body)
 
     async def _resolve_team_id(self, team_key: str) -> str:
         data = await self._gql.query(_TEAM_BY_KEY_QUERY, {"key": team_key})

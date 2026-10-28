@@ -421,6 +421,44 @@ async def test_update_issue_puts_summary_and_adf_description() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_create_comment_posts_markdown_and_returns_provider_attestation() -> None:
+    issue = _issue()
+    comment = respx.post(f"{DIRECT_API}/issue/PROJ-42/comment").mock(
+        return_value=httpx.Response(
+            201,
+            json={
+                "id": "comment-1",
+                "body": {
+                    "type": "doc",
+                    "version": 1,
+                    "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "## proof"}]},
+                        {"type": "paragraph", "content": []},
+                        {
+                            "type": "paragraph",
+                            "content": [{"type": "text", "text": "- [x] created"}],
+                        },
+                    ],
+                },
+            },
+        )
+    )
+    respx.get(f"{DIRECT_API}/issue/PROJ-42").mock(return_value=httpx.Response(200, json=issue))
+    adapter = JiraAdapter(site_url=SITE_URL, email="ada@example.com", api_token="secret")
+    try:
+        created = await adapter.create_comment("PROJ-42", "## proof\n\n- [x] created")
+    finally:
+        await adapter.close()
+
+    assert created.id == "comment-1"
+    assert created.issue_id == "10001"
+    assert created.body == "## proof\n\n- [x] created"
+    body = json.loads(comment.calls.last.request.content)["body"]
+    assert body["content"][0]["content"][0]["text"] == "## proof"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_update_issue_rejects_nothing_out_of_scope_and_jira_validation() -> None:
     respx.get(f"{DIRECT_API}/issue/OTHER-1").mock(return_value=httpx.Response(404))
     respx.get(f"{DIRECT_API}/issue/PROJ-42").mock(return_value=httpx.Response(200, json=_issue()))

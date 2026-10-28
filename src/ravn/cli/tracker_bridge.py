@@ -84,6 +84,19 @@ async def _run_update_status(args: argparse.Namespace) -> int:
         return _write_payload(response.json())
 
 
+async def _run_create_comment(args: argparse.Namespace) -> int:
+    body: dict[str, str] = {"body": args.body}
+    if args.connection_id is not None:
+        body["connection_id"] = args.connection_id
+    async with await _client() as client:
+        response = await client.post(
+            f"{_TRACKER_ISSUES_PATH}/{args.issue_id}/comments",
+            json=body,
+        )
+        response.raise_for_status()
+        return _write_payload(response.json())
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tracker_issue")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -102,6 +115,16 @@ def _build_parser() -> argparse.ArgumentParser:
     update_alias.add_argument("issue_id")
     update_alias.add_argument("status")
 
+    comment = sub.add_parser("create-comment")
+    comment.add_argument("issue_id")
+    comment.add_argument("body")
+    comment.add_argument("--connection-id")
+
+    comment_alias = sub.add_parser("create_comment")
+    comment_alias.add_argument("issue_id")
+    comment_alias.add_argument("body")
+    comment_alias.add_argument("--connection-id")
+
     return parser
 
 
@@ -115,6 +138,8 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(_run_get(args))
         if args.command in {"update-status", "update_status"}:
             return asyncio.run(_run_update_status(args))
+        if args.command in {"create-comment", "create_comment"}:
+            return asyncio.run(_run_create_comment(args))
         raise SystemExit(f"unknown command: {args.command}")
     except httpx.HTTPStatusError as exc:
         payload: object

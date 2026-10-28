@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from uuid import UUID
 
 from niuu.ports.integrations import IntegrationRepository
-from tracker.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue
+from tracker.models import ProjectMapping, TrackerComment, TrackerConnectionStatus, TrackerIssue
 
 
 class TrackerRequestError(ValueError):
@@ -73,6 +73,10 @@ class IssueTrackerProvider(ABC):
         Raises :class:`TrackerRequestError` when the team or any label does
         not exist — nothing requested is ever silently dropped.
         """
+
+    @abstractmethod
+    async def create_comment(self, issue_id: str, body: str) -> TrackerComment:
+        """Create one Markdown comment and return its provider attestation."""
 
 
 class ProjectMappingRepository(ABC):

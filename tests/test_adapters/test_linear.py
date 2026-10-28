@@ -587,3 +587,55 @@ class TestCreateIssue:
             await adapter.update_issue("NIU-1", title="T")
         with pytest.raises(TrackerRequestError, match="Nothing to update"):
             await adapter.update_issue("NIU-1")
+
+
+class TestCreateComment:
+    async def test_creates_one_comment_and_returns_provider_attestation(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.return_value = _mock_response(
+            {
+                "data": {
+                    "commentCreate": {
+                        "success": True,
+                        "comment": {
+                            "id": "comment-1",
+                            "body": "## proof\n\n- [x] created",
+                            "issue": {"id": "issue-1"},
+                        },
+                    }
+                }
+            }
+        )
+
+        comment = await adapter.create_comment("NIU-1153", "## proof\n\n- [x] created")
+
+        assert comment.id == "comment-1"
+        assert comment.issue_id == "issue-1"
+        assert comment.body == "## proof\n\n- [x] created"
+        payload = adapter._gql._client.post.call_args.kwargs["json"]
+        assert payload["variables"] == {
+            "input": {"issueId": "NIU-1153", "body": "## proof\n\n- [x] created"}
+        }
+        assert "commentCreate" in payload["query"]
+
+    async def test_rejects_a_provider_response_that_cannot_attest_exact_body(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.return_value = _mock_response(
+            {
+                "data": {
+                    "commentCreate": {
+                        "success": True,
+                        "comment": {
+                            "id": "comment-1",
+                            "body": "different",
+                            "issue": {"id": "issue-1"},
+                        },
+                    }
+                }
+            }
+        )
+
+        with pytest.raises(LinearAPIError, match="did not echo the exact body"):
+            await adapter.create_comment("NIU-1153", "## proof")
