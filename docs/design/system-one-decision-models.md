@@ -487,7 +487,15 @@ Per request, for every purpose:
   `ravn.decision.score` histograms; and a `ravn.decision.answer` span event
   with the full distribution.
 - One INFO log line per request, for example
-  `decision[resident.first_opinion] model=jev-1.14.0 212ms tier=ambient(0.81) decision=watch(0.64) needs_investigation=0.22`.
+  `decision[resident.first_opinion] model=jev-1.14.0 212ms input_tokens=1583 tier=ambient(0.81) decision=watch(0.64) needs_investigation=0.22`,
+  and one ERROR line per failed request
+  (`decision[resident.first_opinion] failed 30012ms error=ReadTimeout: …`).
+  These lines are the exact per-event record, and the Resident Decisions
+  dashboard counts from them. A resident makes about one decision an hour and
+  restarts on every rollout, so each counter reaches only 1–2 per pod.
+  Prometheus `increase()` drops a new series' first sample, and misses a
+  restart whose counter climbs back to the same value. Counts taken from the
+  metrics therefore under-report.
 
 For the resident first opinion specifically:
 
