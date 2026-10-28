@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -48,6 +49,8 @@ from ravn.ports.decision import (
 )
 from ravn.resident_first_opinion import DECISION_CRITERIA, TIER_CRITERIA
 from ravn.resident_inbox import ResidentInboxSignal, aggregate_summary_lines
+
+logger = logging.getLogger(__name__)
 
 PURPOSE = "resident.slot_opinion"
 #: Severity an operator configured to jump the queue (``critical_reasons``); never gated.
@@ -418,6 +421,20 @@ class ResidentSlotAttention:
                 if resident[question] is not None:
                     attributes["ravn.decision.agreed"] = first == resident[question]
                 telemetry.count("ravn.decision.slot_opinion.comparisons", attributes=attributes)
+            logger.info(
+                "slot_opinion[%s] model=%s eligible=%s skip_probability=%.3f would_skip=%s "
+                "tier jev=%s resident=%s decision jev=%s resident=%s turn_needed=%s",
+                opinion.ref,
+                opinion.model,
+                opinion.eligible,
+                skip_probability,
+                would_skip,
+                opinion.tier,
+                resident["tier"],
+                opinion.decision,
+                resident["decision"],
+                turn_needed,
+            )
             telemetry.record(
                 "ravn.decision.slot_opinion.skip_probability",
                 skip_probability,
