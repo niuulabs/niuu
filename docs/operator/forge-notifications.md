@@ -445,7 +445,9 @@ targets it is the only way a notification reaches a phone.
 **Needs-input push.** With `push.enabled`, the "session needs you" push is delivered by
 this outbox like any other notification, so it is retried, recorded per delivery, and
 honours quiet hours and rate limits. When an owner registers a device
-(`POST /api/v1/forge/devices`), Forge gives them a **Needs-input pushes** rule:
+(`POST /api/v1/forge/devices`; on a Guild this registers the device on every visible
+node, and fails if any node does not accept it, so the app registers again), Forge gives
+them a **Needs-input pushes** rule:
 `attention` notifications raised by Forge itself (`source: system`) → the sink named by
 `push.attention_sink`. Forge adds it only when the owner has no rule for that sink yet
 (enabled or not), so owners opt out by disabling it and keep any rule they made
