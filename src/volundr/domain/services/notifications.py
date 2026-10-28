@@ -399,6 +399,50 @@ class NotificationService(NotificationRecorder):
                 retired += 1
         return retired
 
+    async def record_system_attention(
+        self,
+        owner_id: str,
+        *,
+        dedupe_key: str,
+        title: str,
+        body: str,
+        metadata: Mapping[str, object],
+    ) -> Notification | None:
+        """Record (idempotently) a session-less attention item for ``owner_id``.
+
+        The ``attention`` / ``warning`` / ``system`` item a waiting session raises,
+        for a producer that has no Forge session or resident of its own (the ODIN
+        review queue). The producer names the item (``dedupe_key``), so a replay,
+        or a second replica, records it once. ``None`` when it was already recorded.
+        """
+        candidate = NotificationCandidate(
+            dedupe_key=dedupe_key,
+            owner_id=owner_id,
+            kind=NotificationKind.ATTENTION,
+            severity=NotificationSeverity.WARNING,
+            source=NotificationSource.SYSTEM,
+            title=_bounded(title, MAX_TITLE_CHARS),
+            body=_bounded(body, MAX_BODY_CHARS),
+            metadata=dict(metadata),
+        )
+        created = await self._record([candidate])
+        return created[0] if created else None
+
+    async def retire_system_attention(self, owner_id: str, *, dedupe_key: str) -> bool:
+        """Acknowledge the owner's unread item recorded under ``dedupe_key``.
+
+        Mirrors :meth:`retire_resident_attention` for :meth:`record_system_attention`:
+        only that item is marked read. ``False`` when it was never recorded or is
+        already read.
+        """
+        item_id = notification_id(dedupe_key)
+        if await self._repository.get(item_id) is None:
+            return False
+        if item_id in await self._repository.read_ids(owner_id, [item_id]):
+            return False
+        await self._repository.mark_read(owner_id, item_id)
+        return True
+
     async def submit_for_resident(
         self,
         resident: ResidentRuntime,

@@ -97,6 +97,20 @@ class NotificationResponse(BaseModel):
             "the resident's main room."
         ),
     )
+    odin_review_id: str | None = Field(
+        default=None,
+        description=(
+            "The ODIN review item (a resident's question) this notification asks the "
+            "operator to answer; null for every other notification."
+        ),
+    )
+    odin_review_decide_path: str | None = Field(
+        default=None,
+        description=(
+            "Path that decides odin_review_id, on the host serving the ODIN review queue "
+            "(POST {decision: answered, answer})."
+        ),
+    )
     created_at: datetime
     read: bool
     instance_id: str | None = Field(

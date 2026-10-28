@@ -89,6 +89,7 @@ from volundr.adapters.outbound.config_resident_profiles import (
 from volundr.adapters.outbound.git_registry import create_git_registry
 from volundr.adapters.outbound.linear import LinearAdapter
 from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
+from volundr.adapters.outbound.odin_review_notification_relay import OdinReviewNotificationRelay
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.pg_message_delivery import PostgresMessageDelivery
 from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
@@ -112,6 +113,9 @@ from volundr.adapters.outbound.postgres_notifications import (
     PostgresNotificationDeliveryRepository,
     PostgresNotificationRepository,
     PostgresNotificationRuleRepository,
+)
+from volundr.adapters.outbound.postgres_odin_review_relay import (
+    PostgresOdinReviewRelayStateStore,
 )
 from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
 from volundr.adapters.outbound.postgres_resident_runtimes import (
@@ -283,6 +287,41 @@ def _create_resident_notification_relay(
             reconnect_initial_seconds=config.reconnect_initial_seconds,
             reconnect_max_seconds=config.reconnect_max_seconds,
         ),
+    )
+
+
+def _create_odin_review_relay(
+    settings: Settings,
+    pool: Any,
+    notification_service: NotificationService | None,
+) -> OdinReviewNotificationRelay | None:
+    """Follow the ODIN review queue into the feed (``notifications.odin_review_relay``).
+
+    Enabled but unable to run is fatal: the source adapter is built here, so a bad class
+    path or kwargs stops startup with the remedy instead of leaving questions unannounced.
+    """
+    config = settings.notifications.odin_review_relay
+    if not config.enabled:
+        return None
+    if notification_service is None:
+        raise RuntimeError(
+            "notifications.odin_review_relay.enabled records into the notification feed: "
+            "set notifications.enabled: true, or disable the relay"
+        )
+    if not settings.push.enabled:
+        logger.warning(
+            "ODIN review relay is on but push.enabled is false: resident questions reach the "
+            "notification feed and nothing is pushed to a phone"
+        )
+    source = import_class(config.source.adapter)(
+        **resolve_secret_kwargs(config.source.kwargs, config.source.secret_kwargs_env)
+    )
+    return OdinReviewNotificationRelay(
+        source,
+        PostgresOdinReviewRelayStateStore(pool),
+        notification_service,
+        owner_ids=config.owner_ids,
+        poll_interval_seconds=config.poll_interval_seconds,
     )
 
 
@@ -1136,6 +1175,8 @@ def create_app(
                 notification_service,
             )
             app.state.resident_notification_relay = resident_notification_relay
+            odin_review_relay = _create_odin_review_relay(settings, pool, notification_service)
+            app.state.odin_review_relay = odin_review_relay
             notification_delivery = _create_notification_delivery(
                 settings,
                 pool,
@@ -1973,6 +2014,8 @@ def create_app(
             )
             if notification_delivery is not None:
                 await notification_delivery.start()
+            if odin_review_relay is not None:
+                await odin_review_relay.start()
             if settings.telegram_ingress.enabled:
                 await telegram_ingress.start()
             else:
@@ -2008,6 +2051,8 @@ def create_app(
                     bifrost_catalog_task.cancel()
                     await asyncio.gather(bifrost_catalog_task, return_exceptions=True)
                 await telegram_ingress.stop()
+                if odin_review_relay is not None:
+                    await odin_review_relay.stop()
                 if notification_delivery is not None:
                     await notification_delivery.stop()
                 background_task.cancel()

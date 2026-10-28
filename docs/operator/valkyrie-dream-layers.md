@@ -72,3 +72,20 @@ publishes an already-decided `autonomy_change` ReviewItem; the resident
 applies it and confirms with `valkyrie.state.updated`. Residents persist
 pending requests in `.ravn/review_outbox.json` and re-announce them on
 restart.
+
+### Deciding a review item, and answering a resident's question
+
+`POST /api/v1/ravn/odin/reviews/{id}/decide` takes `{"decision", "reason", "answer",
+"participantId"}`:
+
+- `approved` and `rejected` work for every kind (`rejected` needs a `reason`).
+- `answered` settles an `answer_operator_question` item, the question a resident asks
+  its owner, with the free-text `answer`. The item becomes `approved` (then `applied`
+  once the resident confirms) and carries the text in `decision_answer`. The resident's
+  `submit_operator_answer` receives it verbatim, with no "Yes."/"No." prefix. A
+  blank answer, an answer on any other kind, or an `answer` sent with `approved` or
+  `rejected` is a `422`; an item that is no longer pending is a `409`; an unknown item is
+  a `404`.
+
+Forge turns pending questions into notifications and pushes so the operator's phone can
+answer them: see [Forge notifications](forge-notifications.md#resident-questions-in-the-odin-review-queue).

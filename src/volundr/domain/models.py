@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -264,6 +265,21 @@ class DeviceToken(BaseModel):
     model_config = {"frozen": False}
 
 
+#: Keys a push payload already carries; custom push data must not reuse them.
+PUSH_RESERVED_KEYS = frozenset(
+    {
+        "aps",
+        "session_id",
+        "kind",
+        "request_id",
+        "notification_id",
+        "url",
+        "resident_id",
+        "resident_session_id",
+    }
+)
+
+
 @dataclass(frozen=True)
 class PushMessage:
     """A user-facing push built from a session attention signal."""
@@ -285,6 +301,16 @@ class PushMessage:
     #: A resident's notification: the resident and its channel ("" = main room).
     resident_id: str = ""
     resident_session_id: str = ""
+    #: APNs ``aps.category`` for this push, so the phone can offer inline actions
+    #: ("" = none, the push carries no category).
+    category: str = ""
+    #: Extra custom keys carried in the push payload; never a key the payload already uses.
+    data: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        reserved = PUSH_RESERVED_KEYS & set(self.data)
+        if reserved:
+            raise ValueError(f"Push data may not override payload keys: {sorted(reserved)}")
 
 
 class GitSource(BaseModel):
