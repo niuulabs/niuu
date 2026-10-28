@@ -671,8 +671,15 @@ def _escalation(**overrides) -> dict:
         {},
         {"continuation": "stop", "next_action_timing": "none"},
         {"continuation": "", "next_action_timing": ""},
+        {"decision": "watch", "verdict": "help_needed"},
+        {
+            "decision": "watch",
+            "verdict": "help_needed",
+            "continuation": "stop",
+            "next_action_timing": "none",
+        },
     ],
-    ids=["sleep", "stop", "no-continuation"],
+    ids=["sleep", "stop", "no-continuation", "help-needed-sleep", "help-needed-stop"],
 )
 async def test_an_escalation_with_a_question_reaches_the_operator_whatever_the_continuation(
     tmp_path, overrides

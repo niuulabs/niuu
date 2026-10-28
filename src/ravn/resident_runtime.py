@@ -920,11 +920,14 @@ class ResidentRuntime:
         self._inflight_cases.discard(case_id)
         self._inflight_refs.difference_update(task.resident_inbox_refs)
         control = str(fields.get("continuation") or "").strip().casefold()
-        if _escalates(fields):
-            # Escalating is asking: whatever continuation the model also picked,
-            # a sleep or stop here would leave a case that believes it told a
-            # human, with no question anyone could answer. The question is
-            # guaranteed non-empty by the outcome contract.
+        if _escalates(fields) or asks_operator(fields):
+            # Escalating, asking by continuation, and a help_needed verdict are
+            # all asking: whatever continuation the model also picked, a sleep
+            # or stop here would leave a case that believes it told a human,
+            # with no question anyone could answer. The question is guaranteed
+            # non-empty by the outcome contract. The continuation budget never
+            # swallows a question either: the human's answer is the only way
+            # the case continues.
             return await self._hand_to_operator(
                 task=task,
                 record=record,
@@ -936,7 +939,14 @@ class ResidentRuntime:
                 mandate=mandate,
                 cumulative=cumulative,
                 budget_ref=budget_ref,
-                reason=str(fields.get("reason") or "resident decided to escalate"),
+                reason=str(
+                    fields.get("reason")
+                    or (
+                        "resident decided to escalate"
+                        if _escalates(fields)
+                        else "operator input required"
+                    )
+                ),
             )
         if control == "sleep":
             # No per-case turn or token cap: rechecks are bounded by the daily
@@ -999,25 +1009,6 @@ class ResidentRuntime:
                 turn_ref=turn_ref,
                 budget_ref=budget_ref,
                 reason="model selected stop",
-            )
-
-        if asks_operator(fields):
-            # The continuation budget bounds what the resident does on its own.
-            # A question hands the case to a human, whose answer is the only way
-            # it continues, so the budget never swallows one: stopping here left
-            # the resident needing input with no question anyone could answer.
-            return await self._hand_to_operator(
-                task=task,
-                record=record,
-                fields=fields,
-                case_id=case_id,
-                root_id=root_id,
-                turn_ref=turn_ref,
-                turn_index=turn_index,
-                mandate=mandate,
-                cumulative=cumulative,
-                budget_ref=budget_ref,
-                reason=str(fields.get("reason") or "operator input required"),
             )
 
         if control == "continue":
