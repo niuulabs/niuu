@@ -2716,3 +2716,124 @@ class TestSessionRuntimeServesNodeModels:
         result = await contributor.contribute(session, _pair_flock(runtime_backend=""))
 
         assert result.pod_spec is not None
+
+
+# ---------------------------------------------------------------------------
+# OpenShell personas reach the platform through the sandbox's platform grant
+# ---------------------------------------------------------------------------
+
+#: The platform section valhalla's Ting puts on every flock launch: Kubernetes
+#: personas exchange a projected token at the launching platform.
+_TING_PLATFORM = {
+    "enabled": True,
+    "base_url": "https://volundr.valhalla.example.test",
+    "workload_exchange_url": (
+        "https://volundr.valhalla.example.test/api/v1/tokens/workload/exchange"
+    ),
+    "workload_token_file": "/var/run/secrets/niuu-workload/token",
+    "a2a_trusted_origins": ["https://ting.valhalla.example.test"],
+}
+
+
+def _ting_flock(*, runtime_backend: str = "openshell", **platform) -> SessionContext:  # noqa: ANN003
+    return _pair_flock(
+        runtime_backend=runtime_backend,
+        llm_config={"model": "gpt-5.6-terra"},
+        ravn_config={"gateway": {"platform": {**_TING_PLATFORM, **platform}}},
+    )
+
+
+def _openshell_peer(result, persona: str) -> tuple[dict, dict]:
+    (workload,) = [
+        w for w in result.values["openshell"]["workloads"] if w["name"] == f"ravn-{persona}"
+    ]
+    config = yaml.safe_load(
+        result.values["openshell"]["files"][workload["environment"]["RAVN_CONFIG"]]
+    )
+    return workload, config
+
+
+class TestOpenShellPlatformMediation:
+    """Regression: a Code & Review Flow launched by Ting onto noatun's OpenShell
+    died at the persona's first Codex start with "workload identity proof token
+    not found at '/var/run/secrets/niuu-workload/token'". Ting configures the
+    platform for Kubernetes personas; OpenShell mounts no projected token."""
+
+    async def test_projected_token_settings_are_replaced_by_the_mediated_bearer(
+        self, session
+    ) -> None:
+        result = await _flock_contributor().contribute(session, _ting_flock())
+
+        for persona in ("coder", "reviewer"):
+            workload, config = _openshell_peer(result, persona)
+            platform = config["gateway"]["platform"]
+            assert "workload_token_file" not in platform
+            assert "workload_exchange_url" not in platform
+            assert platform["base_url"] == "https://volundr.valhalla.example.test"
+            assert workload["command"][:2] == ["sh", "-c"]
+            assert "RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN" in workload["command"][2]
+            assert "NIUU_VOLUNDR_ACCESS_TOKEN" in workload["command"][2]
+            assert workload["command"][4:6] == ["python", "-c"]
+        # The overlay kept for regeneration names no projected token either.
+        kept = result.values["flock"]["ravn_config"]["gateway"]["platform"]
+        assert "workload_token_file" not in kept
+
+    async def test_the_platform_origins_are_handed_to_the_platform_grant(self, session) -> None:
+        result = await _flock_contributor().contribute(session, _ting_flock())
+
+        assert result.values["openshell"]["platformApiUrls"] == [
+            "https://volundr.valhalla.example.test",
+            "https://ting.valhalla.example.test",
+        ]
+
+    async def test_the_peer_exports_the_mediated_bearer_and_fails_without_it(
+        self, session, tmp_path
+    ) -> None:
+        import os
+        import subprocess
+
+        result = await _flock_contributor().contribute(session, _ting_flock())
+        workload, _ = _openshell_peer(result, "coder")
+        # Run the export prefix against a probe instead of the Ravn bootstrap.
+        command = [
+            *workload["command"][:4],
+            "sh",
+            "-c",
+            "echo $RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN",
+        ]
+        base_env = {"PATH": os.environ["PATH"]}
+
+        granted = subprocess.run(
+            command,
+            env={**base_env, "NIUU_VOLUNDR_ACCESS_TOKEN": "openshell-placeholder"},
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        ungranted = subprocess.run(
+            command, env=base_env, capture_output=True, text=True, timeout=10
+        )
+
+        assert granted.stdout.strip() == "openshell-placeholder"
+        assert ungranted.returncode != 0
+        assert "no Völundr platform grant" in ungranted.stderr
+
+    async def test_an_enabled_platform_without_a_base_url_fails_the_launch(self, session) -> None:
+        with pytest.raises(ValueError, match=r"gateway\.platform\.base_url"):
+            await _flock_contributor().contribute(session, _ting_flock(base_url=""))
+
+    async def test_a_flock_without_a_platform_is_unchanged(self, session) -> None:
+        result = await _flock_contributor().contribute(
+            session, _pair_flock(llm_config={"model": "gpt-5.6-terra"})
+        )
+
+        workload, config = _openshell_peer(result, "coder")
+        assert workload["command"][:2] == ["python", "-c"]
+        assert "platformApiUrls" not in result.values["openshell"]
+        assert "platform" not in config["gateway"]
+
+    async def test_kubernetes_personas_keep_the_projected_token(self, session) -> None:
+        result = await _flock_contributor().contribute(session, _ting_flock(runtime_backend=""))
+
+        kept = result.values["flock"]["ravn_config"]["gateway"]["platform"]
+        assert kept["workload_token_file"] == "/var/run/secrets/niuu-workload/token"

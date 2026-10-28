@@ -9,8 +9,10 @@ follows that model instead of a table of its own:
   with the platform, APNs topic and environment in its (non-secret) ``config``;
 * the device token in the owner's credential store entry named by the connection.
 
-The connection id and credential name are derived from (owner, token), so a device
-registering again (every app launch) updates the same connection. People see their
+The credential name is derived from (owner, token), and a device registering again
+(every app launch) finds its connection by that name and updates it. The lookup goes
+by name, not id: the HTTP integration repository (a Forge using another cluster's
+shared store) lets the server assign the id, so a derived id is not kept. People see their
 devices under their integrations and can disable or remove one there; a disabled
 connection receives no pushes.
 
@@ -76,10 +78,11 @@ class IntegrationDeviceTokenRepository(DeviceTokenRepository):
         """Store the token in the credential store, then the connection that names it.
 
         The credential is written first: a connection never points at a missing secret.
-        Re-registering keeps the connection's ``enabled`` choice and creation time.
+        Re-registering updates the device's connection and keeps its creation time; a
+        device turned off (any of its connections disabled) stays off. Extra connections
+        for the same device, left by registrations that each created one, are removed.
         """
         name = self.credential_name(device.owner_id, device.token)
-        connection_id = self.connection_id(device.owner_id, device.token)
         await self._credentials.store(
             _CREDENTIAL_OWNER_TYPE,
             device.owner_id,
@@ -88,7 +91,10 @@ class IntegrationDeviceTokenRepository(DeviceTokenRepository):
             {"device_token": device.token},
             metadata={"kind": PUSH_DEVICE_SLUG, "platform": device.platform.value},
         )
-        existing = await self._integrations.get_connection(connection_id)
+        existing = await self._connections_for(device.owner_id, name)
+        kept = existing[0] if existing else None
+        for duplicate in existing[1:]:
+            await self._integrations.delete_connection(duplicate.id)
         now = datetime.now(UTC)
         config: dict[str, str] = {"platform": device.platform.value}
         if device.app_bundle_id:
@@ -96,19 +102,19 @@ class IntegrationDeviceTokenRepository(DeviceTokenRepository):
         if device.environment:
             config["environment"] = device.environment
         connection = IntegrationConnection(
-            id=connection_id,
+            id=kept.id if kept is not None else self.connection_id(device.owner_id, device.token),
             owner_id=device.owner_id,
             integration_type=IntegrationType.MESSAGING,
             adapter="",
             credential_name=name,
             config=config,
-            enabled=existing.enabled if existing is not None else True,
-            created_at=existing.created_at if existing is not None else now,
+            enabled=all(c.enabled for c in existing),
+            created_at=kept.created_at if kept is not None else now,
             updated_at=now,
             slug=PUSH_DEVICE_SLUG,
         )
-        await self._integrations.save_connection(connection)
-        return self._device(connection, device.token)
+        saved = await self._integrations.save_connection(connection)
+        return self._device(saved, device.token)
 
     async def list_for_owner(self, owner_id: str) -> list[DeviceToken]:
         """The owner's enabled push devices whose token is in the credential store."""
@@ -134,14 +140,29 @@ class IntegrationDeviceTokenRepository(DeviceTokenRepository):
         return sorted(devices, key=lambda device: device.updated_at, reverse=True)
 
     async def delete(self, owner_id: str, token: str) -> bool:
-        """Remove the device's connection, then its credential."""
-        connection_id = self.connection_id(owner_id, token)
-        connection = await self._integrations.get_connection(connection_id)
-        if connection is None or connection.owner_id != owner_id or not is_push_device(connection):
+        """Remove the device's connections, then its credential."""
+        name = self.credential_name(owner_id, token)
+        connections = await self._connections_for(owner_id, name)
+        if not connections:
             return False
-        await self._integrations.delete_connection(connection_id)
-        await self._credentials.delete(_CREDENTIAL_OWNER_TYPE, owner_id, connection.credential_name)
+        for connection in connections:
+            await self._integrations.delete_connection(connection.id)
+        await self._credentials.delete(_CREDENTIAL_OWNER_TYPE, owner_id, name)
         return True
+
+    async def _connections_for(
+        self, owner_id: str, credential_name: str
+    ) -> list[IntegrationConnection]:
+        """The owner's push-device connections naming this credential, oldest first."""
+        connections = await self._integrations.list_connections(
+            owner_id, integration_type=IntegrationType.MESSAGING
+        )
+        matches = [
+            connection
+            for connection in connections
+            if is_push_device(connection) and connection.credential_name == credential_name
+        ]
+        return sorted(matches, key=lambda connection: connection.created_at)
 
     @staticmethod
     def _device(connection: IntegrationConnection, token: str) -> DeviceToken:

@@ -162,12 +162,13 @@ DEFAULT_SANDBOX_IMAGE = "ghcr.io/niuulabs/skuld:openshell-codex-openbao-20260709
 DEFAULT_SANDBOX_COMMAND = ["/usr/local/bin/openshell-run-installed-skuld"]
 DEFAULT_SERVICE_PORT = 9200
 READY_POLL_INTERVAL = 1.0
-#: How long a session's sandbox delete may take, the DeleteSandbox call included.
-#: The OpenShell Kubernetes driver answers DeleteSandbox only once the workload
-#: Pod has gone (its 30s termination grace plus one 30s Kubernetes API timeout)
-#: and it has confirmed the Sandbox CR is gone (another API timeout). A flock Pod
-#: whose processes do not exit on SIGTERM takes that whole grace period.
-DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS = 90.0
+#: How long a session's sandbox delete may take, the DeleteSandbox call and the
+#: wait for its record to go together. The OpenShell Kubernetes driver answers
+#: DeleteSandbox only once the workload Pod has gone (its 30s termination grace
+#: plus one 30s Kubernetes API timeout) and it has confirmed the Sandbox CR is
+#: gone; a flock's peer-workload Pod took about 60s on Noatun, so 30s turned
+#: every first flock delete into a 503.
+DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS = 120.0
 #: How long a resident's deploy or migration waits for a sandbox it removes to go.
 #: Deleting a resident sandbox (its pod, volumes and gateway records) took over
 #: 30s on Noatun, so a rollback gave up on a sandbox that was still going.
@@ -5329,6 +5330,10 @@ def _resident_api_urls(values: dict[str, Any]) -> tuple[str, ...]:
     token_path = (codex_auth.get("kwargs") or {}).get("token_path", "")
     if urlparse(token_path).scheme:
         urls.append(token_path)
+    # Platform origins a flock's personas call with the mediated platform token
+    # (ravn_flock contributor), e.g. the launching Ting on another cluster.
+    openshell = values.get("openshell") if isinstance(values.get("openshell"), dict) else {}
+    urls.extend(str(url) for url in openshell.get("platformApiUrls") or [] if url)
     return tuple(urls)
 
 
