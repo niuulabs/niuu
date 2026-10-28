@@ -1200,6 +1200,16 @@ ravnFlockImage: ""
 #         base_url: https://vllm.example.internal
 ravnFlockLlmConfig: {}
 
+# -- Per session definition, LLM settings merged over ravnFlockLlmConfig for
+# flocks launched on that definition. Under OpenShell a flock's Ravns run on
+# the session definition's CLI runtime (Codex for skuldCodex, Claude Code for
+# skuldClaude), so a flock launch fails when the resolved model is one that
+# runtime does not serve.
+#   ravnFlockLlmConfigByDefinition:
+#     skuldCodex:
+#       model: gpt-5.6-terra
+ravnFlockLlmConfigByDefinition: {}
+
 sessionContributors:
   - adapter: "volundr.adapters.outbound.contributors.core.CoreSessionContributor"
     kwargs:

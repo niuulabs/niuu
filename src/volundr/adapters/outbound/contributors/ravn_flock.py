@@ -26,6 +26,7 @@ from typing import Any
 import yaml
 
 from niuu.domain.llm_merge import _SECURITY_KEYS, is_empty, merge_llm
+from niuu.domain.model_runtime import validate_session_definition_for_models
 from niuu.mesh import nng_gateway_port_for as _gateway_port_for
 from niuu.mesh import nng_ports_for as _ports_for
 from volundr.adapters.outbound.openshell_contract import (
@@ -814,11 +815,17 @@ def _default_flock_trigger_config(
     }
 
 
-def _resolve_flock_llm(*, default_llm: dict[str, Any], workload_llm: object) -> dict[str, Any]:
+def _resolve_flock_llm(
+    *,
+    default_llm: dict[str, Any],
+    workload_llm: object,
+    definition_llm: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Return the flock-wide LLM config every node starts from.
 
-    ``workload_config.llm_config`` is merged over the Forge default
-    (``ravn_flock_llm_config``), last wins per key; per-persona ``llm``
+    The Forge default (``ravn_flock_llm_config``), then the default for the
+    session's definition (``ravn_flock_llm_config_by_definition``), then
+    ``workload_config.llm_config``, last wins per key; per-persona ``llm``
     overrides are merged over the result for each node.
 
     The session ``model`` is deliberately not a layer: in a flock it is the
@@ -830,7 +837,8 @@ def _resolve_flock_llm(*, default_llm: dict[str, Any], workload_llm: object) -> 
             "workload_config.llm_config must be a mapping in Ravn's llm: shape "
             f"(model, max_tokens, provider), got {type(workload_llm).__name__}"
         )
-    return merge_llm(defaults=default_llm, global_override=workload_llm)
+    base = merge_llm(defaults=default_llm, global_override=definition_llm)
+    return merge_llm(defaults=base, global_override=workload_llm)
 
 
 def _persona_model(persona_dict: dict[str, Any]) -> object:
@@ -862,6 +870,30 @@ def _require_node_models(
         "or configure the Forge default ravn_flock_llm_config "
         "(Helm value ravnFlockLlmConfig)."
     )
+
+
+def _node_models_on_session_runtime(
+    persona_dicts: list[dict[str, Any]],
+    global_llm: dict[str, Any],
+    extra_ravn_config: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Each node's effective model, for nodes that run on the session's CLI runtime.
+
+    Mirrors the node config layering (flock llm, persona llm, then
+    ``ravn_config.llm``). A persona with its own ``executor`` picks its runtime
+    itself and is left out.
+    """
+    ravn_config_llm = (extra_ravn_config or {}).get("llm")
+    ravn_config_model = ravn_config_llm.get("model") if isinstance(ravn_config_llm, dict) else None
+    models: dict[str, str] = {}
+    for persona_dict in persona_dicts:
+        if persona_dict.get("executor"):
+            continue
+        for candidate in (ravn_config_model, _persona_model(persona_dict), global_llm.get("model")):
+            if not is_empty(candidate):
+                models[str(persona_dict["name"])] = str(candidate)
+                break
+    return models
 
 
 class RavnFlockContributor(SessionContributor):
@@ -900,10 +932,20 @@ class RavnFlockContributor(SessionContributor):
         workload_identity_token_file_env: str = "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE",
         execution_credential_service: object | None = None,
         default_llm_config: dict[str, Any] | None = None,
+        llm_config_by_definition: dict[str, dict[str, Any]] | None = None,
+        session_definitions: dict[str, Any] | None = None,
+        default_definition: str = "",
+        pricing_provider: object | None = None,
         **_extra: object,
     ) -> None:
         self._launch_spec_provider = launch_spec_provider
         self._default_llm_config = dict(default_llm_config or {})
+        self._llm_config_by_definition = {
+            str(key): dict(value) for key, value in (llm_config_by_definition or {}).items()
+        }
+        self._session_definitions = dict(session_definitions or {})
+        self._default_definition = default_definition
+        self._model_catalog = pricing_provider
         self._ravn_image = ravn_image
         self._base_port = base_port
         self._mesh_host = mesh_host
@@ -920,6 +962,41 @@ class RavnFlockContributor(SessionContributor):
     @property
     def name(self) -> str:
         return "ravn_flock"
+
+    def _require_session_runtime_serves(self, definition_key: str, models: dict[str, str]) -> None:
+        """Refuse an OpenShell flock whose Ravns' runtime cannot serve their model.
+
+        OpenShell peers inherit the session's broker environment, so each Ravn
+        without its own executor runs on the session definition's CLI
+        transport. A model that runtime does not serve (claude-sonnet-4-6 on a
+        Codex session) otherwise starts the flock and fails every Ravn's first
+        turn with the provider's model-not-found.
+        """
+        if not models:
+            return
+        catalog = self._model_catalog.list_models() if self._model_catalog is not None else ()
+        failures: list[str] = []
+        for model in sorted(set(models.values())):
+            problem = validate_session_definition_for_models(
+                definition_key,
+                [model],
+                session_definitions=self._session_definitions,
+                configured_models=catalog,
+            )
+            if problem:
+                personas = ", ".join(sorted(name for name, m in models.items() if m == model))
+                failures.append(f"{model} ({personas}): {problem}")
+        if not failures:
+            return
+        raise ValueError(
+            "ravn_flock: under OpenShell each Ravn runs on the session's "
+            f"{definition_key or '(no definition)'} runtime, which cannot serve its model: "
+            + "; ".join(failures)
+            + ". Name a model that runtime serves with workload_config.llm_config.model, "
+            "a per-persona llm.model, or the Forge default for this definition "
+            "(ravn_flock_llm_config_by_definition, Helm value ravnFlockLlmConfigByDefinition); "
+            "or launch the flock on a session definition that serves the model."
+        )
 
     async def contribute(
         self,
@@ -961,8 +1038,10 @@ class RavnFlockContributor(SessionContributor):
         global_max_concurrent_tasks: int = wc.get(
             "max_concurrent_tasks", _DEFAULT_MAX_CONCURRENT_TASKS
         )
+        definition_key = context.definition or self._default_definition
         global_llm = _resolve_flock_llm(
             default_llm=self._default_llm_config,
+            definition_llm=self._llm_config_by_definition.get(definition_key),
             workload_llm=wc.get("llm_config") or None,
         )
         provenance = wc.get("provenance")
@@ -1037,6 +1116,11 @@ class RavnFlockContributor(SessionContributor):
         )
 
         _require_node_models(persona_dicts, global_llm, extra_ravn_config)
+        if context.runtime_backend == "openshell":
+            self._require_session_runtime_serves(
+                definition_key,
+                _node_models_on_session_runtime(persona_dicts, global_llm, extra_ravn_config),
+            )
         logger.info(
             "ravn_flock: session=%s llm model=%s",
             str(session.id)[:8],

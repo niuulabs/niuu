@@ -2844,6 +2844,15 @@ class Settings(BaseSettings):
             "launch fails."
         ),
     )
+    ravn_flock_llm_config_by_definition: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description=(
+            "Per session definition, LLM settings merged over ravn_flock_llm_config for "
+            "flocks launched on that definition, e.g. {skuldCodex: {model: gpt-5.6-terra}}. "
+            "Under OpenShell a flock's Ravns run on its session definition's CLI runtime, "
+            "so one Forge-wide model cannot serve both a Claude and a Codex flock."
+        ),
+    )
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
         default_factory=default_session_definitions,
         description="Session definitions keyed by name (e.g. skuldClaude, skuldCodex).",
@@ -2873,6 +2882,15 @@ class Settings(BaseSettings):
             LLMConfig.model_validate(value)
         return value
 
+    @field_validator("ravn_flock_llm_config_by_definition")
+    @classmethod
+    def _validate_ravn_flock_llm_config_by_definition(
+        cls, value: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        for llm in value.values():
+            LLMConfig.model_validate(llm)
+        return value
+
     @model_validator(mode="after")
     def _needs_input_push_has_its_sink(self) -> "Settings":
         """``push.enabled`` delivers through the outbox; refuse it without one."""
@@ -2897,6 +2915,14 @@ class Settings(BaseSettings):
     def _merge_built_in_session_definitions(self) -> "Settings":
         """Keep built-in session definitions unless config explicitly overrides them."""
         self.session_definitions = merge_session_definitions(self.session_definitions)
+        unknown = sorted(
+            set(self.ravn_flock_llm_config_by_definition) - set(self.session_definitions)
+        )
+        if unknown:
+            raise ValueError(
+                f"ravn_flock_llm_config_by_definition names unknown session definition(s) "
+                f"{', '.join(unknown)}; known: {', '.join(sorted(self.session_definitions))}"
+            )
         return self
 
     @classmethod

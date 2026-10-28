@@ -680,6 +680,7 @@ data:
 
     ravn_flock_image: {{ .Values.ravnFlockImage | default "" | quote }}
     ravn_flock_llm_config: {{ .Values.ravnFlockLlmConfig | default dict | toJson }}
+    ravn_flock_llm_config_by_definition: {{ .Values.ravnFlockLlmConfigByDefinition | default dict | toJson }}
 
     {{- if .Values.sessionContributors }}
     session_contributors:

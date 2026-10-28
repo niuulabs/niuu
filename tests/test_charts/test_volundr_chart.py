@@ -2035,3 +2035,17 @@ class TestZeroDowntimeRollout:
         )["spec"]["template"]["spec"]
         assert "affinity" not in pod
         assert all("lifecycle" not in c for c in pod["containers"])
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestRavnFlockLlmConfigByDefinition:
+    def test_defaults_to_no_per_definition_default(self):
+        assert _rendered_configmap()["ravn_flock_llm_config_by_definition"] == {}
+
+    def test_renders_a_per_definition_flock_model(self):
+        config = _rendered_configmap(
+            "--set", "ravnFlockLlmConfigByDefinition.skuldCodex.model=gpt-5.6-terra"
+        )
+        assert config["ravn_flock_llm_config_by_definition"] == {
+            "skuldCodex": {"model": "gpt-5.6-terra"}
+        }
