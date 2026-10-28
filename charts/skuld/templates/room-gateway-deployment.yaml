@@ -65,14 +65,22 @@ spec:
         - name: skuld
           image: {{ include "skuld.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # An explicit command makes the image entrypoint exec it directly,
+          # skipping the Forge-session workspace setup under /volundr/sessions
+          # that a room has no volume for.
+          args: ["skuld"]
           securityContext:
             runAsUser: {{ .Values.securityContext.runAsUser }}
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false
             capabilities:
               drop: [ALL]
-          {{- if $rg.telegram.enabled }}
           env:
+            # The room's only writable mount; anything skuld keeps under $HOME
+            # lands beside its workspace.
+            - name: HOME
+              value: {{ $dataPath | quote }}
+          {{- if $rg.telegram.enabled }}
             - name: SKULD__TELEGRAM__BOT_TOKEN
               valueFrom:
                 secretKeyRef:

@@ -172,7 +172,11 @@ class TestRoomGatewayRender:
             "regin-room-skuld-config",
         }
         broker = container(docs, "skuld")
-        assert "env" not in broker
+        # The explicit command skips the image entrypoint's Forge-session
+        # workspace setup; without it the broker exits on mkdir under
+        # /volundr/sessions, which a room never mounts.
+        assert broker["args"] == ["skuld"]
+        assert broker["env"] == [{"name": "HOME", "value": "/var/lib/skuld"}]
         assert {m["name"] for m in broker["volumeMounts"]} == {"skuld-config", "data"}
         volume_claims = [v for v in pod(docs)["volumes"] if "persistentVolumeClaim" in v]
         assert volume_claims == []
@@ -751,7 +755,7 @@ class TestRoomGatewayTelegram:
 
         config = configmap_file(docs, "config.yaml")
         assert config["telegram"] == {"enabled": False}
-        assert "env" not in container(docs, "skuld")
+        assert [e["name"] for e in container(docs, "skuld")["env"]] == ["HOME"]
 
     def test_on_reads_the_bot_from_a_named_secret(self, tmp_path, monkeypatch):
         docs = render(
@@ -769,7 +773,11 @@ class TestRoomGatewayTelegram:
             },
         )
 
-        env = {e["name"]: e["valueFrom"]["secretKeyRef"] for e in container(docs, "skuld")["env"]}
+        env = {
+            e["name"]: e["valueFrom"]["secretKeyRef"]
+            for e in container(docs, "skuld")["env"]
+            if "valueFrom" in e
+        }
         assert env == {
             "SKULD__TELEGRAM__BOT_TOKEN": {"name": "regin-room-telegram", "key": "bot-token"},
             "SKULD__TELEGRAM__CHAT_ID": {"name": "regin-room-telegram", "key": "chat-id"},
@@ -808,6 +816,7 @@ class TestRoomGatewayTelegram:
         keys = {
             e["name"]: e["valueFrom"]["secretKeyRef"]["key"]
             for e in container(docs, "skuld")["env"]
+            if "valueFrom" in e
         }
         assert keys == {"SKULD__TELEGRAM__BOT_TOKEN": "token", "SKULD__TELEGRAM__CHAT_ID": "chat"}
 
