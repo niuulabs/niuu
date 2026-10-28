@@ -106,4 +106,3 @@ class DecisionPort(Protocol):
 
         Raise when a configured backend cannot produce a complete, well-typed answer set.
         """
-        ...
