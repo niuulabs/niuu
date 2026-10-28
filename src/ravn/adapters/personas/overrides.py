@@ -108,8 +108,12 @@ def apply_config_overrides(persona: PersonaConfig, overrides: dict) -> PersonaCo
                     if isinstance(executor_override.get("kwargs"), dict)
                     else {}
                 ),
-                requires=executor_override.get("requires", []),
-                fallbacks=_parse_executor_fallbacks(executor_override.get("fallbacks")),
+                requires=executor_override.get("requires", persona.executor.requires),
+                fallbacks=(
+                    _parse_executor_fallbacks(executor_override.get("fallbacks"))
+                    if "fallbacks" in executor_override
+                    else list(persona.executor.fallbacks)
+                ),
             ),
         )
 

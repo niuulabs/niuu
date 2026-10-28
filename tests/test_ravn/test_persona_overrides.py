@@ -12,7 +12,13 @@ import logging
 
 import pytest
 
-from ravn.adapters.personas.loader import PersonaConfig, PersonaConsumes, PersonaLLMConfig
+from ravn.adapters.personas.loader import (
+    PersonaConfig,
+    PersonaConsumes,
+    PersonaExecutorConfig,
+    PersonaExecutorFallback,
+    PersonaLLMConfig,
+)
 from ravn.adapters.personas.overrides import apply_config_overrides
 from ravn.domain.harness import HarnessCapability
 
@@ -220,6 +226,28 @@ class TestCombinedOverrides:
         assert result.executor.fallbacks[0].adapter == (
             "ravn.adapters.executors.cli.CliTransportExecutor"
         )
+
+    def test_transport_override_keeps_persona_capability_bindings(self, base_persona):
+        base_persona.executor = PersonaExecutorConfig(
+            adapter="ravn.adapters.executors.agent.AgentExecutor",
+            requires={HarnessCapability.REASONING},
+            fallbacks=[PersonaExecutorFallback(adapter="tests.NativeFallback")],
+        )
+
+        result = apply_config_overrides(
+            base_persona,
+            {
+                "executor": {
+                    "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
+                    "kwargs": {"transport_adapter": "tests.CliTransport"},
+                }
+            },
+        )
+
+        assert result.executor.requires == frozenset({HarnessCapability.REASONING})
+        assert result.executor.fallbacks == [
+            PersonaExecutorFallback(adapter="tests.NativeFallback")
+        ]
 
     def test_all_overrides_applied_together(self, base_persona):
         result = apply_config_overrides(

@@ -654,7 +654,7 @@ def _build_ravn_config(
         po["consumes_event_types"] = [str(event_type) for event_type in consumes_event_types]
     executor_override = persona_override.get("executor")
     if isinstance(executor_override, dict) and executor_override:
-        po["executor"] = {
+        executor_config: dict[str, Any] = {
             "adapter": str(executor_override.get("adapter") or ""),
             "kwargs": (
                 dict(executor_override.get("kwargs") or {})
@@ -662,6 +662,11 @@ def _build_ravn_config(
                 else {}
             ),
         }
+        if "requires" in executor_override:
+            executor_config["requires"] = executor_override["requires"]
+        if "fallbacks" in executor_override:
+            executor_config["fallbacks"] = executor_override["fallbacks"]
+        po["executor"] = executor_config
     if po:
         config["persona_overrides"] = po
 

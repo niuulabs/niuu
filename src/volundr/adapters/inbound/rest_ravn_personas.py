@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from niuu.domain.models import Principal
+from ravn.adapters.personas.loader import _parse_executor_fallbacks, _sanitize_executor_kwargs
 from ravn.adapters.personas.postgres_registry import PersonaView, PostgresPersonaRegistry
+from ravn.domain.harness import HarnessContractError, parse_harness_requirements
 from ravn.domain.persona_document import PersonaDocumentError
 from volundr.adapters.inbound.auth import extract_principal, get_current_user
 from volundr.domain.models import User
@@ -86,12 +88,70 @@ class PersonaFanInResponse(BaseModel):
     params: dict[str, Any]
 
 
+class PersonaExecutorFallbackRequest(BaseModel):
+    """One optional pre-start harness alternative."""
+
+    adapter: str = Field(min_length=1)
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+
+
+class PersonaExecutorRequest(BaseModel):
+    """Persona harness selection requirements and explicit alternatives."""
+
+    adapter: str = Field(default="")
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    requires: list[str] = Field(default_factory=list)
+    fallbacks: list[PersonaExecutorFallbackRequest] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_contract(self) -> PersonaExecutorRequest:
+        """Reject non-canonical requirements before persisting the persona."""
+        try:
+            parse_harness_requirements(self.requires)
+            _parse_executor_fallbacks([fallback.model_dump() for fallback in self.fallbacks])
+        except (HarnessContractError, ValueError) as exc:
+            raise ValueError(f"Invalid executor configuration: {exc}") from exc
+        return self
+
+    def to_payload(self) -> dict[str, Any]:
+        """Return a normalized, canonically validated executor binding."""
+        try:
+            requirements = parse_harness_requirements(self.requires)
+        except HarnessContractError as exc:
+            raise ValueError(f"Invalid executor requires: {exc}") from exc
+        fallbacks = _parse_executor_fallbacks(
+            [fallback.model_dump() for fallback in self.fallbacks]
+        )
+        return {
+            "adapter": self.adapter.strip(),
+            "kwargs": _sanitize_executor_kwargs(self.kwargs),
+            "requires": sorted(capability.value for capability in requirements),
+            "fallbacks": [
+                {
+                    "adapter": fallback.adapter,
+                    "kwargs": _sanitize_executor_kwargs(fallback.kwargs),
+                }
+                for fallback in fallbacks
+            ],
+        }
+
+
+class PersonaExecutorResponse(BaseModel):
+    """Resolved persona harness selection configuration."""
+
+    adapter: str
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    requires: list[str] = Field(default_factory=list)
+    fallbacks: list[PersonaExecutorFallbackRequest] = Field(default_factory=list)
+
+
 class PersonaDetailResponse(PersonaSummaryResponse):
     """Full persona detail view."""
 
     description: str
     system_prompt_template: str
     forbidden_tools: list[str]
+    executor: PersonaExecutorResponse
     llm: PersonaLLMResponse
     produces: PersonaProducesResponse
     consumes: PersonaConsumesResponse
@@ -122,6 +182,7 @@ class PersonaCreateRequest(BaseModel):
     allowed_tools: list[str] = Field(default_factory=list)
     forbidden_tools: list[str] = Field(default_factory=list)
     permission_mode: str = Field(default="default")
+    executor: PersonaExecutorRequest | None = Field(default=None)
     iteration_budget: int = Field(default=0, ge=0)
     llm_thinking_enabled: bool = Field(default=False)
     llm_max_tokens: int = Field(default=0, ge=0)
@@ -147,7 +208,7 @@ class PersonaCreateRequest(BaseModel):
             "allowed_tools": list(self.allowed_tools),
             "forbidden_tools": list(self.forbidden_tools),
             "permission_mode": self.permission_mode,
-            "executor": None,
+            "executor": self.executor.to_payload() if self.executor is not None else None,
             "iteration_budget": self.iteration_budget,
             "llm_primary_alias": "",
             "llm_thinking_enabled": self.llm_thinking_enabled,
@@ -511,6 +572,12 @@ def _to_detail(view: PersonaView) -> PersonaDetailResponse:
         description=str(payload["description"]),
         system_prompt_template=str(payload["system_prompt_template"]),
         forbidden_tools=list(payload["forbidden_tools"]),
+        executor=PersonaExecutorResponse(
+            adapter=str((payload.get("executor") or {}).get("adapter") or ""),
+            kwargs=dict((payload.get("executor") or {}).get("kwargs") or {}),
+            requires=list((payload.get("executor") or {}).get("requires") or []),
+            fallbacks=list((payload.get("executor") or {}).get("fallbacks") or []),
+        ),
         llm=PersonaLLMResponse(
             thinking_enabled=bool(payload["llm_thinking_enabled"]),
             max_tokens=int(payload["llm_max_tokens"]),

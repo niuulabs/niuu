@@ -227,10 +227,22 @@ class TestRavnPersonaRoutes:
 
     def test_create_get_list_and_yaml(self) -> None:
         client, _ = _make_client()
+        payload = _make_payload("custom-agent")
+        payload["executor"] = {
+            "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
+            "kwargs": {"transport_adapter": "tests.CompatibleTransport"},
+            "requires": ["reasoning", "tools"],
+            "fallbacks": [
+                {
+                    "adapter": "ravn.adapters.executors.agent.AgentExecutor",
+                    "kwargs": {"mode": "native"},
+                }
+            ],
+        }
 
         create_resp = client.post(
             "/api/v1/personas",
-            json=_make_payload("custom-agent"),
+            json=payload,
             headers={"Authorization": "Bearer token"},
         )
         assert create_resp.status_code == 201
@@ -243,6 +255,7 @@ class TestRavnPersonaRoutes:
             "topic": "string",
             "max_sources": "number",
         }
+        assert created["executor"] == payload["executor"]
 
         list_resp = client.get(
             "/api/v1/personas?source=custom",
@@ -257,6 +270,7 @@ class TestRavnPersonaRoutes:
         )
         assert detail_resp.status_code == 200
         assert detail_resp.json()["yaml_source"] == "[user:user-1]"
+        assert detail_resp.json()["executor"] == payload["executor"]
 
         yaml_resp = client.get(
             "/api/v1/personas/custom-agent/yaml",
@@ -265,6 +279,22 @@ class TestRavnPersonaRoutes:
         assert yaml_resp.status_code == 200
         assert "name: custom-agent" in yaml_resp.text
         assert "permission_mode: workspace-write" in yaml_resp.text
+        assert "requires:" in yaml_resp.text
+        assert "fallbacks:" in yaml_resp.text
+
+    def test_create_rejects_unknown_executor_capability(self) -> None:
+        client, _ = _make_client()
+        payload = _make_payload("invalid-executor-agent")
+        payload["executor"] = {"requires": ["provider_only_feature"]}
+
+        response = client.post(
+            "/api/v1/personas",
+            json=payload,
+            headers={"Authorization": "Bearer token"},
+        )
+
+        assert response.status_code == 422
+        assert "unknown harness capability" in response.text
 
     def test_legacy_ravn_routes_still_work(self) -> None:
         client, _ = _make_client()

@@ -778,6 +778,50 @@ class TestContributorOutput:
 
 
 class TestMountedConfig:
+    async def test_mounted_config_preserves_executor_capability_bindings(
+        self, session, flock_template
+    ):
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        contributor = _flock_contributor(launch_spec_provider=provider)
+        context = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": [
+                    {
+                        "name": "coordinator",
+                        "executor": {
+                            "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
+                            "kwargs": {"transport_adapter": "tests.CliTransport"},
+                            "requires": ["reasoning"],
+                            "fallbacks": [
+                                {"adapter": "ravn.adapters.executors.agent.AgentExecutor"}
+                            ],
+                        },
+                    },
+                    {
+                        "name": "reviewer",
+                        "executor": {
+                            "adapter": "ravn.adapters.executors.agent.AgentExecutor",
+                            "requires": ["tools"],
+                        },
+                    },
+                ],
+                "mimir": {},
+                "sleipnir": {},
+            },
+        )
+
+        result = await contributor.contribute(session, context)
+
+        coordinator = yaml.safe_load(_extract_mounted_config(result.pod_spec, "coordinator"))
+        reviewer = yaml.safe_load(_extract_mounted_config(result.pod_spec, "reviewer"))
+        assert coordinator["persona_overrides"]["executor"]["requires"] == ["reasoning"]
+        assert coordinator["persona_overrides"]["executor"]["fallbacks"] == [
+            {"adapter": "ravn.adapters.executors.agent.AgentExecutor"}
+        ]
+        assert reviewer["persona_overrides"]["executor"]["requires"] == ["tools"]
+
     async def test_ravn_config_inline_absent(self, session, flock_template):
         """RAVN_CONFIG_INLINE must not appear in any container env."""
         provider = MagicMock()
@@ -1927,6 +1971,10 @@ class TestWorkloadPersonaOverride:
             llm={"primary_alias": "powerful"},
             system_prompt_extra="Be thorough.",
             iteration_budget=40,
+            executor={
+                "requires": ["reasoning"],
+                "fallbacks": [{"adapter": "tests.Fallback"}],
+            },
         )
         d = override.to_dict()
         assert d == {
@@ -1934,6 +1982,10 @@ class TestWorkloadPersonaOverride:
             "llm": {"primary_alias": "powerful"},
             "system_prompt_extra": "Be thorough.",
             "iteration_budget": 40,
+            "executor": {
+                "requires": ["reasoning"],
+                "fallbacks": [{"adapter": "tests.Fallback"}],
+            },
         }
 
     def test_to_dict_usable_in_workload_config(self, session):

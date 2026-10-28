@@ -438,10 +438,14 @@ class TestHelperNormalization:
         assert _normalize_executor("bad", {"adapter": "x", "kwargs": {"k": 1}}) == {
             "adapter": "x",
             "kwargs": {"k": 1},
+            "requires": [],
+            "fallbacks": [],
         }
         assert _normalize_executor({"adapter": "", "kwargs": {}}, {}) == {
             "adapter": "",
             "kwargs": {},
+            "requires": [],
+            "fallbacks": [],
         }
         assert _normalize_consumes_events(
             [{"name": " code.requested ", "injects": ["a", ""], "trust": "0.5"}, {}, "bad"]
@@ -458,7 +462,14 @@ class TestHelperNormalization:
                 "allowed_tools": ["read", ""],
                 "forbidden_tools": ["rm"],
                 "permission_mode": "workspace-write",
-                "executor": {"adapter": "demo.Adapter", "kwargs": {"foo": "bar"}},
+                "executor": {
+                    "adapter": "demo.Adapter",
+                    "kwargs": {"foo": "bar"},
+                    "requires": ["reasoning"],
+                    "fallbacks": [
+                        {"adapter": "fallback.Adapter", "kwargs": {"mode": "safe"}}
+                    ],
+                },
                 "iteration_budget": "9",
                 "llm_primary_alias": "fast",
                 "llm_thinking_enabled": True,
@@ -475,17 +486,27 @@ class TestHelperNormalization:
         assert normalized["letter"] == "Z"
         assert normalized["permission_mode"] == "default"
         assert normalized["executor"]["adapter"] == "demo.Adapter"
+        assert normalized["executor"]["requires"] == ["reasoning"]
+        assert normalized["executor"]["fallbacks"] == [
+            {"adapter": "fallback.Adapter", "kwargs": {"mode": "safe"}}
+        ]
         assert normalized["produces_schema"] == {"file": "string"}
 
         config = _payload_to_config(normalized)
         assert config.permission_mode == "workspace-write"
         assert config.executor.adapter == "demo.Adapter"
+        assert {capability.value for capability in config.executor.requires} == {"reasoning"}
+        assert config.executor.fallbacks[0].adapter == "fallback.Adapter"
         assert config.fan_in.contributes_to == "summary"
         assert config.consumes.injects == ["summary"]
 
         payload = _config_to_payload(config)
         assert payload["permission_mode"] == "default"
         assert payload["executor"]["adapter"] == "demo.Adapter"
+        assert payload["executor"]["requires"] == ["reasoning"]
+        assert payload["executor"]["fallbacks"] == [
+            {"adapter": "fallback.Adapter", "kwargs": {"mode": "safe"}}
+        ]
         assert payload["consumes_events"] == [{"name": "code.requested"}]
 
     def test_normalize_payload_requires_name(self):
