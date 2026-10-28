@@ -23,7 +23,7 @@ from ravn.api.valkyrie_config import (
     roster_fields,
 )
 from ravn.api.valkyrie_projection_common import _environment_id, _field, _valkyrie_id
-from ravn.ports.resident_discovery import StandaloneResident
+from ravn.ports.resident_discovery import ResidentPlacement, StandaloneResident
 
 #: Fleet vocabulary shared with the other standalone residents.
 STATUS_ACTIVE = "active"
@@ -53,6 +53,7 @@ class _CatalogEntry:
     visibility: InstanceVisibility
     owner_id: str
     tenant_id: str
+    placement: ResidentPlacement | None
 
 
 def _utcnow() -> datetime:
@@ -107,6 +108,7 @@ class ValkyrieCatalogRoster:
             deployment=VALKYRIE_DEPLOYMENT,
             capabilities=["chat"] if entry.chat_endpoint else [],
             conditions=[condition],
+            placement=entry.placement,
         )
 
     def _observed_state(
@@ -214,6 +216,7 @@ def _catalog_entries(config: ValkyrieDashboardConfig) -> list[_CatalogEntry]:
                 visibility=fields.visibility,
                 owner_id=fields.owner_id,
                 tenant_id=fields.tenant_id,
+                placement=fields.placement,
             )
         )
     return entries

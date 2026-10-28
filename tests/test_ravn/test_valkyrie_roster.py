@@ -109,6 +109,19 @@ class TestCatalogMapping:
         assert rota.visibility is InstanceVisibility.USER
         assert (rota.owner_id, rota.tenant_id) == ("user-a", "tenant-a")
 
+    async def test_placement_says_where_the_valkyrie_runs(self):
+        placement = {"cluster": "glitnir", "namespace": "nats", "workload": "valkyrie-glitnir"}
+        config = _config(
+            _record("valkyrie-hildr", "Hildr", placement=placement),
+            _record("valkyrie-rota", "Rota"),
+        )
+
+        hildr, rota = await _roster(config, _Dashboard()).list_residents()
+
+        assert hildr.placement is not None
+        assert hildr.placement.model_dump() == placement
+        assert rota.placement is None
+
     async def test_empty_catalog_lists_nothing(self):
         roster = _roster(ValkyrieDashboardConfig(environments_json=""), _Dashboard())
 
@@ -298,6 +311,20 @@ class TestCatalogFieldValidation:
         catalog = json.dumps([_record("valkyrie-eir", "Eir", chatEndpoint=endpoint)])
 
         with pytest.raises(ValueError, match="valkyrie-eir.*chatEndpoint"):
+            ValkyrieDashboardConfig(environments_json=catalog)
+
+    @pytest.mark.parametrize(
+        "placement",
+        [
+            "glitnir/nats/valkyrie",
+            {"cluster": "glitnir", "namespace": "nats"},
+            {"cluster": "Glitnir", "namespace": "nats", "workload": "valkyrie"},
+        ],
+    )
+    def test_malformed_placement_fails_config_load(self, placement):
+        catalog = json.dumps([_record("valkyrie-eir", "Eir", placement=placement)])
+
+        with pytest.raises(ValueError, match="valkyrie-eir: placement"):
             ValkyrieDashboardConfig(environments_json=catalog)
 
     def test_unknown_visibility_fails_config_load(self):

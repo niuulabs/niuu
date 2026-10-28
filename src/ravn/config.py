@@ -4829,6 +4829,32 @@ class ResidentDiscoveryConfig(BaseModel):
         return self
 
 
+class ResidentLogsConfig(BaseModel):
+    """Where the logs of discovered and catalog residents are read from.
+
+    Managed residents' logs come from their control plane. Residents deployed
+    straight from infrastructure are read by placement through this dynamic
+    adapter (for example
+    ``ravn.adapters.resident_logs.loki.LokiResidentLogAdapter`` with
+    ``base_url``). With no adapter, asking for such a resident's logs answers
+    that no log source is configured.
+    """
+
+    adapter: str = Field(
+        default="",
+        description="Fully-qualified class path of the resident log adapter; empty for none.",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+    model_config = {"extra": "allow"}
+
+    def adapter_kwargs(self) -> dict[str, Any]:
+        """Return constructor kwargs from explicit kwargs plus extra fields."""
+        extras = self.__pydantic_extra__ or {}
+        return {**self.kwargs, **extras}
+
+
 class _LegacyAliasSettings(BaseSettings):
     """Settings base where legacy environment aliases override config input."""
 
@@ -5747,6 +5773,7 @@ class Settings(BaseSettings):
 
     # Standalone-resident discovery (helm-deployed residents outside Forge).
     resident_discovery: ResidentDiscoveryConfig = Field(default_factory=ResidentDiscoveryConfig)
+    resident_logs: ResidentLogsConfig = Field(default_factory=ResidentLogsConfig)
 
     # NIU-435: cascade coordinator / flock delegation / ephemeral spawn
     cascade: CascadeConfig = Field(default_factory=CascadeConfig)

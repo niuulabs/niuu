@@ -332,6 +332,7 @@ shape as a discovered standalone resident:
 | `chatEndpoint` (optional) | `chat_endpoint`, and `chat` in `capabilities` |
 | `visibility` (optional) | `system` (default), `tenant` or `user`; same rules as the discovery annotations above |
 | `ownerId`, `tenantId` (optional) | Required owner for `user` visibility, tenant for `tenant` visibility |
+| `placement` (optional) | `{cluster, namespace, workload}`: the Deployment that is the Valkyrie; gives the resident its `cluster` and its logs |
 
 `chatEndpoint` is the Valkyrie's room, an absolute `wss://` URL such as
 `wss://yggdrasil.niuu.world/rooms/<id>/ws/ravn`. Without it the Valkyrie is
@@ -352,6 +353,36 @@ load the channel of an `idle` Valkyrie.
 
 The id precedence is managed, then discovered, then catalog: a catalog Valkyrie
 never appears twice when Forge or discovery already lists the same id.
+
+A catalog Valkyrie is listed by the instance whose Ravn holds the catalog
+(ymir), so its `instance_id` names that instance and calls about it are routed
+there. Where it actually runs is its `placement.cluster`, reported as `cluster`;
+the web UI and Lexi show and group a resident by `cluster` when it has one.
+
+### Logs of discovered and catalog residents
+
+A managed resident's logs come from its control plane. A discovered or catalog
+resident is a plain Kubernetes workload, often in a cluster with no Niuu
+instance, so `GET /api/v1/ravn/ravens/{id}/logs` reads it by its placement from
+the configured `resident_logs` adapter. The Loki adapter reads the Loki that
+every cluster's collector ships pod logs to, one tenant per cluster:
+
+```yaml
+resident_logs:
+  adapter: ravn.adapters.resident_logs.loki.LokiResidentLogAdapter
+  base_url: https://loki.proxy.glitnir.alfheim.niuu.world
+  # query_path: /{cluster}/loki/api/v1/query_range   # default; {cluster} is the tenant path
+  # lookback_seconds: 86400
+  # timeout_seconds: 15
+```
+
+It selects the workload's pods (`<workload>-<replicaset>-<pod>`) in its
+namespace; `source` names containers and `min_level` filters on the line's
+level. A discovered resident is placed when its discovery adapter names its
+`cluster` (`KubernetesResidentDiscoveryAdapter(cluster: valhalla)`); a catalog
+Valkyrie, by its `placement`. A resident without a placement, or a Ravn with no
+`resident_logs` adapter, answers `409` with what to configure; a Loki that
+cannot answer is a `502`. Logs are never reported empty in place of either.
 
 ### The shared (system) resident list
 

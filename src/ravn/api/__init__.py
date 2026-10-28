@@ -38,6 +38,8 @@ from ravn.adapters.platform_runtime import HttpPlatformRuntimeAdapter, PlatformR
 from ravn.api.persistence_wiring import aclose_stores, build_budget_ledger, build_trigger_store
 from ravn.api.residents import (
     ResidentDirectory,
+    ResidentLogsUnavailableError,
+    ResidentNotFoundError,
     StandaloneDiscoveryUnavailableError,
     forward_auth,
 )
@@ -58,9 +60,11 @@ from ravn.api.warden_stream import WardenStreamBroker
 from ravn.config import Settings
 from ravn.domain.budget_totals import BudgetTotals
 from ravn.domain.trigger_record import TriggerRecord
+from ravn.dynamic_adapters import build_dynamic_adapter
 from ravn.ports.budget_ledger import BudgetLedgerPort
 from ravn.ports.platform_runtime import PlatformRuntimePort
 from ravn.ports.resident_discovery import ResidentDiscoveryPort
+from ravn.ports.resident_logs import ResidentLogPort, ResidentLogSourceError
 from ravn.ports.resident_roster import ResidentRosterPort
 from ravn.ports.trigger_store import TriggerStorePort
 from ravn.ports.warden_deployer import WardenDeploymentError
@@ -179,6 +183,7 @@ def create_app(
     resident_discovery: ResidentDiscoveryPort | None = None,
     platform_runtime: PlatformRuntimePort | None = None,
     resident_roster: ResidentRosterPort | None = None,
+    resident_logs: ResidentLogPort | None = None,
 ) -> FastAPI:
     """Create and return the Ravn FastAPI sub-application.
 
@@ -236,10 +241,13 @@ def create_app(
             dashboard=valkyrie_projection,
             config=valkyrie_dashboard_config,
         )
+    if resident_logs is None:
+        resident_logs = build_dynamic_adapter(loaded_settings.resident_logs)
     resident_directory = ResidentDirectory(
         platform=platform,
         discovery=standalone_discovery,
         roster=resident_roster,
+        logs=resident_logs,
     )
     trigger_store = build_trigger_store(loaded_settings.trigger_store)
     budget_ledger = build_budget_ledger(loaded_settings.budget_ledger)
@@ -580,12 +588,13 @@ def create_app(
         lines: int = Query(default=200, ge=1, le=5000),
         source: list[str] = Query(default_factory=list),
         min_level: str = Query(default="", max_length=32),
-        _: Principal = Depends(extract_principal),
+        principal: Principal = Depends(extract_principal),
     ) -> dict:
         auth_headers, auth_params = forward_auth(request)
         try:
             return await resident_directory.get_raven_logs(
                 ravn_id,
+                principal=principal,
                 lines=lines,
                 sources=tuple(source),
                 min_level=min_level,
@@ -594,6 +603,17 @@ def create_app(
             )
         except httpx.HTTPStatusError as exc:
             _raise_platform_error(exc)
+        except ResidentNotFoundError as exc:
+            raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail=str(exc))
+        except ResidentLogsUnavailableError as exc:
+            raise HTTPException(status_code=http_status.HTTP_409_CONFLICT, detail=str(exc))
+        except ResidentLogSourceError as exc:
+            raise HTTPException(status_code=http_status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+        except ValueError as exc:
+            # An unknown min_level or a container name that is not one.
+            raise HTTPException(
+                status_code=http_status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            )
 
     @app.post("/api/v1/ravn/ravens/{ravn_id}/suspend")
     async def suspend_raven_endpoint(

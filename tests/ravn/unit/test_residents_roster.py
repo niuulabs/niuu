@@ -408,15 +408,18 @@ class TestResidentSessionsListing:
 
     @respx.mock
     async def test_prefers_a_managed_runtime_of_the_same_id(self):
-        native = respx.get(f"{_BASE}/api/v1/forge/resident-runtimes/valkyrie-runa/sessions").mock(
+        # Managed runtime ids are platform UUIDs, so only a catalog entry that
+        # names a UUID can collide with one.
+        shared_id = "5f0c6a8e-1b2d-4c3e-8f40-516273849abc"
+        native = respx.get(f"{_BASE}/api/v1/forge/resident-runtimes/{shared_id}/sessions").mock(
             return_value=httpx.Response(200, json=[{"id": "native-1"}])
         )
         directory = _directory(
-            managed=[_managed(id="valkyrie-runa")],
-            roster=_Static([_resident()]),
+            managed=[_managed(id=shared_id)],
+            roster=_Static([_resident(id=shared_id)]),
         )
 
-        sessions = await directory.list_resident_sessions("valkyrie-runa", _PRINCIPAL, {}, {})
+        sessions = await directory.list_resident_sessions(shared_id, _PRINCIPAL, {}, {})
 
         assert native.called
         assert [session["id"] for session in sessions] == ["native-1"]

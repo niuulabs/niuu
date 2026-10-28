@@ -8,11 +8,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from niuu.domain.models import InstanceVisibility
 from ravn.api.valkyrie_projection_common import _field
+from ravn.ports.resident_discovery import ResidentPlacement
 
 
 class ValkyrieDashboardConfig(BaseSettings):
@@ -57,6 +58,7 @@ class RosterFields:
     visibility: InstanceVisibility
     owner_id: str
     tenant_id: str
+    placement: ResidentPlacement | None
 
 
 def roster_fields(record: dict[str, Any], *, source: str = "catalog") -> RosterFields:
@@ -75,7 +77,26 @@ def roster_fields(record: dict[str, Any], *, source: str = "catalog") -> RosterF
         visibility=_visibility(_field(combined, "visibility", default="system"), label),
         owner_id=_text(_field(combined, "ownerId", "owner_id"), "ownerId", label),
         tenant_id=_text(_field(combined, "tenantId", "tenant_id"), "tenantId", label),
+        placement=_placement(_field(combined, "placement", default=None), label),
     )
+
+
+def _placement(value: Any, label: str) -> ResidentPlacement | None:
+    """Where the Valkyrie runs: ``{cluster, namespace, workload}``, or absent."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"{label}: placement must be an object with cluster, namespace and workload, "
+            f"got {type(value).__name__}"
+        )
+    try:
+        return ResidentPlacement.model_validate(value)
+    except ValidationError as exc:
+        raise ValueError(
+            f"{label}: placement {value!r} needs cluster, namespace and workload, each a "
+            f"Kubernetes name: {exc}"
+        ) from exc
 
 
 def _chat_endpoint(value: Any, label: str) -> str | None:

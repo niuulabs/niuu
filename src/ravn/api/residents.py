@@ -27,6 +27,7 @@ from niuu.adapters.inbound.source_health import SourceFailure, source_failure
 from niuu.domain.models import InstanceVisibility, Principal
 from ravn.ports.platform_runtime import PlatformRuntimePort
 from ravn.ports.resident_discovery import ResidentDiscoveryPort, StandaloneResident
+from ravn.ports.resident_logs import ResidentLogPort
 from ravn.ports.resident_roster import ResidentRosterPort
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,18 @@ class StandaloneDiscoveryUnavailableError(RuntimeError):
     silently returning "not found" here would misreport an unreachable
     resident as one that never existed. See
     ``.claude/rules/no-fallbacks.md``.
+    """
+
+
+class ResidentNotFoundError(LookupError):
+    """No resident with this id is visible to the caller."""
+
+
+class ResidentLogsUnavailableError(RuntimeError):
+    """The resident exists but nothing is configured to read its logs.
+
+    The message names what to configure; this is a deployment gap, never an
+    empty log.
     """
 
 
@@ -154,13 +167,17 @@ class ResidentDirectory:
         platform: PlatformRuntimePort,
         discovery: ResidentDiscoveryPort | None = None,
         roster: ResidentRosterPort | None = None,
+        logs: ResidentLogPort | None = None,
     ) -> None:
         self._platform = platform
         self._discovery = discovery
         self._roster_port = roster
+        self._logs = logs
 
     async def aclose(self) -> None:
         await self._platform.aclose()
+        if self._logs is not None:
+            await self._logs.aclose()
 
     async def list_ravens(
         self,
@@ -263,20 +280,49 @@ class ResidentDirectory:
         self,
         ravn_id: str,
         *,
+        principal: Principal,
         lines: int,
         sources: tuple[str, ...],
         min_level: str,
         auth_headers: dict[str, str],
         auth_params: dict[str, str],
     ) -> dict[str, Any]:
-        """Return target-native logs for one managed resident."""
-        return await self._platform.get_resident_logs(
-            ravn_id,
+        """Return one resident's recent logs.
+
+        A managed resident's come from its control plane. A discovered or
+        catalog resident is a plain workload, so its logs are read by its
+        placement from the configured log source.
+        """
+        managed = await self._platform.get_resident_runtime(ravn_id, auth_headers, auth_params)
+        if managed is not None:
+            return await self._platform.get_resident_logs(
+                ravn_id,
+                lines=lines,
+                sources=sources,
+                min_level=min_level,
+                auth_headers=auth_headers,
+                auth_params=auth_params,
+            )
+        resident = await self._visible_unmanaged(ravn_id, principal)
+        if resident is None:
+            raise ResidentNotFoundError(f"no resident {ravn_id!r} is visible to the caller")
+        if resident.placement is None:
+            raise ResidentLogsUnavailableError(
+                f"resident {ravn_id!r} has no placement, so its logs cannot be located: give "
+                "its catalog entry a placement {cluster, namespace, workload}, or its discovery "
+                "adapter a cluster"
+            )
+        if self._logs is None:
+            raise ResidentLogsUnavailableError(
+                f"no resident log source is configured to read {ravn_id!r}: set "
+                "resident_logs.adapter (for example "
+                "ravn.adapters.resident_logs.loki.LokiResidentLogAdapter with base_url)"
+            )
+        return await self._logs.read_logs(
+            resident.placement,
             lines=lines,
             sources=sources,
             min_level=min_level,
-            auth_headers=auth_headers,
-            auth_params=auth_params,
         )
 
     async def list_resident_sessions(
@@ -568,6 +614,17 @@ class ResidentDirectory:
             return []
         return await self._roster_port.list_residents()
 
+    async def _visible_unmanaged(
+        self,
+        ravn_id: str,
+        principal: Principal,
+    ) -> StandaloneResident | None:
+        """Return the discovered, else rostered, resident with this id when visible."""
+        for resident in [*await self._discover_standalone(), *await self._roster_residents()]:
+            if resident.id == ravn_id:
+                return resident if self._is_discovered_visible(resident, principal) else None
+        return None
+
     async def _visible_rostered(
         self,
         ravn_id: str,
@@ -737,6 +794,9 @@ class ResidentDirectory:
             "a2a_endpoint_url": endpoint_urls.get("a2a") or None,
             "session_id": str(runtime.get("id") or ""),
             "location": "",
+            # A managed resident runs on the instance that manages it, which
+            # the aggregate names; only residents placed elsewhere say more.
+            "cluster": "",
             "deployment": runtime.get("backend") or "",
             "backend": runtime.get("backend") or "",
             "engine": runtime.get("engine") or "",
@@ -828,6 +888,7 @@ class ResidentDirectory:
             "chat_endpoint": resident.chat_endpoint,
             "session_id": resident.id,
             "location": resident.location,
+            "cluster": resident.placement.cluster if resident.placement else "",
             "deployment": resident.deployment,
             "backend": "unknown",
             "engine": "ravn",

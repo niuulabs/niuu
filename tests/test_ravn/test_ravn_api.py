@@ -34,6 +34,7 @@ from ravn.api.valkyries import (
 from ravn.api.warden_stream import WardenStreamBroker
 from ravn.cap_telemetry import degraded_counts, reset_cap_hits
 from ravn.config import ValkyrieTelemetryConfig
+from ravn.ports.resident_logs import ResidentLogSourceError
 from ravn.ports.warden_deployer import (
     WardenDeploymentError,
     WardenDeploymentResult,
@@ -3303,3 +3304,114 @@ def test_resident_list_rejects_an_unknown_visibility(client: TestClient):
     resp = client.get("/api/v1/ravn/ravens", params={"visibility": "everyone"})
 
     assert resp.status_code == 422
+
+
+class _FakeResidentLogs:
+    def __init__(self, failure: Exception | None = None) -> None:
+        self.failure = failure
+        self.placements: list[object] = []
+
+    async def read_logs(self, placement, *, lines, sources, min_level):
+        if self.failure is not None:
+            raise self.failure
+        self.placements.append(placement)
+        return {"entries": [{"timestampMs": 1, "message": "ready"}], "bufferTotal": 1}
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _placed_client(monkeypatch, logs: _FakeResidentLogs | None) -> TestClient:
+    catalog = json.loads(_valkyrie_catalog())
+    catalog["environments"][0]["valkyrie"]["placement"] = {
+        "cluster": "valhalla",
+        "namespace": "nats",
+        "workload": "valkyrie-valhalla-k8s",
+    }
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", json.dumps(catalog))
+    return TestClient(create_app(resident_logs=logs))
+
+
+@respx.mock
+def test_a_catalog_valkyries_logs_are_read_by_its_placement(monkeypatch):
+    """A Valkyrie is no Forge runtime; its id never reaches the Forge, which
+    would reject it as a malformed UUID."""
+    forge = respx.route(url__startswith="http://localhost:8080/api/v1/forge/")
+    logs = _FakeResidentLogs()
+
+    resp = _placed_client(monkeypatch, logs).get(
+        "/api/v1/ravn/ravens/valkyrie-valhalla-k8s/logs", params={"lines": 5}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["bufferTotal"] == 1
+    assert [p.cluster for p in logs.placements] == ["valhalla"]
+    assert not forge.called
+
+
+@respx.mock
+def test_a_catalog_valkyrie_reports_its_cluster_and_room_without_the_forge(monkeypatch):
+    forge = respx.route(url__startswith="http://localhost:8080/api/v1/forge/")
+    client = _placed_client(monkeypatch, None)
+
+    detail = client.get("/api/v1/ravn/ravens/valkyrie-valhalla-k8s")
+    sessions = client.get("/api/v1/ravn/ravens/valkyrie-valhalla-k8s/sessions")
+
+    assert detail.status_code == 200
+    assert detail.json()["cluster"] == "valhalla"
+    assert sessions.status_code == 200
+    assert sessions.json() == []
+    assert not forge.called
+
+
+@pytest.mark.parametrize(
+    ("logs", "ravn_id", "status", "detail"),
+    [
+        (None, "valkyrie-valhalla-k8s", 409, "resident_logs.adapter"),
+        (_FakeResidentLogs(), "nobody", 404, "no resident 'nobody'"),
+        (
+            _FakeResidentLogs(ResidentLogSourceError("Loki down")),
+            "valkyrie-valhalla-k8s",
+            502,
+            "Loki",
+        ),
+        (_FakeResidentLogs(ValueError("min_level 'x'")), "valkyrie-valhalla-k8s", 422, "min_level"),
+    ],
+)
+def test_resident_logs_answer_each_failure_with_its_own_status(
+    monkeypatch, logs, ravn_id, status, detail
+):
+    resp = _placed_client(monkeypatch, logs).get(f"/api/v1/ravn/ravens/{ravn_id}/logs")
+
+    assert resp.status_code == status
+    assert detail in resp.json()["detail"]
+
+
+@respx.mock
+def test_the_configured_loki_adapter_serves_resident_logs(monkeypatch):
+    from ravn.config import Settings
+
+    loki = respx.get("https://loki.test/valhalla/loki/api/v1/query_range").mock(
+        return_value=httpx.Response(200, json={"data": {"result": []}})
+    )
+    catalog = json.loads(_valkyrie_catalog())
+    catalog["environments"][0]["valkyrie"]["placement"] = {
+        "cluster": "valhalla",
+        "namespace": "nats",
+        "workload": "valkyrie-valhalla-k8s",
+    }
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", json.dumps(catalog))
+    settings = Settings(
+        resident_logs={
+            "adapter": "ravn.adapters.resident_logs.loki.LokiResidentLogAdapter",
+            "base_url": "https://loki.test",
+        }
+    )
+
+    resp = TestClient(create_app(settings=settings)).get(
+        "/api/v1/ravn/ravens/valkyrie-valhalla-k8s/logs"
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"entries": [], "bufferTotal": 0}
+    assert loki.called

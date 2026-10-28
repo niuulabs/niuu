@@ -14,6 +14,18 @@ from pydantic import BaseModel, Field
 
 from niuu.domain.models import InstanceVisibility
 
+#: An RFC 1123 label, the shape of Kubernetes cluster, namespace and workload names.
+_KUBERNETES_NAME = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+
+
+class ResidentPlacement(BaseModel):
+    """Where a resident runs: the Kubernetes workload whose pods are the resident."""
+
+    cluster: str = Field(pattern=_KUBERNETES_NAME)
+    namespace: str = Field(pattern=_KUBERNETES_NAME)
+    # The Deployment name; its pods are named ``<workload>-<replicaset>-<pod>``.
+    workload: str = Field(pattern=_KUBERNETES_NAME)
+
 
 class StandaloneResident(BaseModel):
     """A resident running outside Forge, described by its deployment."""
@@ -41,6 +53,10 @@ class StandaloneResident(BaseModel):
     capabilities: list[str] = Field(default_factory=lambda: ["chat"])
     # Reconciled lifecycle conditions, in the shape managed runtimes report.
     conditions: list[dict[str, Any]] = Field(default_factory=list)
+    # Where it runs, when its source knows. A resident's logs are read by
+    # placement, and the fleet shows its cluster rather than the instance
+    # that happens to list it.
+    placement: ResidentPlacement | None = None
 
 
 class ResidentDiscoveryPort(Protocol):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from uuid import UUID
 
 import httpx
 
@@ -32,6 +33,14 @@ class PlatformRequestError(httpx.HTTPStatusError):
         if isinstance(payload, dict) and isinstance(payload.get("detail"), str):
             return payload["detail"]
         return f"platform answered HTTP {self.status_code} for {self.request.url.path}"
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        UUID(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _raise_for_status(response: httpx.Response) -> None:
@@ -120,8 +129,14 @@ class HttpPlatformRuntimeAdapter:
         auth_headers: dict[str, str],
         auth_params: dict[str, str],
     ) -> dict[str, Any] | None:
+        path = f"/api/v1/forge/resident-runtimes/{_path_segment(runtime_id)}"
+        # Managed runtime ids are UUIDs the platform assigns; any other id
+        # (a catalog Valkyrie, a discovered Deployment) names no managed
+        # runtime, and the platform would reject it as malformed, not unknown.
+        if not _is_uuid(runtime_id):
+            return None
         return await self._get_item(
-            f"/api/v1/forge/resident-runtimes/{_path_segment(runtime_id)}",
+            path,
             auth_headers,
             auth_params,
         )
