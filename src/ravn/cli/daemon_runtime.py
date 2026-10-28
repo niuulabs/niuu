@@ -301,6 +301,7 @@ async def _run_daemon(
             skill_manager=(
                 resident_learning_runtime.skills if resident_learning_runtime is not None else None
             ),
+            learned_tool_resolver=learned_tool_resolver,
         )
         if profile_cfg.include_mcp:
             tools.extend(_filter_tools(mcp_tools, settings, resolved_persona))

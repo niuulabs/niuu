@@ -1709,3 +1709,118 @@ class TestDaemonAgentFactory:
                 "url": "",
             }
         ]
+
+    async def test_run_daemon_builds_one_learned_tool_resolver_for_every_task(
+        self, tmp_path: Path
+    ) -> None:
+        """A daemon with one refused tool reports it once, however many tasks run.
+
+        The resolver is built at the composition root and injected into
+        ``_build_tools``; a resolver per task would sweep venvs, republish the
+        inventory and count ``degraded.learned_tool.refused`` once per task.
+        """
+        from ravn.cap_telemetry import degraded_counts, reset_cap_hits
+        from ravn.cli import tool_builders
+        from ravn.valkyrie_evolution.learned_tools import (
+            LearnedToolResolver,
+            learned_tool_storage,
+            write_learned_tool,
+            write_learned_tool_artifact,
+        )
+        from ravn.valkyrie_evolution.models import LearnedToolArtifact, LearnedToolManifest
+
+        reset_cap_hits()
+        settings = Settings(state_dir=str(tmp_path))
+        # 'container' has no channel back to the resident, like k8s_job.
+        settings.resident_evolution.learned_tool_execution_backend = "container"
+        settings.initiative.enabled = True
+        settings.gateway.channels.http.enabled = False
+        settings.gateway.channels.telegram.enabled = False
+        settings.gateway.channels.discord.enabled = False
+        settings.gateway.channels.slack.enabled = False
+        settings.gateway.channels.matrix.enabled = False
+        settings.gateway.channels.whatsapp.enabled = False
+        settings.sleipnir.enabled = False
+        settings.mimir.source_trigger.enabled = False
+        settings.mimir.staleness_trigger.enabled = False
+        settings.thread.enabled = False
+        settings.cascade.enabled = False
+
+        artifact = LearnedToolArtifact(
+            artifact_id="learned-tool:read_configmap_key_tail",
+            manifest=LearnedToolManifest(
+                name="read_configmap_key_tail",
+                description="Read a ConfigMap key.",
+                input_schema={"type": "object"},
+                required_permission="tool:run",
+            ),
+            tool_code="from ravn.sdk import tool\n\ndef run(p):\n    return tool.x()\n",
+            provenance={"verification": {"ok": True, "logs": "fixture"}},
+        )
+        code_dir, artifacts_dir = learned_tool_storage(tmp_path)
+        write_learned_tool(tools_dir=code_dir, artifact=artifact)
+        write_learned_tool_artifact(artifacts_dir=artifacts_dir, artifact=artifact)
+
+        class _FakePublisher:
+            async def start(self) -> None:
+                return None
+
+            async def stop(self) -> None:
+                return None
+
+        class _FakeExecutor:
+            def build(self, **kwargs):  # noqa: ANN003
+                return MagicMock()
+
+        class _FakeDriveLoop:
+            def __init__(self, *, agent_factory, **kwargs):  # noqa: ANN003
+                self._triggers: list[object] = []
+                for task_id in ("task-1", "task-2", "task-3"):
+                    agent_factory(MagicMock(), task_id=task_id, triggered_by="mesh:outcome:test")
+
+            async def run(self) -> None:
+                return None
+
+        memory = MagicMock()
+        memory.close = AsyncMock()
+        resolvers: list[object] = []
+        real_build_tools = tool_builders._build_tools
+
+        def _record(*args, **kwargs):  # noqa: ANN002, ANN003
+            resolvers.append(kwargs.get("learned_tool_resolver"))
+            return real_build_tools(*args, **kwargs)
+
+        persona = PersonaConfig(name="claude-mimir-researcher", permission_mode="read-only")
+        with (
+            patch("ravn.cli.commands._resolve_workspace", return_value=tmp_path),
+            patch("ravn.cli.commands._build_llm", return_value=MagicMock()),
+            patch("ravn.cli.commands._build_memory", return_value=memory),
+            patch("ravn.cli.commands._build_compaction", return_value=(MagicMock(), None)),
+            patch(
+                "ravn.cli.commands._build_environment_signal_publisher",
+                return_value=_FakePublisher(),
+            ),
+            patch(
+                "ravn.cli.commands._build_prompt_builder",
+                side_effect=lambda *_args: MagicMock(),
+            ),
+            patch("ravn.cli.commands._build_hooks", return_value=([], [])),
+            patch("ravn.cli.commands._start_mcp_shared", new=AsyncMock(return_value=(None, []))),
+            patch("ravn.cli.commands._build_mimir", return_value=None),
+            patch("ravn.cli.commands._build_permission", return_value=MagicMock()),
+            patch("ravn.cli.commands._build_tools", side_effect=_record),
+            patch("ravn.cli.commands._build_executor", return_value=_FakeExecutor()),
+            patch("ravn.cli.commands._wire_triggers", return_value=[]),
+            patch("ravn.cli.commands._wire_cron", return_value=[]),
+            patch("ravn.cli.commands._shutdown_mcp", new=AsyncMock()),
+            patch("ravn.drive_loop.DriveLoop", _FakeDriveLoop),
+            patch.object(LearnedToolResolver, "sweep_orphaned_venvs", autospec=True) as sweep,
+        ):
+            await _run_daemon(settings, persona_config=persona)
+
+        assert len(resolvers) == 3
+        assert isinstance(resolvers[0], LearnedToolResolver)
+        assert all(resolver is resolvers[0] for resolver in resolvers)
+        assert degraded_counts() == {"learned_tool.refused": 1}
+        sweep.assert_called_once()
+        reset_cap_hits()
