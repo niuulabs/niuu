@@ -22,6 +22,19 @@ class HarnessKind(StrEnum):
     CLI_BACKED = "cli_backed"
 
 
+class HarnessCapability(StrEnum):
+    """Provider-neutral features a Ravn harness can declare and require."""
+
+    TOOLS = "tools"
+    REASONING = "reasoning"
+    ATTACHMENTS = "attachments"
+    IMAGES = "images"
+    INTERRUPT = "interrupt"
+    STEERING = "steering"
+    SESSION_RESUME = "session_resume"
+    DYNAMIC_TOOLS = "dynamic_tools"
+
+
 class SteeringMode(StrEnum):
     """How a harness applies an in-flight steering instruction."""
 
@@ -43,6 +56,10 @@ class HarnessContractError(ValueError):
 
 class UnsupportedHarnessCapabilityError(HarnessContractError):
     """Raised when a requested turn feature is absent from the declared profile."""
+
+
+class HarnessRequirementError(HarnessContractError):
+    """Raised when no selected harness satisfies declared requirements."""
 
 
 class HarnessLifecycleError(RuntimeError):
@@ -103,6 +120,34 @@ class HarnessCapabilityProfile:
         """Whether the harness can apply a steering control during a turn."""
         return self.steering_mode is not SteeringMode.NONE
 
+    @property
+    def capabilities(self) -> frozenset[HarnessCapability]:
+        """Return the canonical capability names supported by this profile."""
+        capabilities: set[HarnessCapability] = set()
+        if self.supports_tools:
+            capabilities.add(HarnessCapability.TOOLS)
+        if self.supports_reasoning:
+            capabilities.add(HarnessCapability.REASONING)
+        if self.supports_attachments:
+            capabilities.add(HarnessCapability.ATTACHMENTS)
+        if self.supports_images:
+            capabilities.add(HarnessCapability.IMAGES)
+        if self.supports_interrupt:
+            capabilities.add(HarnessCapability.INTERRUPT)
+        if self.supports_steering:
+            capabilities.add(HarnessCapability.STEERING)
+        if self.supports_session_resume:
+            capabilities.add(HarnessCapability.SESSION_RESUME)
+        if self.supports_dynamic_tools:
+            capabilities.add(HarnessCapability.DYNAMIC_TOOLS)
+        return frozenset(capabilities)
+
+    def missing_requirements(
+        self, requirements: frozenset[HarnessCapability]
+    ) -> frozenset[HarnessCapability]:
+        """Return every canonical requirement this profile cannot meet."""
+        return requirements - self.capabilities
+
     @classmethod
     def native_ravn_agent(cls) -> HarnessCapabilityProfile:
         """Profile of the in-process ``RavnAgent`` turn loop."""
@@ -147,6 +192,69 @@ class HarnessCapabilityProfile:
             supports_session_resume=supports_session_resume,
             supports_dynamic_tools=supports_dynamic_tools,
         )
+
+
+def parse_harness_requirements(values: object) -> frozenset[HarnessCapability]:
+    """Validate a config-facing collection of canonical capability names."""
+    if values is None:
+        return frozenset()
+    if not isinstance(values, (list, tuple, set, frozenset)):
+        raise HarnessContractError("harness requires must be a list of canonical capabilities")
+
+    requirements: set[HarnessCapability] = set()
+    for value in values:
+        if not isinstance(value, str):
+            raise HarnessContractError("harness requirements must be capability names")
+        try:
+            capability = HarnessCapability(value)
+        except ValueError as exc:
+            supported = ", ".join(capability.value for capability in HarnessCapability)
+            raise HarnessContractError(
+                f"unknown harness capability {value!r}; supported capabilities: {supported}"
+            ) from exc
+        if capability in requirements:
+            raise HarnessContractError(f"duplicate harness requirement {capability.value!r}")
+        requirements.add(capability)
+    return frozenset(requirements)
+
+
+@dataclass(frozen=True)
+class HarnessSelection:
+    """Resolved harness facts suitable for config inspection and observability."""
+
+    adapter: str
+    runtime_identity: str
+    profile: HarnessCapabilityProfile
+    requirements: frozenset[HarnessCapability]
+    reason: str
+    model: str = ""
+
+    @property
+    def capabilities(self) -> frozenset[HarnessCapability]:
+        """Return the selected harness's canonical capability set."""
+        return self.profile.capabilities
+
+    def with_model(self, model: str) -> HarnessSelection:
+        """Attach the resolved model identity without retaining any prompt data."""
+        return HarnessSelection(
+            adapter=self.adapter,
+            runtime_identity=self.runtime_identity,
+            profile=self.profile,
+            requirements=self.requirements,
+            reason=self.reason,
+            model=model,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return content-safe selection facts for existing inspection surfaces."""
+        return {
+            "adapter": self.adapter,
+            "runtime_identity": self.runtime_identity,
+            "model": self.model,
+            "capabilities": sorted(capability.value for capability in self.capabilities),
+            "requires": sorted(capability.value for capability in self.requirements),
+            "reason": self.reason,
+        }
 
 
 @dataclass(frozen=True)

@@ -50,6 +50,7 @@ import yaml as _yaml
 
 from niuu.domain.outcome import OutcomeField, OutcomeSchema, generate_outcome_instruction
 from ravn.config import ProjectConfig, _safe_int
+from ravn.domain.harness import HarnessCapability, HarnessContractError, parse_harness_requirements
 from ravn.domain.permission_mode import PermissionMode, parse_optional_permission_mode
 from ravn.domain.persona_document import (
     PortablePersonaDefinition,
@@ -112,11 +113,27 @@ class PersonaVoiceConfig:
 
 
 @dataclass
+class PersonaExecutorFallback:
+    """One explicitly configured pre-start alternative harness binding."""
+
+    adapter: str
+    kwargs: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class PersonaExecutorConfig:
-    """Executor adapter settings embedded in a persona."""
+    """Executor adapter settings and canonical capability requirements."""
 
     adapter: str = ""
     kwargs: dict[str, Any] = field(default_factory=dict)
+    requires: frozenset[HarnessCapability] = field(default_factory=frozenset)
+    fallbacks: list[PersonaExecutorFallback] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        try:
+            self.requires = parse_harness_requirements(self.requires)
+        except HarnessContractError as exc:
+            raise ValueError(f"Invalid executor requires: {exc}") from exc
 
 
 @dataclass
@@ -216,12 +233,33 @@ class PersonaConfig:
             d["forbidden_tools"] = list(self.forbidden_tools)
         if self.permission_mode:
             d["permission_mode"] = str(self.permission_mode)
-        if self.executor.adapter or self.executor.kwargs:
+        if (
+            self.executor.adapter
+            or self.executor.kwargs
+            or self.executor.requires
+            or self.executor.fallbacks
+        ):
             executor_dict: dict[str, Any] = {}
             if self.executor.adapter:
                 executor_dict["adapter"] = self.executor.adapter
             if self.executor.kwargs:
                 executor_dict["kwargs"] = _sanitize_executor_kwargs(self.executor.kwargs)
+            if self.executor.requires:
+                executor_dict["requires"] = sorted(
+                    capability.value for capability in self.executor.requires
+                )
+            if self.executor.fallbacks:
+                executor_dict["fallbacks"] = [
+                    {
+                        "adapter": fallback.adapter,
+                        **(
+                            {"kwargs": _sanitize_executor_kwargs(fallback.kwargs)}
+                            if fallback.kwargs
+                            else {}
+                        ),
+                    }
+                    for fallback in self.executor.fallbacks
+                ]
             d["executor"] = executor_dict
 
         llm_dict: dict = {}
@@ -835,6 +873,38 @@ def _sanitize_executor_kwargs(raw_kwargs: dict[str, Any]) -> dict[str, Any]:
     return kwargs
 
 
+def _parse_executor_fallbacks(raw: Any) -> list[PersonaExecutorFallback]:
+    """Parse configured alternatives; malformed declarations must fail closed."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("executor.fallbacks must be a list")
+
+    fallbacks: list[PersonaExecutorFallback] = []
+    for index, candidate in enumerate(raw):
+        if not isinstance(candidate, dict):
+            raise ValueError(f"executor.fallbacks[{index}] must be a mapping")
+        adapter = candidate.get("adapter")
+        if not isinstance(adapter, str) or not adapter.strip():
+            raise ValueError(f"executor.fallbacks[{index}].adapter must be a nonblank string")
+        kwargs = candidate.get("kwargs", {})
+        if not isinstance(kwargs, dict):
+            raise ValueError(f"executor.fallbacks[{index}].kwargs must be a mapping")
+        unknown = set(candidate) - {"adapter", "kwargs"}
+        if unknown:
+            raise ValueError(
+                f"executor.fallbacks[{index}] has unsupported field(s): "
+                f"{', '.join(sorted(unknown))}"
+            )
+        fallbacks.append(
+            PersonaExecutorFallback(
+                adapter=adapter.strip(),
+                kwargs=_sanitize_executor_kwargs(dict(kwargs)),
+            )
+        )
+    return fallbacks
+
+
 _VALID_FAN_IN_STRATEGIES = {"all_must_pass", "any_pass", "majority", "merge"}
 
 
@@ -1336,6 +1406,8 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
                 if isinstance(executor_raw.get("kwargs"), dict)
                 else {}
             ),
+            requires=executor_raw.get("requires", []),
+            fallbacks=_parse_executor_fallbacks(executor_raw.get("fallbacks")),
         )
 
         allowed = raw.get("allowed_tools", [])

@@ -6,6 +6,7 @@ import inspect
 from typing import Any
 
 from ravn.agent import RavnAgent
+from ravn.domain.harness import HarnessCapabilityProfile
 from ravn.ports.executor import (
     ExecutionAgentPort,
     ExecutorPort,
@@ -19,6 +20,11 @@ class AgentExecutor(ExecutorPort, HarnessExecutorPort):
 
     def __init__(self, **_: Any) -> None:
         return None
+
+    @property
+    def profile(self) -> HarnessCapabilityProfile:
+        """Declare the native RavnAgent capabilities before it is constructed."""
+        return HarnessCapabilityProfile.native_ravn_agent()
 
     def build(self, **kwargs: Any) -> ExecutionAgentPort:
         return self.build_harness(**kwargs)

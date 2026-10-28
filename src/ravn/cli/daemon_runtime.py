@@ -20,7 +20,10 @@ async def _run_daemon(
     from ravn.adapters.channels.gateway import RavnGateway
     from ravn.adapters.channels.gateway_http import HttpGateway
     from ravn.adapters.channels.gateway_telegram import TelegramGateway
-    from ravn.cli.runtime_builders import require_tool_build_push  # noqa: PLC0415
+    from ravn.cli.runtime_builders import (  # noqa: PLC0415
+        emit_harness_selection,
+        require_tool_build_push,
+    )
     from ravn.drive_loop import DriveLoop
     from ravn.ports.channel import ChannelPort
 
@@ -325,6 +328,7 @@ async def _run_daemon(
         tools = _apply_trust_filter(tools, settings, triggered_by)
 
         executor = _build_executor(resolved_persona)
+        emit_harness_selection(executor, model=resolved_model)
         resolved_extended_thinking = _resolve_extended_thinking(
             settings,
             resolved_persona,

@@ -20,7 +20,12 @@ import dataclasses
 import logging
 
 from niuu.domain.llm_merge import _SECURITY_KEYS, concat_prompt_extras
-from ravn.adapters.personas.loader import PersonaConfig, PersonaConsumes, PersonaExecutorConfig
+from ravn.adapters.personas.loader import (
+    PersonaConfig,
+    PersonaConsumes,
+    PersonaExecutorConfig,
+    _parse_executor_fallbacks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +108,8 @@ def apply_config_overrides(persona: PersonaConfig, overrides: dict) -> PersonaCo
                     if isinstance(executor_override.get("kwargs"), dict)
                     else {}
                 ),
+                requires=executor_override.get("requires", []),
+                fallbacks=_parse_executor_fallbacks(executor_override.get("fallbacks")),
             ),
         )
 

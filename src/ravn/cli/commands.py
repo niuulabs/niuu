@@ -192,6 +192,7 @@ from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _build_permission,
     _build_tool_build_backend,
     _effective_permission_mode,
+    emit_harness_selection,
     _constructor_accepts_kwarg,
     _get_tool_group,
     _with_mimir_fact_capture,
@@ -572,6 +573,7 @@ def _build_agent(
 
     cp_cfg = settings.checkpoint
     executor = _build_executor(persona_config)
+    emit_harness_selection(executor, model=resolved_model)
     agent = executor.build(
         llm=llm,
         tools=tools,
@@ -1641,6 +1643,7 @@ async def _run_gateway(
             effective_channel = CompositeChannel([channel, sleipnir_ch])
 
         executor = _build_executor(persona_config)
+        emit_harness_selection(executor, model=resolved_model)
         return executor.build(
             llm=llm,
             tools=tools,

@@ -14,6 +14,7 @@ import pytest
 
 from ravn.adapters.personas.loader import PersonaConfig, PersonaConsumes, PersonaLLMConfig
 from ravn.adapters.personas.overrides import apply_config_overrides
+from ravn.domain.harness import HarnessCapability
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -198,6 +199,28 @@ class TestSecurityKeyDropping:
 
 
 class TestCombinedOverrides:
+    def test_executor_override_preserves_capability_requirements_and_fallbacks(self, base_persona):
+        result = apply_config_overrides(
+            base_persona,
+            {
+                "executor": {
+                    "adapter": "ravn.adapters.executors.agent.AgentExecutor",
+                    "requires": ["session_resume"],
+                    "fallbacks": [
+                        {
+                            "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
+                            "kwargs": {"transport_adapter": "tests.Transport"},
+                        }
+                    ],
+                }
+            },
+        )
+
+        assert result.executor.requires == frozenset({HarnessCapability.SESSION_RESUME})
+        assert result.executor.fallbacks[0].adapter == (
+            "ravn.adapters.executors.cli.CliTransportExecutor"
+        )
+
     def test_all_overrides_applied_together(self, base_persona):
         result = apply_config_overrides(
             base_persona,
