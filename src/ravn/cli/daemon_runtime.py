@@ -21,6 +21,7 @@ async def _run_daemon(
     from ravn.adapters.channels.gateway_http import HttpGateway
     from ravn.adapters.channels.gateway_telegram import TelegramGateway
     from ravn.cli.runtime_builders import (  # noqa: PLC0415
+        _selected_executor_uses_cli_transport,
         emit_harness_selection,
         require_tool_build_push,
     )
@@ -57,7 +58,8 @@ async def _run_daemon(
     from ravn.cli.tool_builders import _build_learned_tool_resolver  # noqa: PLC0415
 
     learned_tool_resolver = _build_learned_tool_resolver(settings, workspace)
-    cli_transport_executor = _uses_cli_transport_executor(persona_config)
+    executor = _build_executor(persona_config)
+    cli_transport_executor = _selected_executor_uses_cli_transport(executor)
     llm = None if cli_transport_executor else _build_llm(settings)
     memory = _build_memory(settings)
     # Built here for the persona's own model so an impossible compaction setting
@@ -194,6 +196,9 @@ async def _run_daemon(
                 if task_persona_cfg.llm.max_tokens:
                     resolved_max_tokens = task_persona_cfg.llm.max_tokens
 
+        executor = _build_executor(resolved_persona)
+        cli_transport_executor = _selected_executor_uses_cli_transport(executor)
+
         session = Session()
         budget = _build_iteration_budget(settings, resolved_max_iterations)
         permission = _build_permission(
@@ -327,12 +332,11 @@ async def _run_daemon(
         # NIU-571: Apply trust gradient constraints for thread-triggered tasks
         tools = _apply_trust_filter(tools, settings, triggered_by)
 
-        executor = _build_executor(resolved_persona)
         emit_harness_selection(executor, model=resolved_model)
         resolved_extended_thinking = _resolve_extended_thinking(
             settings,
             resolved_persona,
-            cli_transport_executor=_uses_cli_transport_executor(resolved_persona),
+            cli_transport_executor=cli_transport_executor,
         )
         compressor, native_compaction = (
             _build_compaction(settings, llm, resolved_model) if llm is not None else (None, None)

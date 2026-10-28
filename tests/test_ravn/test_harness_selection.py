@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from niuu.ports.cli import CLITransport, TransportCapabilities
@@ -18,6 +20,7 @@ from ravn.domain.harness import (
     HarnessRequirementError,
     SteeringMode,
 )
+from tests.test_ravn.conftest import make_simple_llm
 
 
 class ResumeTransport(CLITransport):
@@ -171,6 +174,33 @@ def test_pre_start_fallback_must_satisfy_every_requirement() -> None:
     assert selection.adapter == _CLI_EXECUTOR
     assert selection.reason == "fallback_after_incompatible_primary"
     assert selection.requirements <= selection.capabilities
+
+
+async def test_cli_primary_fallback_to_native_builds_and_runs_with_llm() -> None:
+    """A native fallback gets native resources, not those of the CLI primary."""
+    from ravn.cli.commands import _build_agent
+    from ravn.config import Settings
+
+    llm = make_simple_llm("native fallback response")
+    persona = _persona(
+        PersonaExecutorConfig(
+            adapter=_CLI_EXECUTOR,
+            kwargs={"transport_adapter": _RESUME_TRANSPORT},
+            requires=frozenset({HarnessCapability.REASONING}),
+            fallbacks=[
+                PersonaExecutorFallback(
+                    adapter="ravn.adapters.executors.agent.AgentExecutor",
+                )
+            ],
+        )
+    )
+
+    with patch("ravn.cli.commands._build_llm", return_value=llm):
+        agent, _ = _build_agent(Settings(), persona_config=persona)
+
+    assert agent._llm is llm
+    result = await agent.run_turn("use the native fallback")
+    assert result.response == "native fallback response"
 
 
 def test_incompatible_fallback_is_not_selected() -> None:

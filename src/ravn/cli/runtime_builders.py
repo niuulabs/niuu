@@ -18,7 +18,12 @@ import httpx
 from niuu.adapters.outbound.http_auth import WorkloadIdentityBearerTokenAuthAdapter
 from ravn.config import PermissionConfig, Settings, ToolGroupConfig
 from ravn.domain.exceptions import ConfigurationError
-from ravn.domain.harness import HarnessCapabilityProfile, HarnessRequirementError, HarnessSelection
+from ravn.domain.harness import (
+    HarnessCapabilityProfile,
+    HarnessKind,
+    HarnessRequirementError,
+    HarnessSelection,
+)
 from ravn.domain.permission_mode import PermissionMode, parse_permission_mode
 from ravn.ports.executor import ExecutorPort
 
@@ -698,6 +703,19 @@ def _uses_cli_transport_executor(
     if adapter_path:
         return adapter_path == "ravn.adapters.executors.cli.CliTransportExecutor"
     return _uses_cli_transport_runtime(settings)
+
+
+def _selected_executor_uses_cli_transport(executor: ExecutorPort) -> bool:
+    """Return whether the resolved executor, rather than its primary config, is CLI-backed.
+
+    Capability selection can replace a configured CLI executor with a native
+    fallback. Runtime resources must follow that selected profile so the native
+    executor receives its LLM before a provider session is opened.
+    """
+    selection = getattr(executor, "harness_selection", None)
+    if isinstance(selection, HarnessSelection):
+        return selection.profile.kind is HarnessKind.CLI_BACKED
+    return False
 
 
 # ---------------------------------------------------------------------------
