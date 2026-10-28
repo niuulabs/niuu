@@ -359,6 +359,57 @@ A catalog Valkyrie is listed by the instance whose Ravn holds the catalog
 there. Where it actually runs is its `placement.cluster`, reported as `cluster`;
 the web UI and Lexi show and group a resident by `cluster` when it has one.
 
+### Channels with catalog residents (the Forge's discovered backend)
+
+A resident's extra channels are sessions in its Ravn OpenClaw shim, which the
+Forge drives (`RavnResidentSessionController`). The Forge only drives residents
+it has a record of, so catalog Valkyries get channels through the
+`discovered` resident backend: residents the Forge discovers instead of
+deploying. It keeps one record per discovered resident (id derived from the
+resident's key, `niuu.domain.discovered_residents.discovered_resident_id`),
+reports it active while its shim's `<shim_url>/health` answers, and never
+deploys, restarts, suspends or removes it. Its profile is never offered for
+deployment.
+
+```yaml
+residentRuntimeProfiles:
+  - id: discovered-ravn
+    enabled: true
+    displayName: Discovered Ravn
+    backend: discovered
+    engine: ravn
+    capabilities: [chat, logs]          # session.* are added by the Ravn session controller
+residentRuntimeControllers:
+  - adapter: volundr.adapters.outbound.discovered_resident_runtime.DiscoveredResidentRuntimeController
+    kwargs:
+      loki_base_url: https://loki.proxy.glitnir.alfheim.niuu.world
+      residents:
+        - key: valkyrie-glitnir-k8s     # the catalog valkyrieId
+          name: Hildr
+          owner_id: <user id>           # whose record (and channels) it is
+          tenant_id: <tenant id>
+          persona_name: k8s-valkyrie
+          shim_url: https://hildr.glitnir.alfheim.niuu.world/openclaw
+          chat_endpoint: wss://yggdrasil.niuu.world/rooms/hildr/session
+          placement: {cluster: glitnir, namespace: nats, workload: valkyrie-glitnir-k8s}
+    secretKwargs:
+      - kwarg: shim_tokens              # JSON object: resident key -> its shim token
+        secretName: discovered-resident-shim-tokens
+        secretKey: tokens.json
+```
+
+Each resident runs the shim with the same token
+(`gateway.channels.openclaw` with `path: /openclaw` behind its ingress,
+`token_env: RAVN_OPENCLAW_TOKEN`, `agent_id: main`). Every resident needs a token
+and every token a resident, or the Forge refuses to start.
+
+The Ravn API keeps listing the resident under its own id. When the caller may see
+the Forge's record of it, the resident gains `session.list`, `session.create` and
+`session.delete`, its sessions list is its room plus the record's sessions (chat
+endpoints `/s/<record id>/sessions/<id>/session`), and creating or deleting a
+channel goes to that record. Without a record a catalog resident has only its
+room, and creating a channel answers `409`.
+
 ### Logs of discovered and catalog residents
 
 A managed resident's logs come from its control plane. A discovered or catalog

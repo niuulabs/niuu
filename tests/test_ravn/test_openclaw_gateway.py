@@ -661,3 +661,32 @@ def test_a_restart_frees_sessions_left_busy(tmp_path) -> None:
 
     assert store.get_session("agent:main:niuu-1")["status"] == "idle"
     store.close()
+
+
+def test_a_configured_path_serves_the_shim_under_its_own_prefix(tmp_path) -> None:
+    """Behind an ingress the resident shares with other routes (a Valkyrie's)."""
+    from fastapi.testclient import TestClient
+
+    store = OpenClawStore(tmp_path / "state.db")
+
+    class Cfg:
+        agent_id = "main"
+        token_env = "RAVN_OPENCLAW_TEST_TOKEN_ENV"
+        rooms_dir = str(tmp_path / "rooms")
+        path = "/openclaw"
+
+    gateway = OpenClawGateway(Cfg(), StubRavnGateway(), store=store)
+
+    client = TestClient(gateway._app)
+    assert client.get("/openclaw/health").json() == {"ok": True, "status": "live"}
+    assert client.get("/health").status_code == 404
+    assert "/openclaw" in {getattr(route, "path", "") for route in gateway._app.routes}
+    store.close()
+
+
+def test_the_shim_path_must_be_absolute() -> None:
+    from ravn.config import OpenClawChannelConfig
+
+    with pytest.raises(ValueError, match="must start with '/'"):
+        OpenClawChannelConfig(path="openclaw")
+    assert OpenClawChannelConfig().path == "/"

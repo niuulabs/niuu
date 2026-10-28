@@ -26,6 +26,7 @@ from ravn.resident_first_opinion import (
     DECISION_CRITERIA,
     PURPOSE,
     TIER_CRITERIA,
+    TIER_DELTA_BUCKETS,
     FirstOpinion,
     ResidentFirstOpinion,
     without_outcome_contract,
@@ -199,11 +200,40 @@ class TestCompare:
         assert name == "ravn.decision.first_opinion.tier_delta"
         assert delta == -2  # ambient (1) minus urgent (3): the cheap model under-attended
         assert attrs["ravn.decision.resident"] == "urgent"
+        assert telemetry.buckets[name] == TIER_DELTA_BUCKETS == (-2.5, -1.5, -0.5, 0.5, 1.5, 2.5)
+        assert telemetry.span_attributes == {
+            "ravn.decision.first_opinion.tier": "ambient",
+            "ravn.decision.first_opinion.decision": "watch",
+            "ravn.decision.first_opinion.tier_agreed": "false",
+            "ravn.decision.first_opinion.decision_agreed": "true",
+        }
         [(event, attrs, content)] = telemetry.events
         assert event == "ravn.decision.first_opinion"
         assert attrs["ravn.resident.case_id"] == "case-1"
         assert content["resident"] == {"tier": "urgent", "decision": "watch", "confidence": 0.9}
         assert content["first_opinion"]["needs_investigation"] == 0.2
+
+    def test_logs_one_line_per_comparison(
+        self, telemetry: RecordingTelemetry, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.INFO, logger="ravn.resident_first_opinion"):
+            ResidentFirstOpinion(_Decisions(), max_observation_chars=100).compare(
+                _opinion(tier="ambient", decision="watch"),
+                {"tier": "silent", "decision": "watch"},
+                outcome_valid=True,
+            )
+            ResidentFirstOpinion(_Decisions(), max_observation_chars=100).compare(
+                _opinion(), None, outcome_valid=False
+            )
+
+        assert [r.getMessage() for r in caplog.records] == [
+            "first_opinion[case-1] model=jev-1.14.0 outcome_valid=True "
+            "tier jev=ambient resident=silent agreed=false "
+            "decision jev=watch resident=watch agreed=true",
+            "first_opinion[case-1] model=jev-1.14.0 outcome_valid=False "
+            "tier jev=ambient resident=unavailable agreed=unavailable "
+            "decision jev=watch resident=unavailable agreed=unavailable",
+        ]
 
     @pytest.mark.parametrize(
         "outcome",
@@ -217,6 +247,7 @@ class TestCompare:
         )
 
         comparisons = _comparisons(telemetry)
+        assert telemetry.span_attributes["ravn.decision.first_opinion.tier_agreed"] == "unavailable"
         for question in ("tier", "decision"):
             assert comparisons[question]["ravn.decision.resident"] == "unavailable"
             assert "ravn.decision.agreed" not in comparisons[question]

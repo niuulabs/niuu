@@ -40,6 +40,7 @@ from ravn.api.residents import (
     ResidentDirectory,
     ResidentLogsUnavailableError,
     ResidentNotFoundError,
+    ResidentSessionsUnavailableError,
     StandaloneDiscoveryUnavailableError,
     forward_auth,
 )
@@ -669,15 +670,17 @@ def create_app(
         ravn_id: str,
         body: dict,
         request: Request,
-        _: Principal = Depends(extract_principal),
+        principal: Principal = Depends(extract_principal),
     ) -> dict:
         auth_headers, auth_params = forward_auth(request)
         try:
             return await resident_directory.create_resident_session(
-                ravn_id, body, auth_headers, auth_params
+                ravn_id, body, principal, auth_headers, auth_params
             )
         except httpx.HTTPStatusError as exc:
             _raise_platform_error(exc)
+        except ResidentSessionsUnavailableError as exc:
+            raise HTTPException(status_code=http_status.HTTP_409_CONFLICT, detail=str(exc))
 
     @app.delete(
         "/api/v1/ravn/ravens/{ravn_id}/sessions/{session_id}",
@@ -687,15 +690,17 @@ def create_app(
         ravn_id: str,
         session_id: str,
         request: Request,
-        _: Principal = Depends(extract_principal),
+        principal: Principal = Depends(extract_principal),
     ) -> Response:
         auth_headers, auth_params = forward_auth(request)
         try:
             await resident_directory.delete_resident_session(
-                ravn_id, session_id, auth_headers, auth_params
+                ravn_id, session_id, principal, auth_headers, auth_params
             )
         except httpx.HTTPStatusError as exc:
             _raise_platform_error(exc)
+        except ResidentSessionsUnavailableError as exc:
+            raise HTTPException(status_code=http_status.HTTP_409_CONFLICT, detail=str(exc))
         return Response(status_code=http_status.HTTP_204_NO_CONTENT)
 
     @app.get("/api/v1/ravn/deployment-profiles")
