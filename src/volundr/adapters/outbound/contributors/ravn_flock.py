@@ -32,6 +32,7 @@ from niuu.mesh import nng_ports_for as _ports_for
 from volundr.adapters.outbound.openshell_contract import (
     check_peer_workload_name,
     check_peer_workloads,
+    egress_target,
 )
 from volundr.adapters.outbound.resident_container_spec import PLATFORM_ACCESS_TOKEN_ENV
 from volundr.domain.models import (
@@ -743,6 +744,33 @@ def _normalize_workflow_config(
         "graph": graph,
         "trace_context": dict(trace_context or {}),
     }
+
+
+def _observability_egress(observability_config: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The OTLP endpoints Skuld and every Ravn in the flock export to.
+
+    Traces go over OTLP/gRPC, whose client completes TLS itself; metrics and
+    logs go over OTLP/HTTP.
+    """
+    if not observability_config or not observability_config.get("enabled"):
+        return []
+    return [
+        egress_target(
+            str(observability_config.get("trace_endpoint") or ""),
+            purpose="OTLP trace",
+            passthrough=True,
+        ),
+        egress_target(
+            str(observability_config.get("metric_endpoint") or ""),
+            purpose="OTLP metric",
+            passthrough=False,
+        ),
+        egress_target(
+            str(observability_config.get("log_endpoint") or ""),
+            purpose="OTLP log",
+            passthrough=False,
+        ),
+    ]
 
 
 def _workflow_trigger_config(workflow: dict[str, Any] | None) -> dict[str, str] | None:
@@ -1619,6 +1647,7 @@ class RavnFlockContributor(SessionContributor):
                 "files": openshell_files,
                 "volumes": volumes,
                 "volumeMounts": mounts,
+                "egress": _observability_egress(observability_config),
             }
             pod_spec = PodSpecAdditions(env=tuple(skuld_env))
 

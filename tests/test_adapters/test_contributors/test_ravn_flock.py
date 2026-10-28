@@ -1015,6 +1015,42 @@ class TestMountedConfig:
         )
         assert skuld_env["SKULD__OBSERVABILITY__LOG_ENDPOINT"] == "https://loki.example/v1/logs"
 
+    async def test_openshell_flock_declares_the_otlp_egress_it_needs(self, session):
+        contributor = _flock_contributor(ravn_image="ghcr.io/niuulabs/openshell:dev-test")
+        observability = {
+            "enabled": True,
+            "trace_endpoint": "https://tempo.example:4317",
+            "metric_endpoint": "https://mimir.example/v1/metrics",
+            "log_endpoint": "http://loki.example/v1/logs",
+        }
+        context = SessionContext(
+            workload_type="ravn_flock",
+            runtime_backend="openshell",
+            workload_config={"personas": ["reviewer"], "observability": observability},
+        )
+
+        result = await contributor.contribute(session, context)
+
+        # Traces are OTLP/gRPC, which must reach the collector uninspected.
+        assert result.values["openshell"]["egress"] == [
+            {"host": "tempo.example", "port": 4317, "purpose": "OTLP trace", "passthrough": True},
+            {"host": "mimir.example", "port": 443, "purpose": "OTLP metric", "passthrough": False},
+            {"host": "loki.example", "port": 80, "purpose": "OTLP log", "passthrough": False},
+        ]
+
+    async def test_openshell_flock_without_observability_declares_no_egress(
+        self, session, flock_template
+    ):
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        contributor = _flock_contributor(launch_spec_provider=provider)
+
+        result = await contributor.contribute(
+            session, SessionContext(launch_spec="ravn-flock", runtime_backend="openshell")
+        )
+
+        assert result.values["openshell"]["egress"] == []
+
     async def test_ravn_sidecars_use_unique_service_ports(self, session, flock_template):
         """Each Ravn API server must bind its own port inside the shared pod netns."""
         provider = MagicMock()

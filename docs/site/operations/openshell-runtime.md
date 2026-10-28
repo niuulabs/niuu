@@ -143,6 +143,36 @@ in the image or HTTP-backed; arbitrary ConfigMap/init-container passthrough is
 unsupported. The primary remains the only exec/SSH target. Peer stdout is
 written to `/sandbox/workspace/.flock/logs/<persona>.log`.
 
+A flock with observability enabled (for example Ting's
+`dispatch.flock.observability`) exports from Skuld and every Ravn to the
+configured OTLP endpoints, so the sandbox policy must allow them. Völundr
+refuses to start the flock when it does not, naming the missing endpoint.
+Traces use OTLP/gRPC, which completes TLS itself: OpenShell's TLS termination
+negotiates only HTTP/1.1, so the trace endpoint needs `protocol: tcp` and
+`tls: skip`. Metrics and logs use OTLP/HTTP and can be inspected. List exact
+hosts when the collectors resolve to private addresses: a wildcard host cannot
+reach one without `allowed_ips`.
+
+```yaml
+flock-observability:
+  name: flock-observability
+  endpoints:
+    - {host: tempo.example.org, port: 443, protocol: tcp, tls: skip}
+    - {host: mimir.example.org, port: 443, protocol: rest, enforcement: enforce, access: full}
+    - {host: loki.example.org, port: 443, protocol: rest, enforcement: enforce, access: full}
+  binaries:
+    - {path: /opt/niuu/bin/python}
+    - {path: /opt/niuu/bin/python3}
+    - {path: /sandbox/.uv/python/**}
+```
+
+Deleting a session waits up to `resource_delete_timeout` (90s) for its sandbox
+to go, the DeleteSandbox call included: the Kubernetes driver answers only once
+the workload Pod has terminated, which takes its whole 30s grace period when a
+process ignores SIGTERM. Völundr's Envoy `upstreamTimeout` must be longer than
+that budget, or a slow delete reaches the client as a 504 while it is still
+running.
+
 ### Gateway requirements
 
 Peers and every Forge storage mount travel in the sandbox's
