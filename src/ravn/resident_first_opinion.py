@@ -16,6 +16,8 @@ its outcome is the only one that reaches the court. What it produces is evidence
 * ``ravn.decision.first_opinion.tier_delta`` — first-opinion tier index minus the resident's,
   so a negative value is the dangerous direction (the cheap model would have under-attended);
 * a ``ravn.decision.first_opinion`` span event with both full judgments;
+* the same verdicts as attributes on the turn's span (``…first_opinion.tier_agreed`` and
+  ``…decision_agreed`` as ``true`` / ``false`` / ``unavailable``), so TraceQL finds disagreements;
 * one INFO log line per comparison carrying the trace id, so disagreements can be listed and
   opened from the logs.
 
@@ -196,6 +198,20 @@ class ResidentFirstOpinion:
                 delta,
                 attributes={**base, "ravn.decision.resident": resident_tier},
             )
+        # On the turn's own span, so TraceQL can find disagreements directly, e.g.
+        # { span.ravn.decision.first_opinion.tier_agreed = "false" }.
+        telemetry.set_attributes(
+            {
+                "ravn.decision.first_opinion.tier": opinion.tier.choice,
+                "ravn.decision.first_opinion.decision": opinion.decision.choice,
+                "ravn.decision.first_opinion.tier_agreed": _agreement(
+                    opinion.tier.choice, resident_tier
+                ),
+                "ravn.decision.first_opinion.decision_agreed": _agreement(
+                    opinion.decision.choice, resident_decision
+                ),
+            }
+        )
         telemetry.event(
             "ravn.decision.first_opinion",
             attributes={

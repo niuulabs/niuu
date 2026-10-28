@@ -199,6 +199,12 @@ class TestCompare:
         assert name == "ravn.decision.first_opinion.tier_delta"
         assert delta == -2  # ambient (1) minus urgent (3): the cheap model under-attended
         assert attrs["ravn.decision.resident"] == "urgent"
+        assert telemetry.span_attributes == {
+            "ravn.decision.first_opinion.tier": "ambient",
+            "ravn.decision.first_opinion.decision": "watch",
+            "ravn.decision.first_opinion.tier_agreed": "false",
+            "ravn.decision.first_opinion.decision_agreed": "true",
+        }
         [(event, attrs, content)] = telemetry.events
         assert event == "ravn.decision.first_opinion"
         assert attrs["ravn.resident.case_id"] == "case-1"
@@ -239,6 +245,7 @@ class TestCompare:
         )
 
         comparisons = _comparisons(telemetry)
+        assert telemetry.span_attributes["ravn.decision.first_opinion.tier_agreed"] == "unavailable"
         for question in ("tier", "decision"):
             assert comparisons[question]["ravn.decision.resident"] == "unavailable"
             assert "ravn.decision.agreed" not in comparisons[question]
