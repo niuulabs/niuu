@@ -785,6 +785,7 @@ async def _run_daemon(
         resident_learning_runtime=resident_learning_runtime,
         resident_wakefulness=resident_wakefulness,
         resident_inbox=resident_inbox,
+        resident_runtime=resident_runtime,
         owns_publisher=not environment_signal_publisher_started,
     )
     if environment_signal_runtime is not None:
