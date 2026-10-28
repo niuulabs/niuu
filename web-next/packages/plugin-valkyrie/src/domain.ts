@@ -1122,7 +1122,13 @@ export type ReviewKind =
   | 'morning_brief';
 
 export type ReviewStatus =
-  'pending' | 'approved' | 'rejected' | 'expired' | 'applied' | 'apply_failed';
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'expired'
+  | 'applied'
+  | 'apply_failed'
+  | 'withdrawn';
 
 export type ReviewRiskClass = 'low' | 'medium' | 'high' | 'critical';
 
@@ -1177,6 +1183,7 @@ const REVIEW_STATUSES: readonly ReviewStatus[] = [
   'expired',
   'applied',
   'apply_failed',
+  'withdrawn',
 ];
 
 const REVIEW_RISKS: readonly ReviewRiskClass[] = ['low', 'medium', 'high', 'critical'];

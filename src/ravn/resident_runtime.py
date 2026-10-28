@@ -48,7 +48,14 @@ from ravn.domain.valkyrie_contracts import (
     asks_operator,
     operator_question_error,
 )
-from ravn.odin.review import OPERATOR_QUESTION_ACTION, ReviewItem, ReviewKind, ReviewRequester
+from ravn.odin.review import (
+    ANSWERED_ELSEWHERE_OUTCOME,
+    OPERATOR_QUESTION_ACTION,
+    WITHDRAWN_OUTCOME,
+    ReviewItem,
+    ReviewKind,
+    ReviewRequester,
+)
 from ravn.ports.known_resolutions import KnownResolutionPort
 from ravn.ports.resident_notifications import ResidentNotificationOutboxPort
 from ravn.ports.trigger import TriggerPort
@@ -1444,6 +1451,7 @@ class ResidentRuntime:
             reason=reason,
             operator_ref=operator_ref,
             root_correlation_id=record.root_correlation_id,
+            turn_index=str(record.turn_index),
         )
         task.resident_case_id = record.case_id
         return ResidentTurnDisposition(
@@ -1494,6 +1502,11 @@ class ResidentRuntime:
             if self._notifications is not None:
                 # Its "needs your input" item must not keep asking the owner.
                 await self._notifications.resolve(group=target)
+            await self._settle_operator_review(
+                pending,
+                outcome=WITHDRAWN_OUTCOME,
+                detail=f"{self._resident_id} withdrew this question: {reason}",
+            )
             telemetry.event(
                 "ravn.resident.operator_question.withdrawn",
                 attributes={
@@ -1507,12 +1520,88 @@ class ResidentRuntime:
         return [_pending_view(item) for item in await self._state.list_operator_needed()]
 
     async def publish_pending_questions(self) -> int:
-        """File persisted operator questions into the shared review inbox."""
+        """File persisted operator questions into the shared review inbox.
+
+        First settles every review item this resident filed whose question is no
+        longer open, so a question that closed while this process was down (or
+        before closing settled its item) leaves the operator's queue on the next
+        start instead of waiting forever.
+        """
+        await self.settle_closed_operator_reviews()
         filed = 0
-        for pending in await self.pending_questions():
-            item = await self._request_operator_review(**pending)
+        for entry in await self._state.list_operator_needed():
+            pending = _pending_view(entry)
+            item = await self._request_operator_review(
+                **pending, turn_index=_metadata(entry.content, "turn")
+            )
             filed += item is not None
         return filed
+
+    async def settle_closed_operator_reviews(self) -> int:
+        """Settle the pending review items whose operator question is no longer open.
+
+        The review item must follow the question: whatever closed it (a withdrawal,
+        an answer that arrived outside the queue, a dropped case) this resident's
+        pending outbox items for it are retired as ``withdrawn``, with the reason
+        the operator reads in the queue. Items of other residents and items that
+        are not operator questions are left alone. Returns how many were settled.
+        """
+        if self._review_requester is None:
+            return 0
+        candidates = [
+            item
+            for item in self._review_requester.pending_items()
+            if item.requested_action == OPERATOR_QUESTION_ACTION
+            and item.valkyrie_id == self._resident_id
+        ]
+        if not candidates:
+            return 0
+        open_cases = {
+            _metadata(entry.content, "case_id") or _case_from_path(entry.path)
+            for entry in await self._state.list_operator_needed()
+        }
+        settled = 0
+        for item in candidates:
+            case_id = str(item.evidence.get("operator_question", {}).get("case_id") or "")
+            if not case_id or case_id in open_cases:
+                continue
+            outcome, detail = await self._closure_settlement(case_id)
+            if await self._review_requester.withdraw(item, outcome=outcome, detail=detail):
+                settled += 1
+        return settled
+
+    async def _closure_settlement(self, case_id: str) -> tuple[str, str]:
+        """How an operator question closed, as the outcome and sentence its review item gets."""
+        closure = await self._state.read_closed_operator_question(case_id)
+        status = _metadata(closure.content, "status") if closure is not None else ""
+        if status == "answered":
+            return ANSWERED_ELSEWHERE_OUTCOME, _answered_elsewhere_detail(self._resident_id)
+        if status == "withdrawn":
+            reason = _metadata(closure.content, "withdraw_reason") if closure else ""
+            return (
+                WITHDRAWN_OUTCOME,
+                f"{self._resident_id} withdrew this question: {reason or 'no reason recorded'}",
+            )
+        return (
+            WITHDRAWN_OUTCOME,
+            f"{self._resident_id} no longer has an open question for case {case_id}: "
+            "its record was removed",
+        )
+
+    async def _settle_operator_review(
+        self,
+        question: ResidentMemoryEntry,
+        *,
+        outcome: str,
+        detail: str,
+    ) -> None:
+        """Retire the review item of a question that has just closed on this side."""
+        if self._review_requester is None:
+            return
+        item = self._operator_review_item(
+            **_pending_view(question), turn_index=_metadata(question.content, "turn")
+        )
+        await self._review_requester.withdraw(item, outcome=outcome, detail=detail)
 
     async def _request_operator_review(
         self,
@@ -1522,11 +1611,40 @@ class ResidentRuntime:
         reason: str,
         operator_ref: str,
         root_correlation_id: str,
+        turn_index: str,
     ) -> ReviewItem | None:
         if self._review_requester is None:
             return None
-        digest = hashlib.sha256(f"{self._resident_id}\0{case_id}".encode()).hexdigest()[:24]
-        item = ReviewItem(
+        item = self._operator_review_item(
+            case_id=case_id,
+            question=question,
+            reason=reason,
+            operator_ref=operator_ref,
+            root_correlation_id=root_correlation_id,
+            turn_index=turn_index,
+        )
+        # A question nobody can see in the review queue is one the operator will
+        # never answer: fail the turn loudly. The question itself is already
+        # persisted and its attention raised before this, so nothing is lost.
+        return await self._review_requester.request(item)
+
+    def _operator_review_item(
+        self,
+        *,
+        case_id: str,
+        question: str,
+        reason: str,
+        operator_ref: str,
+        root_correlation_id: str,
+        turn_index: str,
+    ) -> ReviewItem:
+        # One item per question: the turn that asked is part of its identity, so a
+        # case that asks again after an answer or a withdrawal files a new item the
+        # queue shows, instead of one it already holds as settled.
+        digest = hashlib.sha256(
+            f"{self._resident_id}\0{case_id}\0{turn_index}".encode()
+        ).hexdigest()[:24]
+        return ReviewItem(
             item_id=f"review:{ReviewKind.COURT_ESCALATION.value}:operator:{digest}",
             kind=ReviewKind.COURT_ESCALATION.value,
             requested_action=OPERATOR_QUESTION_ACTION,
@@ -1550,10 +1668,6 @@ class ResidentRuntime:
             requested_by=self._resident_id,
             correlation_id=root_correlation_id or case_id,
         )
-        # A question nobody can see in the review queue is one the operator will
-        # never answer: fail the turn loudly. The question itself is already
-        # persisted and its attention raised before this, so nothing is lost.
-        return await self._review_requester.request(item)
 
     async def submit_operator_answer(
         self,
@@ -1561,7 +1675,15 @@ class ResidentRuntime:
         case_id: str,
         answer: str,
         trace_context: dict[str, str] | None = None,
+        via_review: bool = False,
     ) -> dict[str, Any]:
+        """Record an operator's answer to a case's open question and resume the case.
+
+        ``via_review`` is set by the one caller that applies a decision made in the
+        review queue: that item is settled by its own resolution. An answer that
+        arrives any other way (a room or direct reply, the gateway) retires the
+        question's review item here, so it does not stay pending in the queue.
+        """
         case_id = case_id.strip()
         answer = answer.strip()
         if not case_id or not answer:
@@ -1574,12 +1696,20 @@ class ResidentRuntime:
         ):
             pending = await self._state.read_operator_needed(case_id)
             if pending is None:
-                raise LookupError(f"no pending operator question for case {case_id}")
+                raise LookupError(await self._closed_question_message(case_id))
             prior_turn_handoff = await self._read_parent_handoff(pending)
             answer_ref = await self._state.write_operator_answer(answer, case_id=case_id)
             if self._notifications is not None:
                 # The owner answered: their "needs your input" item must not stay unread.
                 await self._notifications.resolve(group=case_id)
+            if not via_review:
+                # Settled before the resume is queued: a failure here leaves the
+                # durable answer for retry_unconsumed_answers to resume, not lost.
+                await self._settle_operator_review(
+                    pending,
+                    outcome=ANSWERED_ELSEWHERE_OUTCOME,
+                    detail=_answered_elsewhere_detail(self._resident_id),
+                )
             task = _operator_resume_task(
                 pending,
                 answer=answer,
@@ -1602,6 +1732,21 @@ class ResidentRuntime:
                 "continuation_task_id": task.task_id if accepted else "",
                 "queued": accepted,
             }
+
+    async def _closed_question_message(self, case_id: str) -> str:
+        """Why a case has no pending operator question: how it closed, when known."""
+        closure = await self._state.read_closed_operator_question(case_id)
+        base = f"no pending operator question for case {case_id}"
+        if closure is None:
+            return f"{base}: the case has no question record (it never asked, or was removed)"
+        status = _metadata(closure.content, "status")
+        if status == "answered":
+            when = _metadata(closure.content, "answered_at")
+            return f"{base}: it was already answered{f' at {when}' if when else ''}"
+        if status == "withdrawn":
+            reason = _metadata(closure.content, "withdraw_reason")
+            return f"{base}: it was withdrawn by the resident ({reason or 'no reason recorded'})"
+        return f"{base}: its record has status {status or 'unknown'!r}"
 
     async def consume_directed_message(
         self,
@@ -1907,6 +2052,9 @@ class ResidentRuntime:
         return max(0.0, (now - parsed).total_seconds()), updated_at
 
     async def retry_unconsumed_answers(self) -> int:
+        # An answer written outside this process (the CLI) is found here; its
+        # question is closed, so its review item is retired like any other.
+        await self.settle_closed_operator_reviews()
         queued = 0
         for answer in await self._state.list_operator_answers():
             case_id = _metadata(answer.content, "case_id") or _case_from_path(answer.path)
@@ -2332,6 +2480,13 @@ def _open_question_prompt_view(entry: ResidentMemoryEntry) -> dict[str, str]:
         "asked_at": _metadata(entry.content, "created_at"),
         "question": _metadata(entry.content, "question"),
     }
+
+
+def _answered_elsewhere_detail(resident_id: str) -> str:
+    return (
+        f"answered outside the review queue: the answer reached {resident_id} directly, "
+        "so no reply is needed here"
+    )
 
 
 def _withdrawal_request(item: Any, *, fallback_reason: Any) -> tuple[str, str]:
