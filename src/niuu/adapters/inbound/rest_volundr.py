@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -418,6 +418,47 @@ def _is_client_error(response: httpx.Response) -> bool:
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_422_UNPROCESSABLE_CONTENT,
     }
+
+
+#: Bound on an upstream error message echoed into a device-route failure detail.
+_DEVICE_FAILURE_DETAIL_CHARS = 200
+
+
+def _raise_device_failures(
+    action: str,
+    instances: list[RegisteredInstance],
+    responses: dict[str, httpx.Response],
+    unavailable: set[str],
+    *,
+    accepted: Callable[[httpx.Response], bool],
+) -> None:
+    """Fail a device fan-out unless every instance accepted it.
+
+    A device registry is per node, so a call that only some nodes honoured leaves
+    the others without the device: that is reported, never returned as success.
+    ``accepted`` says whether one node's answer counts as done. The first node
+    that refused with a 4xx decides the status (its refusal would repeat on a
+    retry); an unreachable node or a 5xx is a 502.
+    """
+    reasons: list[str] = []
+    refusal: int | None = None
+    for instance in instances:
+        result = responses.get(instance.id)
+        if instance.id in unavailable or result is None:
+            reasons.append(f"{instance.id} (unreachable)")
+            continue
+        if accepted(result):
+            continue
+        detail = _upstream_detail(result)[:_DEVICE_FAILURE_DETAIL_CHARS]
+        reasons.append(f"{instance.id} (HTTP {result.status_code}: {detail})")
+        if refusal is None and status.HTTP_400_BAD_REQUEST <= result.status_code < 500:
+            refusal = result.status_code
+    if not reasons:
+        return
+    raise HTTPException(
+        status_code=refusal or status.HTTP_502_BAD_GATEWAY,
+        detail=f"Device {action} failed on Forge instance(s): {', '.join(reasons)}",
+    )
 
 
 def _set_unavailable(response: Response, unavailable: set[str]) -> None:
@@ -2662,6 +2703,127 @@ def create_volundr_router(
         )
         payload = _with_instance(_remote_json(remote), instance, rebase_chat_endpoint=False)
         return JSONResponse(payload, status_code=remote.status_code)
+
+    # -- Push devices -----------------------------------------------------------
+    #
+    # The Guild has no device registry of its own: every node Forge pushes to the
+    # devices registered with *it*, so a device must be registered on every visible
+    # node. These routes fan out to all of them and succeed only when all agree.
+
+    async def _device_fan_out(
+        request: Request,
+        principal: Principal,
+        *,
+        method: str,
+        path: str,
+        body: Any = None,
+    ) -> tuple[list[RegisteredInstance], dict[str, httpx.Response], set[str]]:
+        instances = await _visible_instances(service, principal)
+        if not instances:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY, "No Forge instance is visible to handle devices"
+            )
+        responses, unavailable = await _fan_out(
+            instances,
+            request,
+            method=method,
+            path=path,
+            params_for=lambda _instance: [],
+            json_for=(lambda _instance: body) if body is not None else None,
+        )
+        return instances, responses, unavailable
+
+    @router.post("/devices", status_code=status.HTTP_201_CREATED)
+    async def register_device(
+        request: Request,
+        body: dict[str, Any] = Body(...),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Register a push device on every visible Forge node.
+
+        Idempotent on (owner, token) per node, so a failed registration is simply
+        retried. 201 with one node's device record when every node accepted; a node's
+        4xx refusal propagates, anything else (unreachable, 5xx) is 502, and the
+        detail names each instance that did not accept.
+        """
+        instances, responses, unavailable = await _device_fan_out(
+            request, principal, method="POST", path="/devices", body=body
+        )
+        _raise_device_failures(
+            "registration",
+            instances,
+            responses,
+            unavailable,
+            accepted=lambda result: result.status_code == status.HTTP_201_CREATED,
+        )
+        return JSONResponse(
+            _remote_json(responses[instances[0].id]), status_code=status.HTTP_201_CREATED
+        )
+
+    @router.get("/devices")
+    async def list_devices(
+        request: Request, principal: Principal = Depends(extract_principal)
+    ) -> list[dict[str, Any]]:
+        """The caller's push devices across every visible node, one row per token.
+
+        Nodes may share a device store, so a token can come back from several;
+        the first node's row wins. An unreachable or refusing node fails the call
+        (unlike the feed, a partial list would read as "device not registered").
+        """
+        instances, responses, unavailable = await _device_fan_out(
+            request, principal, method="GET", path="/devices"
+        )
+        _raise_device_failures(
+            "listing",
+            instances,
+            responses,
+            unavailable,
+            accepted=lambda result: result.status_code == status.HTTP_200_OK,
+        )
+        devices: dict[str, dict[str, Any]] = {}
+        for instance in instances:
+            payload = _remote_json(responses[instance.id])
+            if not isinstance(payload, list):
+                raise HTTPException(
+                    status.HTTP_502_BAD_GATEWAY,
+                    f"Unexpected device list from Forge instance {instance.id}",
+                )
+            for device in payload:
+                if not isinstance(device, dict) or not isinstance(device.get("token"), str):
+                    raise HTTPException(
+                        status.HTTP_502_BAD_GATEWAY,
+                        f"Unexpected device row from Forge instance {instance.id}",
+                    )
+                devices.setdefault(device["token"], device)
+        return list(devices.values())
+
+    @router.delete("/devices/{token}", status_code=status.HTTP_204_NO_CONTENT)
+    async def unregister_device(
+        request: Request,
+        token: str = Path(description="The push token to unregister"),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Unregister a push device on every visible Forge node.
+
+        A node that no longer knows the token (404) counts as done. Any other
+        failure is reported with the instances that did not remove it.
+        """
+        instances, responses, unavailable = await _device_fan_out(
+            request,
+            principal,
+            method="DELETE",
+            path=f"/devices/{quote(token, safe='')}",
+        )
+        _raise_device_failures(
+            "unregistration",
+            instances,
+            responses,
+            unavailable,
+            accepted=lambda result: (
+                result.status_code in {status.HTTP_204_NO_CONTENT, status.HTTP_404_NOT_FOUND}
+            ),
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @router.get("/external-sessions")
     async def list_external_sessions(
