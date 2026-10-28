@@ -1,4 +1,4 @@
-import type { Ravn } from '../domain/ravn';
+import { ravnPlace, type Ravn } from '../domain/ravn';
 import type { BudgetState } from '@niuulabs/domain';
 
 /** The available grouping keys for the Ravens split view. */
@@ -34,7 +34,7 @@ export function groupRavens(ravens: Ravn[], by: GroupKey): Record<string, Ravn[]
     if (by === 'flock') key = r.flockId ? `mesh ${r.flockId.slice(0, 8)}` : 'independent';
     else if (by === 'persona') key = r.personaName || r.residentName || 'unassigned';
     else if (by === 'state') key = r.status;
-    else key = r.instanceName || r.location || 'unplaced';
+    else key = ravnPlace(r) || r.location || 'unplaced';
 
     (groups[key] ??= []).push(r);
   }
