@@ -1636,6 +1636,14 @@ class OpenClawChannelConfig(BaseModel):
             "— that is the real OpenClaw gateway's port."
         ),
     )
+    path: str = Field(
+        default="/",
+        description=(
+            "URL path of the WebSocket; GET <path>/health answers beside it. The app "
+            "connects at the root. Behind an ingress the resident shares with other "
+            "routes, give the shim its own prefix (e.g. /openclaw)."
+        ),
+    )
     token_env: str = Field(
         default="RAVN_OPENCLAW_TOKEN",
         description=(
@@ -1692,6 +1700,13 @@ class OpenClawChannelConfig(BaseModel):
             "oldest are dropped, with a warning: Forge has not reached this shim for long."
         ),
     )
+
+    @field_validator("path")
+    @classmethod
+    def _path_is_absolute(cls, value: str) -> str:
+        if not value.startswith("/"):
+            raise ValueError(f"gateway.channels.openclaw.path {value!r} must start with '/'")
+        return value
 
 
 class VoiceMinterConfig(BaseModel):

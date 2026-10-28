@@ -13,6 +13,7 @@ import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient as _TestClient
 
+from niuu.domain.discovered_residents import discovered_resident_id
 from ravn.api import create_app
 from ravn.api.valkyrie_config import (
     ValkyrieDashboardConfig,
@@ -3349,19 +3350,77 @@ def test_a_catalog_valkyries_logs_are_read_by_its_placement(monkeypatch):
     assert not forge.called
 
 
+_VALHALLA_RECORD = str(discovered_resident_id("valkyrie-valhalla-k8s"))
+_FORGE_RUNTIMES = "http://localhost:8080/api/v1/forge/resident-runtimes"
+
+
 @respx.mock
-def test_a_catalog_valkyrie_reports_its_cluster_and_room_without_the_forge(monkeypatch):
-    forge = respx.route(url__startswith="http://localhost:8080/api/v1/forge/")
+def test_a_catalog_valkyrie_never_reaches_the_forge_by_its_catalog_id(monkeypatch):
+    """Only the record the Forge would keep for it, by its derived UUID, is asked for."""
+    by_catalog_id = respx.route(url__startswith=f"{_FORGE_RUNTIMES}/valkyrie-valhalla-k8s")
+    respx.get(f"{_FORGE_RUNTIMES}/{_VALHALLA_RECORD}").mock(return_value=httpx.Response(404))
     client = _placed_client(monkeypatch, None)
 
     detail = client.get("/api/v1/ravn/ravens/valkyrie-valhalla-k8s")
     sessions = client.get("/api/v1/ravn/ravens/valkyrie-valhalla-k8s/sessions")
+    created = client.post("/api/v1/ravn/ravens/valkyrie-valhalla-k8s/sessions", json={"title": "x"})
 
     assert detail.status_code == 200
     assert detail.json()["cluster"] == "valhalla"
+    assert detail.json()["capabilities"] == []
     assert sessions.status_code == 200
     assert sessions.json() == []
-    assert not forge.called
+    assert created.status_code == 409
+    assert "has not discovered it" in created.json()["detail"]
+    assert not by_catalog_id.called
+
+
+def _discovered_record() -> dict:
+    return {
+        "id": _VALHALLA_RECORD,
+        "name": "Sigrun",
+        "backend": "discovered",
+        "engine": "ravn",
+        "backendRef": {"key": "valkyrie-valhalla-k8s"},
+        "capabilities": ["chat", "session.list", "session.create", "session.delete"],
+        "observedState": "active",
+    }
+
+
+@respx.mock
+def test_a_discovered_valkyrie_opens_channels_through_its_forge_record(monkeypatch):
+    respx.get(_FORGE_RUNTIMES).mock(return_value=httpx.Response(200, json=[_discovered_record()]))
+    respx.get(f"{_FORGE_RUNTIMES}/{_VALHALLA_RECORD}").mock(
+        return_value=httpx.Response(200, json=_discovered_record())
+    )
+    native = {"id": "11111111-2222-4333-8444-555555555555", "title": "Triage", "status": "idle"}
+    listed = respx.get(f"{_FORGE_RUNTIMES}/{_VALHALLA_RECORD}/sessions").mock(
+        return_value=httpx.Response(200, json=[native])
+    )
+    created = respx.post(f"{_FORGE_RUNTIMES}/{_VALHALLA_RECORD}/sessions").mock(
+        return_value=httpx.Response(201, json=native)
+    )
+    deleted = respx.delete(f"{_FORGE_RUNTIMES}/{_VALHALLA_RECORD}/sessions/{native['id']}").mock(
+        return_value=httpx.Response(204)
+    )
+    client = _placed_client(monkeypatch, None)
+
+    ravens = client.get("/api/v1/ravn/ravens").json()
+    sessions = client.get("/api/v1/ravn/ravens/valkyrie-valhalla-k8s/sessions").json()
+    new = client.post("/api/v1/ravn/ravens/valkyrie-valhalla-k8s/sessions", json={"title": "x"})
+    gone = client.delete(f"/api/v1/ravn/ravens/valkyrie-valhalla-k8s/sessions/{native['id']}")
+
+    assert [raven["id"] for raven in ravens] == ["valkyrie-valhalla-k8s"]
+    assert {"session.list", "session.create", "session.delete"} <= set(ravens[0]["capabilities"])
+    assert [session["id"] for session in sessions] == [native["id"]]
+    assert sessions[0]["ravn_id"] == "valkyrie-valhalla-k8s"
+    assert sessions[0]["chat_endpoint"] == (
+        f"/s/{_VALHALLA_RECORD}/sessions/{native['id']}/session"
+    )
+    assert new.status_code == 201
+    assert new.json()["chat_endpoint"].startswith(f"/s/{_VALHALLA_RECORD}/")
+    assert gone.status_code == 204
+    assert listed.called and created.called and deleted.called
 
 
 @pytest.mark.parametrize(

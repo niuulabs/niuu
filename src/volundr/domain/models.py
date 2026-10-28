@@ -1475,6 +1475,9 @@ class ResidentBackend(StrEnum):
     HELMRELEASE = "helmrelease"
     OPENSHELL = "openshell"
     LOCAL = "local"
+    # Running outside the Forge (deployed from infrastructure); the Forge discovers
+    # it and drives its sessions, but never deploys, restarts or removes it.
+    DISCOVERED = "discovered"
 
 
 class ResidentEngine(StrEnum):

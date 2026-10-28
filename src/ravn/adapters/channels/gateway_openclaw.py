@@ -233,12 +233,14 @@ class OpenClawGateway:
     def _build_app(self) -> FastAPI:
         app = FastAPI(title="Ravn OpenClaw shim", docs_url=None, redoc_url=None)
 
-        @app.get("/health")
+        path = str(getattr(self._config, "path", "/") or "/")
+
+        @app.get(f"{path.rstrip('/')}/health")
         async def health() -> dict[str, Any]:
             # Both fields are non-optional in Swift's HealthResponse.
             return {"ok": True, "status": "live"}
 
-        @app.websocket("/")
+        @app.websocket(path)
         async def ws_root(websocket: WebSocket) -> None:
             await self._serve(websocket)
 

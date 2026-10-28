@@ -24,6 +24,7 @@ from typing import Any
 from fastapi import Request
 
 from niuu.adapters.inbound.source_health import SourceFailure, source_failure
+from niuu.domain.discovered_residents import discovered_resident_id
 from niuu.domain.models import InstanceVisibility, Principal
 from ravn.ports.platform_runtime import PlatformRuntimePort
 from ravn.ports.resident_discovery import ResidentDiscoveryPort, StandaloneResident
@@ -48,6 +49,14 @@ class StandaloneDiscoveryUnavailableError(RuntimeError):
 
 class ResidentNotFoundError(LookupError):
     """No resident with this id is visible to the caller."""
+
+
+class ResidentSessionsUnavailableError(RuntimeError):
+    """The resident exists but has no channels beyond its room.
+
+    A catalog resident gets channels once the Forge discovers it (its record on
+    the ``discovered`` backend); the message says so.
+    """
 
 
 class ResidentLogsUnavailableError(RuntimeError):
@@ -133,6 +142,14 @@ _MANAGED_RAVEN_STATUS_MAP = {
 }
 
 
+def _discovered_key(runtime: dict[str, Any]) -> str:
+    """The resident a Forge record backs when the Forge discovered it, else ''."""
+    if str(runtime.get("backend") or "") != "discovered":
+        return ""
+    backend_ref = runtime.get("backend_ref") or runtime.get("backendRef") or {}
+    return str(backend_ref.get("key") or "") if isinstance(backend_ref, dict) else ""
+
+
 def forward_auth(request: Request) -> tuple[dict[str, str], dict[str, str]]:
     """Extract forwardable auth headers and dev-identity query params."""
     headers = {
@@ -192,18 +209,27 @@ class ResidentDirectory:
         residents and is filtered by its explicit visibility metadata.
         """
         managed = await self._platform.list_resident_runtimes(auth_headers, auth_params)
-        ravens = [self._managed_to_raven(runtime) for runtime in managed]
+        discovered = [*await self._discover_standalone(), *await self._roster_residents()]
+        # The Forge's record of a resident it discovered backs that resident's
+        # channels; the resident is listed once, as itself.
+        backed = {resident.id: resident for resident in discovered}
+        backings: dict[str, dict[str, Any]] = {}
+        ravens: list[dict[str, Any]] = []
+        for runtime in managed:
+            key = _discovered_key(runtime)
+            if key in backed:
+                backings[key] = runtime
+                continue
+            ravens.append(self._managed_to_raven(runtime))
         managed_ids = {raven["id"] for raven in ravens}
         claimed_ids = set(managed_ids)
-        for resident in await self._discover_standalone():
+        for resident in discovered:
+            if resident.id in claimed_ids:
+                continue
             claimed_ids.add(resident.id)
-            if resident.id in managed_ids or not self._is_discovered_visible(resident, principal):
+            if not self._is_discovered_visible(resident, principal):
                 continue
-            ravens.append(self._standalone_to_raven(resident))
-        for resident in await self._roster_residents():
-            if resident.id in claimed_ids or not self._is_discovered_visible(resident, principal):
-                continue
-            ravens.append(self._standalone_to_raven(resident))
+            ravens.append(self._standalone_to_raven(resident, backings.get(resident.id)))
         return ravens
 
     async def list_system_ravens(self) -> list[dict[str, Any]]:
@@ -342,9 +368,18 @@ class ResidentDirectory:
         if rostered is not None:
             managed = await self._platform.get_resident_runtime(ravn_id, auth_headers, auth_params)
             if managed is None:
-                if not rostered.chat_endpoint:
-                    return []
-                return [self._standalone_to_session(rostered)]
+                room = [self._standalone_to_session(rostered)] if rostered.chat_endpoint else []
+                backing = await self._discovered_backing(ravn_id, auth_headers, auth_params)
+                if backing is None:
+                    return room
+                runtime_id = str(backing["id"])
+                sessions = await self._platform.list_resident_sessions(
+                    runtime_id, auth_headers, auth_params
+                )
+                return room + [
+                    self._native_session(session, ravn_id, runtime_id=runtime_id)
+                    for session in sessions
+                ]
         sessions = await self._platform.list_resident_sessions(ravn_id, auth_headers, auth_params)
         return [self._native_session(session, ravn_id) for session in sessions]
 
@@ -352,24 +387,66 @@ class ResidentDirectory:
         self,
         ravn_id: str,
         body: dict[str, Any],
+        principal: Principal,
         auth_headers: dict[str, str],
         auth_params: dict[str, str],
     ) -> dict[str, Any]:
         """Create one native session through the resident engine adapter."""
+        runtime_id = await self._session_runtime_id(ravn_id, principal, auth_headers, auth_params)
         session = await self._platform.create_resident_session(
-            ravn_id, body, auth_headers, auth_params
+            runtime_id, body, auth_headers, auth_params
         )
-        return self._native_session(session, ravn_id)
+        return self._native_session(session, ravn_id, runtime_id=runtime_id)
 
     async def delete_resident_session(
         self,
         ravn_id: str,
         session_id: str,
+        principal: Principal,
         auth_headers: dict[str, str],
         auth_params: dict[str, str],
     ) -> None:
         """Delete one native resident session."""
-        await self._platform.delete_resident_session(ravn_id, session_id, auth_headers, auth_params)
+        runtime_id = await self._session_runtime_id(ravn_id, principal, auth_headers, auth_params)
+        await self._platform.delete_resident_session(
+            runtime_id, session_id, auth_headers, auth_params
+        )
+
+    async def _session_runtime_id(
+        self,
+        ravn_id: str,
+        principal: Principal,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> str:
+        """The platform runtime whose engine holds this resident's sessions.
+
+        A managed resident's own; for a catalog resident, the record the Forge keeps
+        for it once discovered. A catalog resident the Forge has not discovered has
+        no channels beyond its room.
+        """
+        if await self._visible_rostered(ravn_id, principal) is None:
+            return ravn_id
+        if await self._platform.get_resident_runtime(ravn_id, auth_headers, auth_params):
+            return ravn_id
+        backing = await self._discovered_backing(ravn_id, auth_headers, auth_params)
+        if backing is None:
+            raise ResidentSessionsUnavailableError(
+                f"resident {ravn_id!r} has no channels beyond its room: the Forge has not "
+                "discovered it (configure it on the Forge's discovered resident backend)"
+            )
+        return str(backing["id"])
+
+    async def _discovered_backing(
+        self,
+        resident_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any] | None:
+        """The Forge's record of a resident it discovered, when the caller may see it."""
+        return await self._platform.get_resident_runtime(
+            str(discovered_resident_id(resident_id)), auth_headers, auth_params
+        )
 
     async def list_sessions(
         self,
@@ -590,17 +667,11 @@ class ResidentDirectory:
         managed = await self._platform.get_resident_runtime(ravn_id, auth_headers, auth_params)
         if managed is not None:
             return self._managed_to_raven(managed)
-        for resident in await self._discover_standalone():
-            if resident.id == ravn_id:
-                if not self._is_discovered_visible(resident, principal):
-                    return None
-                return self._standalone_to_raven(resident)
-        for resident in await self._roster_residents():
-            if resident.id == ravn_id:
-                if not self._is_discovered_visible(resident, principal):
-                    return None
-                return self._standalone_to_raven(resident)
-        return None
+        resident = await self._visible_unmanaged(ravn_id, principal)
+        if resident is None:
+            return None
+        backing = await self._discovered_backing(ravn_id, auth_headers, auth_params)
+        return self._standalone_to_raven(resident, backing)
 
     async def _discover_standalone(self) -> list[StandaloneResident]:
         """Return discovered standalone residents for authoritative fleet reads."""
@@ -852,7 +923,10 @@ class ResidentDirectory:
         session: dict[str, Any],
         ravn_id: str,
         persona_name: str = "resident-agent",
+        *,
+        runtime_id: str = "",
     ) -> dict[str, Any]:
+        """``runtime_id`` names the platform runtime serving the chat, when not ``ravn_id``."""
         session_id = str(session.get("id") or "")
         engine_status = str(session.get("status") or "idle")
         return {
@@ -863,7 +937,7 @@ class ResidentDirectory:
             "model": session.get("model") or "",
             "created_at": session.get("created_at") or session.get("createdAt"),
             "updated_at": session.get("updated_at") or session.get("updatedAt"),
-            "chat_endpoint": f"/s/{ravn_id}/sessions/{session_id}/session",
+            "chat_endpoint": f"/s/{runtime_id or ravn_id}/sessions/{session_id}/session",
             "title": session.get("title") or "",
             "message_count": session.get("message_count") or session.get("messageCount") or 0,
             "tokens_used": session.get("tokens_used") or session.get("tokensUsed") or 0,
@@ -874,7 +948,16 @@ class ResidentDirectory:
         }
 
     @staticmethod
-    def _standalone_to_raven(resident: StandaloneResident) -> dict[str, Any]:
+    def _standalone_to_raven(
+        resident: StandaloneResident,
+        backing: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """``backing`` is the Forge's record of the resident, which brings its channels."""
+        session_capabilities = [
+            capability
+            for capability in (backing or {}).get("capabilities") or []
+            if str(capability).startswith("session.") and capability not in resident.capabilities
+        ]
         return {
             "id": resident.id,
             "persona_name": resident.persona_name,
@@ -896,7 +979,7 @@ class ResidentDirectory:
             "desired_state": "running",
             "observed_state": resident.status,
             "backend_ref": {},
-            "capabilities": list(resident.capabilities),
+            "capabilities": [*resident.capabilities, *session_capabilities],
             "conditions": list(resident.conditions),
             "managed": False,
         }
