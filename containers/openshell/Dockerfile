@@ -113,7 +113,7 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/niuu
 COPY pyproject.toml uv.lock README.md /app/
 # Dependencies resolve from the lockfile alone, so this layer survives source
 # edits; only the project itself is installed after src/ is copied.
-RUN uv sync --frozen --no-dev --no-editable --no-cache --no-install-project --extra nats --extra dsh
+RUN uv sync --frozen --no-dev --no-editable --no-cache --no-install-project --extra nats --extra dsh --extra otel
 COPY src/ /app/src/
 # migrations/ is force-included into the wheel as cli/migrations (see
 # pyproject.toml); the build fails without it.
@@ -123,7 +123,7 @@ COPY migrations/ /app/migrations/
 # does not run identity.authz_main.
 COPY vendor/ /app/vendor/
 COPY scripts/openshell-run-installed-skuld.sh /usr/local/bin/openshell-run-installed-skuld
-RUN uv sync --frozen --no-dev --no-editable --no-cache --extra nats --extra dsh \
+RUN uv sync --frozen --no-dev --no-editable --no-cache --extra nats --extra dsh --extra otel \
     && mkdir -p /run/secrets \
     && chmod 0755 /usr/local/bin/openshell-run-installed-skuld \
     && chown -R sandbox:sandbox /opt/niuu /run/secrets
