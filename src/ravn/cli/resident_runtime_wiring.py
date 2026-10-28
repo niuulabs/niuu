@@ -17,6 +17,7 @@ def _build_environment_signal_runtime(
     resident_learning_runtime: Any | None = None,
     resident_wakefulness: Any | None = None,
     resident_inbox: Any | None = None,
+    resident_runtime: Any | None = None,
     owns_publisher: bool = True,
 ) -> Any | None:
     """Build the resident Environment signal runtime when sources are configured."""
@@ -92,6 +93,7 @@ def _build_environment_signal_runtime(
         output_mode=output_mode,
         owns_publisher=owns_publisher,
         durable_home_enabled=resident_signal_recorder is not None,
+        home_wake=(resident_runtime.request_home_wake if resident_runtime is not None else None),
         # The dedupe set lives here so it survives a restart. Passed even
         # when environment signals are not routed through the inbox: the
         # two are separate choices, and a polling source re-reads its whole

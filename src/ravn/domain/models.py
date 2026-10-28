@@ -414,8 +414,18 @@ RESIDENT_HOME_TRIGGER = "resident:home"
 #: cannot crowd the queue; at the default priority it waited behind every
 #: signal task, and an operator's message sat unread for 16 hours.
 RESIDENT_HOME_PRIORITY = 1
+#: Prefix shared by every task an Environment signal produced.
+SIGNAL_TRIGGER_PREFIX = "signal:"
 #: Trigger of a periodic idle-triage window over below-threshold signals.
 IDLE_TRIAGE_TRIGGER = "signal:idle_triage"
+#: Trigger of one window over a batch from a durable (acking) signal source.
+DURABLE_SIGNAL_WINDOW_TRIGGER = "signal:durable_window"
+#: Trigger of the one window a restart folds a per-observation backlog into.
+SIGNAL_BACKLOG_TRIGGER = "signal:restored_backlog"
+#: Triggers of signal tasks that already cover many observations.
+SIGNAL_WINDOW_TRIGGERS = frozenset(
+    {IDLE_TRIAGE_TRIGGER, DURABLE_SIGNAL_WINDOW_TRIGGER, SIGNAL_BACKLOG_TRIGGER}
+)
 
 
 @dataclass

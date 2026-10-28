@@ -9,6 +9,7 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -194,6 +195,12 @@ class ResidentRuntime:
         self._enqueue: EnqueueResidentTask | None = None
         self._inflight_cases: set[str] = set()
         self._inflight_refs: set[str] = set()
+        # A home wake asked for ahead of the routine interval (a critical
+        # observation arrived). It stays pending while a home turn is queued
+        # or running and fires when that turn's case is released, so the
+        # next turn picks the observation up without waiting a full interval.
+        self._home_wake = asyncio.Event()
+        self._home_wake_pending = False
         # Latest durable-health counts, refreshed off the hot path and
         # re-stated as gauges on every telemetry heartbeat so they never age
         # out of the metrics backend between refreshes.
@@ -895,7 +902,7 @@ class ResidentRuntime:
             # happened. Count it: a slot no turn can validly judge must stop
             # being retried forever and become visible to a human instead.
             await self._record_invalid_outcome(task, case_id=case_id, turn_index=turn_index)
-            self._inflight_cases.discard(case_id)
+            self._release_case(case_id)
             self._inflight_refs.difference_update(task.resident_inbox_refs)
             return ResidentTurnDisposition(
                 kind=ContinuationDecisionKind.STOP,
@@ -924,7 +931,7 @@ class ResidentRuntime:
             if answer is not None and answer.path == task.resident_answer_ref:
                 await self._state.consume_operator_answer(answer)
 
-        self._inflight_cases.discard(case_id)
+        self._release_case(case_id)
         self._inflight_refs.difference_update(task.resident_inbox_refs)
         control = str(fields.get("continuation") or "").strip().casefold()
         if _escalates(fields) or asks_operator(fields):
@@ -1865,7 +1872,8 @@ class ResidentRuntime:
     ) -> AgentTask | None:
         if self._inbox is None:
             return None
-        if any(case_id.startswith("resident-home-") for case_id in self._inflight_cases):
+        if self._home_turn_in_flight():
+            # A requested wake stays pending; releasing this case fires it.
             return None
         rows = await self._inbox.list_signals(
             status=ResidentInboxStatus.NEW.value,
@@ -1873,6 +1881,7 @@ class ResidentRuntime:
         )
         rows = [(ref, signal) for ref, signal in rows if ref not in self._inflight_inbox_refs()]
         if not rows:
+            self._home_wake_pending = False
             return None
         origin = _a2a_signal_origin(rows[0][1])
         if origin.get("case_id"):
@@ -1958,6 +1967,7 @@ class ResidentRuntime:
         task.resident_output_tokens = int(origin.get("case_output_tokens") or 0)
         self._inflight_cases.add(case_id)
         self._inflight_refs.update(refs)
+        self._home_wake_pending = False
         return task
 
     async def next_stewardship_task(
@@ -2104,8 +2114,27 @@ class ResidentRuntime:
 
     def release_failed_task(self, task: AgentTask) -> None:
         if task.resident_case_id:
-            self._inflight_cases.discard(task.resident_case_id)
+            self._release_case(task.resident_case_id)
         self._inflight_refs.difference_update(task.resident_inbox_refs)
+
+    def request_home_wake(self) -> None:
+        """Judge the inbox now rather than at the next routine home interval."""
+        self._home_wake_pending = True
+        self._home_wake.set()
+
+    async def wait_for_home_wake(self, timeout: float) -> None:
+        """Return when a home wake is requested or ``timeout`` seconds pass."""
+        with suppress(TimeoutError):
+            await asyncio.wait_for(self._home_wake.wait(), timeout)
+        self._home_wake.clear()
+
+    def _home_turn_in_flight(self) -> bool:
+        return any(case_id.startswith("resident-home-") for case_id in self._inflight_cases)
+
+    def _release_case(self, case_id: str) -> None:
+        self._inflight_cases.discard(case_id)
+        if self._home_wake_pending and not self._home_turn_in_flight():
+            self._home_wake.set()
 
     async def _enqueue_task(self, task: AgentTask) -> bool:
         if self._enqueue is None:
@@ -2154,7 +2183,8 @@ class ResidentHomeTrigger(TriggerPort):
         await asyncio.sleep(self._interval)
         while True:
             await self.run_once(enqueue)
-            await asyncio.sleep(self._interval)
+            # A critical observation cuts the routine interval short.
+            await self._runtime.wait_for_home_wake(self._interval)
 
     async def run_once(self, enqueue: EnqueueResidentTask) -> bool:
         self._runtime.bind_enqueue(enqueue)

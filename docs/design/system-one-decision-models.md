@@ -190,7 +190,9 @@ references are to current `src/`.
 - Any new inbox slot wakes a full thinking-enabled turn.
 - Stewardship wakes run on a timer, and their own prompt treats "nothing
   warrants action" as the expected answer.
-- Signal wake is `signal.severity in signal_task_severities`.
+- Signal wake is `signal.severity in signal_task_severities` without the inbox; with
+  `resident_inbox.environment_signals_enabled` every observation reaches a home
+  turn through a coalescing slot and only `critical` wakes it early.
 
 **With a decision model:** one request per slot at selection time (the
 evaluation point §5.2 of the attention doc already chose). Its state is the

@@ -4004,8 +4004,11 @@ class ResidentInboxConfig(BaseModel):
     environment_signals_enabled: bool = Field(
         default=False,
         description=(
-            "Persist configured Environment signals through the resident inbox adapter. "
-            "Disabled by default so existing deployments opt into this delivery owner explicitly."
+            "Persist configured Environment signals through the resident inbox adapter, which "
+            "then becomes their only route to a turn: repeats coalesce into one slot per shape "
+            "and the resident home turn judges them together, with critical observations "
+            "waking it at once. Disabled by default so existing deployments opt into this "
+            "delivery owner explicitly."
         ),
     )
     directed_messages_enabled: bool = Field(
@@ -4688,7 +4691,12 @@ class EnvironmentConfig(BaseModel):
     )
     signal_task_severities: list[str] = Field(
         default_factory=lambda: ["warning", "critical"],
-        description="Signal severities that should enqueue autonomous Valkyrie tasks.",
+        description=(
+            "Signal severities that enqueue one autonomous Valkyrie task per observation. "
+            "Ignored when resident_inbox.environment_signals_enabled is set: the inbox then "
+            "coalesces every observation for the resident home turn, and a critical one wakes "
+            "that turn immediately."
+        ),
     )
     idle_triage_interval_seconds: float = Field(
         default=900.0,
@@ -4700,8 +4708,9 @@ class EnvironmentConfig(BaseModel):
     idle_triage_sample_signals: int = Field(
         default=15,
         description=(
-            "Maximum individual signal lines rendered in an idle triage prompt; "
-            "the rest of the batch is summarized by the severity breakdown and "
+            "Maximum individual signal lines rendered in an idle triage prompt, and "
+            "object lines in the window a restart folds a per-observation backlog into; "
+            "the rest of the batch is summarized by counts and "
             "an explicit overflow line so the prompt stays bounded."
         ),
     )
@@ -4711,7 +4720,10 @@ class EnvironmentConfig(BaseModel):
     )
     idle_triage_max_signal_refs: int = Field(
         default=25,
-        description="Maximum signal refs listed in the idle triage outcome template.",
+        description=(
+            "Maximum signal refs listed in the outcome template of an idle triage or "
+            "restored-backlog window."
+        ),
     )
     signal_subjects: list[str] = Field(
         default_factory=list,

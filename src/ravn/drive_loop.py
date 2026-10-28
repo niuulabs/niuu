@@ -85,6 +85,7 @@ from ravn.ports.resident_budget import ResidentBudgetPort
 from ravn.ports.trigger import TriggerPort
 from ravn.prompt_builder import build_initiative_prompt
 from ravn.reflex import ReflexInjector, build_reflex_injector
+from ravn.signal_backlog import fold_signal_backlog, is_per_signal_task
 from ravn.workflow_runtime import _workflow_result_schema_for_event
 from sleipnir.domain.events import SleipnirEvent
 
@@ -5434,6 +5435,10 @@ class DriveLoop:
             "resident_started_at": task.resident_started_at,
             "resident_parent_turn_ref": task.resident_parent_turn_ref,
             "resident_inbox_refs": task.resident_inbox_refs,
+            # What a queued home turn actually saw of each slot. Without it a
+            # restored turn would acknowledge observations that arrived after
+            # it was rendered, marking them judged when no turn read them.
+            "resident_inbox_expected": task.resident_inbox_expected,
             "resident_answer_ref": task.resident_answer_ref,
             "resident_wake_ref": task.resident_wake_ref,
             "resident_help_published": task.resident_help_published,
@@ -5558,6 +5563,7 @@ class DriveLoop:
                     resident_started_at=rec.get("resident_started_at", ""),
                     resident_parent_turn_ref=rec.get("resident_parent_turn_ref", ""),
                     resident_inbox_refs=rec.get("resident_inbox_refs", []) or [],
+                    resident_inbox_expected=dict(rec.get("resident_inbox_expected") or {}),
                     resident_answer_ref=rec.get("resident_answer_ref", ""),
                     resident_wake_ref=rec.get("resident_wake_ref", ""),
                     resident_help_published=rec.get("resident_help_published", False),
@@ -5609,6 +5615,7 @@ class DriveLoop:
                 "the newest cron tick and idle-triage window of each producer is kept",
                 dropped,
             )
+        selected, folded = self._fold_restored_signal_backlog(selected)
 
         for task, was_inflight in selected:
             counter = self._next_counter()
@@ -5630,5 +5637,74 @@ class DriveLoop:
                 "drive_loop: restored %d fan-in slot(s) from journal",
                 self._fan_in.pending_count,
             )
-        if dropped:
+        if dropped or folded:
             self._persist_queue()
+
+    def _fold_restored_signal_backlog(
+        self,
+        restored: list[tuple[AgentTask, bool]],
+    ) -> tuple[list[tuple[AgentTask, bool]], int]:
+        """Replace a restored backlog of per-observation signal tasks with one window.
+
+        Returns the tasks to queue and how many were folded. Only queued tasks
+        fold; one that was running at the restart resumes as restart recovery.
+        The original records are written beside the journal before anything
+        changes, so a failed write leaves the journal exactly as it was.
+        """
+        for task, _was_inflight in restored:
+            if is_per_signal_task(task) and task.resident_inbox_refs:
+                # Such a task names a shared, coalescing slot with no bound on
+                # what it saw; acknowledging it would mark every observation
+                # folded into that slot as judged. The slot stays pending for
+                # a home turn instead.
+                logger.warning(
+                    "drive_loop: restored signal task %s no longer acknowledges inbox slot(s) %s",
+                    task.task_id,
+                    ", ".join(task.resident_inbox_refs),
+                )
+                task.resident_inbox_refs = []
+        backlog = [
+            task for task, was_inflight in restored if not was_inflight and is_per_signal_task(task)
+        ]
+        if len(backlog) < 2:
+            return restored, 0
+        folded_at = datetime.now(UTC)
+        record_path = self._journal_path.with_name(
+            f"{self._journal_path.stem}.folded-{folded_at:%Y%m%dT%H%M%S%fZ}.json"
+        )
+        environment = self._settings.environment
+        window = fold_signal_backlog(
+            backlog,
+            record_ref=str(record_path),
+            sample_groups=environment.idle_triage_sample_signals,
+            max_signal_refs=environment.idle_triage_max_signal_refs,
+        )
+        record = {
+            "folded_at": folded_at.isoformat(),
+            "window_task_id": window.task_id,
+            "tasks": [self._task_journal_record(task) for task in backlog],
+        }
+        try:
+            record_path.write_text(json.dumps(record, indent=2))
+        except OSError as exc:
+            raise RuntimeError(
+                f"queue journal: could not record the {len(backlog)} signal task(s) to fold "
+                f"on restore at {record_path} ({exc}); fix the journal volume. Nothing was "
+                "folded and the journal is unchanged."
+            ) from exc
+        logger.warning(
+            "drive_loop: folded %d restored per-observation signal task(s) into window %s; "
+            "the original records are in %s",
+            len(backlog),
+            window.task_id,
+            record_path,
+        )
+        get_observability().count(
+            "ravn.queue.signal_backlog_folded",
+            len(backlog),
+            attributes={"ravn.environment.id": environment.id},
+            description="Restored per-observation signal tasks folded into one window.",
+        )
+        folded_ids = {task.task_id for task in backlog}
+        kept = [entry for entry in restored if entry[0].task_id not in folded_ids]
+        return [*kept, (window, False)], len(backlog)
