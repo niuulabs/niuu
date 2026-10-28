@@ -59,13 +59,7 @@ async def _run_daemon(
 
     learned_tool_resolver = _build_learned_tool_resolver(settings, workspace)
     executor = _build_executor(persona_config)
-    cli_transport_executor = _selected_executor_uses_cli_transport(executor)
-    llm = None if cli_transport_executor else _build_llm(settings)
     memory = _build_memory(settings)
-    # Built here for the persona's own model so an impossible compaction setting
-    # fails at startup; each task builds its own for the model it runs on.
-    if llm is not None:
-        _build_compaction(settings, llm, base_model)
     pre_hooks, post_hooks = _build_hooks(settings)
 
     mcp_manager: Any | None = None
@@ -74,8 +68,55 @@ async def _run_daemon(
     # Build Mímir adapter early so _agent_factory closure can capture it.
     daemon_mimir = _build_mimir(settings)
     memory = _with_mimir_fact_capture(memory, daemon_mimir)
-    learning_consolidation = _build_learning_consolidation(settings, llm)
-    capability_matcher = _build_capability_matcher(settings, learning_consolidation)
+
+    # A daemon may route each task persona to a different selected harness.
+    # Native agents need an LLM while CLI-backed ones must not construct one;
+    # retain resources by the resolved selection so tasks sharing a harness also
+    # share its safe-to-share LLM and learning services.
+    task_resources: dict[object, tuple[Any | None, Any | None, Any | None]] = {}
+    task_compactions: dict[tuple[object, str], tuple[Any | None, Any | None]] = {}
+
+    def _resource_key(resolved_executor: Any) -> object:
+        selection = getattr(resolved_executor, "harness_selection", None)
+        return selection if selection is not None else id(resolved_executor)
+
+    def _resources_for_executor(
+        resolved_executor: Any,
+    ) -> tuple[Any | None, Any | None, Any | None]:
+        key = _resource_key(resolved_executor)
+        cached = task_resources.get(key)
+        if cached is not None:
+            return cached
+        task_llm = (
+            None
+            if _selected_executor_uses_cli_transport(resolved_executor)
+            else _build_llm(settings)
+        )
+        consolidation = _build_learning_consolidation(settings, task_llm)
+        resources = (
+            task_llm,
+            consolidation,
+            _build_capability_matcher(settings, consolidation),
+        )
+        task_resources[key] = resources
+        return resources
+
+    def _compaction_for_executor(
+        resolved_executor: Any, task_llm: Any | None, model: str
+    ) -> tuple[Any | None, Any | None]:
+        if task_llm is None:
+            return None, None
+        key = (_resource_key(resolved_executor), model)
+        cached = task_compactions.get(key)
+        if cached is None:
+            cached = _build_compaction(settings, task_llm, model)
+            task_compactions[key] = cached
+        return cached
+
+    llm, learning_consolidation, capability_matcher = _resources_for_executor(executor)
+    # Validate the base persona's compaction configuration at startup. Task
+    # personas validate their own model binding when their factory is invoked.
+    _compaction_for_executor(executor, llm, base_model)
     friction_ledger = _build_friction_ledger(
         settings, mimir=daemon_mimir, consolidation=learning_consolidation
     )
@@ -203,6 +244,10 @@ async def _run_daemon(
 
         executor = _build_executor(resolved_persona)
         cli_transport_executor = _selected_executor_uses_cli_transport(executor)
+        task_llm, task_learning_consolidation, task_capability_matcher = _resources_for_executor(
+            executor
+        )
+        compressor, native_compaction = _compaction_for_executor(executor, task_llm, resolved_model)
 
         session = Session()
         budget = _build_iteration_budget(settings, resolved_max_iterations)
@@ -290,7 +335,7 @@ async def _run_daemon(
             settings,
             workspace,
             session,
-            llm,
+            task_llm,
             memory,
             budget,
             mimir=daemon_mimir,
@@ -344,11 +389,8 @@ async def _run_daemon(
             resolved_persona,
             cli_transport_executor=cli_transport_executor,
         )
-        compressor, native_compaction = (
-            _build_compaction(settings, llm, resolved_model) if llm is not None else (None, None)
-        )
         agent = executor.build(
-            llm=llm,
+            llm=task_llm,
             tools=tools,
             channel=channel,
             permission=permission,
@@ -368,7 +410,9 @@ async def _run_daemon(
             inject_learnings=settings.reflection.inject_learnings,
             max_learnings_injected=settings.reflection.max_learnings_injected,
             learning_token_budget=settings.reflection.learning_token_budget,
-            learning_index=learning_consolidation.lessons if learning_consolidation else None,
+            learning_index=(
+                task_learning_consolidation.lessons if task_learning_consolidation else None
+            ),
             learning_entry_max_chars=settings.reflection.learning_entry_max_chars,
             max_route_recoveries=settings.reflection.verified_promotion.max_route_recoveries,
             route_excerpt_chars=settings.reflection.verified_promotion.excerpt_chars,
@@ -426,7 +470,7 @@ async def _run_daemon(
                 if resident_learning_runtime is not None
                 else None
             ),
-            capability_matcher=capability_matcher,
+            capability_matcher=task_capability_matcher,
             skill_manager=(
                 resident_learning_runtime.skills if resident_learning_runtime is not None else None
             ),

@@ -12,7 +12,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from ravn.adapters.personas.loader import PersonaConfig, PersonaExecutorConfig
+from ravn.adapters.personas.loader import (
+    PersonaConfig,
+    PersonaExecutorConfig,
+    PersonaExecutorFallback,
+)
 from ravn.cli.commands import (
     _apply_profile,
     _build_executor,
@@ -45,6 +49,7 @@ from ravn.cli.commands import (
 )
 from ravn.cli.flock import NodeDef, _write_node_config
 from ravn.config import Settings
+from ravn.domain.harness import HarnessCapability
 from ravn.domain.models import (
     Session,
     StreamEvent,
@@ -1709,6 +1714,100 @@ class TestDaemonAgentFactory:
                 "url": "",
             }
         ]
+
+    async def test_run_daemon_task_fallback_uses_native_resources(self) -> None:
+        """A native task fallback does not inherit a CLI base persona's null LLM."""
+        from ravn.adapters.executors.agent import AgentExecutor
+
+        settings = Settings()
+        settings.initiative.enabled = True
+        settings.gateway.channels.http.enabled = False
+        settings.gateway.channels.telegram.enabled = False
+        settings.gateway.channels.discord.enabled = False
+        settings.gateway.channels.slack.enabled = False
+        settings.gateway.channels.matrix.enabled = False
+        settings.gateway.channels.whatsapp.enabled = False
+        settings.sleipnir.enabled = False
+        settings.mimir.source_trigger.enabled = False
+        settings.mimir.staleness_trigger.enabled = False
+        settings.thread.enabled = False
+        settings.cascade.enabled = False
+
+        cli_adapter = "ravn.adapters.executors.cli.CliTransportExecutor"
+        base_persona = PersonaConfig(
+            name="cli-base",
+            executor=PersonaExecutorConfig(
+                adapter=cli_adapter,
+                kwargs={
+                    "transport_adapter": "tests.test_ravn.test_executor_cli.FakeResumableTransport"
+                },
+            ),
+        )
+        fallback_persona = PersonaConfig(
+            name="native-fallback",
+            executor=PersonaExecutorConfig(
+                adapter=cli_adapter,
+                kwargs={
+                    "transport_adapter": "tests.test_ravn.test_executor_cli.FakeResumableTransport"
+                },
+                requires=frozenset({HarnessCapability.REASONING}),
+                fallbacks=[
+                    PersonaExecutorFallback(adapter="ravn.adapters.executors.agent.AgentExecutor")
+                ],
+            ),
+        )
+        native_llm = MagicMock()
+        built: list[dict[str, object]] = []
+
+        class _FakeDriveLoop:
+            def __init__(self, *, agent_factory, **kwargs):  # noqa: ANN003
+                self._triggers: list[object] = []
+                agent_factory(
+                    MagicMock(),
+                    task_id="native-fallback-task",
+                    task_persona=fallback_persona.name,
+                )
+
+            async def run(self) -> None:
+                return None
+
+        def _record_native_build(self, **kwargs):  # noqa: ANN001, ANN003
+            built.append(kwargs)
+            return MagicMock()
+
+        with (
+            patch("ravn.cli.commands._resolve_workspace", return_value=Path("/tmp/workspace")),
+            patch(
+                "ravn.cli.tool_builders._build_learned_tool_resolver",
+                return_value=MagicMock(),
+            ),
+            patch("ravn.cli.commands._resolve_persona", return_value=fallback_persona),
+            patch("ravn.cli.commands._build_llm", return_value=native_llm) as build_llm,
+            patch("ravn.cli.commands._build_memory", return_value=MagicMock()),
+            patch("ravn.cli.commands._build_compaction", return_value=(MagicMock(), None)),
+            patch("ravn.cli.commands._build_environment_signal_publisher", return_value=None),
+            patch("ravn.cli.commands._build_prompt_builder", return_value=MagicMock()),
+            patch("ravn.cli.commands._build_hooks", return_value=([], [])),
+            patch("ravn.cli.commands._start_mcp_shared", new=AsyncMock(return_value=(None, []))),
+            patch("ravn.cli.commands._build_mimir", return_value=None),
+            patch("ravn.cli.commands._build_permission", return_value=MagicMock()),
+            patch("ravn.cli.commands._build_tools", return_value=[]),
+            patch(
+                "ravn.cli.commands._get_tool_group",
+                return_value=MagicMock(include_mcp=False, include_groups=[]),
+            ),
+            patch("ravn.cli.commands._apply_trust_filter", side_effect=lambda tools, *_: tools),
+            patch("ravn.cli.commands._wire_triggers", return_value=[]),
+            patch("ravn.cli.commands._wire_cron", return_value=[]),
+            patch("ravn.cli.commands._shutdown_mcp", new=AsyncMock()),
+            patch("ravn.drive_loop.DriveLoop", _FakeDriveLoop),
+            patch.object(AgentExecutor, "build", _record_native_build),
+        ):
+            await _run_daemon(settings, persona_config=base_persona)
+
+        assert build_llm.call_count == 1
+        assert len(built) == 1
+        assert built[0]["llm"] is native_llm
 
     async def test_run_daemon_builds_one_learned_tool_resolver_for_every_task(
         self, tmp_path: Path
