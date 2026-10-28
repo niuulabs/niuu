@@ -39,6 +39,7 @@ class SteeringMode(StrEnum):
     """How a harness applies an in-flight steering instruction."""
 
     NONE = "none"
+    NATIVE = "native"
     LIVE = "live"
     INTERRUPT_RESUME = "interrupt_resume"
 

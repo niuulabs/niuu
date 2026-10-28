@@ -12,7 +12,12 @@ from ravn.adapters.personas.loader import (
     PersonaExecutorFallback,
 )
 from ravn.cli.runtime_builders import _build_executor, emit_harness_selection
-from ravn.domain.harness import HarnessCapability, HarnessKind, HarnessRequirementError
+from ravn.domain.harness import (
+    HarnessCapability,
+    HarnessKind,
+    HarnessRequirementError,
+    SteeringMode,
+)
 
 
 class ResumeTransport(CLITransport):
@@ -60,6 +65,11 @@ class ResumeTransport(CLITransport):
 
 _CLI_EXECUTOR = "ravn.adapters.executors.cli.CliTransportExecutor"
 _RESUME_TRANSPORT = "tests.test_ravn.test_harness_selection.ResumeTransport"
+_NATIVE_STEERING_TRANSPORTS = (
+    "skuld.transports.pi.PiRpcTransport",
+    "skuld.transports.tmux_interactive.TmuxInteractiveTransport",
+    "skuld.transports.muse.MuseMSPTransport",
+)
 
 
 def _persona(executor: PersonaExecutorConfig) -> PersonaConfig:
@@ -99,6 +109,26 @@ def test_compatible_cli_harness_is_selected_without_starting_provider_session() 
     assert executor.harness_selection.profile.kind is HarnessKind.CLI_BACKED
     assert HarnessCapability.SESSION_RESUME in executor.harness_selection.capabilities
     assert ResumeTransport.starts == 0
+
+
+@pytest.mark.parametrize("transport_adapter", _NATIVE_STEERING_TRANSPORTS)
+def test_no_requirements_selects_native_steering_cli_transport(
+    transport_adapter: str,
+) -> None:
+    executor = _build_executor(
+        _persona(
+            PersonaExecutorConfig(
+                adapter=_CLI_EXECUTOR,
+                kwargs={"transport_adapter": transport_adapter},
+            )
+        )
+    )
+
+    selection = executor.harness_selection
+
+    assert selection.requirements == frozenset()
+    assert selection.profile.steering_mode is SteeringMode.NATIVE
+    assert HarnessCapability.STEERING in selection.capabilities
 
 
 def test_incompatible_explicit_cli_harness_fails_with_every_missing_requirement() -> None:
