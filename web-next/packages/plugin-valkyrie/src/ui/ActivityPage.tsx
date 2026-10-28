@@ -20,7 +20,14 @@ import { timeAgo } from './reviewFormat';
 const PANEL =
   'niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:rounded-md';
 const MUTED = 'niuu:text-text-muted';
-const SETTLED: ReviewStatus[] = ['approved', 'rejected', 'applied', 'apply_failed', 'expired'];
+const SETTLED: ReviewStatus[] = [
+  'approved',
+  'rejected',
+  'applied',
+  'apply_failed',
+  'expired',
+  'withdrawn',
+];
 
 function toggleClasses(active: boolean): string {
   return `niuu:rounded-md niuu:border niuu:border-solid niuu:px-2 niuu:py-1 niuu:text-xs ${

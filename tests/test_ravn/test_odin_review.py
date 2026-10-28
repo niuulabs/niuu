@@ -116,6 +116,73 @@ async def test_requester_dedupes_and_reannounces(tmp_path) -> None:
     assert len(await recorder.of_type(registry.ODIN_REVIEW_REQUESTED)) == 2
 
 
+def test_a_withdrawal_needs_a_known_outcome_and_a_readable_reason() -> None:
+    with pytest.raises(ValueError, match="unknown withdrawal outcome"):
+        _item().withdraw(outcome="applied", detail="x")
+    with pytest.raises(ValueError, match="reason the operator can read"):
+        _item().withdraw(outcome="withdrawn", detail="  ")
+
+    item = _item()
+    item.withdraw(outcome="answered_elsewhere", detail="answered in the room")
+    assert item.status == ReviewStatus.WITHDRAWN.value
+    assert not item.is_pending
+    assert item.resolved_at
+
+
+async def test_requester_withdraws_a_pending_item_and_tells_the_queue(tmp_path) -> None:
+    bus = InProcessBus()
+    recorder = BusRecorder(bus)
+    await bus.subscribe(["*"], recorder)
+    store = JsonReviewStore(tmp_path / "outbox.json")
+    requester = ReviewRequester(publisher=bus, store=store, source="test")
+    item = _item(dedupe_key="q")
+    await requester.request(item)
+
+    settled = await requester.withdraw(item, outcome="withdrawn", detail="no longer needed")
+    await bus.flush()
+
+    assert settled is not None
+    assert store.get(item.item_id).status == ReviewStatus.WITHDRAWN.value
+    assert not requester.has_pending("q")
+    [resolved] = await recorder.of_type(registry.ODIN_REVIEW_RESOLVED)
+    assert resolved.payload["status"] == "withdrawn"
+    assert resolved.payload["apply_detail"] == "no longer needed"
+    # A restarted resident does not re-announce what it retired.
+    assert await ReviewRequester(publisher=bus, store=store).reannounce() == 0
+    # And retiring it again is a no-op, not a second event.
+    assert await requester.withdraw(item, outcome="withdrawn", detail="again") is None
+    await bus.flush()
+    assert len(await recorder.of_type(registry.ODIN_REVIEW_RESOLVED)) == 1
+
+
+async def test_requester_keeps_the_item_pending_when_the_withdrawal_cannot_be_published(
+    tmp_path,
+) -> None:
+    publisher = AsyncMock()
+    store = JsonReviewStore(tmp_path / "outbox.json")
+    requester = ReviewRequester(publisher=publisher, store=store)
+    item = _item(dedupe_key="q")
+    await requester.request(item)
+    publisher.publish.side_effect = RuntimeError("bus down")
+
+    with pytest.raises(RuntimeError, match="bus down"):
+        await requester.withdraw(item, outcome="withdrawn", detail="no longer needed")
+
+    assert requester.has_pending("q")
+    assert JsonReviewStore(tmp_path / "outbox.json").get(item.item_id).is_pending
+
+
+async def test_requester_without_an_outbox_announces_the_item_it_is_given() -> None:
+    publisher = AsyncMock()
+    requester = ReviewRequester(publisher=publisher)
+    item = _item()
+
+    settled = await requester.withdraw(item, outcome="withdrawn", detail="no longer needed")
+
+    assert settled is not None
+    assert publisher.publish.await_args.args[0].payload["status"] == "withdrawn"
+
+
 def test_item_targets_by_audience() -> None:
     me = {
         "valkyrie_id": "valkyrie:k8s-a",
@@ -323,7 +390,33 @@ async def test_operator_question_review_resumes_exact_resident_case(tmp_path) ->
     answerer.assert_awaited_once_with(
         case_id="case-etcd",
         answer="Yes. read-only checks",
+        via_review=True,
     )
+    await runtime.stop()
+
+
+async def test_a_decision_for_a_question_the_resident_withdrew_is_not_applied(tmp_path) -> None:
+    runtime, bus, store, _skills = _runtime(tmp_path, autonomy_mode="autonomous")
+    answerer = AsyncMock(return_value={"queued": True})
+    runtime.bind_operator_answerer(answerer)
+    await runtime.start()
+    item = _item(
+        kind=ReviewKind.COURT_ESCALATION.value,
+        requested_action="answer_operator_question",
+        evidence={"operator_question": {"case_id": "case-etcd", "question": "Proceed?"}},
+    )
+    await runtime.review_requester.request(item)
+    await runtime.review_requester.withdraw(
+        item, outcome="withdrawn", detail="regin withdrew this question: merged"
+    )
+
+    # The operator's decision crossed the withdrawal on the bus.
+    item.decide(decision="approved", operator_id="human:jozef")
+    await bus.publish(review_decided_event(item, source="ravn:odin-review"))
+    await bus.flush()
+
+    answerer.assert_not_awaited()
+    assert store.get(item.item_id).status == ReviewStatus.WITHDRAWN.value
     await runtime.stop()
 
 
@@ -351,6 +444,7 @@ async def test_free_text_answer_reaches_the_resident_verbatim(tmp_path) -> None:
     answerer.assert_awaited_once_with(
         case_id="case-etcd",
         answer="Tuesday 02:00 UTC, after the backup.",
+        via_review=True,
     )
     resolved = await recorder.of_type(registry.ODIN_REVIEW_RESOLVED)
     assert resolved[0].payload["apply_outcome"] == "applied"

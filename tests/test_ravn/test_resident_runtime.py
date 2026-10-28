@@ -21,7 +21,7 @@ from ravn.domain.resident_continuation import (
     validate_resident_working_state,
 )
 from ravn.drive_loop import DriveLoop
-from ravn.odin.review import JsonReviewStore, ReviewRequester
+from ravn.odin.review import JsonReviewStore, ReviewItem, ReviewRequester
 from ravn.resident_continuation import _scheduled_wake_at
 from ravn.resident_inbox import LocalResidentInbox, MimirResidentInbox, ResidentInboxStatus
 from ravn.resident_runtime import (
@@ -378,7 +378,7 @@ async def test_tool_result_is_durable_without_creating_a_followup_task(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_working_state_is_reused_by_a_new_runtime_after_restart(tmp_path) -> None:
+async def test_working_state_is_reused_by_a_new_runtime_after_review_runtime(tmp_path) -> None:
     first_state = LocalResidentState(tmp_path)
     first_runtime = ResidentRuntime(state=first_state, resident_id="resident-alpha")
     first_task = _task(root_correlation_id="event-a")
@@ -1959,7 +1959,7 @@ async def test_a_timestamp_that_only_moves_the_clock_is_not_new_evidence(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_the_streak_survives_a_restart(tmp_path) -> None:
+async def test_the_streak_survives_a_review_runtime(tmp_path) -> None:
     runtime = ResidentRuntime(
         state=LocalResidentState(tmp_path),
         resident_id="regin",
@@ -2229,3 +2229,265 @@ async def test_prior_working_state_reaches_the_next_turn_whole() -> None:
     assert working_state in context
     assert "truncated" not in context
     assert cap_hit_counts() == {}
+
+
+# ---------------------------------------------------------------------------
+# The review item follows the question: whatever closes an operator question
+# without a queue decision also settles its item in the operator's queue.
+# ---------------------------------------------------------------------------
+
+
+def _review_runtime(tmp_path, *, resident_id: str = "regin"):
+    publisher = AsyncMock()
+    store = JsonReviewStore(tmp_path / "reviews.json")
+    runtime = ResidentRuntime(
+        state=LocalResidentState(tmp_path / "state"),
+        resident_id=resident_id,
+        review_requester=ReviewRequester(publisher=publisher, store=store, source=resident_id),
+    )
+    return runtime, publisher, store
+
+
+# A restart is the same factory again: fresh objects over the same durable state
+# directory and the same outbox file.
+
+
+def _published_resolved(publisher: AsyncMock) -> list[dict]:
+    return [
+        call.args[0].payload
+        for call in publisher.publish.await_args_list
+        if call.args[0].event_type == "odin.review.resolved"
+    ]
+
+
+def _outbox_status(store: JsonReviewStore, case_id: str) -> str:
+    [item] = [
+        item
+        for item in store.list()
+        if item.evidence.get("operator_question", {}).get("case_id") == case_id
+    ]
+    return item.status
+
+
+async def _withdraw_turn(runtime: ResidentRuntime, *, target: str) -> None:
+    await runtime.handle_completed_turn(
+        task=_task(task_id="task-steward", root_correlation_id="case-steward"),
+        prompt="prompt",
+        result=_result({}),
+        response_text="stewardship",
+        outcome_fields={
+            "continuation": "stop",
+            "next_action_timing": "none",
+            "withdrawn_questions": [{"case_id": target, "reason": "PR #1166 was merged"}],
+        },
+        outcome_valid=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_withdrawing_a_question_settles_its_review_item(tmp_path) -> None:
+    runtime, publisher, store = _review_runtime(tmp_path)
+    await _ask(runtime, "case-stale", "Should I merge PR #1166?")
+    await _ask(runtime, "case-live", "Which scope is authorized?")
+    publisher.reset_mock()
+
+    await _withdraw_turn(runtime, target="case-stale")
+
+    [resolved] = _published_resolved(publisher)
+    assert resolved["status"] == "withdrawn"
+    assert resolved["apply_outcome"] == "withdrawn"
+    assert resolved["evidence"]["operator_question"]["case_id"] == "case-stale"
+    assert "regin withdrew this question: PR #1166 was merged" in resolved["apply_detail"]
+    assert _outbox_status(store, "case-stale") == "withdrawn"
+    assert _outbox_status(store, "case-live") == "pending"
+
+
+@pytest.mark.asyncio
+async def test_an_answer_that_reaches_the_resident_directly_settles_the_item(tmp_path) -> None:
+    runtime, publisher, store = _review_runtime(tmp_path)
+    runtime.bind_enqueue(AsyncMock(return_value=True))
+    await _ask(runtime, "case-room", "May I restart the pod?")
+    publisher.reset_mock()
+
+    bound = await runtime.consume_directed_message("Yes, go ahead.", None)
+
+    assert bound is True
+    [resolved] = _published_resolved(publisher)
+    assert resolved["status"] == "withdrawn"
+    assert resolved["apply_outcome"] == "answered_elsewhere"
+    assert "answered outside the review queue" in resolved["apply_detail"]
+    assert _outbox_status(store, "case-room") == "withdrawn"
+
+
+@pytest.mark.asyncio
+async def test_an_answer_decided_in_the_queue_is_not_settled_as_withdrawn(tmp_path) -> None:
+    runtime, publisher, store = _review_runtime(tmp_path)
+    runtime.bind_enqueue(AsyncMock(return_value=True))
+    await _ask(runtime, "case-queue", "May I restart the pod?")
+    publisher.reset_mock()
+
+    await runtime.submit_operator_answer(case_id="case-queue", answer="Yes.", via_review=True)
+
+    assert _published_resolved(publisher) == []
+    assert _outbox_status(store, "case-queue") == "pending"
+
+
+@pytest.mark.asyncio
+async def test_restart_settles_items_whose_question_is_no_longer_open(tmp_path) -> None:
+    runtime, _publisher, _store = _review_runtime(tmp_path)
+    for case_id in ("case-withdrawn", "case-answered", "case-dropped", "case-open"):
+        await _ask(runtime, case_id, f"Question for {case_id}?")
+    # Each of these closes the question without touching its review item.
+    await runtime.state.withdraw_operator_needed(
+        "case-withdrawn", reason="decided another way", turn_ref="turn-1"
+    )
+    await runtime.state.write_operator_answer("Go ahead.", case_id="case-answered")
+    await runtime.state.delete_case("case-dropped")
+
+    restarted, publisher, store = _review_runtime(tmp_path)
+    filed = await restarted.publish_pending_questions()
+
+    assert filed == 0
+    by_case = {
+        item.evidence["operator_question"]["case_id"]: item
+        for item in store.list()
+        if item.status == "withdrawn"
+    }
+    assert set(by_case) == {"case-withdrawn", "case-answered", "case-dropped"}
+    assert by_case["case-withdrawn"].apply_outcome == "withdrawn"
+    assert "decided another way" in by_case["case-withdrawn"].apply_detail
+    assert by_case["case-answered"].apply_outcome == "answered_elsewhere"
+    assert by_case["case-dropped"].apply_outcome == "withdrawn"
+    assert "record was removed" in by_case["case-dropped"].apply_detail
+    assert _outbox_status(store, "case-open") == "pending"
+    assert len(_published_resolved(publisher)) == 3
+
+
+@pytest.mark.asyncio
+async def test_reconcile_leaves_other_residents_and_other_items_alone(tmp_path) -> None:
+    runtime, _publisher, store = _review_runtime(tmp_path, resident_id="regin")
+    await _ask(runtime, "case-open", "Still waiting?")
+    # Pending items this resident must not touch: another resident's question
+    # whose case this state knows nothing about, and an unrelated review kind.
+    foreign = ReviewItem.new(
+        kind="court_escalation",
+        requested_action="answer_operator_question",
+        environment_id="unknown",
+        valkyrie_id="fulla",
+        title="fulla asks",
+        summary="",
+        dedupe_key="operator-question:fulla:case-x",
+        evidence={"operator_question": {"case_id": "case-x"}},
+    )
+    unrelated = ReviewItem.new(
+        kind="evolution_build",
+        requested_action="install",
+        environment_id="unknown",
+        valkyrie_id="regin",
+        title="probe",
+        summary="",
+        dedupe_key="build:probe",
+    )
+    store.save(foreign)
+    store.save(unrelated)
+
+    restarted, publisher, store = _review_runtime(tmp_path)
+    assert await restarted.settle_closed_operator_reviews() == 0
+
+    assert store.get(foreign.item_id).status == "pending"
+    assert store.get(unrelated.item_id).status == "pending"
+    assert _outbox_status(store, "case-open") == "pending"
+    publisher.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_settlement_publish_is_raised_and_retried_on_the_next_start(
+    tmp_path,
+) -> None:
+    runtime, _publisher, _store = _review_runtime(tmp_path)
+    await _ask(runtime, "case-stale", "Should I merge?")
+    await runtime.state.withdraw_operator_needed("case-stale", reason="merged", turn_ref="t")
+
+    failing, publisher, store = _review_runtime(tmp_path)
+    publisher.publish.side_effect = RuntimeError("sleipnir unreachable")
+    with pytest.raises(RuntimeError, match="sleipnir unreachable"):
+        await failing.publish_pending_questions()
+    assert _outbox_status(store, "case-stale") == "pending"
+
+    healthy, publisher, store = _review_runtime(tmp_path)
+    await healthy.publish_pending_questions()
+    assert _outbox_status(store, "case-stale") == "withdrawn"
+
+
+@pytest.mark.asyncio
+async def test_an_answer_written_by_the_cli_settles_the_item_when_it_is_picked_up(
+    tmp_path,
+) -> None:
+    runtime, publisher, store = _review_runtime(tmp_path)
+    runtime.bind_enqueue(AsyncMock(return_value=True))
+    await _ask(runtime, "case-cli", "Which scope?")
+    publisher.reset_mock()
+    await runtime.state.write_operator_answer("Only NIU-1107.", case_id="case-cli")
+
+    assert await runtime.retry_unconsumed_answers() == 1
+
+    [resolved] = _published_resolved(publisher)
+    assert resolved["apply_outcome"] == "answered_elsewhere"
+    assert _outbox_status(store, "case-cli") == "withdrawn"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("close", "expected"),
+    [
+        ("answered", "it was already answered at "),
+        ("withdrawn", "it was withdrawn by the resident (merged elsewhere)"),
+        ("removed", "the case has no question record"),
+    ],
+)
+async def test_answering_a_closed_question_says_how_it_closed(tmp_path, close, expected) -> None:
+    runtime = ResidentRuntime(state=LocalResidentState(tmp_path))
+    await _ask(runtime, "case-closed", "Which scope?")
+    if close == "answered":
+        await runtime.state.write_operator_answer("Only NIU-1107.", case_id="case-closed")
+    elif close == "withdrawn":
+        await runtime.state.withdraw_operator_needed(
+            "case-closed", reason="merged elsewhere", turn_ref="t"
+        )
+    else:
+        await runtime.state.delete_case("case-closed")
+
+    with pytest.raises(LookupError) as raised:
+        await runtime.submit_operator_answer(case_id="case-closed", answer="late")
+
+    assert f"no pending operator question for case case-closed: {expected}" in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_a_case_that_asks_again_files_a_new_review_item(tmp_path) -> None:
+    runtime, publisher, store = _review_runtime(tmp_path)
+    runtime.bind_enqueue(AsyncMock(return_value=True))
+    await _ask(runtime, "case-again", "First question?")
+    await runtime.submit_operator_answer(case_id="case-again", answer="Yes.")
+    # The resumed case asks again on a later turn.
+    await runtime.handle_completed_turn(
+        task=_task(
+            task_id="task-again",
+            root_correlation_id="case-again",
+            resident_case_id="case-again",
+            resident_turn_index=2,
+        ),
+        prompt="prompt",
+        result=_result({}),
+        response_text="needs input again",
+        outcome_fields={
+            "continuation": "ask_operator",
+            "question": "Second question?",
+            "next_action_timing": "operator_input",
+        },
+        outcome_valid=True,
+    )
+
+    items = store.list()
+    assert len({item.item_id for item in items}) == 2
+    assert sorted(item.status for item in items) == ["pending", "withdrawn"]

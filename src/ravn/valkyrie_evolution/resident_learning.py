@@ -1230,7 +1230,7 @@ class ResidentLearningRuntime:
                 answer = f"No. {detail}" if detail else "No, do not proceed."
             else:
                 answer = f"Yes. {detail}" if detail else "Yes, proceed."
-            result = await self._operator_answerer(case_id=case_id, answer=answer)
+            result = await self._operator_answerer(case_id=case_id, answer=answer, via_review=True)
             if not result.get("queued"):
                 return "apply_failed", f"operator answer for {case_id} was not queued", None
             return "applied", f"operator answer queued for {case_id}", None
