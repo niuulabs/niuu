@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from time import monotonic
@@ -690,6 +690,10 @@ class BuildTool(ToolPort):
             # the installed envelope: written over it, the working version's
             # code on disk would no longer match a passing verification and
             # could never run again.
+            installed_before = _InstalledFiles.capture(
+                learned_tool_artifact_path(self._artifacts_dir, artifact.manifest.name),
+                learned_tool_path(self._tools_dir, artifact.manifest.name),
+            )
             if verify_error is not None:
                 artifact_path = write_failed_learned_tool_artifact(
                     artifacts_dir=self._artifacts_dir,
@@ -848,10 +852,19 @@ class BuildTool(ToolPort):
                         attributes={"outcome": "canary_failed"},
                         description="Learned-tool install attempts by outcome.",
                     )
+                    # The build was written over the installed version before
+                    # its canary ran; left there, a working tool is replaced on
+                    # disk by one that just failed.
+                    installed_before.restore()
+                    failed_path = write_failed_learned_tool_artifact(
+                        artifacts_dir=self._artifacts_dir,
+                        artifact=artifact,
+                    )
                     return ToolResult(
                         tool_call_id="",
                         content=(
-                            "Canary failed; learned tool was persisted but not registered.\n"
+                            f"Canary failed; the build was kept at {failed_path} and the "
+                            "installed version is unchanged.\n"
                             f"{canary.content}"
                         ),
                         is_error=True,
@@ -2204,6 +2217,32 @@ def _review_summary(
     if not review_filed:
         payload["reason"] = "operator review is required but no review requester is configured"
     return json.dumps(payload, indent=2, sort_keys=True)
+
+
+@dataclass(frozen=True)
+class _InstalledFiles:
+    """An installed tool's envelope and code as they were before a build."""
+
+    envelope: Path
+    code: Path
+    envelope_text: str | None
+    code_text: str | None
+
+    @classmethod
+    def capture(cls, envelope: Path, code: Path) -> _InstalledFiles:
+        return cls(
+            envelope=envelope,
+            code=code,
+            envelope_text=envelope.read_text(encoding="utf-8") if envelope.is_file() else None,
+            code_text=code.read_text(encoding="utf-8") if code.is_file() else None,
+        )
+
+    def restore(self) -> None:
+        for path, text in ((self.envelope, self.envelope_text), (self.code, self.code_text)):
+            if text is None:
+                path.unlink(missing_ok=True)
+                continue
+            path.write_text(text, encoding="utf-8")
 
 
 def _canary_failed(canary: ToolResult) -> bool:

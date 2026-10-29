@@ -884,6 +884,60 @@ async def test_a_canary_that_reports_an_error_is_not_installed(tmp_path) -> None
     assert registered == []
 
 
+async def test_a_failed_canary_leaves_the_installed_version_in_place(tmp_path) -> None:
+    """The build was written over the working tool before its canary ran, so
+    a failed canary left the broken version installed on disk."""
+    tool, registered = _tool(tmp_path)
+    working = await tool.execute(
+        {"manifest": _manifest(), "tool_code": _ECHO_TOOL, "test_code": _ECHO_TEST}
+    )
+    assert working.is_error is False
+    envelope = tmp_path / "arts" / "echo_tool.json"
+    before = envelope.read_text()
+    code_before = {p.name: p.read_text() for p in (tmp_path / "tools").glob("*.py")}
+
+    failed = await tool.execute(
+        {
+            "manifest": _manifest(),
+            "tool_code": "def run(payload):\n    return {'error': 'needs PROMETHEUS_URL'}\n",
+            "test_code": (
+                "import _verify_tool\n\ndef test_it():\n"
+                "    assert 'error' in _verify_tool.run({})\n"
+            ),
+            "canary_input": {"query": "up"},
+            "replace": True,
+        }
+    )
+
+    assert failed.is_error is True
+    assert "installed version is unchanged" in failed.content
+    assert envelope.read_text() == before
+    assert {p.name: p.read_text() for p in (tmp_path / "tools").glob("*.py")} == code_before
+    assert list((tmp_path / "arts" / "_failed").glob("echo_tool__*.json"))
+    assert len(registered) == 1
+
+
+async def test_a_failed_first_canary_installs_nothing(tmp_path) -> None:
+    tool, registered = _tool(tmp_path)
+
+    failed = await tool.execute(
+        {
+            "manifest": _manifest(),
+            "tool_code": "def run(payload):\n    return {'error': 'no endpoint'}\n",
+            "test_code": (
+                "import _verify_tool\n\ndef test_it():\n"
+                "    assert 'error' in _verify_tool.run({})\n"
+            ),
+            "canary_input": {},
+        }
+    )
+
+    assert failed.is_error is True
+    assert not (tmp_path / "arts" / "echo_tool.json").exists()
+    assert list((tmp_path / "tools").glob("*.py")) == []
+    assert registered == []
+
+
 async def test_a_failed_cancel_launches_no_second_build(tmp_path) -> None:
     from ravn.ports.tool_build_backend import ToolBuildError
 
