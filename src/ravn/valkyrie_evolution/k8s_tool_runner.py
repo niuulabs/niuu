@@ -1440,9 +1440,19 @@ _INFRA_WAITING_REASONS = frozenset(
 #: a positively-identified cluster-driven cause overrides it.
 _INFRA_EVICTION_MARKERS = ("drain", "preempt", "taint")
 
+#: How the kubelet opens a node-pressure eviction. It appends "Container
+#: <name> was using <usage>, request is <request>" for each container over
+#: its request, so a message with no such clause blames the node, not the
+#: tool: on jarnvidr a full image filesystem evicted tool pods that were
+#: still pulling their image.
+_NODE_PRESSURE_EVICTION = "the node was low on resource"
+_CONTAINER_OVER_REQUEST = "was using"
+
 
 def _eviction_is_infrastructure(message: str) -> bool:
     lowered = message.lower()
+    if lowered.startswith(_NODE_PRESSURE_EVICTION):
+        return _CONTAINER_OVER_REQUEST not in lowered
     return any(marker in lowered for marker in _INFRA_EVICTION_MARKERS)
 
 

@@ -497,6 +497,9 @@ class TestPodInfraReason:
             "Pod ephemeral local storage usage exceeds the total limit of containers",
             "Container tool was using 200Mi, which exceeds its request of 64Mi memory",
             "node pressure",
+            "The node was low on resource: ephemeral-storage. Threshold quantity: 984127912, "
+            "available: 494504Ki. Container tool was using 900Mi, request is 0, has larger "
+            "consumption of ephemeral-storage. ",
             "",
         ],
     )
@@ -511,6 +514,8 @@ class TestPodInfraReason:
             "Pod was terminated due to node drain",
             "The pod was preempted by a higher priority pod",
             "deleted due to NoExecute taint",
+            "The node was low on resource: ephemeral-storage. Threshold quantity: 984127912, "
+            "available: 494504Ki. ",
         ],
     )
     def test_cluster_driven_eviction_is_an_infra_reason(self, message: str) -> None:
