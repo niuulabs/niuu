@@ -11,7 +11,7 @@ _SECRET_VALUE_RE = re.compile(
     r"|[A-Za-z][A-Za-z0-9_-]*(?:authorization|api[_-]?key|token|password|secret|credential)"
     r"[A-Za-z0-9_-]*)"
     r"(?P=quote)\s*(?P<separator>[:=])\s*(?!Bearer\s+\[REDACTED\])"
-    r"(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\S+)"
+    r"(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\S+(?:\s+\S+)*)"
 )
 
 

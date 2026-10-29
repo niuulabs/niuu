@@ -1787,7 +1787,24 @@ class TestBroker:
         assert "flock-coder" not in test_broker._peer_watches
 
     @pytest.mark.asyncio
-    async def test_peer_error_fails_room_only_workflow_once(self, test_broker):
+    @pytest.mark.parametrize(
+        ("raw_error", "secret_fragments", "sanitized_error"),
+        [
+            (
+                r'Repository access failed: {"client_secret": "safe\\\"session-leaked-tail"}',
+                ("session-leaked-tail",),
+                'Repository access failed: {"client_secret":[REDACTED]}',
+            ),
+            (
+                "Repository access failed: password=correct horse battery staple",
+                ("correct", "horse", "battery", "staple"),
+                "Repository access failed: password=[REDACTED]",
+            ),
+        ],
+    )
+    async def test_peer_error_fails_room_only_workflow_once(
+        self, test_broker, raw_error, secret_fragments, sanitized_error
+    ):
         participant = MagicMock(persona="specification-framer")
         test_broker._room_bridge = MagicMock()
         test_broker._room_bridge.participants = {"flock-framer": participant}
@@ -1795,7 +1812,6 @@ class TestBroker:
         test_broker._finish_trace_span = AsyncMock()
         test_broker._is_room_only_workflow_session = MagicMock(return_value=True)
 
-        raw_error = r'Repository access failed: {"client_secret": "safe\\\"session-leaked-tail"}'
         frame = {"data": {"error": raw_error}}
         await test_broker._observe_room_peer_event("flock-framer", "error", frame)
         await test_broker._observe_room_peer_event("flock-framer", "error", frame)
@@ -1807,12 +1823,13 @@ class TestBroker:
                 "failure_peer_id": "flock-framer",
                 "failure_persona": "specification-framer",
                 "failure_reason_supplied": True,
-                "error": 'Repository access failed: {"client_secret":[REDACTED]}',
+                "error": sanitized_error,
             },
         )
         reported = str(test_broker._report_activity_state.await_args)
         assert raw_error not in reported
-        assert "session-leaked-tail" not in reported
+        for fragment in secret_fragments:
+            assert fragment not in reported
 
     @pytest.mark.asyncio
     async def test_peer_error_failure_names_the_failing_workflow_node(self, test_broker):

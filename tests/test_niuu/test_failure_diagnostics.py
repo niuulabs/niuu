@@ -40,3 +40,13 @@ def test_sanitize_failure_reason_redacts_escaped_quoted_credential_values() -> N
     assert "json-leaked-tail" not in reason
     assert "python-leaked-tail" not in reason
     assert reason == "{\"client_secret\":[REDACTED]} {'client_secret':[REDACTED]}"
+
+
+def test_sanitize_failure_reason_redacts_unquoted_passphrases() -> None:
+    passphrase = "correct horse battery staple"
+
+    reason = sanitize_failure_reason(f"Repository access denied: password={passphrase}")
+
+    for fragment in passphrase.split():
+        assert fragment not in reason
+    assert reason == "Repository access denied: password=[REDACTED]"

@@ -2223,7 +2223,24 @@ class TestGetTask:
         assert message["role"] == "ROLE_AGENT"
         assert message["parts"] == [{"text": "refresh token was already used"}]
 
-    def test_projected_planning_failure_exposes_a_sanitized_reason_to_its_owner(self) -> None:
+    @pytest.mark.parametrize(
+        ("raw_error", "secret_fragments", "sanitized_reason"),
+        [
+            (
+                r"Repository access denied: {'client_secret': 'safe\\\'a2a-leaked-tail'}",
+                ("a2a-leaked-tail",),
+                "'client_secret':[REDACTED]",
+            ),
+            (
+                "Repository access denied: password=correct horse battery staple",
+                ("correct", "horse", "battery", "staple"),
+                "password=[REDACTED]",
+            ),
+        ],
+    )
+    def test_projected_planning_failure_exposes_a_sanitized_reason_to_its_owner(
+        self, raw_error, secret_fragments, sanitized_reason
+    ) -> None:
         workflow = next(
             item for item in load_system_workflows() if item.name == "Developer Planning"
         )
@@ -2252,10 +2269,7 @@ class TestGetTask:
                         "failure_workflow_node_id": "planning-analysis",
                         "failure_task_id": "event_planning_analysis_f172f8bda59428bc",
                         "failure_reason_supplied": True,
-                        "error": (
-                            r"Repository access denied: "
-                            r"{'client_secret': 'safe\\\'a2a-leaked-tail'}"
-                        ),
+                        "error": raw_error,
                     },
                     campaign.owner_id,
                 ),
@@ -2270,8 +2284,9 @@ class TestGetTask:
         diagnostic = task["metadata"]["failureDiagnostic"]
         assert task["status"]["state"] == "TASK_STATE_FAILED"
         assert "planning-analysis" in task["status"]["message"]["parts"][0]["text"]
-        assert "a2a-leaked-tail" not in authorized.text
-        assert "'client_secret':[REDACTED]" in authorized.text
+        for fragment in secret_fragments:
+            assert fragment not in authorized.text
+        assert sanitized_reason in authorized.text
         assert diagnostic == {
             "reference": f"a2a-task:{campaign.slug}:failure",
             "reasonSupplied": True,
