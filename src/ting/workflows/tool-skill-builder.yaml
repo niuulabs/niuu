@@ -3,7 +3,7 @@ id: 3c217e0a-1ff0-56d6-ba27-54cd43bff8e6
 name: Tool & Skill Builder
 description: Resident capability workflow that designs, implements, reviews, canaries, and publishes a
   missing Valkyrie/Ravn tool or skill.
-version: 1.0.5
+version: 1.0.7
 persona_dependencies:
   capability-publisher:
     id: capability-publisher
