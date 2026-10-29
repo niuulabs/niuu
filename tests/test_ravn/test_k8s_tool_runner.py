@@ -22,6 +22,7 @@ from ravn.valkyrie_evolution.k8s_tool_runner import (
     JobRunResult,
     KubernetesJobExecutor,
     KubernetesJobLearnedToolRunner,
+    _container_exit_code,
     _container_started_at,
     _job_uid,
     _k8s_safe_component,
@@ -1157,6 +1158,80 @@ async def test_run_pod_start_budget_is_separate_from_the_tool_timeout() -> None:
             timeout_seconds=10,
             egress=EgressPlan(),
         )
+
+
+def _terminated_since_2020(exit_code: int, **status: Any) -> dict[str, Any]:
+    """A pod whose container started long before any budget and has exited."""
+    return {
+        "phase": "Running",
+        **status,
+        "container_statuses": [
+            {
+                "state": {
+                    "terminated": {"started_at": "2020-01-01T00:00:00Z", "exit_code": exit_code}
+                }
+            }
+        ],
+    }
+
+
+async def _execute(executor: KubernetesJobExecutor) -> JobRunResult:
+    return await executor.execute(
+        run_name="ravn-tool-finished",
+        image=DEFAULT_TOOL_RUN_IMAGE,
+        code="def run(p): return {}",
+        payload={},
+        entry_point="run",
+        requirements=[],
+        timeout_seconds=10,
+        egress=EgressPlan(),
+    )
+
+
+async def test_a_run_ends_when_its_container_exits_not_when_the_job_is_marked() -> None:
+    """jarnvidr's Job controller marked Jobs succeeded 2-4s after their
+    container exited; counted against a 10s budget, a tool that finished in
+    7s was reported as a timeout and its result thrown away."""
+    batch = _FakeVerifyBatchV1({"succeeded": None, "failed": None})
+    core = _FakeVerifyCoreV1(
+        log='ravn-k8s-job-result: {"ok": true}', pod_status=_terminated_since_2020(0)
+    )
+
+    result = await _execute(_verify_executor(batch=batch, core=core))
+
+    assert not result.timed_out
+    assert (result.exit_code, result.stdout) == (0, '{"ok": true}')
+
+
+async def test_a_container_exit_code_is_the_runs_exit_code() -> None:
+    batch = _FakeVerifyBatchV1({"succeeded": None, "failed": None})
+    core = _FakeVerifyCoreV1(log="Traceback", pod_status=_terminated_since_2020(3))
+
+    result = await _execute(_verify_executor(batch=batch, core=core))
+
+    assert (result.timed_out, result.exit_code, result.stderr) == (False, 3, "Traceback")
+
+
+async def test_a_container_the_cluster_stopped_is_infrastructure() -> None:
+    batch = _FakeVerifyBatchV1({"succeeded": None, "failed": None})
+    core = _FakeVerifyCoreV1(
+        pod_status=_terminated_since_2020(
+            137, reason="Evicted", message="Pod was terminated due to node drain"
+        )
+    )
+
+    with pytest.raises(LearnedToolInfrastructureError, match="stopped by the cluster: evicted"):
+        await _execute(_verify_executor(batch=batch, core=core))
+
+
+def test_container_exit_code_reads_only_a_terminated_container() -> None:
+    def pod(state: dict[str, Any]) -> dict[str, Any]:
+        return {"status": {"containerStatuses": [{"state": state}]}}
+
+    assert _container_exit_code(pod({"terminated": {"exitCode": 2}})) == 2
+    assert _container_exit_code(pod({"running": {"startedAt": "2020-01-01T00:00:00Z"}})) is None
+    assert _container_exit_code({"status": {}}) is None
+    assert _container_exit_code(object()) is None
 
 
 def test_k8s_backend_requires_explicit_verified_deployment_coordinates(tmp_path) -> None:
