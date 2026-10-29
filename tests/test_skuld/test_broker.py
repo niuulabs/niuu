@@ -2162,6 +2162,116 @@ class TestBroker:
         assert len(pending_events) == 1
 
     @pytest.mark.asyncio
+    async def test_brief_gate_exposes_framed_brief_after_each_review_cycle(self, tmp_path):
+        settings = SkuldSettings(
+            session={"id": "sess-brief-gate", "workspace_dir": str(tmp_path)},
+            workflow={
+                "graph": {
+                    "nodes": [
+                        {
+                            "id": "plan-brief-gate",
+                            "kind": "gate",
+                            "label": "Planning feedback gate",
+                            "requireBrief": True,
+                        }
+                    ],
+                    "edges": [
+                        {
+                            "id": "brief-to-gate",
+                            "source": "plan-clarify",
+                            "target": "plan-brief-gate",
+                            "label": "plan.brief.framed -> plan.brief.framed",
+                        },
+                        {
+                            "id": "gate-approved",
+                            "source": "plan-brief-gate",
+                            "target": "plan-breakdown",
+                            "label": "plan.brief.approved -> plan.brief.approved",
+                        },
+                        {
+                            "id": "gate-changes",
+                            "source": "plan-brief-gate",
+                            "target": "plan-clarify",
+                            "label": "plan.brief.changes_requested -> plan.brief.changes_requested",
+                        },
+                    ],
+                }
+            },
+        )
+        broker_under_test = Broker(settings=settings)
+        broker_under_test._mesh_adapter = SimpleNamespace(publish=AsyncMock())
+        broker_under_test._emit_pipeline_event = AsyncMock()
+        broker_under_test._emit_workflow_gate_help_needed_sleipnir_event = AsyncMock()
+        broker_under_test._report_activity_state = AsyncMock()
+        broker_under_test._finish_trace_span = AsyncMock()
+        broker_under_test.handle_human_room_message = AsyncMock()
+        frame = {"metadata": {"task_id": "planning-1"}}
+
+        async def frame_brief(brief: str) -> None:
+            await broker_under_test._maybe_activate_workflow_gate(
+                frame,
+                {
+                    "event_type": "plan.brief.framed",
+                    "summary": "Brief ready for review.",
+                    "fields": {"brief": brief},
+                },
+            )
+
+        first_brief = "Goal: ship it.\n\nAcceptance: tests pass."
+        await frame_brief(first_brief)
+        first_gate = broker_under_test.list_workflow_gates()[0]
+        assert first_gate["brief"] == first_brief
+
+        await broker_under_test.resolve_workflow_gate(first_gate["id"], "APPROVE")
+        second_brief = "Goal: ship it safely.\n\nAcceptance: add regression coverage."
+        await frame_brief(second_brief)
+        second_gate = broker_under_test.list_workflow_gates()[0]
+        assert second_gate["brief"] == second_brief
+
+        await broker_under_test.resolve_workflow_gate(
+            second_gate["id"], "CHANGES_REQUESTED", notes="Clarify the boundary."
+        )
+        third_brief = "Goal: ship it safely.\n\nAcceptance: cover the boundary."
+        await frame_brief(third_brief)
+        assert broker_under_test.list_workflow_gates()[0]["brief"] == third_brief
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("brief", [None, {"content": "not a brief string"}])
+    async def test_brief_gate_rejects_missing_or_unreadable_framed_brief(self, tmp_path, brief):
+        settings = SkuldSettings(
+            session={"id": "sess-brief-gate", "workspace_dir": str(tmp_path)},
+            workflow={
+                "graph": {
+                    "nodes": [
+                        {
+                            "id": "plan-brief-gate",
+                            "kind": "gate",
+                            "label": "Planning feedback gate",
+                            "requireBrief": True,
+                        }
+                    ],
+                    "edges": [
+                        {
+                            "id": "brief-to-gate",
+                            "source": "plan-clarify",
+                            "target": "plan-brief-gate",
+                            "label": "plan.brief.framed -> plan.brief.framed",
+                        }
+                    ],
+                }
+            },
+        )
+        broker_under_test = Broker(settings=settings)
+
+        with pytest.raises(ValueError, match="requires a non-empty framed brief"):
+            await broker_under_test._maybe_activate_workflow_gate(
+                {"metadata": {"task_id": "planning-1"}},
+                {"event_type": "plan.brief.framed", "fields": {"brief": brief}},
+            )
+
+        assert broker_under_test.list_workflow_gates() == []
+
+    @pytest.mark.asyncio
     async def test_flock_completion_accepts_stage_finisher_persona(self, test_broker):
         participant = MagicMock(persona="coordinator-finisher")
         test_broker._room_bridge = MagicMock()

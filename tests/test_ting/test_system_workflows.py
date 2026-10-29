@@ -164,6 +164,12 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         node["label"] for node in planning_flow.graph["nodes"] if node.get("kind") == "gate"
     ]
     assert planning_gate_labels == ["Planning feedback gate", "Draft plan review gate"]
+    planning_brief_gate = next(
+        node
+        for node in planning_flow.graph["nodes"]
+        if node.get("id") == "plan-brief-gate"
+    )
+    assert planning_brief_gate["requireBrief"] is True
     planning_stage_personas = {
         node["label"]: [member["personaId"] for member in node.get("stageMembers", [])]
         for node in planning_flow.graph["nodes"]

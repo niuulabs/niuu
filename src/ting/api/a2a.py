@@ -1689,7 +1689,7 @@ def _select_pending_question_id(
 
 def _pending_gate_view(gate: dict) -> dict[str, str]:
     """Project a skuld WorkflowGateState dict to the A2A-facing gate context."""
-    return {
+    view = {
         "gateId": str(gate.get("id") or ""),
         "nodeId": str(gate.get("node_id") or gate.get("nodeId") or ""),
         "label": str(gate.get("label") or ""),
@@ -1697,6 +1697,10 @@ def _pending_gate_view(gate: dict) -> dict[str, str]:
         "instructions": str(gate.get("instructions") or ""),
         "summary": str(gate.get("summary") or ""),
     }
+    brief = str(gate.get("brief") or "").strip()
+    if brief:
+        view["brief"] = brief
+    return view
 
 
 def _artifact_media_type(path: str) -> str:

@@ -2420,6 +2420,7 @@ class Broker(
         triggering_event_type: str,
         *,
         summary: str = "",
+        brief: str = "",
     ) -> WorkflowGateState:
         key = (node.node_id, activation_id)
         existing_state_id = self._workflow_gate_state_ids_by_key.get(key)
@@ -2450,6 +2451,7 @@ class Broker(
             changes_requested_event_type=node.changes_requested_event_type,
             attempt=attempt,
             summary=summary,
+            brief=brief,
         )
         self._workflow_gate_states[gate_id] = state
         self._workflow_gate_state_ids_by_key[key] = gate_id
@@ -2482,6 +2484,7 @@ class Broker(
                 "triggered_by_event_type": state.triggered_by_event_type,
                 "status": state.status,
                 "summary": state.summary,
+                "brief": state.brief,
             },
         )
         if state.pending_behavior == "help_needed":
@@ -2621,8 +2624,12 @@ class Broker(
         summary = str(payload.get("summary") or "").strip()
         fields = payload.get("fields")
         reason = ""
+        brief = ""
         if isinstance(fields, dict):
             reason = str(fields.get("reason") or fields.get("rationale") or "").strip()
+            raw_brief = fields.get("brief")
+            if isinstance(raw_brief, str):
+                brief = raw_brief.strip()
         if reason and reason not in summary:
             summary = f"{summary} — {reason}" if summary else reason
 
@@ -2636,11 +2643,17 @@ class Broker(
             if not all(required in slot for required in node.event_types):
                 continue
             self._workflow_gate_slots.pop(key, None)
+            if node.require_brief and not brief:
+                raise ValueError(
+                    f"Workflow gate {node.node_id} requires a non-empty framed brief; "
+                    "refusing an unreviewable approval gate"
+                )
             await self._activate_workflow_gate(
                 node,
                 activation_id,
                 event_type,
                 summary=summary,
+                brief=brief,
             )
 
     async def _evaluate_workflow_evidence_gate(

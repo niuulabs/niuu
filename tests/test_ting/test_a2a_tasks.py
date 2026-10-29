@@ -802,6 +802,56 @@ class TestSendMessage:
         assert port.spawned[0].tracker_issue_id == f"workflow:{result['id']}"
         assert port.spawned[0].name == "tool-builder-build-the-widget-tool"
 
+    def test_saga_planning_brief_gate_is_reviewable_after_a2a_launch(self) -> None:
+        workflow = next(
+            item for item in load_system_workflows() if item.name == "Saga Planning"
+        )
+        client, campaigns, port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+        client.app.state.persona_source = FilesystemPersonaAdapter(
+            persona_dirs=[], include_builtin=True
+        )
+
+        launched = _rpc(
+            client,
+            "SendMessage",
+            _send_params(str(workflow.id), prompt="Plan the ticket acceptance criteria."),
+        )
+        task_id = launched.json()["result"]["task"]["id"]
+        campaign = asyncio.run(campaigns.get_campaign_by_slug(task_id))
+        assert campaign is not None
+        asyncio.run(
+            campaigns.save_campaign(
+                replace(campaign, status=WorkflowCampaignStatus.BLOCKED)
+            )
+        )
+        brief = (
+            "Goal: fix the planning gate.\n\n"
+            "Scope: expose the framed brief to authorized reviewers.\n\n"
+            "Acceptance: approval and requested changes retain the full brief."
+        )
+        port.gates = [
+            {
+                "id": "plan-brief-gate:session-123:1",
+                "node_id": "plan-brief-gate",
+                "status": "pending",
+                "label": "Planning feedback gate",
+                "condition": "Review the framed planning brief before drafting.",
+                "instructions": "Approve the framed brief when it captures the intent.",
+                "summary": "Brief ready for review.",
+                "brief": brief,
+            }
+        ]
+
+        task = _rpc(client, "GetTask", {"id": task_id}).json()["result"]
+
+        assert task["status"]["state"] == "TASK_STATE_INPUT_REQUIRED"
+        gate = task["metadata"]["pendingGates"][0]
+        assert gate["brief"] == brief
+        assert "Scope: expose the framed brief" in gate["brief"]
+        assert "Acceptance: approval and requested changes" in gate["brief"]
+
     def test_caller_session_name_names_the_session(self) -> None:
         workflow = _make_workflow()
         client, _campaigns, port = _make_client(
@@ -2210,6 +2260,33 @@ class TestGetTask:
                 "summary": "",
             }
         ]
+
+    def test_input_required_task_carries_framed_brief_for_gate_review(self) -> None:
+        campaign = _make_campaign(status=WorkflowCampaignStatus.BLOCKED)
+        port = RecordingVolundrPort()
+        brief = "Goal: preserve context.\n\nAcceptance: review the full brief."
+        port.gates = [
+            {
+                "id": "gate-brief",
+                "node_id": "plan-brief-gate",
+                "status": "pending",
+                "label": "Planning feedback gate",
+                "condition": "Review the framed planning brief.",
+                "instructions": "Approve when the brief captures the intent.",
+                "summary": "Brief ready for review.",
+                "brief": brief,
+            }
+        ]
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+            volundr=port,
+        )
+
+        response = _rpc(client, "GetTask", {"id": campaign.slug})
+
+        gate = response.json()["result"]["metadata"]["pendingGates"][0]
+        assert gate["brief"] == brief
+        assert "Acceptance: review the full brief." in gate["brief"]
 
     def test_working_task_carries_no_pending_gates(self) -> None:
         campaign = _make_campaign(status=WorkflowCampaignStatus.RUNNING)

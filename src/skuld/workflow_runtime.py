@@ -77,6 +77,7 @@ class WorkflowGateNode:
     auto_forward_after: str = "30m"
     evidence_policy: dict[str, Any] | None = None
     artifact: dict[str, str] | None = None
+    require_brief: bool = False
 
 
 @dataclass
@@ -101,6 +102,7 @@ class WorkflowGateState:
     notes: str = ""
     source: str = "workflow"
     summary: str = ""
+    brief: str = ""
 
 
 @dataclass(frozen=True)
@@ -304,6 +306,7 @@ def _workflow_gate_nodes(graph: dict[str, Any] | None) -> list[WorkflowGateNode]
                 auto_forward_after=str(node.get("autoForwardAfter") or "30m"),
                 evidence_policy=node.get("evidencePolicy"),
                 artifact=node.get("artifact"),
+                require_brief=bool(node.get("requireBrief", False)),
             )
         )
 
