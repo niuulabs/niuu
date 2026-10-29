@@ -3981,6 +3981,7 @@ class DriveLoop:
         *,
         message: str,
         failure_kind: str,
+        failure_reason_supplied: bool | None = None,
     ) -> None:
         """Emit the terminal ERROR event that fails the flock workflow visibly."""
         if channel is None:
@@ -3994,6 +3995,7 @@ class DriveLoop:
                     session_id=task.session_id or task.task_id,
                     task_id=task.task_id,
                     failure_kind=failure_kind,
+                    failure_reason_supplied=failure_reason_supplied,
                 )
             )
         except Exception:
@@ -4026,6 +4028,7 @@ class DriveLoop:
             # outcome: a graph with no route for it ends the task blocked, with
             # the agent's reason, instead of reporting a platform-looking
             # "outcome that cannot be accepted".
+            reason_supplied = bool(explanation)
             reason = explanation or "no reason given"
             self._result_store.set_failure(task.task_id, "The workflow is blocked.", [reason])
             await self._emit_workflow_error(
@@ -4035,6 +4038,7 @@ class DriveLoop:
                     f"Workflow node {task.workflow_node_id or task.task_id} is blocked: {reason}"
                 ),
                 failure_kind="blocked",
+                failure_reason_supplied=reason_supplied,
             )
             return
         detail = (

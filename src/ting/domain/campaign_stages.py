@@ -18,11 +18,13 @@ Nothing here knows what any particular workflow is for.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
+from niuu.domain.failure_diagnostics import sanitize_failure_reason
 from ting.domain.models import CampaignStageState, WorkflowCampaign, WorkflowCampaignStatus
 
 #: Campaign metadata keys a stage failure is recorded under. ``failure_error``
@@ -36,6 +38,7 @@ _FAILURE_DETAIL_KEYS = (
     "failure_task_id",
     "failure_kind",
 )
+_DIAGNOSTIC_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 
 
 @dataclass(frozen=True)
@@ -206,7 +209,8 @@ def failure_metadata(
     error: str,
 ) -> dict[str, str]:
     """Campaign metadata recording a runtime failure: the error and its stage."""
-    recorded = {FAILURE_ERROR_KEY: error} if error else {}
+    safe_error = sanitize_failure_reason(error)
+    recorded = {FAILURE_ERROR_KEY: safe_error} if safe_error else {}
     for key in _FAILURE_DETAIL_KEYS:
         value = str(activity_metadata.get(key) or "").strip()
         if value:
@@ -275,6 +279,24 @@ def record_runtime_failure(
         error=error or "Workflow runtime reported an error",
     )
     stage_id = recorded.get(FAILURE_STAGE_KEY)
+    reason_supplied = bool(activity_metadata.get("failure_reason_supplied"))
+    diagnostic = None
+    if "failure_reason_supplied" in activity_metadata:
+        diagnostic = {
+            "reference": f"a2a-task:{campaign.slug}:failure",
+            "reasonSupplied": reason_supplied,
+            **({"stageId": stage_id} if stage_id else {}),
+            **(
+                {"peerId": peer_id}
+                if (peer_id := _diagnostic_identifier(activity_metadata.get("failure_peer_id")))
+                else {}
+            ),
+            **(
+                {"taskId": task_id}
+                if (task_id := _diagnostic_identifier(activity_metadata.get("failure_task_id")))
+                else {}
+            ),
+        }
     stage_state = mark_stage_failed(
         campaign.stage_state,
         stage_id,
@@ -283,10 +305,22 @@ def record_runtime_failure(
     )
     active_stage_id = stage_id if stage_state is not campaign.stage_state else None
     return (
-        {**campaign.metadata, **recorded},
+        {
+            **campaign.metadata,
+            **recorded,
+            **({"failure_diagnostic": diagnostic} if diagnostic is not None else {}),
+        },
         stage_state,
         active_stage_id or campaign.active_stage_id,
     )
+
+
+def _diagnostic_identifier(value: object) -> str:
+    """Keep only opaque identifiers that are safe to return to an A2A caller."""
+    identifier = str(value or "").strip()
+    if not _DIAGNOSTIC_IDENTIFIER_RE.fullmatch(identifier):
+        return ""
+    return identifier
 
 
 def _current_stage_index(

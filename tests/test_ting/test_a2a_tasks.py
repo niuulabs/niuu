@@ -2223,6 +2223,110 @@ class TestGetTask:
         assert message["role"] == "ROLE_AGENT"
         assert message["parts"] == [{"text": "refresh token was already used"}]
 
+    def test_projected_planning_failure_exposes_a_sanitized_reason_to_its_owner(self) -> None:
+        workflow = next(
+            item for item in load_system_workflows() if item.name == "Developer Planning"
+        )
+        client, campaigns, port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow])
+        )
+        launched = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
+        task_id = launched.json()["result"]["task"]["id"]
+        campaign = asyncio.run(campaigns.get_campaign_by_slug(task_id))
+        assert campaign is not None
+        projector = WorkflowCampaignProjector(
+            repo=campaigns,
+            volundr_factory=RecordingVolundrFactory([port]),
+            event_bus=AsyncMock(),
+        )
+
+        asyncio.run(
+            projector.handle_activity(
+                ActivityEvent(
+                    campaign.session_id,
+                    "error",
+                    {
+                        "failure_source": "ravn_flock",
+                        "failure_peer_id": "flock-developer-analyst",
+                        "failure_persona": "developer-analyst",
+                        "failure_workflow_node_id": "planning-analysis",
+                        "failure_task_id": "event_planning_analysis_f172f8bda59428bc",
+                        "failure_reason_supplied": True,
+                        "error": "Repository access denied: Bearer planning-secret-token",
+                    },
+                    campaign.owner_id,
+                ),
+                campaign.owner_id,
+            )
+        )
+
+        authorized = _rpc(client, "GetTask", {"id": campaign.slug})
+        denied = _rpc(client, "GetTask", {"id": campaign.slug}, headers=_headers(user_id="user-2"))
+
+        task = authorized.json()["result"]
+        diagnostic = task["metadata"]["failureDiagnostic"]
+        assert task["status"]["state"] == "TASK_STATE_FAILED"
+        assert "planning-analysis" in task["status"]["message"]["parts"][0]["text"]
+        assert "planning-secret-token" not in authorized.text
+        assert diagnostic == {
+            "reference": f"a2a-task:{campaign.slug}:failure",
+            "reasonSupplied": True,
+            "stageId": "planning-analysis",
+            "peerId": "flock-developer-analyst",
+            "taskId": "event_planning_analysis_f172f8bda59428bc",
+        }
+        assert denied.status_code == 200
+        assert denied.json()["error"]["code"] == -32001
+        assert "failureDiagnostic" not in denied.text
+
+    def test_projected_planning_failure_distinguishes_an_absent_reason(self) -> None:
+        workflow = next(
+            item for item in load_system_workflows() if item.name == "Developer Planning"
+        )
+        client, campaigns, port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow])
+        )
+        launched = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
+        task_id = launched.json()["result"]["task"]["id"]
+        campaign = asyncio.run(campaigns.get_campaign_by_slug(task_id))
+        assert campaign is not None
+        projector = WorkflowCampaignProjector(
+            repo=campaigns,
+            volundr_factory=RecordingVolundrFactory([port]),
+            event_bus=AsyncMock(),
+        )
+
+        asyncio.run(
+            projector.handle_activity(
+                ActivityEvent(
+                    campaign.session_id,
+                    "error",
+                    {
+                        "failure_source": "ravn_flock",
+                        "failure_peer_id": "flock-developer-analyst",
+                        "failure_persona": "developer-analyst",
+                        "failure_workflow_node_id": "planning-analysis",
+                        "failure_task_id": "event_planning_analysis_f172f8bda59428bc",
+                        "failure_reason_supplied": False,
+                    },
+                    campaign.owner_id,
+                ),
+                campaign.owner_id,
+            )
+        )
+
+        task = _rpc(client, "GetTask", {"id": campaign.slug}).json()["result"]
+
+        assert task["metadata"]["failureDiagnostic"]["reasonSupplied"] is False
+        assert task["metadata"]["failureDiagnostic"]["peerId"] == "flock-developer-analyst"
+        assert task["metadata"]["failureDiagnostic"]["taskId"] == (
+            "event_planning_analysis_f172f8bda59428bc"
+        )
+        assert "no failure reason was supplied by the peer" in (
+            task["status"]["message"]["parts"][0]["text"]
+        )
+        assert "no reason given" not in task["status"]["message"]["parts"][0]["text"]
+
     def test_only_a_failed_task_carries_a_failure_status_message(self) -> None:
         campaign = _make_campaign(
             status=WorkflowCampaignStatus.RUNNING,

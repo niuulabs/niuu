@@ -1812,6 +1812,7 @@ class TestBroker:
                 "failure_source": "ravn_flock",
                 "failure_peer_id": "flock-framer",
                 "failure_persona": "specification-framer",
+                "failure_reason_supplied": True,
                 "error": frame["data"]["error"],
             },
         )
@@ -1849,12 +1850,48 @@ class TestBroker:
                 "failure_source": "ravn_flock",
                 "failure_peer_id": "flock-kvm-research-coordinator",
                 "failure_persona": "kvm-research-coordinator",
+                "failure_reason_supplied": True,
                 "error": error,
                 "failure_workflow_node_id": "research-coordinate",
                 "failure_kind": "RuntimeError",
                 "failure_task_id": "event_research_coordinate_fe4ae2efb1c879c7",
             },
         )
+
+    @pytest.mark.asyncio
+    async def test_peer_error_without_reason_is_traceable_without_a_generic_reason(
+        self, test_broker
+    ):
+        test_broker._room_bridge = MagicMock()
+        test_broker._room_bridge.participants = {
+            "flock-developer-analyst": MagicMock(persona="developer-analyst")
+        }
+        test_broker._report_activity_state = AsyncMock(return_value=True)
+        test_broker._finish_trace_span = AsyncMock()
+        test_broker._is_room_only_workflow_session = MagicMock(return_value=True)
+
+        await test_broker._observe_room_peer_event(
+            "flock-developer-analyst",
+            "error",
+            {
+                "task_id": "event_planning_analysis_f172f8bda59428bc",
+                "data": "Workflow node planning-analysis is blocked: no reason given",
+                "metadata": {
+                    "workflow_node_id": "planning-analysis",
+                    "failure_reason_supplied": False,
+                },
+            },
+        )
+
+        metadata = test_broker._report_activity_state.await_args.kwargs["extra_metadata"]
+        assert metadata == {
+            "failure_source": "ravn_flock",
+            "failure_peer_id": "flock-developer-analyst",
+            "failure_persona": "developer-analyst",
+            "failure_reason_supplied": False,
+            "failure_workflow_node_id": "planning-analysis",
+            "failure_task_id": "event_planning_analysis_f172f8bda59428bc",
+        }
 
     @pytest.mark.asyncio
     async def test_peer_git_checkpoint_signals_increment_artifacts(self, test_broker):

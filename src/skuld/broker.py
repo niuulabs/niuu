@@ -25,6 +25,7 @@ import httpx
 from fastapi import WebSocket, WebSocketDisconnect  # noqa: F401
 
 from niuu.domain.conversation_timeline import TIMELINE_KEY, project_timeline, stamp_parts, timeline
+from niuu.domain.failure_diagnostics import sanitize_failure_reason
 from niuu.domain.logging import LoggingConfig
 from niuu.domain.outcome import parse_outcome_block
 from niuu.domain.text_projection import projection_revision
@@ -337,8 +338,8 @@ def _normalize_browser_message_content(content: object) -> str:
     return "\n\n".join(lines).strip()
 
 
-def _peer_error_message(frame: dict[str, Any]) -> str:
-    """Extract a bounded, human-readable error from a room peer frame."""
+def _peer_error_reason(frame: dict[str, Any]) -> tuple[str, bool]:
+    """Extract a safe peer error reason and whether the peer supplied one."""
     data = frame.get("data")
     if isinstance(data, str):
         message = data
@@ -348,14 +349,18 @@ def _peer_error_message(frame: dict[str, Any]) -> str:
             message = str(raw_error.get("message") or raw_error.get("error") or "")
         else:
             message = str(
-                raw_error
-                or data.get("message")
-                or data.get("content")
-                or "Peer workflow agent failed"
+                raw_error or data.get("message") or data.get("content") or ""
             )
     else:
-        message = str(frame.get("error") or "Peer workflow agent failed")
-    return message.strip()[:2000] or "Peer workflow agent failed"
+        message = str(frame.get("error") or "")
+    message = message.strip()
+    return sanitize_failure_reason(message), bool(message)
+
+
+def _peer_error_message(frame: dict[str, Any]) -> str:
+    """Extract a bounded, human-readable error from a room peer frame."""
+    message, supplied = _peer_error_reason(frame)
+    return message if supplied else "Peer workflow agent failed"
 
 
 @dataclass
@@ -3094,13 +3099,15 @@ class Broker(
 
         participant = self._room_bridge.participants.get(peer_id) if self._room_bridge else None
         persona = (participant.persona if participant is not None else "").strip()
-        error = _peer_error_message(frame)
+        error, reason_supplied = _peer_error_reason(frame)
         extra_metadata = {
             "failure_source": "ravn_flock",
             "failure_peer_id": peer_id,
             "failure_persona": persona,
-            "error": error,
+            "failure_reason_supplied": reason_supplied,
         }
+        if reason_supplied:
+            extra_metadata["error"] = error
         # The workflow node and task the peer was running when it failed, so
         # Ting can record which stage failed rather than only which peer.
         frame_metadata = frame.get("metadata")
@@ -3113,9 +3120,17 @@ class Broker(
             failure_kind = str(frame_metadata.get("failure_kind") or "").strip()
             if failure_kind:
                 extra_metadata["failure_kind"] = failure_kind
+            if "failure_reason_supplied" in frame_metadata:
+                reason_supplied = frame_metadata["failure_reason_supplied"] is True
         task_id = str(frame.get("task_id") or "").strip()
         if task_id:
             extra_metadata["failure_task_id"] = task_id
+
+        extra_metadata["failure_reason_supplied"] = reason_supplied
+        if reason_supplied:
+            extra_metadata["error"] = error
+        else:
+            extra_metadata.pop("error", None)
 
         if await self._report_activity_state("error", extra_metadata=extra_metadata):
             self._flock_failure_reported = True

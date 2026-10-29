@@ -215,6 +215,10 @@ def project_ravn_event(event: RavnEvent, *, persona: str = "") -> list[dict[str,
                 for key in ("workflow_node_id", "persona", "failure_kind")
                 if event.payload.get(key)
             }
+            if "failure_reason_supplied" in event.payload:
+                projected["metadata"]["failure_reason_supplied"] = bool(
+                    event.payload["failure_reason_supplied"]
+                )
         return [projected]
 
     if event.type == RavnEventType.HELP_NEEDED:

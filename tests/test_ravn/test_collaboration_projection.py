@@ -89,6 +89,21 @@ def test_error_projection_names_the_failing_workflow_node() -> None:
     }
 
 
+def test_error_projection_preserves_that_a_blocked_reason_was_omitted() -> None:
+    projected = project_ravn_event(
+        RavnEvent.error(
+            source="ravn-1",
+            message="Workflow node planning-analysis is blocked: no reason given",
+            correlation_id="task-1",
+            session_id="session-1",
+            failure_kind="blocked",
+            failure_reason_supplied=False,
+        )
+    )[0]
+
+    assert projected["metadata"]["failure_reason_supplied"] is False
+
+
 def test_tool_projection_exposes_activity_and_delegation_without_skuld_logic() -> None:
     projected = project_ravn_event(
         _event(

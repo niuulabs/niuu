@@ -2470,6 +2470,7 @@ rationale: delivery_evidence approval was denied
         assert error.payload["message"] == (
             "Workflow node delivery-coordinate is blocked: delivery_evidence approval was denied"
         )
+        assert error.payload["failure_reason_supplied"] is True
 
     @pytest.mark.asyncio
     async def test_merges_tool_metadata_into_canonical_outcome(self) -> None:

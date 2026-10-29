@@ -157,10 +157,13 @@ class RavnEvent:
         session_id: str,
         task_id: str | None = None,
         failure_kind: str = "",
+        failure_reason_supplied: bool | None = None,
     ) -> RavnEvent:
         payload = {"message": message}
         if failure_kind:
             payload["failure_kind"] = failure_kind
+        if failure_reason_supplied is not None:
+            payload["failure_reason_supplied"] = failure_reason_supplied
         return cls(
             type=RavnEventType.ERROR,
             source=source,

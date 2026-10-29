@@ -175,7 +175,10 @@ def campaign_to_task(campaign: WorkflowCampaign) -> Task:
         task.status.state = _STATUS_TO_STATE[campaign.status]
     task.status.timestamp.FromDatetime(campaign.updated_at.astimezone(UTC))
     failure_error = str(campaign.metadata.get("failure_error") or "").strip()
-    if campaign.status == WorkflowCampaignStatus.FAILED and failure_error:
+    failure_diagnostic = campaign.metadata.get("failure_diagnostic")
+    failure_diagnostic = failure_diagnostic if isinstance(failure_diagnostic, dict) else None
+    failure_message = _failure_status_message(failure_error, failure_diagnostic)
+    if campaign.status == WorkflowCampaignStatus.FAILED and failure_message:
         # The protocol's place for why a task ended. metadata.error carries the
         # same text for callers that already read it there.
         task.status.message.CopyFrom(
@@ -184,7 +187,7 @@ def campaign_to_task(campaign: WorkflowCampaign) -> Task:
                 context_id=task.context_id,
                 task_id=campaign.slug,
                 role=Role.ROLE_AGENT,
-                parts=[Part(text=failure_error)],
+                parts=[Part(text=failure_message)],
             )
         )
     task.metadata.update(
@@ -203,10 +206,11 @@ def campaign_to_task(campaign: WorkflowCampaign) -> Task:
                 else {}
             ),
             **(
-                {"error": str(campaign.metadata["failure_error"])}
+                {"error": failure_message}
                 if campaign.metadata.get("failure_error")
                 else {}
             ),
+            **({"failureDiagnostic": failure_diagnostic} if failure_diagnostic else {}),
         }
     )
     delivery = campaign.metadata.get("delivery")
@@ -224,6 +228,23 @@ def campaign_to_task(campaign: WorkflowCampaign) -> Task:
             },
         }
     return task
+
+
+def _failure_status_message(error: str, diagnostic: dict[str, Any] | None) -> str:
+    """Render the safe, actionable A2A failure text for a projected runtime error."""
+    if not diagnostic:
+        return error
+    reference = str(diagnostic.get("reference") or "").strip()
+    stage = str(diagnostic.get("stageId") or "workflow stage").strip()
+    if diagnostic.get("reasonSupplied"):
+        return (
+            f"Workflow stage {stage} failed: {error}. "
+            f"Review diagnostic {reference} before retrying."
+        )
+    return (
+        f"Workflow stage {stage} failed: no failure reason was supplied by the peer. "
+        f"Review diagnostic {reference} before retrying."
+    )
 
 
 def _record_a2a_state_transition(campaign: WorkflowCampaign) -> None:
