@@ -2644,10 +2644,19 @@ class Broker(
                 continue
             self._workflow_gate_slots.pop(key, None)
             if node.require_brief and not brief:
-                raise ValueError(
+                error = (
                     f"Workflow gate {node.node_id} requires a non-empty framed brief; "
                     "refusing an unreviewable approval gate"
                 )
+                await self._report_activity_state(
+                    "error",
+                    extra_metadata={
+                        "failure_source": "workflow_gate",
+                        "failure_workflow_node_id": node.node_id,
+                        "error": error,
+                    },
+                )
+                raise ValueError(error)
             await self._activate_workflow_gate(
                 node,
                 activation_id,

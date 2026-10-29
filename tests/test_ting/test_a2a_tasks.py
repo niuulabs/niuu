@@ -821,28 +821,62 @@ class TestSendMessage:
         task_id = launched.json()["result"]["task"]["id"]
         campaign = asyncio.run(campaigns.get_campaign_by_slug(task_id))
         assert campaign is not None
-        asyncio.run(
-            campaigns.save_campaign(
-                replace(campaign, status=WorkflowCampaignStatus.BLOCKED)
-            )
-        )
         brief = (
             "Goal: fix the planning gate.\n\n"
             "Scope: expose the framed brief to authorized reviewers.\n\n"
             "Acceptance: approval and requested changes retain the full brief."
         )
-        port.gates = [
-            {
-                "id": "plan-brief-gate:session-123:1",
-                "node_id": "plan-brief-gate",
-                "status": "pending",
-                "label": "Planning feedback gate",
-                "condition": "Review the framed planning brief before drafting.",
-                "instructions": "Approve the framed brief when it captures the intent.",
-                "summary": "Brief ready for review.",
-                "brief": brief,
+        broker = Broker(
+            SkuldSettings.model_validate(
+                {
+                    "session": {"id": campaign.session_id, "workspace_dir": "/tmp"},
+                    "workflow": {"graph": workflow.graph},
+                }
+            )
+        )
+        broker._room_bridge = SimpleNamespace(
+            participants={
+                "brief-framer": SimpleNamespace(
+                    persona="saga-brief-framer", participant_type="ravn"
+                )
             }
-        ]
+        )
+        broker._emit_pipeline_event = AsyncMock()
+        broker._emit_workflow_gate_help_needed_sleipnir_event = AsyncMock()
+        broker._report_activity_state = AsyncMock(return_value=True)
+
+        asyncio.run(
+            broker._observe_room_peer_event(
+                "brief-framer",
+                "outcome",
+                {
+                    "root_correlation_id": "planning-activation",
+                    "metadata": {"event_type": "plan.brief.framed"},
+                    "data": {
+                        "event_type": "plan.brief.framed",
+                        "summary": "Brief ready for review.",
+                        "fields": {"brief": brief},
+                    },
+                },
+            )
+        )
+        gate = broker.list_workflow_gates()[0]
+        projector = WorkflowCampaignProjector(
+            repo=campaigns,
+            volundr_factory=RecordingVolundrFactory([port]),
+            event_bus=AsyncMock(),
+        )
+        asyncio.run(
+            projector.record_help_needed(
+                broker._build_workflow_gate_help_needed_payload(
+                    broker._workflow_gate_states[gate["id"]]
+                ),
+                campaign.owner_id,
+                session_id=campaign.session_id,
+                gate=gate,
+            )
+        )
+        port.gates = broker.list_workflow_gates()
 
         task = _rpc(client, "GetTask", {"id": task_id}).json()["result"]
 
@@ -851,6 +885,61 @@ class TestSendMessage:
         assert gate["brief"] == brief
         assert "Scope: expose the framed brief" in gate["brief"]
         assert "Acceptance: approval and requested changes" in gate["brief"]
+
+    def test_saga_planning_missing_brief_fails_a2a_task(self) -> None:
+        workflow = next(
+            item for item in load_system_workflows() if item.name == "Saga Planning"
+        )
+        client, campaigns, port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+        client.app.state.persona_source = FilesystemPersonaAdapter(
+            persona_dirs=[], include_builtin=True
+        )
+        launched = _rpc(
+            client,
+            "SendMessage",
+            _send_params(str(workflow.id), prompt="Plan the ticket acceptance criteria."),
+        )
+        task_id = launched.json()["result"]["task"]["id"]
+        campaign = asyncio.run(campaigns.get_campaign_by_slug(task_id))
+        assert campaign is not None
+        broker = Broker(
+            SkuldSettings.model_validate(
+                {
+                    "session": {"id": campaign.session_id, "workspace_dir": "/tmp"},
+                    "workflow": {"graph": workflow.graph},
+                }
+            )
+        )
+        broker._report_activity_state = AsyncMock(return_value=True)
+
+        with pytest.raises(ValueError, match="requires a non-empty framed brief"):
+            asyncio.run(
+                broker._maybe_activate_workflow_gate(
+                    {"root_correlation_id": "planning-activation"},
+                    {"event_type": "plan.brief.framed", "fields": {}},
+                )
+            )
+
+        activity_metadata = broker._report_activity_state.await_args.kwargs["extra_metadata"]
+        projector = WorkflowCampaignProjector(
+            repo=campaigns,
+            volundr_factory=RecordingVolundrFactory([port]),
+            event_bus=AsyncMock(),
+        )
+        assert asyncio.run(
+            projector.handle_activity(
+                ActivityEvent(campaign.session_id, "error", activity_metadata, campaign.owner_id),
+                campaign.owner_id,
+            )
+        )
+
+        task = _rpc(client, "GetTask", {"id": task_id}).json()["result"]
+        error = "Workflow gate plan-brief-gate requires a non-empty framed brief"
+        assert task["status"]["state"] == "TASK_STATE_FAILED"
+        assert error in task["metadata"]["error"]
+        assert error in task["status"]["message"]["parts"][0]["text"]
 
     def test_caller_session_name_names_the_session(self) -> None:
         workflow = _make_workflow()

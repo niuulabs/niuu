@@ -2262,6 +2262,7 @@ class TestBroker:
             },
         )
         broker_under_test = Broker(settings=settings)
+        broker_under_test._report_activity_state = AsyncMock(return_value=True)
 
         with pytest.raises(ValueError, match="requires a non-empty framed brief"):
             await broker_under_test._maybe_activate_workflow_gate(
@@ -2270,6 +2271,17 @@ class TestBroker:
             )
 
         assert broker_under_test.list_workflow_gates() == []
+        broker_under_test._report_activity_state.assert_awaited_once_with(
+            "error",
+            extra_metadata={
+                "failure_source": "workflow_gate",
+                "failure_workflow_node_id": "plan-brief-gate",
+                "error": (
+                    "Workflow gate plan-brief-gate requires a non-empty framed brief; "
+                    "refusing an unreviewable approval gate"
+                ),
+            },
+        )
 
     @pytest.mark.asyncio
     async def test_flock_completion_accepts_stage_finisher_persona(self, test_broker):

@@ -213,7 +213,7 @@ class ActivityReportingMixin:
     def _terminal_activity_kind(metadata: dict[str, Any]) -> str:
         if metadata.get("completion_source") == "ravn_flock":
             return "completion"
-        if metadata.get("failure_source") == "ravn_flock":
+        if metadata.get("failure_source") in {"ravn_flock", "workflow_gate"}:
             return "failure"
         return ""
 

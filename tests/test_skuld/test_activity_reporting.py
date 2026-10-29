@@ -184,6 +184,28 @@ class TestActivityStateReporting:
         assert test_broker._flock_completion_reported is True
 
     @pytest.mark.asyncio
+    async def test_workflow_gate_failure_remains_pending_until_acknowledged(self, test_broker):
+        rejected = MagicMock(status_code=500, url="http://volundr/activity")
+        accepted = MagicMock(status_code=204, url="http://volundr/activity")
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=[rejected, accepted])
+        test_broker._http_client = mock_client
+        test_broker._http_client_jwt = None
+        failure = {
+            "failure_source": "workflow_gate",
+            "failure_workflow_node_id": "plan-brief-gate",
+            "error": "Workflow gate requires a non-empty framed brief",
+        }
+
+        assert await test_broker._report_activity_state("error", extra_metadata=failure) is False
+        assert test_broker._pending_terminal_activity is not None
+        assert test_broker._pending_terminal_activity["kind"] == "failure"
+
+        assert await test_broker._retry_pending_terminal_activity() is True
+        assert test_broker._pending_terminal_activity is None
+        assert test_broker._flock_failure_reported is True
+
+    @pytest.mark.asyncio
     async def test_older_terminal_ack_cannot_clear_newer_pending_report(self, test_broker):
         first_started = asyncio.Event()
         release_first = asyncio.Event()
