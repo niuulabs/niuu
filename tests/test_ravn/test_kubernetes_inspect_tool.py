@@ -229,6 +229,33 @@ async def test_workload_not_found_quarantine_survives_the_next_recovery_cycle(tm
 
 
 @pytest.mark.asyncio
+async def test_workload_not_found_quarantine_uses_the_canonical_cluster_context(tmp_path) -> None:
+    apps = _RouteAppsV1({"valkyries": 404})
+    state_path = tmp_path / "route-recovery.json"
+    tool = _route_recovery_tool(tmp_path, apps, state_path)
+    short_name_route = {
+        "action": "workload",
+        "cluster": "ymir",
+        "kind": "deployment",
+        "namespace": "valkyries",
+        "name": "valkyrie-ymir-k8s",
+    }
+
+    await tool.execute(short_name_route)
+    await tool.execute(short_name_route)
+    full_name_result = await tool.execute(
+        {**short_name_route, "cluster": "teleport.niuu.world-ymir"}
+    )
+
+    assert full_name_result.is_error
+    assert "did not reissue quarantined" in full_name_result.content
+    assert apps.calls == [("valkyries", "valkyrie-ymir-k8s")] * 2
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    [record] = state["routes"].values()
+    assert record["route"]["cluster"] == "teleport.niuu.world-ymir"
+
+
+@pytest.mark.asyncio
 async def test_workload_not_found_quarantine_bounds_a_duplicate_registry_batch(tmp_path) -> None:
     state_path = tmp_path / "route-recovery.json"
     apps = _RouteAppsV1({"valkyries": 404})

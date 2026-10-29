@@ -39,6 +39,7 @@ ClientFactory = Callable[[str, str], Awaitable[KubernetesClients]]
 
 
 _ROUTE_RECOVERY_STATE_VERSION = 1
+_IN_CLUSTER_ROUTE_CONTEXT = "(this cluster)"
 
 
 @dataclass
@@ -294,11 +295,21 @@ class KubernetesInspectTool(ToolPort):
         namespace, name = _namespace_name(input)
         return {
             "action": "workload",
-            "cluster": str(input.get("cluster") or "").strip(),
+            "cluster": self._route_cluster_identity(str(input.get("cluster") or "").strip()),
             "kind": str(input.get("kind") or "Deployment").strip().lower(),
             "name": name,
             "namespace": namespace,
         }
+
+    def _route_cluster_identity(self, cluster: str) -> str:
+        """Return the durable identity for a workload route's cluster."""
+        if self._in_cluster or self._injected is not None:
+            if cluster:
+                raise ValueError(
+                    "this resident inspects only its own cluster; cluster must be empty"
+                )
+            return _IN_CLUSTER_ROUTE_CONTEXT
+        return self._resolve_context(cluster)
 
     @staticmethod
     def _route_key(route: dict[str, str]) -> str:
