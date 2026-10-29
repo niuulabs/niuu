@@ -85,6 +85,18 @@ DEFAULT_MAX_REPAIR_ATTEMPTS = 3
 #: survives the suspend/resume of a commissioned (A2A) repair.
 _REPAIR_ATTEMPTS_KEY = "_repair_attempts"
 
+#: Build-input keys that steer one call (resume a task, answer it, reuse an
+#: operation id) rather than describe the requested tool.
+_CONTINUATION_KEYS = frozenset(
+    {
+        "_build_continuation",
+        "_build_operation_id",
+        "continuation_task_id",
+        "continuation_answer",
+        "continuation_metadata",
+    }
+)
+
 ToolRegistrar = Callable[[ToolPort], None]
 InstalledArtifactRecorder = Callable[[ResidentLearningArtifact], Awaitable[None]]
 logger = logging.getLogger(__name__)
@@ -208,7 +220,9 @@ class BuildTool(ToolPort):
             "If it returns status=input_required, either answer from "
             "available evidence or ask the operator. Resume the same durable A2A task with "
             "continuation_task_id and continuation_answer; include continuation_metadata "
-            "when the result requests a gate decision. "
+            "when the result requests a gate decision. A tool has one commissioned "
+            "build at a time: a new build_request for a tool whose build is still "
+            "suspended cancels that build and starts this one. "
             + "The entry point defaults to run(input). Good instruments "
             "ACQUIRE live evidence: tool_code may run CLI commands (subprocess), call HTTP "
             "APIs, and read files — declare that reach honestly in declared_reach, it is "
@@ -1094,7 +1108,77 @@ class BuildTool(ToolPort):
                 "ravn.tool_build.inline_fallback.enabled": False,
             },
         )
+        resumable = await self._supersede_suspended_builds(input)
+        if resumable:
+            return await self._resume_commission(input, task_id=resumable)
         return await self._commission_and_merge(input, signal_context_suffix="")
+
+    async def _supersede_suspended_builds(self, input: dict) -> str:  # noqa: A002
+        """Keep one remote build per tool: end the ones a new request replaces.
+
+        A suspended build deletes its commission record, so nothing stopped a
+        reworded request for the same tool from launching a second workflow
+        beside the first. Regin held 25 suspended builds of one tool, each a
+        Ting campaign still open. The same request resumes its task instead of
+        launching; a changed one cancels the suspended task before its own
+        build starts. Returns the task id to resume, or "".
+        """
+        tool_name = _manifest_name(input)
+        if not tool_name:
+            return ""
+        request = _build_request_of(input)
+        resumable = ""
+        for task_id, pending in self._suspended_builds(tool_name):
+            if not resumable and pending["input"] == request:
+                input_kind = str(pending["continuation"].get("input_kind") or "")
+                if input_kind != "pending":
+                    raise LearnedToolError(
+                        f"this build of {tool_name!r} is already A2A task {task_id}, "
+                        f"which waits for {input_kind} input; answer it with build_tool "
+                        f"continuation_task_id={task_id!r} and continuation_answer "
+                        "instead of requesting it again"
+                    )
+                resumable = task_id
+                continue
+            state = await self._build_backend.cancel(task_id)
+            self._delete_pending_build(task_id)
+            get_observability().event(
+                "ravn.tool_build.continuation.superseded",
+                attributes={
+                    "a2a.task.id": task_id,
+                    "a2a.task.state": state,
+                    "ravn.tool_build.name": tool_name,
+                },
+            )
+        return resumable
+
+    def _suspended_builds(self, tool_name: str) -> list[tuple[str, dict[str, Any]]]:
+        """Suspended builds of *tool_name*, newest first, as (task id, durable state)."""
+        directory = self._artifacts_dir / "pending-builds"
+        try:
+            paths = sorted(
+                directory.glob("*.json"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            return []
+        found: list[tuple[str, dict[str, Any]]] = []
+        for path in paths:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(payload, dict) or payload.get("version") != 1:
+                continue
+            original = payload.get("input")
+            task_id = str(payload.get("task_id") or "")
+            if not task_id or not isinstance(payload.get("continuation"), dict):
+                continue
+            if not isinstance(original, dict) or _manifest_name(original) != tool_name:
+                continue
+            found.append((task_id, payload))
+        return found
 
     def _build_backend_request(self, input: dict, *, signal_context_suffix: str) -> Any:  # noqa: A002
         """Build the ToolBuildRequest for an (initial or repair) commission."""
@@ -1240,18 +1324,7 @@ class BuildTool(ToolPort):
         required: ToolBuildInputRequiredError | ToolBuildPendingError,
     ) -> None:
         """Atomically persist the minimum state needed to resume one build."""
-        original = {
-            key: value
-            for key, value in input.items()
-            if key
-            not in {
-                "_build_continuation",
-                "_build_operation_id",
-                "continuation_task_id",
-                "continuation_answer",
-                "continuation_metadata",
-            }
-        }
+        original = _build_request_of(input)
         payload = {
             "version": 1,
             "task_id": required.task_id,
@@ -1287,7 +1360,9 @@ class BuildTool(ToolPort):
             payload = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError as exc:
             raise LearnedToolError(
-                f"no pending commissioned build exists for task {task_id!r}"
+                f"no pending commissioned build exists for task {task_id!r}: it already "
+                "finished or ended, or a newer request for the same tool superseded it, "
+                "so there is nothing to resume"
             ) from exc
         except (OSError, ValueError) as exc:
             raise LearnedToolError(
@@ -1326,18 +1401,7 @@ class BuildTool(ToolPort):
         manifest = prepared.get("manifest")
         manifest = manifest if isinstance(manifest, dict) else {}
         tool_name = str(manifest.get("name") or "").strip()
-        original = {
-            key: value
-            for key, value in prepared.items()
-            if key
-            not in {
-                "_build_continuation",
-                "_build_operation_id",
-                "continuation_task_id",
-                "continuation_answer",
-                "continuation_metadata",
-            }
-        }
+        original = _build_request_of(prepared)
         existing = None if replace_current else self._pending_commission(tool_name)
         if existing is not None and existing.get("input") != original:
             # The operation id is the A2A messageId, and the peer rejects a
@@ -1888,6 +1952,18 @@ def attach_build_tool(
     )
     registrar(tool, replace=replace)
     return tool
+
+
+def _build_request_of(input: dict) -> dict:  # noqa: A002
+    """The requested tool, without the keys that only steer this one call."""
+    return {key: value for key, value in input.items() if key not in _CONTINUATION_KEYS}
+
+
+def _manifest_name(input: dict) -> str:  # noqa: A002
+    manifest = input.get("manifest")
+    if not isinstance(manifest, dict):
+        return ""
+    return str(manifest.get("name") or "").strip()
 
 
 def _resident_learning_artifact(

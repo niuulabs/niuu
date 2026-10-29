@@ -137,3 +137,17 @@ class ToolBuildBackend(ABC):
         Raises :class:`ToolBuildError` on failure — there is no silent
         fallback to a stub tool.
         """
+
+    async def cancel(self, task_id: str) -> str:
+        """End the suspended remote build *task_id*; return its final task state.
+
+        build_tool calls this when a newer request for the same tool replaces
+        a build that suspended (:class:`ToolBuildPendingError` or
+        :class:`ToolBuildInputRequiredError`). A task that already ended is
+        left as it is and its state returned. Only a backend that suspends
+        builds has any to cancel.
+        """
+        raise ToolBuildError(
+            f"the {self.name} build backend suspends no builds, so it has no task "
+            f"{task_id!r} to cancel"
+        )

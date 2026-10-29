@@ -698,6 +698,134 @@ async def test_commissioned_build_rejects_unknown_continuation_task(tmp_path) ->
     assert registered == []
 
 
+class _SuspendingBackend:
+    """Suspends every fresh build as its own A2A task; records cancellations."""
+
+    name = "a2a"
+
+    def __init__(self, *, input_kind: str = "pending") -> None:
+        self.launched: list[str] = []
+        self.resumed: list[str] = []
+        self.cancelled: list[str] = []
+        self._input_kind = input_kind
+
+    async def build(self, request: Any) -> ToolBuildResult:
+        if request.continuation:
+            self.resumed.append(request.continuation["task_id"])
+            return ToolBuildResult(
+                manifest=_manifest(),
+                tool_code=_ECHO_TOOL,
+                test_code=_ECHO_TEST,
+                requirements=[],
+            )
+        task_id = f"task-{len(self.launched) + 1}"
+        self.launched.append(task_id)
+        continuation = {"task_id": task_id, "input_kind": self._input_kind}
+        if self._input_kind == "pending":
+            raise ToolBuildPendingError(
+                task_id=task_id, push_registered=True, continuation=continuation
+            )
+        raise ToolBuildInputRequiredError(
+            task_id=task_id,
+            input_kind=self._input_kind,
+            prompt="Which namespace?",
+            continuation=continuation,
+        )
+
+    async def cancel(self, task_id: str) -> str:
+        self.cancelled.append(task_id)
+        return "TASK_STATE_CANCELED"
+
+
+def _pending_builds(tmp_path: Path) -> list[Path]:
+    return list((tmp_path / "arts" / "pending-builds").glob("*.json"))
+
+
+async def test_a_reworded_request_cancels_the_suspended_build_it_replaces(tmp_path) -> None:
+    """Regin reworded its request for one tool every half hour while each
+    earlier build sat suspended, leaving 25 open Ting campaigns for it."""
+    backend = _SuspendingBackend()
+    tool, _ = _tool(tmp_path, build_backend=backend)
+
+    await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+    second = await tool.execute(
+        {"manifest": _manifest(), "build_request": "build an echo tool, in place"}
+    )
+
+    assert json.loads(second.content)["task_id"] == "task-2"
+    assert backend.launched == ["task-1", "task-2"]
+    assert backend.cancelled == ["task-1"]
+    assert len(_pending_builds(tmp_path)) == 1
+
+    stale = await tool.execute({"continuation_task_id": "task-1"})
+    assert stale.is_error is True
+    assert "superseded" in stale.content
+
+
+async def test_the_same_request_resumes_its_suspended_build(tmp_path) -> None:
+    backend = _SuspendingBackend()
+    tool, registered = _tool(tmp_path, build_backend=backend)
+    request = {"manifest": _manifest(), "build_request": "build an echo tool"}
+
+    await tool.execute(dict(request))
+    again = await tool.execute(dict(request))
+
+    assert again.is_error is False
+    assert backend.launched == ["task-1"]
+    assert backend.resumed == ["task-1"]
+    assert backend.cancelled == []
+    assert len(registered) == 1
+    assert _pending_builds(tmp_path) == []
+
+
+async def test_the_same_request_while_its_build_awaits_an_answer_points_at_it(tmp_path) -> None:
+    backend = _SuspendingBackend(input_kind="question")
+    tool, _ = _tool(tmp_path, build_backend=backend)
+    request = {"manifest": _manifest(), "build_request": "build an echo tool"}
+
+    await tool.execute(dict(request))
+    again = await tool.execute(dict(request))
+
+    assert again.is_error is True
+    assert "continuation_task_id='task-1'" in again.content
+    assert backend.launched == ["task-1"]
+    assert backend.cancelled == []
+    assert len(_pending_builds(tmp_path)) == 1
+
+
+async def test_a_suspended_build_of_another_tool_is_left_alone(tmp_path) -> None:
+    backend = _SuspendingBackend()
+    tool, _ = _tool(tmp_path, build_backend=backend)
+
+    await tool.execute({"manifest": _manifest("other_tool"), "build_request": "build it"})
+    await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+
+    assert backend.launched == ["task-1", "task-2"]
+    assert backend.cancelled == []
+    assert len(_pending_builds(tmp_path)) == 2
+
+
+async def test_a_failed_cancel_launches_no_second_build(tmp_path) -> None:
+    from ravn.ports.tool_build_backend import ToolBuildError
+
+    class _Unreachable(_SuspendingBackend):
+        async def cancel(self, task_id: str) -> str:
+            raise ToolBuildError("A2A GetTask returned HTTP 503")
+
+    backend = _Unreachable()
+    tool, _ = _tool(tmp_path, build_backend=backend)
+
+    await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+    second = await tool.execute(
+        {"manifest": _manifest(), "build_request": "build an echo tool, in place"}
+    )
+
+    assert second.is_error is True
+    assert "HTTP 503" in second.content
+    assert backend.launched == ["task-1"]
+    assert len(_pending_builds(tmp_path)) == 1
+
+
 # ---------------------------------------------------------------------------
 # Identical rebuilds and capability identity, end to end through execute()
 # ---------------------------------------------------------------------------
