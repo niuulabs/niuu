@@ -24,3 +24,19 @@ def test_sanitize_failure_reason_preserves_complete_actionable_diagnostics() -> 
     reason = "x" * 1_001
 
     assert sanitize_failure_reason(reason) == reason
+
+
+def test_sanitize_failure_reason_redacts_escaped_quoted_credential_values() -> None:
+    escaped_json_secret = r"safe\\\"json-leaked-tail"
+    escaped_python_secret = r"safe\\\'python-leaked-tail"
+
+    reason = sanitize_failure_reason(
+        f'{{"client_secret": "{escaped_json_secret}"}} '
+        f"{{'client_secret': '{escaped_python_secret}'}}"
+    )
+
+    assert escaped_json_secret not in reason
+    assert escaped_python_secret not in reason
+    assert "json-leaked-tail" not in reason
+    assert "python-leaked-tail" not in reason
+    assert reason == "{\"client_secret\":[REDACTED]} {'client_secret':[REDACTED]}"

@@ -1795,7 +1795,7 @@ class TestBroker:
         test_broker._finish_trace_span = AsyncMock()
         test_broker._is_room_only_workflow_session = MagicMock(return_value=True)
 
-        raw_error = 'Repository access failed: {"client_secret": "session-client-secret"}'
+        raw_error = r'Repository access failed: {"client_secret": "safe\\\"session-leaked-tail"}'
         frame = {"data": {"error": raw_error}}
         await test_broker._observe_room_peer_event("flock-framer", "error", frame)
         await test_broker._observe_room_peer_event("flock-framer", "error", frame)
@@ -1810,7 +1810,9 @@ class TestBroker:
                 "error": 'Repository access failed: {"client_secret":[REDACTED]}',
             },
         )
-        assert raw_error not in str(test_broker._report_activity_state.await_args)
+        reported = str(test_broker._report_activity_state.await_args)
+        assert raw_error not in reported
+        assert "session-leaked-tail" not in reported
 
     @pytest.mark.asyncio
     async def test_peer_error_failure_names_the_failing_workflow_node(self, test_broker):
