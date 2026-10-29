@@ -2252,7 +2252,10 @@ class TestGetTask:
                         "failure_workflow_node_id": "planning-analysis",
                         "failure_task_id": "event_planning_analysis_f172f8bda59428bc",
                         "failure_reason_supplied": True,
-                        "error": "Repository access denied: client_secret=planning-secret-token",
+                        "error": (
+                            "Repository access denied: "
+                            "{'client_secret': 'planning-secret-token'}"
+                        ),
                     },
                     campaign.owner_id,
                 ),
@@ -2268,7 +2271,7 @@ class TestGetTask:
         assert task["status"]["state"] == "TASK_STATE_FAILED"
         assert "planning-analysis" in task["status"]["message"]["parts"][0]["text"]
         assert "planning-secret-token" not in authorized.text
-        assert "client_secret=[REDACTED]" in authorized.text
+        assert "'client_secret':[REDACTED]" in authorized.text
         assert diagnostic == {
             "reference": f"a2a-task:{campaign.slug}:failure",
             "reasonSupplied": True,

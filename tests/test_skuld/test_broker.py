@@ -1795,7 +1795,7 @@ class TestBroker:
         test_broker._finish_trace_span = AsyncMock()
         test_broker._is_room_only_workflow_session = MagicMock(return_value=True)
 
-        raw_error = "Repository access failed: client_secret=session-client-secret"
+        raw_error = 'Repository access failed: {"client_secret": "session-client-secret"}'
         frame = {"data": {"error": raw_error}}
         await test_broker._observe_room_peer_event("flock-framer", "error", frame)
         await test_broker._observe_room_peer_event("flock-framer", "error", frame)
@@ -1807,7 +1807,7 @@ class TestBroker:
                 "failure_peer_id": "flock-framer",
                 "failure_persona": "specification-framer",
                 "failure_reason_supplied": True,
-                "error": "Repository access failed: client_secret=[REDACTED]",
+                "error": 'Repository access failed: {"client_secret":[REDACTED]}',
             },
         )
         assert raw_error not in str(test_broker._report_activity_state.await_args)
