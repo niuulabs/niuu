@@ -9,6 +9,8 @@ from ravn.adapters.tools.kubernetes import KubernetesClients, KubernetesInspectT
 from ravn.cap_telemetry import cap_hit_counts
 from ravn.cli.commands import _filter_tools, _groups_for_persona
 from ravn.config import Settings
+from ravn.domain.models import ToolCall
+from ravn.registry import ToolRegistry
 
 
 class RawLogResponse:
@@ -224,6 +226,37 @@ async def test_workload_not_found_quarantine_survives_the_next_recovery_cycle(tm
 
     assert suppressed.is_error and "did not reissue quarantined" in suppressed.content
     assert apps.calls == [("valkyries", "valkyrie-ymir-k8s")] * 2
+
+
+@pytest.mark.asyncio
+async def test_workload_not_found_quarantine_bounds_a_duplicate_registry_batch(tmp_path) -> None:
+    state_path = tmp_path / "route-recovery.json"
+    apps = _RouteAppsV1({"valkyries": 404})
+    tool = _route_recovery_tool(tmp_path, apps, state_path)
+    registry = ToolRegistry()
+    registry.register(tool)
+    stale_route = {
+        "action": "workload",
+        "cluster": "ymir",
+        "kind": "deployment",
+        "namespace": "valkyries",
+        "name": "valkyrie-ymir-k8s",
+    }
+
+    results = await registry.dispatch_batch(
+        [
+            ToolCall(id=f"call-{index}", name="kubernetes_inspect", input=stale_route)
+            for index in range(3)
+        ]
+    )
+
+    assert [result.is_error for result in results] == [True, True, True]
+    assert "quarantined after 2 HTTP 404" in results[1].content
+    assert "did not reissue quarantined" in results[2].content
+    assert apps.calls == [("valkyries", "valkyrie-ymir-k8s")] * 2
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    [record] = state["routes"].values()
+    assert record["not_found_count"] == 2
 
 
 @pytest.mark.asyncio

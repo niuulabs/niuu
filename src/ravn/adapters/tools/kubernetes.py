@@ -222,7 +222,10 @@ class KubernetesInspectTool(ToolPort):
 
     @property
     def parallelisable(self) -> bool:
-        return True
+        # Route-recovery evidence is updated around an awaited API read. Batch
+        # dispatch must preserve those updates so duplicate routes cannot pass
+        # the quarantine check before an earlier 404 is recorded.
+        return False
 
     async def execute(self, input: dict) -> ToolResult:  # noqa: A002
         action = str(input.get("action") or "").strip()
