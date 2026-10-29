@@ -38,6 +38,56 @@ class KubernetesClients:
 ClientFactory = Callable[[str, str], Awaitable[KubernetesClients]]
 
 
+_ROUTE_RECOVERY_STATE_VERSION = 1
+
+
+@dataclass
+class _RouteRecoveryState:
+    """Durable deterministic-failure evidence for workload inspection routes."""
+
+    path: Path | None
+    routes: dict[str, dict[str, Any]]
+
+    @classmethod
+    def load(cls, path: Path | str | None) -> _RouteRecoveryState:
+        if path is None:
+            return cls(path=None, routes={})
+        state_path = Path(path)
+        if not state_path.exists():
+            return cls(path=state_path, routes={})
+        try:
+            raw = json.loads(state_path.read_text(encoding="utf-8"))
+            if raw.get("version") != _ROUTE_RECOVERY_STATE_VERSION:
+                raise ValueError("unknown state version")
+            routes = raw.get("routes")
+            if not isinstance(routes, dict) or any(
+                not isinstance(key, str) or not isinstance(value, dict)
+                for key, value in routes.items()
+            ):
+                raise ValueError("routes must be an object")
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"kubernetes route recovery state {state_path} is unreadable ({exc}); "
+                "fix it or delete it to explicitly reset quarantined routes"
+            ) from exc
+        return cls(path=state_path, routes=routes)
+
+    def save(self) -> None:
+        if self.path is None:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(f"{self.path.suffix}.tmp")
+        temporary.write_text(
+            json.dumps(
+                {"version": _ROUTE_RECOVERY_STATE_VERSION, "routes": self.routes},
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        temporary.replace(self.path)
+
+
 class KubernetesInspectTool(ToolPort):
     """Inspect Kubernetes objects with the resident service account.
 
@@ -63,6 +113,8 @@ class KubernetesInspectTool(ToolPort):
         max_log_lines: int = 120,
         max_configmap_value_chars: int = 4000,
         max_list_items: int = 100,
+        not_found_quarantine_threshold: int = 3,
+        route_recovery_state_path: Path | str | None = None,
         client_factory: ClientFactory | None = None,
     ) -> None:
         self._in_cluster = in_cluster
@@ -76,6 +128,10 @@ class KubernetesInspectTool(ToolPort):
         self._max_log_lines = max(1, max_log_lines)
         self._max_configmap_value_chars = max(1, max_configmap_value_chars)
         self._max_list_items = max(1, max_list_items)
+        if not_found_quarantine_threshold < 1:
+            raise ValueError("not_found_quarantine_threshold must be at least 1")
+        self._not_found_quarantine_threshold = not_found_quarantine_threshold
+        self._route_recovery = _RouteRecoveryState.load(route_recovery_state_path)
         self._client_factory = client_factory or _clients_for_context
 
     @property
@@ -149,6 +205,13 @@ class KubernetesInspectTool(ToolPort):
                     "type": "integer",
                     "description": "Maximum pod log lines to return.",
                 },
+                "reset_not_found": {
+                    "type": "boolean",
+                    "description": (
+                        "workload only: explicitly clear this exact route's HTTP 404 "
+                        "quarantine before inspecting it again."
+                    ),
+                },
             },
             "required": ["action"],
         }
@@ -163,7 +226,14 @@ class KubernetesInspectTool(ToolPort):
 
     async def execute(self, input: dict) -> ToolResult:  # noqa: A002
         action = str(input.get("action") or "").strip()
+        route: dict[str, str] | None = None
         try:
+            if action == "workload":
+                route = self._workload_route(input)
+            if route is not None and bool(input.get("reset_not_found")):
+                self._reset_route(route)
+            if route is not None and self._route_is_quarantined(route):
+                return self._quarantined_result(route)
             if action == "clusters":
                 return ToolResult(
                     tool_call_id="",
@@ -189,12 +259,90 @@ class KubernetesInspectTool(ToolPort):
                 if clients.aclose is not None:
                     await clients.aclose()
         except Exception as exc:  # noqa: BLE001
+            if route is not None and _is_http_not_found(exc):
+                count = self._record_not_found(route)
+                if count >= self._not_found_quarantine_threshold:
+                    record_cap_hit(
+                        "tools.kubernetes.not_found_quarantine_threshold",
+                        "kubernetes_inspect quarantined workload route "
+                        f"{_route_description(route)} after {count} HTTP 404 responses; "
+                        "use a verified replacement route or reset_not_found=true to retry it",
+                    )
+                    return ToolResult(
+                        tool_call_id="",
+                        content=(
+                            f"kubernetes_inspect failed: {exc}; workload route quarantined "
+                            f"after {count} HTTP 404 responses. Use a verified replacement "
+                            "route or reset_not_found=true to retry this exact route."
+                        ),
+                        is_error=True,
+                    )
             return ToolResult(
                 tool_call_id="",
                 content=f"kubernetes_inspect failed: {exc}",
                 is_error=True,
             )
+        if route is not None:
+            self._clear_not_found(route)
         return ToolResult(tool_call_id="", content=json.dumps(payload, indent=2, sort_keys=True))
+
+    def _workload_route(self, input: dict) -> dict[str, str]:  # noqa: A002
+        """Return the normalized route whose workload existence is being checked."""
+        namespace, name = _namespace_name(input)
+        return {
+            "action": "workload",
+            "cluster": str(input.get("cluster") or "").strip(),
+            "kind": str(input.get("kind") or "Deployment").strip().lower(),
+            "name": name,
+            "namespace": namespace,
+        }
+
+    @staticmethod
+    def _route_key(route: dict[str, str]) -> str:
+        return json.dumps(route, sort_keys=True, separators=(",", ":"))
+
+    def _route_is_quarantined(self, route: dict[str, str]) -> bool:
+        record = self._route_recovery.routes.get(self._route_key(route), {})
+        return int(record.get("not_found_count", 0)) >= self._not_found_quarantine_threshold
+
+    def _record_not_found(self, route: dict[str, str]) -> int:
+        key = self._route_key(route)
+        previous = self._route_recovery.routes.get(key, {})
+        count = int(previous.get("not_found_count", 0)) + 1
+        self._route_recovery.routes[key] = {
+            "not_found_count": count,
+            "reason": "HTTP 404 NotFound for this exact workload route",
+            "route": route,
+        }
+        self._route_recovery.save()
+        return count
+
+    def _clear_not_found(self, route: dict[str, str]) -> None:
+        if self._route_recovery.routes.pop(self._route_key(route), None) is not None:
+            self._route_recovery.save()
+
+    def _reset_route(self, route: dict[str, str]) -> None:
+        self._clear_not_found(route)
+
+    def _quarantined_result(self, route: dict[str, str]) -> ToolResult:
+        record = self._route_recovery.routes[self._route_key(route)]
+        count = int(record["not_found_count"])
+        record_cap_hit(
+            "tools.kubernetes.not_found_quarantine_threshold",
+            "kubernetes_inspect suppressed quarantined workload route "
+            f"{_route_description(route)} after {count} HTTP 404 responses; use a verified "
+            "replacement route or reset_not_found=true to retry it",
+        )
+        return ToolResult(
+            tool_call_id="",
+            content=(
+                "kubernetes_inspect did not reissue quarantined workload route "
+                f"{_route_description(route)}: {record['reason']} ({count} responses). "
+                "Use a verified replacement route or reset_not_found=true to retry "
+                "this exact route."
+            ),
+            is_error=True,
+        )
 
     def _handlers(self) -> dict[str, Callable[[KubernetesClients, dict], Awaitable[dict]]]:
         return {
@@ -440,6 +588,19 @@ def _workload_reader(apps_v1: Any, batch_v1: Any, kind: str) -> Any:
     if normalized == "job":
         return batch_v1.read_namespaced_job
     raise ValueError(f"unsupported workload kind: {kind}")
+
+
+def _is_http_not_found(exc: Exception) -> bool:
+    """Recognize only the Kubernetes client's explicit HTTP 404 status."""
+    return getattr(exc, "status", None) == 404
+
+
+def _route_description(route: dict[str, str]) -> str:
+    cluster = route["cluster"] or "(this cluster)"
+    return (
+        f"{route['kind']} {route['namespace']}/{route['name']} "
+        f"on cluster {cluster}"
+    )
 
 
 async def _maybe_await(value: Any) -> Any:

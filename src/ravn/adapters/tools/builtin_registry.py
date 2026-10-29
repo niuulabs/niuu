@@ -342,6 +342,8 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "max_log_lines": s.tools.kubernetes.max_log_lines,
             "max_configmap_value_chars": s.tools.kubernetes.max_configmap_value_chars,
             "max_list_items": s.tools.kubernetes.max_list_items,
+            "not_found_quarantine_threshold": s.tools.kubernetes.not_found_quarantine_threshold,
+            "route_recovery_state_path": _ctx.get("kubernetes_route_recovery_state_path"),
         },
     ),
     # =========================================================================

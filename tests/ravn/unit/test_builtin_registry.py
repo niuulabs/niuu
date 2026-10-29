@@ -149,6 +149,8 @@ class TestRegistryStructure:
             "max_log_lines": 80,
             "max_configmap_value_chars": 900,
             "max_list_items": 100,
+            "not_found_quarantine_threshold": 3,
+            "route_recovery_state_path": None,
         }
 
     def test_kubernetes_tool_is_enabled_explicitly_not_by_environment_type(self) -> None:

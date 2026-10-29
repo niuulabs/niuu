@@ -93,6 +93,7 @@ in the output and counted. That includes excerpts the prompt announces
 | `tools.bash.max_output_bytes` | 100 KiB | Prompt budget | Kept; output carries a notice | Error log + counted |
 | `tools.web.fetch.content_budget` | 20000 | Prompt budget | Kept; output carries a notice | Error log + counted |
 | `tools.kubernetes.max_configmap_value_chars` / `max_list_items` | 4000 / 100 | Prompt budget | Kept; `truncated_keys` / `truncated` in the result | Error log + counted |
+| `tools.kubernetes.not_found_quarantine_threshold` | 3 | A repeated HTTP 404 is deterministic evidence that an unchanged workload route cannot succeed | Kept; the exact route is persisted in `.ravn/kubernetes_route_recovery.json` and is refused after the threshold. A successful replacement route is independent; retry the old route only with `reset_not_found=true` (or by deleting the state file as an explicit full reset). | Error log + `ravn.cap.hits` counter |
 | `gateway.platform.a2a_result_max_chars` | 12000 | Prompt budget | Kept; the hard-coded 16-item list limit is removed (the character budget is the bound) | Marker + error log + counted |
 | `mimir.source_trigger.max_content_chars` | 120000 | Synthesis prompt budget | Kept; context carries a notice | Error log + counted (synthesis worked from part of the source) |
 | Thread-enricher page excerpt | was hard-coded 500 | Classifier model's window | **Removed**: the whole page is classified; the head alone misread pages by their preamble | Context errors raise |

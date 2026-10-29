@@ -348,6 +348,16 @@ class KubernetesToolsConfig(BaseModel):
         ge=1,
         description="Most objects a kubernetes_inspect listing (pods) returns.",
     )
+    not_found_quarantine_threshold: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Identical workload-route HTTP 404 responses required before the resident "
+            "quarantines that route. This bounds repeat requests for a deterministic "
+            "missing workload; raise it only when the deployment process can make an "
+            "unchanged route appear between inspections."
+        ),
+    )
 
 
 class BashToolConfig(BaseModel):

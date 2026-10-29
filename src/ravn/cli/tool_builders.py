@@ -116,6 +116,9 @@ def _build_tools(
         "permission": permission,
         "a2a_activity_emitter": a2a_activity_emitter,
         "a2a_activity_finder": a2a_activity_finder,
+        "kubernetes_route_recovery_state_path": (
+            _resident_ravn_state_dir(workspace, settings) / "kubernetes_route_recovery.json"
+        ),
     }
     runtime_ctx["capability_tools_provider"] = lambda: runtime_ctx.get("capability_tools", [])
 

@@ -133,6 +133,54 @@ class FakeBatchV1:
     pass
 
 
+class _KubernetesApiError(Exception):
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
+
+
+class _RouteAppsV1:
+    def __init__(self, failures: dict[str, int] | None = None) -> None:
+        self.failures = failures or {}
+        self.calls: list[tuple[str, str]] = []
+
+    async def read_namespaced_deployment(self, name: str, namespace: str):
+        self.calls.append((namespace, name))
+        status = self.failures.get(namespace)
+        if status is not None:
+            raise _KubernetesApiError(
+                status,
+                f"deployments.apps {name!r} not found" if status == 404 else f"HTTP {status}",
+            )
+        return SimpleNamespace(
+            metadata=SimpleNamespace(name=name, namespace=namespace, uid="deploy-uid"),
+            spec=SimpleNamespace(replicas=1),
+            status=SimpleNamespace(
+                replicas=1,
+                ready_replicas=1,
+                available_replicas=1,
+                unavailable_replicas=0,
+                conditions=[],
+            ),
+        )
+
+
+def _route_recovery_tool(tmp_path, apps: _RouteAppsV1, state_path) -> KubernetesInspectTool:
+    kubeconfig = tmp_path / "kubeconfig.yaml"
+    kubeconfig.write_text(_TELEPORT_KUBECONFIG, encoding="utf-8")
+
+    async def factory(_path: str, _context: str) -> KubernetesClients:
+        return KubernetesClients(core_v1=FakeCoreV1(), apps_v1=apps, batch_v1=FakeBatchV1())
+
+    return KubernetesInspectTool(
+        in_cluster=False,
+        kubeconfig_path=str(kubeconfig),
+        client_factory=factory,
+        not_found_quarantine_threshold=2,
+        route_recovery_state_path=state_path,
+    )
+
+
 @pytest.mark.asyncio
 async def test_kubernetes_inspect_pod_returns_read_only_status() -> None:
     tool = KubernetesInspectTool(core_v1=FakeCoreV1(), apps_v1=FakeAppsV1(), batch_v1=FakeBatchV1())
@@ -147,6 +195,90 @@ async def test_kubernetes_inspect_pod_returns_read_only_status() -> None:
     assert payload["pod"]["containers"][0]["state"]["kind"] == "waiting"
     assert payload["pod"]["containers"][0]["state"]["reason"] == "CrashLoopBackOff"
     assert payload["pod"]["metadata"]["owner_references"][0]["kind"] == "ReplicaSet"
+
+
+@pytest.mark.asyncio
+async def test_workload_not_found_quarantine_survives_the_next_recovery_cycle(tmp_path) -> None:
+    state_path = tmp_path / "route-recovery.json"
+    apps = _RouteAppsV1({"valkyries": 404})
+    stale_route = {
+        "action": "workload",
+        "cluster": "ymir",
+        "kind": "deployment",
+        "namespace": "valkyries",
+        "name": "valkyrie-ymir-k8s",
+    }
+    tool = _route_recovery_tool(tmp_path, apps, state_path)
+
+    first = await tool.execute(stale_route)
+    threshold = await tool.execute(stale_route)
+
+    assert first.is_error and "not found" in first.content
+    assert threshold.is_error and "quarantined after 2 HTTP 404" in threshold.content
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    [record] = state["routes"].values()
+    assert record["reason"] == "HTTP 404 NotFound for this exact workload route"
+
+    next_cycle = _route_recovery_tool(tmp_path, apps, state_path)
+    suppressed = await next_cycle.execute(stale_route)
+
+    assert suppressed.is_error and "did not reissue quarantined" in suppressed.content
+    assert apps.calls == [("valkyries", "valkyrie-ymir-k8s")] * 2
+
+
+@pytest.mark.asyncio
+async def test_workload_not_found_quarantine_allows_replacement_or_explicit_reset(tmp_path) -> None:
+    apps = _RouteAppsV1({"valkyries": 404})
+    tool = _route_recovery_tool(tmp_path, apps, tmp_path / "route-recovery.json")
+    stale_route = {
+        "action": "workload",
+        "cluster": "ymir",
+        "kind": "deployment",
+        "namespace": "valkyries",
+        "name": "valkyrie-ymir-k8s",
+    }
+
+    await tool.execute(stale_route)
+    await tool.execute(stale_route)
+    replacement = await tool.execute({**stale_route, "namespace": "nats"})
+    reset = await tool.execute({**stale_route, "reset_not_found": True})
+
+    assert not replacement.is_error
+    assert json.loads(replacement.content)["namespace"] == "nats"
+    assert reset.is_error and "quarantined" not in reset.content
+    assert apps.calls == [
+        ("valkyries", "valkyrie-ymir-k8s"),
+        ("valkyries", "valkyrie-ymir-k8s"),
+        ("nats", "valkyrie-ymir-k8s"),
+        ("valkyries", "valkyrie-ymir-k8s"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 500])
+async def test_workload_non_not_found_errors_do_not_enter_the_quarantine(
+    tmp_path, status: int
+) -> None:
+    apps = _RouteAppsV1({"valkyries": status})
+    tool = KubernetesInspectTool(
+        core_v1=FakeCoreV1(),
+        apps_v1=apps,
+        batch_v1=FakeBatchV1(),
+        not_found_quarantine_threshold=2,
+        route_recovery_state_path=tmp_path / "route-recovery.json",
+    )
+    route = {
+        "action": "workload",
+        "namespace": "valkyries",
+        "name": "valkyrie-ymir-k8s",
+    }
+
+    first = await tool.execute(route)
+    second = await tool.execute(route)
+
+    assert first.is_error and second.is_error
+    assert "quarantined" not in first.content + second.content
+    assert apps.calls == [("valkyries", "valkyrie-ymir-k8s")] * 2
 
 
 @pytest.mark.asyncio
