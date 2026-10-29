@@ -24,6 +24,7 @@ from ravn.ports.tool_build_backend import (
     ToolBuildInputRequiredError,
     ToolBuildPendingError,
     ToolBuildTaskEndedError,
+    ToolBuildTaskStatus,
 )
 from ravn.skills.management import SkillLifecycle
 from ravn.tool_observability import publish_learned_tool_inventory
@@ -62,6 +63,7 @@ from ravn.valkyrie_evolution.tool_curation import (
     capability_matched_marker,
     find_installed_capability,
     lineage_problems,
+    reactivate_rolled_back_tool,
     restore_learned_tool,
     retire_superseded_predecessor,
 )
@@ -625,6 +627,15 @@ class BuildTool(ToolPort):
             )
             if duplicate is not None:
                 self._complete_commission(input, artifact=duplicate)
+                reactivated = (
+                    await reactivate_rolled_back_tool(
+                        skills=self._skill_manager,
+                        name=duplicate.manifest.name,
+                        why="build_tool produced its installed code again",
+                    )
+                    if self._skill_manager is not None
+                    else None
+                )
                 telemetry.event(
                     "ravn.tool_build.duplicate.skipped",
                     attributes={
@@ -637,7 +648,10 @@ class BuildTool(ToolPort):
                     "ravn.tool_build.duplicate.operations",
                     attributes={"ravn.tool_build.duplicate.name": duplicate.manifest.name},
                 )
-                return ToolResult(tool_call_id="", content=_duplicate_summary(artifact, duplicate))
+                return ToolResult(
+                    tool_call_id="",
+                    content=_duplicate_summary(artifact, duplicate, reactivated=reactivated),
+                )
 
             # A build this resident's backend would refuse to load is rejected
             # before it is verified or installed: installed, it would replace the
@@ -817,7 +831,7 @@ class BuildTool(ToolPort):
                     attributes={"ravn.tool_build.name": artifact.manifest.name},
                 ) as canary_span:
                     canary = await learned_tool.execute(canary_input)
-                    canary_outcome = "error" if canary.is_error else "passed"
+                    canary_outcome = "error" if _canary_failed(canary) else "passed"
                     canary_span.set_attribute("ravn.tool_build.canary.outcome", canary_outcome)
                     telemetry.event(
                         "ravn.tool_build.canary.finished",
@@ -828,7 +842,7 @@ class BuildTool(ToolPort):
                         "ravn.tool_build.canary.operations",
                         attributes={"ravn.tool_build.canary.outcome": canary_outcome},
                     )
-                if canary.is_error:
+                if canary_outcome == "error":
                     telemetry.count(
                         "ravn_learned_tool_installs_total",
                         attributes={"outcome": "canary_failed"},
@@ -1108,27 +1122,65 @@ class BuildTool(ToolPort):
                 "ravn.tool_build.inline_fallback.enabled": False,
             },
         )
-        resumable = await self._supersede_suspended_builds(input)
+        self._require_loadable_reach(input)
+        resumable, finished = await self._supersede_suspended_builds(input)
         if resumable:
-            return await self._resume_commission(input, task_id=resumable)
+            return await self._resume_commission(input, task_id=resumable, finished=finished)
         return await self._commission_and_merge(input, signal_context_suffix="")
 
-    async def _supersede_suspended_builds(self, input: dict) -> str:  # noqa: A002
+    def _require_loadable_reach(self, input: dict) -> None:  # noqa: A002
+        """Refuse a build whose declared reach this resident could never load.
+
+        The backend's refusal used to arrive only after the whole remote
+        workflow had built, reviewed and published the tool, so a resident
+        paid for a full build to learn its reach was unenforceable, reworded
+        the request and paid again.
+        """
+        manifest = input.get("manifest")
+        runner = self._runner_for_backend()
+        if not isinstance(manifest, dict) or runner is None:
+            return
+        refusal = backend_load_refusal(
+            manifest=LearnedToolManifest.from_dict(manifest),
+            tool_code="",
+            runner=runner,
+        )
+        if refusal is not None:
+            raise LearnedToolError(
+                "nothing was commissioned: this resident's execution backend would refuse "
+                f"to load a tool with this declared reach, so the build could never be "
+                f"installed: {refusal}"
+            )
+
+    async def _supersede_suspended_builds(self, input: dict) -> tuple[str, bool]:  # noqa: A002
         """Keep one remote build per tool: end the ones a new request replaces.
 
         A suspended build deletes its commission record, so nothing stopped a
         reworded request for the same tool from launching a second workflow
         beside the first. Regin held 25 suspended builds of one tool, each a
-        Ting campaign still open. The same request resumes its task instead of
-        launching; a changed one cancels the suspended task before its own
-        build starts. Returns the task id to resume, or "".
+        Ting campaign still open. A build that already finished is collected
+        before anything else is commissioned (valhalla's two finished builds
+        sat uncollected while it commissioned a third); one that ended is
+        dropped. The same request resumes its running task instead of
+        launching; a changed one cancels it before its own build starts.
+
+        Returns ``(task id to resume, whether that task finished)``, or
+        ``("", False)`` to commission.
         """
         tool_name = _manifest_name(input)
         if not tool_name:
-            return ""
+            return "", False
         request = _build_request_of(input)
         resumable = ""
+        finished = ""
         for task_id, pending in self._suspended_builds(tool_name):
+            status = await self._build_backend.task_status(task_id)
+            if status is ToolBuildTaskStatus.COMPLETED:
+                finished = finished or task_id
+                continue
+            if status is ToolBuildTaskStatus.ENDED:
+                self._delete_pending_build(task_id)
+                continue
             if not resumable and pending["input"] == request:
                 input_kind = str(pending["continuation"].get("input_kind") or "")
                 if input_kind != "pending":
@@ -1150,7 +1202,9 @@ class BuildTool(ToolPort):
                     "ravn.tool_build.name": tool_name,
                 },
             )
-        return resumable
+        if finished:
+            return finished, True
+        return resumable, False
 
     def _suspended_builds(self, tool_name: str) -> list[tuple[str, dict[str, Any]]]:
         """Suspended builds of *tool_name*, newest first, as (task id, durable state)."""
@@ -1248,8 +1302,18 @@ class BuildTool(ToolPort):
         merged["provenance"] = provenance
         return merged
 
-    async def _resume_commission(self, input: dict, *, task_id: str) -> dict:  # noqa: A002
-        """Resume the exact commissioned A2A task suspended on remote input."""
+    async def _resume_commission(
+        self,
+        input: dict,  # noqa: A002
+        *,
+        task_id: str,
+        finished: bool = False,
+    ) -> dict:
+        """Resume the exact commissioned A2A task suspended on remote input.
+
+        *finished* collects a task that already completed: whatever input it
+        was suspended on was settled remotely, so nothing is answered.
+        """
         if self._build_backend is None:
             raise LearnedToolError(
                 "continuation_task_id was given but no tool build backend is configured"
@@ -1263,6 +1327,8 @@ class BuildTool(ToolPort):
             raise LearnedToolError(f"pending build state does not match task {task_id!r}")
 
         continuation = dict(continuation)
+        if finished:
+            continuation["input_kind"] = "pending"
         input_kind = str(continuation.get("input_kind") or "")
         answer = str(input.get("continuation_answer") or "").strip()
         if input_kind != "pending" and not answer:
@@ -2140,6 +2206,23 @@ def _review_summary(
     return json.dumps(payload, indent=2, sort_keys=True)
 
 
+def _canary_failed(canary: ToolResult) -> bool:
+    """Whether the canary run failed, including a tool that reported its own error.
+
+    The canary is the resident's known-good input, so a result carrying an
+    ``error`` is the tool not working, not a bad question. Counted as a pass,
+    a kubelet tool that could only ever answer 403 was installed, looked
+    healthy in its run counts, and was rebuilt again and again.
+    """
+    if canary.is_error:
+        return True
+    try:
+        payload = json.loads(canary.content)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(payload, dict) and bool(payload.get("error"))
+
+
 def _build_result_outcome(result: ToolResult) -> str:
     """Classify the lifecycle without treating a filed review as installation."""
     if result.is_error:
@@ -2170,23 +2253,35 @@ def _verification_payload(artifact: LearnedToolArtifact) -> dict[str, Any]:
 def _duplicate_summary(
     attempted: LearnedToolArtifact,
     installed: LearnedToolArtifact,
+    *,
+    reactivated: SkillLifecycle | None = None,
 ) -> str:
     """Tell the resident it already owns this, in the place it will read it."""
-    return json.dumps(
-        {
-            "status": "already_installed",
-            "tool_name": installed.manifest.name,
-            "artifact_id": installed.artifact_id,
-            "requested_name": attempted.manifest.name,
+    name = installed.manifest.name
+    payload: dict[str, Any] = {
+        "status": "already_installed",
+        "tool_name": name,
+        "artifact_id": installed.artifact_id,
+        "requested_name": attempted.manifest.name,
+        "detail": (
+            f"No tool was built: {name!r} is already installed with "
+            "identical code and an identical contract. Run it with learned_tool_run "
+            f"(name={name!r}). Build again only if you need "
+            "different behaviour, not a different name."
+        ),
+    }
+    if reactivated is not None:
+        payload["reactivated"] = {
+            "rolled_back_because": reactivated.archived_detail,
             "detail": (
-                f"No tool was built: {installed.manifest.name!r} is already installed with "
-                "identical code and an identical contract. Run it with learned_tool_run "
-                f"(name={installed.manifest.name!r}). Build again only if you need "
-                "different behaviour, not a different name."
+                f"{name!r} had been rolled back after repeated failures and is runnable "
+                "again. The same code fails the same way while the cause of that "
+                "failure remains: when it was a timeout, a refused permission or a "
+                "connection its sandbox does not allow, change what the tool reaches "
+                "or where it gets its data, not its wording."
             ),
-        },
-        indent=2,
-    )
+        }
+    return json.dumps(payload, indent=2)
 
 
 def _already_serves_summary(
@@ -2303,6 +2398,10 @@ def _lineage_repair_brief(
         f"Produce version {target.version + 1} of {name!r}: keep its name and the capability "
         f"it serves, and change what this request needs.{renamed}\n"
         f"Why the installed version does not already serve the request: {why}.\n"
+        "Deliver the new version as learned_tool.json like any build: the resident "
+        "installs it itself when this task completes. You cannot reach the resident or "
+        "its tool catalog, so never block on installing, registering or finding the tool "
+        "there.\n"
         "Installed manifest:\n"
         f"{json.dumps(target.manifest.to_dict(), indent=2, sort_keys=True)}\n"
         f"Installed implementation:\n```python\n{target.tool_code}\n```\n"

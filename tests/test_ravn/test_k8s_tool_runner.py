@@ -120,6 +120,46 @@ async def test_runner_derives_each_runs_egress_from_its_declared_reach(tmp_path)
     assert len(executor.calls) == 3
 
 
+@pytest.mark.asyncio
+async def test_a_timeout_names_the_only_network_the_run_had(tmp_path) -> None:
+    """valhalla's Prometheus tool probed Services its reach did not name; the
+    policy dropped those connections, each hung, and the run was reported as a
+    bare timeout, so the resident rebuilt code that only needed its reach."""
+    executor = _FakeExecutor(JobRunResult(timed_out=True, network_enforced=True))
+    runner = KubernetesJobLearnedToolRunner(executor=executor)
+
+    result = await runner.run(
+        _write_tool(tmp_path),
+        {},
+        entry_point="run",
+        timeout_seconds=10,
+        declared_reach=[
+            ToolReachGrant(kind="network", target="monitoring/prometheus:9090", access="read")
+        ],
+    )
+
+    assert not result.ok
+    assert result.error.startswith("learned tool timed out after 10s.")
+    assert "could reach only monitoring/prometheus:9090, plus cluster DNS" in result.error
+    assert "dropped by the network policy and hangs" in result.error
+
+
+@pytest.mark.asyncio
+async def test_an_unrestricted_run_times_out_without_a_network_note(tmp_path) -> None:
+    executor = _FakeExecutor(JobRunResult(timed_out=True, network_enforced=True))
+    runner = KubernetesJobLearnedToolRunner(executor=executor)
+
+    result = await runner.run(
+        _write_tool(tmp_path),
+        {},
+        entry_point="run",
+        timeout_seconds=10,
+        declared_reach=[ToolReachGrant(kind="network", access="read_write")],
+    )
+
+    assert result.error == "learned tool timed out after 10s"
+
+
 def test_runner_refuses_unenforceable_reach_at_load() -> None:
     runner = KubernetesJobLearnedToolRunner(
         executor=_FakeExecutor(JobRunResult(stdout="{}", network_enforced=True))

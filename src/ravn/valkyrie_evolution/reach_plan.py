@@ -120,6 +120,21 @@ class EgressPlan:
     def network(self) -> bool:
         return self.unrestricted or self.scoped
 
+    def describe(self) -> str:
+        """What a Job run under this plan can reach, in words a resident acts on."""
+        if self.unrestricted:
+            return "unrestricted network egress"
+        if not self.scoped:
+            return "no network at all"
+        targets = [
+            f"{target.namespace}/{target.name}" + (f":{target.port}" if target.port else "")
+            for target in self.services
+        ]
+        targets.extend(f"{target.host}:{target.port}" for target in self.hosts)
+        if self.kubernetes_api:
+            targets.append("the Kubernetes API (as the read-only tool identity)")
+        return "only " + ", ".join(targets) + ", plus cluster DNS"
+
 
 def parse_service_ref(ref: str) -> ServiceTarget:
     """Parse ``namespace/service[:port]``; raises :class:`ValueError` otherwise."""

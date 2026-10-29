@@ -1629,6 +1629,30 @@ async def test_a2a_cancel_leaves_an_ended_task_as_it_is() -> None:
     assert [body["method"] for body in client.post_bodies] == ["GetTask"]
 
 
+@pytest.mark.parametrize(
+    ("state", "status"),
+    [
+        ("TASK_STATE_COMPLETED", "completed"),
+        ("TASK_STATE_FAILED", "ended"),
+        ("TASK_STATE_CANCELED", "ended"),
+        ("TASK_STATE_INPUT_REQUIRED", "active"),
+        ("TASK_STATE_WORKING", "active"),
+    ],
+)
+async def test_a2a_reports_where_a_suspended_build_stands(state: str, status: str) -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [_rpc_result(_a2a_task(state))],
+        }
+    )
+
+    reported = await _a2a_backend(client, workflow_id="wf-1").task_status("task-1")
+
+    assert reported == status
+    assert [body["method"] for body in client.post_bodies] == ["GetTask"]
+
+
 async def test_a_backend_that_never_suspends_has_nothing_to_cancel() -> None:
     from ravn.ports.tool_build_backend import ToolBuildBackend, ToolBuildError
 
@@ -1640,3 +1664,5 @@ async def test_a_backend_that_never_suspends_has_nothing_to_cancel() -> None:
 
     with pytest.raises(ToolBuildError, match="suspends no builds"):
         await _Inline().cancel("task-1")
+    with pytest.raises(ToolBuildError, match="suspends no builds"):
+        await _Inline().task_status("task-1")

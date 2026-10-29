@@ -59,7 +59,9 @@ from ravn.valkyrie_evolution.models import (
 )
 from ravn.valkyrie_evolution.ports import EvolutionReviewPort
 from ravn.valkyrie_evolution.tool_curation import (
+    RETIREMENT_REASONS,
     RETIREMENTS_PEERS_CANNOT_UNDO,
+    ROLLED_BACK,
     restore_learned_tool,
     retire_superseded_predecessor,
 )
@@ -791,7 +793,11 @@ class ResidentLearningRuntime:
             else skill_name
         )
 
-        await self._skills.archive(skill_name)
+        await self._skills.archive(
+            skill_name,
+            reason=ROLLED_BACK,
+            detail=tool_run.error or tool_run.stderr,
+        )
         self._prune_tool_venv(skill_name)
 
         try:
@@ -1552,7 +1558,7 @@ class ResidentLearningRuntime:
         name = str(artifact.learned_tool_manifest.get("name") or artifact.title)
         record = self._skills.lifecycle_metadata(name) or {}
         reason = str(record.get("archived_reason") or "")
-        if record.get("status") != "archived" or not reason:
+        if record.get("status") != "archived" or reason not in RETIREMENT_REASONS:
             return None
         if reason in RETIREMENTS_PEERS_CANNOT_UNDO and not artifact.operator_command:
             return ResidentLearningDecision(

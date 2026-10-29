@@ -69,6 +69,11 @@ RETIRED_SUPERSEDED = "superseded"
 RETIRED_DEBUG_LEFTOVER = "debug_leftover"
 RETIRED_UNRUNNABLE = "unrunnable"
 RETIRED_UNUSED = "unused"
+#: Why ``learned_tool_run`` archived a tool that kept failing. Not a
+#: retirement: the tool stays installed, its archive detail holds the failure
+#: that crossed the threshold, and a rebuild or an identical reinstall
+#: restores it.
+ROLLED_BACK = "rolled_back"
 RETIREMENT_REASONS = (
     RETIRED_SUPERSEDED,
     RETIRED_DEBUG_LEFTOVER,
@@ -365,6 +370,31 @@ async def restore_learned_tool(
     return retired
 
 
+async def reactivate_rolled_back_tool(*, skills: Any, name: str, why: str) -> SkillLifecycle | None:
+    """Put a rolled-back, still-installed tool back into use.
+
+    Returns its record as it was while rolled back, or ``None`` when *name*
+    was not rolled back. A rebuild that produced the installed code again
+    used to report "already installed" while the tool stayed archived and
+    unrunnable, so a resident could only get it back by commissioning a
+    cosmetically different version.
+    """
+    metadata = skills.lifecycle_metadata(name)
+    if not metadata or metadata.get("status") != "archived":
+        return None
+    if metadata.get("archived_reason") in RETIREMENT_REASONS:
+        return None
+    rolled_back = _lifecycle_from(metadata)
+    await skills.restore(name)
+    get_observability().event(
+        "ravn.learned_tool.lifecycle.reactivated",
+        attributes={"ravn.learned_tool.name": name},
+        content={"why": why, "rolled_back_detail": rolled_back.archived_detail},
+    )
+    logger.info("Reactivated rolled-back learned tool %s: %s", name, why)
+    return rolled_back
+
+
 async def retire_superseded_predecessor(
     *,
     tools_dir: str | Path,
@@ -532,10 +562,23 @@ def lineage_problems(entry: ToolEntry, *, load_refusal: str | None = None) -> li
         problems.append("its last verification failed, so it can never run")
     lifecycle = entry.lifecycle
     if lifecycle is not None and lifecycle.status == "archived" and not entry.retired:
-        problems.append("it was rolled back after repeated failures")
+        problems.append(rolled_back_reason(lifecycle))
     if lifecycle is not None and lifecycle.consecutive_failures:
         problems.append(f"its last {lifecycle.consecutive_failures} run(s) failed")
     return problems
+
+
+def rolled_back_reason(lifecycle: SkillLifecycle) -> str:
+    """Why a rolled-back tool stopped running, with the failure that did it.
+
+    A rollback that only said "repeated failures" sent residents into
+    rebuilding tools whose code was fine: the failure was a sandbox timeout
+    or a 403, which no new version can fix, and nothing said so.
+    """
+    detail = lifecycle.archived_detail.strip() if lifecycle.archived_reason == ROLLED_BACK else ""
+    if not detail:
+        return "it was rolled back after repeated failures"
+    return f"it was rolled back after repeated failures; the last one was: {detail}"
 
 
 def capability_matched_marker(*, by: str, same_as: str = "", reason: str = "") -> dict[str, str]:
@@ -950,7 +993,7 @@ class LearnedToolCurator:
         if not entry.verified:
             return "has no passing verification, so learned_tool_run refuses it"
         if entry.lifecycle is not None and entry.lifecycle.status == "archived":
-            return "rolled back after repeated failures"
+            return rolled_back_reason(entry.lifecycle)
         refusal = self._refusals.get(entry.name)
         if refusal is not None:
             return (

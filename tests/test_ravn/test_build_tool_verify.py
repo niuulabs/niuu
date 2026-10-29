@@ -17,6 +17,7 @@ from ravn.ports.tool_build_backend import (
     ToolBuildPendingError,
     ToolBuildResult,
     ToolBuildTaskEndedError,
+    ToolBuildTaskStatus,
 )
 from ravn.valkyrie_evolution.tool_verification import VerificationResult
 
@@ -707,6 +708,8 @@ class _SuspendingBackend:
         self.launched: list[str] = []
         self.resumed: list[str] = []
         self.cancelled: list[str] = []
+        #: Where each task stands remotely; a task not listed is still running.
+        self.statuses: dict[str, ToolBuildTaskStatus] = {}
         self._input_kind = input_kind
 
     async def build(self, request: Any) -> ToolBuildResult:
@@ -731,6 +734,9 @@ class _SuspendingBackend:
             prompt="Which namespace?",
             continuation=continuation,
         )
+
+    async def task_status(self, task_id: str) -> ToolBuildTaskStatus:
+        return self.statuses.get(task_id, ToolBuildTaskStatus.ACTIVE)
 
     async def cancel(self, task_id: str) -> str:
         self.cancelled.append(task_id)
@@ -803,6 +809,79 @@ async def test_a_suspended_build_of_another_tool_is_left_alone(tmp_path) -> None
     assert backend.launched == ["task-1", "task-2"]
     assert backend.cancelled == []
     assert len(_pending_builds(tmp_path)) == 2
+
+
+async def test_a_finished_build_is_collected_before_another_is_commissioned(tmp_path) -> None:
+    """valhalla commissioned a third build of one tool while two finished
+    builds of it sat uncollected; superseding them would have thrown the
+    finished work away and built it again."""
+    backend = _SuspendingBackend()
+    tool, registered = _tool(tmp_path, build_backend=backend)
+    await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+    backend.statuses["task-1"] = ToolBuildTaskStatus.COMPLETED
+
+    result = await tool.execute(
+        {"manifest": _manifest(), "build_request": "build an echo tool, in place"}
+    )
+
+    assert result.is_error is False, result.content
+    assert backend.launched == ["task-1"]
+    assert backend.resumed == ["task-1"]
+    assert backend.cancelled == []
+    assert len(registered) == 1
+    assert _pending_builds(tmp_path) == []
+
+
+async def test_a_finished_build_that_had_asked_a_question_needs_no_answer(tmp_path) -> None:
+    backend = _SuspendingBackend(input_kind="question")
+    tool, registered = _tool(tmp_path, build_backend=backend)
+    request = {"manifest": _manifest(), "build_request": "build an echo tool"}
+    await tool.execute(dict(request))
+    backend.statuses["task-1"] = ToolBuildTaskStatus.COMPLETED
+
+    result = await tool.execute(dict(request))
+
+    assert result.is_error is False, result.content
+    assert backend.resumed == ["task-1"]
+    assert len(registered) == 1
+
+
+async def test_an_ended_build_is_dropped_and_the_new_request_commissioned(tmp_path) -> None:
+    backend = _SuspendingBackend()
+    tool, _ = _tool(tmp_path, build_backend=backend)
+    await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+    backend.statuses["task-1"] = ToolBuildTaskStatus.ENDED
+
+    await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool, in place"})
+
+    assert backend.launched == ["task-1", "task-2"]
+    assert backend.cancelled == []
+    assert backend.resumed == []
+    assert len(_pending_builds(tmp_path)) == 1
+
+
+async def test_a_canary_that_reports_an_error_is_not_installed(tmp_path) -> None:
+    """jarnvidr's kubelet tool could only ever answer {"error": "... 403"};
+    counted as a passing canary it was installed, looked healthy, and was
+    rebuilt again and again."""
+    tool, registered = _tool(tmp_path)
+
+    result = await tool.execute(
+        {
+            "manifest": _manifest(),
+            "tool_code": "def run(payload):\n    return {'error': 'HTTP Error 403: Forbidden'}\n",
+            "test_code": (
+                "import _verify_tool\n\ndef test_it():\n"
+                "    assert 'error' in _verify_tool.run({})\n"
+            ),
+            "canary_input": {"node_name": "n1"},
+        }
+    )
+
+    assert result.is_error is True
+    assert "Canary failed" in result.content
+    assert "403" in result.content
+    assert registered == []
 
 
 async def test_a_failed_cancel_launches_no_second_build(tmp_path) -> None:

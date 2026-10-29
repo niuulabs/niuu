@@ -224,7 +224,7 @@ class KubernetesJobLearnedToolRunner:
         if run.timed_out:
             return ToolRunResult(
                 ok=False,
-                error=f"learned tool timed out after {timeout_seconds}s",
+                error=_timeout_error(timeout_seconds, egress),
                 stderr=run.stderr,
                 enforcement=enforcement,
             )
@@ -1560,6 +1560,24 @@ def _split_result(logs: str) -> tuple[str, str]:
             result = lines[index].removeprefix(_RESULT_MARKER)
             return result, "\n".join(lines[:index] + lines[index + 1 :]).strip()
     return "", logs.strip()
+
+
+def _timeout_error(timeout_seconds: float, egress: EgressPlan) -> str:
+    """A timeout that names the network the run had.
+
+    The NetworkPolicy drops a connection to anything the declared reach does
+    not name, so the tool sees no refusal: the connection hangs until this
+    timeout. Reported as a bare timeout, a tool that probed one undeclared
+    address looked like slow code, and residents rebuilt it again and again.
+    """
+    message = f"learned tool timed out after {timeout_seconds}s"
+    if egress.unrestricted:
+        return message
+    return (
+        f"{message}. Its Job could reach {egress.describe()}; a connection to anything "
+        "else is dropped by the network policy and hangs until this timeout instead of "
+        "failing, so check that the tool contacts only its declared reach"
+    )
 
 
 def _gated_command(python_args: list[str], requirements_path: str) -> list[str]:

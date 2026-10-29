@@ -44,6 +44,7 @@ from ravn.valkyrie_evolution.tool_curation import (
     RETIRED_SUPERSEDED,
     RETIRED_UNRUNNABLE,
     RETIRED_UNUSED,
+    ROLLED_BACK,
     LearnedToolCurator,
     LifecycleSnapshot,
     find_installed_capability,
@@ -447,6 +448,8 @@ class TestCurator:
         ).plan()
 
         reasons = {decision.name: decision.reason for decision in plan.retire}
+        details = {decision.name: decision.detail for decision in plan.retire}
+        assert details["rolled_back_tool"] == "it was rolled back after repeated failures"
         assert reasons == {
             "debug_k8s_config": RETIRED_DEBUG_LEFTOVER,
             "patch_node_labels_via_sa": RETIRED_UNRUNNABLE,
@@ -890,6 +893,68 @@ class TestRepairOverVariant:
         assert json.loads(result.content)["tool_name"] == "inspect_persistentvolume"
         assert "retired as unrunnable" in backend.requests[0].signal_context
 
+    async def test_a_rolled_back_tools_repair_is_told_the_failure(self, tmp_path: Path) -> None:
+        """A rollback that only said "repeated failures" sent builders to
+        rewrite code whose real problem was a timeout or a 403."""
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "prometheus_readonly_query", capability="prom.query")
+        await skills.archive(
+            "prometheus_readonly_query",
+            reason=ROLLED_BACK,
+            detail="learned tool timed out after 10s. Its Job could reach only monitoring/p:9090",
+        )
+        backend = RecordingBackend()
+        tool, _ = _build_tool(tmp_path, build_backend=backend, skill_manager=skills)
+
+        result = await tool.execute(
+            _request("prometheus_readonly_query", capability_id="prom.query")
+        )
+
+        problems = json.loads(result.content)["repair_of"]["problems"]
+        assert problems == [
+            "it was rolled back after repeated failures; the last one was: learned tool "
+            "timed out after 10s. Its Job could reach only monitoring/p:9090"
+        ]
+        assert "could reach only monitoring/p:9090" in backend.requests[0].signal_context
+        assert "the resident installs it itself" in backend.requests[0].signal_context
+
+    async def test_an_identical_rebuild_puts_a_rolled_back_tool_back(self, tmp_path: Path) -> None:
+        """valhalla's working Prometheus tool stayed archived after an
+        identical rebuild reported "already installed", so it commissioned a
+        cosmetic change just to get it running again."""
+        skills = _skills(tmp_path)
+        installed = await _install(
+            tmp_path, skills, "prometheus_readonly_query", capability="prom.query"
+        )
+        await skills.archive(
+            "prometheus_readonly_query", reason=ROLLED_BACK, detail="timed out after 10s"
+        )
+
+        class SameCode(RecordingBackend):
+            async def build(self, request: Any) -> ToolBuildResult:
+                self.requests.append(request)
+                return ToolBuildResult(
+                    manifest=installed.manifest.to_dict(),
+                    tool_code=installed.tool_code,
+                    test_code=installed.test_code,
+                    requirements=[],
+                    provenance={},
+                )
+
+        tool, registered = _build_tool(tmp_path, build_backend=SameCode(), skill_manager=skills)
+
+        result = await tool.execute(
+            _request("prometheus_readonly_query", capability_id="prom.query")
+        )
+
+        payload = json.loads(result.content)
+        assert payload["status"] == "already_installed"
+        assert payload["reactivated"]["rolled_back_because"] == "timed out after 10s"
+        assert skills.status("prometheus_readonly_query") == "active"
+        record = skills.lifecycle_metadata("prometheus_readonly_query")
+        assert (record["archived_reason"], record["consecutive_failures"]) == ("", 0)
+        assert registered == []
+
     async def test_a_judge_that_cannot_answer_builds_nothing(self, tmp_path: Path) -> None:
         skills = _skills(tmp_path)
         await _install(tmp_path, skills, "some_tool")
@@ -1070,6 +1135,8 @@ async def test_a_peer_copy_does_not_undo_a_retirement_here(tmp_path: Path) -> No
     skills = _skills(state)
     await _install(state, skills, "list_pods_in_namespace_safe")
     await _install(state, skills, "k8s_quantity_parse")
+    await _install(state, skills, "prometheus_readonly_query")
+    await skills.archive("prometheus_readonly_query", reason=ROLLED_BACK, detail="timed out")
     code_dir, artifacts_dir = _dirs(state)
     for name, reason in (
         ("list_pods_in_namespace_safe", RETIRED_SUPERSEDED),
@@ -1109,7 +1176,12 @@ async def test_a_peer_copy_does_not_undo_a_retirement_here(tmp_path: Path) -> No
 
     ignored = await runtime._reconcile_retired_tool(proposal("list_pods_in_namespace_safe"))
     restored = await runtime._reconcile_retired_tool(proposal("k8s_quantity_parse"))
+    # Rolled back, not retired: still installed, so the peer copy installs
+    # over it as its next version with nothing to restore first.
+    rolled_back = await runtime._reconcile_retired_tool(proposal("prometheus_readonly_query"))
 
+    assert rolled_back is None
+    assert skills.status("prometheus_readonly_query") == "archived"
     assert ignored is not None and ignored.action == "ignored"
     assert "superseded" in ignored.rationale
     assert restored is None
@@ -1468,6 +1540,28 @@ class TestBackendRefusal:
         assert registered == []
         code_dir, _ = _dirs(tmp_path)
         assert not learned_tool_path(code_dir, "count_cluster_nodes").exists()
+
+    async def test_a_reach_the_backend_cannot_enforce_commissions_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """The refusal used to arrive after the whole remote workflow had
+        built, reviewed and published the tool."""
+        backend = RecordingBackend()
+        tool, registered = _build_tool(
+            tmp_path, build_backend=backend, execution_backend="container"
+        )
+        request = _request("regin_repo_review_readonly")
+        request["manifest"]["declared_reach"] = [
+            {"kind": "http", "target": "https://api.github.com:443", "access": "read"}
+        ]
+
+        result = await tool.execute(request)
+
+        assert result.is_error
+        assert "nothing was commissioned" in result.content
+        assert "target-specific network reach" in result.content
+        assert backend.requests == []
+        assert registered == []
 
     def test_the_builder_is_only_told_about_the_host_sdk_where_it_exists(
         self, tmp_path: Path

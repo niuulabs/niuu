@@ -40,6 +40,7 @@ from ravn.ports.tool_build_backend import (
     ToolBuildRequest,
     ToolBuildResult,
     ToolBuildTaskEndedError,
+    ToolBuildTaskStatus,
 )
 
 logger = logging.getLogger(__name__)
@@ -263,6 +264,15 @@ class A2AToolBuildBackend(ToolBuildBackend):
                 },
             )
             return result
+
+    async def task_status(self, task_id: str) -> ToolBuildTaskStatus:
+        endpoint, _workflow_id, _push_supported = await self._resolve_endpoint_and_workflow()
+        state = _task_state(await self._get_task(endpoint, task_id))
+        if state == _COMPLETED_STATE:
+            return ToolBuildTaskStatus.COMPLETED
+        if state in _FAILED_STATES:
+            return ToolBuildTaskStatus.ENDED
+        return ToolBuildTaskStatus.ACTIVE
 
     async def cancel(self, task_id: str) -> str:
         endpoint, _workflow_id, _push_supported = await self._resolve_endpoint_and_workflow()
