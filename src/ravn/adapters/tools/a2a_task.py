@@ -282,9 +282,11 @@ class A2ATaskTool(ToolPort):
                 active_only=bool(input.get("active_only", False)),
                 limit=limit,
             )
+            payload: dict[str, Any] = {"operation": "find", "tasks": []}
+            _append_while_fits(payload, "tasks", matches, self._result_max_chars)
             return ToolResult(
                 tool_call_id="",
-                content=json.dumps({"operation": "find", "tasks": matches}, indent=2),
+                content=json.dumps(payload, indent=2, default=str),
             )
 
         agent_id = str(input.get("agent_id") or "").strip()
@@ -745,20 +747,29 @@ def _append_while_fits(
 ) -> None:
     target = payload[key]
     assert isinstance(target, list)
-    for index, value in enumerate(values):
-        bounded = _bounded_item(value, max_chars=max(256, max_chars // 3))
-        target.append(bounded)
-        if len(json.dumps(payload, indent=2, default=str)) > max_chars:
+
+    def overflows() -> bool:
+        return len(json.dumps(payload, indent=2, default=str)) > max_chars
+
+    for value in values:
+        target.append(_bounded_item(value, max_chars=max(256, max_chars // 3)))
+        if not overflows():
+            continue
+        target.pop()
+        target.append({"truncated": f"additional {key} omitted"})
+        # The marker is what tells the reader the list is partial, so it
+        # takes the place of the last item when both will not fit.
+        while overflows() and len(target) > 1:
+            del target[-2]
+        if overflows():
             target.pop()
-            record_cap_hit(
-                "gateway.platform.a2a_result_max_chars",
-                f"A2A task result: {len(values) - index} of {len(values)} {key} omitted to "
-                f"fit {max_chars} characters; raise gateway.platform.a2a_result_max_chars",
-            )
-            target.append({"truncated": f"additional {key} omitted"})
-            if len(json.dumps(payload, indent=2, default=str)) > max_chars:
-                target.pop()
-            break
+        shown = max(0, len(target) - 1)
+        record_cap_hit(
+            "gateway.platform.a2a_result_max_chars",
+            f"A2A task result: {len(values) - shown} of {len(values)} {key} omitted to "
+            f"fit {max_chars} characters; raise gateway.platform.a2a_result_max_chars",
+        )
+        break
 
 
 def _bounded_item(value: Any, *, max_chars: int) -> Any:
@@ -768,7 +779,17 @@ def _bounded_item(value: Any, *, max_chars: int) -> Any:
     if isinstance(value, dict):
         identity = {
             key: value[key]
-            for key in ("artifactId", "artifact_id", "requestId", "gateId", "id", "name")
+            for key in (
+                "artifactId",
+                "artifact_id",
+                "requestId",
+                "gateId",
+                "id",
+                "name",
+                "task_id",
+                "agent_id",
+                "state",
+            )
             if key in value
         }
         identity["content_excerpt"] = _truncate(rendered, max(64, max_chars - 160))

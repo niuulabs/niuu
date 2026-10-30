@@ -20,6 +20,7 @@ from ravn.adapters.tool_build.http import HttpResponse
 from ravn.adapters.tools.a2a_task import A2ATaskTool
 from ravn.adapters.tools.capability_catalog import CapabilityListTool
 from ravn.agent import RavnAgent
+from ravn.cap_telemetry import cap_hit_counts
 from ravn.domain.events import RavnEventType
 from ravn.domain.models import StreamEvent, StreamEventType, TokenUsage, ToolCall
 from tests.ravn.fixtures.fakes import InMemoryChannel
@@ -195,6 +196,94 @@ async def test_a2a_task_find_uses_durable_registry_without_peer_lookup() -> None
     assert json.loads(result.content)["tasks"][0]["task_id"] == "task-remembered"
     assert queries == [{"query": "remembered", "active_only": True, "limit": 10}]
     assert directory.lookups == []
+
+
+@pytest.mark.asyncio
+async def test_find_leaves_the_case_mandate_out_of_the_handle(tmp_path) -> None:
+    """A home case's mandate is its whole home prompt: 2 MB on one Sigrun lookup."""
+    from ravn.adapters.resident_state.mimir import LocalResidentState
+    from ravn.resident_runtime import ResidentRuntime
+
+    runtime = ResidentRuntime(state=LocalResidentState(tmp_path), resident_id="sigrun")
+    mandate = "resident home prompt " * 100_000
+    await runtime.record_a2a_activity(
+        {
+            "task_id": "task-1",
+            "agent_id": "agent-aggregate-1",
+            "state": "TASK_STATE_INPUT_REQUIRED",
+            "prompt": "Build pod_status_with_workload_fallback",
+            "case_id": "resident-home-1",
+            "mandate": mandate,
+        }
+    )
+    tool = A2ATaskTool(
+        agent_directory=_Directory(_agent()),
+        client=_Client([]),
+        activity_finder=runtime.find_a2a_tasks,
+    )
+
+    result = await tool.execute({"operation": "find", "query": "workload_fallback"})
+
+    assert len(result.content) < 1_000
+    handle = json.loads(result.content)["tasks"][0]
+    assert handle["task_id"] == "task-1"
+    assert handle["agent_id"] == "agent-aggregate-1"
+    assert "mandate" not in handle
+    # Resuming the case still reads it from the durable record.
+    assert (await runtime._read_a2a_record("task-1")).mandate == mandate.strip()
+
+
+@pytest.mark.asyncio
+async def test_find_stays_inside_the_result_budget_and_says_what_it_left_out() -> None:
+    async def _find(**_kwargs) -> list[dict[str, object]]:
+        return [
+            {"task_id": f"task-{index}", "agent_id": "agent-1", "prompt": "x" * 300}
+            for index in range(20)
+        ]
+
+    before = cap_hit_counts().get("gateway.platform.a2a_result_max_chars", 0)
+    tool = A2ATaskTool(
+        agent_directory=_Directory(_agent()),
+        client=_Client([]),
+        activity_finder=_find,
+        result_max_chars=2_000,
+    )
+
+    result = await tool.execute({"operation": "find", "limit": 20})
+
+    assert len(result.content) <= 2_000
+    tasks = json.loads(result.content)["tasks"]
+    assert tasks[0]["task_id"] == "task-0"
+    assert tasks[-1] == {"truncated": "additional tasks omitted"}
+    assert cap_hit_counts()["gateway.platform.a2a_result_max_chars"] == before + 1
+
+
+@pytest.mark.asyncio
+async def test_find_keeps_the_identifiers_of_a_handle_too_big_to_show() -> None:
+    async def _find(**_kwargs) -> list[dict[str, object]]:
+        return [
+            {
+                "task_id": "task-1",
+                "agent_id": "agent-1",
+                "state": "TASK_STATE_WORKING",
+                "status_message": "x" * 5_000,
+            }
+        ]
+
+    tool = A2ATaskTool(
+        agent_directory=_Directory(_agent()),
+        client=_Client([]),
+        activity_finder=_find,
+        result_max_chars=3_000,
+    )
+
+    result = await tool.execute({"operation": "find"})
+
+    handle = json.loads(result.content)["tasks"][0]
+    assert handle["task_id"] == "task-1"
+    assert handle["agent_id"] == "agent-1"
+    assert handle["state"] == "TASK_STATE_WORKING"
+    assert len(result.content) <= 3_000
 
 
 @pytest.mark.asyncio

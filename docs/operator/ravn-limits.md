@@ -93,7 +93,7 @@ in the output and counted. That includes excerpts the prompt announces
 | `tools.bash.max_output_bytes` | 100 KiB | Prompt budget | Kept; output carries a notice | Error log + counted |
 | `tools.web.fetch.content_budget` | 20000 | Prompt budget | Kept; output carries a notice | Error log + counted |
 | `tools.kubernetes.max_configmap_value_chars` / `max_list_items` | 4000 / 100 | Prompt budget | Kept; `truncated_keys` / `truncated` in the result | Error log + counted |
-| `gateway.platform.a2a_result_max_chars` | 12000 | Prompt budget | Kept; the hard-coded 16-item list limit is removed (the character budget is the bound) | Marker + error log + counted |
+| `gateway.platform.a2a_result_max_chars` | 12000 | Prompt budget | Kept; bounds `a2a_task` results including `find`, whose handles leave out the case mandate; the hard-coded 16-item list limit is removed (the character budget is the bound) | Marker + error log + counted |
 | `mimir.source_trigger.max_content_chars` | 120000 | Synthesis prompt budget | Kept; context carries a notice | Error log + counted (synthesis worked from part of the source) |
 | Thread-enricher page excerpt | was hard-coded 500 | Classifier model's window | **Removed**: the whole page is classified; the head alone misread pages by their preamble | Context errors raise |
 | `mimir.ingest.entity_source_excerpt_chars` | 3000, was hard-coded | Extraction model's window (raw sources reach megabytes) | Made configurable; the prompt says "first N chars" | Error log + counted |

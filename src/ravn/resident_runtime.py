@@ -577,6 +577,9 @@ class ResidentRuntime:
     ) -> list[dict[str, Any]]:
         """Find durable A2A handles, with bounded legacy-memory recovery.
 
+        Handles come back without the launching case's mandate, which only
+        resuming that case reads.
+
         ``limit=None`` returns every match. The tool-facing default stays 10
         because the model chooses how many handles a search should return; the
         resident prompt block passes ``None`` so no active task is left out of
@@ -611,7 +614,7 @@ class ResidentRuntime:
         found = [record for record in records if matches(record)]
         found.sort(key=lambda record: record.updated_at, reverse=True)
         selected = found if limit is None else found[: max(1, limit)]
-        rendered = [_a2a_record_payload(record) for record in selected]
+        rendered = [_a2a_handle(record) for record in selected]
         if rendered or not needle or active_only:
             return rendered
         if limit is None:
@@ -2493,11 +2496,22 @@ def _a2a_record_payload(record: ResidentA2ATaskRecord) -> dict[str, Any]:
     }
 
 
+def _a2a_handle(record: ResidentA2ATaskRecord) -> dict[str, Any]:
+    """A handle for readers: the case mandate stays in the durable record.
+
+    A home case's mandate is its whole home prompt. Returned through
+    ``a2a_task find`` it put 2 MB into one tool result on Sigrun, for a lookup
+    that needed a task id; resuming the case reads it from the record.
+    """
+    handle = _a2a_record_payload(record)
+    del handle["mandate"]
+    return handle
+
+
 # What a turn needs to judge an in-flight A2A task. Each durable handle also
-# stores the mandate of the case that launched it (Regin's ran to ~32k chars)
-# and the full brief; rendered into every turn's context, a few active handles
-# alone pushed the first message past the prompt budget, where compaction
-# cannot reach. The full record stays available through a2a_task find/get.
+# stores the full brief; rendered into every turn's context, a few active
+# handles alone pushed the first message past the prompt budget, where
+# compaction cannot reach. The brief stays available through a2a_task find/get.
 _A2A_HANDLE_PROMPT_FIELDS = (
     "task_id",
     "agent_id",

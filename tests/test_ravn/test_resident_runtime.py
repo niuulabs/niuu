@@ -307,6 +307,7 @@ async def test_a2a_push_resumes_originating_case_and_coalesces_duplicate(tmp_pat
     found = await runtime.find_a2a_tasks(query="Laevateinn")
     assert found[0]["task_id"] == "workflow-456"
     assert found[0]["state"] == "TASK_STATE_FAILED"
+    assert "mandate" not in found[0]
 
 
 @pytest.mark.asyncio
