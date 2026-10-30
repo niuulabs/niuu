@@ -822,7 +822,8 @@ def resident_attention_calibrate(
             "decision.enabled is false: configure the decision model to calibrate.", err=True
         )
         raise typer.Exit(1)
-    gate = settings.decision.resident_first_opinion.gate
+    first_opinion = settings.decision.resident_first_opinion
+    gate = first_opinion.gate
     attention = ResidentSlotAttention(
         decisions,
         policy=AttentionGatePolicy(
@@ -830,7 +831,9 @@ def resident_attention_calibrate(
             skip_decisions=frozenset(gate.skip_decisions),
         ),
         gate_enabled=False,
-        max_observation_chars=settings.decision.resident_first_opinion.max_observation_chars,
+        max_observation_chars=first_opinion.max_observation_chars,
+        max_mandate_chars=first_opinion.max_mandate_chars,
+        max_working_state_chars=first_opinion.max_working_state_chars,
     )
 
     async def _replay() -> Any:

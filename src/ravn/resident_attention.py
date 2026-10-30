@@ -34,7 +34,6 @@ from datetime import datetime
 from typing import Any
 
 from niuu.observability import get_observability
-from ravn.cap_telemetry import record_truncation
 from ravn.decision_observability import UNIT_BUCKETS
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_ATTENTION_TIER_ORDER,
@@ -48,8 +47,8 @@ from ravn.ports.decision import (
     NoulAnswer,
     NoulQuestion,
 )
-from ravn.resident_first_opinion import DECISION_CRITERIA, TIER_CRITERIA
-from ravn.resident_inbox import ResidentInboxSignal, aggregate_summary_lines
+from ravn.resident_first_opinion import DECISION_CRITERIA, TIER_CRITERIA, bounded_state
+from ravn.resident_inbox import ResidentInboxSignal, aggregate_summary_lines, observed_payload
 
 logger = logging.getLogger(__name__)
 
@@ -222,9 +221,9 @@ def slot_observation(ref: str, signal: ResidentInboxSignal) -> str:
     if aggregate:
         lines.append("variation across these observations:")
         lines.extend(line.strip() for line in aggregate)
-    raw = signal.payload.get("payload", signal.payload)
+    raw = observed_payload(signal.payload.get("payload", signal.payload))
     lines.append("newest observation payload:")
-    lines.append(json.dumps(raw, indent=2, sort_keys=True, ensure_ascii=False, default=str))
+    lines.append(json.dumps(raw, sort_keys=True, ensure_ascii=False, default=str))
     return "\n".join(lines)
 
 
@@ -263,15 +262,23 @@ class ResidentSlotAttention:
         policy: AttentionGatePolicy,
         gate_enabled: bool,
         max_observation_chars: int,
+        max_mandate_chars: int,
+        max_working_state_chars: int,
     ) -> None:
         if max_observation_chars <= 0:
             raise ValueError("max_observation_chars must be positive")
+        if max_mandate_chars <= 0:
+            raise ValueError("max_mandate_chars must be positive")
+        if max_working_state_chars <= 0:
+            raise ValueError("max_working_state_chars must be positive")
         if gate_enabled and policy.min_skip_probability is None:
             raise ValueError("the attention gate needs a fitted min_skip_probability")
         self._decisions = decisions
         self._policy = policy
         self._gate_enabled = gate_enabled
         self._max_observation_chars = max_observation_chars
+        self._max_mandate_chars = max_mandate_chars
+        self._max_working_state_chars = max_working_state_chars
 
     @property
     def policy(self) -> AttentionGatePolicy:
@@ -339,28 +346,31 @@ class ResidentSlotAttention:
         mandate: str,
         working_state: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
-        observation = self._bounded(slot_observation(ref, signal), what=f"inbox slot {ref}")
         state_text = (
-            json.dumps(working_state, indent=2, sort_keys=True, ensure_ascii=False, default=str)
+            json.dumps(working_state, sort_keys=True, ensure_ascii=False, default=str)
             if working_state
             else "(no working state recorded yet)"
         )
         return {
-            "mandate": mandate,
-            "working_state": self._bounded(state_text, what="resident working state"),
-            "observation": observation,
+            "mandate": bounded_state(
+                mandate,
+                self._max_mandate_chars,
+                knob="max_mandate_chars",
+                what="resident charter for the slot opinion",
+            ),
+            "working_state": bounded_state(
+                state_text,
+                self._max_working_state_chars,
+                knob="max_working_state_chars",
+                what="resident working state for the slot opinion",
+            ),
+            "observation": bounded_state(
+                slot_observation(ref, signal),
+                self._max_observation_chars,
+                knob="max_observation_chars",
+                what=f"inbox slot {ref} for the slot opinion",
+            ),
         }
-
-    def _bounded(self, text: str, *, what: str) -> str:
-        if len(text) <= self._max_observation_chars:
-            return text
-        record_truncation(
-            "decision.resident_first_opinion.max_observation_chars",
-            what=f"{what} for the slot opinion",
-            kept=self._max_observation_chars,
-            total=len(text),
-        )
-        return text[: self._max_observation_chars]
 
     def select(
         self,

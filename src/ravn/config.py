@@ -560,21 +560,29 @@ class ResidentFirstOpinionConfig(BaseModel):
         ),
     )
     max_observation_chars: int = Field(
-        default=24000,
+        default=4000,
         gt=0,
         description=(
-            "Characters of the turn's observation sent as decision state; longer observations "
-            "are cut and the cut is reported. Jev answers at most 32k tokens per question."
+            "Characters of the slot or turn observation sent as decision state; longer "
+            "observations are cut and the cut is reported. A decision model judges small, "
+            "relevant state. The head survives the cut: identity, counts and ranges come first."
         ),
     )
     max_mandate_chars: int = Field(
-        default=8000,
+        default=2000,
         gt=0,
         description=(
-            "Characters of the resident case's mandate sent as decision state; longer mandates "
-            "are cut and the cut is reported. Together with max_observation_chars this keeps a "
-            "request under Jev's 32k-token limit (Kubernetes evidence runs about 2.2 characters "
-            "per token); a request over it is rejected with max_tokens_exceeded."
+            "Characters of the resident's charter or case mandate sent as decision state; "
+            "longer ones are cut and the cut is reported."
+        ),
+    )
+    max_working_state_chars: int = Field(
+        default=2000,
+        gt=0,
+        description=(
+            "Characters of the resident's working state sent with a slot opinion; a longer one "
+            "is cut and the cut is reported. These three bounds keep a request near 8000 "
+            "characters, about 3600 tokens on Kubernetes evidence (2.2 characters per token)."
         ),
     )
     gate: ResidentAttentionGateConfig = Field(

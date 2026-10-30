@@ -79,6 +79,7 @@ from ravn.resident_inbox import (
     ResidentInboxSignal,
     ResidentInboxStatus,
     aggregate_summary_lines,
+    observed_payload,
 )
 from ravn.resident_text import compact_line
 
@@ -1965,10 +1966,10 @@ class ResidentRuntime:
             context_lines.append(
                 f"- inbox_ref={ref}; source={signal.source}; kind={signal.kind}; "
                 f"observed_at={signal.observed_at}; evidence_ref={evidence}; "
-                f"summary={compact_line(signal.summary, limit=280)}"
+                f"summary={_summary_line(signal)}"
             )
             context_lines.extend(_coalesced_evidence_lines(signal))
-            raw_payload = signal.payload.get("payload", signal.payload)
+            raw_payload = observed_payload(signal.payload.get("payload", signal.payload))
             context_lines.extend(
                 (
                     "  Raw payload:",
@@ -1998,6 +1999,7 @@ class ResidentRuntime:
             task_id=_task_id("resident_home"),
             title=f"Resident home turn ({len(rows)} observations)",
             initiative_context="\n".join(context_lines),
+            recall_query="\n".join(_summary_line(signal) for _ref, signal in turn_rows),
             triggered_by=RESIDENT_HOME_TRIGGER,
             output_mode=output_mode,
             persona=persona,
@@ -2509,6 +2511,7 @@ _A2A_HANDLE_PROMPT_FIELDS = (
     "updated_at",
 )
 _A2A_HANDLE_BRIEF_CHARS = 280
+_OBSERVATION_SUMMARY_CHARS = 280
 
 
 def _a2a_handle_prompt_view(handle: dict[str, Any]) -> dict[str, Any]:
@@ -2553,6 +2556,10 @@ def _string_refs(value: Any) -> tuple[str, ...]:
     if not isinstance(value, list | tuple):
         return ()
     return tuple(str(item).strip() for item in value if str(item).strip())
+
+
+def _summary_line(signal: ResidentInboxSignal) -> str:
+    return compact_line(signal.summary, limit=_OBSERVATION_SUMMARY_CHARS)
 
 
 def _coalesced_evidence_lines(signal: ResidentInboxSignal) -> list[str]:
@@ -2604,6 +2611,7 @@ def _extreme_payload_lines(
         if payload is None:
             lines.append(f"  {key}: archive_ref={ref} (payload unavailable)")
             continue
+        payload = observed_payload(payload)
         lines.extend(
             (
                 f"  {key}: archive_ref={ref}",

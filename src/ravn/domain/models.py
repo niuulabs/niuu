@@ -470,7 +470,8 @@ class AgentTask:
     #: thing that was actually asked. A room message arrives wrapped in framing plus up to 4,000
     #: characters of prior room context, and recalling on all of that embeds an average of the
     #: room's recent chatter instead of the question — against documents averaging 158 characters.
-    #: Empty means the context IS the query, which is true for every non-room trigger.
+    #: A resident home turn is the same case: its context is every observation's payload,
+    #: so it recalls on their summaries. Empty means the context IS the query.
     recall_query: str = ""
     # Durable resident continuation metadata.  These fields are transport
     # state, not a semantic task taxonomy: the model still selects the action

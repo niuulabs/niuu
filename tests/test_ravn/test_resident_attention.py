@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from typer.testing import CliRunner
 
 from ravn.adapters.resident_state.mimir import LocalResidentState
+from ravn.cap_telemetry import cap_hit_counts
 from ravn.config import (
     InitiativeConfig,
     ResidentAttentionGateConfig,
@@ -42,6 +43,7 @@ from ravn.resident_attention import (
     SlotOpinion,
     gate_eligible,
     opinion_mandate,
+    slot_observation,
     working_state_from_page,
 )
 from ravn.resident_attention_calibration import CalibrationRow, calibrate, sweep
@@ -142,6 +144,8 @@ def _attention(decisions: _Decisions, *, gate: float | None = None) -> ResidentS
         policy=_policy(gate),
         gate_enabled=gate is not None,
         max_observation_chars=20000,
+        max_mandate_chars=20000,
+        max_working_state_chars=20000,
     )
 
 
@@ -394,7 +398,12 @@ async def test_a_wholly_routine_inbox_gets_no_turn_and_is_not_asked_twice(tmp_pa
 def test_gate_cannot_run_without_a_fitted_threshold() -> None:
     with pytest.raises(ValueError, match="min_skip_probability"):
         ResidentSlotAttention(
-            _Decisions(), policy=_policy(), gate_enabled=True, max_observation_chars=10
+            _Decisions(),
+            policy=_policy(),
+            gate_enabled=True,
+            max_observation_chars=10,
+            max_mandate_chars=10,
+            max_working_state_chars=10,
         )
     with pytest.raises(ValidationError, match="min_skip_probability"):
         ResidentAttentionGateConfig(enabled=True)
@@ -441,16 +450,72 @@ def test_working_state_page_must_carry_its_state() -> None:
     assert opinion_mandate("", "") == "(no charter configured)"
 
 
-def test_observation_is_bounded_and_the_cut_reported(telemetry) -> None:
-    attention = ResidentSlotAttention(
-        _Decisions(), policy=_policy(), gate_enabled=False, max_observation_chars=40
+def _small_attention() -> ResidentSlotAttention:
+    return ResidentSlotAttention(
+        _Decisions(),
+        policy=_policy(),
+        gate_enabled=False,
+        max_observation_chars=40,
+        max_mandate_chars=30,
+        max_working_state_chars=35,
     )
-    state = attention.state(
+
+
+def test_observation_is_bounded_and_the_cut_reported(telemetry) -> None:
+    state = _small_attention().state(
         "pending/a.md", _signal("x" * 200, field="p"), mandate="m", working_state=None
     )
 
     assert len(state["observation"]) == 40
     assert state["working_state"] == "(no working state recorded yet)"
+
+
+def test_every_part_of_the_slot_state_has_its_own_bound() -> None:
+    state = _small_attention().state(
+        "pending/a.md",
+        _signal("msg", field="p"),
+        mandate="c" * 500,
+        working_state={"observations": ["y" * 500]},
+    )
+
+    assert len(state["mandate"]) == 30
+    assert len(state["working_state"]) == 35
+    assert cap_hit_counts() == {
+        "decision.resident_first_opinion.max_mandate_chars": 1,
+        "decision.resident_first_opinion.max_observation_chars": 1,
+        "decision.resident_first_opinion.max_working_state_chars": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    "knob",
+    ["max_observation_chars", "max_mandate_chars", "max_working_state_chars"],
+)
+def test_slot_state_bounds_must_be_positive(knob: str) -> None:
+    bounds = {
+        "max_observation_chars": 10,
+        "max_mandate_chars": 10,
+        "max_working_state_chars": 10,
+    }
+    with pytest.raises(ValueError, match=knob):
+        ResidentSlotAttention(
+            _Decisions(),
+            policy=_policy(),
+            gate_enabled=False,
+            **{**bounds, knob: 0},
+        )
+
+
+def test_routing_state_never_reaches_the_decision_model() -> None:
+    signal = _signal("msg", field="p").with_updates(
+        payload={"task": {"id": "w-1"}, "_resident": {"mandate": "M" * 500}},
+    )
+
+    observation = slot_observation("pending/a.md", signal)
+
+    assert '"w-1"' in observation
+    assert "MMM" not in observation
+    assert "_resident" not in observation
 
 
 # ---------------------------------------------------------------------------

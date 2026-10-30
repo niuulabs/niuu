@@ -6,7 +6,7 @@ import pytest
 
 from ravn.adapters.decision.systemone import SystemOneDecisionAdapter
 from ravn.cli.runtime_builders import build_decision_port, build_resident_first_opinion
-from ravn.config import Settings
+from ravn.config import ResidentFirstOpinionConfig, Settings
 from ravn.decision_observability import ObservedDecisionPort
 from ravn.domain.exceptions import ConfigurationError
 from ravn.resident_first_opinion import ResidentFirstOpinion
@@ -111,3 +111,11 @@ class TestResidentFirstOpinion:
         assert isinstance(first_opinion._decisions, ObservedDecisionPort)
         assert first_opinion._max_observation_chars == 1234
         assert first_opinion._max_mandate_chars == 567
+
+    def test_decision_state_defaults_stay_small(self) -> None:
+        config = ResidentFirstOpinionConfig()
+
+        total = (
+            config.max_observation_chars + config.max_mandate_chars + config.max_working_state_chars
+        )
+        assert total <= 8000

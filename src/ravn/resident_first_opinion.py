@@ -277,7 +277,7 @@ class ResidentFirstOpinion:
 
     def _state(self, task: AgentTask) -> dict[str, str]:
         return {
-            "mandate": _bounded(
+            "mandate": bounded_state(
                 task.resident_mandate,
                 self._max_mandate_chars,
                 knob="max_mandate_chars",
@@ -285,7 +285,7 @@ class ResidentFirstOpinion:
             ),
             "trigger": task.triggered_by,
             "title": task.title,
-            "observation": _bounded(
+            "observation": bounded_state(
                 without_outcome_contract(task.initiative_context),
                 self._max_observation_chars,
                 knob="max_observation_chars",
@@ -294,8 +294,11 @@ class ResidentFirstOpinion:
         }
 
 
-def _bounded(text: str, limit: int, *, knob: str, what: str) -> str:
-    """Cut ``text`` to ``limit`` characters, reporting the cut against its config knob."""
+def bounded_state(text: str, limit: int, *, knob: str, what: str) -> str:
+    """Cut ``text`` to ``limit`` characters, reporting the cut against its config knob.
+
+    Decision models answer on small, relevant state: a request is a judgment, not a turn.
+    """
     if len(text) <= limit:
         return text
     record_truncation(

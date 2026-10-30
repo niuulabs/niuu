@@ -199,6 +199,12 @@ references are to current `src/`.
 evaluation point §5.2 of the attention doc already chose). Its state is the
 slot aggregate (ranges, counts, novel payloads), the resident's charter and
 mandate, its last `working_state`, and the last few judgments on this shape.
+That state stays small: a request is one judgment, not a turn. Each part has its
+own bound under `decision.resident_first_opinion` (`max_observation_chars` 4000,
+`max_mandate_chars` 2000, `max_working_state_chars` 2000), so a request stays
+near 8000 characters, about 3600 tokens on Kubernetes evidence. A cut keeps the
+head (identity, counts, ranges) and is reported as a cap hit. Routing state
+(`_resident` on an A2A update) is never part of it, or of a home prompt.
 Questions:
 
 - `choice` **tier**: silent / ambient / present / urgent. This is the same

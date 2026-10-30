@@ -747,6 +747,8 @@ def build_resident_slot_attention(settings: Settings, first_opinion: Any) -> Any
         ),
         gate_enabled=config.gate.enabled,
         max_observation_chars=config.max_observation_chars,
+        max_mandate_chars=config.max_mandate_chars,
+        max_working_state_chars=config.max_working_state_chars,
     )
 
 

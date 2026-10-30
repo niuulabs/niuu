@@ -32,7 +32,14 @@ from ravn.domain.resident_continuation import (
 from ravn.drive_loop import DriveLoop
 from ravn.odin.review import JsonReviewStore, ReviewItem, ReviewRequester
 from ravn.resident_continuation import _scheduled_wake_at
-from ravn.resident_inbox import LocalResidentInbox, MimirResidentInbox, ResidentInboxStatus
+from ravn.resident_inbox import (
+    LocalResidentInbox,
+    MimirResidentInbox,
+    ResidentInboxStatus,
+    ShapeAggregate,
+    observed_payload,
+    shape_key,
+)
 from ravn.resident_runtime import (
     ResidentHomeTrigger,
     ResidentRuntime,
@@ -138,6 +145,115 @@ async def test_a2a_push_is_persisted_and_immediately_wakes_resident(tmp_path) ->
     rows = await inbox.list_signals(status=ResidentInboxStatus.NEW.value, limit=10)
     assert len(rows) == 1
     assert rows[0][1].classification == "status_update"
+
+
+async def _case_update(
+    runtime: ResidentRuntime,
+    task_id: str,
+    *,
+    mandate: str,
+    state: str,
+) -> AgentTask | None:
+    await runtime.record_a2a_activity(
+        {
+            "task_id": task_id,
+            "agent_id": "builder-1",
+            "skill_id": "research",
+            "state": "TASK_STATE_SUBMITTED",
+            "operation": "start",
+            "prompt": "Investigate",
+            "case_id": "resident-home-origin",
+            "root_correlation_id": "root",
+            "parent_task_id": "task-origin",
+            "mandate": mandate,
+            "turn_index": 2,
+            "case_input_tokens": 30,
+            "case_output_tokens": 12,
+            "case_started_at": "2026-08-03T10:00:00+00:00",
+            "push_registered": True,
+        }
+    )
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime.bind_enqueue(enqueue)
+    await runtime.submit_a2a_push({"task": {"id": task_id, "status": {"state": state}}})
+    return queued[0] if queued else None
+
+
+@pytest.mark.asyncio
+async def test_a_case_mandate_stays_out_of_the_prompt_built_from_its_update(tmp_path) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    inbox = LocalResidentInbox(tmp_path / "inbox")
+    runtime = ResidentRuntime(state=state, inbox=inbox, resident_id="ivaldi")
+    mandate = "the original home prompt\n" * 100
+
+    task = await _case_update(runtime, "w-1", mandate=mandate, state="TASK_STATE_FAILED")
+
+    assert task is not None
+    assert task.resident_mandate == mandate.strip()
+    assert "the original home prompt" not in task.initiative_context
+    assert "_resident" not in task.initiative_context
+    assert task.resident_case_id == "resident-home-origin"
+
+
+@pytest.mark.asyncio
+async def test_a_case_mandate_stays_out_of_the_slot_and_its_extremes(tmp_path) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    inbox = LocalResidentInbox(tmp_path / "inbox", novelty_min_observations=1000)
+    runtime = ResidentRuntime(state=state, inbox=inbox, resident_id="ivaldi")
+    for index in range(3):
+        task = await _case_update(
+            runtime,
+            "w-1",
+            mandate=f"generation {index} prompt",
+            state=f"TASK_STATE_{index}",
+        )
+        if task is not None:
+            runtime.release_failed_task(task)
+
+    rows = await inbox.list_signals(status=ResidentInboxStatus.NEW.value, limit=10)
+    signal = rows[0][1]
+    assert signal.observation_count == 3
+    aggregate = signal.aggregate
+    assert not [path for path in aggregate.numeric if path.startswith("_resident")]
+    assert not [path for path in aggregate.categorical if path.startswith("_resident")]
+    assert not [key for key in aggregate.extreme_refs if key.startswith("_resident")]
+
+    task = await runtime.next_home_task(limit=5, persona=None, output_mode=OutputMode.AMBIENT)
+
+    assert task is not None
+    assert "prompt" not in task.initiative_context.split("Observations:")[1]
+
+
+def test_slots_already_holding_routing_state_shed_it_when_read() -> None:
+    aggregate = ShapeAggregate.from_dict(
+        {
+            "numeric": {"_resident.turn_index": [1, 2], "task.count": [1, 2]},
+            "categorical": {"_resident.mandate": ["M" * 500], "task.state": ["FAILED"]},
+            "high_cardinality": ["_resident.case_id", "task.id"],
+            "extreme_refs": {"_resident.turn_index:max": "2026-10-30:1", "task.count:max": "r"},
+        }
+    )
+
+    assert list(aggregate.numeric) == ["task.count"]
+    assert list(aggregate.categorical) == ["task.state"]
+    assert aggregate.high_cardinality == ("task.id",)
+    assert list(aggregate.extreme_refs) == ["task.count:max"]
+
+
+def test_routing_state_does_not_change_an_observation_shape() -> None:
+    bare = {"task": {"id": "w-1"}}
+    routed = {**bare, "_resident": {"turn_index": 1, "mandate": "m"}}
+
+    assert observed_payload(bare) is bare
+    assert observed_payload(routed) == bare
+    assert shape_key(source="a2a", kind="k", payload=bare) == shape_key(
+        source="a2a", kind="k", payload=routed
+    )
 
 
 @pytest.mark.asyncio
@@ -1202,6 +1318,7 @@ async def test_home_turn_carries_a_large_raw_payload_whole(tmp_path) -> None:
     assert detail in task.initiative_context
     assert "truncated" not in task.initiative_context
     assert cap_hit_counts() == {}
+    assert detail not in task.recall_query
 
 
 @pytest.mark.asyncio
