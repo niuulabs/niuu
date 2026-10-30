@@ -405,7 +405,7 @@ function PodsPanel({ pods, isLoading }: { pods: ClusterSessionView[]; isLoading:
     <section className="niuu:rounded-xl niuu:border" style={PANEL_SURFACE_STYLE}>
       <header className="niuu:flex niuu:items-baseline niuu:gap-3 niuu:border-b niuu:border-border niuu:px-4 niuu:py-3">
         <h3 className="niuu:text-base niuu:font-semibold niuu:text-text-primary">
-          Pods on this forge
+          Pods on this host
         </h3>
         <span className="niuu:font-mono niuu:text-base niuu:text-text-faint">{pods.length}</span>
       </header>
@@ -415,7 +415,7 @@ function PodsPanel({ pods, isLoading }: { pods: ClusterSessionView[]; isLoading:
         </div>
       ) : pods.length === 0 ? (
         <div className="niuu:p-4 niuu:font-mono niuu:text-xs niuu:text-text-faint">
-          no niuu sessions active on this forge
+          no niuu sessions active on this host
         </div>
       ) : (
         <ul className="niuu:divide-y niuu:divide-border">
@@ -579,7 +579,7 @@ export function ClustersPage() {
       >
         <EmptyState
           title="No clusters registered"
-          description="Connect a realm to start placing sessions on a forge."
+          description="Connect a realm to start placing sessions on a host."
         />
       </div>
     );
@@ -751,7 +751,7 @@ export function ClustersPage() {
                 type="button"
               >
                 <span className="niuu:text-lg">+</span>
-                forge here
+                host here
               </button>
             </div>
           </header>

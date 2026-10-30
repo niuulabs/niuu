@@ -215,7 +215,7 @@ function makeNewNode(kind: WorkflowNodeKind, position: { x: number; y: number })
       return {
         id,
         kind: 'resource',
-        label: 'Mimir resource',
+        label: 'Memory resource',
         resourceType: 'mimir',
         bindingMode: 'registry',
         registryEntryId: null,

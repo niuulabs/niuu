@@ -506,7 +506,7 @@ export function BifrostPage({ defaultTab = 'overview' }: { defaultTab?: BifrostT
     <div className="bf-page">
       <div className="bf-page__head">
         <div>
-          <p className="bf-page__title">Bifröst</p>
+          <p className="bf-page__title">AI models</p>
           <p className="bf-page__copy">{TAB_COPY[activeTab]}</p>
         </div>
         <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
@@ -517,11 +517,11 @@ export function BifrostPage({ defaultTab = 'overview' }: { defaultTab?: BifrostT
       </div>
       {loading ? (
         <div className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-6 niuu:text-text-secondary">
-          Loading Bifröst…
+          Loading AI models…
         </div>
       ) : error ? (
         <div className="niuu:rounded-xl niuu:border niuu:border-critical niuu:bg-critical-bg niuu:p-6 niuu:text-critical">
-          {error instanceof Error ? error.message : 'Failed to load Bifröst'}
+          {error instanceof Error ? error.message : 'Failed to load AI models'}
         </div>
       ) : activeTab === 'overview' ? (
         <OverviewTab

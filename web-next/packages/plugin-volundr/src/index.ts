@@ -15,17 +15,15 @@ import { useUnreadNotificationCount } from './ui/hooks/useNotifications';
 export const volundrPlugin = definePlugin({
   id: 'volundr',
   rune: 'V',
-  title: 'Völundr',
-  subtitle: '',
+  // Coding sessions: a terminal an agent works in.
+  icon: createElement(SquareTerminal, { size: 17, 'aria-hidden': true }),
+  title: 'Sessions',
+  subtitle: 'coding agents in sandboxes',
   simple: {
     tabs: ['sessions'],
-    title: 'Sessions',
-    subtitle: 'coding agents in sandboxes',
-    // Coding sessions: a terminal an agent works in.
-    icon: createElement(SquareTerminal, { size: 17, 'aria-hidden': true }),
   },
   tabs: [
-    { id: 'forge', label: 'Forge', path: '/volundr/forge' },
+    { id: 'forge', label: 'Overview', path: '/volundr/forge' },
     { id: 'sessions', label: 'Sessions', path: '/volundr/sessions' },
     { id: 'catalog', label: 'Catalog', path: '/volundr/catalog' },
     {

@@ -163,7 +163,7 @@ it('keeps available sessions but exposes registry refresh failures instead of si
   });
   await waitFor(() =>
     expect(result.current.sources[0]).toMatchObject({
-      name: 'Forge registry',
+      name: 'Host registry',
       error: 'Registry denied',
       stale: true,
     }),

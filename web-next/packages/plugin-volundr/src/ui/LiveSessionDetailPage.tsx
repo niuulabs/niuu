@@ -3659,7 +3659,7 @@ function LiveSessionDetailPageInner({
     if (forgeBadgeLabel) {
       return null;
     }
-    return { label: 'Forge', value: sessionForgeLabel(liveSession) };
+    return { label: 'Host', value: sessionForgeLabel(liveSession) };
   }, [costValue, forgeBadgeLabel, liveSession]);
   const tabCounts: Partial<Record<SessionTab, number>> = {
     chat: liveSession?.messageCount || replayMessages.length || undefined,

@@ -30,7 +30,7 @@ export const EDGE_LAYERS: readonly EdgeLayer[] = [
  */
 export const EDGE_LAYER_LABELS: Readonly<Record<EdgeLayer, string>> = {
   mesh: 'Agent mesh',
-  memory: 'Mímir',
+  memory: 'Memory',
   inference: 'Models',
   platform: 'Platform',
   observability: 'Telemetry',

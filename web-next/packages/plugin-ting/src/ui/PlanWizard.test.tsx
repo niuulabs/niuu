@@ -395,7 +395,7 @@ describe('PlanRuns', () => {
     render(<PlanRuns error={null} onBack={vi.fn()} />);
     // Use aria-label to disambiguate from StateDot's inner role="status"
     expect(screen.getByLabelText(/decomposing plan/i)).toBeInTheDocument();
-    expect(screen.getByText(/Ravns are mapping the work/i)).toBeInTheDocument();
+    expect(screen.getByText(/Agents are mapping the work/i)).toBeInTheDocument();
     expect(screen.getByText(/can take a few minutes or longer/i)).toBeInTheDocument();
   });
 
@@ -403,7 +403,7 @@ describe('PlanRuns', () => {
     render(<PlanRuns error={null} onBack={vi.fn()} />);
     expect(screen.getByText(/decomposer — analyzing brief/i)).toBeInTheDocument();
     expect(screen.getByText(/investigator — probing repo/i)).toBeInTheDocument();
-    expect(screen.getByText(/mimir-indexer — pulling in prior-art/i)).toBeInTheDocument();
+    expect(screen.getByText(/memory indexer — pulling in prior-art/i)).toBeInTheDocument();
   });
 
   it('shows error state when error is present', () => {
@@ -615,7 +615,7 @@ describe('PlanDraft', () => {
   it('shows empty state when no phases', () => {
     const emptyStructure: ExtractedStructure = {
       found: false,
-      structure: { name: 'Saga', phases: [] },
+      structure: { name: 'Project', phases: [] },
     };
     render(
       <PlanDraft
@@ -702,7 +702,7 @@ describe('PlanDraft', () => {
       />,
     );
     const ownSagaButtons = screen.getAllByRole('button', {
-      name: /promote run .* to own saga unavailable/i,
+      name: /promote run .* to own project unavailable/i,
     });
     expect(ownSagaButtons.length).toBeGreaterThan(0);
     ownSagaButtons.forEach((btn) => expect(btn).toBeDisabled());
@@ -771,7 +771,7 @@ describe('PlanApproved', () => {
 
   it('shows the "Open in Sagas" link', () => {
     render(<PlanApproved saga={MOCK_SAGA} />);
-    expect(screen.getByRole('link', { name: /open in sagas/i })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /open in projects/i })).toBeInTheDocument();
   });
 
   it('shows feature branch', () => {
@@ -812,11 +812,6 @@ describe('PlanWizard integration', () => {
   it('shows the step dots navigation', () => {
     render(<PlanWizard />, { wrapper: wrap(makeSvc()) });
     expect(screen.getByRole('navigation', { name: /plan wizard steps/i })).toBeInTheDocument();
-  });
-
-  it('shows the Ting rune in the header', () => {
-    render(<PlanWizard />, { wrapper: wrap(makeSvc()) });
-    expect(screen.getByText('ᚦ')).toBeInTheDocument();
   });
 
   it('advances to questions step after submitting prompt', async () => {
@@ -989,7 +984,7 @@ describe('PlanWizard integration', () => {
     });
 
     await waitFor(() => expect(screen.getByTestId('plan-approved')).toBeInTheDocument());
-    expect(screen.getByText('Saga launched!')).toBeInTheDocument();
+    expect(screen.getByText('Project launched!')).toBeInTheDocument();
   });
 
   it('lists and resumes active planning sessions', async () => {

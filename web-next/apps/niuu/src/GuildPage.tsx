@@ -4,17 +4,26 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouterState } from '@tanstack/react-router';
 import { createApiClient } from '@niuulabs/query';
 import { useConfig, useService, type IIdentityService } from '@niuulabs/plugin-sdk';
-import { Dialog, DialogContent, ErrorState, LoadingState, Rune, cn } from '@niuulabs/ui';
+import { Dialog, DialogContent, ErrorState, LoadingState, cn } from '@niuulabs/ui';
 import {
+  Bot,
+  Brain,
+  BriefcaseBusiness,
   Building2,
   ChevronRight,
   ExternalLink,
+  LayoutGrid,
+  Network,
   Pencil,
   Trash2,
   RefreshCw,
   Search,
+  Server,
   Shield,
+  Sparkles,
+  SquareTerminal,
   UserRound,
+  type LucideIcon,
   Wifi,
   WifiOff,
 } from 'lucide-react';
@@ -38,7 +47,6 @@ type CredentialScope = 'none' | 'user' | 'tenant';
 type InstanceCatalogEntry = {
   kind: InstanceKind;
   label: string;
-  rune: string;
   summary: string;
   detail: string;
   registerable: boolean;
@@ -80,52 +88,56 @@ type WizardState = {
 const FILTER_KIND_OPTIONS: Array<{
   value: Exclude<InstanceKind, 'generic'>;
   label: string;
-  rune: string;
 }> = [
-  { value: 'volundr', label: 'Volundr', rune: 'ᚲ' },
-  { value: 'ting', label: 'Ting', rune: '✦' },
-  { value: 'mimir', label: 'Mimir', rune: 'ᛗ' },
-  { value: 'bifrost', label: 'Bifrost', rune: 'ᚨ' },
-  { value: 'ravn', label: 'Ravn', rune: 'ᚱ' },
-  { value: 'observatory', label: 'Observatory', rune: 'ᛞ' },
+  { value: 'volundr', label: 'Sessions' },
+  { value: 'ting', label: 'Work' },
+  { value: 'mimir', label: 'Memory' },
+  { value: 'bifrost', label: 'AI models' },
+  { value: 'ravn', label: 'Agents' },
+  { value: 'observatory', label: 'Monitoring' },
 ];
 
 const REGISTER_KIND_OPTIONS: Array<{
   value: Extract<InstanceKind, 'volundr' | 'mimir' | 'bifrost' | 'ting'>;
   label: string;
-  rune: string;
   summary: string;
   detail: string;
 }> = [
   {
     value: 'volundr',
-    label: 'Volundr',
-    rune: 'ᚲ',
-    summary: 'session forge',
+    label: 'Sessions',
+    summary: 'session hosts',
     detail: 'spawns remote dev pods',
   },
   {
     value: 'mimir',
-    label: 'Mimir',
-    rune: 'ᛗ',
+    label: 'Memory',
     summary: 'knowledge index',
     detail: 'chronicles, embeddings, graph',
   },
   {
     value: 'bifrost',
-    label: 'Bifrost',
-    rune: 'ᚨ',
+    label: 'AI models',
     summary: 'LLM gateway',
     detail: 'routes inference',
   },
   {
     value: 'ting',
-    label: 'Ting',
-    rune: '✦',
-    summary: 'saga coordinator',
-    detail: 'dispatch ravens',
+    label: 'Work',
+    summary: 'project coordinator',
+    detail: 'dispatches agents',
   },
 ];
+
+const KIND_ICONS: Record<string, LucideIcon> = {
+  all: LayoutGrid,
+  volundr: SquareTerminal,
+  ting: BriefcaseBusiness,
+  mimir: Brain,
+  bifrost: Sparkles,
+  ravn: Bot,
+  observatory: Network,
+};
 
 const DEFAULT_CAPABILITIES: Record<InstanceKind, string[]> = {
   volundr: ['sessions', 'chat', 'logs', 'chronicles'],
@@ -176,13 +188,29 @@ function slugifyName(value: string): string {
     .slice(0, 64);
 }
 
+/** The registry catalog names kinds after services; show them by what they do. */
+function plainCatalogEntry(entry: InstanceCatalogEntry): InstanceCatalogEntry {
+  const filter = FILTER_KIND_OPTIONS.find((option) => option.value === entry.kind);
+  const register = REGISTER_KIND_OPTIONS.find((option) => option.value === entry.kind);
+  return {
+    ...entry,
+    label: filter?.label ?? entry.label,
+    summary: register?.summary ?? entry.summary,
+    detail: register?.detail ?? entry.detail,
+  };
+}
+
+function KindIcon({ kind, size, className }: { kind: string; size: number; className: string }) {
+  const Icon = KIND_ICONS[kind] ?? Server;
+  return <Icon size={size} className={className} aria-hidden="true" />;
+}
+
 function kindMeta(kind: InstanceKind) {
   return (
     FILTER_KIND_OPTIONS.find((option) => option.value === kind) ??
     ({
       value: 'generic',
       label: 'Generic API',
-      rune: 'ᛦ',
     } as const)
   );
 }
@@ -526,7 +554,7 @@ function InstanceCard({
     >
       <div className="niuu:flex niuu:items-start niuu:gap-3">
         <div className="niuu:flex niuu:h-10 niuu:w-10 niuu:flex-shrink-0 niuu:items-center niuu:justify-center niuu:rounded-[12px] niuu:border niuu:border-white/10 niuu:bg-bg-tertiary">
-          <Rune glyph={meta.rune} size={16} className="niuu:text-brand" />
+          <KindIcon kind={instance.kind} size={16} className="niuu:text-brand" />
         </div>
         <div className="niuu:min-w-0 niuu:flex-1">
           <div className="niuu:flex niuu:items-center niuu:gap-2">
@@ -632,7 +660,7 @@ function GuildDetailRail({
       <div className="niuu:rounded-[22px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-5">
         <div className="niuu:flex niuu:items-start niuu:gap-3">
           <div className="niuu:flex niuu:h-10 niuu:w-10 niuu:flex-shrink-0 niuu:items-center niuu:justify-center niuu:rounded-[12px] niuu:border niuu:border-white/10 niuu:bg-bg-tertiary">
-            <Rune glyph={meta.rune} size={16} className="niuu:text-brand" />
+            <KindIcon kind={instance.kind} size={16} className="niuu:text-brand" />
           </div>
           <div className="niuu:min-w-0 niuu:flex-1">
             <div className="niuu:flex niuu:items-center niuu:gap-2">
@@ -872,7 +900,6 @@ function RegisterWizard({
   registerOptions: Array<{
     value: InstanceKind;
     label: string;
-    rune: string;
     summary: string;
     detail: string;
   }>;
@@ -948,7 +975,7 @@ function RegisterWizard({
                       )}
                     >
                       <div className="guild-choice-icon niuu:flex niuu:h-11 niuu:w-11 niuu:items-center niuu:justify-center niuu:rounded-[10px] niuu:border niuu:border-white/15 niuu:bg-[#22303b]">
-                        <Rune glyph={option.rune} size={18} className="niuu:text-brand" />
+                        <KindIcon kind={option.value} size={18} className="niuu:text-brand" />
                       </div>
                       <div className="niuu:min-w-0">
                         <div className="niuu:flex niuu:items-center niuu:gap-2">
@@ -970,8 +997,8 @@ function RegisterWizard({
                 })}
               </div>
               <p className="niuu:font-mono niuu:text-[12px] niuu:leading-5 niuu:text-text-faint">
-                Future types plug in here. Guild is a generic Niuu runtime registry, not a
-                Volundr-only catalog.
+                Future types plug in here. Infrastructure is a generic Niuu runtime registry, not a
+                sessions-only catalog.
               </p>
             </div>
           ) : null}
@@ -987,7 +1014,7 @@ function RegisterWizard({
                   onChange={(event) =>
                     setWizard((current) => ({ ...current, name: event.target.value }))
                   }
-                  placeholder="volundr • prod"
+                  placeholder="sessions • prod"
                   className="niuu:w-full niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-3 niuu:py-2.5 niuu:text-[14px] niuu:text-text-primary niuu:placeholder:text-text-muted niuu:focus:outline-none"
                 />
                 <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
@@ -1574,7 +1601,10 @@ export function GuildPage() {
     () => instances.filter((instance) => normalizeHealth(instance.health) === 'unreachable'),
     [instances],
   );
-  const catalogEntries = useMemo(() => catalogQuery.data ?? [], [catalogQuery.data]);
+  const catalogEntries = useMemo(
+    () => (catalogQuery.data ?? []).map(plainCatalogEntry),
+    [catalogQuery.data],
+  );
   const filterOptions = useMemo(
     () =>
       catalogEntries.length > 0
@@ -1582,7 +1612,6 @@ export function GuildPage() {
         : FILTER_KIND_OPTIONS.map((option) => ({
             kind: option.value,
             label: option.label,
-            rune: option.rune,
             summary: '',
             detail: '',
             registerable: true,
@@ -1597,7 +1626,6 @@ export function GuildPage() {
         : REGISTER_KIND_OPTIONS.map((option) => ({
             kind: option.value,
             label: option.label,
-            rune: option.rune,
             summary: option.summary,
             detail: option.detail,
             registerable: true,
@@ -1685,7 +1713,7 @@ export function GuildPage() {
     return (
       <div className="niuu:p-6">
         <p className="niuu:text-sm niuu:text-text-secondary">
-          The shared Niuu API is not configured, so Guild targets are unavailable.
+          The shared Niuu API is not configured, so infrastructure targets are unavailable.
         </p>
       </div>
     );
@@ -1710,11 +1738,10 @@ export function GuildPage() {
 
               <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2">
                 {[
-                  { value: 'all', label: 'all', rune: 'ᚹ' } as const,
+                  { value: 'all', label: 'all' } as const,
                   ...filterOptions.map((option) => ({
                     value: option.kind,
                     label: option.label,
-                    rune: option.rune,
                   })),
                 ].map((option) => {
                   const active = kindFilter === option.value;
@@ -1731,7 +1758,7 @@ export function GuildPage() {
                           : 'niuu:border-border-subtle niuu:bg-bg-tertiary niuu:text-text-muted niuu:hover:text-text-primary',
                       )}
                     >
-                      <Rune glyph={option.rune} size={13} className="niuu:text-current" />
+                      <KindIcon kind={option.value} size={13} className="niuu:text-current" />
                       <span>{option.label}</span>
                       <span className="niuu:text-[10px] niuu:text-text-faint">{count}</span>
                     </button>
@@ -1865,7 +1892,6 @@ export function GuildPage() {
         registerOptions={registerOptions.map((option) => ({
           value: option.kind,
           label: option.label,
-          rune: option.rune,
           summary: option.summary,
           detail: option.detail,
         }))}

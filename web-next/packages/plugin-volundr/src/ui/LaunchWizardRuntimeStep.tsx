@@ -123,7 +123,7 @@ export function RuntimeStep({
       {presets.length > 0 ? (
         <SectionCard
           title="Launch spec"
-          description="Load catalog specs or save reusable forge configurations."
+          description="Load catalog specs or save reusable session configurations."
         >
           <div className="niuu:grid niuu:grid-cols-[2fr_1fr] niuu:gap-4">
             <Field label="Load launch spec">
@@ -258,8 +258,8 @@ export function RuntimeStep({
               {totalModelCount > 0 ? (
                 <div className="niuu:text-xs niuu:text-text-faint">
                   {modelOptions.length === totalModelCount
-                    ? `Showing all ${totalModelCount} Bifrost models for ${selectedDefinition}.`
-                    : `Showing ${modelOptions.length} of ${totalModelCount} Bifrost models compatible with ${selectedDefinition}.`}
+                    ? `Showing all ${totalModelCount} models for ${selectedDefinition}.`
+                    : `Showing ${modelOptions.length} of ${totalModelCount} models compatible with ${selectedDefinition}.`}
                 </div>
               ) : null}
             </Field>
@@ -277,14 +277,14 @@ export function RuntimeStep({
             </Field>
           ) : null}
           {targets.length > 0 ? (
-            <Field label="Forge">
+            <Field label="Host">
               <div className="niuu:space-y-3">
                 <SegmentedFilter<WizardForm['targetMode']>
-                  aria-label="Forge routing mode"
+                  aria-label="Host routing mode"
                   value={form.targetMode}
                   onChange={(targetMode) => update({ targetMode })}
                   options={[
-                    { value: 'instance', label: 'Specific Forge' },
+                    { value: 'instance', label: 'Specific host' },
                     {
                       value: 'tags',
                       label: 'Match tags',
@@ -332,8 +332,8 @@ export function RuntimeStep({
                     />
                     <div className="niuu:text-xs niuu:text-text-faint">
                       {form.targetTags.length === 0
-                        ? 'No tags selected; Guild will route to the default enabled Forge.'
-                        : `${matchingTagTargets.length} matching Forge${matchingTagTargets.length === 1 ? '' : 's'}: ${
+                        ? 'No tags selected; Niuu will route to the default enabled host.'
+                        : `${matchingTagTargets.length} matching host${matchingTagTargets.length === 1 ? '' : 's'}: ${
                             matchingTagTargets.map((target) => target.name).join(', ') || 'none'
                           }`}
                     </div>
@@ -348,7 +348,7 @@ export function RuntimeStep({
                     }))}
                     value={form.instanceId}
                     onChange={(value) => update({ instanceId: value })}
-                    placeholder="Select forge"
+                    placeholder="Select host"
                     testId="forge-target-select"
                   />
                 )}
@@ -372,7 +372,7 @@ export function RuntimeStep({
 
         <SectionCard
           title="Resources"
-          description="Request runtime capacity with live guardrails from Forge."
+          description="Request runtime capacity with live guardrails from the host."
         >
           <Field label="CPU (cores)">
             <Input

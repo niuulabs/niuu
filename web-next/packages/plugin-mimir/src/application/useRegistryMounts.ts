@@ -22,7 +22,7 @@ export function useCreateRegistryMount() {
     mutationFn: async (mount: Omit<RegistryMount, 'id'>) => {
       const createRegistryMount = service.mounts.createRegistryMount;
       if (!createRegistryMount) {
-        throw new Error('Registry management is not available for this Mimir service.');
+        throw new Error('Registry management is not available for this memory service.');
       }
       return createRegistryMount.call(service.mounts, mount);
     },
@@ -40,7 +40,7 @@ export function useUpdateRegistryMount() {
     mutationFn: async ({ id, mount }: { id: string; mount: Omit<RegistryMount, 'id'> }) => {
       const updateRegistryMount = service.mounts.updateRegistryMount;
       if (!updateRegistryMount) {
-        throw new Error('Registry management is not available for this Mimir service.');
+        throw new Error('Registry management is not available for this memory service.');
       }
       return updateRegistryMount.call(service.mounts, id, mount);
     },
@@ -58,7 +58,7 @@ export function useDeleteRegistryMount() {
     mutationFn: async (id: string) => {
       const deleteRegistryMount = service.mounts.deleteRegistryMount;
       if (!deleteRegistryMount) {
-        throw new Error('Registry management is not available for this Mimir service.');
+        throw new Error('Registry management is not available for this memory service.');
       }
       return deleteRegistryMount.call(service.mounts, id);
     },

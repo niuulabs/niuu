@@ -14,14 +14,14 @@ export const REALMS_TABS = [
 
 export const realmsPlugin = definePlugin({
   id: 'realms',
-  rune: 'ᚱ',
+  rune: 'R',
+  // A set of environments, each its own box.
+  icon: <Boxes size={17} aria-hidden="true" />,
   title: 'Realms',
   subtitle: 'environments kept by residents',
   tabs: REALMS_TABS.map((tab) => ({ ...tab })),
   simple: {
     tabs: REALMS_TABS.map((tab) => tab.id),
-    // A set of environments, each its own box.
-    icon: <Boxes size={17} aria-hidden="true" />,
   },
   routes: (rootRoute) => [
     createRoute({ getParentRoute: () => rootRoute, path: '/realms', component: RealmsHomePage }),

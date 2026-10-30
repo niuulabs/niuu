@@ -111,7 +111,7 @@ export function ravnTarget(
 ): string {
   const named = ravnPlace(ravn) || ravn.instanceSlug || ravn.location || ravn.backend;
   if (named) return named;
-  return ravn.kind === 'session' ? 'this Forge' : 'unassigned';
+  return ravn.kind === 'session' ? 'this host' : 'unassigned';
 }
 
 export function isSessionRavn(ravn: Pick<Ravn, 'kind'>): boolean {

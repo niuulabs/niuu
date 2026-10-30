@@ -335,19 +335,19 @@ function TargetCard({
     <section className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-4 niuu:space-y-3">
       <div className="niuu:space-y-1">
         <div className="niuu:text-[11px] niuu:font-mono niuu:uppercase niuu:tracking-[0.08em] niuu:text-text-muted">
-          Volundr target
+          Session host
         </div>
         <h3 className="niuu:text-[16px] niuu:font-semibold niuu:text-text-primary">
           {targetLabel}
         </h3>
         <p className="niuu:text-sm niuu:leading-6 niuu:text-text-secondary">
-          Assign this saga to default routing, one specific Volundr instance, or a label selector
+          Assign this project to default routing, one specific session host, or a label selector
           that resolves at dispatch time.
         </p>
       </div>
       <div className="niuu:space-y-3">
         <SegmentedFilter<TargetMode>
-          aria-label="Volundr target mode"
+          aria-label="Session host mode"
           value={mode}
           onChange={setMode}
           options={[
@@ -363,7 +363,7 @@ function TargetCard({
             className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
             disabled={isLoading || isUpdating}
           >
-            <option value="">Select Volundr instance</option>
+            <option value="">Select a session host</option>
             {targets.map((target) => (
               <option key={target.connectionId} value={target.connectionId}>
                 {target.name}
@@ -493,7 +493,7 @@ function SagaReposCard({
       <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-3">
         <div className="niuu:space-y-1">
           <div className="niuu:text-[11px] niuu:font-mono niuu:uppercase niuu:tracking-[0.08em] niuu:text-text-muted">
-            Saga repositories
+            Project repositories
           </div>
           <h3 className="niuu:text-[16px] niuu:font-semibold niuu:text-text-primary">
             {currentRefs.length} {currentRefs.length === 1 ? 'repo' : 'repos'}
@@ -767,10 +767,10 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
     queryFn: () => repoCatalog.getRepos(),
   });
 
-  if (sagaLoading || phasesLoading) return <LoadingState label="Loading saga…" />;
+  if (sagaLoading || phasesLoading) return <LoadingState label="Loading project…" />;
   if (sagaError)
     return (
-      <ErrorState message={sagaErr instanceof Error ? sagaErr.message : 'Failed to load saga'} />
+      <ErrorState message={sagaErr instanceof Error ? sagaErr.message : 'Failed to load project'} />
     );
   if (phasesError)
     return (
@@ -778,7 +778,7 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
         message={phasesErr instanceof Error ? phasesErr.message : 'Failed to load phases'}
       />
     );
-  if (!saga) return <ErrorState message={`Saga "${sagaId}" not found`} />;
+  if (!saga) return <ErrorState message={`Project "${sagaId}" not found`} />;
 
   const allPhases = phases ?? [];
   const activeRuns = allPhases
@@ -812,7 +812,7 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
           onClick={() => void navigate({ to: '/ting/sagas' })}
           className="niuu:text-sm niuu:text-text-secondary niuu:hover:text-text-primary"
         >
-          ← Sagas
+          ← Projects
         </button>
       )}
 
@@ -838,7 +838,7 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
           {allPhases.length === 0 ? (
             <EmptyState
               title="No phases yet"
-              description="This saga has not been decomposed into phases."
+              description="This project has not been decomposed into phases."
             />
           ) : (
             allPhases.map((phase) => <PhaseCard key={phase.id} phase={phase} />)

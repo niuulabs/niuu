@@ -325,7 +325,7 @@ describe('ReadyPage', () => {
       'href',
       '/volundr',
     );
-    expect(screen.getByText(/Forge → New session/)).toBeInTheDocument();
+    expect(screen.getByText(/Sessions → New session/)).toBeInTheDocument();
     expect(screen.getByTestId('ready-dashboard')).toHaveAttribute('href', '/');
   });
 });

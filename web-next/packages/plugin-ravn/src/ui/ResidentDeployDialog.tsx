@@ -78,7 +78,7 @@ export function ResidentDeployDialog({
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
         title="Deploy resident"
-        description="Launch a long-lived Ravn from an enabled target profile."
+        description="Launch a long-lived agent from an enabled target profile."
         className="rv-deploy-dialog"
       >
         <form className="rv-deploy-form" onSubmit={(event) => void submit(event)}>

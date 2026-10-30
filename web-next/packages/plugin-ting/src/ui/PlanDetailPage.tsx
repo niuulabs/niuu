@@ -76,7 +76,7 @@ export function PlanDetailPage() {
           <dt>Repository</dt>
           <dd>{plan.repo || 'none selected'}</dd>
           <dt>Workflow</dt>
-          <dd>{plan.workflowName || 'Saga Planning'}</dd>
+          <dd>{plan.workflowName || 'Project planning'}</dd>
           <dt>Slug</dt>
           <dd>{slug}</dd>
         </dl>

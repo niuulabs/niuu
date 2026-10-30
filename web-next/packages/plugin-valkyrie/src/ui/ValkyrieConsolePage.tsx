@@ -130,7 +130,7 @@ function taskSeverities(
 function ConsoleLoading() {
   return (
     <div data-testid="valkyrie-console-loading" className={`niuu:p-6 niuu:text-sm ${MUTED}`}>
-      Loading Valkyrie console...
+      Loading resident console...
     </div>
   );
 }
@@ -150,7 +150,7 @@ function ConsoleError({ message }: { message: string }) {
 function EmptyConsole() {
   return (
     <div data-testid="valkyrie-console-empty" className={`${PANEL} niuu:m-4 niuu:p-6 ${MUTED}`}>
-      No resident Valkyries have announced yet.
+      No residents have announced yet.
     </div>
   );
 }
@@ -372,7 +372,7 @@ function Hero({
           <div className="niuu:flex niuu:items-center niuu:gap-3">
             <span className="niuu:relative niuu:shrink-0">
               <span className="niuu:flex niuu:h-14 niuu:w-14 niuu:items-center niuu:justify-center niuu:rounded-full niuu:border niuu:border-brand niuu:bg-brand/10 niuu:text-3xl niuu:text-brand">
-                ᛒ
+                {valkyrie.name.charAt(0)}
               </span>
               <span className="niuu:absolute niuu:-bottom-1 niuu:-left-1 niuu:flex niuu:h-5 niuu:w-5 niuu:items-center niuu:justify-center niuu:rounded-full niuu:bg-bg-secondary niuu:text-brand">
                 {wakefulnessIcon(valkyrie.wakefulness)}
@@ -380,7 +380,7 @@ function Hero({
             </span>
             <div className="niuu:min-w-0">
               <h1 className="niuu:truncate niuu:font-mono niuu:text-2xl niuu:font-semibold niuu:text-text-primary">
-                valkyrie:{valkyrie.name}
+                {valkyrie.name}
               </h1>
               <p className="niuu:mt-1 niuu:text-sm niuu:text-text-muted">
                 {valkyrie.persona} · {valkyrie.specialty}
@@ -446,7 +446,7 @@ function Hero({
                 updateAutonomy.mutate({
                   valkyrieId: valkyrie.id,
                   mode: event.target.value as AutonomyMode,
-                  reason: 'Operator change from the Valkyrie console',
+                  reason: 'Operator change from the resident console',
                   participantId: OPERATOR_PARTICIPANT_ID,
                 })
               }
@@ -484,7 +484,7 @@ function Hero({
           className="niuu:mt-4 niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-3"
         >
           <div className="niuu:text-[11px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-muted">
-            charter — what this valkyrie is for
+            charter — what this resident is for
           </div>
           <p className="niuu:mt-2 niuu:text-sm niuu:leading-6 niuu:text-text-primary">
             {valkyrie.charter}
@@ -903,8 +903,8 @@ function AuthorityPanel({
         {realmExists ? (
           <>
             <p className={`niuu:mt-1 niuu:text-xs ${MUTED}`}>
-              The realm&apos;s build grant pins the Ting workflow this resident uses to build tools
-              and sets its effective build autonomy.
+              The realm&apos;s build grant pins the workflow this resident uses to build tools and
+              sets its effective build autonomy.
             </p>
             <ToolBuilderGrantCard realm={realm} />
           </>
@@ -1802,7 +1802,7 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
       <main className="niuu:min-h-0 niuu:overflow-auto niuu:p-5">
         <div className="niuu:mb-4 niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:text-xs niuu:text-text-muted">
           <div className="niuu:font-mono">
-            Valkyrie / valkyries / <span className="niuu:text-text-primary">{selected.name}</span>
+            Residents / <span className="niuu:text-text-primary">{selected.name}</span>
           </div>
           <div className="niuu:flex niuu:items-center niuu:gap-3">
             <span>resident {dashboard.valkyries.length}</span>
@@ -1918,7 +1918,7 @@ export function ValkyrieConsolePage() {
   if (error) {
     return (
       <ConsoleError
-        message={error instanceof Error ? error.message : 'Unable to load Valkyrie console'}
+        message={error instanceof Error ? error.message : 'Unable to load resident console'}
       />
     );
   }

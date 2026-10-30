@@ -292,7 +292,7 @@ function TalkToIt({ ravn }: { ravn: Ravn }) {
           {latest ? 'New conversation' : 'Start a conversation'}
         </button>
         <Link to={'/ravn/ravens' as never} className={LINK}>
-          Open in Ravn
+          Open in Agents
         </Link>
       </div>
       {create.error ? (
@@ -749,7 +749,7 @@ export function RealmPage() {
             ) : (
               <EmptyState
                 title="Realm memory is still starting"
-                description="The Mímir instance created with the realm has not been discovered yet."
+                description="The memory instance created with the realm has not been discovered yet."
               />
             )}
           </div>
@@ -793,10 +793,10 @@ export function RealmPage() {
           {(workflows.data ?? []).length === 0 ? (
             <EmptyState
               title="No workflows yet"
-              description="Build one under Ting › Workflows, then run it here."
+              description="Build one under Work › Workflows, then run it here."
               action={
                 <Link to={'/ting/workflows' as never} className={PRIMARY}>
-                  Open Ting › Workflows
+                  Open Work › Workflows
                 </Link>
               }
             />
@@ -822,7 +822,7 @@ export function RealmPage() {
             ))
           )}
           <Link to={'/ting/workflows' as never} className={`${LINK} niuu:self-start`}>
-            Manage workflows in Ting
+            Manage workflows
           </Link>
         </div>
       </Modal>
@@ -836,7 +836,7 @@ export function RealmPage() {
         launching={launchWorkflow.isPending}
         onLaunch={async (request) => {
           const target = workflow ?? workflows.data?.[0];
-          if (!target) throw new Error('No workflow to run. Create one under Ting › Workflows.');
+          if (!target) throw new Error('No workflow to run. Create one under Work › Workflows.');
           await launchWorkflow.mutateAsync({
             id: target.id,
             request: {

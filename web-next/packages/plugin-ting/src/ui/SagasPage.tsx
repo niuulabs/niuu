@@ -9,7 +9,6 @@ import {
   ErrorState,
   EmptyState,
   RepoSelect,
-  Rune,
   SegmentedFilter,
   ToastProvider,
   useToast,
@@ -356,9 +355,11 @@ function SagasPageContent() {
 
   const selectedSaga = filtered.find((s) => s.id === selectedSagaId) ?? filtered[0] ?? null;
 
-  if (isLoading) return <LoadingState label="Loading sagas…" />;
+  if (isLoading) return <LoadingState label="Loading projects…" />;
   if (isError)
-    return <ErrorState message={error instanceof Error ? error.message : 'Failed to load sagas'} />;
+    return (
+      <ErrorState message={error instanceof Error ? error.message : 'Failed to load projects'} />
+    );
 
   function handleSelectSaga(saga: Saga) {
     setSelectedSagaIdState(saga.id);
@@ -458,7 +459,7 @@ function SagasPageContent() {
 
   async function handleDeleteSelectedSaga() {
     if (!selectedSaga || !ting.deleteSaga) return;
-    if (!window.confirm(`Delete the Ting import for "${selectedSaga.name}"?`)) return;
+    if (!window.confirm(`Delete the import for "${selectedSaga.name}"?`)) return;
 
     setIsDeletingSaga(true);
     try {
@@ -469,7 +470,7 @@ function SagasPageContent() {
       void navigate({ to: '/ting/sagas' });
     } catch (deleteError) {
       toast({
-        title: deleteError instanceof Error ? deleteError.message : 'Failed to delete saga',
+        title: deleteError instanceof Error ? deleteError.message : 'Failed to delete project',
         tone: 'critical',
       });
     } finally {
@@ -483,10 +484,10 @@ function SagasPageContent() {
         <div className="niuu:p-4 niuu:border-b niuu:border-border-subtle">
           <input
             type="search"
-            placeholder="Filter sagas..."
+            placeholder="Filter projects..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            aria-label="Search sagas"
+            aria-label="Search projects"
             className="niuu:w-full niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-3 niuu:text-[14px] niuu:text-text-primary niuu:placeholder-text-muted niuu:outline-none"
           />
         </div>
@@ -527,13 +528,12 @@ function SagasPageContent() {
         <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-5">
           <div className="niuu:max-w-[680px]">
             <div className="niuu:flex niuu:items-start niuu:gap-3">
-              <Rune glyph="ᚦ" size={26} />
               <div>
                 <h2 className="niuu:m-0 niuu:text-[22px] niuu:font-semibold niuu:text-text-primary">
-                  Sagas
+                  Projects
                 </h2>
                 <p className="niuu:m-0 niuu:mt-2 niuu:text-[14px] niuu:leading-6 niuu:text-text-secondary">
-                  Every saga is a decomposed tracker issue driven by a workflow. Select one to
+                  Every project is a decomposed tracker issue driven by a workflow. Select one to
                   inspect phases and runs.
                 </p>
               </div>
@@ -542,17 +542,17 @@ function SagasPageContent() {
           <div className="niuu:flex niuu:items-center niuu:gap-3">
             <input
               type="search"
-              placeholder="Filter sagas..."
+              placeholder="Filter projects..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              aria-label="Filter sagas"
+              aria-label="Filter projects"
               className="niuu:w-[310px] niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-2.5 niuu:text-[14px] niuu:text-text-primary niuu:placeholder-text-muted niuu:outline-none"
             />
             <button
               type="button"
               className="niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-2.5 niuu:text-[14px] niuu:font-medium niuu:text-text-primary"
               onClick={openImportModal}
-              aria-label="Import saga from tracker"
+              aria-label="Import project from tracker"
             >
               Import
             </button>
@@ -562,9 +562,9 @@ function SagasPageContent() {
               onClick={() => {
                 const data = JSON.stringify(allSagas, null, 2);
                 downloadJson('sagas.json', data);
-                toast({ title: `Exported ${allSagas.length} sagas`, tone: 'success' });
+                toast({ title: `Exported ${allSagas.length} projects`, tone: 'success' });
               }}
-              aria-label="Export sagas as JSON"
+              aria-label="Export projects as JSON"
             >
               Export
             </button>
@@ -574,7 +574,7 @@ function SagasPageContent() {
                 className="niuu:rounded-lg niuu:border niuu:border-critical/50 niuu:bg-bg-secondary niuu:px-4 niuu:py-2.5 niuu:text-[14px] niuu:font-medium niuu:text-critical"
                 onClick={() => void handleDeleteSelectedSaga()}
                 disabled={isDeletingSaga}
-                aria-label="Delete selected saga import"
+                aria-label="Delete selected project import"
               >
                 {isDeletingSaga ? 'Deleting…' : 'Delete import'}
               </button>
@@ -583,9 +583,9 @@ function SagasPageContent() {
               type="button"
               className="niuu:rounded-lg niuu:border niuu:border-brand/50 niuu:bg-brand niuu:px-4 niuu:py-2.5 niuu:text-[14px] niuu:font-medium niuu:text-bg-primary"
               onClick={() => setShowNewSagaModal(true)}
-              aria-label="Create new saga"
+              aria-label="Create new project"
             >
-              + New saga
+              + New project
             </button>
           </div>
         </div>
@@ -595,15 +595,15 @@ function SagasPageContent() {
         ) : filtered.length === 0 ? (
           <div className="niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-6">
             <EmptyState
-              title="No sagas found"
-              description={search ? `No sagas match "${search}"` : 'No sagas yet.'}
+              title="No projects found"
+              description={search ? `No projects match "${search}"` : 'No projects yet.'}
             />
           </div>
         ) : (
           <div className="niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-6">
             <EmptyState
-              title="Select a saga"
-              description="Choose a saga to inspect phases and runs."
+              title="Select a project"
+              description="Choose a project to inspect phases and runs."
             />
           </div>
         )}
@@ -611,8 +611,8 @@ function SagasPageContent() {
         <Modal
           open={showNewSagaModal}
           onOpenChange={setShowNewSagaModal}
-          title="New Saga"
-          description="New sagas start from a prompt in the Plan view."
+          title="New project"
+          description="New projects start from a prompt in the Plan view."
           actions={[
             { label: 'Cancel', variant: 'secondary', closes: true },
             {
@@ -630,12 +630,12 @@ function SagasPageContent() {
           open={showImportModal}
           onOpenChange={handleImportModalToggle}
           title="Import From Tracker"
-          description="Browse tracker projects, choose a target repo, and register the project as a Ting saga."
+          description="Browse tracker projects, choose a target repo, and register it as a project."
           className="niuu:max-w-[920px]"
           actions={[
             { label: 'Cancel', variant: 'secondary', closes: true },
             {
-              label: isImporting ? 'Importing…' : 'Import saga',
+              label: isImporting ? 'Importing…' : 'Import project',
               variant: 'primary',
               disabled: !canImportSelectedProject,
               closes: false,
@@ -661,7 +661,7 @@ function SagasPageContent() {
                 {trackerProjects.length === 0 ? (
                   <EmptyState
                     title="No tracker projects found"
-                    description="Connect a tracker in Ting settings, then try again."
+                    description="Connect a tracker in Work settings, then try again."
                   />
                 ) : (
                   trackerProjects.map((project: TrackerProject) => {
@@ -739,7 +739,7 @@ function SagasPageContent() {
                         {effectiveSelectedProject.name}
                       </h3>
                       <p className="niuu:m-0 niuu:mt-2 niuu:text-sm niuu:leading-5 niuu:text-text-secondary">
-                        Import registers this tracker project as a saga. Ting will keep the saga
+                        Import registers this tracker project in Niuu. Niuu will keep the project
                         linked to the tracker instead of copying the project into local-only state.
                       </p>
                     </div>
@@ -913,10 +913,10 @@ function SagasPageContent() {
 
                     <div className="niuu:block">
                       <span className="niuu:block niuu:mb-1.5 niuu:text-xs niuu:font-mono niuu:text-text-muted">
-                        Volundr target
+                        Session host
                       </span>
                       <SegmentedFilter<ImportTargetMode>
-                        aria-label="Saga target routing mode"
+                        aria-label="Project target routing mode"
                         value={targetMode}
                         onChange={setTargetMode}
                         options={[
@@ -931,7 +931,7 @@ function SagasPageContent() {
                           onChange={(event) => setSelectedInstanceId(event.target.value)}
                           className="niuu:mt-2 niuu:w-full niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:outline-none niuu:focus:border-brand"
                         >
-                          <option value="">Select a Volundr instance</option>
+                          <option value="">Select a session host</option>
                           {(dispatchTargetsQuery.data ?? []).map((target: DispatchCluster) => (
                             <option
                               key={target.instanceId ?? target.connectionId}
@@ -966,8 +966,8 @@ function SagasPageContent() {
                         </div>
                       ) : null}
                       <div className="niuu:mt-1 niuu:text-[11px] niuu:text-text-faint">
-                        Default lets Ting route normally. Instance pins one Volundr. Tags route each
-                        dispatch to a Volundr instance whose labels match.
+                        Default lets Niuu route normally. Instance pins one host. Tags route each
+                        dispatch to a session host whose labels match.
                       </div>
                     </div>
 
@@ -978,12 +978,12 @@ function SagasPageContent() {
                           effectiveSelectedProject.trackerConnectionId,
                         ),
                       )
-                        ? 'This tracker project is already imported into Ting.'
+                        ? 'This tracker project is already imported into Niuu.'
                         : selectedProjectHasSlugConflict
-                          ? `A saga with slug "${selectedProjectSlug}" already exists in Ting.`
+                          ? `A project with slug "${selectedProjectSlug}" already exists in Niuu.`
                           : selectedProjectNeedsSourceSuffix
-                            ? `The saga name "${selectedProjectSlug}" already exists; Ting will add the tracker source.`
-                            : 'Select one or more repositories to bind the imported saga to.'}
+                            ? `The project name "${selectedProjectSlug}" already exists; Niuu will add the tracker source.`
+                            : 'Select one or more repositories to bind the imported project to.'}
                     </div>
                   </>
                 ) : (

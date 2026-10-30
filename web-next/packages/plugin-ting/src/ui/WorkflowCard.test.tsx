@@ -39,7 +39,7 @@ describe('WorkflowCard', () => {
 
   it('renders the workflow description text', () => {
     render(<WorkflowCard workflow="ship" />);
-    expect(screen.getByText(/saved as the saga default/i)).toBeInTheDocument();
+    expect(screen.getByText(/saved as the project default/i)).toBeInTheDocument();
   });
 
   it('renders the dispatch override info row', () => {
@@ -52,9 +52,9 @@ describe('WorkflowCard', () => {
     expect(screen.getByLabelText(/workflow participants/i)).toBeInTheDocument();
   });
 
-  it('renders APPLIED · PER-SAGA label', () => {
+  it('renders APPLIED · PER-PROJECT label', () => {
     render(<WorkflowCard />);
-    expect(screen.getByText(/APPLIED · PER-SAGA/i)).toBeInTheDocument();
+    expect(screen.getByText(/APPLIED · PER-PROJECT/i)).toBeInTheDocument();
   });
 
   it('renders assign and clear actions when callbacks are supplied', () => {

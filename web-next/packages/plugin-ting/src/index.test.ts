@@ -13,11 +13,8 @@ function routeFor(path: string) {
 
 describe('tingPlugin descriptor', () => {
   it('shows Work and Workflows in Simple mode', () => {
-    expect(tingPlugin.simple).toMatchObject({
-      tabs: ['work', 'workflows', 'builder'],
-      title: 'Ting',
-      subtitle: 'run and oversee work',
-    });
+    expect(tingPlugin).toMatchObject({ title: 'Work', subtitle: 'run and oversee work' });
+    expect(tingPlugin.simple).toMatchObject({ tabs: ['work', 'workflows', 'builder'] });
     expect(tingPlugin.tabs.map((tab) => tab.id)).toEqual(['work', 'workflows', 'builder']);
   });
 

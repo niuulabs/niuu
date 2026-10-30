@@ -34,7 +34,7 @@ const ROLE_HINT: Partial<Record<PersonaRole, string>> = {
   gate: 'release gates',
   index: 'knowledge upkeep',
   investigate: 'root cause work',
-  knowledge: 'mimir curation',
+  knowledge: 'memory curation',
   observe: 'signals and health',
   plan: 'goal decomposition',
   qa: 'verification',
