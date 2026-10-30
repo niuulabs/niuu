@@ -567,6 +567,16 @@ class ResidentFirstOpinionConfig(BaseModel):
             "are cut and the cut is reported. Jev answers at most 32k tokens per question."
         ),
     )
+    max_mandate_chars: int = Field(
+        default=8000,
+        gt=0,
+        description=(
+            "Characters of the resident case's mandate sent as decision state; longer mandates "
+            "are cut and the cut is reported. Together with max_observation_chars this keeps a "
+            "request under Jev's 32k-token limit (Kubernetes evidence runs about 2.2 characters "
+            "per token); a request over it is rejected with max_tokens_exceeded."
+        ),
+    )
     gate: ResidentAttentionGateConfig = Field(
         default_factory=ResidentAttentionGateConfig,
         description="Per-slot attention gate built on the slot opinions. Off until calibrated.",
@@ -4253,6 +4263,17 @@ class ResidentStateConfig(BaseModel):
         description=(
             "Delay applied when a resident turn sleeps for a scheduled time without "
             "naming an explicit wake_at timestamp."
+        ),
+    )
+    failed_resume_retry_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description=(
+            "Seconds before a resident case whose resumed turn failed (a scheduled wake or "
+            "an operator answer) is resumed again. The wake or answer stays pending so the "
+            "case is not lost, but a failure that recurs on every attempt otherwise re-queued "
+            "the case the moment it was released: one resident retried a failing case about "
+            "twice a second."
         ),
     )
     repeated_decision_escalate_after: int = Field(

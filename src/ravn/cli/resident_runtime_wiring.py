@@ -253,6 +253,7 @@ def _build_resident_runtime(
         resident_personality=settings.environment.resident_personality,
         charter=settings.environment.charter,
         scheduled_wake_default_seconds=cfg.scheduled_wake_default_seconds,
+        failed_resume_retry_seconds=cfg.failed_resume_retry_seconds,
         repeated_decision_escalate_after=cfg.repeated_decision_escalate_after,
         health_refresh_interval_seconds=cfg.health_refresh_interval_seconds,
         stewardship_interval_seconds=cfg.stewardship_interval_seconds,

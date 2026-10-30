@@ -9,7 +9,7 @@ import pytest
 
 from ravn.cap_telemetry import cap_hit_counts
 from ravn.config import InitiativeConfig
-from ravn.domain.models import AgentTask, OutputMode
+from ravn.domain.models import RESIDENT_HOME_CASE_PREFIX, AgentTask, OutputMode
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_ATTENTION_TIER_ORDER,
     VALKYRIE_DECISION_ORDER,
@@ -87,8 +87,13 @@ def test_descriptions_cover_exactly_the_contract_vocabulary() -> None:
 
 
 def test_refuses_a_non_positive_observation_bound() -> None:
-    with pytest.raises(ValueError, match="positive"):
-        ResidentFirstOpinion(_Decisions(), max_observation_chars=0)
+    with pytest.raises(ValueError, match="max_observation_chars must be positive"):
+        ResidentFirstOpinion(_Decisions(), max_observation_chars=0, max_mandate_chars=1000)
+
+
+def test_refuses_a_non_positive_mandate_bound() -> None:
+    with pytest.raises(ValueError, match="max_mandate_chars must be positive"):
+        ResidentFirstOpinion(_Decisions(), max_observation_chars=1000, max_mandate_chars=0)
 
 
 def test_applies_only_to_resident_cases() -> None:
@@ -96,10 +101,22 @@ def test_applies_only_to_resident_cases() -> None:
     assert not ResidentFirstOpinion.applies_to(_task(case_id=""))
 
 
+def test_skips_a_home_case_however_it_is_resumed() -> None:
+    # A sleeping home turn's scheduled wake resumes the case under another trigger, still
+    # carrying the home mandate with every observation it judged: on one resident that
+    # overran the decision model's 32k-token limit on every resume.
+    resumed_home = _task(case_id=f"{RESIDENT_HOME_CASE_PREFIX}17a9c529a281a72c")
+
+    assert resumed_home.triggered_by == "resident:scheduled_wake"
+    assert not ResidentFirstOpinion.applies_to(resumed_home)
+
+
 class TestJudge:
     async def test_asks_tier_decision_and_investigation_in_one_request(self) -> None:
         decisions = _Decisions(tier="present", decision="investigate")
-        opinion = await ResidentFirstOpinion(decisions, max_observation_chars=1000).judge(_task())
+        opinion = await ResidentFirstOpinion(
+            decisions, max_observation_chars=1000, max_mandate_chars=1000
+        ).judge(_task())
 
         [(state, questions, purpose)] = decisions.calls
         assert purpose == PURPOSE
@@ -122,9 +139,9 @@ class TestJudge:
     async def test_outcome_contract_is_not_sent_as_state(self) -> None:
         context = f"## Signal\n\nnozzle 240C\n\n{resident_outcome_section()}"
         decisions = _Decisions()
-        await ResidentFirstOpinion(decisions, max_observation_chars=10_000).judge(
-            _task(context=context)
-        )
+        await ResidentFirstOpinion(
+            decisions, max_observation_chars=10_000, max_mandate_chars=1000
+        ).judge(_task(context=context))
 
         observation = decisions.calls[0][0]["observation"]
         assert observation == "## Signal\n\nnozzle 240C"
@@ -133,11 +150,22 @@ class TestJudge:
         knob = "decision.resident_first_opinion.max_observation_chars"
         before = cap_hit_counts().get(knob, 0)
         decisions = _Decisions()
-        await ResidentFirstOpinion(decisions, max_observation_chars=5).judge(
-            _task(context="abcdefghij")
-        )
+        await ResidentFirstOpinion(
+            decisions, max_observation_chars=5, max_mandate_chars=1000
+        ).judge(_task(context="abcdefghij"))
 
         assert decisions.calls[0][0]["observation"] == "abcde"
+        assert cap_hit_counts()[knob] == before + 1
+
+    async def test_long_mandate_is_cut_and_the_cut_reported(self) -> None:
+        knob = "decision.resident_first_opinion.max_mandate_chars"
+        before = cap_hit_counts().get(knob, 0)
+        decisions = _Decisions()
+        await ResidentFirstOpinion(decisions, max_observation_chars=100, max_mandate_chars=4).judge(
+            _task()
+        )
+
+        assert decisions.calls[0][0]["mandate"] == "keep"
         assert cap_hit_counts()[knob] == before + 1
 
     async def test_mistyped_answers_raise(self) -> None:
@@ -151,7 +179,9 @@ class TestJudge:
                 )
 
         with pytest.raises(TypeError, match="mistyped"):
-            await ResidentFirstOpinion(_Wrong(), max_observation_chars=100).judge(_task())
+            await ResidentFirstOpinion(
+                _Wrong(), max_observation_chars=100, max_mandate_chars=1000
+            ).judge(_task())
 
 
 class TestWithoutOutcomeContract:
@@ -183,7 +213,9 @@ def _comparisons(telemetry: RecordingTelemetry) -> dict[str, dict]:
 
 class TestCompare:
     def test_records_agreement_and_disagreement(self, telemetry: RecordingTelemetry) -> None:
-        first_opinion = ResidentFirstOpinion(_Decisions(), max_observation_chars=100)
+        first_opinion = ResidentFirstOpinion(
+            _Decisions(), max_observation_chars=100, max_mandate_chars=1000
+        )
         first_opinion.compare(
             _opinion(tier="ambient", decision="watch"),
             {"tier": "urgent", "decision": "watch", "confidence": 0.9},
@@ -217,14 +249,16 @@ class TestCompare:
         self, telemetry: RecordingTelemetry, caplog: pytest.LogCaptureFixture
     ) -> None:
         with caplog.at_level(logging.INFO, logger="ravn.resident_first_opinion"):
-            ResidentFirstOpinion(_Decisions(), max_observation_chars=100).compare(
+            ResidentFirstOpinion(
+                _Decisions(), max_observation_chars=100, max_mandate_chars=1000
+            ).compare(
                 _opinion(tier="ambient", decision="watch"),
                 {"tier": "silent", "decision": "watch"},
                 outcome_valid=True,
             )
-            ResidentFirstOpinion(_Decisions(), max_observation_chars=100).compare(
-                _opinion(), None, outcome_valid=False
-            )
+            ResidentFirstOpinion(
+                _Decisions(), max_observation_chars=100, max_mandate_chars=1000
+            ).compare(_opinion(), None, outcome_valid=False)
 
         assert [r.getMessage() for r in caplog.records] == [
             "first_opinion[case-1] model=jev-1.14.0 outcome_valid=True "
@@ -242,9 +276,9 @@ class TestCompare:
     def test_missing_resident_judgment_is_unavailable_not_disagreement(
         self, telemetry: RecordingTelemetry, outcome: dict | None
     ) -> None:
-        ResidentFirstOpinion(_Decisions(), max_observation_chars=100).compare(
-            _opinion(), outcome, outcome_valid=False
-        )
+        ResidentFirstOpinion(
+            _Decisions(), max_observation_chars=100, max_mandate_chars=1000
+        ).compare(_opinion(), outcome, outcome_valid=False)
 
         comparisons = _comparisons(telemetry)
         assert telemetry.span_attributes["ravn.decision.first_opinion.tier_agreed"] == "unavailable"
@@ -295,7 +329,9 @@ def _drive_loop(order: list[str], *, fail_opinion: bool = False) -> DriveLoop:
         def compare(self, opinion, outcome, *, outcome_valid):
             order.append("compare")
 
-    loop.set_first_opinion(_Recording(_Decisions(), max_observation_chars=100))
+    loop.set_first_opinion(
+        _Recording(_Decisions(), max_observation_chars=100, max_mandate_chars=1000)
+    )
     return loop
 
 

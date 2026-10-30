@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -11,7 +12,15 @@ from mimir.adapters.markdown import MarkdownMimirAdapter
 from ravn.adapters.resident_state.mimir import LocalResidentState
 from ravn.cap_telemetry import cap_hit_counts
 from ravn.config import InitiativeConfig, Settings
-from ravn.domain.models import AgentTask, OutputMode, TokenUsage, ToolCall, ToolResult, TurnResult
+from ravn.domain.models import (
+    RESIDENT_HOME_TRIGGER,
+    AgentTask,
+    OutputMode,
+    TokenUsage,
+    ToolCall,
+    ToolResult,
+    TurnResult,
+)
 from ravn.domain.resident_continuation import (
     ContinuationDecisionKind,
     ResidentA2ATaskRecord,
@@ -1453,7 +1462,7 @@ async def test_a_due_wake_is_consumed_only_after_the_resumed_turn_succeeds(tmp_p
 @pytest.mark.asyncio
 async def test_a_failed_resumed_turn_leaves_the_wake_pending_for_retry(tmp_path) -> None:
     state = LocalResidentState(tmp_path)
-    runtime = ResidentRuntime(state=state)
+    runtime = ResidentRuntime(state=state, failed_resume_retry_seconds=0.05)
     queued: list[AgentTask] = []
 
     async def enqueue(task: AgentTask) -> bool:
@@ -1474,8 +1483,71 @@ async def test_a_failed_resumed_turn_leaves_the_wake_pending_for_retry(tmp_path)
     runtime.release_failed_task(queued[0])
 
     assert len(await state.list_scheduled_wakes()) == 1
+    # Not straight back: a failure that recurs on every attempt re-queued the case the
+    # moment it was released, about twice a second on one resident.
+    assert await runtime.resume_due_wakes() == 0
+    await asyncio.sleep(0.06)
     assert await runtime.resume_due_wakes() == 1
     assert len(queued) == 2
+    # Once resumed again the hold is gone, so a later failure starts a fresh one.
+    runtime.release_failed_task(queued[1])
+    assert await runtime.resume_due_wakes() == 0
+
+
+@pytest.mark.asyncio
+async def test_a_failed_answer_resume_is_held_back_before_retrying(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state, failed_resume_retry_seconds=0.05)
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime.bind_enqueue(enqueue)
+    await state.write_operator_answer("Only NIU-1107.", case_id="case-answer")
+
+    assert await runtime.retry_unconsumed_answers() == 1
+    runtime.release_failed_task(queued[0])
+
+    assert await runtime.retry_unconsumed_answers() == 0
+    await asyncio.sleep(0.06)
+    assert await runtime.retry_unconsumed_answers() == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_home_turn_is_not_held_back(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state, failed_resume_retry_seconds=60)
+    await state.write_scheduled_wake(
+        ResidentScheduledWakeRecord(
+            case_id="case-home",
+            root_correlation_id="root-home",
+            wake_at=datetime.now(UTC) - timedelta(minutes=1),
+            reason="recheck",
+        )
+    )
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime.bind_enqueue(enqueue)
+    home = AgentTask(
+        task_id="t-home",
+        title="Resident home turn",
+        initiative_context="observations",
+        triggered_by=RESIDENT_HOME_TRIGGER,
+        output_mode=OutputMode.SILENT,
+        resident_case_id="case-home",
+    )
+
+    runtime.release_failed_task(home)
+
+    # Only resumes hold their case back; the home turn's inbox slots stay pending and are
+    # picked up by the next home turn on its own interval.
+    assert await runtime.resume_due_wakes() == 1
 
 
 @pytest.mark.asyncio

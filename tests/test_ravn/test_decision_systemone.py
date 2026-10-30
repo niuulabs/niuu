@@ -29,7 +29,8 @@ class _FakeClient:
         self.sent.append((url, headers, json))
         request = httpx.Request("POST", url)
         if self.status != 200:
-            return httpx.Response(self.status, json={"detail": "nope"}, request=request)
+            body = self.payload if self.payload is not None else {"detail": "nope"}
+            return httpx.Response(self.status, json=body, request=request)
         return httpx.Response(200, json=self.payload, request=request)
 
 
@@ -189,8 +190,31 @@ class TestRejectsMalformedAnswers:
             await _adapter(_FakeClient(payload)).decide("s", _QUESTIONS, purpose="test")
 
     async def test_http_error_raises(self) -> None:
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(httpx.HTTPStatusError, match="rejected 'test' with 429"):
             await _adapter(_FakeClient(status=429)).decide("s", _QUESTIONS, purpose="test")
+
+    async def test_rejection_names_the_services_reason(self) -> None:
+        client = _FakeClient({"detail": {"error_type": "max_tokens_exceeded"}}, status=400)
+
+        with pytest.raises(httpx.HTTPStatusError) as raised:
+            await _adapter(client).decide("s", _QUESTIONS, purpose="test")
+
+        assert str(raised.value).endswith('400: {"error_type": "max_tokens_exceeded"}')
+        assert raised.value.response.status_code == 400
+
+    async def test_rejection_without_detail_keeps_the_body(self) -> None:
+        with pytest.raises(httpx.HTTPStatusError, match='503: {"message": "down"}'):
+            await _adapter(_FakeClient({"message": "down"}, status=503)).decide(
+                "s", _QUESTIONS, purpose="test"
+            )
+
+    async def test_rejection_with_a_plain_text_body(self) -> None:
+        class _TextClient(_FakeClient):
+            async def post(self, url: str, headers: dict, json: dict) -> httpx.Response:
+                return httpx.Response(502, text="bad gateway", request=httpx.Request("POST", url))
+
+        with pytest.raises(httpx.HTTPStatusError, match="502: bad gateway"):
+            await _adapter(_TextClient()).decide("s", _QUESTIONS, purpose="test")
 
 
 async def test_close_releases_the_client() -> None:

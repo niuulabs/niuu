@@ -98,7 +98,11 @@ class TestResidentFirstOpinion:
         first_opinion = build_resident_first_opinion(
             _settings(
                 enabled=True,
-                resident_first_opinion={"enabled": True, "max_observation_chars": 1234},
+                resident_first_opinion={
+                    "enabled": True,
+                    "max_observation_chars": 1234,
+                    "max_mandate_chars": 567,
+                },
             ),
             has_resident_runtime=True,
         )
@@ -106,3 +110,4 @@ class TestResidentFirstOpinion:
         assert isinstance(first_opinion, ResidentFirstOpinion)
         assert isinstance(first_opinion._decisions, ObservedDecisionPort)
         assert first_opinion._max_observation_chars == 1234
+        assert first_opinion._max_mandate_chars == 567

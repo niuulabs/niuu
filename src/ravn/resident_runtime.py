@@ -23,6 +23,7 @@ from ravn.cap_telemetry import health_counts as cap_health_counts
 from ravn.domain.a2a_status import a2a_status_text
 from ravn.domain.exceptions import UnboundOperatorReplyError
 from ravn.domain.models import (
+    RESIDENT_HOME_CASE_PREFIX,
     RESIDENT_HOME_PRIORITY,
     RESIDENT_HOME_TRIGGER,
     AgentTask,
@@ -82,6 +83,12 @@ from ravn.resident_inbox import (
 from ravn.resident_text import compact_line
 
 logger = logging.getLogger(__name__)
+
+_SCHEDULED_WAKE_TRIGGER = "resident:scheduled_wake"
+_OPERATOR_ANSWER_TRIGGER = "resident:operator_answer"
+#: Triggers that resume an existing case from a durable wake or answer, which stays pending
+#: when the resumed turn fails so the case can be resumed again.
+_RESUME_TRIGGERS = frozenset({_SCHEDULED_WAKE_TRIGGER, _OPERATOR_ANSWER_TRIGGER})
 
 
 def _log_health_refresh_failure(task: asyncio.Task[dict[str, int]]) -> None:
@@ -175,6 +182,7 @@ class ResidentRuntime:
         resident_personality: str = "",
         charter: str = "",
         scheduled_wake_default_seconds: float = 3600.0,
+        failed_resume_retry_seconds: float = 300.0,
         repeated_decision_escalate_after: int = 5,
         health_refresh_interval_seconds: float = 300.0,
         stewardship_interval_seconds: float = 0.0,
@@ -192,6 +200,11 @@ class ResidentRuntime:
         self._resident_personality = resident_personality.strip()
         self._charter = charter.strip()
         self._scheduled_wake_default_seconds = max(1.0, float(scheduled_wake_default_seconds))
+        self._failed_resume_retry_seconds = float(failed_resume_retry_seconds)
+        # Cases whose resumed turn failed, with the earliest time they may be resumed again.
+        # Their wake or answer stays pending (the case is not lost); without this a failure
+        # that recurs on every attempt re-queued the case the moment it was released.
+        self._resume_not_before: dict[str, datetime] = {}
         self._repeated_decision_escalate_after = max(0, int(repeated_decision_escalate_after))
         self._health_refresh_interval_seconds = max(1.0, float(health_refresh_interval_seconds))
         self._stewardship_interval_seconds = max(0.0, float(stewardship_interval_seconds))
@@ -1316,7 +1329,11 @@ class ResidentRuntime:
         )
         for wake in wakes:
             case_id = _metadata(wake.content, "case_id") or _case_from_path(wake.path)
-            if not case_id or case_id in self._inflight_cases:
+            if (
+                not case_id
+                or case_id in self._inflight_cases
+                or self._resume_deferred(case_id, now)
+            ):
                 continue
             wake_at = _scheduled_wake_at(wake.content)
             if wake_at is None:
@@ -1922,7 +1939,7 @@ class ResidentRuntime:
         turn_rows = rows[: len(rows) - len(receipts)]
         refs = [ref for ref, _signal in rows]
         digest = hashlib.sha256("\n".join(sorted(refs)).encode()).hexdigest()[:16]
-        case_id = str(origin.get("case_id") or f"resident-home-{digest}")
+        case_id = str(origin.get("case_id") or f"{RESIDENT_HOME_CASE_PREFIX}{digest}")
         if case_id in self._inflight_cases:
             return None
         now = datetime.now(UTC)
@@ -2160,9 +2177,14 @@ class ResidentRuntime:
         # question is closed, so its review item is retired like any other.
         await self.settle_closed_operator_reviews()
         queued = 0
+        now = datetime.now(UTC)
         for answer in await self._state.list_operator_answers():
             case_id = _metadata(answer.content, "case_id") or _case_from_path(answer.path)
-            if not case_id or case_id in self._inflight_cases:
+            if (
+                not case_id
+                or case_id in self._inflight_cases
+                or self._resume_deferred(case_id, now)
+            ):
                 continue
             pending = await self._state.read_operator_needed(case_id)
             if pending is not None:
@@ -2186,8 +2208,37 @@ class ResidentRuntime:
 
     def release_failed_task(self, task: AgentTask) -> None:
         if task.resident_case_id:
+            self._defer_failed_resume(task)
             self._release_case(task.resident_case_id)
         self._inflight_refs.difference_update(task.resident_inbox_refs)
+
+    def _defer_failed_resume(self, task: AgentTask) -> None:
+        if task.triggered_by not in _RESUME_TRIGGERS:
+            return
+        retry_at = datetime.now(UTC) + timedelta(seconds=self._failed_resume_retry_seconds)
+        self._resume_not_before[task.resident_case_id] = retry_at
+        get_observability().count(
+            "ravn.resident.failed_resumes_deferred",
+            attributes={
+                "ravn.resident.id": self._resident_id,
+                "ravn.task.trigger": task.triggered_by,
+            },
+            description="Failed resumed resident turns held back before resuming the case again.",
+        )
+        logger.warning(
+            "resident: resumed case %s failed; resuming it again no sooner than %s",
+            task.resident_case_id,
+            retry_at.isoformat(),
+        )
+
+    def _resume_deferred(self, case_id: str, now: datetime) -> bool:
+        not_before = self._resume_not_before.get(case_id)
+        if not_before is None:
+            return False
+        if now < not_before:
+            return True
+        del self._resume_not_before[case_id]
+        return False
 
     def request_home_wake(self) -> None:
         """Judge the inbox now rather than at the next routine home interval."""
@@ -2201,7 +2252,9 @@ class ResidentRuntime:
         self._home_wake.clear()
 
     def _home_turn_in_flight(self) -> bool:
-        return any(case_id.startswith("resident-home-") for case_id in self._inflight_cases)
+        return any(
+            case_id.startswith(RESIDENT_HOME_CASE_PREFIX) for case_id in self._inflight_cases
+        )
 
     def _release_case(self, case_id: str) -> None:
         self._inflight_cases.discard(case_id)
@@ -2309,7 +2362,7 @@ def _operator_resume_task(
         task_id=_task_id("resident_answer"),
         title=f"Resume resident case {case_id}",
         initiative_context=context,
-        triggered_by="resident:operator_answer",
+        triggered_by=_OPERATOR_ANSWER_TRIGGER,
         output_mode=OutputMode.SURFACE,
         persona=_metadata(pending.content, "persona") or None,
         priority=1,
@@ -2351,7 +2404,7 @@ def _scheduled_wake_task(
         task_id=_task_id("resident_wake"),
         title=f"Resume resident case {case_id}",
         initiative_context=context,
-        triggered_by="resident:scheduled_wake",
+        triggered_by=_SCHEDULED_WAKE_TRIGGER,
         output_mode=OutputMode.SURFACE,
         persona=_metadata(wake.content, "persona") or None,
         priority=1,

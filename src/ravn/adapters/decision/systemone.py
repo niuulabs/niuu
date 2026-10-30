@@ -13,6 +13,7 @@ would read as a decision the caller never got.
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping
 from typing import Any
@@ -95,7 +96,13 @@ class SystemOneDecisionAdapter(DecisionPort):
                 "questions": {qid: _wire_question(q) for qid, q in questions.items()},
             },
         )
-        response.raise_for_status()
+        if response.is_error:
+            raise httpx.HTTPStatusError(
+                f"decision model {self._model!r} rejected {purpose!r} with "
+                f"{response.status_code}: {_error_detail(response)}",
+                request=response.request,
+                response=response,
+            )
         payload = response.json()
         if not isinstance(payload, dict) or not isinstance(payload.get("answers"), dict):
             raise ValueError(f"decision model {self._model!r} returned no answers object")
@@ -202,3 +209,18 @@ def _input_tokens(usage: object) -> int | None:
     if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
         raise ValueError(f"decision response usage.input_tokens is invalid: {tokens!r}")
     return tokens
+
+
+def _error_detail(response: httpx.Response) -> str:
+    """The service's own reason for rejecting a request, e.g. ``max_tokens_exceeded``.
+
+    A bare status code says nothing about whether the request was too large, malformed or
+    unauthorised, and the response body is otherwise lost with the exception.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return response.text or "(empty body)"
+    if isinstance(body, dict) and "detail" in body:
+        return json.dumps(body["detail"], sort_keys=True)
+    return json.dumps(body, sort_keys=True)

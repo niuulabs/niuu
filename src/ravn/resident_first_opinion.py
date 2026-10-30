@@ -35,7 +35,7 @@ from typing import Any
 
 from niuu.observability import get_observability
 from ravn.cap_telemetry import record_truncation
-from ravn.domain.models import RESIDENT_HOME_TRIGGER, AgentTask
+from ravn.domain.models import RESIDENT_HOME_CASE_PREFIX, RESIDENT_HOME_TRIGGER, AgentTask
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_ATTENTION_TIER_ORDER,
     VALKYRIE_DECISION_ORDER,
@@ -122,11 +122,20 @@ class FirstOpinion:
 class ResidentFirstOpinion:
     """Ask for a first opinion before a resident turn and compare it with the turn's outcome."""
 
-    def __init__(self, decisions: DecisionPort, *, max_observation_chars: int) -> None:
+    def __init__(
+        self,
+        decisions: DecisionPort,
+        *,
+        max_observation_chars: int,
+        max_mandate_chars: int,
+    ) -> None:
         if max_observation_chars <= 0:
             raise ValueError("max_observation_chars must be positive")
+        if max_mandate_chars <= 0:
+            raise ValueError("max_mandate_chars must be positive")
         self._decisions = decisions
         self._max_observation_chars = max_observation_chars
+        self._max_mandate_chars = max_mandate_chars
 
     @property
     def decisions(self) -> DecisionPort:
@@ -134,14 +143,21 @@ class ResidentFirstOpinion:
 
     @staticmethod
     def applies_to(task: AgentTask) -> bool:
-        """Resident cases other than home turns, whose slots are judged one by one.
+        """Resident cases other than home cases, whose slots are judged one by one.
 
         Only resident cases produce the tier/decision outcome being compared. A home turn
         covers many inbox slots; judging its whole prompt at once is the distractor-laden
         state the decision model handles worst, so ``ravn.resident_attention`` judges each
-        slot when it is selected instead.
+        slot when it is selected instead. That holds for the whole home case: when a home
+        turn sleeps, its scheduled wake resumes the case under another trigger with the home
+        turn's mandate — every observation it judged — which overran the decision model's
+        context on every resume.
         """
-        return bool(task.resident_case_id) and task.triggered_by != RESIDENT_HOME_TRIGGER
+        return (
+            bool(task.resident_case_id)
+            and task.triggered_by != RESIDENT_HOME_TRIGGER
+            and not task.resident_case_id.startswith(RESIDENT_HOME_CASE_PREFIX)
+        )
 
     async def judge(self, task: AgentTask) -> FirstOpinion:
         result = await self._decisions.decide(
@@ -260,21 +276,35 @@ class ResidentFirstOpinion:
         )
 
     def _state(self, task: AgentTask) -> dict[str, str]:
-        observation = without_outcome_contract(task.initiative_context)
-        if len(observation) > self._max_observation_chars:
-            record_truncation(
-                "decision.resident_first_opinion.max_observation_chars",
-                what=f"resident case {task.resident_case_id} observation for the first opinion",
-                kept=self._max_observation_chars,
-                total=len(observation),
-            )
-            observation = observation[: self._max_observation_chars]
         return {
-            "mandate": task.resident_mandate,
+            "mandate": _bounded(
+                task.resident_mandate,
+                self._max_mandate_chars,
+                knob="max_mandate_chars",
+                what=f"resident case {task.resident_case_id} mandate for the first opinion",
+            ),
             "trigger": task.triggered_by,
             "title": task.title,
-            "observation": observation,
+            "observation": _bounded(
+                without_outcome_contract(task.initiative_context),
+                self._max_observation_chars,
+                knob="max_observation_chars",
+                what=f"resident case {task.resident_case_id} observation for the first opinion",
+            ),
         }
+
+
+def _bounded(text: str, limit: int, *, knob: str, what: str) -> str:
+    """Cut ``text`` to ``limit`` characters, reporting the cut against its config knob."""
+    if len(text) <= limit:
+        return text
+    record_truncation(
+        f"decision.resident_first_opinion.{knob}",
+        what=what,
+        kept=limit,
+        total=len(text),
+    )
+    return text[:limit]
 
 
 def without_outcome_contract(context: str) -> str:

@@ -726,6 +726,7 @@ def build_resident_first_opinion(settings: Settings, *, has_resident_runtime: bo
     return ResidentFirstOpinion(
         decision_port,
         max_observation_chars=config.max_observation_chars,
+        max_mandate_chars=config.max_mandate_chars,
     )
 
 

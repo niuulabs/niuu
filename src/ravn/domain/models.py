@@ -409,6 +409,10 @@ class SleipnirEnvelope:
 #: Trigger of the resident home turn, the one task that reads the durable inbox
 #: (operator directed messages, A2A updates, coalesced observations).
 RESIDENT_HOME_TRIGGER = "resident:home"
+#: Case id prefix of a home turn. The case outlives the turn: a home case that sleeps is
+#: resumed by its scheduled wake under another trigger, still carrying the home turn's
+#: mandate with every observation it judged.
+RESIDENT_HOME_CASE_PREFIX = "resident-home-"
 #: A home turn runs ahead of signal work, level with an operator answer
 #: resuming its case. Only one home turn is ever queued or running, so this
 #: cannot crowd the queue; at the default priority it waited behind every
