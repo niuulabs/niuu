@@ -394,8 +394,8 @@ function WorkDetailView({
       if (!result || result.status !== 'spawned') {
         throw new Error(
           result
-            ? `Ting did not start this ticket (${result.status}). Review it in Operations.`
-            : 'Ting did not return a dispatch result. Review the ticket in Operations.',
+            ? `Niuu did not start this ticket (${result.status}). Review it in Operations.`
+            : 'Niuu did not return a dispatch result. Review the ticket in Operations.',
         );
       }
       await queryClient.invalidateQueries({ queryKey: ['ting', 'work'] });

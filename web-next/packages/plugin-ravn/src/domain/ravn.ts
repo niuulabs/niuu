@@ -168,7 +168,7 @@ export const ravnSchema = z
     context.addIssue({
       code: 'custom',
       path: ['personaName'],
-      message: 'personaName is required for non-resident ravens',
+      message: 'personaName is required for non-resident agents',
     });
   });
 

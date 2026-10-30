@@ -23,9 +23,7 @@ describe('ValkyrieConsolePage', () => {
 
     expect(await screen.findByTestId('valkyrie-console-page')).toBeInTheDocument();
     expect(screen.getByTestId('valkyrie-roster')).toHaveTextContent(seed.valkyries[0]!.name);
-    expect(screen.getByTestId('valkyrie-console-hero')).toHaveTextContent(
-      `valkyrie:${seed.valkyries[0]!.name}`,
-    );
+    expect(screen.getByTestId('valkyrie-console-hero')).toHaveTextContent(seed.valkyries[0]!.name);
     expect(screen.getByTestId('valkyrie-current-situation')).toBeInTheDocument();
     expect(screen.getByTestId('valkyrie-signal-timeline')).toBeInTheDocument();
     expect(screen.getByTestId('valkyrie-authority')).toHaveTextContent('Authority & autonomy');
@@ -865,7 +863,7 @@ describe('hero actions', () => {
     // Saga's host environment has no huddle in the seed.
     await user.click(screen.getByRole('button', { name: /Saga/ }));
     await waitFor(() =>
-      expect(screen.getByTestId('valkyrie-console-hero')).toHaveTextContent('valkyrie:Saga'),
+      expect(screen.getByTestId('valkyrie-console-hero')).toHaveTextContent('Saga'),
     );
     expect(screen.getByTestId('valkyrie-join-huddle')).toBeDisabled();
     expect(screen.getByTestId('valkyrie-direct-message')).toBeDisabled();

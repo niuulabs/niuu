@@ -19,8 +19,8 @@ function KVRow({ label, value }: KVRowProps) {
 
 const SERVICE_BINDINGS: KVRowProps[] = [
   { label: 'Service URL', value: 'https://ting.niuu.internal' },
-  { label: 'Event backbone', value: 'sleipnir · nats' },
-  { label: 'Knowledge store', value: 'mímir · qdrant:/niuu' },
+  { label: 'Event backbone', value: 'event bus · nats' },
+  { label: 'Knowledge store', value: 'memory · qdrant:/niuu' },
   { label: 'Default workflow', value: 'tpl-ship v1.4.2' },
 ];
 
@@ -31,7 +31,7 @@ export function GeneralSection() {
         General
       </h3>
       <p className="niuu:text-sm niuu:text-text-secondary niuu:mb-4">
-        Core service bindings for the saga coordinator.
+        Core service bindings for the project coordinator.
       </p>
 
       <div className="niuu:max-w-lg" role="list" aria-label="Service bindings">

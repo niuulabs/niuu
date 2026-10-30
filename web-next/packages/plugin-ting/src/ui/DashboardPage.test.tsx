@@ -58,11 +58,11 @@ describe('DashboardPage', () => {
 
   it('renders KPI cards with real-data labels', async () => {
     render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
-    await waitFor(() => expect(screen.getByText('Active sagas')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Active projects')).toBeInTheDocument());
     expect(screen.getByText('Active runs')).toBeInTheDocument();
     expect(screen.getByText('Awaiting review')).toBeInTheDocument();
     expect(screen.getByText('Merged · 24h')).toBeInTheDocument();
-    expect(screen.getByText('Saga overview')).toBeInTheDocument();
+    expect(screen.getByText('Project overview')).toBeInTheDocument();
   });
 
   it('renders active saga names from the service', async () => {
@@ -115,7 +115,7 @@ describe('DashboardPage', () => {
     };
     render(<DashboardPage />, { wrapper: wrap(quietTing) });
     await waitFor(() => expect(screen.getByText('Event feed')).toBeInTheDocument());
-    expect(screen.getByText(/No recent Ting activity yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/No recent activity yet/i)).toBeInTheDocument();
   });
 
   it('clicking a saga card navigates to the saga detail page', async () => {
@@ -137,7 +137,7 @@ describe('DashboardPage', () => {
     await waitFor(() => expect(screen.getByText('View all')).toBeInTheDocument());
     fireEvent.click(screen.getByText('View all'));
     expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/sagas' });
-    await waitFor(() => expect(screen.getByText('Navigating to Sagas')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Navigating to Projects')).toBeInTheDocument());
   });
 
   it('clicking awaiting review navigates to the sagas page', async () => {
@@ -184,7 +184,7 @@ describe('DashboardPage', () => {
             trackerId: 'NIU-1',
             trackerType: 'linear',
             slug: 'done-saga',
-            name: 'Done Saga',
+            name: 'Done Project',
             repos: [],
             featureBranch: 'feat/done',
             status: 'complete',
@@ -198,8 +198,8 @@ describe('DashboardPage', () => {
       'ting.dispatcher': createMockDispatcherService(),
     };
     render(<DashboardPage />, { wrapper: wrap(completeSvc) });
-    await waitFor(() => expect(screen.getByText('Saga stream')).toBeInTheDocument());
-    expect(screen.queryByText('Done Saga')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Project stream')).toBeInTheDocument());
+    expect(screen.queryByText('Done Project')).not.toBeInTheDocument();
   });
 
   it('renders saga completion events in the activity feed', async () => {
@@ -240,7 +240,7 @@ describe('DashboardPage', () => {
           trackerId: 'NIU-404',
           trackerType: 'linear',
           slug: 'terminal-saga',
-          name: 'Terminal Saga',
+          name: 'Terminal Project',
           repos: [],
           featureBranch: 'feat/terminal',
           status: 'active',
@@ -348,7 +348,7 @@ describe('DashboardPage', () => {
             trackerId: 'NIU-1001',
             trackerType: 'linear',
             slug: 'fresh-saga',
-            name: 'Fresh Saga',
+            name: 'Fresh Project',
             repos: [],
             featureBranch: 'feat/fresh',
             status: 'active',
@@ -390,7 +390,7 @@ describe('DashboardPage', () => {
     });
 
     await waitFor(() => expect(screen.getByText('external signal')).toBeInTheDocument());
-    const openButton = screen.getByTitle('No linked saga');
+    const openButton = screen.getByTitle('No linked project');
     expect(openButton).toBeDisabled();
     fireEvent.click(openButton);
     expect(mockNavigate).not.toHaveBeenCalled();

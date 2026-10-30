@@ -107,7 +107,7 @@ async function boundedJson(response: Response): Promise<unknown> {
       size += value.byteLength;
       if (size > HISTORY_PAGE_BYTES) {
         await reader.cancel();
-        throw new Error('This Forge did not honor the history page size. Update its history API.');
+        throw new Error('This host did not honor the history page size. Update its history API.');
       }
       chunks.push(value);
     }
@@ -140,7 +140,7 @@ async function pageRequest(url: URL, signal: AbortSignal): Promise<HistoryPage> 
     data.turns.some((turn) => typeof turn.id !== 'string' || !turn.id) ||
     new Set(data.turns.map((turn) => turn.id)).size !== data.turns.length
   ) {
-    throw new Error('The Forge returned an invalid history page.');
+    throw new Error('The host returned an invalid history page.');
   }
   // Old standalone brokers can return their complete SMALL transcript without page metadata.
   // Large ignored requests are rejected by the byte/count guards above.
@@ -159,7 +159,7 @@ async function pageRequest(url: URL, signal: AbortSignal): Promise<HistoryPage> 
     (data.history_protocol === 2 && start > 0 && !data.older_cursor) ||
     (url.searchParams.has('cursor') && data.history_protocol !== 2)
   ) {
-    throw new Error('The Forge returned an invalid history boundary.');
+    throw new Error('The host returned an invalid history boundary.');
   }
   return { ...data, total_turns: total, window_offset: start, window_end: end };
 }
@@ -262,6 +262,6 @@ export async function fetchHistoryItem(
     : [];
   const turn = data.turn ?? (matches.length === 1 ? matches[0] : undefined);
   if (turn?.id !== id || turn.history_preview)
-    throw new Error('This Forge cannot expand this message. Update its history API.');
+    throw new Error('This host cannot expand this message. Update its history API.');
   return turn;
 }

@@ -9,12 +9,12 @@ import { HomePage } from './HomePage';
  */
 export const homePlugin = definePlugin({
   id: 'home',
-  rune: 'ᚺ',
+  rune: 'H',
+  // The place you come back to.
+  icon: <House size={17} aria-hidden="true" />,
   title: 'Home',
   subtitle: 'what do you want to do',
   simple: {
-    // The place you come back to.
-    icon: <House size={17} aria-hidden="true" />,
     only: true,
     landing: true,
   },

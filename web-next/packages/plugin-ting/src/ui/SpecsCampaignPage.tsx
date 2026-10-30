@@ -287,7 +287,7 @@ export function SpecsCampaignPage() {
           </div>
           <div className="ting-research-detail__header-actions">
             <button type="button" onClick={openMimirPage} className="specs-action-button">
-              Open in Mimir
+              Open in Memory
             </button>
             <button
               type="button"

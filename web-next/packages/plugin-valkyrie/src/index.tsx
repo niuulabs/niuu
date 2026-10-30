@@ -1,3 +1,4 @@
+import { Radar } from 'lucide-react';
 import { createRoute, redirect } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ActivityPage } from './ui/ActivityPage';
@@ -38,12 +39,13 @@ const createLegacyRedirect =
 export const valkyriePlugin = definePlugin({
   id: 'valkyrie',
   rune: 'V',
-  title: 'Valkyrie',
-  subtitle: 'resident telemetry',
+  icon: <Radar size={17} aria-hidden="true" />,
+  title: 'Resident console',
+  subtitle: 'what your residents are doing',
   tabs: [
-    { id: 'console', label: 'Console', rune: 'ᛒ', path: '/valkyrie' },
-    { id: 'activity', label: 'Activity', rune: '↔', path: '/valkyrie/activity' },
-    { id: 'inbox', label: 'Inbox', rune: '◇', path: '/valkyrie/inbox' },
+    { id: 'console', label: 'Roster', path: '/valkyrie' },
+    { id: 'activity', label: 'Activity', path: '/valkyrie/activity' },
+    { id: 'inbox', label: 'Inbox', path: '/valkyrie/inbox' },
   ],
   routes: (rootRoute) => [
     createRoute({

@@ -32,12 +32,7 @@ function wrap(
 describe('VolundrPage (Overview)', () => {
   it('renders the page title', () => {
     wrap();
-    expect(screen.getByText('Völundr · session forge')).toBeInTheDocument();
-  });
-
-  it('renders the rune glyph', () => {
-    wrap();
-    expect(screen.getByText('ᚲ')).toBeInTheDocument();
+    expect(screen.getByText('Sessions')).toBeInTheDocument();
   });
 
   it('renders KPI cards once data loads', async () => {

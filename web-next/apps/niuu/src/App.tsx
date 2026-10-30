@@ -242,7 +242,7 @@ function ApplicationShell({ plugins }: { plugins: PluginDescriptor[] }) {
     return (
       <div className="niuu-disconnected">
         <h1>Disconnected</h1>
-        <p>Your sessions continue running on their Forge hosts.</p>
+        <p>Your sessions continue running on their hosts.</p>
         <button type="button" onClick={() => setDisconnected(false)}>
           Reconnect
         </button>

@@ -14,8 +14,8 @@ const HOW_PLAN_WORKS: GuidanceCard = {
   numbered: true,
   items: [
     'Describe your goal in plain language — the more detail, the better the plan.',
-    'Answer clarifying questions to help Ting understand scope and constraints.',
-    'Ravns work through the plan together and decompose it into phases and work items.',
+    'Answer clarifying questions to help Niuu understand scope and constraints.',
+    'Agents work through the plan together and decompose it into phases and work items.',
     'Review the draft plan and approve or edit phases before committing.',
   ],
 };

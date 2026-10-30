@@ -19,17 +19,17 @@ describe('volundrPlugin', () => {
     localStorage.clear();
   });
 
-  it('is Sessions in Simple mode, with only the sessions tab', () => {
-    expect(volundrPlugin.simple).toMatchObject({
-      tabs: ['sessions'],
+  it('is called Sessions, with only the sessions tab in Simple mode', () => {
+    expect(volundrPlugin).toMatchObject({
       title: 'Sessions',
       subtitle: 'coding agents in sandboxes',
     });
+    expect(volundrPlugin.simple).toMatchObject({ tabs: ['sessions'] });
   });
 
-  it('keeps Forge at the beginning of the tab list while sessions use their dedicated route', () => {
+  it('keeps Overview at the beginning of the tab list while sessions use their dedicated route', () => {
     expect(volundrPlugin.tabs).toEqual([
-      { id: 'forge', label: 'Forge', path: '/volundr/forge' },
+      { id: 'forge', label: 'Overview', path: '/volundr/forge' },
       { id: 'sessions', label: 'Sessions', path: '/volundr/sessions' },
       { id: 'catalog', label: 'Catalog', path: '/volundr/catalog' },
       {

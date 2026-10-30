@@ -74,12 +74,12 @@ test('ting lands on Work with the primary navigation only', async ({ page }) => 
 test('sagas route renders search, filters, and actions', async ({ page }) => {
   await page.goto('/ting/sagas');
 
-  await expect(page.getByRole('searchbox', { name: 'Search sagas' })).toBeVisible({
+  await expect(page.getByRole('searchbox', { name: 'Search projects' })).toBeVisible({
     timeout: 5000,
   });
-  await expect(page.getByRole('searchbox', { name: 'Filter sagas' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Import saga from tracker' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Export sagas as JSON' })).toBeVisible();
+  await expect(page.getByRole('searchbox', { name: 'Filter projects' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Import project from tracker' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Export projects as JSON' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Create new saga' })).toBeVisible();
   const selectedSaga = page.getByRole('complementary').locator('button[aria-pressed="true"]');
   await expect(selectedSaga).toBeVisible();

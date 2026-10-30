@@ -1262,7 +1262,7 @@ function ResourceNode({
               className="niuu:truncate niuu:font-mono niuu:text-[10px]"
               style={{ color: C.textMuted }}
             >
-              RESOURCE · MIMIR
+              RESOURCE · MEMORY
             </div>
             <span
               className="niuu:w-fit niuu:rounded-full niuu:border niuu:px-[8px] niuu:py-[1px] niuu:font-mono niuu:text-[7.5px] niuu:font-semibold"

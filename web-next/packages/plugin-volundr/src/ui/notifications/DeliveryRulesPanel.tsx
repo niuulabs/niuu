@@ -190,7 +190,7 @@ export function DeliveryRulesPanel({ hosts, onClose }: DeliveryRulesPanelProps) 
   else if ((rules.data ?? []).length === 0)
     list = (
       <p className="niuu:m-0 niuu:text-sm niuu:text-text-muted">
-        No delivery rules. Notifications stay in Forge until you add one.
+        No delivery rules. Notifications stay in Niuu until you add one.
       </p>
     );
   else
@@ -230,7 +230,7 @@ export function DeliveryRulesPanel({ hosts, onClose }: DeliveryRulesPanelProps) 
         </button>
       </div>
       <p className="niuu:m-0 niuu:text-xs niuu:text-text-muted">
-        Rules send matching notifications to Telegram, push or a webhook. Nothing leaves Forge
+        Rules send matching notifications to Telegram, push or a webhook. Nothing leaves Niuu
         without one.
       </p>
       {hosts.length > 1 && (
@@ -244,7 +244,7 @@ export function DeliveryRulesPanel({ hosts, onClose }: DeliveryRulesPanelProps) 
               closeEditor();
             }}
           >
-            <option value="">This Forge</option>
+            <option value="">This host</option>
             {hosts.map((host) => (
               <option key={host.id} value={host.id}>
                 {host.label}

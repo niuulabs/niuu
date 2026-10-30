@@ -4,14 +4,14 @@ export interface CliBadgeProps {
   className?: string;
 }
 
-const CLI_META: Record<string, { label: string; rune: string }> = {
-  claude: { label: 'Claude Code', rune: 'ᛗ' },
-  codex: { label: 'Codex', rune: 'ᚲ' },
-  gemini: { label: 'Gemini', rune: 'ᛇ' },
-  aider: { label: 'Aider', rune: 'ᚨ' },
+const CLI_META: Record<string, { label: string; mark: string }> = {
+  claude: { label: 'Claude Code', mark: 'Cl' },
+  codex: { label: 'Codex', mark: 'Cx' },
+  gemini: { label: 'Gemini', mark: 'Ge' },
+  aider: { label: 'Aider', mark: 'Ai' },
 };
 
-/** CLI tool identity badge — rune + label */
+/** CLI tool identity badge — the label, or a short mark when compact */
 export function CliBadge({ cli, compact = false, className }: CliBadgeProps) {
   const meta = CLI_META[cli];
   if (!meta) return null;
@@ -22,8 +22,11 @@ export function CliBadge({ cli, compact = false, className }: CliBadgeProps) {
       data-testid="cli-badge"
       title={meta.label}
     >
-      <span className="niuu:font-mono niuu:text-text-secondary">{meta.rune}</span>
-      {!compact && <span className="niuu:text-text-secondary">{meta.label}</span>}
+      {compact ? (
+        <span className="niuu:font-mono niuu:text-text-secondary">{meta.mark}</span>
+      ) : (
+        <span className="niuu:text-text-secondary">{meta.label}</span>
+      )}
     </span>
   );
 }

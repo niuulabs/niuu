@@ -16,7 +16,7 @@ export const FORGE_STANDARDS = [
   {
     id: 'codex',
     name: 'Codex',
-    harness: 'OpenAI Codex · Skuld CLI',
+    harness: 'OpenAI Codex · CLI',
     definition: 'skuldCodex',
     models: [
       { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
@@ -49,5 +49,5 @@ export function hostDefaultFolder(host: VolundrTarget | undefined): string {
 export function forgeErrorMessage(error: unknown): string {
   if (error && typeof error === 'object' && 'detail' in error && typeof error.detail === 'string')
     return error.detail;
-  return error instanceof Error ? error.message : 'The Forge request failed. Please try again.';
+  return error instanceof Error ? error.message : 'The host request failed. Please try again.';
 }

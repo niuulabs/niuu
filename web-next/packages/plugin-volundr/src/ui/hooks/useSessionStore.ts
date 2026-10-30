@@ -148,7 +148,7 @@ export function useSessionList(filters?: SessionFilters) {
       ? [
           {
             id: 'registry',
-            name: 'Forge registry',
+            name: 'Host registry',
             archived: false,
             loading: false,
             error: discovery.error.message,

@@ -260,7 +260,7 @@ export function DreamsPage() {
               <span>time</span>
               <span>kind</span>
               <span>mount</span>
-              <span>ravn · message</span>
+              <span>agent · message</span>
             </div>
             {filteredEvents.map((event) => (
               <ActivityRow key={event.id} event={event} />

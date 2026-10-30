@@ -18,7 +18,7 @@ export const WALKTHROUGHS: readonly Walkthrough[] = [
     title: 'Run your first session',
     desc: 'Open a repository and hand Claude or Codex a task in an isolated sandbox.',
     steps: [
-      'Forge → New session; pick a repository or start from an empty workspace.',
+      'Sessions → New session; pick a repository or start from an empty workspace.',
       'Choose the runtime (Claude Code or Codex) and the provider you connected.',
       'Write the task; watch the chat, files and diff update as it works.',
     ],
@@ -26,19 +26,19 @@ export const WALKTHROUGHS: readonly Walkthrough[] = [
   {
     href: '/ting',
     title: 'Turn an issue into a workflow',
-    desc: 'Pick an issue from your tracker; Ting plans it into a saga with gates you approve.',
+    desc: 'Pick an issue from your tracker; Niuu plans it into a project with gates you approve.',
     steps: [
-      'Ting → Sagas → Plan from issue; pick one from the tracker you connected.',
+      'Work → Projects → Plan from issue; pick one from the tracker you connected.',
       'Review the plan; gates are where you approve before it continues.',
-      'Dispatch; each step runs as a session you can open from the saga.',
+      'Dispatch; each step runs as a session you can open from the project.',
     ],
   },
   {
     href: '/ravn',
     title: 'Meet the residents',
-    desc: 'Long-lived Ravns that watch your environment and ask before they act.',
+    desc: 'Long-lived agents that watch your environment and ask before they act.',
     steps: [
-      'Ravn → Personas shows what a resident can be given to steward.',
+      'Agents → Personas shows what a resident can be given to keep.',
       'Start one against this host; it observes first and asks before acting.',
       'Talk to it in its room; every action it proposes waits for your answer.',
     ],

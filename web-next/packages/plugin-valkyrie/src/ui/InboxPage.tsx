@@ -459,7 +459,7 @@ export function InboxPage() {
               aria-label="Search review inbox"
               value={queryInput}
               onChange={(event) => setQueryInput(event.target.value)}
-              placeholder="Search title, environment, valkyrie, action…"
+              placeholder="Search title, environment, resident, action…"
               className="niuu:min-w-0 niuu:flex-1 niuu:bg-transparent niuu:py-1.5 niuu:text-xs niuu:text-text-primary niuu:outline-none"
             />
           </label>
@@ -536,7 +536,7 @@ export function InboxPage() {
         <div data-testid="inbox-empty" className={`${PANEL} niuu:p-6 niuu:text-sm ${MUTED}`}>
           {hasFilters
             ? 'No pending reviews match these filters.'
-            : 'Nothing needs you. Held builds, guarded promotions, peer learnings, and court escalations will appear here the moment a valkyrie wants a decision.'}
+            : 'Nothing needs you. Held builds, guarded promotions, peer learnings, and court escalations will appear here the moment a resident wants a decision.'}
         </div>
       ) : (
         <div className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:gap-3">

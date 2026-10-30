@@ -197,7 +197,7 @@ export function ImportExternalSessionsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         title="Import CLI Sessions"
-        description="Claude Code and Codex sessions discovered on the host can be imported as Völundr sessions."
+        description="Claude Code and Codex sessions discovered on the host can be imported as Niuu sessions."
       >
         <div data-testid="import-external-sessions-panel">
           <label className="forge-import-search">

@@ -1,7 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { useService } from '@niuulabs/plugin-sdk';
-import { Rune } from '@niuulabs/ui';
 import type { RepoRecord } from '@niuulabs/ui';
 import { PLAN_STEPS } from '../domain/plan';
 import { StepDots } from './StepDots';
@@ -90,13 +89,12 @@ export function PlanWizard() {
       <div className="ting-plan-main">
         <div className="ting-plan-main__inner">
           <div className="ting-plan-title">
-            <Rune glyph="ᚦ" size={24} />
             <div>
               <h1 className="niuu:text-base niuu:font-semibold niuu:text-text-secondary niuu:m-0">
-                New saga plan
+                New project plan
               </h1>
               <p className="ting-plan-title__copy">
-                Turn a rough brief into a decomposed saga with workflow, acceptance criteria, and
+                Turn a rough brief into a decomposed project with workflow, acceptance criteria, and
                 reviewable sub-tasks.
               </p>
             </div>

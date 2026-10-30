@@ -72,7 +72,7 @@ describe('ClustersPage', () => {
   it('renders pods and nodes panels', async () => {
     renderWithVolundr(<ClustersPage />);
 
-    await waitFor(() => expect(screen.getByText(/Pods on this forge/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Pods on this host/i)).toBeInTheDocument());
     expect(screen.getByText(/^Nodes$/)).toBeInTheDocument();
     expect(screen.getByText('observatory-canvas-perf')).toBeInTheDocument();
     expect(screen.getByText('valaskjalf-01')).toBeInTheDocument();

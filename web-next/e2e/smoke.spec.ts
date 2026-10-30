@@ -10,22 +10,30 @@ test('niuu boots into the first rail plugin, realms', async ({ page }) => {
 
 test('deep-link /volundr renders the forge page directly', async ({ page }) => {
   await page.goto('/volundr');
-  await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('heading', { name: 'Sessions', exact: true, level: 1 })).toBeVisible({
+    timeout: 5000,
+  });
   await expect(page.getByTestId('forge-page')).toBeVisible();
   await expect(page).toHaveURL('http://localhost:5173/volundr/forge');
 });
 
 test('navigating away from /volundr and back preserves the shell', async ({ page }) => {
   await page.goto('/volundr');
-  await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('heading', { name: 'Sessions', exact: true, level: 1 })).toBeVisible({
+    timeout: 5000,
+  });
   await expect(page.getByTestId('forge-page')).toBeVisible();
 
   await page.goto('/ting');
-  await expect(page.getByRole('heading', { name: 'Ting' })).toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('heading', { name: 'Work', exact: true, level: 1 })).toBeVisible({
+    timeout: 5000,
+  });
 
   await page.goBack();
   await expect(page).toHaveURL(/\/volundr\/forge$/);
-  await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('heading', { name: 'Sessions', exact: true, level: 1 })).toBeVisible({
+    timeout: 5000,
+  });
   await expect(page.getByTestId('forge-page')).toBeVisible();
 });
 

@@ -13,17 +13,17 @@ import { legacySessionSearch } from './ui/workbench/legacyRoutes';
 export const ravnPlugin = definePlugin({
   id: 'ravn',
   rune: 'R',
-  title: 'Ravn',
-  subtitle: 'ravens · personas',
+  icon: createElement(Bot, { size: 17, 'aria-hidden': true }),
+  title: 'Agents',
+  subtitle: 'deployed agents and their personas',
   simple: {
     // The agents themselves: residents and the personas they run with.
     tabs: ['residents', 'personas'],
     title: 'Residents',
     subtitle: 'who keeps what',
-    icon: createElement(Bot, { size: 17, 'aria-hidden': true }),
   },
   tabs: [
-    { id: 'ravens', label: 'Ravens', path: '/ravn' },
+    { id: 'ravens', label: 'Deployed', path: '/ravn' },
     { id: 'residents', label: 'Residents', path: '/ravn/residents', simpleOnly: true },
     { id: 'personas', label: 'Personas', path: '/ravn/personas' },
   ],

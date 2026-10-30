@@ -987,7 +987,7 @@ function StageInspector({
           <div className="niuu:flex niuu:flex-col niuu:gap-1.5">
             {stageMembers.length === 0 && (
               <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3 niuu:text-xs niuu:text-text-muted">
-                No ravns assigned yet.
+                No agents assigned yet.
               </div>
             )}
             {stageMembers.map((member) => {
@@ -1126,7 +1126,7 @@ function StageInspector({
                   )}
 
                   <div>
-                    <div className={SECTION_LABEL}>Ravn</div>
+                    <div className={SECTION_LABEL}>Agent</div>
                     <select
                       className={cn(INPUT, 'niuu:mt-0.5')}
                       value={member.personaId}
@@ -1154,7 +1154,7 @@ function StageInspector({
                 value={newPersonaId}
                 onChange={(e) => setNewPersonaId(e.target.value)}
               >
-                <option value="">Select a ravn…</option>
+                <option value="">Select an agent…</option>
                 {availablePersonas.map((persona) => (
                   <option key={persona.id} value={persona.id}>
                     {persona.label} · {persona.role}
@@ -1184,7 +1184,7 @@ function StageInspector({
                   setNewModelId(defaultModelId);
                 }}
               >
-                Add ravn
+                Add agent
               </button>
             </div>
           </div>
@@ -1319,10 +1319,10 @@ function ResourceInspector({
       {node.bindingMode === 'ephemeral_local' ? (
         <div className="niuu:flex niuu:flex-col niuu:gap-3">
           <div className="niuu:rounded-md niuu:border niuu:border-status-emerald/40 niuu:bg-status-emerald/10 niuu:p-3 niuu:flex niuu:flex-col niuu:gap-1.5">
-            <div className={SECTION_LABEL}>Ephemeral local Mimir</div>
+            <div className={SECTION_LABEL}>Ephemeral local memory</div>
             <div className="niuu:text-xs niuu:text-text-secondary niuu:leading-relaxed">
-              This Mimir is created inside the session workspace at runtime. Its local path is fixed
-              by the runtime and cannot be changed here.
+              This memory is created inside the session workspace at runtime. Its local path is
+              fixed by the runtime and cannot be changed here.
             </div>
             <div className="niuu:text-[10px] niuu:font-mono niuu:text-text-faint">
               Path: workspace-local (.flock/mimir/local/...)
@@ -1356,7 +1356,7 @@ function ResourceInspector({
               value={node.registryEntryId ?? ''}
               onChange={(e) => applyRegistryMount(e.target.value)}
             >
-              <option value="">Select a Mimir registry mount…</option>
+              <option value="">Select a memory mount…</option>
               {registryMounts.map((mount) => (
                 <option key={mount.id} value={mount.id}>
                   {mount.name} · {mount.role}
@@ -1369,7 +1369,7 @@ function ResourceInspector({
             <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3 niuu:flex niuu:flex-col niuu:gap-1.5">
               <div className={SECTION_LABEL}>Resolved mount</div>
               <div className="niuu:text-xs niuu:text-text-secondary niuu:leading-relaxed">
-                {selectedMount.desc || 'Registry-backed Mimir instance'}
+                {selectedMount.desc || 'Registry-backed memory instance'}
               </div>
               <div className="niuu:flex niuu:flex-wrap niuu:gap-1">
                 <span

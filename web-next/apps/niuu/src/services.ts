@@ -119,7 +119,7 @@ export class UnsupportedSessionStoreOperationError extends Error {
 
   constructor(operation: 'create' | 'update') {
     super(
-      `The app session-store adapter does not support session ${operation}. Use the Forge lifecycle service instead.`,
+      `The app session-store adapter does not support session ${operation}. Use the session lifecycle service instead.`,
     );
     this.name = 'UnsupportedSessionStoreOperationError';
     this.operation = operation;
@@ -1367,7 +1367,7 @@ function buildVolundrClusterAdapter(volundr: IVolundrService): IClusterAdapter {
               {
                 id: 'shared',
                 slug: 'shared',
-                name: 'Shared Forge',
+                name: 'Shared host',
                 baseUrl: '',
                 enabled: true,
                 isDefault: false,
@@ -1390,7 +1390,7 @@ function buildVolundrClusterAdapter(volundr: IVolundrService): IClusterAdapter {
           {
             id: 'shared',
             slug: 'shared',
-            name: capacityFromNodes(nodes).gpu > 0 ? 'Shared GPU Forge' : 'Shared Forge',
+            name: capacityFromNodes(nodes).gpu > 0 ? 'Shared GPU host' : 'Shared host',
             baseUrl: '',
             enabled: true,
             isDefault: false,
@@ -1622,7 +1622,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
       ? buildWorkHttpAdapter(workClient)
       : unavailableService<IWorkService>(
           'ting.work',
-          'Configure a live Ting backend to view work.',
+          'Configure a live work backend to view work.',
         ),
     'ting.workflowExecutions': tingClient
       ? buildWorkflowExecutionHttpAdapter(tingClient)

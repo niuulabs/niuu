@@ -35,12 +35,12 @@ const defaultServices = {
 describe('TingPage (DashboardPage alias)', () => {
   it('renders the saga stream section', async () => {
     render(<TingPage />, { wrapper: wrap(defaultServices) });
-    await waitFor(() => expect(screen.getByText('Saga stream')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Project stream')).toBeInTheDocument());
   });
 
   it('renders KPI cards', async () => {
     render(<TingPage />, { wrapper: wrap(defaultServices) });
-    await waitFor(() => expect(screen.getByText('Active sagas')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Active projects')).toBeInTheDocument());
     expect(screen.getByText('Active runs')).toBeInTheDocument();
   });
 

@@ -146,9 +146,9 @@ describe('QuickLaunch', () => {
     fireEvent.change(screen.getByLabelText('Working folder'), {
       target: { value: '/home/thor/custom' },
     });
-    fireEvent.change(screen.getByLabelText('Forge'), { target: { value: 'spark' } });
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'spark' } });
     expect(screen.getByLabelText('Working folder')).toHaveValue('/home/xteo/review');
-    fireEvent.change(screen.getByLabelText('Forge'), { target: { value: 'thor' } });
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'thor' } });
     expect(screen.getByLabelText('Working folder')).toHaveValue('/home/thor/custom');
   });
   it('does not replace an unavailable requested model with another model', async () => {
@@ -193,7 +193,7 @@ describe('QuickLaunch', () => {
   });
   it('does not launch on a disabled host', async () => {
     setup({ getTargets: async () => hosts.map((h) => ({ ...h, enabled: false })) });
-    await screen.findByText('Add an enabled Forge host to launch a session.');
+    await screen.findByText('Add an enabled host to launch a session.');
     expect(screen.getByRole('button', { name: 'Launch Claude' })).toBeDisabled();
   });
   it('preserves the form and prevents duplicate submission while a launch is pending', async () => {
@@ -209,7 +209,7 @@ describe('QuickLaunch', () => {
     fireEvent.submit(screen.getByTestId('quick-launch-form'));
     fireEvent.submit(screen.getByTestId('quick-launch-form'));
     expect(startSession).toHaveBeenCalledOnce();
-    expect(screen.getByLabelText('Forge')).toBeDisabled();
+    expect(screen.getByLabelText('Host')).toBeDisabled();
     reject(new Error('Host is offline'));
     await screen.findByText('Host is offline');
     await ready();
@@ -245,7 +245,7 @@ describe('QuickLaunch', () => {
     fireEvent.change(screen.getByLabelText('Workspace source'), {
       target: { value: 'local_mount' },
     });
-    fireEvent.change(screen.getByLabelText('Forge'), { target: { value: 'spark' } });
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'spark' } });
     await waitFor(() => expect(screen.getByLabelText('Workspace source')).toHaveValue('git'));
     expect(screen.queryByLabelText('Working folder')).toBeNull();
   });

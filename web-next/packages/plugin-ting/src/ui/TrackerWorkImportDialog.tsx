@@ -342,7 +342,7 @@ export function TrackerWorkImportDialog({
             <label>
               <span>Execution target</span>
               <select value={targetId} onChange={(event) => setTargetId(event.target.value)}>
-                <option value="">Let Ting choose</option>
+                <option value="">Let Niuu choose</option>
                 {enabledTargets.map((target: DispatchCluster) => (
                   <option
                     key={target.instanceId ?? target.connectionId}

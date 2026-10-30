@@ -61,7 +61,7 @@ export function SessionEnvironment({
                 </button>
               </>
             ) : (
-              <span>Not reported by Forge</span>
+              <span>Not reported by the host</span>
             )}
           </dd>
           <dt>Git repository</dt>

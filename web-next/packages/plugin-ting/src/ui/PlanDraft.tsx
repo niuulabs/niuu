@@ -122,7 +122,7 @@ function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProp
                 title={run.persona ?? 'raven'}
                 aria-label={`persona: ${run.persona ?? 'raven'}`}
               >
-                {run.persona ? run.persona.charAt(0).toUpperCase() : 'ᚱ'}
+                {run.persona ? run.persona.charAt(0).toUpperCase() : 'A'}
               </span>
 
               {/* Col 2: Name + meta */}
@@ -155,11 +155,11 @@ function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProp
               <button
                 type="button"
                 disabled
-                aria-label={`Promote run ${ri + 1} to own saga unavailable`}
-                title="Unavailable: promoting a run to its own saga is not supported."
+                aria-label={`Promote run ${ri + 1} to own project unavailable`}
+                title="Unavailable: promoting a run to its own project is not supported."
                 className="niuu:text-xs niuu:text-text-muted niuu:border niuu:border-border niuu:rounded niuu:px-1.5 niuu:py-0.5 niuu:opacity-40 niuu:cursor-not-allowed"
               >
-                Own saga
+                Own project
               </button>
 
               {/* Col 5: Remove button */}
@@ -202,7 +202,7 @@ export function PlanDraft({
   onRemoveRun,
 }: PlanDraftProps) {
   const phases = structure.structure?.phases ?? [];
-  const sagaName = structure.structure?.name ?? 'New Saga';
+  const sagaName = structure.structure?.name ?? 'New project';
   const risks = structure.structure?.risks ?? [];
 
   const totalRuns = phases.reduce((sum, p) => sum + p.runs.length, 0);
@@ -237,7 +237,7 @@ export function PlanDraft({
             </h2>
             <p className="niuu:text-sm niuu:text-text-secondary">
               Nothing is created yet. Tune the draft, remove work, or re-plan before materializing
-              the saga.
+              the project.
             </p>
           </div>
         </div>
@@ -285,7 +285,7 @@ export function PlanDraft({
 
       {phases.length === 0 && (
         <p className="niuu:text-sm niuu:text-text-muted niuu:italic">
-          No phases extracted — the raven couldn&apos;t decompose this goal. Try going back and
+          No phases extracted — the agent couldn&apos;t decompose this goal. Try going back and
           adding more context.
         </p>
       )}
