@@ -56,6 +56,7 @@ from niuu.adapters.inbound.remote_urls import (
     forward_websocket_identity_headers as _forward_websocket_headers,
 )
 from niuu.adapters.inbound.source_health import (
+    SOURCE_FAILURES_HEADER,
     SourceFailure,
     describe_remote_failure,
     instance_source_failures,
@@ -88,6 +89,10 @@ from niuu.ports.instances import InvalidInstanceIdError
 logger = logging.getLogger(__name__)
 
 UNAVAILABLE_INSTANCES_HEADER = "X-Forge-Unavailable-Instances"
+#: Marks a facade's owner probe of another node, and its owner-hint question to the
+#: Guild: the facade answering it reports only its own nodes and never asks back,
+#: so two facades cannot ask each other in a loop (LEX-1738).
+OWNER_PROBE_HEADER = "X-Niuu-Owner-Probe"
 #: The Forge-hosted MCP endpoint, under the Forge API prefix on every node.
 MCP_PATH = "/mcp"
 NOTIFICATION_EVENT = "session_notification"
@@ -816,16 +821,21 @@ async def _find_runtime_owner(
     extra_headers: dict[str, str] | None = None,
     candidates: list[RegisteredInstance] | None = None,
 ) -> tuple[RegisteredInstance, dict[str, Any]]:
-    async def probe(instance: RegisteredInstance) -> tuple[RegisteredInstance, httpx.Response]:
-        response = await _request_remote(
-            instance,
-            request,
-            method="GET",
-            path=path,
-            extra_headers=extra_headers,
-            embedded_app=embedded_app,
-            timeout=5.0,
-        )
+    async def probe(
+        instance: RegisteredInstance,
+    ) -> tuple[RegisteredInstance, httpx.Response | httpx.RequestError]:
+        try:
+            response = await _request_remote(
+                instance,
+                request,
+                method="GET",
+                path=path,
+                extra_headers={**(extra_headers or {}), OWNER_PROBE_HEADER: "1"},
+                embedded_app=embedded_app,
+                timeout=5.0,
+            )
+        except httpx.RequestError as exc:
+            return instance, exc
         return instance, response
 
     selected = request.query_params.get("instance_id")
@@ -849,6 +859,8 @@ async def _find_runtime_owner(
         # to every other node, and a node that lacks it is asked only when needed.
         # Only "not here" moves on: a local store error must not read as absent.
         instance, response = await probe(local[0])
+        if isinstance(response, httpx.RequestError):
+            raise HTTPException(502, "This node's Forge is unreachable") from response
         if response.status_code != status.HTTP_404_NOT_FOUND:
             _ensure_remote_success(response)
             payload = response.json()
@@ -858,32 +870,53 @@ async def _find_runtime_owner(
                 )
         instances = [instance for instance in instances if instance is not local[0]]
     tasks = [asyncio.create_task(probe(instance)) for instance in instances]
-    failure: HTTPException | None = None
+    refused: HTTPException | None = None
+    unanswered: list[SourceFailure] = []
     try:
         # Ownership is unknown until a visible instance returns the resource.
         # An unrelated offline instance must not delay a healthy owner's reply.
         for task in asyncio.as_completed(tasks):
             try:
                 instance, response = await task
-            except httpx.RequestError:
-                failure = HTTPException(502, "An instance was unreachable during owner lookup")
-                continue
             except HTTPException as exc:
-                failure = exc
+                refused = exc  # a policy refusal, not a node that failed to answer
+                continue
+            if isinstance(response, httpx.RequestError) or response.status_code >= 500:
+                unanswered.append(
+                    source_failure(
+                        instance_id=instance.id,
+                        name=instance.name,
+                        error=describe_remote_failure(response),
+                    )
+                )
                 continue
             if response.status_code in {status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND}:
                 continue
             if response.is_error:
-                failure = HTTPException(502, "An instance failed during owner lookup")
+                unanswered.append(
+                    source_failure(
+                        instance_id=instance.id,
+                        name=instance.name,
+                        error=describe_remote_failure(response),
+                    )
+                )
                 continue
             payload = response.json()
             if isinstance(payload, dict):
                 return instance, _with_instance(
                     payload, instance, rebase_chat_endpoint=rebase_chat_endpoint
                 )
-        if failure is not None:
-            # A partial search cannot establish that the resource is absent.
-            raise failure
+        if refused is not None:
+            raise refused
+        if unanswered:
+            # A partial search cannot establish that the resource is absent: a client may
+            # read 404 as "gone", and a sleeping node must never make a live session
+            # vanish. The nodes that did not answer are named.
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="An instance was unreachable during owner lookup",
+                headers={SOURCE_FAILURES_HEADER: json.dumps(unanswered[:20])},
+            )
         raise HTTPException(status_code=404, detail=not_found_detail)
     finally:
         for task in tasks:
@@ -4085,7 +4118,8 @@ def create_volundr_router(
                 response = await client.get(
                     build_remote_url(
                         guild_membership.guild_url, "/api/v1/forge", f"/sessions/{session_id}"
-                    )
+                    ),
+                    headers={OWNER_PROBE_HEADER: "1"},
                 )
         except httpx.RequestError:
             return None
@@ -4150,6 +4184,8 @@ def create_volundr_router(
         except HTTPException as exc:
             if exc.status_code != status.HTTP_404_NOT_FOUND:
                 raise
+            if request.headers.get(OWNER_PROBE_HEADER):
+                raise  # another facade is asking: report this node's answer, never ask back
             owner = await _guild_owner_of(session_id)
             if owner is None:
                 raise
@@ -4162,6 +4198,7 @@ def create_volundr_router(
             raise HTTPException(
                 status.HTTP_404_NOT_FOUND,
                 f"Session {session_id} is not on this node; it is {owner}. {how}",
+                headers=exc.headers,
             ) from exc
         if session_owners is not None:
             _with_parent_guild_ids(request, await _visible_instances(service, principal), [payload])
