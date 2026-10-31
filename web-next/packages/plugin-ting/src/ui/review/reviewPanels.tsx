@@ -6,6 +6,7 @@ import {
   SessionDiffs,
   SessionFilePreview,
   SessionFilesWorkspace,
+  SessionPage,
   type IFileSystemPort,
   type ReviewControls,
 } from '@niuulabs/ui';
@@ -14,6 +15,8 @@ import type { ReviewPanel } from '../../domain/work';
 import { markQuotes } from './markQuotes';
 
 const NO_MARKS: readonly string[] = [];
+const NO_FILES: readonly string[] = [];
+const NO_CONTEXT: Readonly<Record<string, string | number>> = {};
 const WORKSPACE_ROOT = '/workspace';
 
 export interface ReviewPanelProps {
@@ -32,6 +35,11 @@ export interface ReviewPanelProps {
   marks?: readonly string[];
   /** Opens the conversation a mark came from. */
   onMarkClick?: (quote: string) => void;
+  /** Plain facts a page may read about this review. */
+  pageContext?: Readonly<Record<string, string | number>>;
+  /** Puts text from a page in front of the person; absent once there is nothing to add to. */
+  onQuote?: (text: string) => void;
+  onAsk?: (text: string) => void;
 }
 
 function MarkedDocument({
@@ -139,6 +147,35 @@ function LinkPanel({ panel }: ReviewPanelProps) {
   );
 }
 
+function PagePanel({
+  panel,
+  filesystem,
+  sessionId,
+  pageContext,
+  onQuote,
+  onAsk,
+}: ReviewPanelProps) {
+  if (!filesystem || !sessionId || !panel.source) {
+    return (
+      <p role="alert" className="ting-review-panel__missing">
+        This app has no file browser connected.
+      </p>
+    );
+  }
+  return (
+    <SessionPage
+      sessionId={sessionId}
+      path={panel.source.value}
+      title={panel.title}
+      context={pageContext ?? NO_CONTEXT}
+      files={panel.files ?? NO_FILES}
+      filesystem={filesystem}
+      onQuote={onQuote}
+      onAsk={onAsk}
+    />
+  );
+}
+
 function PullRequestPanel({ pullRequestUrl, revision }: ReviewPanelProps) {
   return (
     <>
@@ -165,6 +202,7 @@ export const REVIEW_WIDGETS: Readonly<Record<string, ComponentType<ReviewPanelPr
   files: FilesPanel,
   file: FilePanel,
   link: LinkPanel,
+  page: PagePanel,
   pullRequest: PullRequestPanel,
   summary: SummaryPanel,
 };

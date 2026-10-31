@@ -1311,6 +1311,7 @@ PLAN_PANEL = {
     "widget": "document",
     "title": "Plan",
     "source": {"kind": "outcome", "value": "plan"},
+    "files": [],
 }
 
 

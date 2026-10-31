@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
-import type { IFileSystemPort } from '@niuulabs/ui';
+import { frameDocument, type IFileSystemPort } from '@niuulabs/ui';
 import type { IWorkService } from '../../ports';
 import type { ReviewRevision, RunReview, TicketReviews } from '../../domain/review';
 import type { WorkDetail, WorkTask } from '../../domain/work';
@@ -437,6 +437,47 @@ describe('ReviewPanelSlot', () => {
       'src',
       'https://printer.example/cam',
     );
+  });
+
+  it('runs a declared page from the run workspace, sandboxed', async () => {
+    const downloadFile = vi.fn().mockResolvedValue({
+      size: 12,
+      text: () => Promise.resolve('<p>Layers</p>'),
+    });
+    render(
+      <ReviewPanelSlot
+        panel={{
+          widget: 'page',
+          title: 'Layers',
+          source: { kind: 'file', value: 'report/index.html' },
+          files: ['report/unit-17.jpg'],
+        }}
+        revision={revision()}
+        compareWith={null}
+        pullRequestUrl={null}
+        sessionId="run-1"
+        filesystem={{ downloadFile } as unknown as IFileSystemPort}
+        pageContext={{ ticket: 'FAB-88' }}
+      />,
+    );
+
+    const frame = await screen.findByTitle('Layers');
+
+    expect(frame).toHaveAttribute('sandbox', 'allow-scripts');
+    expect(frame.getAttribute('srcdoc')).toBe(frameDocument('<p>Layers</p>'));
+  });
+
+  it('says when a page panel has no file browser', () => {
+    render(
+      <ReviewPanelSlot
+        panel={{ widget: 'page', title: 'Layers', source: { kind: 'file', value: 'a.html' } }}
+        revision={revision()}
+        compareWith={null}
+        pullRequestUrl={null}
+      />,
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent('no file browser');
   });
 
   it('says when no file browser is connected', () => {

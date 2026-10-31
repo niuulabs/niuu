@@ -45,6 +45,7 @@ SOURCE_URL = "url"
 WIDGET_DOCUMENT = "document"
 WIDGET_FILE = "file"
 WIDGET_LINK = "link"
+WIDGET_PAGE = "page"
 WIDGET_DIFF = "diff"
 WIDGET_FILES = "files"
 WIDGET_PULL_REQUEST = "pullRequest"
@@ -54,6 +55,7 @@ _WIDGET_SOURCES: Mapping[str, str | None] = {
     WIDGET_DOCUMENT: SOURCE_OUTCOME,
     WIDGET_FILE: SOURCE_FILE,
     WIDGET_LINK: SOURCE_URL,
+    WIDGET_PAGE: SOURCE_FILE,
     WIDGET_DIFF: None,
     WIDGET_FILES: None,
     WIDGET_PULL_REQUEST: None,
@@ -102,6 +104,8 @@ class ReviewPanel:
     widget: str
     title: str
     source: ReviewSource | None = None
+    # Workspace files a page may ask for; a page has no network of its own.
+    files: tuple[str, ...] = ()
 
 
 _KIND_PANELS: Mapping[str, tuple[ReviewPanel, ...]] = {
@@ -528,7 +532,7 @@ def _review_panels(
 def _parse_panel(raw: object, column_id: str) -> ReviewPanel:
     if not isinstance(raw, Mapping):
         raise WorkflowBoardError(f"Each panel of board column {column_id!r} must be a mapping")
-    unknown = set(raw) - {"widget", "title", "source"}
+    unknown = set(raw) - {"widget", "title", "source", "files"}
     if unknown:
         raise WorkflowBoardError(f"Unknown review panel field(s): {', '.join(sorted(unknown))}")
     widget = raw.get("widget")
@@ -542,7 +546,26 @@ def _parse_panel(raw: object, column_id: str) -> ReviewPanel:
         widget=str(widget),
         title=title,
         source=_parse_source(raw.get("source"), str(widget), title),
+        files=_parse_files(raw.get("files"), str(widget), title),
     )
+
+
+def _parse_files(raw: object, widget: str, title: str) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if widget != WIDGET_PAGE:
+        raise WorkflowBoardError(f"Review panel {title!r} takes no files; only a page does")
+    if not isinstance(raw, list):
+        raise WorkflowBoardError(f"Review panel {title!r} files must be a list")
+    files = tuple(_required_text(item, f"{title} file") for item in raw)
+    for path in files:
+        _require_workspace_path(path, title)
+    return files
+
+
+def _require_workspace_path(path: str, title: str) -> None:
+    if path.startswith("/") or ".." in path.split("/"):
+        raise WorkflowBoardError(f"Review panel {title!r} must name a file inside the workspace")
 
 
 def _parse_source(raw: object, widget: str, title: str) -> ReviewSource | None:
@@ -554,8 +577,8 @@ def _parse_source(raw: object, widget: str, title: str) -> ReviewSource | None:
     if not isinstance(raw, Mapping) or set(raw) != {kind}:
         raise WorkflowBoardError(f"Review panel {title!r} needs source {{{kind}: ...}}")
     value = _required_text(raw[kind], f"{title} source")
-    if kind == SOURCE_FILE and (value.startswith("/") or ".." in value.split("/")):
-        raise WorkflowBoardError(f"Review panel {title!r} must name a file inside the workspace")
+    if kind == SOURCE_FILE:
+        _require_workspace_path(value, title)
     if kind == SOURCE_URL and not value.startswith(_WEB_SCHEMES):
         raise WorkflowBoardError(f"Review panel {title!r} needs an http or https URL")
     return ReviewSource(kind=kind, value=value)

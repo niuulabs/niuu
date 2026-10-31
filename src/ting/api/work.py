@@ -256,6 +256,7 @@ class ReviewPanelResponse(_ResponseModel):
     widget: str
     title: str
     source: ReviewSourceResponse | None = None
+    files: list[str] = []
 
 
 class BoardColumnResponse(_ResponseModel):

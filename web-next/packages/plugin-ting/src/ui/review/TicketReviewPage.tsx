@@ -86,6 +86,10 @@ function ReviewWorkspace({
     quoted.find((item) => item.textContent?.includes(quote))?.scrollIntoView({ block: 'center' });
   }, []);
 
+  const quoteFromPage = useCallback((text: string) => {
+    setNote((current) => addQuoteToNote(current, text));
+  }, []);
+
   const review = reviews.find((item) => item.columnId === chosenColumn) ?? openingReview(reviews);
   const latest = review?.revisions[review.revisions.length - 1];
   if (!review || !latest) return null;
@@ -128,6 +132,13 @@ function ReviewWorkspace({
   }
 
   const panel = review.panels[chosenPanel] ?? review.panels[0];
+  const pageContext = {
+    ticket: task.source.identifier,
+    title: task.title,
+    review: review.title,
+    revision: revision.number,
+    status: revision.status,
+  };
   const subject = panel ? (
     <ReviewPanelSlot
       panel={panel}
@@ -140,6 +151,9 @@ function ReviewWorkspace({
       review={decidable ? lineComments : undefined}
       marks={marks}
       onMarkClick={openQuote}
+      pageContext={pageContext}
+      onQuote={decidable ? quoteFromPage : undefined}
+      onAsk={canAsk ? setAsking : undefined}
     />
   ) : null;
 

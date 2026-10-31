@@ -100,6 +100,8 @@ export interface ReviewPanel {
   title: string;
   /** Where its content comes from; panels that show the run's own session have none. */
   source?: { kind: 'outcome' | 'file' | 'url'; value: string } | null;
+  /** Workspace files a page may ask for. */
+  files?: string[];
 }
 
 export interface WorkBoardColumn {

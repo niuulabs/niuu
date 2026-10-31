@@ -100,6 +100,59 @@ def test_a_panel_that_cannot_be_shown_is_refused(panels: Any, reason: str) -> No
         parse_workflow_board(graph)
 
 
+def test_a_page_declares_the_files_it_may_read() -> None:
+    graph = _graph()
+    _gate_column(graph)["panels"] = [
+        {
+            "widget": "page",
+            "title": "Layers",
+            "source": {"file": "report/index.html"},
+            "files": ["report/unit-17.jpg"],
+        }
+    ]
+
+    board = parse_workflow_board(graph)
+
+    assert board is not None
+    assert board.columns[1].panels == (
+        ReviewPanel(
+            widget="page",
+            title="Layers",
+            source=ReviewSource(kind="file", value="report/index.html"),
+            files=("report/unit-17.jpg",),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("panel", "reason"),
+    [
+        (
+            {"widget": "file", "title": "R", "source": {"file": "a.pdf"}, "files": ["b.png"]},
+            "only a page",
+        ),
+        (
+            {"widget": "page", "title": "P", "source": {"file": "a.html"}, "files": "b.png"},
+            "must be a list",
+        ),
+        (
+            {"widget": "page", "title": "P", "source": {"file": "a.html"}, "files": ["../b"]},
+            "inside the workspace",
+        ),
+        (
+            {"widget": "page", "title": "P", "source": {"file": "a.html"}, "files": [""]},
+            "non-empty",
+        ),
+    ],
+)
+def test_a_page_cannot_reach_past_its_workspace(panel: dict[str, Any], reason: str) -> None:
+    graph = _graph()
+    _gate_column(graph)["panels"] = [panel]
+
+    with pytest.raises(WorkflowBoardError, match=reason):
+        parse_workflow_board(graph)
+
+
 def test_panels_need_a_gate() -> None:
     graph = _graph()
     graph["board"]["columns"][0]["panels"] = [{"widget": "summary", "title": "Result"}]
