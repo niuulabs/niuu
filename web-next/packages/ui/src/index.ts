@@ -2,6 +2,7 @@ export * from './primitives/Chip';
 export * from './primitives/StateDot';
 export * from './primitives/Rune';
 export * from './primitives/NiuuMark';
+export * from './primitives/ContinuityField';
 export * from './primitives/NavIcons';
 export * from './primitives/Kbd';
 export * from './primitives/LiveBadge';

@@ -8,6 +8,12 @@
 /* --- Fonts --- */
 @font-face {
   font-family: 'Inter';
+  src: url('./fonts/Inter-Light.woff2') format('woff2');
+  font-weight: 300;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
   src: url('./fonts/Inter-Regular.ttf') format('truetype');
   font-weight: 400;
   font-display: swap;
@@ -417,6 +423,13 @@
   --niuu-rgb-danger: 231 141 148;
   --niuu-backdrop-centre: #0b1722;
   --niuu-backdrop-edge: #071019;
+  --niuu-field-haze: #1f4b67;
+  --niuu-field-line: #7cb7cf;
+  --niuu-field-edge: #6fa4c1;
+  --niuu-field-path: #b5e8f3;
+  --niuu-field-glow: #0f2937;
+  --niuu-field-mid: #091721;
+  --niuu-panel-shadow: 0 28px 85px rgb(0 0 0 / 0.4);
 }
 
 [data-theme='amber'] {
