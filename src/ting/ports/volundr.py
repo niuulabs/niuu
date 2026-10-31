@@ -575,6 +575,17 @@ class VolundrFactory(Protocol):
         """Return all visible adapters for a fully scoped principal."""
         raise NotImplementedError
 
+    async def for_principal_with_unresolved(
+        self, principal: Principal
+    ) -> tuple[list[VolundrPort], int]:
+        """Like ``for_principal``, but also reports how many registered instances
+        could not be resolved into a usable adapter this call.
+
+        Looking for a session across a principal's Forges needs this: a session
+        absent from the Forges that resolved is only gone when none was skipped.
+        """
+        raise NotImplementedError
+
     async def primary_for_principal(self, principal: Principal) -> VolundrPort | None:
         """Return the primary visible adapter for a fully scoped principal."""
         raise NotImplementedError

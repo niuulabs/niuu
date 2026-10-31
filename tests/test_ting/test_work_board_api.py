@@ -209,6 +209,8 @@ def _client(
     adapter: MagicMock | None,
     campaigns: list[WorkflowCampaign] | None = None,
     coordinators: _Coordinators | None = None,
+    forges: list[MagicMock] | None = None,
+    unresolved: int = 0,
 ) -> TestClient:
     project = TrackerProject(
         id="project-1",
@@ -236,7 +238,10 @@ def _client(
     app.state.subscriber = SimpleNamespace(running=True)
     if adapter is not None:
         app.state.volundr_factory = SimpleNamespace(
-            primary_for_principal=AsyncMock(return_value=adapter)
+            primary_for_principal=AsyncMock(return_value=adapter),
+            for_principal_with_unresolved=AsyncMock(
+                return_value=([adapter] if forges is None else forges, unresolved)
+            ),
         )
     app.include_router(create_work_router())
     app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -258,8 +263,11 @@ def _adapter(
     gates: list[dict[str, Any]] | Exception,
     *,
     activity_state: str = "active",
+    name: str = "forge-a",
 ) -> MagicMock:
     adapter = MagicMock()
+    adapter.name = name
+    adapter.target_id = name
     adapter.get_session = AsyncMock(
         return_value=SimpleNamespace(
             activity_state=activity_state,
@@ -1158,3 +1166,141 @@ def test_a_dispatched_run_reads_the_workflow_assigned_to_the_project() -> None:
     board = _board_task(client, saga)["board"]
 
     assert (board["columnId"], board["state"]) == ("code-review", "needsDecision")
+
+
+def _on_no_forge(name: str) -> MagicMock:
+    forge = _adapter([], name=name)
+    forge.get_session.return_value = None
+    return forge
+
+
+def test_a_run_on_another_forge_reads_its_real_state() -> None:
+    saga = _saga(_snapshot())
+    primary = _on_no_forge("forge-a")
+    other = _adapter([_pending_gate()], name="forge-b")
+    client = _client(
+        saga, issues=[_issue()], runs=[_run()], adapter=primary, forges=[primary, other]
+    )
+
+    board = _board_task(client, saga)["board"]
+
+    assert (board["columnId"], board["state"]) == ("code-review", "needsDecision")
+    assert board["reason"] != SESSION_GONE_REASON
+    primary.get_workflow_gates.assert_not_awaited()
+    assert _decide(client, saga).status_code == 200
+    other.resolve_workflow_gate.assert_awaited_once()
+    primary.resolve_workflow_gate.assert_not_awaited()
+
+
+def test_a_session_on_no_forge_reads_as_gone() -> None:
+    saga = _saga(_snapshot())
+    first, second = _on_no_forge("forge-a"), _on_no_forge("forge-b")
+    client = _client(saga, issues=[_issue()], runs=[_run()], adapter=first, forges=[first, second])
+
+    board = _board_task(client, saga)["board"]
+
+    assert board["state"] == "blocked"
+    assert board["reason"] == SESSION_GONE_REASON
+
+
+def test_a_forge_that_could_not_be_asked_never_makes_a_session_gone() -> None:
+    saga = _saga(_snapshot())
+    answering = _on_no_forge("forge-a")
+    down = _adapter([], name="forge-b")
+    down.get_session.side_effect = httpx.ConnectError("forge-b is down")
+    client = _client(
+        saga, issues=[_issue()], runs=[_run()], adapter=answering, forges=[answering, down]
+    )
+
+    body = client.get(f"/api/v1/ting/work/project/{saga.id}", headers=HEADERS).json()
+
+    assert body["tasks"][0]["board"]["state"] == "unknown"
+    assert _coverage(body, "workflowGates")["error"]["code"] == "sourceReadFailed"
+
+
+def test_a_forge_left_out_for_its_credential_never_makes_a_session_gone() -> None:
+    saga = _saga(_snapshot())
+    answering = _on_no_forge("forge-a")
+    client = _client(
+        saga, issues=[_issue()], runs=[_run()], adapter=answering, forges=[answering], unresolved=1
+    )
+
+    body = client.get(f"/api/v1/ting/work/project/{saga.id}", headers=HEADERS).json()
+
+    assert body["tasks"][0]["board"]["state"] == "unknown"
+    assert _coverage(body, "workflowGates")["error"]["code"] == "sourceReadFailed"
+
+
+def test_no_registered_forge_makes_a_session_unreadable_not_gone() -> None:
+    saga = _saga(_snapshot())
+    client = _client(saga, issues=[_issue()], runs=[_run()], adapter=_adapter([]), forges=[])
+
+    body = client.get(f"/api/v1/ting/work/project/{saga.id}", headers=HEADERS).json()
+
+    assert body["tasks"][0]["board"]["state"] == "unknown"
+    assert _coverage(body, "workflowGates")["status"] == "unavailable"
+
+
+def test_a_coordinator_is_read_from_its_own_forge_without_asking_the_others() -> None:
+    saga = _saga(_snapshot())
+    other = _on_no_forge("forge-a")
+    own = _adapter([], name="forge-b")
+    client = _client(
+        saga,
+        issues=[_issue(status_type="unstarted")],
+        runs=[],
+        adapter=other,
+        forges=[other, own],
+        coordinators=_Coordinators(replace(_coordinator(saga), connection_id="forge-b")),
+    )
+
+    board = _board_task(client, saga)["board"]
+
+    assert board["reason"] != SESSION_GONE_REASON
+    other.get_session.assert_not_awaited()
+    own.get_session.assert_awaited_once()
+
+
+def test_a_campaign_is_read_from_the_forge_it_launched_on() -> None:
+    saga = _saga(_snapshot())
+    other = _on_no_forge("forge-a")
+    own = _adapter([_pending_gate()], name="forge-b")
+    campaign = replace(
+        _campaign(saga, status=WorkflowCampaignStatus.RUNNING), connection_id="forge-b"
+    )
+    client = _client(
+        saga,
+        issues=[_issue()],
+        runs=[],
+        adapter=other,
+        forges=[other, own],
+        campaigns=[campaign],
+        coordinators=_Coordinators(replace(_coordinator(saga), connection_id="forge-b")),
+    )
+
+    board = _board_task(client, saga)["board"]
+
+    assert (board["columnId"], board["state"]) == ("code-review", "needsDecision")
+    other.get_session.assert_not_awaited()
+    assert own.get_session.await_count == 2
+    assert _decide(client, saga).status_code == 200
+    own.resolve_workflow_gate.assert_awaited_once()
+
+
+def test_a_connection_that_no_longer_resolves_is_unreadable_never_gone() -> None:
+    saga = _saga(_snapshot())
+    other = _on_no_forge("forge-a")
+    client = _client(
+        saga,
+        issues=[_issue(status_type="unstarted")],
+        runs=[],
+        adapter=other,
+        forges=[other],
+        coordinators=_Coordinators(replace(_coordinator(saga), connection_id="forge-b")),
+    )
+
+    body = client.get(f"/api/v1/ting/work/project/{saga.id}", headers=HEADERS).json()
+
+    assert body["tasks"][0]["board"]["reason"] != SESSION_GONE_REASON
+    assert _coverage(body, "workflowGates")["error"]["code"] == "sourceReadFailed"
+    other.get_session.assert_not_awaited()

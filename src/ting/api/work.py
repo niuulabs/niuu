@@ -6,6 +6,7 @@ answer to the session that owns the gate.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import replace
 from datetime import datetime
@@ -56,7 +57,7 @@ from ting.domain.workflow_board import (
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.ticket_coordinator_repository import TicketCoordinatorRepository
 from ting.ports.tracker import TrackerPort, TrackerResolution
-from ting.ports.volundr import VolundrPort, VolundrSession
+from ting.ports.volundr import VolundrFactory, VolundrPort, VolundrSession
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_execution import WorkflowExecutionRepository
 
@@ -494,21 +495,42 @@ def _blocked_reason(session: VolundrSession | None) -> str | None:
     return str(last.get("summary") or f"{last.get('persona') or 'A stage'} is blocked.")
 
 
-def _session_gate_reader(
-    adapter: VolundrPort | None,
-    *,
-    request: Request,
-    principal: Principal,
-) -> SessionGateReader | None:
-    if adapter is None:
-        return None
-    auth_token = extract_bearer_token(request)
+class ForgeSessionUnreadableError(RuntimeError):
+    """A session's Forge could not be asked, so whether the session exists is not known."""
 
-    async def read(session_id: str) -> SessionProgress:
-        session = await adapter.get_session(session_id, auth_token=auth_token, principal=principal)
-        if session is None:
-            # Forge answered, and the session is gone: that is known, not unreadable.
+
+class _ForgeSessions:
+    """Reads sessions from the Forge each one lives on.
+
+    A board spans sessions on several Forges, because unpinned launches are
+    placed across every registered one. A session is read from the Forge it
+    was launched on when that is known; otherwise every Forge of the principal
+    is asked. The Forges are resolved once per request, never per ticket, and a
+    session counts as gone only when every Forge that was asked answered
+    without it.
+    """
+
+    def __init__(self, factory: VolundrFactory, *, principal: Principal, auth_token: str | None):
+        self._factory = factory
+        self._principal = principal
+        self._auth_token = auth_token
+        self._forges: asyncio.Task[tuple[list[VolundrPort], int]] | None = None
+        self._located: dict[str, VolundrPort] = {}
+
+    def forge_of(self, session_id: str) -> VolundrPort | None:
+        """The Forge a session was found on while the board was read."""
+        return self._located.get(session_id)
+
+    async def read(self, session_id: str, connection_id: str | None) -> SessionProgress:
+        if connection_id:
+            adapter = await self._forge_for(connection_id)
+            session = await self._get_session(adapter, session_id)
+        else:
+            adapter, session = await self._locate(session_id)
+        if adapter is None or session is None:
+            # Every Forge asked answered, and none has it: known, not unreadable.
             return SessionProgress(gates=[], failed=True, blocked_reason=SESSION_GONE_REASON)
+        self._located[session_id] = adapter
         if session.status in _SESSION_AWAY_REASONS:
             # Its broker is not listening, so its gates cannot be read right now.
             return SessionProgress(
@@ -522,7 +544,7 @@ def _session_gate_reader(
                 ),
             )
         gates = await adapter.get_workflow_gates(
-            session_id, auth_token=auth_token, principal=principal
+            session_id, auth_token=self._auth_token, principal=self._principal
         )
         return SessionProgress(
             gates=gates,
@@ -531,7 +553,60 @@ def _session_gate_reader(
             blocked_reason=_blocked_reason(session),
         )
 
-    return read
+    async def _forges_of_principal(self) -> tuple[list[VolundrPort], int]:
+        if self._forges is None:
+            self._forges = asyncio.ensure_future(
+                self._factory.for_principal_with_unresolved(self._principal)
+            )
+        return await self._forges
+
+    async def _forge_for(self, connection_id: str) -> VolundrPort:
+        adapters, _ = await self._forges_of_principal()
+        for adapter in adapters:
+            if connection_id in {adapter.target_id, adapter.name}:
+                return adapter
+        raise ForgeSessionUnreadableError(
+            f"Forge connection {connection_id!r} did not resolve, so its sessions cannot be "
+            "read. Check the connection's credential in Guild."
+        )
+
+    async def _get_session(self, adapter: VolundrPort, session_id: str) -> VolundrSession | None:
+        return await adapter.get_session(
+            session_id, auth_token=self._auth_token, principal=self._principal
+        )
+
+    async def _locate(self, session_id: str) -> tuple[VolundrPort | None, VolundrSession | None]:
+        adapters, unresolved = await self._forges_of_principal()
+        if not adapters:
+            raise ForgeSessionUnreadableError("No Forge connection is available to read sessions.")
+        answers = await asyncio.gather(
+            *(self._get_session(adapter, session_id) for adapter in adapters),
+            return_exceptions=True,
+        )
+        failures = [answer for answer in answers if isinstance(answer, BaseException)]
+        for failure in failures:
+            if isinstance(failure, asyncio.CancelledError):
+                raise failure
+        for adapter, answer in zip(adapters, answers, strict=True):
+            if not isinstance(answer, BaseException) and answer is not None:
+                return adapter, answer
+        if failures:
+            raise ForgeSessionUnreadableError(
+                f"Session {session_id} was not found, but a Forge could not be asked."
+            ) from failures[0]
+        if unresolved:
+            raise ForgeSessionUnreadableError(
+                f"Session {session_id} was not found, but {unresolved} registered Forge(s) "
+                "could not be reached with a usable credential."
+            )
+        return None, None
+
+
+def _forge_sessions(request: Request, principal: Principal) -> _ForgeSessions | None:
+    factory = getattr(request.app.state, "volundr_factory", None)
+    if factory is None:
+        return None
+    return _ForgeSessions(factory, principal=principal, auth_token=extract_bearer_token(request))
 
 
 def _summary_response(item: WorkSummary) -> WorkSummaryResponse:
@@ -606,6 +681,7 @@ def create_work_router() -> APIRouter:
         execution_repo: WorkflowExecutionRepository | None = Depends(resolve_work_execution_repo),
     ) -> WorkDetailResponse:
         forge = await _forge_adapter(request, principal) if kind == "project" else None
+        sessions = _forge_sessions(request, principal) if forge is not None else None
         service = _service(
             principal=principal,
             saga_repo=saga_repo,
@@ -616,11 +692,7 @@ def create_work_router() -> APIRouter:
                 getattr(request.app.state, "subscriber", None)
                 and request.app.state.subscriber.running
             ),
-            session_gates=_session_gate_reader(
-                forge if kind == "project" else None,
-                request=request,
-                principal=principal,
-            ),
+            session_gates=sessions.read if sessions is not None else None,
             coordinator_repo=_coordinator_repo(request),
         )
         try:
@@ -711,8 +783,8 @@ def create_work_router() -> APIRouter:
         notes = body.notes.strip()
         if body.decision == "request_changes" and not notes:
             raise HTTPException(status_code=422, detail="Say what should change")
-        adapter = await _forge_adapter(request, principal)
-        if adapter is None:
+        sessions = _forge_sessions(request, principal)
+        if sessions is None or await _forge_adapter(request, principal) is None:
             raise HTTPException(status_code=503, detail="No Forge connection is available")
         service = _service(
             principal=principal,
@@ -721,7 +793,7 @@ def create_work_router() -> APIRouter:
             tracker_resolution=tracker_resolution,
             execution_repo=None,
             campaign_lifecycle_available=True,
-            session_gates=_session_gate_reader(adapter, request=request, principal=principal),
+            session_gates=sessions.read,
             coordinator_repo=_coordinator_repo(request),
         )
         try:
@@ -740,8 +812,14 @@ def create_work_router() -> APIRouter:
                 status_code=409,
                 detail="This gate changed after you opened it. Review it again.",
             )
+        # The gate lives on the Forge the session was found on, which is not always the primary.
+        forge = sessions.forge_of(session_id)
+        if forge is None:
+            raise HTTPException(
+                status_code=502, detail=f"The Forge of session {session_id} could not be found"
+            )
         try:
-            await adapter.resolve_workflow_gate(
+            await forge.resolve_workflow_gate(
                 session_id,
                 gate.id,
                 _GATE_DECISIONS[body.decision],
@@ -774,7 +852,8 @@ def create_work_router() -> APIRouter:
     ) -> TicketStartResponse:
         """Hand a ticket to its coordinator, which starts the workflow of the dropped column."""
         adapter = await _forge_adapter(request, principal)
-        if adapter is None:
+        sessions = _forge_sessions(request, principal)
+        if adapter is None or sessions is None:
             raise HTTPException(status_code=503, detail="No Forge connection is available")
         saga = await saga_repo.get_saga(saga_id, owner_id=principal.user_id)
         if saga is None:
@@ -791,7 +870,7 @@ def create_work_router() -> APIRouter:
             tracker_resolution=tracker_resolution,
             execution_repo=None,
             campaign_lifecycle_available=True,
-            session_gates=_session_gate_reader(adapter, request=request, principal=principal),
+            session_gates=sessions.read,
             coordinator_repo=_coordinator_repo(request),
         )
         try:
