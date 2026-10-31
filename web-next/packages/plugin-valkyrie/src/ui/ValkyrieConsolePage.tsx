@@ -392,9 +392,9 @@ function Hero({
             >
               {effectiveCopy.label}
               {buildGrant
-                ? ` · effective (realm grant level ${buildGrant.level})`
+                ? ` · effective (workspace grant level ${buildGrant.level})`
                 : grantsKnown
-                  ? ' · configured (no realm build grant)'
+                  ? ' · configured (no workspace build grant)'
                   : ''}
             </span>
             {buildGrant ? (
@@ -419,7 +419,7 @@ function Hero({
               </span>
             ) : null}
             <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-3 niuu:py-1 niuu:text-text-secondary">
-              realm {governance.realm.slug}
+              workspace {governance.realm.slug}
             </span>
           </div>
         </div>
@@ -458,7 +458,7 @@ function Hero({
             </select>
           </label>
           <p className={`niuu:text-xs ${MUTED}`}>
-            Configured mode — the realm build grant still wins for tool builds.
+            Configured mode — the workspace build grant still wins for tool builds.
           </p>
           {updateAutonomy.isError ? (
             <p role="alert" className="niuu:text-xs niuu:text-critical">
@@ -855,9 +855,9 @@ function AuthorityPanel({
       {grantsKnown ? (
         <p data-testid="valkyrie-autonomy-provenance" className={`niuu:mt-2 niuu:text-xs ${MUTED}`}>
           {buildGrant
-            ? `${effectiveCopy.label} is the effective build autonomy — realm grant level ` +
+            ? `${effectiveCopy.label} is the effective build autonomy — workspace grant level ` +
               `${buildGrant.level} on ${realm.slug}; configured mode is ${modeCopy.label.toLowerCase()}.`
-            : `No build grant on realm ${realm.slug} yet — the configured mode ` +
+            : `No build grant on workspace ${realm.slug} yet — the configured mode ` +
               `${modeCopy.label.toLowerCase()} applies.`}
         </p>
       ) : null}
@@ -896,13 +896,13 @@ function AuthorityPanel({
       </div>
       <div className="niuu:mt-4" data-testid="valkyrie-realm-governance">
         <div className="niuu:text-[11px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-muted">
-          realm build governance — {realm.slug}
+          workspace build governance — {realm.slug}
         </div>
         {realmExists ? (
           <>
             <p className={`niuu:mt-1 niuu:text-xs ${MUTED}`}>
-              The realm&apos;s build grant pins the workflow this resident uses to build tools and
-              sets its effective build autonomy.
+              The workspace&apos;s build grant pins the workflow this resident uses to build tools
+              and sets its effective build autonomy.
             </p>
             <ToolBuilderGrantCard realm={realm} />
           </>
@@ -911,8 +911,8 @@ function AuthorityPanel({
             data-testid="valkyrie-realm-unconfigured"
             className={`niuu:mt-1 niuu:text-xs ${MUTED}`}
           >
-            No realm is configured for {realm.slug}, so there is no build governance to set. The
-            configured autonomy mode applies until a realm is created.
+            No workspace is configured for {realm.slug}, so there is no build governance to set. The
+            configured autonomy mode applies until a workspace is created.
           </p>
         )}
       </div>

@@ -1,5 +1,6 @@
 import { hostChips, hostFlavor, type HostFacts } from '../domain/setup';
-import { ArrowIcon, NiuuMark } from './icons';
+import { NiuuMark } from '@niuulabs/ui';
+import { ArrowIcon } from './icons';
 
 export interface WelcomeStepProps {
   facts: HostFacts | null;

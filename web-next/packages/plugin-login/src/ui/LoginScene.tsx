@@ -1,95 +1,16 @@
-/**
- * The niuu emblem: a constellation of isometric wireframe cubes, the lit
- * central cube carrying the wordmark. Ported 1:1 from the approved
- * "full curtain + cube constellation" design board.
- */
+import { NiuuMark, NiuuWordmark } from '@niuulabs/ui';
+
+const EMBLEM_MARK_SIZE = 120;
+const EMBLEM_WORDMARK_HEIGHT = 34;
+
+/** The NIUU primary lockup: orbit mark over the path-drawn wordmark. */
 function Emblem() {
   return (
     <div className="login-scene-emblem">
-      <svg
-        aria-hidden="true"
-        width="440"
-        height="300"
-        viewBox="0 0 440 300"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-      >
-        <g stroke="color-mix(in srgb, var(--brand-300) 35%, transparent)" strokeWidth="1.2">
-          <path d="M121 71.5L165.4 98.1" />
-          <path d="M279.2 99.1L297 88.9" />
-          <path d="M341 106.4L358.8 165.4" />
-          <path d="M174.3 177.7L155.4 195.7" />
-          <path d="M54.7 128.5L76.8 84.4" />
-        </g>
-        <circle cx="250" cy="40" r="1.2" fill="var(--brand-200)" opacity="0.4" />
-        <circle cx="60" cy="252" r="1.2" fill="var(--brand-200)" opacity="0.4" />
-        <circle cx="402" cy="120" r="1.2" fill="var(--brand-200)" opacity="0.4" />
-        <circle cx="180" cy="20" r="1.2" fill="var(--brand-200)" opacity="0.4" />
-        <g
-          stroke="color-mix(in srgb, var(--brand-500) 32%, transparent)"
-          strokeWidth="2"
-          strokeLinejoin="miter"
-          fill="none"
-        >
-          <path d="M92 28L114.5 41V67L92 80L69.5 67V41Z" />
-          <path d="M69.5 41L92 54L114.5 41M92 54V80" />
-        </g>
-        <g
-          stroke="color-mix(in srgb, var(--brand-500) 45%, transparent)"
-          strokeWidth="2"
-          strokeLinejoin="miter"
-          fill="none"
-        >
-          <path d="M330 40L356 55V85L330 100L304 85V55Z" />
-          <path d="M304 55L330 70L356 55M330 70V100" />
-        </g>
-        <g
-          stroke="color-mix(in srgb, var(--brand-500) 32%, transparent)"
-          strokeWidth="2"
-          strokeLinejoin="miter"
-          fill="none"
-        >
-          <path d="M368 172L388.8 184V208L368 220L347.2 208V184Z" />
-          <path d="M347.2 184L368 196L388.8 184M368 196V220" />
-        </g>
-        <g
-          stroke="color-mix(in srgb, var(--brand-500) 45%, transparent)"
-          strokeWidth="2"
-          strokeLinejoin="miter"
-          fill="none"
-        >
-          <path d="M128 192L154 207V237L128 252L102 237V207Z" />
-          <path d="M102 207L128 222L154 207M128 222V252" />
-        </g>
-        <g
-          stroke="color-mix(in srgb, var(--brand-500) 22%, transparent)"
-          strokeWidth="1.6"
-          strokeLinejoin="miter"
-          fill="none"
-        >
-          <path d="M44 134L57.9 142V158L44 166L30.1 158V142Z" />
-          <path d="M30.1 142L44 150L57.9 142M44 150V166" />
-        </g>
-        <path
-          d="M222 74L272.2 103L222 132L171.8 103Z"
-          fill="color-mix(in srgb, var(--brand-500) 8%, transparent)"
-        />
-        <path
-          d="M222 74L272.2 103V161L222 190L171.8 161V103Z"
-          stroke="var(--brand-500)"
-          strokeWidth="2.5"
-          strokeLinejoin="miter"
-          fill="none"
-        />
-        <path
-          d="M171.8 103L222 132L272.2 103"
-          stroke="var(--brand-500)"
-          strokeWidth="2.5"
-          strokeLinejoin="miter"
-          fill="none"
-        />
-      </svg>
-      <h1 className="login-scene-emblem-word">niuu</h1>
+      <NiuuMark size={EMBLEM_MARK_SIZE} />
+      <h1 className="login-scene-emblem-word" aria-label="NIUU">
+        <NiuuWordmark height={EMBLEM_WORDMARK_HEIGHT} />
+      </h1>
     </div>
   );
 }

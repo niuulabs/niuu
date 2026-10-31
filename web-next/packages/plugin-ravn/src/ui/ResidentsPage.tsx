@@ -60,7 +60,7 @@ import { ResidentDeployDialog } from './ResidentDeployDialog';
 import { saveStorage } from './storage';
 
 const LEDE_FIRST =
-  'A resident keeps one realm: it reads the board, starts sessions, checks quality and asks you when it should.';
+  'A resident keeps one workspace: it reads the board, starts sessions, checks quality and asks you when it should.';
 const LEDE_SECOND = 'A persona is the character it runs with.';
 
 const PERSONA_STORAGE_KEY = 'ravn.persona';
@@ -173,7 +173,7 @@ function ResidentCard({
             </span>
           ) : (
             <span className="niuu:truncate niuu:text-[11px] niuu:text-text-faint">
-              keeps no realm yet
+              keeps no workspace yet
             </span>
           )}
         </div>
@@ -277,7 +277,7 @@ function ResidentCard({
             className="niuu:ml-auto niuu:text-[11px] niuu:text-brand-300"
             data-testid="resident-open-realm"
           >
-            Open realm ›
+            Open workspace ›
           </Link>
         ) : null}
       </div>
@@ -407,7 +407,7 @@ export function ResidentsPage() {
         <EmptyState
           icon={<Bot size={18} aria-hidden="true" />}
           title="No residents yet"
-          description="A resident keeps a realm for you. Deploy one and give it something to keep."
+          description="A resident keeps a workspace for you. Deploy one and give it something to keep."
           action={
             <button type="button" className={PRIMARY} onClick={() => setDeployOpen(true)}>
               <Plus size={13} aria-hidden="true" />

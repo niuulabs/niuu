@@ -7,7 +7,7 @@
   overflow: hidden;
   /* Matches the plan's canvas, which is what shows through until the
      renderer's first frame lands. */
-  background: radial-gradient(ellipse at 50% 50%, #0a0c12 0%, #050509 70%);
+  background: radial-gradient(ellipse at 50% 50%, #0b1722 0%, #071019 70%);
 }
 
 .topology-scene3d__canvas-host {

@@ -219,7 +219,7 @@ const REMOTE_PROVIDER_DEFS = [
   {
     id: 'volundr',
     pluginId: 'volundr',
-    title: 'Session platform',
+    title: 'Forge',
     subtitle: 'session host settings',
     scope: 'service' as const,
     resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'volundr'),
@@ -259,7 +259,7 @@ const REMOTE_PROVIDER_DEFS = [
   {
     id: 'observatory',
     pluginId: 'observatory',
-    title: 'Monitoring',
+    title: 'Observatory',
     subtitle: 'live map and event settings',
     scope: 'service' as const,
     resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'observatory'),

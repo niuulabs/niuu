@@ -593,7 +593,7 @@ export function ClustersPage() {
       <div className="niuu:relative niuu:flex niuu:min-h-0 niuu:flex-1">
         <aside
           className={cn(
-            'niuu:flex niuu:min-h-0 niuu:shrink-0 niuu:flex-col niuu:overflow-hidden niuu:border-r niuu:border-border-subtle niuu:bg-[#0b0c10] niuu:transition-[width] niuu:duration-200',
+            'niuu:flex niuu:min-h-0 niuu:shrink-0 niuu:flex-col niuu:overflow-hidden niuu:border-r niuu:border-border-subtle niuu:bg-[var(--color-bg-primary)] niuu:transition-[width] niuu:duration-200',
             sidebarCollapsed ? 'niuu:w-[54px]' : 'niuu:w-[350px]',
           )}
           aria-label="Clusters by realm"
@@ -622,7 +622,7 @@ export function ClustersPage() {
                         className={cn(
                           'niuu:flex niuu:w-full niuu:items-center niuu:justify-center niuu:border-l-2 niuu:py-2',
                           selectedCluster.id === cluster.id
-                            ? 'niuu:border-brand niuu:bg-[#12212b]'
+                            ? 'niuu:border-brand niuu:bg-[var(--color-bg-secondary)]'
                             : 'niuu:border-transparent niuu:hover:bg-bg-tertiary',
                         )}
                         aria-label={cluster.displayName}
@@ -678,7 +678,7 @@ export function ClustersPage() {
                             className={cn(
                               'niuu:grid niuu:w-full niuu:items-center niuu:gap-3 niuu:px-5 niuu:py-2.5 niuu:text-left niuu:transition-colors',
                               selectedCluster.id === cluster.id
-                                ? 'niuu:bg-[#12212b] niuu:text-text-primary'
+                                ? 'niuu:bg-[var(--color-bg-secondary)] niuu:text-text-primary'
                                 : 'niuu:text-text-secondary niuu:hover:bg-bg-panel',
                             )}
                             onClick={() => setSelectedId(cluster.id)}

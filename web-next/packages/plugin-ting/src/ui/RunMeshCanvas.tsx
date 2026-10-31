@@ -12,7 +12,7 @@ const HALO_OPACITY = 0.12;
 const EDGE_STROKE = 'rgba(147,197,253,0.18)';
 const PULSE_FILL_BASE = 'rgba(186,230,253,';
 const RAVEN_FILL = 'rgba(125,211,252,0.85)';
-const RAVEN_FILL_HOVER = '#bae6fd';
+const RAVEN_FILL_HOVER = '#a8e7f4';
 const RAVEN_RADIUS = 3.2;
 const RAVEN_RADIUS_HOVER = 5;
 const HOVER_RING_RADIUS = 9;
@@ -27,7 +27,7 @@ const HIT_RADIUS_RAVEN = 14;
 const LABEL_FONT = '500 10px JetBrains Mono, monospace';
 // Fallback colors used until CSS custom properties are resolved in setup()
 const LABEL_COLOR_PRIMARY_FALLBACK = '#e4e4e7';
-const LABEL_COLOR_MUTED_FALLBACK = '#71717a';
+const LABEL_COLOR_MUTED_FALLBACK = '#78909d';
 
 // ---------------------------------------------------------------------------
 // Types

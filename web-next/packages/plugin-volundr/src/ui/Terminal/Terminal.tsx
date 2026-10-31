@@ -144,9 +144,9 @@ export function Terminal({
       const webLinksAddon = new WebLinksAddon();
       const xterm = new XTerm({
         theme: {
-          background: '#09090b',
-          foreground: '#fafafa',
-          cursor: '#a1a1aa',
+          background: '#071019',
+          foreground: '#edf4f7',
+          cursor: '#a5b7c1',
           selectionBackground: '#3f3f46',
         },
         fontFamily: TERMINAL_FONT_FAMILY,

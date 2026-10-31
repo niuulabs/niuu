@@ -95,7 +95,7 @@
 }
 
 .niuu-filter-chip__value {
-  color: var(--brand-300, #bae6fd);
+  color: var(--brand-300, var(--brand-300));
 }
 
 .niuu-filter-chip__remove {
@@ -152,5 +152,5 @@
 .niuu-filter-toggle--active {
   background: color-mix(in srgb, var(--color-brand) 12%, transparent);
   border-color: color-mix(in srgb, var(--color-brand) 35%, transparent);
-  color: var(--brand-300, #bae6fd);
+  color: var(--brand-300, var(--brand-300));
 }

@@ -259,31 +259,15 @@
 /* ── Content column ─────────────────────────────────────── */
 
 .login-scene-emblem {
-  position: relative;
-  width: 440px;
-  height: 300px;
-  max-width: 100%;
-  filter: drop-shadow(0 0 30px color-mix(in srgb, var(--brand-500) 25%, transparent));
-}
-.login-scene-emblem svg {
-  width: 100%;
-  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-6);
+  margin-block: var(--space-6);
 }
 .login-scene-emblem-word {
-  position: absolute;
-  left: 2px;
-  right: 0;
-  top: 53.3%;
   display: flex;
   justify-content: center;
-  font-size: 30px;
-  font-weight: 400;
-  letter-spacing: 0.28em;
-  margin-right: -0.28em;
-  color: var(--color-text-primary);
-  text-shadow:
-    0 0 14px var(--color-bg-primary),
-    0 0 26px color-mix(in srgb, var(--brand-500) 50%, transparent);
 }
 
 @keyframes login-scene-drift1 {

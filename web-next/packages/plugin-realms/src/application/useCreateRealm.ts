@@ -38,8 +38,8 @@ export interface RecipeStep {
 export const RECIPE_STEPS: RecipeStep[] = [
   { id: 'validate', label: 'check the draft', advancedPath: '/realms' },
   { id: 'connections', label: 'test connections', advancedPath: '/settings/integrations' },
-  { id: 'realm', label: 'create the realm', advancedPath: '/valkyrie' },
-  { id: 'memory', label: 'create realm memory', advancedPath: '/mimir/registry' },
+  { id: 'realm', label: 'create the workspace', advancedPath: '/valkyrie' },
+  { id: 'memory', label: 'create workspace memory', advancedPath: '/mimir/registry' },
   { id: 'routing', label: 'route memory writes', advancedPath: '/mimir/registry' },
   { id: 'persona', label: 'write the persona', advancedPath: '/ravn/personas' },
   { id: 'trust', label: 'grant trust', advancedPath: '/valkyrie' },
@@ -279,7 +279,7 @@ export function useCreateRealm() {
           await new Promise((resolve) => setTimeout(resolve, MOUNT_DISCOVERY_INTERVAL_MS));
         }
         throw new Error(
-          `Realm memory ${mountName} did not appear within 60 s; the deployment is still starting. Check Memory › Library and write the charter from Settings once it is up.`,
+          `Workspace memory ${mountName} did not appear within 60 s; the deployment is still starting. Check Memory › Library and write the charter from Settings once it is up.`,
         );
       });
 

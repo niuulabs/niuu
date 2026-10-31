@@ -15,7 +15,7 @@ export const ravnPlugin = definePlugin({
   rune: 'R',
   icon: createElement(AgentsIcon),
   title: 'Agents',
-  subtitle: 'deployed agents and their personas',
+  subtitle: 'who does the work',
   simple: {
     // The agents themselves: residents and the personas they run with.
     tabs: ['residents', 'personas'],

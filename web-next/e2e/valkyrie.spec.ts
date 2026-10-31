@@ -285,7 +285,7 @@ test('console shows the effective build autonomy from the realm grant', async ({
 
   // Sigrun on env-k8s-valhalla → realm `valhalla` whose build grant is level 2.
   await expect(page.getByTestId('valkyrie-effective-autonomy')).toHaveText(
-    'Autonomous · effective (realm grant level 2)',
+    'Autonomous · effective (workspace grant level 2)',
   );
   await expect(page.getByTestId('valkyrie-configured-autonomy')).toHaveText(
     'configured autonomous',
@@ -294,11 +294,11 @@ test('console shows the effective build autonomy from the realm grant', async ({
   // Runa is configured guarded but shares the realm: the grant wins.
   await page.getByRole('button', { name: /Runa/ }).click();
   await expect(page.getByTestId('valkyrie-effective-autonomy')).toHaveText(
-    'Autonomous · effective (realm grant level 2)',
+    'Autonomous · effective (workspace grant level 2)',
   );
   await expect(page.getByTestId('valkyrie-configured-autonomy')).toHaveText('configured guarded');
   await expect(page.getByTestId('valkyrie-authority')).toContainText(
-    'realm build governance — valhalla',
+    'workspace build governance — valhalla',
   );
   await expect(page.getByTestId('tool-builder-autonomy')).toHaveText('autonomous · level 2');
 });
@@ -312,7 +312,7 @@ test('operator pins a builder workflow and raises the trust level from the conso
   // Saga lives on env-host-jozef → realm `host-jozef` with no build grant yet.
   await page.getByRole('button', { name: /Saga/ }).click();
   await expect(page.getByTestId('valkyrie-effective-autonomy')).toHaveText(
-    'Guarded · configured (no realm build grant)',
+    'Guarded · configured (no workspace build grant)',
   );
   const card = page.getByTestId('tool-builder-card');
   await expect(card.getByTestId('tool-builder-ungranted')).toBeVisible();
@@ -324,7 +324,7 @@ test('operator pins a builder workflow and raises the trust level from the conso
 
   await expect(card.getByTestId('tool-builder-autonomy')).toHaveText('yolo · level 4');
   await expect(page.getByTestId('valkyrie-effective-autonomy')).toHaveText(
-    'Yolo · effective (realm grant level 4)',
+    'Yolo · effective (workspace grant level 4)',
   );
 });
 

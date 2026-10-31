@@ -242,7 +242,7 @@ test('memory canvas follows Light and dark theme changes', async ({ page }) => {
   ] as const) {
     await selector.click();
     await page
-      .getByRole('button', { name: theme === 'light' ? 'Light' : 'Native dark', exact: true })
+      .getByRole('button', { name: theme === 'light' ? 'Light' : 'NIUU', exact: true })
       .click();
     await expect
       .poll(() =>

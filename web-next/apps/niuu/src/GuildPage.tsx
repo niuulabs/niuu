@@ -89,12 +89,12 @@ const FILTER_KIND_OPTIONS: Array<{
   value: Exclude<InstanceKind, 'generic'>;
   label: string;
 }> = [
-  { value: 'volundr', label: 'Sessions' },
+  { value: 'volundr', label: 'Forge' },
   { value: 'ting', label: 'Work' },
   { value: 'mimir', label: 'Memory' },
   { value: 'bifrost', label: 'AI models' },
   { value: 'ravn', label: 'Agents' },
-  { value: 'observatory', label: 'Monitoring' },
+  { value: 'observatory', label: 'Observatory' },
 ];
 
 const REGISTER_KIND_OPTIONS: Array<{
@@ -105,7 +105,7 @@ const REGISTER_KIND_OPTIONS: Array<{
 }> = [
   {
     value: 'volundr',
-    label: 'Sessions',
+    label: 'Forge',
     summary: 'session hosts',
     detail: 'spawns remote dev pods',
   },
@@ -547,7 +547,7 @@ function InstanceCard({
       className={cn(
         'niuu:group niuu:flex niuu:h-full niuu:flex-col niuu:rounded-[18px] niuu:border niuu:bg-bg-secondary niuu:p-4 niuu:text-left niuu:transition-colors',
         selected
-          ? 'guild-choice--selected niuu:border-brand/45 niuu:bg-[#111b24] niuu:shadow-[0_0_0_1px_rgba(83,194,255,0.12)]'
+          ? 'guild-choice--selected niuu:border-brand/45 niuu:bg-[var(--color-bg-secondary)] niuu:shadow-[0_0_0_1px_rgba(83,194,255,0.12)]'
           : 'niuu:border-border-subtle niuu:hover:border-white/16',
       )}
       data-testid={`guild-instance-card-${instance.slug}`}
@@ -970,11 +970,11 @@ function RegisterWizard({
                       className={cn(
                         'niuu:flex niuu:items-center niuu:gap-4 niuu:rounded-[12px] niuu:border niuu:bg-bg-tertiary niuu:p-4 niuu:text-left niuu:transition-colors',
                         selected
-                          ? 'guild-choice--selected niuu:border-brand niuu:bg-[#1d2832]'
+                          ? 'guild-choice--selected niuu:border-brand niuu:bg-[var(--color-bg-tertiary)]'
                           : 'niuu:border-transparent niuu:hover:border-white/10',
                       )}
                     >
-                      <div className="guild-choice-icon niuu:flex niuu:h-11 niuu:w-11 niuu:items-center niuu:justify-center niuu:rounded-[10px] niuu:border niuu:border-white/15 niuu:bg-[#22303b]">
+                      <div className="guild-choice-icon niuu:flex niuu:h-11 niuu:w-11 niuu:items-center niuu:justify-center niuu:rounded-[10px] niuu:border niuu:border-white/15 niuu:bg-[var(--color-bg-tertiary)]">
                         <KindIcon kind={option.value} size={18} className="niuu:text-brand" />
                       </div>
                       <div className="niuu:min-w-0">
@@ -1258,7 +1258,7 @@ function RegisterWizard({
                         className={cn(
                           'niuu:rounded-[12px] niuu:border niuu:bg-bg-tertiary niuu:p-4 niuu:text-left niuu:transition-colors',
                           wizard.visibility === option.value
-                            ? 'guild-choice--selected niuu:border-brand niuu:bg-[#1d2832]'
+                            ? 'guild-choice--selected niuu:border-brand niuu:bg-[var(--color-bg-tertiary)]'
                             : 'niuu:border-transparent niuu:hover:border-white/10',
                           disabled && 'niuu:cursor-not-allowed niuu:opacity-40',
                         )}

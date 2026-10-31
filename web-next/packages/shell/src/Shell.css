@@ -36,7 +36,6 @@
   font-weight: 700;
   color: var(--color-brand);
   margin-bottom: 10px;
-  text-shadow: 0 0 12px color-mix(in srgb, var(--color-brand) 55%, transparent);
 }
 .niuu-shell__rail-brand svg {
   display: block;
@@ -355,13 +354,13 @@
   font-size: 8px;
 }
 .niuu-shell__footer-chip-dot[data-state='ok'] {
-  color: var(--status-healthy, #10b981);
+  color: var(--status-healthy, var(--state-ok));
 }
 .niuu-shell__footer-chip-dot[data-state='warn'] {
-  color: var(--status-gated, #f59e0b);
+  color: var(--status-gated, var(--state-warn));
 }
 .niuu-shell__footer-chip-dot[data-state='err'] {
-  color: var(--status-failed, #ef4444);
+  color: var(--status-failed, var(--color-critical));
 }
 .niuu-shell__footer-chip-sep {
   color: var(--color-text-faint);

@@ -111,9 +111,9 @@ Three feature-flag tiers, any of which can hide a plugin:
 
 Styling in `web-next/` uses **Tailwind CSS** mapped to our design tokens.
 
-- **`@niuulabs/design-tokens` owns `tokens.css`** — ported from the earlier
-  prototype system and now treated as the single source of truth for color,
-  spacing, typography, motion, and theme (ice / amber / spring).
+- **`@niuulabs/design-tokens` owns `tokens.css`** — implements the NIUU brand system
+  (`docs/design/brand/`) and is the single source of truth for color, spacing,
+  typography, motion, and theme (ice / amber / spring / xteo / light).
 - **Tailwind config reads from tokens** — `tailwind.config.ts` in each package
   pulls from `tokens.css` via `theme.extend`. Never hard-code hex or px in a class
   (`bg-[#09090b]` is a bug — use `bg-bg-primary` mapped to `var(--color-bg-primary)`).

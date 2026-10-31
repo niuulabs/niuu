@@ -80,7 +80,7 @@ describe('RealmPage with a running resident', () => {
     localStorage.clear();
   });
 
-  it('shows sessions, QA findings, the conversation and realm memory', async () => {
+  it('shows sessions, QA findings, the conversation and workspace memory', async () => {
     const user = userEvent.setup();
     const log = createCallLog();
     const { router } = renderRealms('/realms/valhalla', await populated(log), log);
@@ -101,7 +101,9 @@ describe('RealmPage with a running resident', () => {
     expect(screen.getByText('fix flaky test')).toBeInTheDocument();
     expect(screen.queryByText('other')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Memory' }));
-    const exploreLink = await screen.findByRole('link', { name: "Explore this realm's memory" });
+    const exploreLink = await screen.findByRole('link', {
+      name: "Explore this workspace's memory",
+    });
     await user.click(exploreLink);
     await waitFor(() => expect(router.state.location.pathname).toBe('/mimir'));
     expect(router.state.location.search).toEqual({ mount: 'realm-valhalla' });

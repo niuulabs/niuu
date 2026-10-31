@@ -110,7 +110,7 @@ test('auth-disabled mode: no redirect to /login', async ({ page }) => {
   // Default config has no auth.issuer — login plugin is registered but auth is off.
   await page.goto('/');
   // App boots normally and shows the first enabled plugin.
-  await expect(page.getByRole('heading', { name: 'Sessions', exact: true, level: 1 })).toBeVisible({
+  await expect(page.getByRole('heading', { name: 'Forge', exact: true, level: 1 })).toBeVisible({
     timeout: 5000,
   });
   await expect(page.getByTestId('forge-page')).toBeVisible();

@@ -407,7 +407,6 @@
 }
 .setup-hero__mark {
   color: var(--color-brand);
-  filter: drop-shadow(0 0 14px color-mix(in srgb, var(--brand-500) 60%, transparent));
 }
 .setup-hero__title {
   margin: 0;

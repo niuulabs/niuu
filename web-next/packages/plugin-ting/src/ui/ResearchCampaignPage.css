@@ -1,7 +1,9 @@
 .ting-research-detail {
   position: relative;
   min-height: 100%;
-  background: radial-gradient(circle at top, rgba(96, 165, 250, 0.06), transparent 24%), #09090b;
+  background:
+    radial-gradient(circle at top, rgba(96, 165, 250, 0.06), transparent 24%),
+    var(--color-bg-primary);
   color: rgba(244, 244, 245, 0.96);
 }
 

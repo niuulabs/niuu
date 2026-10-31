@@ -1,5 +1,5 @@
 import { useIntegrations, useSetupState, useStackStatus } from './hooks';
-import { NiuuMark } from './icons';
+import { NiuuMark } from '@niuulabs/ui';
 import { summarizeConnections } from './FinishStep';
 import { LocalModelCard } from './LocalModelCard';
 import './SetupPage.css';
@@ -18,7 +18,7 @@ export const WALKTHROUGHS: readonly Walkthrough[] = [
     title: 'Run your first session',
     desc: 'Open a repository and hand Claude or Codex a task in an isolated sandbox.',
     steps: [
-      'Sessions → New session; pick a repository or start from an empty workspace.',
+      'Forge → New session; pick a repository or start from an empty workspace.',
       'Choose the runtime (Claude Code or Codex) and the provider you connected.',
       'Write the task; watch the chat, files and diff update as it works.',
     ],

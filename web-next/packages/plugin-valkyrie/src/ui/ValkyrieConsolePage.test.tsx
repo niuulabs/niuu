@@ -670,7 +670,7 @@ describe('ValkyrieConsolePage', () => {
     // Sigrun on env-k8s-valhalla → realm `valhalla` whose build grant is level 2.
     await waitFor(() =>
       expect(screen.getByTestId('valkyrie-effective-autonomy')).toHaveTextContent(
-        'Autonomous · effective (realm grant level 2)',
+        'Autonomous · effective (workspace grant level 2)',
       ),
     );
     expect(screen.getByTestId('valkyrie-configured-autonomy')).toHaveTextContent(
@@ -691,7 +691,7 @@ describe('ValkyrieConsolePage', () => {
 
     await waitFor(() =>
       expect(screen.getByTestId('valkyrie-effective-autonomy')).toHaveTextContent(
-        'Autonomous · effective (realm grant level 2)',
+        'Autonomous · effective (workspace grant level 2)',
       ),
     );
     expect(screen.getByTestId('valkyrie-configured-autonomy')).toHaveTextContent(
@@ -709,12 +709,12 @@ describe('ValkyrieConsolePage', () => {
 
     await waitFor(() =>
       expect(screen.getByTestId('valkyrie-effective-autonomy')).toHaveTextContent(
-        'Guarded · configured (no realm build grant)',
+        'Guarded · configured (no workspace build grant)',
       ),
     );
     expect(screen.queryByTestId('valkyrie-configured-autonomy')).toBeNull();
     expect(screen.getByTestId('valkyrie-autonomy-provenance')).toHaveTextContent(
-      'No build grant on realm host-jozef yet',
+      'No build grant on workspace host-jozef yet',
     );
     expect(await screen.findByTestId('tool-builder-ungranted')).toBeInTheDocument();
   });
@@ -739,7 +739,7 @@ describe('ValkyrieConsolePage', () => {
     // Saga's environment has no realm → no request, and the panel says why.
     await user.click(screen.getByRole('button', { name: /Saga/ }));
     expect(await screen.findByTestId('valkyrie-realm-unconfigured')).toHaveTextContent(
-      'No realm is configured for host-jozef',
+      'No workspace is configured for host-jozef',
     );
     expect(screen.queryByTestId('tool-builder-card')).toBeNull();
     // The badge stays on the configured mode without claiming effectiveness.
@@ -756,7 +756,7 @@ describe('ValkyrieConsolePage', () => {
     await screen.findByTestId('valkyrie-console-page');
 
     const authority = screen.getByTestId('valkyrie-authority');
-    expect(authority).toHaveTextContent('realm build governance — valhalla');
+    expect(authority).toHaveTextContent('workspace build governance — valhalla');
     const card = await within(authority).findByTestId('tool-builder-card');
     // The card is addressed by the environment's display name.
     await user.selectOptions(
@@ -774,7 +774,7 @@ describe('ValkyrieConsolePage', () => {
     });
     await waitFor(() =>
       expect(screen.getByTestId('valkyrie-effective-autonomy')).toHaveTextContent(
-        'Yolo · effective (realm grant level 4)',
+        'Yolo · effective (workspace grant level 4)',
       ),
     );
   });
@@ -809,7 +809,7 @@ describe('hero actions', () => {
     expect(hero).toHaveTextContent('env Valhalla k8s');
     expect(hero).toHaveTextContent('Kubernetes');
     expect(hero).toHaveTextContent('flock Kubernetes Valkyries');
-    expect(hero).toHaveTextContent('realm valhalla');
+    expect(hero).toHaveTextContent('workspace valhalla');
     // Operational health folds env health, resident status, and confidence.
     expect(hero).toHaveTextContent('watch · busy');
     expect(hero).toHaveTextContent('judgment confidence 86%');

@@ -17,8 +17,8 @@ export const volundrPlugin = definePlugin({
   rune: 'V',
   // Coding sessions: a terminal an agent works in.
   icon: createElement(SessionsIcon),
-  title: 'Sessions',
-  subtitle: 'coding agents in sandboxes',
+  title: 'Forge',
+  subtitle: 'build and execute',
   simple: {
     tabs: ['sessions'],
   },

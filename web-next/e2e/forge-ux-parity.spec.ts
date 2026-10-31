@@ -438,7 +438,7 @@ test('phone layout uses a full-width list and detail back navigation', async ({
   await expect(page.getByTestId('pod-list-sidebar')).toBeVisible();
 });
 
-test('xTeo and Native dark switch across the shell and document previews and survive reload', async ({
+test('xTeo and NIUU themes switch across the shell and document previews and survive reload', async ({
   page,
 }, testInfo) => {
   await fixture(page, true);

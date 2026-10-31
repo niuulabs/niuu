@@ -9,7 +9,7 @@
   height: 100%;
   max-height: none;
   padding: 16px 20px;
-  background: #090a0d;
+  background: var(--color-bg-primary);
 }
 
 .rv-resident-logs-view__row {

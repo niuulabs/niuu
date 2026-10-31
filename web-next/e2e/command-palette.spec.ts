@@ -6,9 +6,9 @@ import { test, expect } from '@playwright/test';
 test.describe('CommandPalette', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/volundr');
-    await expect(
-      page.getByRole('heading', { name: 'Sessions', exact: true, level: 1 }),
-    ).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: 'Forge', exact: true, level: 1 })).toBeVisible({
+      timeout: 5000,
+    });
     await expect(page.getByTestId('forge-page')).toBeVisible({ timeout: 8_000 });
   });
 

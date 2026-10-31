@@ -73,11 +73,11 @@ const CHOICES: Choice[] = [
     id: 'realm',
     step: '3',
     icon: <Boxes size={18} aria-hidden="true" />,
-    title: 'Set up a realm',
+    title: 'Set up a workspace',
     blurb:
       'A resident that keeps an environment: the board, the sessions, the quality, the health.',
     bullets: ['Starts from a template', 'Works while you are away', 'Asks you only what it must'],
-    action: 'Set up a realm',
+    action: 'Set up a workspace',
     to: '/realms/new',
   },
 ];
@@ -346,7 +346,7 @@ export function HomePage() {
       </div>
 
       {home.error ? (
-        <ErrorState title="Could not load your realms" message={String(home.error)} />
+        <ErrorState title="Could not load your workspaces" message={String(home.error)} />
       ) : home.isLoading ? (
         <LoadingState label="Looking at what is running…" />
       ) : (

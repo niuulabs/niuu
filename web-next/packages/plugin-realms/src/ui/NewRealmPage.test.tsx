@@ -36,7 +36,7 @@ describe('NewRealmPage', () => {
     expect(screen.getByTestId('realm-slug')).toHaveValue('lexi-api');
     await user.click(screen.getByTestId('realm-continue'));
     await screen.findByTestId('wizard-step-launch');
-    expect(screen.getByText('Realm draft')).toBeInTheDocument();
+    expect(screen.getByText('Workspace draft')).toBeInTheDocument();
   });
 
   it('opens on the launch step with the inferred rows when given a sentence', async () => {

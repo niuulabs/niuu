@@ -33,7 +33,7 @@ describe('LoginPage', () => {
 
   it('renders the niuu wordmark', () => {
     wrap(baseAuth);
-    expect(screen.getByRole('heading', { level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'NIUU' })).toBeInTheDocument();
   });
 
   it('renders the primary sign-in button', () => {
@@ -115,7 +115,7 @@ describe('LoginPage', () => {
 
   it('explains the identity handoff and shows one sign-in action', () => {
     wrap(baseAuth);
-    expect(screen.getByText('Where AI agents work, collaborate, and evolve.')).toBeVisible();
+    expect(screen.getByText('A place where intelligent systems do real work.')).toBeVisible();
     expect(screen.getByText('You’ll continue to Niuu Identity.')).toBeVisible();
     expect(screen.getAllByRole('button')).toHaveLength(1);
   });

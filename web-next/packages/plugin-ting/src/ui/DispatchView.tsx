@@ -192,7 +192,7 @@ function PendingDispatchBar({
             {entries.map((entry) => (
               <div
                 key={entry.run.id}
-                className="niuu:flex niuu:items-center niuu:gap-2 niuu:rounded-md niuu:border niuu:border-brand/20 niuu:bg-[#1e232a] niuu:px-3 niuu:py-2"
+                className="niuu:flex niuu:items-center niuu:gap-2 niuu:rounded-md niuu:border niuu:border-brand/20 niuu:bg-[var(--color-bg-tertiary)] niuu:px-3 niuu:py-2"
               >
                 <span className="niuu:rounded niuu:bg-bg-elevated niuu:px-1.5 niuu:py-0.5 niuu:font-mono niuu:text-[10px] niuu:text-text-secondary">
                   {entry.run.trackerId}
@@ -320,10 +320,10 @@ function RunRow({
       className={cn(
         'niuu:flex niuu:items-center niuu:gap-3 niuu:px-4 niuu:py-2.5 niuu:border niuu:rounded-md niuu:cursor-pointer niuu:transition-colors',
         isPendingDispatch
-          ? 'niuu:bg-[#252c36] niuu:border-brand/30'
+          ? 'niuu:bg-[var(--color-bg-tertiary)] niuu:border-brand/30'
           : isSelected
-            ? 'niuu:bg-[#1d232b] niuu:border-brand/20'
-            : 'niuu:bg-[#171b22] niuu:border-border-subtle niuu:hover:bg-[#1d232b]',
+            ? 'niuu:bg-[var(--color-bg-tertiary)] niuu:border-brand/20'
+            : 'niuu:bg-[var(--color-bg-secondary)] niuu:border-border-subtle niuu:hover:bg-[var(--color-bg-tertiary)]',
       )}
       onClick={onToggle}
     >

@@ -159,24 +159,24 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
       <header className="niuu:flex niuu:items-end niuu:justify-between niuu:gap-6">
         <div className="niuu:flex niuu:max-w-3xl niuu:flex-col niuu:gap-1.5">
           <span className="niuu:font-mono niuu:text-[11px] niuu:uppercase niuu:tracking-[0.3em] niuu:text-brand-300">
-            realms
+            workspaces
           </span>
           <h1 className="niuu:m-0 niuu:text-2xl niuu:font-bold niuu:tracking-tight niuu:text-text-primary">
             {home.error
-              ? 'Realms'
+              ? 'Workspaces'
               : home.cards.length === 0
-                ? 'No realms yet. Start with one sentence.'
-                : `${countWords(home.cards.length)} realm${home.cards.length === 1 ? '' : 's'}, each kept by a resident.`}
+                ? 'No workspaces yet. Start with one sentence.'
+                : `${countWords(home.cards.length)} workspace${home.cards.length === 1 ? '' : 's'}, each kept by a resident.`}
           </h1>
           <p className="niuu:m-0 niuu:text-[15px] niuu:text-text-secondary">
-            A realm is an environment a resident keeps: it reads your tracker, works the tickets in
-            sessions, checks quality, watches health and keeps learning. You review what it asks you
-            to.
+            A workspace is an environment a resident keeps: it reads your tracker, works the tickets
+            in sessions, checks quality, watches health and keeps learning. You review what it asks
+            you to.
           </p>
         </div>
         <div className="niuu:flex niuu:gap-2">
           <button type="button" className={BUTTON} onClick={() => setCloneOpen(true)}>
-            Clone a realm
+            Clone a workspace
           </button>
           <Link to="/realms/new" className={BUTTON}>
             Set one up step by step
@@ -187,9 +187,9 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
       <SentenceComposer />
 
       {home.error ? (
-        <ErrorState title="Could not load realms" message={String(home.error)} />
+        <ErrorState title="Could not load workspaces" message={String(home.error)} />
       ) : home.isLoading ? (
-        <LoadingState label="Loading realms…" />
+        <LoadingState label="Loading workspaces…" />
       ) : view === 'templates' ? (
         <TemplatesView />
       ) : view === 'needs-you' ? (
@@ -209,7 +209,7 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
         <>
           {home.cards.length === 0 ? (
             <EmptyState
-              title="No realms yet"
+              title="No workspaces yet"
               description="Type a sentence above, or set one up step by step."
               action={
                 <Link to="/realms/new" className={PRIMARY}>
@@ -242,7 +242,7 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
                 >
                   {showAll
                     ? `Show the ${FIRST_ROW} that matter most`
-                    : `Show all ${ordered.length} realms`}
+                    : `Show all ${ordered.length} workspaces`}
                 </button>
               ) : null}
             </div>
@@ -282,12 +282,12 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
               <div className="niuu:flex niuu:flex-col niuu:gap-2.5 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4">
                 <div className="niuu:flex niuu:items-center niuu:justify-between">
                   <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
-                    Across realms
+                    Across workspaces
                   </span>
                   <span className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">now</span>
                 </div>
                 <div className="niuu:grid niuu:grid-cols-2 niuu:gap-x-4 niuu:gap-y-3">
-                  <Figure value={home.cards.length} label="realms" />
+                  <Figure value={home.cards.length} label="workspaces" />
                   <Figure value={home.residentsOnline} label="residents online" />
                   <Figure value={home.sessionsRunning} label="sessions running" />
                   <Figure
@@ -345,12 +345,12 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
       <Modal
         open={cloneOpen}
         onOpenChange={setCloneOpen}
-        title="Clone a realm"
-        description="Only the blanks change: repository, board, name. Charter, trust, standing jobs and template come from the realm you pick."
+        title="Clone a workspace"
+        description="Only the blanks change: repository, board, name. Charter, trust, standing jobs and template come from the workspace you pick."
       >
         <div className="niuu:flex niuu:flex-col niuu:gap-2" data-testid="clone-picker">
           {home.cards.length === 0 ? (
-            <EmptyState title="No realm to clone yet" />
+            <EmptyState title="No workspace to clone yet" />
           ) : (
             home.cards.map((card) => (
               <button

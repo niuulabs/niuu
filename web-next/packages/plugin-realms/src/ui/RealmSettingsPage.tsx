@@ -63,8 +63,8 @@ function ResidentControls({ ravn, realmName }: { ravn: Ravn | null; realmName: s
   if (!ravn) {
     return (
       <EmptyState
-        title="No resident is running for this realm"
-        description="Start one from the realm page, or clone the realm to deploy a fresh resident."
+        title="No resident is running for this workspace"
+        description="Start one from the workspace page, or clone the workspace to deploy a fresh resident."
       />
     );
   }
@@ -129,9 +129,9 @@ function ResidentControls({ ravn, realmName }: { ravn: Ravn | null; realmName: s
         )}
       </div>
       <span className="niuu:text-xs niuu:text-text-muted">
-        Pause keeps the resident deployed but idle. Remove tears its deployment down; the realm, its
-        charter, trust and memory stay, and the platform has no route to delete the realm record
-        itself yet.
+        Pause keeps the resident deployed but idle. Remove tears its deployment down; the workspace,
+        its charter, trust and memory stay, and the platform has no route to delete the workspace
+        record itself yet.
       </span>
       {error ? <span className="niuu:text-xs niuu:text-critical-fg">{String(error)}</span> : null}
     </div>
@@ -154,7 +154,7 @@ function RealmTeardown({
   return (
     <div className="niuu:flex niuu:flex-col niuu:gap-2" data-testid="realm-teardown">
       <span className="niuu:text-xs niuu:text-text-muted">
-        Deleting the realm removes its resident, persona, memory routing rule, trust and
+        Deleting the workspace removes its resident, persona, memory routing rule, trust and
         capabilities. The memory instance stays (the platform cannot remove one yet); its pages are
         still under Memory › Library.
       </span>
@@ -186,7 +186,7 @@ function RealmTeardown({
             onClick={() => setArmed(true)}
             data-testid="realm-delete"
           >
-            Delete realm
+            Delete workspace
           </button>
         )}
       </div>
@@ -264,11 +264,13 @@ export function RealmSettingsPage() {
   const ravens = useRavens();
   const ravn = ravnForRealm(ravens.data, slug);
 
-  if (data.isLoading) return <LoadingState label="Loading realm…" />;
+  if (data.isLoading) return <LoadingState label="Loading workspace…" />;
   if (data.error)
-    return <ErrorState title="Could not load the realm" message={String(data.error)} />;
+    return <ErrorState title="Could not load the workspace" message={String(data.error)} />;
   if (!data.realm || !data.view)
-    return <ErrorState title="No such realm" message={`There is no realm called ${slug}.`} />;
+    return (
+      <ErrorState title="No such workspace" message={`There is no workspace called ${slug}.`} />
+    );
 
   const view = data.view;
   const levelFor = (actionClass: ActionClass) =>
@@ -307,7 +309,7 @@ export function RealmSettingsPage() {
           (persona.error as { status?: number }).status === 404 ? (
             <EmptyState
               title={`No persona named ${view.personaName} yet`}
-              description="This realm was not set up by the wizard, so it has no charter persona. Clone it to create one, or write the persona under Agents › Personas."
+              description="This workspace was not set up by the wizard, so it has no charter persona. Clone it to create one, or write the persona under Agents › Personas."
             />
           ) : (
             <ErrorState message={String(persona.error)} />
@@ -362,11 +364,11 @@ export function RealmSettingsPage() {
         <div className="niuu:flex niuu:flex-col niuu:gap-4">
           <SectionCard
             title="Resident"
-            description="Pause, resume, restart or remove the resident that keeps this realm."
+            description="Pause, resume, restart or remove the resident that keeps this workspace."
           >
             <ResidentControls ravn={ravn} realmName={data.realm.name} />
           </SectionCard>
-          <SectionCard title="Delete the realm" description="Gone from the list, for good.">
+          <SectionCard title="Delete the workspace" description="Gone from the list, for good.">
             <RealmTeardown slug={slug} ravn={ravn} realmName={data.realm.name} />
           </SectionCard>
         </div>
@@ -374,8 +376,8 @@ export function RealmSettingsPage() {
 
       {section === 'memory' ? (
         <SectionCard
-          title="Realm memory"
-          description="The memory mount created with the realm, and where its writes go."
+          title="Workspace memory"
+          description="The memory mount created with the workspace, and where its writes go."
         >
           <div className="niuu:flex niuu:flex-col niuu:gap-3">
             <div className="niuu:flex niuu:items-center niuu:gap-2">
