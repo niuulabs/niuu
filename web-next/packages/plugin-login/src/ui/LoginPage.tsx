@@ -82,7 +82,7 @@ export function LoginPage({
       </div>
 
       <main className="login-page__card">
-        <div className="login-page__kicker">níu · the ninth world</div>
+        <div className="login-page__kicker">niuu · autonomous work</div>
         <Emblem />
         <p className="login-page__tag">A place where intelligent systems do real work.</p>
 
