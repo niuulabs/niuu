@@ -63,6 +63,10 @@ class WorkflowTerminalNode:
     require_git_push: bool = False
 
 
+#: The one gate mode an agent may answer. Every other mode waits for a person.
+AGENT_ANSWERABLE_GATE_MODE = "automated_approval"
+
+
 @dataclass(frozen=True)
 class WorkflowGateNode:
     node_id: str

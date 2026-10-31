@@ -38,6 +38,23 @@ graph:
 `review` names the kind of decision: `plan`, `code` or `output`. Without
 `panels`, a column shows that kind's usual panels. Several panels show as tabs.
 
+## Who answers a gate
+
+A gate waits for a person unless the workflow says otherwise. An agent, such as
+a resident, cannot answer it, even when it runs under your account. It is told
+the gate waits for a person, and should tell you.
+
+To let an agent answer a gate, set its mode in the workflow:
+
+```yaml
+- id: style-check
+  kind: gate
+  label: Style check
+  mode: automated_approval
+```
+
+The review then records the agent as the one who decided.
+
 ## Stock widgets
 
 | Widget | Shows | Source |

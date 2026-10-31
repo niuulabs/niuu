@@ -584,6 +584,22 @@ def test_the_ticket_planning_flow_declares_a_plan_gate() -> None:
     assert "autoForwardAfter" not in node
 
 
+def test_a_blocked_plan_reaches_a_person_who_can_send_it_on() -> None:
+    workflow = next(item for item in load_system_workflows() if item.name == "Ticket Planning Flow")
+    nodes = {item["id"]: item for item in workflow.graph["nodes"]}
+    edges = {(item["source"], item["target"]) for item in workflow.graph["edges"]}
+
+    blocked = nodes["plan-blocked"]
+
+    assert blocked["mode"] == "human_approval"
+    assert {("plan-draft", "plan-blocked"), ("plan-check", "plan-blocked")} <= edges
+    assert ("plan-blocked", "plan-draft") in edges
+    assert blocked["approvalEvent"] == blocked["changesRequestedEvent"]
+    assert (
+        blocked["approvalEvent"] in (nodes["plan-draft"]["stageMembers"][0]["consumesEventTypes"])
+    )
+
+
 def test_planning_and_delivery_share_a_board() -> None:
     workflows = {item.name: item for item in load_system_workflows()}
 

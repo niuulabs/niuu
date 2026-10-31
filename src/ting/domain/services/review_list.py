@@ -13,6 +13,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from niuu.domain.models import actor_name
 from ting.domain.models import Saga, WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.ticket_coordinator import PENDING_GATES_KEY, TICKET_METADATA_KEY, ticket_of
 
@@ -96,7 +97,7 @@ def _run_title(campaign: WorkflowCampaign) -> str:
 def _started_by(metadata: Mapping[str, Any]) -> str | None:
     """The resident that started a run. A person's own run needs no such note."""
     actor = str(metadata.get(RUN_ACTOR_KEY) or "")
-    return actor.rsplit(":", 1)[-1] if actor.startswith(_SERVICE_ACCOUNT_ACTOR) else None
+    return actor_name(actor) if actor.startswith(_SERVICE_ACCOUNT_ACTOR) else None
 
 
 def review_run(campaign: WorkflowCampaign) -> ReviewRun:

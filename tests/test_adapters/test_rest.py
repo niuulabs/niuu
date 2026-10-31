@@ -1801,6 +1801,7 @@ class TestWorkflowGateProxy:
                 "decision": "approved",
                 "notes": "looks good",
                 "source": "human",
+                "actor": "",
                 "decided_by": "dev@example.com",
             },
         )

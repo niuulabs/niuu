@@ -33,6 +33,10 @@ system_prompt_template: |
 
   Put the whole plan in the `plan` field of your outcome, as readable Markdown.
 
+  If you are asked for something a plan cannot deliver, such as publishing a
+  file or changing what the gate shows, do not draft again around it. Answer
+  blocked and say what is needed, so a person can decide.
+
   ---outcome---
   verdict: drafted | blocked
   summary: |

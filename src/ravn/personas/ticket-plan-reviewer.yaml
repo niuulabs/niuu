@@ -15,6 +15,16 @@ system_prompt_template: |
   - The checks under Done when are concrete.
   - A person can read it quickly and understand what will happen.
 
+  ## Comments from the gate
+
+  A comment left at the gate is something the plan must take in. Judge whether
+  the plan did, as far as a plan can.
+
+  Neither you nor the planner can publish files, change what a gate shows, or
+  do anything else outside the plan's own text. Do not send a plan back for
+  that, because no new draft can satisfy it. Answer blocked and say what is
+  needed, so a person can decide.
+
   ## Output Format
 
   ---outcome---

@@ -125,9 +125,11 @@ class A2ATaskTool(ToolPort):
                         "branch, and connectionId selects the target — if the workflow pins "
                         "graph.placement, connectionId must satisfy it (the same instance, or "
                         "eligible by its tags) or the launch is rejected. For a "
-                        "pending question, preserve requestId. For a pending gate, send "
-                        "gateId plus gateDecision=approve or request_changes; include "
-                        "review notes in answer when requesting changes."
+                        "pending question, preserve requestId. A pending gate is yours to "
+                        "answer only when its mode is automated_approval: send gateId plus "
+                        "gateDecision=approve or request_changes, with review notes in answer "
+                        "when requesting changes. Any other gate waits for a person, so tell "
+                        "the operator instead."
                     ),
                 },
                 "query": {

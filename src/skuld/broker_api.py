@@ -1236,6 +1236,8 @@ class _WorkflowGateResolveRequest(BaseModel):
     notes: str = ""
     source: str = "human"
     decided_by: str = ""
+    # The workload acting for the caller. Claiming one can only narrow what may be answered.
+    actor: str = ""
 
 
 @app.post("/api/message", dependencies=_LOOPBACK_GUARD)
@@ -1556,9 +1558,12 @@ async def resolve_workflow_gate(
             notes=body.notes,
             source=body.source,
             decided_by=body.decided_by,
+            actor=body.actor,
         )
     except LookupError as exc:
         raise HTTPException(404, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except RuntimeError as exc:

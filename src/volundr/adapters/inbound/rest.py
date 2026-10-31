@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from niuu.domain.conversation_timeline import resolve_timeline_turn
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
+from niuu.domain.models import actor_name
 from niuu.domain.notifications import notification_visible_to
 from niuu.domain.services.token_scope import (
     FORGE_NOTIFY_SCOPE,
@@ -1211,6 +1212,9 @@ class WorkflowGateResolveRequest(BaseModel):
     decision: str
     notes: str = ""
     source: str = "human"
+    # The workload a trusted caller such as Ting answers for, when its own credential
+    # does not show it. Claiming one can only narrow what may be answered.
+    actor: str = ""
 
 
 class HelpAnswerRequest(BaseModel):
@@ -4503,6 +4507,7 @@ def create_router(
                 detail="Not authorized to resolve gates for this session",
             )
 
+        actor = principal.actor or body.actor
         headers = {}
         auth = request.headers.get("authorization")
         if auth:
@@ -4542,7 +4547,10 @@ def create_router(
                     headers=headers,
                     json={
                         **body.model_dump(),
-                        "decided_by": principal.email or principal.user_id,
+                        "actor": actor,
+                        "decided_by": (
+                            actor_name(actor) if actor else principal.email or principal.user_id
+                        ),
                     },
                 )
                 response.raise_for_status()

@@ -10,6 +10,7 @@ import httpx
 import pytest
 import respx
 
+from niuu.domain.models import Principal
 from ravn.adapters.personas.loader import PersonaConfig
 from ravn.domain.persona_document import portable_persona_from_config
 from ting.adapters.volundr_http import VolundrHTTPAdapter
@@ -1163,7 +1164,32 @@ class TestWorkflowGates:
             "decision": "APPROVE",
             "notes": "Looks bounded.",
             "source": "ting.plan",
+            "actor": "",
         }
+
+    @respx.mock
+    async def test_resolving_a_gate_names_the_agent_behind_the_caller(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        route = respx.post(f"{SESSIONS_URL}/ses-1/workflow/gates/gate-1/resolve").mock(
+            return_value=httpx.Response(200, json={"status": "resolved"})
+        )
+
+        await adapter.resolve_workflow_gate(
+            "ses-1",
+            "gate-1",
+            "APPROVE",
+            principal=Principal(
+                user_id="u1",
+                email="a@b.c",
+                tenant_id="t1",
+                roles=[],
+                actor="system:serviceaccount:nats:regin",
+            ),
+        )
+
+        sent = json.loads(route.calls.last.request.content)
+        assert sent["actor"] == "system:serviceaccount:nats:regin"
 
 
 class _FakeLineIterator:

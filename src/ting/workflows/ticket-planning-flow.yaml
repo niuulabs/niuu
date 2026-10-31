@@ -3,7 +3,7 @@ id: 3f0e6a14-9b2d-5c47-8e61-4d7a2c91b5e3
 name: Ticket Planning Flow
 description: Plans one tracker ticket, has an agent review the plan, then waits for a person to approve
   it before recording the approved plan for the work that follows.
-version: 1.1.0
+version: 1.2.0
 persona_dependencies:
   ticket-plan-publisher:
     id: ticket-plan-publisher
@@ -12,13 +12,13 @@ persona_dependencies:
     path: personas/ticket-plan-publisher.yaml
   ticket-plan-reviewer:
     id: ticket-plan-reviewer
-    revision: content-e02ef04edf9fcb6d
-    digest: sha256:e02ef04edf9fcb6d01a509c533cefd1fa93522812f41b099db0ec7d2c404b243
+    revision: content-e875ceea656b9df6
+    digest: sha256:e875ceea656b9df6f0ca74c04d70e2ab68440e46308a2fa69567db28c45aa669
     path: personas/ticket-plan-reviewer.yaml
   ticket-planner:
     id: ticket-planner
-    revision: content-98d7b56a2d50d41c
-    digest: sha256:98d7b56a2d50d41c280bf5e001cee0e2a071ad3bd0cb38c564876dc40fd93ab9
+    revision: content-fb17a5b3c13eb5e1
+    digest: sha256:fb17a5b3c13eb5e133e056c15a29c80094db86bffad3f9c9c9df45b957b55505
     path: personas/ticket-planner.yaml
 graph:
   tags:
@@ -106,6 +106,19 @@ graph:
     position:
       x: 1056
       y: 480
+  - id: plan-blocked
+    kind: gate
+    label: Plan blocked
+    condition: The planner or its reviewer needs something a plan cannot deliver.
+    mode: human_approval
+    pendingBehavior: help_needed
+    approvalEvent: plan.breakdown.changes_requested
+    changesRequestedEvent: plan.breakdown.changes_requested
+    instructions: Read what is needed. Say how to carry on and the planner continues in this same run,
+      or stop the run if the ticket cannot be planned as written.
+    position:
+      x: 704
+      y: 480
   - id: plan-publish
     kind: stage
     label: Record the approved plan
@@ -145,6 +158,18 @@ graph:
     source: plan-check
     target: plan-review-gate
     label: plan.breakdown.ready_for_gate -> plan.breakdown.ready_for_gate
+  - id: edge-plan-draft-to-blocked
+    source: plan-draft
+    target: plan-blocked
+    label: plan.blocked -> plan.blocked
+  - id: edge-plan-check-to-blocked
+    source: plan-check
+    target: plan-blocked
+    label: plan.blocked -> plan.blocked
+  - id: edge-plan-blocked-to-draft
+    source: plan-blocked
+    target: plan-draft
+    label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
   - id: edge-plan-gate-to-draft
     source: plan-review-gate
     target: plan-draft

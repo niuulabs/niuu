@@ -127,6 +127,7 @@ from skuld.websocket_auth import (  # noqa: F401
 )
 from skuld.websocket_lifecycle import WebSocketLifecycleMixin
 from skuld.workflow_runtime import (
+    AGENT_ANSWERABLE_GATE_MODE,
     ROOM_MEMBER_FRAME,
     WORKFLOW_GATE_FRAME,
     WorkflowGateNode,
@@ -2541,6 +2542,7 @@ class Broker(
         notes: str = "",
         source: str = "human",
         decided_by: str = "",
+        actor: str = "",
     ) -> dict[str, Any]:
         state = self._workflow_gate_states.get(gate_id)
         if state is None:
@@ -2549,6 +2551,13 @@ class Broker(
             raise ValueError(f"Workflow gate {gate_id} is already resolved")
         if state.mode == "evidence":
             raise ValueError("Evidence gates can only be resolved by the configured verifier")
+        if actor and state.mode != AGENT_ANSWERABLE_GATE_MODE:
+            get_observability().count("skuld.workflow.gate_agent_answer_refused")
+            raise PermissionError(
+                f"Workflow gate {gate_id} waits for a person, so {actor} cannot answer it. "
+                f"Ask the operator to decide, or set the gate's mode to "
+                f"{AGENT_ANSWERABLE_GATE_MODE} if an agent may answer it"
+            )
         normalized = decision.strip().upper()
         if normalized not in {"APPROVE", "CHANGES_REQUESTED"}:
             raise ValueError("decision must be APPROVE or CHANGES_REQUESTED")

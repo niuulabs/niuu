@@ -37,6 +37,11 @@ class Principal:
     actor: str = ""
 
 
+def actor_name(actor: str) -> str:
+    """A workload's short name, such as ``regin`` for its ServiceAccount subject."""
+    return actor.rsplit(":", 1)[-1]
+
+
 class IntegrationType(StrEnum):
     """Category of integration."""
 

@@ -1660,6 +1660,31 @@ class TestGateContinuation:
         assert "pending_workflow_gates" not in saved.metadata
         assert saved.metadata["repo"] == "niuu"
 
+    def test_a_gate_that_waits_for_a_person_refuses_an_agent_with_a_way_forward(self) -> None:
+        client, campaign, port = self._blocked_client()
+        refused = httpx.Response(403, request=httpx.Request("POST", "http://forge/gate"))
+        port.resolve_workflow_gate = AsyncMock(
+            side_effect=httpx.HTTPStatusError("no", request=refused.request, response=refused)
+        )
+
+        response = _rpc(client, "SendMessage", self._reply_params(campaign.slug))
+
+        error = response.json()["error"]
+        assert error["code"] == -32602
+        assert "waits for a person" in error["message"]
+        assert "tell the operator" in error["message"]
+
+    def test_any_other_refusal_of_a_gate_answer_stays_an_error(self) -> None:
+        client, campaign, port = self._blocked_client()
+        failed = httpx.Response(502, request=httpx.Request("POST", "http://forge/gate"))
+        port.resolve_workflow_gate = AsyncMock(
+            side_effect=httpx.HTTPStatusError("no", request=failed.request, response=failed)
+        )
+
+        response = _rpc(client, "SendMessage", self._reply_params(campaign.slug))
+
+        assert "waits for a person" not in str(response.json())
+
     def test_request_changes_sends_notes(self) -> None:
         client, campaign, port = self._blocked_client()
 
@@ -2055,6 +2080,7 @@ class TestGetTask:
                 "id": "gate-1",
                 "node_id": "capability-spec-gate",
                 "status": "pending",
+                "mode": "human_approval",
                 "label": "Confirm capability specification",
                 "condition": "The framed spec must be confirmed.",
                 "instructions": "Approve when the spec captures the tool.",
@@ -2076,6 +2102,7 @@ class TestGetTask:
                 "gateId": "gate-1",
                 "nodeId": "capability-spec-gate",
                 "label": "Confirm capability specification",
+                "mode": "human_approval",
                 "condition": "The framed spec must be confirmed.",
                 "instructions": "Approve when the spec captures the tool.",
                 "summary": "",

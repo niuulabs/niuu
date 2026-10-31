@@ -704,7 +704,14 @@ class VolundrHTTPAdapter(VolundrPort):
                 f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/workflow/gates/"
                 f"{encoded_gate_id}/resolve",
                 headers=headers,
-                json={"decision": decision, "notes": notes, "source": source},
+                json={
+                    "decision": decision,
+                    "notes": notes,
+                    "source": source,
+                    # Sent explicitly: a scoped caller's token stays here, so the Forge
+                    # would otherwise see the owner's credential and no agent behind it.
+                    "actor": principal.actor if principal else "",
+                },
             )
             resp.raise_for_status()
             return resp.json()

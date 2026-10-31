@@ -1148,15 +1148,23 @@ class WorkflowTaskHandler(RequestHandler):
             raise InvalidParamsError(
                 f"task {message.task_id} has no pending gate matching the reply"
             )
-        await adapter.resolve_workflow_gate(
-            campaign.session_id,
-            gate_id,
-            decision,
-            notes=notes,
-            source=A2A_SURFACE,
-            auth_token=self._downstream_auth_token(),
-            principal=self._principal,
-        )
+        try:
+            await adapter.resolve_workflow_gate(
+                campaign.session_id,
+                gate_id,
+                decision,
+                notes=notes,
+                source=A2A_SURFACE,
+                auth_token=self._downstream_auth_token(),
+                principal=self._principal,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != status.HTTP_403_FORBIDDEN:
+                raise
+            raise InvalidParamsError(
+                f"gate {gate_id} of task {message.task_id} waits for a person to answer it; "
+                "tell the operator it is waiting and leave the decision to them"
+            ) from exc
 
         # Optimistically report the task back in WORKING; the campaign
         # projector re-syncs the real session state on its next tick. Nothing
@@ -1866,6 +1874,7 @@ def _pending_gate_view(gate: dict) -> dict[str, str]:
         "gateId": str(gate.get("id") or ""),
         "nodeId": str(gate.get("node_id") or gate.get("nodeId") or ""),
         "label": str(gate.get("label") or ""),
+        "mode": str(gate.get("mode") or ""),
         "condition": str(gate.get("condition") or ""),
         "instructions": str(gate.get("instructions") or ""),
         "summary": str(gate.get("summary") or ""),

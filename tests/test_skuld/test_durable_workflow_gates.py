@@ -81,6 +81,41 @@ async def test_opening_and_deciding_a_gate_are_both_logged_durably(tmp_path):
     assert [frame["gate"]["status"] for frame in logged] == ["pending", "approved"]
 
 
+@pytest.mark.parametrize("mode", ["human_approval", "human_review"])
+async def test_an_agent_cannot_answer_a_gate_that_waits_for_a_person(tmp_path, mode):
+    broker = _restarted(tmp_path, _state(mode=mode))
+
+    with pytest.raises(PermissionError, match="waits for a person, so .*regin"):
+        await broker.resolve_workflow_gate(
+            "review:activation:1", "APPROVE", actor="system:serviceaccount:nats:regin"
+        )
+
+    assert [gate["status"] for gate in broker.list_workflow_gates()] == ["pending"]
+    broker._mesh_adapter.publish.assert_not_awaited()
+
+
+async def test_a_workflow_can_let_an_agent_answer_a_gate(tmp_path):
+    broker = _restarted(tmp_path, _state(mode="automated_approval"))
+
+    await broker.resolve_workflow_gate(
+        "review:activation:1",
+        "APPROVE",
+        actor="system:serviceaccount:nats:regin",
+        decided_by="regin",
+    )
+
+    topic = broker._mesh_adapter.publish.call_args.args[1]
+    assert topic == "review.approved"
+
+
+async def test_a_person_still_answers_a_gate_with_no_agent_involved(tmp_path):
+    broker = _restarted(tmp_path, _state())
+
+    await broker.resolve_workflow_gate("review:activation:1", "APPROVE", decided_by="a@b.c")
+
+    broker._mesh_adapter.publish.assert_awaited_once()
+
+
 async def test_a_restored_gate_is_listed_and_still_moves_the_workflow_on(tmp_path):
     broker = _restarted(tmp_path, _state())
 
