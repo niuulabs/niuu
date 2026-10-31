@@ -297,6 +297,13 @@ class TestDeploymentTemplate:
         """Test sessions volume is mounted by multiple containers."""
         assert deployment_yaml.count("name: sessions") >= 2
 
+    def test_volume_ownership_is_not_rewalked_on_every_start(self, tmp_path):
+        """A full walk of a user home delays each session by minutes."""
+        rendered = _render_skuld_chart(tmp_path, {"session": {"id": "abc"}})
+        pod_spec = _deployment_from_rendered(rendered)["spec"]["template"]["spec"]
+
+        assert pod_spec["securityContext"]["fsGroupChangePolicy"] == "OnRootMismatch"
+
     @pytest.mark.parametrize("repo_url", ["", "https://github.com/org/repo"])
     def test_services_setup_precreates_dynamic_nginx_include(self, tmp_path, repo_url):
         """nginx must not wait on devrunner for the include it loads at startup."""

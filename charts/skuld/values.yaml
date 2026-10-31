@@ -898,6 +898,9 @@ securityContext:
   runAsUser: 1000
   # -- Filesystem group ID
   fsGroup: 1000
+  # -- When the kubelet re-owns mounted volumes. `Always` walks every file on
+  # each pod start, which took over two minutes on a user home of 250k files.
+  fsGroupChangePolicy: OnRootMismatch
 
 # Authentication is optional for mini-mode and explicitly trusted deployments.
 # Enable only behind a JWT-verifying proxy that strips caller identity headers.

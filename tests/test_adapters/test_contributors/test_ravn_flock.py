@@ -72,21 +72,17 @@ def _flock_contributor(**kwargs) -> RavnFlockContributor:  # noqa: ANN003
 
 
 def _extract_mounted_config(pod_spec, persona: str) -> str:
-    """Extract the YAML written by the init container for *persona*.
+    """Extract the YAML the init container writes for *persona*.
 
-    The heredoc format is:
-      cat > /etc/ravn/config.yaml <<'__RAVN_EOF__'\\n<yaml>__RAVN_EOF__\\n
+    The script has one line per persona, naming the variable that holds its YAML:
+      printf '%s' "$RAVN_CFG_0" > /etc/ravn/<persona>/config.yaml
     """
-    init_name = f"write-ravn-cfg-{persona}"
-    for ic in pod_spec.init_containers:
-        if ic["name"] == init_name:
-            cmd = ic["command"][2]
-            open_marker = "'__RAVN_EOF__'\n"
-            close_marker = "__RAVN_EOF__\n"
-            start = cmd.index(open_marker) + len(open_marker)
-            end = cmd.rindex(close_marker)
-            return cmd[start:end]
-    raise AssertionError(f"init container {init_name!r} not found")
+    writer = next(ic for ic in pod_spec.init_containers if ic["name"] == "write-ravn-cfg")
+    for line in writer["command"][2].splitlines():
+        if line.endswith(f"> /etc/ravn/{persona}/config.yaml"):
+            env_name = line.split('"$')[1].split('"')[0]
+            return next(e["value"] for e in writer["env"] if e["name"] == env_name)
+    raise AssertionError(f"no config written for {persona!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -1098,31 +1094,47 @@ class TestMountedConfig:
         assert "ravn-cfg-coordinator" in vol_names
         assert "ravn-cfg-reviewer" in vol_names
 
-    async def test_per_sidecar_init_container(self, session, flock_template):
-        """Each persona gets an init container that writes its config."""
+    async def test_single_init_container_writes_every_config(self, session, flock_template):
+        """Init containers run in series, so the configs share one."""
         provider = MagicMock()
         provider.get.return_value = flock_template
         c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
-        ic_names = [ic["name"] for ic in result.pod_spec.init_containers]
-        assert "write-ravn-cfg-coordinator" in ic_names
-        assert "write-ravn-cfg-reviewer" in ic_names
+        assert [ic["name"] for ic in result.pod_spec.init_containers] == ["write-ravn-cfg"]
+        assert result.pod_spec.init_containers[0]["imagePullPolicy"] == "IfNotPresent"
+        for persona in ("coordinator", "reviewer"):
+            assert yaml.safe_load(_extract_mounted_config(result.pod_spec, persona))
+
+    async def test_config_stays_out_of_the_exec_argument(self, session, flock_template):
+        """A flock's configs together exceed the 128 KiB limit on one exec argument."""
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        c = _flock_contributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
+        result = await c.contribute(session, ctx)
+
+        writer = result.pod_spec.init_containers[0]
+        script = writer["command"][2]
+        assert all(env["value"] not in script for env in writer["env"])
+        assert len(writer["env"]) == 2
 
     async def test_init_container_writes_to_correct_volume(self, session, flock_template):
-        """Init container mounts the matching config volume."""
+        """The init container mounts each persona's config volume under its own path."""
         provider = MagicMock()
         provider.get.return_value = flock_template
         c = _flock_contributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
-        for ic in result.pod_spec.init_containers:
-            persona = ic["name"].replace("write-ravn-cfg-", "")
-            vol_name = f"ravn-cfg-{persona}"
-            mounts = {m["name"]: m["mountPath"] for m in ic["volumeMounts"]}
-            assert mounts[vol_name] == "/etc/ravn"
+        mounts = {
+            m["name"]: m["mountPath"] for m in result.pod_spec.init_containers[0]["volumeMounts"]
+        }
+        assert mounts == {
+            "ravn-cfg-coordinator": "/etc/ravn/coordinator",
+            "ravn-cfg-reviewer": "/etc/ravn/reviewer",
+        }
 
     async def test_init_container_runs_non_root(self, session, flock_template):
         """Config writer init containers satisfy Skuld's non-root pod policy."""
@@ -1482,7 +1494,7 @@ class TestContributorPipelineMerge:
         assert "mimir-local" not in volume_names
 
         # Init containers merged
-        assert len(spec.pod_spec.init_containers) == 2
+        assert len(spec.pod_spec.init_containers) == 1
 
     async def test_merge_preserves_skuld_env(self, session, flock_template):
         template_provider = MagicMock()
