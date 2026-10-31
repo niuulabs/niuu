@@ -7,6 +7,7 @@ import json
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
+import pytest
 from starlette.testclient import TestClient
 
 from identity.adapters.identity import AllowAllIdentityAdapter
@@ -241,6 +242,32 @@ class TestObservatoryApp:
             assert payload["title"] == "Observatory"
             assert payload["sections"][0]["id"] == "streams"
             assert any(field["key"] == "guild_url" for field in payload["sections"][0]["fields"])
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            ("GET", "/api/v1/observatory/settings"),
+            ("PUT", "/api/v1/observatory/registry"),
+            ("POST", "/api/v1/observatory/registry/types"),
+            ("PATCH", "/api/v1/observatory/registry/types/cluster"),
+            ("DELETE", "/api/v1/observatory/registry/types/cluster"),
+        ],
+    )
+    def test_shared_registry_and_settings_stay_with_the_platform_org(
+        self, method: str, path: str
+    ) -> None:
+        with _make_client() as client:
+            before = client.get("/api/v1/observatory/registry").json()
+
+            response = client.request(
+                method,
+                path,
+                json={},
+                headers={"x-auth-user-id": "alice", "x-auth-tenant": "org-a"},
+            )
+
+            assert response.status_code == 403
+            assert client.get("/api/v1/observatory/registry").json() == before
 
     def test_agent_directory_forwards_principal_auth_and_all_filters(self) -> None:
         directory = _StubAgentDirectory()

@@ -83,6 +83,18 @@ def _forward_headers(request: Request) -> dict[str, str]:
     return headers
 
 
+async def _require_platform_org(
+    request: Request,
+    principal: Principal = Depends(extract_principal),
+) -> None:
+    """Keep what every org shares in the hands of the org running this deployment."""
+    if principal.tenant_id != request.app.state.platform_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Observatory settings are limited to the org running this deployment",
+        )
+
+
 async def _topology_stream(
     discovery: ObservatoryDiscoveryService,
     principal: Principal,
@@ -219,7 +231,11 @@ def create_router() -> APIRouter:
     async def registry(request: Request) -> dict[str, object]:
         return await _repository(request).get_registry()
 
-    @router.put("/registry", summary="Replace the observatory type registry")
+    @router.put(
+        "/registry",
+        summary="Replace the observatory type registry",
+        dependencies=[Depends(_require_platform_org)],
+    )
     async def save_registry(request: Request, body: dict[str, Any]) -> dict[str, object]:
         try:
             return await _repository(request).save_registry(body)
@@ -229,7 +245,11 @@ def create_router() -> APIRouter:
                 detail=str(exc),
             )
 
-    @router.post("/registry/types", summary="Create one registry type")
+    @router.post(
+        "/registry/types",
+        summary="Create one registry type",
+        dependencies=[Depends(_require_platform_org)],
+    )
     async def create_type(request: Request, body: dict[str, Any]) -> dict[str, object]:
         try:
             return await _repository(request).create_type(body)
@@ -239,7 +259,11 @@ def create_router() -> APIRouter:
                 detail=str(exc),
             )
 
-    @router.patch("/registry/types/{type_id}", summary="Update one registry type")
+    @router.patch(
+        "/registry/types/{type_id}",
+        summary="Update one registry type",
+        dependencies=[Depends(_require_platform_org)],
+    )
     async def update_type(
         request: Request, type_id: str, body: dict[str, Any]
     ) -> dict[str, object]:
@@ -253,7 +277,11 @@ def create_router() -> APIRouter:
                 detail=str(exc),
             )
 
-    @router.delete("/registry/types/{type_id}", summary="Delete one registry type")
+    @router.delete(
+        "/registry/types/{type_id}",
+        summary="Delete one registry type",
+        dependencies=[Depends(_require_platform_org)],
+    )
     async def delete_type(request: Request, type_id: str) -> dict[str, object]:
         try:
             return await _repository(request).delete_type(type_id)
@@ -264,6 +292,7 @@ def create_router() -> APIRouter:
         "/settings",
         response_model=SettingsProviderSchema,
         summary="Get observatory settings schema",
+        dependencies=[Depends(_require_platform_org)],
     )
     async def settings(request: Request) -> SettingsProviderSchema:
         registry_payload = await _repository(request).get_registry()
