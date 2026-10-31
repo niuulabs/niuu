@@ -60,8 +60,10 @@ The v0.4 package did not ship these; they are built from its masters.
 
 - `niuu-lockup-dark.svg`: the lockup for light backgrounds, using the
   `niuu-orbit-dark` and `niuu-wordmark-dark` colours.
-- `niuu-favicon.svg`: the app-icon tile with heavier strokes (11/14). The orbit
-  masters blur at 16px and nearly vanish on a light tab bar.
+- `niuu-favicon.svg`: the orbit with heavier strokes (13/17), enlarged 1.2x, on no
+  background. The masters blur at 16px and vanish on a light tab bar, so a
+  `prefers-color-scheme` rule picks deep blue strokes on light tabs and light blue
+  on dark ones. Browsers that ignore that rule get the deep blue strokes.
 - `--color-text-faint` (`#648090`), `--brand-100` to `--brand-900`: the package
   names no fourth text level and no ramp, so these are derived around Signal.
 - `--color-text-on-critical` is dark: white on Danger is only 2.43:1.
