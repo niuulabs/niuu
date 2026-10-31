@@ -120,30 +120,6 @@ html:has(.niuu-home) { scroll-behavior:smooth }
 .niuu-home .docs-view h3 { font-size:30px;font-weight:350;letter-spacing:-.025em;margin:8px 0 15px }
 .niuu-home .docs-view p { font-size:13px;line-height:1.8;max-width:680px;color:#adbec7 }
 .niuu-home .code-line { font:12px ui-monospace,Consolas,monospace;background:#07131e;padding:15px;border:1px solid #2a4352;border-radius:4px;color:#a0d9ea;margin:22px 0 }
-.niuu-home .brand-section { border-top:1px solid #293e4c }
-.niuu-home .brand-columns { display:grid;grid-template-columns:1.3fr .7fr;gap:16px;margin:28px 0 }
-.niuu-home .brand-display { border:1px solid #304b5d;min-height:215px;padding:35px;display:flex;align-items:center;justify-content:center;gap:30px;border-radius:7px;background:radial-gradient(ellipse at center,#112a38 0%,#08141e 80%) }
-.niuu-home .brand-display img:first-child { width:100px }
-.niuu-home .brand-display img:last-child { width:min(300px,45%) }
-.niuu-home .brand-icons { border:1px solid #304b5d;padding:22px;display:flex;align-items:center;justify-content:space-around;border-radius:7px;background:#0e1b26 }
-.niuu-home .brand-icons img:nth-child(1) { width:86px }
-.niuu-home .brand-icons img:nth-child(2) { width:42px }
-.niuu-home .brand-icons img:nth-child(3) { width:21px }
-.niuu-home .card-label { color:#92aabb;font-size:11px;margin-top:11px }
-.niuu-home .palette { display:grid;grid-template-columns:repeat(6,1fr);gap:11px;margin-top:22px }
-.niuu-home .sw .patch { border-radius:5px;height:70px;border:1px solid #39505c }
-.niuu-home .sw strong { font-size:11px;display:block;margin-top:10px;font-weight:500 }
-.niuu-home .sw small { font:10px ui-monospace,Consolas,monospace;color:#8da8b6 }
-.niuu-home .brand-application { display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:23px }
-.niuu-home .app { border:1px solid #2b4351;border-radius:7px;overflow:hidden;background:#0e202c }
-.niuu-home .app-visual { height:155px;position:relative;padding:24px;overflow:hidden }
-.niuu-home .app-visual img { position:absolute;width:85%;right:-23%;top:5%;opacity:.63 }
-.niuu-home .app-visual p { position:relative;margin:15px 0 0;font-size:18px;font-weight:350;max-width:220px;line-height:1.4 }
-.niuu-home .app-visual.docsapp { background:#10232e }
-.niuu-home .app-visual.docsapp p { font-size:13px }
-.niuu-home .app-visual.appicon { display:grid;place-items:center }
-.niuu-home .app-visual.appicon img { position:static;width:82px;opacity:1 }
-.niuu-home .app-footer { padding:12px 18px;border-top:1px solid #2a4251;color:#a6b7c1;font-size:11px }
 .niuu-home footer { padding:30px var(--edge) 45px;border-top:1px solid #2b4351;display:flex;justify-content:space-between;gap:20px;color:#7996a6;font-size:12px }
 .niuu-home .feedback { display:none;position:fixed;bottom:22px;right:22px;background:#153340;border:1px solid #618da1;box-shadow:0 10px 40px #0006;padding:14px 18px;color:#e6f5f9;border-radius:6px;font-size:12px;z-index:20 }
 .niuu-home .feedback.show { display:block }
@@ -171,14 +147,12 @@ html:has(.niuu-home) { scroll-behavior:smooth }
   .niuu-home .hero-bottom>span { display:none }
   .niuu-home .mini-features { gap:8px!important }
   .niuu-home .mini-features span { font-size:9px }
-  .niuu-home .intro, .niuu-home .brand-columns { grid-template-columns:1fr }
+.niuu-home .intro { grid-template-columns:1fr }
   .niuu-home .intro { gap:12px }
   .niuu-home .product-grid { grid-template-columns:repeat(2,1fr) }
   .niuu-home .demo-frame { grid-template-columns:1fr }
   .niuu-home .sidebar { display:none }
   .niuu-home .panels { grid-template-columns:1fr }
-  .niuu-home .palette { grid-template-columns:repeat(3,1fr) }
-  .niuu-home .brand-application { grid-template-columns:1fr }
   .niuu-home .section { padding-top:75px!important;padding-bottom:75px!important }
 }
 @media (max-width:520px) {
@@ -196,8 +170,6 @@ html:has(.niuu-home) { scroll-behavior:smooth }
   .niuu-home .docs-layout { grid-template-columns:1fr }
   .niuu-home .docs-side { display:none }
   .niuu-home .docs-view { padding:25px }
-  .niuu-home .brand-display { gap:4px;padding:13px }
-  .niuu-home .brand-display img:first-child { width:72px }
   .niuu-home footer { display:block }
 }
 @media (prefers-reduced-motion:reduce) {

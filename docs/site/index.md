@@ -7,8 +7,8 @@ hide:
 home:
   title: NIUU — A place where intelligent systems do real work
   action:
-    label: Brand system ↗
-    href: "#identity"
+    label: GitHub ↗
+    href: https://github.com/niuulabs/niuu
   hero:
     label: An operating environment for intelligent work
     title:
@@ -189,38 +189,6 @@ home:
       note: >-
         Public documentation speaks in outcomes, responsibilities and workflows.
         Implementation details remain available when you need them.
-  identity:
-    label: 05 / Identity system
-    title: One identity, everywhere.
-    body: >-
-      The orbital mark and the custom wide NIUU wordmark remain consistent from
-      the homepage to the product, docs, presentation covers and app icons.
-    lockup: Primary lockup / expressive vector
-    sizes: One design, simplified at small sizes
-    color: Color / one accent family
-    palette:
-      - name: Ink
-        hex: "#071019"
-      - name: Midnight
-        hex: "#0B1722"
-      - name: Panel
-        hex: "#10212D"
-      - name: Raised
-        hex: "#182B38"
-      - name: Mist
-        hex: "#EDF4F7"
-      - name: Signal
-        hex: "#86D0E8"
-    applications:
-      label: Applications / consistent visual language
-      site:
-        body: A place where intelligent systems do real work.
-        label: Site and launch materials
-      docs:
-        kicker: NIUU / Docs
-        body: Build environments for intelligent work.
-        label: Documentation
-      icon: Application and favicon
   footer:
     - NIUU / Continuity identity study · v0.4 · concept
     - One idea. One palette. One environment.

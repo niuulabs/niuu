@@ -159,42 +159,6 @@
       </div>
     </section>
 
-    <section class="section brand-section" id="identity">
-      <div class="label">{{ home.identity.label }}</div>
-      <h2>{{ home.identity.title }}</h2>
-      <p class="lede">{{ home.identity.body }}</p>
-      <div class="brand-columns">
-        <div>
-          <div class="brand-display"><img src="{{ orbit }}" alt="NIUU orbital brand mark"><img src="{{ wordmark }}" alt="NIUU wordmark"></div>
-          <div class="card-label">{{ home.identity.lockup }}</div>
-        </div>
-        <div>
-          <div class="brand-icons"><img src="{{ orbit }}" alt="Large orbital mark"><img src="{{ flat }}" alt="Small mark"><img src="{{ flat }}" alt="Tiny mark"></div>
-          <div class="card-label">{{ home.identity.sizes }}</div>
-        </div>
-      </div>
-      <div class="label" style="margin-top:39px">{{ home.identity.color }}</div>
-      <div class="palette">
-        {% for swatch in home.identity.palette %}
-        <div class="sw"><div class="patch" style="background:{{ swatch.hex }}"></div><strong>{{ swatch.name }}</strong><small>{{ swatch.hex }}</small></div>
-        {% endfor %}
-      </div>
-      <div class="label" style="margin-top:47px">{{ home.identity.applications.label }}</div>
-      <div class="brand-application">
-        <div class="app">
-          <div class="app-visual"><img src="{{ field }}" alt=""><p>{{ home.identity.applications.site.body }}</p></div>
-          <div class="app-footer">{{ home.identity.applications.site.label }}</div>
-        </div>
-        <div class="app">
-          <div class="app-visual docsapp"><div class="label">{{ home.identity.applications.docs.kicker }}</div><p>{{ home.identity.applications.docs.body }}</p></div>
-          <div class="app-footer">{{ home.identity.applications.docs.label }}</div>
-        </div>
-        <div class="app">
-          <div class="app-visual appicon"><img src="{{ 'images/niuu-app-icon.svg' | url }}" alt="NIUU application icon"></div>
-          <div class="app-footer">{{ home.identity.applications.icon }}</div>
-        </div>
-      </div>
-    </section>
   </div>
 
   <footer>
