@@ -75,39 +75,44 @@ def _route_to(app: FastAPI):
 
 
 class TestNoLoop:
-    @respx.mock
-    async def test_an_unknown_session_is_one_round_between_hub_and_member(self) -> None:
+    """Hub and member list each other, the case where a probe that fanned out would loop."""
+
+    def _pair(self):
         hub = _facade([_local("hub"), _instance("member", base_url=MEMBER, tenant_id=TENANT_ALL)])
         member = _facade(
-            [_local("member")], membership=GuildMembership(guild_url=HUB, instance=None)
+            [_local("member"), _instance("hub", base_url=HUB, tenant_id=TENANT_ALL)],
+            membership=MEMBERSHIP,
         )
         to_member = respx.route(host="member.example").mock(side_effect=_route_to(member))
         to_hub = respx.route(host="hub.example").mock(side_effect=_route_to(hub))
+        return hub, member, to_member, to_hub
+
+    @respx.mock
+    async def test_from_the_hub_an_unknown_session_is_one_probe(self) -> None:
+        hub, _, to_member, to_hub = self._pair()
 
         response = TestClient(hub).get(f"/api/v1/forge/sessions/{ZERO}", headers=USER)
 
         assert response.status_code == 404
         assert response.json()["detail"] == f"Session not found: {ZERO}"
-        # The hub asks the member once; the member, answering a probe, never asks back.
+        # One probe of the member, marked; the member answers from its own store and
+        # neither probes back nor asks the Guild (the hub) who owns it.
         assert to_member.call_count == 1
         assert to_member.calls.last.request.headers[OWNER_PROBE_HEADER] == "1"
         assert not to_hub.called
 
     @respx.mock
-    async def test_from_the_member_the_owner_question_is_asked_once(self) -> None:
-        hub = _facade([_local("hub"), _instance("member", base_url=MEMBER, tenant_id=TENANT_ALL)])
-        member = _facade(
-            [_local("member")], membership=GuildMembership(guild_url=HUB, instance=None)
-        )
-        to_member = respx.route(host="member.example").mock(side_effect=_route_to(member))
-        to_hub = respx.route(host="hub.example").mock(side_effect=_route_to(hub))
+    async def test_from_the_member_it_is_one_probe_and_one_owner_question(self) -> None:
+        _, member, to_member, to_hub = self._pair()
 
         response = TestClient(member).get(f"/api/v1/forge/sessions/{ZERO}", headers=USER)
 
         assert response.status_code == 404
-        assert to_hub.call_count == 1  # the member's owner question, asked once
-        # The hub may probe the member while answering; that probe never asks back.
-        assert to_member.call_count <= 1
+        # The member's probe of the hub and its owner question to the Guild (the hub),
+        # both marked; the hub answers each from its own store and never asks back.
+        assert to_hub.call_count == 2
+        assert all(call.request.headers[OWNER_PROBE_HEADER] == "1" for call in to_hub.calls)
+        assert not to_member.called
 
 
 class TestUnansweredNode:
@@ -122,3 +127,14 @@ class TestUnansweredNode:
         assert response.status_code == 502
         (failure,) = json.loads(response.headers["X-Niuu-Source-Failures"])
         assert failure["instanceId"] == "spark"
+
+    @respx.mock
+    async def test_a_node_that_rejects_us_is_named_as_rejected(self) -> None:
+        hub = _facade([_local("hub"), _instance("spark", base_url=SPARK, tenant_id=TENANT_ALL)])
+        respx.route(host="spark.example").mock(return_value=httpx.Response(401))
+
+        response = TestClient(hub).get(f"/api/v1/forge/sessions/{ZERO}", headers=USER)
+
+        assert response.status_code == 502
+        (failure,) = json.loads(response.headers["X-Niuu-Source-Failures"])
+        assert (failure["status"], failure["error"]) == ("rejected", "HTTP 401")

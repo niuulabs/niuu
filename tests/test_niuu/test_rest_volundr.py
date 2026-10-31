@@ -629,7 +629,7 @@ async def test_owner_lookup_cancels_stalled_probes_after_finding_owner(monkeypat
     principal = Principal(user_id="user-a", email="", tenant_id="tenant-a", roles=[])
     owner, _ = await asyncio.wait_for(
         rest_volundr._find_session_owner(
-            service, principal, Request({"type": "http", "query_string": b""}), "s2"
+            service, principal, Request({"type": "http", "query_string": b"", "headers": []}), "s2"
         ),
         timeout=1,
     )

@@ -62,6 +62,7 @@ from niuu.adapters.inbound.source_health import (
     instance_source_failures,
     set_source_health_header,
     source_failure,
+    source_failures_header_value,
 )
 from niuu.adapters.inbound.ws_forge_replay import forward_replay
 from niuu.adapters.outbound.guild_transport import (
@@ -808,6 +809,21 @@ def _local_session_scope(request: Request) -> bool:
     return scope == "local"
 
 
+def _unanswered(
+    instance: RegisteredInstance, result: httpx.Response | httpx.RequestError | HTTPException
+) -> SourceFailure:
+    """A node that did not answer an owner lookup: unreachable, failed, or rejected us."""
+    if isinstance(result, HTTPException):
+        return source_failure(instance_id=instance.id, name=instance.name, error=str(result.detail))
+    rejected = isinstance(result, httpx.Response) and result.status_code < 500
+    return source_failure(
+        instance_id=instance.id,
+        name=instance.name,
+        error=describe_remote_failure(result),
+        status="rejected" if rejected else "unreachable",
+    )
+
+
 async def _find_runtime_owner(
     service: InstanceService,
     principal: Principal,
@@ -823,7 +839,7 @@ async def _find_runtime_owner(
 ) -> tuple[RegisteredInstance, dict[str, Any]]:
     async def probe(
         instance: RegisteredInstance,
-    ) -> tuple[RegisteredInstance, httpx.Response | httpx.RequestError]:
+    ) -> tuple[RegisteredInstance, httpx.Response | httpx.RequestError | HTTPException]:
         try:
             response = await _request_remote(
                 instance,
@@ -836,10 +852,19 @@ async def _find_runtime_owner(
             )
         except httpx.RequestError as exc:
             return instance, exc
+        except HTTPException as exc:
+            if exc.status_code < 500:
+                raise  # a policy refusal (a session credential stays on its node)
+            return instance, exc  # the node's transport failed: it did not answer
         return instance, response
 
     selected = request.query_params.get("instance_id")
-    if candidates is not None:
+    if request.headers.get(OWNER_PROBE_HEADER):
+        # Another facade is asking: answer from this node's own store and never fan
+        # out, so facades that list each other cannot probe each other in a loop. A
+        # client setting it only narrows its own read, like scope=local.
+        instances = [await _local_session_instance(service, principal, request)]
+    elif candidates is not None:
         instances = candidates  # the caller already knows where to look
     elif local_scope:
         instances = [await _local_session_instance(service, principal, request)]
@@ -859,8 +884,16 @@ async def _find_runtime_owner(
         # to every other node, and a node that lacks it is asked only when needed.
         # Only "not here" moves on: a local store error must not read as absent.
         instance, response = await probe(local[0])
-        if isinstance(response, httpx.RequestError):
-            raise HTTPException(502, "This node's Forge is unreachable") from response
+        if not isinstance(response, httpx.Response) or response.status_code >= 500:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                "This node's Forge failed during owner lookup",
+                headers={
+                    SOURCE_FAILURES_HEADER: source_failures_header_value(
+                        [_unanswered(instance, response)]
+                    )
+                },
+            )
         if response.status_code != status.HTTP_404_NOT_FOUND:
             _ensure_remote_success(response)
             payload = response.json()
@@ -879,27 +912,15 @@ async def _find_runtime_owner(
             try:
                 instance, response = await task
             except HTTPException as exc:
-                refused = exc  # a policy refusal, not a node that failed to answer
+                refused = exc  # a policy refusal (a session credential stays on its node)
                 continue
-            if isinstance(response, httpx.RequestError) or response.status_code >= 500:
-                unanswered.append(
-                    source_failure(
-                        instance_id=instance.id,
-                        name=instance.name,
-                        error=describe_remote_failure(response),
-                    )
-                )
+            if isinstance(response, httpx.Response) and response.status_code in {
+                status.HTTP_403_FORBIDDEN,
+                status.HTTP_404_NOT_FOUND,
+            }:
                 continue
-            if response.status_code in {status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND}:
-                continue
-            if response.is_error:
-                unanswered.append(
-                    source_failure(
-                        instance_id=instance.id,
-                        name=instance.name,
-                        error=describe_remote_failure(response),
-                    )
-                )
+            if not isinstance(response, httpx.Response) or response.is_error:
+                unanswered.append(_unanswered(instance, response))
                 continue
             payload = response.json()
             if isinstance(payload, dict):
@@ -912,10 +933,11 @@ async def _find_runtime_owner(
             # A partial search cannot establish that the resource is absent: a client may
             # read 404 as "gone", and a sleeping node must never make a live session
             # vanish. The nodes that did not answer are named.
+            reasons = "; ".join(f"{f['name']}: {f['error']}" for f in unanswered)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="An instance was unreachable during owner lookup",
-                headers={SOURCE_FAILURES_HEADER: json.dumps(unanswered[:20])},
+                detail=f"An instance was unreachable during owner lookup ({reasons})",
+                headers={SOURCE_FAILURES_HEADER: source_failures_header_value(unanswered)},
             )
         raise HTTPException(status_code=404, detail=not_found_detail)
     finally:
