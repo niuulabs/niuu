@@ -166,8 +166,8 @@ export { Terminal } from './ui/Terminal/Terminal';
 export type { TerminalProps } from './ui/Terminal/Terminal';
 export { FileTree } from './ui/FileTree/FileTree';
 export type { FileTreeProps } from './ui/FileTree/FileTree';
-export { FileViewer } from './ui/FileTree/FileViewer';
-export type { FileViewerProps } from './ui/FileTree/FileViewer';
+export { FileViewer } from '@niuulabs/ui';
+export type { FileViewerProps } from '@niuulabs/ui';
 export { SessionDetailPage } from './ui/SessionDetailPage';
 export type { SessionDetailPageProps, SessionTab } from './ui/SessionDetailPage';
 export {

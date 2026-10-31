@@ -16,6 +16,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from niuu.review_widgets import ReviewWidget
 from ting.api.research import resolve_workflow_campaign_repo
 from ting.api.sagas import resolve_saga_repo
 from ting.api.work import create_work_router, resolve_work_trackers
@@ -36,6 +37,7 @@ from ting.domain.workflow_board import SESSION_GONE_REASON
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.ticket_coordinator_repository import TicketCoordinatorRepository
 from ting.ports.tracker import TrackerPort, TrackerResolution
+from ting.ports.volundr import PublicSessionLogEntry, PublicSessionLogPage
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.system_workflows import load_system_workflows
 
@@ -1304,3 +1306,162 @@ def test_a_connection_that_no_longer_resolves_is_unreadable_never_gone() -> None
     assert body["tasks"][0]["board"]["reason"] != SESSION_GONE_REASON
     assert _coverage(body, "workflowGates")["error"]["code"] == "sourceReadFailed"
     other.get_session.assert_not_awaited()
+
+
+PLAN_PANEL = {
+    "widget": "document",
+    "title": "Plan",
+    "source": {"kind": "outcome", "value": "plan"},
+    "files": [],
+}
+
+
+def _reviews(client: TestClient, saga: Saga, issue_id: str = "issue-1") -> httpx.Response:
+    return client.get(
+        f"/api/v1/ting/work/project/{saga.id}/tasks/{issue_id}/reviews",
+        headers={**HEADERS, "authorization": "Bearer token"},
+    )
+
+
+def _log(*frames: tuple[str, dict[str, Any]]) -> PublicSessionLogPage:
+    return PublicSessionLogPage(
+        entries=tuple(
+            PublicSessionLogEntry(
+                session_id="run-session", seq=seq, kind=kind, payload=payload, ts=NOW
+            )
+            for seq, (kind, payload) in enumerate(frames, start=1)
+        ),
+        scanned_through=len(frames),
+        has_more=False,
+    )
+
+
+def test_a_ticket_review_is_read_back_from_its_runs_log() -> None:
+    saga = _planned_saga()
+    adapter = _adapter([])
+    adapter.get_public_session_log_page = AsyncMock(
+        return_value=_log(
+            ("room_outcome", {"fields": {"plan": "Trace every tick"}}),
+            ("workflow_gate", {"gate": _plan_gate()}),
+        )
+    )
+    run = _run_of(saga, PLANNING, WorkflowCampaignStatus.BLOCKED)
+    client = _client(saga, issues=[_issue()], runs=[], adapter=adapter, campaigns=[run])
+
+    response = _reviews(client, saga)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["unreadableRuns"] == []
+    (review,) = body["reviews"]
+    assert review["columnId"] == "plan-review"
+    assert review["taskId"] == "a2a-run"
+    assert review["panels"] == [PLAN_PANEL]
+    assert review["revisions"][0]["fields"] == {"plan": "Trace every tick"}
+    assert review["revisions"][0]["status"] == "pending"
+    assert review["chatEndpoint"] == "ws://forge/s/session/session"
+
+
+def test_another_tickets_runs_are_not_this_tickets_review() -> None:
+    saga = _planned_saga()
+    adapter = _adapter([])
+    adapter.get_public_session_log_page = AsyncMock(return_value=_log())
+    run = _run_of(saga, PLANNING, WorkflowCampaignStatus.BLOCKED)
+    client = _client(saga, issues=[_issue()], runs=[], adapter=adapter, campaigns=[run])
+
+    response = _reviews(client, saga, issue_id="issue-2")
+
+    assert response.json() == {"reviews": [], "unreadableRuns": [], "planSlug": None}
+    adapter.get_public_session_log_page.assert_not_awaited()
+
+
+def test_a_run_whose_session_is_gone_is_named_not_dropped() -> None:
+    saga = _planned_saga()
+    adapter = _adapter([])
+    adapter.get_session = AsyncMock(return_value=None)
+    run = _run_of(saga, PLANNING, WorkflowCampaignStatus.COMPLETED)
+    client = _client(saga, issues=[_issue()], runs=[], adapter=adapter, campaigns=[run])
+
+    assert _reviews(client, saga).json() == {
+        "reviews": [],
+        "unreadableRuns": ["Ticket Planning Flow"],
+        "planSlug": None,
+    }
+
+
+def test_a_forge_that_cannot_be_asked_stays_loud() -> None:
+    saga = _planned_saga()
+    adapter = _adapter([])
+    adapter.get_session = AsyncMock(side_effect=httpx.ConnectError("down"))
+    run = _run_of(saga, PLANNING, WorkflowCampaignStatus.BLOCKED)
+    client = _client(saga, issues=[_issue()], runs=[], adapter=adapter, campaigns=[run])
+
+    assert _reviews(client, saga).status_code == 503
+
+
+def test_reviews_need_a_forge() -> None:
+    saga = _planned_saga()
+    client = _client(saga, issues=[_issue()], runs=[], adapter=None)
+
+    assert _reviews(client, saga).status_code == 503
+
+
+def test_board_columns_carry_their_panels() -> None:
+    saga = _planned_saga()
+    client = _client(saga, issues=[_issue()], runs=[], adapter=_adapter([]))
+
+    board = client.get(f"/api/v1/ting/work/project/{saga.id}", headers=HEADERS).json()["board"]
+
+    column = next(item for item in board["columns"] if item["id"] == "plan-review")
+    assert column["panels"] == [PLAN_PANEL]
+
+
+def test_reviews_list_runs_across_projects_from_their_campaigns() -> None:
+    saga = _planned_saga()
+    run = replace(
+        _run_of(saga, PLANNING, WorkflowCampaignStatus.BLOCKED),
+        metadata={
+            **_run_of(saga, PLANNING, WorkflowCampaignStatus.BLOCKED).metadata,
+            "pending_workflow_gates": [{"label": "Plan review"}],
+        },
+    )
+    adapter = _adapter([])
+    client = _client(saga, issues=[_issue()], runs=[], adapter=adapter, campaigns=[run])
+    client.app.dependency_overrides[resolve_saga_repo]().list_sagas = AsyncMock(return_value=[saga])
+
+    response = client.get("/api/v1/ting/work/reviews", headers=HEADERS)
+
+    assert response.status_code == 200
+    (item,) = response.json()["items"]
+    assert item["state"] == "waiting"
+    assert item["identifier"] == "ISSUE-1"
+    assert item["projectName"] == saga.name
+    adapter.get_workflow_gates.assert_not_awaited()
+
+
+def test_a_ticket_review_names_the_plan_its_project_came_from() -> None:
+    saga = replace(_planned_saga(), plan_slug="plan-1")
+    adapter = _adapter([])
+    client = _client(saga, issues=[_issue()], runs=[], adapter=adapter, campaigns=[])
+
+    assert _reviews(client, saga).json()["planSlug"] == "plan-1"
+
+
+def test_a_widget_page_is_served_as_data_only_when_installed() -> None:
+    saga = _planned_saga()
+    client = _client(saga, issues=[_issue()], runs=[], adapter=_adapter([]))
+    client.app.state.review_widgets = {
+        "acme-print/quality": ReviewWidget(
+            module="acme-print", name="quality", title="Quality", html="<p>Stills</p>"
+        )
+    }
+    url = "/api/v1/ting/work/review-widgets"
+
+    response = client.get(f"{url}/acme-print/quality", headers=HEADERS)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["html"] == "<p>Stills</p>"
+    missing = client.get(f"{url}/acme-print/other", headers=HEADERS)
+    assert missing.status_code == 404
+    assert "not installed" in missing.json()["detail"]

@@ -454,6 +454,26 @@ describe('PlanDraft ticket check', () => {
     );
   }
 
+  it('sends a note back through the shared decision', () => {
+    const onRequestChanges = vi.fn();
+    renderDraft({ onRequestChanges });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Request changes' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Say what should change first.');
+    expect(onRequestChanges).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText('Your note'), { target: { value: ' Split phase 2. ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Request changes' }));
+
+    expect(onRequestChanges).toHaveBeenCalledWith('Split phase 2.');
+  });
+
+  it('holds approval when a draft has no phases', () => {
+    renderDraft({ structure: { found: true, structure: undefined } as never });
+
+    expect(screen.getByRole('button', { name: /Approve & launch/ })).toBeDisabled();
+  });
+
   it('stays out of the way when nothing is flagged', () => {
     renderDraft();
 
@@ -1189,5 +1209,23 @@ describe('completed plan sessions', () => {
 
     await waitFor(() => expect(screen.getByText('Active plans')).toBeInTheDocument());
     expect(screen.queryByText('Completed plans')).not.toBeInTheDocument();
+  });
+
+  it('opens an open plan on its own step when given its slug', async () => {
+    const getPlanSession = vi.fn().mockResolvedValue({
+      sessionId: 's1',
+      chatEndpoint: null,
+      campaignSlug: 'plan-1',
+      status: 'running',
+      prompt: 'Build auth',
+      repo: 'niuulabs/niuu',
+    });
+    const svc = makeSvc({ getPlanSession });
+    render(<PlanWizard resumeSlug="plan-1" />, { wrapper: wrap(svc) });
+
+    await waitFor(() => expect(getPlanSession).toHaveBeenCalledWith('plan-1'));
+    await waitFor(() =>
+      expect(screen.queryByRole('form', { name: 'Plan prompt form' })).not.toBeInTheDocument(),
+    );
   });
 });

@@ -1,9 +1,19 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { Blob as NodeBlob } from 'node:buffer';
-import { MarkdownContent, PresentedFileCard } from '@niuulabs/ui';
+import { MarkdownContent, PresentedFileCard } from '../chat';
 import { SessionResources } from './SessionResources';
-import { createMockFileSystemPort } from '../adapters/mock';
+import type { IFileSystemPort } from './IFileSystemPort';
+
+function fileSystemStub(): IFileSystemPort {
+  return {
+    listTree: vi.fn(),
+    expandDirectory: vi.fn(),
+    readFile: vi.fn(),
+    writeFile: vi.fn(),
+    deletePaths: vi.fn(),
+  };
+}
 
 const blob = (content: string, type = 'text/plain') =>
   new NodeBlob([content], { type }) as unknown as Blob;
@@ -27,7 +37,7 @@ function setup(
   markdown = '[Guide](/home/thor/repo/docs/guide.md)',
 ) {
   const filesystem = {
-    ...createMockFileSystemPort(),
+    ...fileSystemStub(),
     downloadFile,
     downloadPresentedFile: vi.fn().mockResolvedValue(blob('PDF', 'application/pdf')),
   };

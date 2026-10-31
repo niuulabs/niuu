@@ -88,6 +88,7 @@ from ting.domain.a2a_launch import A2ALaunchReservation
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.execution_snapshot import pinned_child_workflow
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus, WorkflowDefinition
+from ting.domain.services.ticket_review import campaign_reviews, pending_documents
 from ting.domain.services.workflow_campaign_lifecycle import (
     stop_terminal_campaign_session,
     terminal_session_cleanup_needed,
@@ -108,7 +109,7 @@ from ting.domain.workflow_snapshot import (
 )
 from ting.ports.a2a_launch import A2ALaunchReservationRepository
 from ting.ports.a2a_push import A2APushDispatcherPort
-from ting.ports.volundr import VolundrFactory
+from ting.ports.volundr import VolundrFactory, VolundrPort
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_execution import WorkflowExecutionRepository
 from ting.ports.workflow_repository import WorkflowRepository
@@ -157,6 +158,9 @@ _STATUS_TO_STATE: dict[WorkflowCampaignStatus, int] = {
     WorkflowCampaignStatus.FAILED: TaskState.TASK_STATE_FAILED,
 }
 _TERMINAL_STATUSES = frozenset({WorkflowCampaignStatus.COMPLETED, WorkflowCampaignStatus.FAILED})
+_STATES_THAT_MAY_HOLD_A_GATE = frozenset(
+    {TaskState.TASK_STATE_WORKING, TaskState.TASK_STATE_INPUT_REQUIRED}
+)
 
 # Reply convention for INPUT_REQUIRED tasks: metadata.gateDecision selects the
 # outcome, the message text becomes the reviewer comment.
@@ -797,6 +801,9 @@ class WorkflowTaskHandler(RequestHandler):
                 await self._attach_readable_artifacts(task, campaign)
             if task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED:
                 await self._attach_pending_questions(task, campaign)
+            # A gate opens before the campaign's status catches up, so a working run
+            # is asked too. Otherwise a reader told of a gate is told there is none.
+            if task.status.state in _STATES_THAT_MAY_HOLD_A_GATE:
                 await self._attach_pending_gates(task, campaign)
         finally:
             if campaign.status in _TERMINAL_STATUSES:
@@ -1304,8 +1311,39 @@ class WorkflowTaskHandler(RequestHandler):
             if isinstance(gate, dict)
             and str(gate.get("status") or "").strip().lower() in _PENDING_GATE_STATUSES
         ]
-        if pending:
-            task.metadata.update({"pendingGates": pending})
+        if not pending:
+            return
+        task.metadata.update({"pendingGates": pending})
+        await self._attach_gate_documents(task, campaign, adapter)
+
+    async def _attach_gate_documents(
+        self,
+        task: Task,
+        campaign: WorkflowCampaign,
+        adapter: VolundrPort,
+    ) -> None:
+        """Hand a gate's reader the document it asks them to decide on."""
+        try:
+            reviews = await campaign_reviews(
+                adapter,
+                campaign,
+                page_size=self._request.app.state.settings.workflow_execution.list_page_size,
+                auth_token=self._downstream_auth_token(),
+                principal=self._principal,
+            )
+        except httpx.HTTPError as exc:
+            logger.error("a2a: could not read the gate document of task %s: %s", task.id, exc)
+            task.metadata.update(
+                {_ARTIFACTS_ERROR_KEY: f"The gate's document is unreadable: {exc}"}
+            )
+            return
+        for title, text in pending_documents(reviews):
+            artifact = task.artifacts.add()
+            artifact.artifact_id = f"gate/{title}"
+            artifact.name = title
+            part = artifact.parts.add()
+            part.media_type = _artifact_media_type(".md")
+            part.text = text
 
     async def _attach_artifacts(self, task: Task, campaign: WorkflowCampaign) -> None:
         """Project configured durable Mimir outputs onto ``task.artifacts``.

@@ -53,7 +53,7 @@ test('ting workflows matches web2', async ({ page }) => {
 // ── Plan ──────────────────────────────────────────────────────────────────────
 
 test('ting plan matches web2', async ({ page }) => {
-  await page.goto('/ting/plan');
+  await page.goto('/ting/plan/new');
   await page.waitForLoadState('networkidle');
   await page.waitForSelector('text=Describe your goal', { timeout: 10_000 });
   await expect(page).toHaveScreenshot('ting-plan.png');

@@ -711,7 +711,7 @@ describe('LiveSessionDetailPage', () => {
     await screen.findByTestId('live-session-detail-page');
     await screen.findByText('Human Gate Requested');
     expect(
-      within(screen.getByRole('tabpanel')).getByText(
+      within(screen.getByRole('region', { name: 'PRD approval gate' })).getByText(
         /Please approve or request changes on the PRD/,
       ),
     ).toBeInTheDocument();

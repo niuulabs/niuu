@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveSessionResource } from './sessionResources';
+import { resolveSessionResource } from './resourcePaths';
 
 describe('session workspace links', () => {
   it.each([

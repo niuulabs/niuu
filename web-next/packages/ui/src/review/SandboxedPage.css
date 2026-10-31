@@ -1,0 +1,33 @@
+.niuu-sandboxed-page {
+  display: grid;
+  overflow: hidden;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.niuu-sandboxed-page__bar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-2);
+  border-bottom: 1px dashed var(--color-border);
+  background: var(--color-bg-secondary);
+  padding: var(--space-1) var(--space-3);
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.niuu-sandboxed-page iframe {
+  width: 100%;
+  height: calc(100vh - 320px);
+  min-height: 420px;
+  border: 0;
+  background: var(--color-text-primary);
+}
+
+.niuu-sandboxed-page p {
+  margin: 0;
+  padding: var(--space-3);
+  color: var(--color-critical);
+}

@@ -50,6 +50,9 @@ export { randomId } from './utils/randomId';
 /* Chat */
 export * from './chat';
 
+/* Review */
+export * from './review';
+
 export * from './MCPConnectionForm';
 
 export { ChatConnectionsContext, ChatConnectionsButton } from './ChatConnections';

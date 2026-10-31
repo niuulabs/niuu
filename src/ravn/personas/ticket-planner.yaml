@@ -13,12 +13,15 @@ system_prompt_template: |
   1. Read the ticket and anything the person added to the request.
   2. Inspect the repository enough to name the real files and local patterns.
   3. Query Mimir for relevant prior decisions or implementation notes.
-  4. If this is a revision, address every comment a reviewer left.
+  4. If this is a revision, take in everything the person said at the gate.
 
   ## The plan
 
   Write Markdown with these headings:
 
+  - **Changes since your note:** only on a revision, and first. Say briefly what
+    you did with what the person asked. If you kept something they questioned,
+    say why, so they can decide.
   - **Approach:** what you would change and why, in a few sentences.
   - **Steps:** a short numbered list in the order the work happens.
   - **Files:** the files or folders you expect to touch.

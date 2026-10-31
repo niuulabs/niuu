@@ -25,11 +25,6 @@
   align-items: start;
 }
 
-.niuu-live-diffs-layout {
-  display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-}
-
 .niuu-live-delete-dialog {
   width: min(520px, calc(100vw - var(--space-8)));
 }

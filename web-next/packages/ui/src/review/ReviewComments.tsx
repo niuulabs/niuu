@@ -5,7 +5,7 @@ import {
   type ReviewComment,
   type ReviewControls,
   type ReviewSide,
-} from '../domain/reviewComments';
+} from './reviewModel';
 import './ReviewComments.css';
 
 export function ReviewAddButton({

@@ -25,11 +25,13 @@ from ting.api.sagas import resolve_saga_repo
 from ting.api.tracker import resolve_trackers
 from ting.domain.models import WorkflowCampaignStatus
 from ting.domain.services.dispatch_service import DispatchService
+from ting.domain.services.review_list import ReviewKind, ReviewState, review_list
 from ting.domain.services.ticket_coordinator import (
     TicketCoordinatorService,
     TicketWorkflow,
     coordinator_ravn_config,
 )
+from ting.domain.services.ticket_review import RunReview, campaign_reviews
 from ting.domain.services.work_read import (
     CoverageError,
     CoverageStatus,
@@ -45,7 +47,7 @@ from ting.domain.services.work_read import (
     WorkSummary,
     WorkTask,
 )
-from ting.domain.ticket_coordinator import TicketCoordinatorStatus
+from ting.domain.ticket_coordinator import TicketCoordinatorStatus, ticket_of
 from ting.domain.workflow_board import (
     BACKLOG_COLUMN_ID,
     SESSION_GONE_REASON,
@@ -236,6 +238,7 @@ class TicketWorkflowRunResponse(_ResponseModel):
 class WorkTaskResponse(_ResponseModel):
     source: TrackerIssueRefResponse
     title: str
+    description: str = ""
     operational_run: OperationalRunRefResponse | None
     dispatch: DispatchRefResponse | None
     actions: list[str]
@@ -244,11 +247,24 @@ class WorkTaskResponse(_ResponseModel):
     workflow_run: TicketWorkflowRunResponse | None = None
 
 
+class ReviewSourceResponse(_ResponseModel):
+    kind: str
+    value: str
+
+
+class ReviewPanelResponse(_ResponseModel):
+    widget: str
+    title: str
+    source: ReviewSourceResponse | None = None
+    files: list[str] = []
+
+
 class BoardColumnResponse(_ResponseModel):
     id: str
     title: str
     kind: BoardColumnKind
     review: str | None = None
+    panels: list[ReviewPanelResponse] = []
     approve_column_id: str | None = None
     changes_column_id: str | None = None
     workflow_id: str | None = None
@@ -298,6 +314,62 @@ class TicketStartRequest(BaseModel):
 class TicketStartResponse(_ResponseModel):
     status: Literal["coordinating"]
     session_id: str
+
+
+class ReviewRevisionResponse(_ResponseModel):
+    number: int
+    gate_id: str
+    activation_id: str
+    requested_at: str
+    status: str
+    summary: str
+    decided_by: str
+    notes: str
+    decided_at: str
+    fields: dict[str, str]
+
+
+class RunReviewResponse(_ResponseModel):
+    column_id: str
+    title: str
+    review: str | None
+    workflow_name: str
+    task_id: str
+    session_id: str
+    panels: list[ReviewPanelResponse]
+    revisions: list[ReviewRevisionResponse]
+    chat_endpoint: str | None = None
+
+
+class TicketReviewsResponse(_ResponseModel):
+    reviews: list[RunReviewResponse]
+    unreadable_runs: list[str]
+    plan_slug: str | None = None
+
+
+class ReviewItemResponse(_ResponseModel):
+    task_id: str
+    kind: ReviewKind
+    title: str
+    workflow_name: str
+    state: ReviewState
+    gate_label: str
+    updated_at: datetime
+    project_id: str | None = None
+    project_name: str | None = None
+    issue_id: str | None = None
+    identifier: str | None = None
+
+
+class ReviewListResponse(_ResponseModel):
+    items: list[ReviewItemResponse]
+
+
+class ReviewWidgetResponse(_ResponseModel):
+    module: str
+    name: str
+    title: str
+    html: str
 
 
 async def resolve_work_execution_repo(
@@ -553,6 +625,20 @@ class _ForgeSessions:
             blocked_reason=_blocked_reason(session),
         )
 
+    async def locate(
+        self, session_id: str, connection_id: str | None
+    ) -> tuple[VolundrPort, VolundrSession] | None:
+        """The Forge holding a session and the session, or None once every Forge says it is gone."""
+        if connection_id:
+            adapter = await self._forge_for(connection_id)
+            session = await self._get_session(adapter, session_id)
+        else:
+            found, session = await self._locate(session_id)
+            if found is None:
+                return None
+            adapter = found
+        return (adapter, session) if session is not None else None
+
     async def _forges_of_principal(self) -> tuple[list[VolundrPort], int]:
         if self._forges is None:
             self._forges = asyncio.ensure_future(
@@ -668,6 +754,33 @@ def create_work_router() -> APIRouter:
             execution_next_cursor=result.execution_next_cursor,
             coverage=[_coverage_response(item) for item in result.coverage],
         )
+
+    @router.get("/reviews", response_model=ReviewListResponse)
+    async def list_reviews(
+        principal: Principal = Depends(extract_principal),
+        saga_repo: SagaRepository = Depends(resolve_saga_repo),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+    ) -> ReviewListResponse:
+        """Every run a person reviews, across projects, from what campaigns already record."""
+        campaigns = await campaign_repo.list_campaign_summaries(owner_id=principal.user_id)
+        sagas = await saga_repo.list_sagas(owner_id=principal.user_id)
+        return ReviewListResponse.model_validate({"items": review_list(campaigns, sagas)})
+
+    @router.get("/review-widgets/{module}/{name}", response_model=ReviewWidgetResponse)
+    async def read_review_widget(
+        module: str,
+        name: str,
+        request: Request,
+        _principal: Principal = Depends(extract_principal),
+    ) -> ReviewWidgetResponse:
+        """A widget's page as data: it only ever runs inside the review's sandbox."""
+        widget = request.app.state.review_widgets.get(f"{module}/{name}")
+        if widget is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Review widget {module}/{name} is not installed on this deployment",
+            )
+        return ReviewWidgetResponse.model_validate(widget)
 
     @router.get("/{kind}/{work_id}", response_model=WorkDetailResponse)
     async def get_work(
@@ -836,6 +949,59 @@ def create_work_router() -> APIRouter:
             ) from exc
         return GateDecisionResponse(status="resolved", session_id=session_id, gate_id=gate.id)
 
+    @router.get(
+        "/project/{saga_id}/tasks/{issue_id}/reviews",
+        response_model=TicketReviewsResponse,
+    )
+    async def ticket_reviews(
+        saga_id: UUID,
+        issue_id: str,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+        saga_repo: SagaRepository = Depends(resolve_saga_repo),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+    ) -> TicketReviewsResponse:
+        """Everything this ticket's runs have put in front of a person, oldest first."""
+        sessions = _forge_sessions(request, principal)
+        if sessions is None:
+            raise HTTPException(status_code=503, detail="No Forge connection is available")
+        saga = await saga_repo.get_saga(saga_id, owner_id=principal.user_id)
+        if saga is None:
+            raise HTTPException(status_code=404, detail=f"Project work not found: {saga_id}")
+        campaigns = await campaign_repo.list_ticket_campaigns(
+            owner_id=principal.user_id, saga_id=saga_id
+        )
+        runs = [
+            campaign
+            for campaign in campaigns
+            if campaign.session_id
+            and (ticket := ticket_of(campaign.metadata)) is not None
+            and ticket[1] == issue_id
+        ]
+        reviews: list[RunReview] = []
+        unreadable: list[str] = []
+        page_size = request.app.state.settings.workflow_execution.list_page_size
+        for campaign in runs:
+            try:
+                located = await sessions.locate(campaign.session_id, campaign.connection_id)
+            except ForgeSessionUnreadableError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            if located is None:
+                unreadable.append(campaign.workflow_name)
+                continue
+            forge, session = located
+            found = await campaign_reviews(
+                forge,
+                campaign,
+                page_size=page_size,
+                auth_token=extract_bearer_token(request),
+                principal=principal,
+            )
+            reviews.extend(replace(item, chat_endpoint=session.chat_endpoint) for item in found)
+        return TicketReviewsResponse.model_validate(
+            {"reviews": reviews, "unreadable_runs": unreadable, "plan_slug": saga.plan_slug}
+        )
+
     @router.post(
         "/project/{saga_id}/tasks/{issue_id}/start",
         response_model=TicketStartResponse,
@@ -913,8 +1079,16 @@ __all__ = [
     "GateDecisionResponse",
     "OperationalRunRefResponse",
     "RawWorkStateResponse",
+    "ReviewItemResponse",
+    "ReviewListResponse",
+    "ReviewPanelResponse",
+    "ReviewWidgetResponse",
+    "ReviewRevisionResponse",
+    "ReviewSourceResponse",
+    "RunReviewResponse",
     "SessionRefResponse",
     "SourceCoverageResponse",
+    "TicketReviewsResponse",
     "TicketStartRequest",
     "TrackerIssueRefResponse",
     "TrackerProjectRefResponse",

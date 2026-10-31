@@ -49,3 +49,9 @@ export function formatReviewMessage(comments: readonly ReviewComment[]): string 
     '\n\n',
   );
 }
+
+/** A gate's comment: what the person wrote, then their line comments in reading order. */
+export function gateNotes(note: string, comments: readonly ReviewComment[]): string {
+  const review = comments.length > 0 ? formatReviewMessage(comments) : '';
+  return [note.trim(), review].filter(Boolean).join('\n\n');
+}
