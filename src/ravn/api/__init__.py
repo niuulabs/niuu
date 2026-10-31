@@ -530,14 +530,15 @@ def create_app(
         visibility: Literal["system"] | None = Query(
             default=None,
             description=(
-                "`system` lists only residents visible to every platform member, "
-                "without the caller's own; for shared views such as the Observatory."
+                "`system` lists only residents visible to every member of the "
+                "caller's org, without the caller's own; for shared views such as "
+                "the Observatory."
             ),
         ),
     ) -> list[dict]:
         """List durable residents and visible compatibility deployments."""
         if visibility == "system":
-            return await resident_directory.list_system_ravens()
+            return await resident_directory.list_system_ravens(principal)
         auth_headers, auth_params = forward_auth(request)
         return await resident_directory.list_ravens(principal, auth_headers, auth_params)
 

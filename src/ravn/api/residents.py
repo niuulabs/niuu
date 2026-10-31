@@ -232,13 +232,14 @@ class ResidentDirectory:
             ravens.append(self._standalone_to_raven(resident, backings.get(resident.id)))
         return ravens
 
-    async def list_system_ravens(self) -> list[dict[str, Any]]:
-        """Return only the residents every member of the platform may see.
+    async def list_system_ravens(self, principal: Principal) -> list[dict[str, Any]]:
+        """Return only the residents every member of the caller's org may see.
 
         For shared views such as the Observatory topology: one picture shown to
         every signed-in user must not be built from any one user's residents, so
         this never asks the platform for user-owned runtimes and keeps only the
-        discovered and catalog residents whose visibility is ``system``.
+        discovered and catalog residents whose visibility is ``system``. A
+        resident that names an org stays inside it.
         """
         ravens: list[dict[str, Any]] = []
         claimed_ids: set[str] = set()
@@ -247,6 +248,8 @@ class ResidentDirectory:
                 continue
             claimed_ids.add(resident.id)
             if resident.visibility is not InstanceVisibility.SYSTEM:
+                continue
+            if not self._is_discovered_visible(resident, principal):
                 continue
             ravens.append(self._standalone_to_raven(resident))
         return ravens
@@ -1001,12 +1004,12 @@ class ResidentDirectory:
 
     @staticmethod
     def _is_discovered_visible(resident: StandaloneResident, principal: Principal) -> bool:
+        if resident.tenant_id and resident.tenant_id != principal.tenant_id:
+            return False
         if resident.visibility is InstanceVisibility.SYSTEM:
             return True
         if resident.visibility is InstanceVisibility.TENANT:
-            return bool(resident.tenant_id) and resident.tenant_id == principal.tenant_id
-        if resident.tenant_id and resident.tenant_id != principal.tenant_id:
-            return False
+            return bool(resident.tenant_id)
         if resident.owner_id == principal.user_id:
             return True
         return bool(resident.tenant_id) and "volundr:admin" in principal.roles

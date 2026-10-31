@@ -455,7 +455,7 @@ async def test_the_system_list_keeps_only_residents_every_member_may_see() -> No
         ),
     )
 
-    ravens = await directory.list_system_ravens()
+    ravens = await directory.list_system_ravens(_PRINCIPAL)
 
     assert [(r["id"], r["resident_name"]) for r in ravens] == [
         ("muninn", "Muninn"),
@@ -463,3 +463,31 @@ async def test_the_system_list_keeps_only_residents_every_member_may_see() -> No
     ]
     # Never asks the platform: user-owned runtimes are not part of a shared view.
     assert not respx.calls
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_a_system_resident_that_names_an_org_stays_inside_it():
+    directory = _directory(
+        managed=[],
+        roster=_Static(
+            [
+                _resident(id="ours", resident_name="Ours", tenant_id="tenant-a"),
+                _resident(id="theirs", resident_name="Theirs", tenant_id="tenant-b"),
+                _resident(id="everyone", resident_name="Everyone"),
+            ]
+        ),
+    )
+
+    ravens = await directory.list_ravens(_PRINCIPAL, {}, {})
+    shared = await directory.list_system_ravens(_PRINCIPAL)
+
+    assert {r["id"] for r in ravens} == {"ours", "everyone"}
+    assert {r["id"] for r in shared} == {"ours", "everyone"}
+    assert await directory.get_raven("theirs", _PRINCIPAL, {}, {}) is None
+
+
+def test_a_tenant_resident_with_no_org_is_visible_to_nobody():
+    resident = _resident(visibility=InstanceVisibility.TENANT)
+
+    assert not ResidentDirectory._is_discovered_visible(resident, _PRINCIPAL)

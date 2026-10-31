@@ -585,6 +585,7 @@ def create_runs_router() -> APIRouter:
                 body.content,
                 sender="user",
                 target_peer_id=body.target_peer_id,
+                owner_id=principal.user_id,
             )
         except RunNotFoundError:
             raise HTTPException(
