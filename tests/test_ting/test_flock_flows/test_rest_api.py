@@ -16,7 +16,11 @@ from ting.ports.flock_flow import FlockFlowProvider
 
 
 def _auth_headers(user_id: str = "test-user") -> dict[str, str]:
-    return {"x-auth-user-id": user_id, "x-auth-roles": "volundr:admin"}
+    return {
+        "x-auth-user-id": user_id,
+        "x-auth-tenant": "default",
+        "x-auth-roles": "volundr:admin",
+    }
 
 
 def _make_app(

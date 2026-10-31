@@ -535,7 +535,7 @@ class TestLiveActivity:
                 "tools/call",
                 {"name": "mimir_read", "arguments": {"path": "technical/ravn.md"}},
             ),
-            headers={"x-auth-user-id": "mcp-user"},
+            headers={"x-auth-user-id": "mcp-user", "x-auth-tenant": "default"},
         )
         (event,) = server._live_activity.list_since(None)
         assert event.kind == "read"
@@ -554,7 +554,7 @@ class TestLiveActivity:
                     "arguments": {"path": "technical/new.md", "content": "# New\nBody."},
                 },
             ),
-            headers={"x-auth-user-id": "mcp-writer"},
+            headers={"x-auth-user-id": "mcp-writer", "x-auth-tenant": "default"},
         )
         (event,) = server._live_activity.list_since(None)
         assert event.kind == "write"

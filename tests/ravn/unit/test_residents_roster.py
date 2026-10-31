@@ -8,6 +8,7 @@ id precedence and the roster's visibility rules.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -61,6 +62,7 @@ def _directory(*, managed: list[dict] | None = None, discovery=None, roster=None
         platform=HttpPlatformRuntimeAdapter(base_url=_BASE),
         discovery=discovery,
         roster=roster,
+        platform_tenant_id="tenant-a",
     )
 
 
@@ -474,7 +476,7 @@ async def test_a_system_resident_that_names_an_org_stays_inside_it():
             [
                 _resident(id="ours", resident_name="Ours", tenant_id="tenant-a"),
                 _resident(id="theirs", resident_name="Theirs", tenant_id="tenant-b"),
-                _resident(id="everyone", resident_name="Everyone"),
+                _resident(id="unowned", resident_name="Unowned"),
             ]
         ),
     )
@@ -482,12 +484,29 @@ async def test_a_system_resident_that_names_an_org_stays_inside_it():
     ravens = await directory.list_ravens(_PRINCIPAL, {}, {})
     shared = await directory.list_system_ravens(_PRINCIPAL)
 
-    assert {r["id"] for r in ravens} == {"ours", "everyone"}
-    assert {r["id"] for r in shared} == {"ours", "everyone"}
+    assert {r["id"] for r in ravens} == {"ours", "unowned"}
+    assert {r["id"] for r in shared} == {"ours", "unowned"}
     assert await directory.get_raven("theirs", _PRINCIPAL, {}, {}) is None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_a_resident_naming_no_org_belongs_to_the_platform_org():
+    directory = _directory(
+        managed=[],
+        roster=_Static([_resident(id="ours"), _resident(id="theirs", tenant_id="tenant-b")]),
+    )
+    other_org = replace(_PRINCIPAL, tenant_id="tenant-b")
+
+    shared = await directory.list_system_ravens(other_org)
+
+    assert [r["id"] for r in shared] == ["theirs"]
+    assert shared[0]["tenant_id"] == "tenant-b"
 
 
 def test_a_tenant_resident_with_no_org_is_visible_to_nobody():
     resident = _resident(visibility=InstanceVisibility.TENANT)
 
-    assert not ResidentDirectory._is_discovered_visible(resident, _PRINCIPAL)
+    directory = _directory(managed=[])
+
+    assert not directory._is_discovered_visible(resident, _PRINCIPAL)

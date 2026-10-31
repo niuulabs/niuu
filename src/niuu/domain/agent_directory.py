@@ -184,9 +184,14 @@ def is_agent_scope_visible(
     visibility: str,
     environment_member_ids: list[str],
     principal: Principal,
+    platform_tenant_id: str | None = None,
 ) -> bool:
-    """Evaluate visibility without constructing a complete directory entry."""
-    if tenant_id and tenant_id != principal.tenant_id:
+    """Evaluate visibility without constructing a complete directory entry.
+
+    With *platform_tenant_id*, an agent that names no org belongs to that org.
+    """
+    owner_tenant_id = tenant_id or platform_tenant_id
+    if owner_tenant_id and owner_tenant_id != principal.tenant_id:
         return False
     if environment_member_ids and principal.user_id not in environment_member_ids:
         return False

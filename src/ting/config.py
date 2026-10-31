@@ -33,6 +33,7 @@ from niuu.config_models import (
     default_session_definitions,
 )
 from niuu.domain.observability import ObservabilityConfig
+from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 
 
 # Config file search paths (in order of priority).
@@ -562,6 +563,13 @@ class AuthConfig(BaseModel):
     default_user_id: str = Field(
         default="dev-user",
         description="User ID for anonymous dev mode fallback.",
+    )
+    platform_tenant_id: str = Field(
+        default=DEFAULT_PLATFORM_TENANT_ID,
+        description=(
+            "The org that runs this deployment. Only its admins may change flock "
+            "settings and system workflows, which every org on this Ting shares."
+        ),
     )
     default_tenant_id: str = Field(
         default="",

@@ -3474,3 +3474,13 @@ def test_the_configured_loki_adapter_serves_resident_logs(monkeypatch):
     assert resp.status_code == 200
     assert resp.json() == {"entries": [], "bufferTotal": 0}
     assert loki.called
+
+
+def test_the_valkyrie_api_is_limited_to_the_platform_org(client: TestClient):
+    operator = {"x-auth-user-id": "jozef", "x-auth-tenant": "default"}
+    other_org = {"x-auth-user-id": "alice", "x-auth-tenant": "org-a"}
+
+    assert client.get("/api/v1/ravn/valkyrie/dashboard", headers=operator).status_code == 200
+    assert client.get("/api/v1/ravn/valkyrie/dashboard", headers=other_org).status_code == 403
+    assert client.get("/api/v1/ravn/valkyrie/flocks", headers=other_org).status_code == 403
+    assert client.post("/api/v1/ravn/valkyrie/autonomy", headers=other_org).status_code == 403

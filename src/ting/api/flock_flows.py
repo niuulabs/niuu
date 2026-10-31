@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from niuu.domain.models import Principal
-from ting.adapters.inbound.auth import extract_principal, require_shared_settings_admin
+from ting.adapters.inbound.auth import require_shared_settings_admin
 from ting.domain.flock_flow import FlockFlowConfig, FlockPersonaOverride
 from ting.ports.flock_flow import FlockFlowProvider
 
@@ -122,7 +122,7 @@ def create_flock_flows_router() -> APIRouter:
 
     @router.get("", response_model=list[FlockFlowResponse])
     async def list_flows(
-        _principal: Principal = Depends(extract_principal),
+        _principal: Principal = Depends(require_shared_settings_admin),
         provider: FlockFlowProvider = Depends(resolve_flow_provider),
     ) -> list[FlockFlowResponse]:
         """List all flock flow configurations."""
@@ -131,7 +131,7 @@ def create_flock_flows_router() -> APIRouter:
     @router.get("/{name}", response_model=FlockFlowResponse)
     async def get_flow(
         name: str,
-        _principal: Principal = Depends(extract_principal),
+        _principal: Principal = Depends(require_shared_settings_admin),
         provider: FlockFlowProvider = Depends(resolve_flow_provider),
     ) -> FlockFlowResponse:
         """Get a single flock flow by name."""

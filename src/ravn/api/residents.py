@@ -26,6 +26,7 @@ from fastapi import Request
 from niuu.adapters.inbound.source_health import SourceFailure, source_failure
 from niuu.domain.discovered_residents import discovered_resident_id
 from niuu.domain.models import InstanceVisibility, Principal
+from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID, belongs_to_tenant
 from ravn.ports.platform_runtime import PlatformRuntimePort
 from ravn.ports.resident_discovery import ResidentDiscoveryPort, StandaloneResident
 from ravn.ports.resident_logs import ResidentLogPort
@@ -185,8 +186,10 @@ class ResidentDirectory:
         discovery: ResidentDiscoveryPort | None = None,
         roster: ResidentRosterPort | None = None,
         logs: ResidentLogPort | None = None,
+        platform_tenant_id: str = DEFAULT_PLATFORM_TENANT_ID,
     ) -> None:
         self._platform = platform
+        self._platform_tenant_id = platform_tenant_id
         self._discovery = discovery
         self._roster_port = roster
         self._logs = logs
@@ -239,7 +242,8 @@ class ResidentDirectory:
         every signed-in user must not be built from any one user's residents, so
         this never asks the platform for user-owned runtimes and keeps only the
         discovered and catalog residents whose visibility is ``system``. A
-        resident that names an org stays inside it.
+        resident stays inside the org that owns it, and one that names no org
+        belongs to the org running the deployment.
         """
         ravens: list[dict[str, Any]] = []
         claimed_ids: set[str] = set()
@@ -973,6 +977,8 @@ class ResidentDirectory:
             "updated_at": resident.updated_at,
             "chat_endpoint": resident.chat_endpoint,
             "session_id": resident.id,
+            "owner_id": resident.owner_id,
+            "tenant_id": resident.tenant_id,
             "location": resident.location,
             "cluster": resident.placement.cluster if resident.placement else "",
             "deployment": resident.deployment,
@@ -1002,9 +1008,12 @@ class ResidentDirectory:
             "capabilities": list(resident.capabilities),
         }
 
-    @staticmethod
-    def _is_discovered_visible(resident: StandaloneResident, principal: Principal) -> bool:
-        if resident.tenant_id and resident.tenant_id != principal.tenant_id:
+    def _is_discovered_visible(self, resident: StandaloneResident, principal: Principal) -> bool:
+        if not belongs_to_tenant(
+            resident.tenant_id,
+            principal.tenant_id,
+            platform_tenant_id=self._platform_tenant_id,
+        ):
             return False
         if resident.visibility is InstanceVisibility.SYSTEM:
             return True

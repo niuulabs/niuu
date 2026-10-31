@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from niuu.domain.models import Principal
-from ting.adapters.inbound.auth import extract_principal, require_shared_settings_admin
+from ting.adapters.inbound.auth import require_shared_settings_admin
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ def create_flock_config_router() -> APIRouter:
     @router.get("/config", response_model=FlockConfigResponse)
     async def get_flock_config(
         request: Request,
-        _principal: Principal = Depends(extract_principal),
+        _principal: Principal = Depends(require_shared_settings_admin),
     ) -> FlockConfigResponse:
         """Return the current flock configuration."""
         flock = request.app.state.settings.dispatch.flock
