@@ -70,6 +70,14 @@ export interface EvolutionChange {
   replacedBy: string;
 }
 
+/** One learned tool and how much it has been used. */
+export interface EvolutionToolUse {
+  tool: string;
+  runs: number;
+  successes: number;
+  lastUsedAt: string;
+}
+
 /** What a resident's learned tools did lately. Its headline is always one code wrote. */
 export interface EvolutionReport {
   headline: string;
@@ -79,6 +87,8 @@ export interface EvolutionReport {
   fromPeers: number;
   runs: number;
   successes: number;
+  /** Busiest first; the page shows the top few. */
+  mostUsed: EvolutionToolUse[];
   changes: EvolutionChange[];
   attention: Array<{ tool: string; runs: number; lastUsedAt: string }>;
 }

@@ -138,6 +138,20 @@ const valkyries: ValkyrieResident[] = [
         fromPeers: 10,
         runs: 34912,
         successes: 34902,
+        mostUsed: [
+          {
+            tool: 'k8s_pod_logs_since_sa',
+            runs: 27310,
+            successes: 27303,
+            lastUsedAt: '2026-06-03T02:40:00Z',
+          },
+          {
+            tool: 'etcd_apiserver_latency_scan',
+            runs: 5884,
+            successes: 5864,
+            lastUsedAt: '2026-06-03T02:10:00Z',
+          },
+        ],
         changes: [
           {
             kind: 'retired',

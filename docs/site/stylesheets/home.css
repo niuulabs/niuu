@@ -1,8 +1,6 @@
 /* The docs landing page, ported from the NIUU brand preview (docs/design/brand).
  * Every rule is scoped to .niuu-home, because this file loads on all docs pages.
  * Copy lives in docs/site/index.md; the markup is docs/overrides/home.html. */
-@font-face { font-family: Inter; src: url('../fonts/Inter-Regular.ttf') format('truetype'); font-weight: 400; font-display: swap; }
-@font-face { font-family: Inter; src: url('../fonts/Inter-Medium.ttf') format('truetype'); font-weight: 500; font-display: swap; }
 
 /* Material's chrome stays in the DOM for instant navigation, hidden on this page. */
 body:has(.niuu-home) { background: #071019; }

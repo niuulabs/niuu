@@ -112,6 +112,16 @@ def _dream_evolution(evolution: dict[str, Any]) -> dict[str, Any] | None:
         "fromPeers": _as_int(evolution.get("from_peers")),
         "runs": _as_int(evolution.get("runs")),
         "successes": _as_int(evolution.get("successes")),
+        "mostUsed": [
+            {
+                "tool": str(tool.get("tool") or ""),
+                "runs": _as_int(tool.get("runs")),
+                "successes": _as_int(tool.get("successes")),
+                "lastUsedAt": str(tool.get("last_used_at") or ""),
+            }
+            for tool in evolution.get("most_used") or []
+            if isinstance(tool, dict)
+        ],
         "changes": [
             _evolution_change(change)
             for change in evolution.get("changes") or []
