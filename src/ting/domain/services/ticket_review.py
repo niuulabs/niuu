@@ -17,15 +17,19 @@ from ting.domain.models import WorkflowCampaign
 from ting.domain.workflow_board import (
     GATE_STATUS_PENDING,
     SOURCE_OUTCOME,
+    WIDGET_SUMMARY,
     BoardColumn,
+    BoardColumnKind,
     ReviewPanel,
     WorkflowBoard,
     board_from_snapshot,
+    node_label,
 )
 from ting.ports.volundr import PublicSessionLogEntry, VolundrPort
 
 _OUTCOME_FRAME = "room_outcome"
 _GATE_FRAME = "workflow_gate"
+_UNDECLARED_GATE_PANELS = (ReviewPanel(widget=WIDGET_SUMMARY, title="Summary"),)
 
 
 @dataclass(frozen=True)
@@ -148,6 +152,30 @@ async def read_session_log(
         after = page.scanned_through
 
 
+def _undeclared_gate_columns(
+    board: WorkflowBoard,
+    campaign: WorkflowCampaign,
+    entries: Iterable[PublicSessionLogEntry],
+) -> tuple[BoardColumn, ...]:
+    """Gates the board has no column for: someone still has to see and answer them."""
+    node_ids: dict[str, None] = {}
+    for entry in sorted(entries, key=lambda item: item.seq):
+        gate = entry.payload.get("gate") if entry.kind == _GATE_FRAME else None
+        node_id = gate.get("node_id") if isinstance(gate, Mapping) else None
+        if isinstance(node_id, str) and node_id and board.gate_column(node_id) is None:
+            node_ids[node_id] = None
+    return tuple(
+        BoardColumn(
+            id=node_id,
+            title=node_label(campaign.workflow_snapshot, node_id),
+            kind=BoardColumnKind.GATE,
+            gate_node_id=node_id,
+            panels=_UNDECLARED_GATE_PANELS,
+        )
+        for node_id in node_ids
+    )
+
+
 def run_reviews(
     board: WorkflowBoard,
     campaign: WorkflowCampaign,
@@ -155,7 +183,7 @@ def run_reviews(
 ) -> tuple[RunReview, ...]:
     """A run's reviews in board order; a gate that never opened has nothing to show."""
     reviews = []
-    for column in board.columns:
+    for column in (*board.columns, *_undeclared_gate_columns(board, campaign, entries)):
         if column.gate_node_id is None:
             continue
         revisions = column_revisions(column, entries)
@@ -184,10 +212,8 @@ async def campaign_reviews(
     auth_token: str | None,
     principal: Principal,
 ) -> tuple[RunReview, ...]:
-    """Read one run's reviews, or none when its workflow declares no board."""
-    board = board_from_snapshot(campaign.workflow_snapshot)
-    if board is None:
-        return ()
+    """Read one run's reviews; a workflow with no board still has its gates to answer."""
+    board = board_from_snapshot(campaign.workflow_snapshot) or WorkflowBoard(columns=())
     entries = await read_session_log(
         forge,
         campaign.session_id,

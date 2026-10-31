@@ -310,6 +310,13 @@ def ticket_is_closed(issue_status_type: str) -> bool:
     return issue_status_type.strip().lower() in _CLOSED_STATUS_TYPES
 
 
+def node_label(snapshot: Mapping[str, Any], node_id: str) -> str:
+    """What a pinned workflow calls a node; its id when it gives no label."""
+    graph = snapshot.get("graph")
+    nodes = _nodes_by_id(graph) if isinstance(graph, Mapping) else {}
+    return str(nodes.get(node_id, {}).get("label") or node_id)
+
+
 def board_from_snapshot(snapshot: Mapping[str, Any] | None) -> WorkflowBoard | None:
     """Return the board a pinned workflow snapshot declares, if it declares one."""
     graph = snapshot.get("graph") if isinstance(snapshot, Mapping) else None

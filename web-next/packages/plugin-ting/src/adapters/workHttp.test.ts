@@ -68,12 +68,22 @@ describe('Work HTTP read adapter', () => {
       notes: '',
     };
 
+    await buildWorkHttpAdapter(http).decideRunGate('a2a/1', decision);
     await buildWorkHttpAdapter(http).decideGate('saga/1', 'issue 1', decision);
 
     expect(http.post).toHaveBeenCalledWith(
       '/work/project/saga%2F1/tasks/issue%201/gate-decision',
       decision,
     );
+    expect(http.post).toHaveBeenCalledWith('/work/runs/a2a%2F1/gate-decision', decision);
+  });
+
+  it('reads a run that has no ticket', async () => {
+    const http = client();
+
+    await buildWorkHttpAdapter(http).runReviews('a2a/1');
+
+    expect(http.get).toHaveBeenCalledWith('/work/runs/a2a%2F1/reviews');
   });
 
   it('starts a ticket through its coordinator', async () => {

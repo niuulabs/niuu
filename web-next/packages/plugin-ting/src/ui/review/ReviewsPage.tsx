@@ -14,11 +14,14 @@ function ReviewRow({ item }: { item: ReviewItem }) {
   return (
     <Link className="ting-reviews__row" to={reviewPath(item) as never}>
       <span>
-        {item.identifier ? `${item.identifier} · ` : ''}
-        {item.title}
+        <span className="ting-reviews__title">
+          {item.identifier ? `${item.identifier} · ` : ''}
+          {item.title}
+        </span>
         <small>
           {item.kind === 'projectPlan' ? 'Project plan' : item.workflowName}
           {item.projectName ? ` · ${item.projectName}` : ''}
+          {item.startedBy ? ` · started by ${item.startedBy}` : ''}
         </small>
       </span>
       <span>{item.gateLabel}</span>

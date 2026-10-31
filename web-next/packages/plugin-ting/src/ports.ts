@@ -13,7 +13,7 @@ import type { SessionInfo } from './domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from './domain/tracker';
 import type { Workflow } from './domain/workflow';
 import type { GateDecision, WorkCollection, WorkDetail, WorkResourceKind } from './domain/work';
-import type { ReviewList, ReviewWidget, TicketReviews } from './domain/review';
+import type { ReviewList, ReviewWidget, RunReviews, TicketReviews } from './domain/review';
 
 export interface IWorkService {
   list(options?: { executionLimit?: number; executionCursor?: string }): Promise<WorkCollection>;
@@ -23,6 +23,8 @@ export interface IWorkService {
   startTicket(projectId: string, issueId: string, columnId?: string): Promise<void>;
   /** What this ticket's runs have put in front of a person, read from their session logs. */
   ticketReviews(projectId: string, issueId: string): Promise<TicketReviews>;
+  runReviews(slug: string): Promise<RunReviews>;
+  decideRunGate(slug: string, decision: GateDecision): Promise<void>;
   /** Every run a person reviews, across their projects. */
   reviews(): Promise<ReviewList>;
   /** A widget a module installed; its page only ever runs in the review's sandbox. */

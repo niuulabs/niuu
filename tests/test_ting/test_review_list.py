@@ -7,7 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from ting.domain.models import Saga, SagaStatus, WorkflowCampaign, WorkflowCampaignStatus
-from ting.domain.services.review_list import ReviewKind, ReviewState, review_list
+from ting.domain.services.review_list import ReviewKind, ReviewState, review_list, review_run
 
 NOW = datetime(2026, 10, 31, 12, tzinfo=UTC)
 SAGA_ID = uuid4()
@@ -129,6 +129,90 @@ def test_a_committed_plan_stays_listed_after_its_project_is_deleted() -> None:
 
     assert item.kind == ReviewKind.PROJECT_PLAN
     assert item.project_name is None
+
+
+def test_a_stopped_plan_names_no_gate_anyone_is_waiting_on() -> None:
+    (item,) = review_list(
+        [
+            _campaign(
+                {"surface": "ting.plan", "pending_workflow_gates": [{"node_id": "plan-brief"}]},
+                status=WorkflowCampaignStatus.FAILED,
+            )
+        ],
+        [],
+    )
+
+    assert item.state == ReviewState.FAILED
+    assert item.gate_label == ""
+
+
+def test_a_run_with_no_ticket_is_a_review_while_it_waits() -> None:
+    metadata = {
+        "prompt": "Plan NIU-1125 only\nRead the complete ticket.",
+        "actor_id": "system:serviceaccount:nats:regin",
+        "pending_workflow_gates": [{"node_id": "spec-prd-gate"}],
+    }
+
+    (item,) = review_list([_campaign(metadata, status=WorkflowCampaignStatus.BLOCKED)], [])
+
+    assert item.kind == ReviewKind.RUN
+    assert item.state == ReviewState.WAITING
+    assert item.task_id == "a2a-1"
+    assert item.title == "Plan NIU-1125 only"
+    assert item.gate_label == "spec-prd-gate"
+    assert item.started_by == "regin"
+    assert item.project_id is None
+
+
+def test_a_run_a_person_started_needs_no_note_of_who_did() -> None:
+    metadata = {
+        "actor_id": "76475334-b685-4299-b91d-1ec37f57e10f",
+        "pending_workflow_gates": [{"node_id": "gate"}],
+    }
+
+    (item,) = review_list([_campaign(metadata)], [])
+
+    assert item.started_by is None
+    assert item.title == "Plan the ticket"
+
+
+def test_a_run_with_no_ticket_leaves_the_list_once_nothing_waits() -> None:
+    gated = {"pending_workflow_gates": [{"node_id": "gate"}]}
+
+    assert (
+        review_list(
+            [
+                _campaign(gated, status=WorkflowCampaignStatus.FAILED),
+                _campaign(gated, status=WorkflowCampaignStatus.COMPLETED),
+                _campaign({}),
+            ],
+            [],
+        )
+        == ()
+    )
+
+
+def test_a_run_introduces_itself_to_its_review_page() -> None:
+    run = review_run(
+        _campaign(
+            {
+                "prompt": "Plan NIU-1125 only\nRead the complete ticket.",
+                "actor_id": "system:serviceaccount:nats:regin",
+                "repo": "https://github.com/niuulabs/niuu",
+                "branch": "regin",
+            }
+        )
+    )
+
+    assert run.slug == "a2a-1"
+    assert run.title == "Plan NIU-1125 only"
+    assert run.prompt == "Plan NIU-1125 only\nRead the complete ticket."
+    assert run.session_id == "s1"
+    assert (run.repo, run.branch, run.started_by) == (
+        "https://github.com/niuulabs/niuu",
+        "regin",
+        "regin",
+    )
 
 
 def test_other_runs_are_not_reviews() -> None:

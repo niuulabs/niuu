@@ -36,12 +36,30 @@ export interface TicketReviews {
   planSlug?: string | null;
 }
 
+/** A run with no ticket, as its review page introduces it. */
+export interface ReviewRun {
+  slug: string;
+  title: string;
+  workflowName: string;
+  prompt: string;
+  sessionId: string;
+  repo: string;
+  branch: string;
+  startedBy?: string | null;
+}
+
+export interface RunReviews {
+  run: ReviewRun;
+  reviews: RunReview[];
+  unreadableRuns: string[];
+}
+
 export type ReviewState = 'waiting' | 'running' | 'done' | 'failed';
 
 /** One run a person reviews, as the Reviews list shows it across projects. */
 export interface ReviewItem {
   taskId: string;
-  kind: 'ticket' | 'projectPlan';
+  kind: 'ticket' | 'projectPlan' | 'run';
   title: string;
   workflowName: string;
   state: ReviewState;
@@ -51,6 +69,8 @@ export interface ReviewItem {
   projectName?: string | null;
   issueId?: string | null;
   identifier?: string | null;
+  /** The resident that started a run with no ticket. */
+  startedBy?: string | null;
 }
 
 export interface ReviewList {
@@ -71,8 +91,9 @@ export function moduleWidgetRef(widget: string): { module: string; name: string 
   return module && name && rest.length === 0 ? { module, name } : null;
 }
 
-/** Where a review lives: a ticket's review page, or its project plan's. */
+/** Where a review lives: a ticket's or a run's review page, or its project plan's. */
 export function reviewPath(item: ReviewItem): string {
+  if (item.kind === 'run') return `/ting/review/run/${item.taskId}`;
   return item.kind === 'ticket' && item.projectId && item.issueId
     ? `/ting/review/${item.projectId}/${item.issueId}`
     : `/ting/plan/${item.taskId}`;

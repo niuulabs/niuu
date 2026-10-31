@@ -95,7 +95,7 @@ from ting.domain.services.workflow_campaign_lifecycle import (
 )
 from ting.domain.ticket_coordinator import TICKET_METADATA_KEY, ticket_of
 from ting.domain.utils import _session_name
-from ting.domain.workflow_board import project_board
+from ting.domain.workflow_board import board_from_snapshot, project_board
 from ting.domain.workflow_document import workflow_document_revision
 from ting.domain.workflow_execution import (
     ExecutionConflictError,
@@ -1323,6 +1323,9 @@ class WorkflowTaskHandler(RequestHandler):
         adapter: VolundrPort,
     ) -> None:
         """Hand a gate's reader the document it asks them to decide on."""
+        # Only a board column names a document, so there is no log worth reading without one.
+        if board_from_snapshot(campaign.workflow_snapshot) is None:
+            return
         try:
             reviews = await campaign_reviews(
                 adapter,

@@ -12,6 +12,7 @@ import { TingFooter } from './ui/TingFooter';
 import { PlanWizard } from './ui/PlanWizard';
 import { ReviewsPage } from './ui/review/ReviewsPage';
 import { PlanDetailPage } from './ui/PlanDetailPage';
+import { RunReviewPage } from './ui/review/RunReviewPage';
 import { TicketReviewPage } from './ui/review/TicketReviewPage';
 import { TingSubnav } from './ui/TingSubnav';
 import { ResearchCenterPage } from './ui/ResearchCenterPage';
@@ -95,6 +96,11 @@ export const tingPlugin = definePlugin({
       getParentRoute: () => rootRoute,
       path: '/ting/work/$workId',
       component: WorkPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/review/run/$slug',
+      component: RunReviewPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
