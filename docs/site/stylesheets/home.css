@@ -7,6 +7,8 @@ body:has(.niuu-home) { background: #071019; }
 body:has(.niuu-home) .md-header, body:has(.niuu-home) .md-main { display: none; }
 .niuu-home .container { width: 100%; }
 .niuu-home .panels[hidden] { display: none; }
+/* Material sets its own font directly on <aside>; the page's demos need the page font. */
+.niuu-home aside { font-family: inherit; }
 
 .niuu-home { --ink:#071019;--midnight:#0b1722;--panel:#10212d;--raised:#182b38;--line:#2b4351;--mist:#edf4f7;--secondary:#a5b7c1;--muted:#78909d;--signal:#86d0e8;--strong:#a8e7f4;--success:#76bfa7;--warning:#e4bd7e;--edge:clamp(22px,4.7vw,74px) }
 .niuu-home * { box-sizing:border-box }

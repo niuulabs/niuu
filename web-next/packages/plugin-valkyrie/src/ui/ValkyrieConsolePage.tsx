@@ -197,8 +197,8 @@ function AuthorityPanel({
         {realmExists ? (
           <>
             <p className={`niuu:mt-1 niuu:text-xs ${MUTED}`}>
-              The workspace&apos;s build grant pins the workflow this resident uses to build tools and
-              sets its effective build autonomy.
+              The workspace&apos;s build grant pins the workflow this resident uses to build tools
+              and sets its effective build autonomy.
             </p>
             <ToolBuilderGrantCard realm={realm} />
           </>
