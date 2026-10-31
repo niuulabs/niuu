@@ -78,7 +78,6 @@ class PeerToolPort(Protocol):
         Empty until a peer has been heard from, which is an answer and not a
         failure.
         """
-        ...
 
     async def adopt_peer_tool(self, tool: PeerTool) -> PeerAdoption:
         """Install *tool* here through the resident install pipeline.
@@ -86,4 +85,3 @@ class PeerToolPort(Protocol):
         ``refused`` is a decision about this tool on this resident. Failing to
         reach one raises.
         """
-        ...
