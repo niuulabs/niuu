@@ -58,7 +58,7 @@ export function ReadyPage() {
     <div className="setup-page setup-page--hero" data-testid="ready-page">
       <ContinuityField />
       <div className="setup-hero">
-        <div className="setup-hero__kicker">níu · ready</div>
+        <div className="setup-hero__kicker">niuu · ready</div>
         <div className="setup-hero__mark">
           <NiuuMark size={56} />
         </div>

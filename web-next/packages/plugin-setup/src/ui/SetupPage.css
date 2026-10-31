@@ -39,7 +39,7 @@
   font-size: 10px;
   letter-spacing: 0.42em;
   text-transform: uppercase;
-  color: var(--brand-300);
+  color: var(--color-text-muted);
 }
 .setup-rail__steps {
   display: flex;
@@ -146,9 +146,9 @@
 .setup-title {
   margin: 0;
   font-size: var(--text-3xl);
-  font-weight: 700;
+  font-weight: 300;
   line-height: 1.2;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.04em;
 }
 .setup-lede {
   margin: 0;
@@ -368,22 +368,23 @@
   color: var(--color-text-secondary);
 }
 .setup-btn--primary {
-  min-height: 46px;
+  --_btn-fill: var(--color-accent-fill, var(--brand-500));
+  min-height: 49px;
   padding: 12px 24px;
   border: 0;
-  border-radius: var(--radius-full);
-  background: var(--brand-500);
-  color: var(--color-bg-primary);
+  border-radius: var(--radius-sm);
+  background: var(--_btn-fill);
+  color: var(--color-accent-on-fill, var(--color-bg-primary));
   font-size: var(--text-sm);
-  font-weight: 600;
-  box-shadow: 0 0 36px color-mix(in srgb, var(--brand-500) 50%, transparent);
+  font-weight: 500;
 }
 .setup-btn--primary:hover:not(:disabled) {
-  background: var(--brand-400);
+  background: color-mix(in srgb, var(--_btn-fill) 85%, white);
   border-color: transparent;
 }
-.setup-btn--primary:disabled {
-  box-shadow: none;
+.setup-btn--primary:focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: 4px;
 }
 
 /* ── Welcome / ready hero ────────────────────────────── */
@@ -403,7 +404,7 @@
   font-size: var(--text-xs);
   letter-spacing: 0.42em;
   text-transform: uppercase;
-  color: var(--brand-300);
+  color: var(--color-text-muted);
 }
 .setup-hero__mark {
   color: var(--color-brand);
@@ -411,9 +412,9 @@
 .setup-hero__title {
   margin: 0;
   font-size: var(--text-4xl);
-  font-weight: 700;
+  font-weight: 300;
   line-height: 1.15;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.047em;
 }
 .setup-hero .setup-grid {
   width: 100%;

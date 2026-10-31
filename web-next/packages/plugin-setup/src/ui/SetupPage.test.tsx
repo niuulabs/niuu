@@ -50,6 +50,7 @@ describe('SetupPage', () => {
 
     await waitFor(() => expect(screen.getByTestId('setup-welcome')).toBeInTheDocument());
     expect(screen.getByTestId('continuity-field')).toBeInTheDocument();
+    expect(screen.getByText('niuu · first launch')).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('setup-begin'));
     await waitFor(() => expect(screen.getByTestId('setup-system')).toBeInTheDocument());
@@ -346,5 +347,6 @@ describe('ReadyPage', () => {
     renderWithSetup(<ReadyPage />, { service: createMockSetupService({ latencyMs: 0 }) });
     await waitFor(() => expect(screen.getByTestId('ready-page')).toBeInTheDocument());
     expect(screen.getByTestId('continuity-field')).toBeInTheDocument();
+    expect(screen.getByText('niuu · ready')).toBeInTheDocument();
   });
 });
