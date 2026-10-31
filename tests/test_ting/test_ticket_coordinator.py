@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 
+from niuu.config_models import default_session_definitions
 from niuu.domain.models import Principal
 from ting.domain.models import Saga, SagaStatus, TrackerIssue
 from ting.domain.services.ticket_coordinator import (
@@ -86,11 +87,43 @@ def _service(*, current: TicketCoordinator | None, session_status: str = "runnin
         principal=Principal(user_id="owner-1", email="", tenant_id="tenant-1", roles=[]),
         auth_token="token",
         persona="ticket-coordinator",
+        model="gpt-5.6-terra",
+        session_definitions=default_session_definitions(),
+        configured_models=[],
+        cli_turn_timeout_seconds=1800.0,
         ravn_config={"gateway": {"platform": {"a2a_default_metadata": {"model": "m"}}}},
         platform_origin="http://platform",
         anonymous_platform=True,
     )
     return service, repo, volundr
+
+
+@pytest.mark.asyncio
+async def test_a_coordinator_runs_on_its_model_like_a_workflow_stage() -> None:
+    service, _, volundr = _service(current=None)
+
+    await service.start_workflow(_saga(), _issue(), WORKFLOW)
+
+    request = volundr.spawn_session.await_args.args[0]
+    persona = request.workload_config["personas"][0]
+    assert request.model == "gpt-5.6-terra"
+    assert request.definition == "skuldCodex"
+    assert persona["llm"] == {"model": "gpt-5.6-terra"}
+    assert persona["executor"]["kwargs"]["transport_adapter"] == (
+        "skuld.transports.codex_ws.CodexWebSocketTransport"
+    )
+    assert persona["system_prompt_extra"].startswith("The ticket you coordinate is NIU-1")
+
+
+@pytest.mark.asyncio
+async def test_a_coordinator_model_no_runtime_serves_refuses_to_start() -> None:
+    service, _, volundr = _service(current=None)
+    service._session_definitions = {}
+
+    with pytest.raises(ValueError, match="model 'gpt-5.6-terra'"):
+        await service.start_workflow(_saga(), _issue(), WORKFLOW)
+
+    volundr.spawn_session.assert_not_awaited()
 
 
 def test_the_brief_names_the_ticket_and_the_workflow() -> None:

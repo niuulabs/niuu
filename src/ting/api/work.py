@@ -402,6 +402,12 @@ def _coordinator_service(
         principal=principal,
         auth_token=extract_bearer_token(request),
         persona=settings.persona,
+        model=settings.model,
+        session_definitions=request.app.state.settings.session_definitions,
+        configured_models=list(request.app.state.settings.bifrost.models),
+        cli_turn_timeout_seconds=(
+            request.app.state.settings.dispatch.workflow_cli_turn_timeout_seconds
+        ),
         ravn_config=settings.ravn_config,
         platform_origin=_public_origin(request),
         anonymous_platform=request.app.state.settings.auth.allow_anonymous_dev,
