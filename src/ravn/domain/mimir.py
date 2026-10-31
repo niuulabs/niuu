@@ -48,6 +48,9 @@ class MimirMount:
                        ``None`` means the mount accepts all categories.
         read_priority: Read order — lower value is queried first.
                        Conventional values: local=0, shared=1, domain=2.
+        lint_enabled: Whether this mount participates in lint rotation. False
+                      preserves normal corpus routing for backends without
+                      Mímir lint support.
     """
 
     name: str
@@ -55,6 +58,7 @@ class MimirMount:
     role: Literal["shared", "local", "domain"]
     categories: list[str] | None = None  # None = all categories
     read_priority: int = 0
+    lint_enabled: bool = True
 
 
 @dataclass

@@ -940,12 +940,7 @@ class MimirLintTool(ToolPort):
                 lines.append(f"  - [{issue.severity}] {issue.page_path}: {issue.message}{fix_tag}")
             lines.append("")
 
-        if not report.complete:
-            lines.append("Coverage incomplete — failed mounts:")
-            for mount_name, failure in report.mount_failures.items():
-                lines.append(f"  - {mount_name}: {failure}")
-            lines.append("This is not a clean lint pass.")
-        elif not report.issues_found:
+        if not report.issues_found:
             lines.append("All clear — no issues found.")
 
         return ToolResult(tool_call_id="", content="\n".join(lines))

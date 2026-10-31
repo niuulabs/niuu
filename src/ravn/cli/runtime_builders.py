@@ -1227,6 +1227,7 @@ def _build_mimir(settings: Settings) -> Any:
                     role=inst.role,
                     read_priority=inst.read_priority,
                     categories=inst.categories,
+                    lint_enabled=inst.lint_enabled,
                 )
             )
 

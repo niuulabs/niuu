@@ -596,6 +596,19 @@ class TestResidentWorkloadIdentityConfigFirst:
             if isinstance(doc, dict) and doc.get("kind") == "ConfigMap"
         }
 
+    def test_ravn_config_preserves_per_mount_lint_rotation(self, tmp_path):
+        values = json.loads(json.dumps(self.RESIDENT_VALUES))
+        values["mimir"]["instances"][0]["lint_enabled"] = False
+
+        configmaps = self._configmaps(_render_skuld_chart(tmp_path, values))
+        ravn_config = next(
+            yaml.safe_load(cm["data"]["config.yaml"])
+            for name, cm in configmaps.items()
+            if name.endswith("-ravn-config")
+        )
+
+        assert ravn_config["mimir"]["instances"] == values["mimir"]["instances"]
+
     def test_broker_config_carries_workload_identity_section(self, rendered):
         configmaps = self._configmaps(rendered)
         broker_cfg = next(

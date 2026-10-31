@@ -2147,6 +2147,13 @@ class MimirInstanceConfig(BaseModel):
         default=0,
         description="Read order — lower value is queried first (local=0, shared=1, domain=2).",
     )
+    lint_enabled: bool = Field(
+        default=True,
+        description=(
+            "Include this mount in Mímir lint rotation. Set false only for a backend "
+            "that does not implement Mímir lint; read, query, and write routing remain enabled."
+        ),
+    )
 
 
 class MimirReadRetryConfig(BaseModel):

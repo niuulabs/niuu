@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import respx
+from httpx import Response
 
 from ravn.adapters.personas.loader import PersonaConfig, PersonaExecutorConfig
 from ravn.config import Settings
@@ -1705,6 +1707,42 @@ class TestBuildMimir:
         assert isinstance(result, CompositeMimirAdapter)
         assert isinstance(result._mounts[0].port, HttpMimirAdapter)
 
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_lint_excludes_configured_non_lint_mount_without_changing_routing(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        from ravn.adapters.mimir.composite import CompositeMimirAdapter
+        from ravn.cli.commands import _build_mimir
+        from ravn.config import MimirInstanceConfig
+
+        settings.mimir.enabled = True
+        settings.mimir.instances = [
+            MimirInstanceConfig(name="local", role="local", path=str(tmp_path / "local")),
+            MimirInstanceConfig(
+                name="mimir-yggdrasil",
+                role="shared",
+                url="https://mimir.yggdrasil.niuu.world/api/v1",
+                lint_enabled=False,
+            ),
+        ]
+        result = _build_mimir(settings)
+
+        assert isinstance(result, CompositeMimirAdapter)
+        assert [mount.name for mount in result._mounts] == ["local", "mimir-yggdrasil"]
+        assert result._mounts[1].lint_enabled is False
+        assert result._write_routing.resolve("wiki/log.md") == ["local"]
+
+        lint_route = respx.get("https://mimir.yggdrasil.niuu.world/api/v1/mimir/lint").mock(
+            return_value=Response(501)
+        )
+
+        report = await result.lint()
+
+        assert report.pages_checked == 0
+        assert report.issues == []
+        assert lint_route.called is False
+
     def test_mixed_instances_returns_composite(self, settings: Settings, tmp_path: Path) -> None:
         from mimir.adapters.markdown import MarkdownMimirAdapter
         from ravn.adapters.mimir.composite import CompositeMimirAdapter
@@ -1728,6 +1766,7 @@ class TestBuildMimir:
         result = _build_mimir(settings)
         assert isinstance(result, CompositeMimirAdapter)
         assert len(result._mounts) == 2
+        assert all(mount.lint_enabled for mount in result._mounts)
         port_types = {m.name: type(m.port) for m in result._mounts}
         assert port_types["local"] is MarkdownMimirAdapter
         assert port_types["hosted"] is HttpMimirAdapter

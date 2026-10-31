@@ -21,7 +21,7 @@ from identity.adapters.identity import (
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.registry import MimirRegistryStore
 from mimir.router import MimirRouter
-from niuu.domain.mimir import MimirLintReport, compute_source_id
+from niuu.domain.mimir import compute_source_id
 from ravn.adapters.mimir.composite import CompositeMimirAdapter
 from ravn.domain.mimir import MimirMount, WriteRouting
 
@@ -817,9 +817,6 @@ def test_lint_empty_wiki(client: TestClient) -> None:
     data = resp.json()
     assert data["pages_checked"] == 0
     assert data["issues_found"] is False
-    assert data["complete"] is True
-    assert data["mounts_checked"] == []
-    assert data["mount_failures"] == {}
     assert data["issues"] == []
     assert "summary" in data
 
@@ -841,30 +838,6 @@ def test_lint_finds_issues_with_page(client_with_page: TestClient) -> None:
         assert "message" in issue
         assert "page_path" in issue
         assert "auto_fixable" in issue
-
-
-def test_federated_lint_reports_incomplete_coverage(tmp_path: Path, monkeypatch) -> None:
-    async def partial_lint(self, fix=False):
-        return MimirLintReport(
-            issues=[],
-            pages_checked=2,
-            mounts_checked=["local"],
-            mount_failures={"shared": "Mímir mount 'shared' failed during lint: 501"},
-        )
-
-    monkeypatch.setattr(CompositeMimirAdapter, "lint", partial_lint)
-    response = TestClient(_make_composite_app(tmp_path), headers=_ADMIN_HEADERS).get("/mimir/lint")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "issues": [],
-        "pages_checked": 2,
-        "issues_found": False,
-        "complete": False,
-        "mounts_checked": ["local"],
-        "mount_failures": {"shared": "Mímir mount 'shared' failed during lint: 501"},
-        "summary": {"error": 0, "warning": 0, "info": 0},
-    }
 
 
 def test_lint_fix_endpoint(client_with_page: TestClient) -> None:

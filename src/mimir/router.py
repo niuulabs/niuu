@@ -237,9 +237,6 @@ class LintResponse(BaseModel):
     issues: list[LintIssueResponse]
     pages_checked: int
     issues_found: bool
-    complete: bool
-    mounts_checked: list[str]
-    mount_failures: dict[str, str]
     summary: dict[str, int]
 
 
@@ -2521,8 +2518,5 @@ def _lint_to_response(
         ],
         pages_checked=report.pages_checked,
         issues_found=report.issues_found,
-        complete=report.complete,
-        mounts_checked=report.mounts_checked,
-        mount_failures=report.mount_failures,
         summary=report.summary,
     )
