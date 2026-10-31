@@ -88,7 +88,7 @@ from sleipnir.domain.catalog import (
     valkyrie_action_requested,
     valkyrie_judgment_proposed,
 )
-from sleipnir.domain.events import SleipnirEvent
+from sleipnir.domain.events import FLOCK_SCOPE_KEY, SleipnirEvent, flock_scope
 from sleipnir.ports.events import SleipnirPublisher, SleipnirSubscriber, Subscription
 
 logger = logging.getLogger(__name__)
@@ -445,12 +445,7 @@ class ResidentLearningRuntime:
             seen.add(name)
             crosses = name in crossing
             flock_fields = (
-                {
-                    "inventory": inventory,
-                    "additional_nats_subjects": [
-                        _flock_nats_subject(self.identity, EVOLUTION_SKILL_INVENTORY_EVENT)
-                    ],
-                }
+                {"inventory": inventory, FLOCK_SCOPE_KEY: _identity_flock_scope(self.identity)}
                 if crosses
                 else {}
             )
@@ -1662,9 +1657,7 @@ class ResidentLearningRuntime:
                 "repetition": record.repetition,
                 "revision": record.revision,
                 "feedback": dict(record.operator_feedback),
-                "additional_nats_subjects": [
-                    _flock_nats_subject(self.identity, "learning.adoption.recorded")
-                ],
+                FLOCK_SCOPE_KEY: _identity_flock_scope(self.identity),
             }
         )
         await self._publisher.publish(event)
@@ -2555,9 +2548,7 @@ class ResidentLearningRuntime:
                 "source_valkyrie_id": artifact.source_valkyrie_id,
                 "command_action": artifact.command_action,
                 "repetition": record.repetition if record is not None else 1,
-                "additional_nats_subjects": [
-                    _flock_nats_subject(self.identity, "learning.adoption.recorded")
-                ],
+                FLOCK_SCOPE_KEY: _identity_flock_scope(self.identity),
             }
         )
         await self._publisher.publish(event)
@@ -3074,19 +3065,16 @@ def capability_proposal_event(proposal: CapabilityProposal, *, source: str) -> S
 
     Every proposer (the resident install pipeline, build_tool) builds a
     :class:`CapabilityProposal` and turns it into an event here, so the
-    payload contract — including the scoped flock NATS fan-out subject —
-    cannot drift between publishers.
+    payload contract — including its flock scope — cannot drift between
+    publishers.
     """
     payload = proposal.to_event_payload()
     payload["status"] = "candidate"
     payload["nats_subject"] = "ravn.environment.flock.learning.proposed"
-    payload["additional_nats_subjects"] = [
-        _scoped_flock_subject(
-            proposal.subject_domain or proposal.domain,
-            proposal.source_environment_id,
-            registry.FLOCK_LEARNING_PROPOSED,
-        )
-    ]
+    payload[FLOCK_SCOPE_KEY] = flock_scope(
+        proposal.subject_domain or proposal.domain,
+        proposal.source_environment_id,
+    )
     return SleipnirEvent(
         event_type=registry.FLOCK_LEARNING_PROPOSED,
         source=source,
@@ -3100,23 +3088,8 @@ def capability_proposal_event(proposal: CapabilityProposal, *, source: str) -> S
     )
 
 
-def _scoped_flock_subject(domain: str, environment_id: str, event_type: str) -> str:
-    return (
-        f"flock.{_nats_token(domain or 'environment')}.{_nats_token(environment_id)}.{event_type}"
-    )
-
-
-def _flock_nats_subject(identity: ResidentLearningIdentity, event_type: str) -> str:
-    return _scoped_flock_subject(
-        identity.domain or identity.environment_type,
-        identity.environment_id,
-        event_type,
-    )
-
-
-def _nats_token(value: str) -> str:
-    token = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(value).strip()).strip("-").lower()
-    return token or "unknown"
+def _identity_flock_scope(identity: ResidentLearningIdentity) -> dict[str, str]:
+    return flock_scope(identity.domain or identity.environment_type, identity.environment_id)
 
 
 def _normalise_scope(scope: str) -> str:

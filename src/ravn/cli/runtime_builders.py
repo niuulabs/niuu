@@ -75,6 +75,7 @@ def _attach_agent_build_tool(
     capability_matcher: Any | None = None,
     skill_manager: Any | None = None,
     peer_tools: Any | None = None,
+    peer_capability_matcher: Any | None = None,
 ) -> Any:
     """Attach build_tool when the active persona explicitly allows it."""
     if not enabled:
@@ -162,6 +163,7 @@ def _attach_agent_build_tool(
             capability_matcher=capability_matcher,
             skill_manager=skill_manager,
             peer_tools=peer_tools,
+            peer_capability_matcher=peer_capability_matcher,
             peer_prior_art_probability=(
                 settings.decision.capability_matching.peer_prior_art_probability
             ),
@@ -824,6 +826,8 @@ def _build_learning_consolidation(settings: Settings, llm: Any) -> LearningConso
 def _build_capability_matcher(
     settings: Settings,
     consolidation: LearningConsolidation | None,
+    *,
+    min_same_probability: float | None = None,
 ) -> Any | None:
     """Meaning-based learned-tool matching, on the lesson-matching machinery.
 
@@ -834,8 +838,9 @@ def _build_capability_matcher(
     names link tools, which is what that setting asks for.
 
     With ``decision.capability_matching.enabled`` the decision model judges instead
-    of the lesson judge. It keeps the embedding shortlist, so without semantic
-    matching a resident cannot start.
+    of the lesson judge, at *min_same_probability* when a caller has its own bar.
+    It keeps the embedding shortlist, so without semantic matching a resident
+    cannot start.
     """
     config = settings.decision.capability_matching
     reflection = settings.effective_post_session_reflection_config()
@@ -858,7 +863,11 @@ def _build_capability_matcher(
             lessons=consolidation.lessons,
             decisions=build_decision_port(settings),
             similarity_threshold=reflection.matching.similarity_threshold,
-            min_same_probability=config.min_same_probability,
+            min_same_probability=(
+                config.min_same_probability
+                if min_same_probability is None
+                else min_same_probability
+            ),
             excerpt_chars=reflection.matching.judge_excerpt_chars,
         )
     return SemanticCapabilityMatcher(
@@ -867,6 +876,18 @@ def _build_capability_matcher(
         similarity_threshold=reflection.matching.similarity_threshold,
         max_candidates=reflection.matching.max_related,
         excerpt_chars=reflection.matching.judge_excerpt_chars,
+    )
+
+
+def _build_peer_capability_matcher(
+    settings: Settings,
+    consolidation: LearningConsolidation | None,
+) -> Any | None:
+    """The same matching for flock peers' tools, at the peer gate's own bar."""
+    return _build_capability_matcher(
+        settings,
+        consolidation,
+        min_same_probability=settings.decision.capability_matching.peer_min_same_probability,
     )
 
 

@@ -71,6 +71,7 @@ async def _run_daemon(
     memory = _with_mimir_fact_capture(memory, daemon_mimir)
     learning_consolidation = _build_learning_consolidation(settings, llm)
     capability_matcher = _build_capability_matcher(settings, learning_consolidation)
+    peer_capability_matcher = _build_peer_capability_matcher(settings, learning_consolidation)
     friction_ledger = _build_friction_ledger(
         settings, mimir=daemon_mimir, consolidation=learning_consolidation
     )
@@ -423,6 +424,7 @@ async def _run_daemon(
                 resident_learning_runtime.skills if resident_learning_runtime is not None else None
             ),
             peer_tools=resident_learning_runtime,
+            peer_capability_matcher=peer_capability_matcher,
         )
 
     tasks: list[asyncio.Task] = []

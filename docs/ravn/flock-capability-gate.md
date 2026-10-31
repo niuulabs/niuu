@@ -1,6 +1,6 @@
 # Seeing the flock at the `build_tool` gate
 
-Status: implemented on `feat/ravn-flock-capability-gate`; not deployed.
+Status: implemented; not deployed.
 
 The `build_tool` gate asks "does a tool for this already exist?" of the local
 resident only. Ymir built `k8s_pod_logs_time_window` while
@@ -82,6 +82,14 @@ the sender's whole inventory, so a tool a peer retired disappears at its next
 crossing. There is no TTL: a peer that is down keeps its claims, and adoption
 re-verifies here regardless.
 
+**Transport: Ravn says who, the adapter says how.** Ravn publishes and subscribes
+through the Sleipnir ports, and marks a crossing event with a neutral `flock_scope`
+(domain and environment). `NatsPublisher` turns that into the
+`flock.<domain>.<env>.<event_type>` subject, because NATS partitions residents by
+cluster. A transport with one shared bus ignores the scope, since everyone already
+hears the event. Proposals and adoption records use the same scope, replacing the
+`additional_nats_subjects` payload hint, so Ravn no longer builds NATS subjects.
+
 **Store: what a resident heard.** `flock_peer_tools.json` holds peers' verified
 tools, scoped to shared flocks. Missing means nothing heard yet, which is a real
 answer. Corrupt raises at startup.
@@ -96,14 +104,17 @@ there are two bars:
 
 | Peer match | Outcome |
 |---|---|
-| P ≥ `min_same_probability` (0.6), adoptable | Adopt through the resident install pipeline: review, re-verify here, canary here. No build. |
+| P ≥ `peer_min_same_probability` (0.6), adoptable | Adopt through the resident install pipeline: review, re-verify here, canary here. No build. |
 | Adoption held | Say it is held for review. No build; a local build would hit the same review. |
 | Adoption refused or failed (no tests, unloadable reach, failed verification or canary, declined before) | Build locally, seeded with the peer's code and the reason. |
-| `peer_prior_art_probability` (0.4) ≤ P < 0.6 | Build locally, seeded with the peer's code. |
+| `peer_prior_art_probability` (0.4) ≤ P < `peer_min_same_probability` | Build locally, seeded with the peer's code. |
 | Below that | Build as before. |
 
-A false adoption blocks a build, so it keeps the 0.6 bar. A false seed costs a
-few lines in a brief, so it can use a lower one. Seeding is not a fallback: "does
+Both bars live in `decision.capability_matching`, apart from the local gate's
+`min_same_probability`, and the values above are defaults: they were read off one
+data set and should move with the next one. A false adoption blocks a build, so
+it starts at the local gate's 0.6. A false seed costs a few lines in a brief, so
+it can sit lower. Prior art above adoption refuses to load. Seeding is not a fallback: "does
 it work here?" has been answered, and the build is what was asked for. Seeded
 builds keep the requested name, because a proposal under the peer's name would
 install over the peer's working copy. They record `peer_capability` in provenance
@@ -141,7 +152,10 @@ against a throwaway copy of the resident's tools with the deployed Jev.
   same week, only the later one could have been stopped.
 
 Adoption's review, re-verification and canary did not run live, because they
-start a Job in the cluster. They are covered with a fake runner only.
+start a Job in the cluster. They are covered with a fake runner only. These runs
+also predate the move to `flock_scope` and the separate peer bars. Tests pin both,
+including that the NATS subject is unchanged, and the peer bar defaults to the
+0.6 used here.
 
 ## What this does not do
 

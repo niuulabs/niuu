@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from ravn.adapters.skill.file_registry import FileSkillRegistry
 from ravn.adapters.tools.build_tool import BuildTool, _artifact_from_input
@@ -57,7 +58,7 @@ from ravn.valkyrie_evolution.tool_curation import find_peer_capability
 from ravn.valkyrie_evolution.tool_runtime import ToolRunResult
 from ravn.valkyrie_evolution.tool_verification import VerificationResult
 from sleipnir.adapters.in_process import InProcessBus
-from sleipnir.domain.events import SleipnirEvent
+from sleipnir.domain.events import FLOCK_SCOPE_KEY, SleipnirEvent, flock_scope
 from sleipnir.domain.registry import ODIN_REVIEW_DECIDED
 
 _CODE = "def run(payload):\n    return {'ok': True}\n"
@@ -143,11 +144,7 @@ class _RecordingBus(InProcessBus):
         return [e for e in self.events if e.event_type == EVOLUTION_SKILL_INVENTORY_EVENT]
 
     def crossed(self) -> list[str]:
-        return [
-            e.payload["skill_name"]
-            for e in self.inventory()
-            if e.payload.get("additional_nats_subjects")
-        ]
+        return [e.payload["skill_name"] for e in self.inventory() if e.payload.get(FLOCK_SCOPE_KEY)]
 
 
 class _Runner:
@@ -323,9 +320,7 @@ class TestCrossing:
 
         assert sorted(bus.crossed()) == ["k8s_pod_logs_time_window", "k8s_pods_list"]
         payload = bus.inventory()[0].payload
-        assert payload["additional_nats_subjects"] == [
-            "flock.k8s.ymir.valkyrie.evolution.skill_inventory"
-        ]
+        assert payload[FLOCK_SCOPE_KEY] == flock_scope("k8s", "ymir")
         assert payload["inventory"] == ["k8s_pod_logs_time_window", "k8s_pods_list"]
         assert payload["flock_ids"] == [_FLOCK]
         assert payload["verified"] is True
@@ -823,6 +818,7 @@ def _gate(state: Path, peers: _Peers, matcher: Any, **kwargs: Any) -> tuple[Buil
         autonomy_mode="autonomous",
         build_backend=backend,
         capability_matcher=matcher,
+        peer_capability_matcher=matcher,
         peer_tools=peers,
         peer_prior_art_probability=0.4,
         **kwargs,
@@ -1052,6 +1048,30 @@ class TestGate:
         assert "the job could not start" in result.content
         assert backend.requests == []
 
+    async def test_peers_are_judged_by_their_own_matcher(self, tmp_path: Path) -> None:
+        peer = _peer_tool()
+        _install_local(tmp_path, "k8s_pods_list")
+        local = _Matcher({"k8s_pods_list": 0.1})
+        peer_matcher = _Matcher({peer.name: 0.8})
+        code_dir, artifacts_dir = learned_tool_storage(tmp_path)
+        tool = BuildTool(
+            tools_dir=code_dir,
+            artifacts_dir=artifacts_dir,
+            register_tool=lambda tool, replace=False: None,
+            autonomy_mode="autonomous",
+            build_backend=_Backend(),
+            capability_matcher=local,
+            peer_capability_matcher=peer_matcher,
+            peer_tools=_Peers([peer], PeerAdoption("adopted", "ok", peer.name)),
+            peer_prior_art_probability=0.4,
+        )
+
+        result = await tool.execute(_request())
+
+        assert json.loads(result.content)["status"] == "adopted_from_peer"
+        assert local.asked == [["k8s_pods_list"]]
+        assert peer_matcher.asked == [[peer.name]]
+
     async def test_no_peer_match_builds_as_before(self, tmp_path: Path) -> None:
         peers = _Peers([_peer_tool()], AssertionError("nothing to adopt"))
         tool, backend = _gate(tmp_path, peers, _Matcher({"k8s_pod_logs_since_sa": 0.1}))
@@ -1091,7 +1111,7 @@ class TestGate:
             register_tool=lambda tool, replace=False: None,
             autonomy_mode="autonomous",
             build_backend=backend,
-            capability_matcher=_Matcher({peer.name: 0.8}),
+            peer_capability_matcher=_Matcher({peer.name: 0.8}),
             peer_tools=runtime,
             peer_prior_art_probability=0.4,
         )
@@ -1122,5 +1142,54 @@ def test_a_build_with_no_canary_records_none() -> None:
 
 
 def test_the_defaults_match_the_design() -> None:
-    assert DecisionCapabilityMatchingConfig().peer_prior_art_probability == 0.4
+    config = DecisionCapabilityMatchingConfig()
+
+    assert (config.peer_min_same_probability, config.peer_prior_art_probability) == (0.6, 0.4)
     assert ResidentEvolutionConfig().flock_inventory_interval_seconds == 3600.0
+
+
+def test_both_peer_bars_can_sit_together() -> None:
+    config = DecisionCapabilityMatchingConfig(
+        peer_min_same_probability=0.7, peer_prior_art_probability=0.7
+    )
+
+    assert config.peer_prior_art_probability == 0.7
+
+
+def test_prior_art_above_adoption_refuses_to_load() -> None:
+    with pytest.raises(ValidationError, match="lower it, or set the two equal"):
+        DecisionCapabilityMatchingConfig(
+            peer_min_same_probability=0.5, peer_prior_art_probability=0.6
+        )
+
+
+def _decision_settings(**matching: Any) -> Any:
+    from types import SimpleNamespace
+
+    reflection = SimpleNamespace(
+        matching=SimpleNamespace(mode="semantic", similarity_threshold=0.65, judge_excerpt_chars=40)
+    )
+    return SimpleNamespace(
+        decision=SimpleNamespace(
+            capability_matching=DecisionCapabilityMatchingConfig(enabled=True, **matching)
+        ),
+        effective_post_session_reflection_config=lambda: reflection,
+    )
+
+
+def test_the_peer_gate_judges_at_its_own_configured_bar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from ravn.cli import runtime_builders
+
+    monkeypatch.setattr(runtime_builders, "build_decision_port", lambda settings: object())
+    settings = _decision_settings(min_same_probability=0.6, peer_min_same_probability=0.75)
+    consolidation = SimpleNamespace(lessons=object())
+
+    local = runtime_builders._build_capability_matcher(settings, consolidation)
+    peer = runtime_builders._build_peer_capability_matcher(settings, consolidation)
+
+    assert local._min_same_probability == 0.6
+    assert peer._min_same_probability == 0.75

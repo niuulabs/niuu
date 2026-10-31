@@ -138,6 +138,7 @@ class BuildTool(ToolPort):
         capability_matcher: CapabilityMatcherPort | None = None,
         skill_manager: Any | None = None,
         peer_tools: PeerToolPort | None = None,
+        peer_capability_matcher: CapabilityMatcherPort | None = None,
         peer_prior_art_probability: float | None = None,
     ) -> None:
         self._tools_dir = Path(tools_dir)
@@ -171,6 +172,7 @@ class BuildTool(ToolPort):
         self._skill_manager = skill_manager
         # What flock peers run, asked only when nothing here serves a request.
         self._peer_tools = peer_tools
+        self._peer_capability_matcher = peer_capability_matcher
         self._peer_prior_art_probability = peer_prior_art_probability
 
     def _investigation_prompt(self) -> str:
@@ -1008,7 +1010,6 @@ class BuildTool(ToolPort):
             "name": name,
             "description": str(manifest.get("description") or ""),
             "inputs": tuple(sorted(properties)) if isinstance(properties, dict) else (),
-            "matcher": self._capability_matcher,
         }
         storage = {
             "tools_dir": self._tools_dir,
@@ -1017,13 +1018,16 @@ class BuildTool(ToolPort):
         }
         peer_tools = self._peer_tools
         try:
-            match = await find_installed_capability(**storage, **request)
+            match = await find_installed_capability(
+                **storage, **request, matcher=self._capability_matcher
+            )
             peers = PeerCapabilities()
             if match is None and peer_tools is not None:
                 peers = await find_peer_capability(
                     **storage,
                     **request,
                     peer_tools=peer_tools.peer_tools(),
+                    matcher=self._peer_capability_matcher,
                     near_probability=self._peer_prior_art_probability,
                 )
         except (LessonJudgeError, CapabilityMatchError) as exc:
@@ -2088,6 +2092,7 @@ def attach_build_tool(
     capability_matcher: CapabilityMatcherPort | None = None,
     skill_manager: Any | None = None,
     peer_tools: PeerToolPort | None = None,
+    peer_capability_matcher: CapabilityMatcherPort | None = None,
     peer_prior_art_probability: float | None = None,
 ) -> BuildTool:
     """Attach build_tool to an agent supporting register_tool()."""
@@ -2118,6 +2123,7 @@ def attach_build_tool(
         capability_matcher=capability_matcher,
         skill_manager=skill_manager,
         peer_tools=peer_tools,
+        peer_capability_matcher=peer_capability_matcher,
         peer_prior_art_probability=peer_prior_art_probability,
     )
     registrar(tool, replace=replace)

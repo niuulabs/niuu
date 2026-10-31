@@ -622,16 +622,38 @@ class DecisionCapabilityMatchingConfig(BaseModel):
             "tools and retires distinct ones; too high lets duplicates through."
         ),
     )
+    peer_min_same_probability: float = Field(
+        default=0.6,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "P(same capability) at or above which build_tool tries to adopt a flock peer's tool "
+            "instead of building. Set apart from min_same_probability because a false match "
+            "here installs a tool rather than blocking on one this resident already holds."
+        ),
+    )
     peer_prior_art_probability: float = Field(
         default=0.4,
         gt=0.0,
         le=1.0,
         description=(
             "P(same capability) at or above which a flock peer's tool is handed to the builder "
-            "as prior art. Lower than min_same_probability because it blocks nothing: the "
-            "build still runs, and a wrong match costs a few lines in its brief."
+            "as prior art. Sits below peer_min_same_probability because it blocks nothing: the "
+            "build still runs, and a wrong match costs a few lines in its brief. Equal to it, "
+            "nothing is handed over short of the same capability."
         ),
     )
+
+    @model_validator(mode="after")
+    def _prior_art_sits_below_adoption(self) -> DecisionCapabilityMatchingConfig:
+        if self.peer_prior_art_probability > self.peer_min_same_probability:
+            raise ValueError(
+                "decision.capability_matching.peer_prior_art_probability "
+                f"({self.peer_prior_art_probability}) is above peer_min_same_probability "
+                f"({self.peer_min_same_probability}), so no peer tool could be prior art; "
+                "lower it, or set the two equal to hand over nothing short of a match"
+            )
+        return self
 
 
 class DecisionConfig(BaseModel):
