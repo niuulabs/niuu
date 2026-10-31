@@ -13,6 +13,7 @@ export function syncTerminalTheme(terminal: Terminal, element: HTMLElement): () 
         background: color('--color-bg-primary'),
         foreground: color('--color-text-primary'),
         cursorAccent: color('--color-bg-primary'),
+        selectionBackground: color('--color-bg-elevated'),
         black: color('--color-bg-primary'),
         white: color('--color-text-secondary'),
         brightWhite: color('--color-text-primary'),

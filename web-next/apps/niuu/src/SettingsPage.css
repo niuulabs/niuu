@@ -141,7 +141,7 @@
 }
 
 .settings-shell__panel-badge--editable {
-  color: #9bd2ff;
+  color: var(--niuu-brand-400, #9bd2ff);
   background: rgba(73, 144, 255, 0.12);
 }
 
@@ -219,7 +219,7 @@
 .settings-shell__panel-heading,
 .settings-shell__panel-title {
   margin: 0;
-  color: #f5f7fb;
+  color: var(--niuu-text-primary, #f5f7fb);
   font-size: clamp(1.45rem, 2.2vw, 1.75rem);
   line-height: 1.08;
 }
@@ -289,7 +289,7 @@
   border: 1px solid rgba(115, 127, 149, 0.34);
   border-radius: 10px;
   background: rgba(13, 16, 21, 0.98);
-  color: #f4f7fb;
+  color: var(--niuu-text-primary, #f4f7fb);
   font-family: var(--font-mono);
   font-size: 0.84rem;
   line-height: 1.5;
@@ -376,7 +376,7 @@
 .settings-checkbox__box--checked {
   background: rgba(78, 149, 255, 0.18);
   border-color: rgba(111, 181, 255, 0.92);
-  color: #dff1ff;
+  color: var(--niuu-brand-100, #dff1ff);
 }
 
 .settings-checkbox__label {
@@ -409,7 +409,7 @@
   border-radius: 999px;
   padding: 0.55rem 0.95rem;
   background: linear-gradient(180deg, rgba(70, 136, 235, 0.2), rgba(46, 101, 180, 0.16));
-  color: #ecf5ff;
+  color: var(--niuu-brand-100, #ecf5ff);
   font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.02em;
@@ -429,11 +429,11 @@
 }
 
 .settings-shell__status--success {
-  color: #a9e8be;
+  color: var(--niuu-ok, #a9e8be);
 }
 
 .settings-shell__status--error {
-  color: #ff9797;
+  color: var(--niuu-critical, #ff9797);
 }
 
 .settings-shell__resources {
@@ -454,7 +454,7 @@
 
 .settings-resource__title {
   margin: 0;
-  color: #f5f7fb;
+  color: var(--niuu-text-primary, #f5f7fb);
   font-size: 0.94rem;
   font-weight: 650;
 }
@@ -507,7 +507,7 @@
 
 .settings-resource__required {
   margin-left: 0.45rem;
-  color: #8fc8ff;
+  color: var(--niuu-brand-400, #8fc8ff);
   font-family: var(--font-mono);
   font-size: 0.68rem;
 }
@@ -544,7 +544,7 @@
 }
 
 .settings-resource__callout-title {
-  color: #dff0ff;
+  color: var(--niuu-brand-100, #dff0ff);
   font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -554,7 +554,7 @@
 .settings-resource__secret {
   display: block;
   margin: 0.45rem 0;
-  color: #f4f7fb;
+  color: var(--niuu-text-primary, #f4f7fb);
   font-family: var(--font-mono);
   font-size: 0.84rem;
   word-break: break-all;
@@ -639,7 +639,7 @@
 }
 
 .settings-resource__row-note--error {
-  color: #ff9797;
+  color: var(--niuu-critical, #ff9797);
 }
 
 .settings-resource__account {
@@ -657,7 +657,7 @@
 }
 
 .settings-resource__row-action {
-  color: #f1f4fa;
+  color: var(--niuu-text-primary, #f1f4fa);
   font-size: 0.76rem;
   font-weight: 600;
   border: 1px solid rgba(255, 255, 255, 0.09);

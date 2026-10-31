@@ -2,7 +2,11 @@
   min-height: 100%;
   background:
     radial-gradient(circle at top center, rgba(90, 119, 147, 0.08), transparent 28%),
-    linear-gradient(180deg, #0c0d10 0%, var(--niuu-bg-primary, #090a0d) 100%);
+    linear-gradient(
+      180deg,
+      var(--niuu-bg-primary, #0c0d10) 0%,
+      var(--niuu-bg-primary, #090a0d) 100%
+    );
   color: var(--ops-text-strong);
 }
 
@@ -125,7 +129,7 @@
 }
 
 .research-filter-chip.is-active {
-  color: #d9edf9;
+  color: var(--niuu-brand-200, #d9edf9);
   border-color: rgba(75, 164, 228, 0.5);
   background: rgba(19, 58, 87, 0.46);
   box-shadow: inset 0 0 0 1px rgba(121, 190, 239, 0.12);
@@ -158,7 +162,7 @@
 
 .research-view-toggle__button.is-active {
   background: rgba(18, 58, 89, 0.72);
-  color: #d8effc;
+  color: var(--niuu-brand-200, #d8effc);
 }
 
 .research-new-button {
@@ -167,7 +171,7 @@
   border: 1px solid rgba(94, 176, 234, 0.5);
   border-radius: 12px;
   background: rgba(18, 58, 89, 0.62);
-  color: #eef8ff;
+  color: var(--niuu-brand-100, #eef8ff);
   font-size: 12px;
   font-weight: 600;
   transition:
@@ -202,7 +206,7 @@
 }
 
 .research-summary-metric.is-alert .research-summary-metric__value {
-  color: #f0b5b8;
+  color: var(--niuu-critical, #f0b5b8);
 }
 
 .research-summary-metric__label {
@@ -266,7 +270,7 @@
 }
 
 .research-sort-chip.is-active {
-  color: #d9edf9;
+  color: var(--niuu-brand-200, #d9edf9);
   border-color: rgba(75, 164, 228, 0.5);
   background: rgba(19, 58, 87, 0.46);
 }
@@ -322,35 +326,35 @@
   width: 12px;
   height: 12px;
   border-radius: 999px;
-  background: #9fb6c9;
+  background: var(--niuu-text-secondary, #9fb6c9);
   box-shadow: 0 0 8px rgba(206, 230, 248, 0.22);
 }
 
 .research-dot.is-running,
 .research-dot.is-review-ready {
-  background: #a4d8ff;
+  background: var(--niuu-brand-500, #a4d8ff);
 }
 
 .research-dot.is-published {
-  background: #dce7f1;
+  background: var(--niuu-text-primary, #dce7f1);
 }
 
 .research-dot.is-blocked {
-  background: #f0be48;
+  background: var(--niuu-warn, #f0be48);
   box-shadow: 0 0 10px rgba(240, 190, 72, 0.3);
 }
 
 .research-dot.is-failed {
-  background: #f26565;
+  background: var(--niuu-critical, #f26565);
   box-shadow: 0 0 10px rgba(242, 101, 101, 0.34);
 }
 
 .research-dot.is-draft {
-  background: #7f8895;
+  background: var(--niuu-text-muted, #7f8895);
 }
 
 .research-campaign-card__status {
-  color: #dbe7f1;
+  color: var(--niuu-text-primary, #dbe7f1);
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.11em;
@@ -371,17 +375,17 @@
 
 .research-mode-pill.is-investigative {
   border-color: rgba(214, 144, 66, 0.45);
-  color: #e2ae6d;
+  color: var(--niuu-warn, #e2ae6d);
 }
 
 .research-mode-pill.is-monitoring {
   border-color: rgba(77, 166, 122, 0.42);
-  color: #7ed1a0;
+  color: var(--niuu-ok, #7ed1a0);
 }
 
 .research-mode-pill.is-exploratory {
   border-color: rgba(85, 116, 164, 0.42);
-  color: #9fbedc;
+  color: var(--niuu-text-secondary, #9fbedc);
 }
 
 .research-campaign-card__confidence {
@@ -410,12 +414,12 @@
   margin: 15px 0 0;
   font-size: 15px;
   line-height: 1.2;
-  color: #f2f4f7;
+  color: var(--niuu-text-primary, #f2f4f7);
 }
 
 .research-campaign-card__question {
   margin: 11px 0 0;
-  color: #b5bcc7;
+  color: var(--niuu-text-secondary, #b5bcc7);
   font-size: 12px;
   line-height: 1.55;
   min-height: 46px;
@@ -435,21 +439,25 @@
 }
 
 .research-progress__segment.is-complete {
-  background: #cae5f7;
+  background: var(--niuu-brand-200, #cae5f7);
 }
 
 .research-progress__segment.is-active {
-  background: linear-gradient(90deg, #cae5f7 0%, rgba(202, 229, 247, 0.18) 100%);
+  background: linear-gradient(
+    90deg,
+    var(--niuu-brand-200, #cae5f7) 0%,
+    rgba(202, 229, 247, 0.18) 100%
+  );
   box-shadow: 0 0 10px rgba(202, 229, 247, 0.28);
 }
 
 .research-progress__segment.is-blocked,
 .research-progress__segment.is-gated {
-  background: #eab53f;
+  background: var(--niuu-warn, #eab53f);
 }
 
 .research-progress__segment.is-failed {
-  background: #ef6262;
+  background: var(--niuu-critical, #ef6262);
 }
 
 .research-campaign-card__metrics {
@@ -474,14 +482,14 @@
 
 .research-campaign-card__warning {
   margin: 0;
-  color: #f3cf61;
+  color: var(--niuu-warn, #f3cf61);
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.45;
 }
 
 .research-campaign-card__warning.is-failed {
-  color: #f0a3a5;
+  color: var(--niuu-critical, #f0a3a5);
 }
 
 .research-campaign-card__warning.is-running {
@@ -504,7 +512,7 @@
   padding: 0 10px;
   border-radius: 8px;
   background: rgba(74, 89, 107, 0.45);
-  color: #d1e5f5;
+  color: var(--niuu-brand-200, #d1e5f5);
   font-family: var(--font-mono);
   font-size: 11px;
   overflow: hidden;
@@ -542,7 +550,7 @@
 }
 
 .research-table__link {
-  color: #eff3f7;
+  color: var(--niuu-text-primary, #eff3f7);
   font-weight: 600;
   text-align: left;
 }
@@ -575,7 +583,7 @@
 }
 
 .research-empty-state.is-error {
-  color: #f0b5b8;
+  color: var(--niuu-critical, #f0b5b8);
   border-color: rgba(240, 130, 137, 0.3);
 }
 

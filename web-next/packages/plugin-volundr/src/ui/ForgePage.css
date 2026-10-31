@@ -162,7 +162,7 @@
 }
 
 .vol-forge__panel-title--critical h2 {
-  color: #f28585;
+  color: var(--niuu-critical, #f28585);
 }
 
 .vol-forge__panel-title--attention h2 {
@@ -438,7 +438,7 @@
 
 .vol-forge__kind--primary {
   background: rgba(69, 150, 221, 0.18);
-  color: #bcecff;
+  color: var(--niuu-brand-300, #bcecff);
 }
 
 .vol-forge__kind--gpu {
@@ -448,7 +448,7 @@
 
 .vol-forge__kind--edge {
   background: rgba(84, 168, 117, 0.2);
-  color: #aef5c4;
+  color: var(--niuu-ok, #aef5c4);
 }
 
 .vol-forge__kind--local {
@@ -458,12 +458,12 @@
 
 .vol-forge__kind--observ {
   background: rgba(122, 154, 180, 0.18);
-  color: #bedcf4;
+  color: var(--niuu-brand-200, #bedcf4);
 }
 
 .vol-forge__kind--media {
   background: rgba(177, 131, 70, 0.2);
-  color: #f2cc93;
+  color: var(--niuu-warn, #f2cc93);
 }
 
 .vol-forge__cluster-meters {
@@ -573,7 +573,7 @@
   border-radius: 6px;
   padding: 3px 9px;
   background: rgba(69, 150, 221, 0.18);
-  color: #bcecff;
+  color: var(--niuu-brand-300, #bcecff);
   font-family:
     ui-monospace,
     SFMono-Regular,
@@ -727,7 +727,7 @@
 
 .vol-forge__error-message {
   margin-top: 6px;
-  color: #f09d9d;
+  color: var(--niuu-critical, #f09d9d);
   font-family:
     ui-monospace,
     SFMono-Regular,
