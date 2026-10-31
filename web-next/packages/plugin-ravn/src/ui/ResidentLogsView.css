@@ -17,7 +17,7 @@
   grid-template-columns: 82px 58px minmax(90px, 0.2fr) minmax(0, 1fr);
   gap: 12px;
   align-items: baseline;
-  border-bottom: 1px solid rgba(156, 164, 177, 0.1);
+  border-bottom: 1px solid rgb(var(--niuu-rgb-muted, 156 164 177) / 0.1);
   padding: 8px 0;
   color: var(--niuu-text-secondary, #9aa3af);
   font-family: var(--font-mono);

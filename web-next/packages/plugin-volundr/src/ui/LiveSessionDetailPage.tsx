@@ -188,7 +188,7 @@ function WorkflowHumanGateCard({
   const [notes, setNotes] = useState('');
 
   return (
-    <section className="niuu:m-3 niuu:mb-0 niuu:rounded-xl niuu:border niuu:border-amber-500/35 niuu:bg-amber-500/8 niuu:p-4 niuu:shadow-[0_18px_40px_-24px_rgba(245,158,11,0.45)]">
+    <section className="niuu:m-3 niuu:mb-0 niuu:rounded-xl niuu:border niuu:border-amber-500/35 niuu:bg-amber-500/8 niuu:p-4 niuu:shadow-[0_18px_40px_-24px_rgb(var(--niuu-rgb-warning,245_158_11)/0.45)]">
       <div className="niuu:flex niuu:items-start niuu:gap-3">
         <div className="niuu:mt-0.5 niuu:rounded-full niuu:bg-amber-500/16 niuu:p-2 niuu:text-amber-300">
           <AlertTriangle className="niuu:h-4 niuu:w-4" />

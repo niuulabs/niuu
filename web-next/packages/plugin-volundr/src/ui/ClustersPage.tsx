@@ -85,16 +85,17 @@ const SESSION_STATE_ORDER: Record<SessionState, number> = {
 
 const PANEL_SURFACE_STYLE = {
   backgroundColor: 'var(--light-panel, #1b1b20)',
-  borderColor: 'var(--light-border, rgba(90, 94, 107, 0.72))',
+  borderColor: 'var(--light-border, rgb(var(--niuu-rgb-muted, 90 94 107) / 0.72))',
 } as const;
 
 const NODE_SURFACE_STYLE = {
   backgroundColor: 'var(--light-panel, #111216)',
-  borderColor: 'var(--light-border, rgba(90, 94, 107, 0.68))',
+  borderColor: 'var(--light-border, rgb(var(--niuu-rgb-muted, 90 94 107) / 0.68))',
 } as const;
 
 const PRIMARY_BADGE_STYLE = {
-  backgroundColor: 'var(--volundr-label-background, rgba(58, 155, 228, 0.16))',
+  backgroundColor:
+    'var(--volundr-label-background, rgb(var(--niuu-rgb-signal, 58 155 228) / 0.16))',
   color: 'var(--light-accent, #8fd8ff)',
 } as const;
 
@@ -103,8 +104,8 @@ const STATUS_PILL_STYLE = {
 } as const;
 
 const FORGE_BUTTON_STYLE = {
-  backgroundColor: 'rgba(28, 124, 173, 0.18)',
-  borderColor: 'rgba(81, 178, 232, 0.65)',
+  backgroundColor: 'rgb(var(--niuu-rgb-signal, 28 124 173) / 0.18)',
+  borderColor: 'rgb(var(--niuu-rgb-signal, 81 178 232) / 0.65)',
 } as const;
 
 const CLUSTER_PRESENTATION: Record<string, ClusterPresentation> = {

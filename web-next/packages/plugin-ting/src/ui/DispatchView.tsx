@@ -172,7 +172,7 @@ function PendingDispatchBar({
 
   return (
     <div
-      className="ting-dispatch__active-batch niuu:border-b niuu:border-brand/20 niuu:bg-[linear-gradient(180deg,rgba(56,189,248,0.08),rgba(21,26,32,0.96))] niuu:px-4 niuu:py-3"
+      className="ting-dispatch__active-batch niuu:border-b niuu:border-brand/20 niuu:bg-[linear-gradient(180deg,rgb(var(--niuu-rgb-signal,56_189_248)/0.08),rgb(var(--niuu-rgb-raised,21_26_32)/0.96))] niuu:px-4 niuu:py-3"
       role="status"
       aria-live="polite"
     >
@@ -377,7 +377,10 @@ function RunRow({
         {entry.feasibility.feasible ? (
           <span
             className="niuu:inline-flex niuu:items-center niuu:rounded-sm niuu:px-2 niuu:py-0.5 niuu:text-xs niuu:font-mono niuu:uppercase"
-            style={{ border: '1px solid rgba(16,185,129,0.5)', color: 'rgb(52,211,153)' }}
+            style={{
+              border: '1px solid rgb(var(--niuu-rgb-success, 16 185 129) / 0.5)',
+              color: 'rgb(var(--niuu-rgb-success, 52 211 153))',
+            }}
           >
             ready
           </span>

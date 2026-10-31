@@ -2,21 +2,21 @@
   position: relative;
   min-height: 100%;
   background:
-    radial-gradient(circle at top, rgba(96, 165, 250, 0.06), transparent 24%),
+    radial-gradient(circle at top, rgb(var(--niuu-rgb-signal, 96 165 250) / 0.06), transparent 24%),
     var(--niuu-bg-primary, #09090b);
-  color: rgba(244, 244, 245, 0.96);
+  color: rgb(var(--niuu-rgb-mist, 244 244 245) / 0.96);
 }
 
 .ting-research-detail__loading,
 .ting-research-detail__error {
   padding: 32px;
-  color: rgba(161, 161, 170, 0.92);
+  color: rgb(var(--niuu-rgb-muted, 161 161 170) / 0.92);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 12px;
 }
 
 .ting-research-detail__error {
-  color: rgba(251, 113, 133, 0.92);
+  color: rgb(var(--niuu-rgb-danger, 251 113 133) / 0.92);
 }
 
 .ting-research-detail__state-strip {
@@ -28,8 +28,8 @@
   align-items: center;
   gap: 18px;
   padding: 14px 30px;
-  border-bottom: 1px solid rgba(63, 63, 70, 0.7);
-  background: rgba(17, 17, 20, 0.94);
+  border-bottom: 1px solid rgb(var(--niuu-rgb-line, 63 63 70) / 0.7);
+  background: rgb(var(--niuu-rgb-ink, 17 17 20) / 0.94);
   backdrop-filter: blur(14px);
 }
 
@@ -54,25 +54,25 @@
   width: 24px;
   height: 6px;
   border-radius: 999px;
-  background: rgba(63, 63, 70, 0.86);
-  box-shadow: inset 0 0 0 1px rgba(82, 82, 91, 0.26);
+  background: rgb(var(--niuu-rgb-line, 63 63 70) / 0.86);
+  box-shadow: inset 0 0 0 1px rgb(var(--niuu-rgb-muted, 82 82 91) / 0.26);
 }
 
 .ting-research-detail__tick.is-complete {
-  background: rgba(219, 234, 254, 0.96);
+  background: rgb(var(--niuu-rgb-mist, 219 234 254) / 0.96);
 }
 
 .ting-research-detail__tick.is-active {
-  background: rgba(186, 230, 253, 1);
-  box-shadow: 0 0 12px rgba(186, 230, 253, 0.48);
+  background: rgb(var(--niuu-rgb-signal, 186 230 253) / 1);
+  box-shadow: 0 0 12px rgb(var(--niuu-rgb-signal, 186 230 253) / 0.48);
 }
 
 .ting-research-detail__tick.is-blocked {
-  background: rgba(251, 191, 36, 0.92);
+  background: rgb(var(--niuu-rgb-warning, 251 191 36) / 0.92);
 }
 
 .ting-research-detail__tick.is-failed {
-  background: rgba(248, 113, 113, 0.92);
+  background: rgb(var(--niuu-rgb-danger, 248 113 113) / 0.92);
 }
 
 .ting-research-detail__strip-copy,
@@ -115,11 +115,11 @@
   align-items: center;
   gap: 9px;
   min-width: 0;
-  color: rgba(212, 212, 216, 0.82);
+  color: rgb(var(--niuu-rgb-mist, 212 212 216) / 0.82);
 }
 
 .ting-research-detail__ticker-persona {
-  color: rgba(225, 232, 240, 0.94);
+  color: rgb(var(--niuu-rgb-mist, 225 232 240) / 0.94);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -129,19 +129,19 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: rgba(161, 161, 170, 0.88);
+  color: rgb(var(--niuu-rgb-muted, 161 161 170) / 0.88);
 }
 
 .ting-research-detail__live-dot {
   width: 7px;
   height: 7px;
   border-radius: 999px;
-  background: rgba(191, 219, 254, 0.98);
-  box-shadow: 0 0 12px rgba(125, 211, 252, 0.52);
+  background: rgb(var(--niuu-rgb-signal, 191 219 254) / 0.98);
+  box-shadow: 0 0 12px rgb(var(--niuu-rgb-signal, 125 211 252) / 0.52);
 }
 
 .ting-research-detail__live-dot.is-idle {
-  background: rgba(113, 113, 122, 0.82);
+  background: rgb(var(--niuu-rgb-muted, 113 113 122) / 0.82);
   box-shadow: none;
 }
 
@@ -155,7 +155,7 @@
   width: 48px;
   height: 6px;
   border-radius: 999px;
-  background: rgba(63, 63, 70, 0.86);
+  background: rgb(var(--niuu-rgb-line, 63 63 70) / 0.86);
   overflow: hidden;
 }
 
@@ -163,11 +163,15 @@
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, rgba(191, 219, 254, 0.94), rgba(125, 211, 252, 1));
+  background: linear-gradient(
+    90deg,
+    rgb(var(--niuu-rgb-signal, 191 219 254) / 0.94),
+    rgb(var(--niuu-rgb-signal, 125 211 252) / 1)
+  );
 }
 
 .ting-research-detail__confidence-text {
-  color: rgba(212, 212, 216, 0.86);
+  color: rgb(var(--niuu-rgb-mist, 212 212 216) / 0.86);
 }
 
 .ting-research-detail__run-chip,
@@ -181,9 +185,9 @@
 .ting-research-detail__annotation-action,
 .ting-research-detail__popover-actions button,
 .ting-research-detail__lf-action {
-  border: 1px solid rgba(82, 82, 91, 0.74);
-  background: rgba(24, 24, 27, 0.98);
-  color: rgba(244, 244, 245, 0.95);
+  border: 1px solid rgb(var(--niuu-rgb-muted, 82 82 91) / 0.74);
+  background: rgb(var(--niuu-rgb-raised, 24 24 27) / 0.98);
+  color: rgb(var(--niuu-rgb-mist, 244 244 245) / 0.95);
   border-radius: 12px;
   cursor: pointer;
 }
@@ -201,18 +205,18 @@
 .ting-research-detail__files-chip,
 .ting-research-detail__primary-button,
 .ting-research-detail__segmented button.is-active {
-  border-color: rgba(56, 189, 248, 0.56);
-  background: rgba(14, 32, 46, 0.96);
-  color: rgba(224, 242, 254, 0.98);
+  border-color: rgb(var(--niuu-rgb-signal, 56 189 248) / 0.56);
+  background: rgb(var(--niuu-rgb-raised, 14 32 46) / 0.96);
+  color: rgb(var(--niuu-rgb-mist, 224 242 254) / 0.98);
 }
 
 .ting-research-detail__files-chip.is-danger,
 .ting-research-detail__ghost-button.is-danger,
 .ting-research-detail__primary-button.is-danger,
 .ting-research-detail__operator-actions button.is-danger {
-  border-color: rgba(248, 113, 113, 0.38);
+  border-color: rgb(var(--niuu-rgb-danger, 248 113 113) / 0.38);
   background: rgba(69, 10, 10, 0.24);
-  color: rgba(254, 202, 202, 0.98);
+  color: rgb(var(--niuu-rgb-danger, 254 202 202) / 0.98);
 }
 
 .ting-research-detail__canvas {
@@ -249,7 +253,7 @@
   padding: 0;
   border: none;
   background: none;
-  color: rgba(212, 212, 216, 0.86);
+  color: rgb(var(--niuu-rgb-mist, 212 212 216) / 0.86);
   cursor: pointer;
   font: inherit;
 }
@@ -260,7 +264,7 @@
 .ting-research-detail__meta-line,
 .ting-research-detail__section-meta,
 .ting-research-detail__view-label {
-  color: rgba(161, 161, 170, 0.84);
+  color: rgb(var(--niuu-rgb-muted, 161 161 170) / 0.84);
   font-size: 11px;
 }
 
@@ -268,20 +272,20 @@
   width: 10px;
   height: 10px;
   border-radius: 999px;
-  background: rgba(113, 113, 122, 0.82);
+  background: rgb(var(--niuu-rgb-muted, 113 113 122) / 0.82);
 }
 
 .ting-research-detail__state-dot.is-brand {
-  background: rgba(186, 230, 253, 0.98);
-  box-shadow: 0 0 11px rgba(186, 230, 253, 0.44);
+  background: rgb(var(--niuu-rgb-signal, 186 230 253) / 0.98);
+  box-shadow: 0 0 11px rgb(var(--niuu-rgb-signal, 186 230 253) / 0.44);
 }
 
 .ting-research-detail__state-dot.is-amber {
-  background: rgba(251, 191, 36, 0.98);
+  background: rgb(var(--niuu-rgb-warning, 251 191 36) / 0.98);
 }
 
 .ting-research-detail__state-dot.is-rose {
-  background: rgba(248, 113, 113, 0.98);
+  background: rgb(var(--niuu-rgb-danger, 248 113 113) / 0.98);
 }
 
 .ting-research-detail__mode-pill {
@@ -291,7 +295,7 @@
   border-radius: 12px;
   border: 1px solid rgba(124, 58, 237, 0.42);
   background: rgba(46, 16, 101, 0.34);
-  color: rgba(221, 214, 254, 0.96);
+  color: rgb(var(--niuu-rgb-mist, 221 214 254) / 0.96);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 11px;
   text-transform: uppercase;
@@ -304,13 +308,13 @@
   line-height: 0.98;
   letter-spacing: -0.05em;
   font-weight: 700;
-  color: rgba(250, 250, 250, 0.98);
+  color: rgb(var(--niuu-rgb-mist, 250 250 250) / 0.98);
 }
 
 .ting-research-detail__question {
   max-width: 820px;
   margin: 0;
-  color: rgba(161, 161, 170, 0.95);
+  color: rgb(var(--niuu-rgb-muted, 161 161 170) / 0.95);
   font-size: 18px;
   line-height: 1.52;
 }
@@ -334,14 +338,14 @@
   display: inline-flex;
   border-radius: 12px;
   overflow: hidden;
-  border: 1px solid rgba(63, 63, 70, 0.8);
+  border: 1px solid rgb(var(--niuu-rgb-line, 63 63 70) / 0.8);
 }
 
 .ting-research-detail__segmented button {
   padding: 8px 16px;
   border: none;
-  background: rgba(17, 24, 39, 0.88);
-  color: rgba(161, 161, 170, 0.92);
+  background: rgb(var(--niuu-rgb-raised, 17 24 39) / 0.88);
+  color: rgb(var(--niuu-rgb-muted, 161 161 170) / 0.92);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 11px;
   cursor: pointer;
@@ -354,27 +358,27 @@
   grid-template-columns: minmax(0, 1fr) 280px;
   gap: 28px;
   padding: 30px;
-  border: 1px solid rgba(82, 82, 91, 0.76);
+  border: 1px solid rgb(var(--niuu-rgb-muted, 82 82 91) / 0.76);
   border-radius: 22px;
-  background: rgba(24, 24, 27, 0.92);
+  background: rgb(var(--niuu-rgb-raised, 24 24 27) / 0.92);
   box-shadow: 0 22px 64px rgba(0, 0, 0, 0.22);
 }
 
 .ting-research-detail__hero-card.is-running,
 .ting-research-detail__hero-card.is-review {
-  border-color: rgba(100, 116, 139, 0.94);
+  border-color: rgb(var(--niuu-rgb-muted, 100 116 139) / 0.94);
 }
 
 .ting-research-detail__hero-card.is-published {
-  border-color: rgba(103, 232, 249, 0.3);
+  border-color: rgb(var(--niuu-rgb-signal, 103 232 249) / 0.3);
 }
 
 .ting-research-detail__hero-card.is-blocked {
-  border-color: rgba(234, 179, 8, 0.48);
+  border-color: rgb(var(--niuu-rgb-warning, 234 179 8) / 0.48);
 }
 
 .ting-research-detail__hero-card.is-failed {
-  border-color: rgba(248, 113, 113, 0.52);
+  border-color: rgb(var(--niuu-rgb-danger, 248 113 113) / 0.52);
 }
 
 .ting-research-detail__hero-main {
@@ -382,7 +386,7 @@
 }
 
 .ting-research-detail__hero-eyebrow {
-  color: rgba(191, 219, 254, 0.92);
+  color: rgb(var(--niuu-rgb-signal, 191 219 254) / 0.92);
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.12em;
@@ -393,7 +397,7 @@
   font-size: 21px;
   line-height: 1.2;
   font-weight: 650;
-  color: rgba(250, 250, 250, 0.98);
+  color: rgb(var(--niuu-rgb-mist, 250 250 250) / 0.98);
 }
 
 .ting-research-detail__hero-paragraph,
@@ -402,14 +406,14 @@
 .ting-research-detail__annotation-body,
 .ting-research-detail__drawer-quote,
 .ting-research-detail__activity-body {
-  color: rgba(228, 228, 231, 0.94);
+  color: rgb(var(--niuu-rgb-mist, 228 228 231) / 0.94);
   font-size: 17px;
   line-height: 1.55;
 }
 
 .ting-research-detail__hero-note {
   margin: 16px 0 0;
-  color: rgba(161, 161, 170, 0.86);
+  color: rgb(var(--niuu-rgb-muted, 161 161 170) / 0.86);
   font-size: 15px;
   line-height: 1.45;
   font-style: italic;
@@ -418,14 +422,14 @@
 .ting-research-detail__challenge-callout {
   margin-top: 22px;
   padding: 18px 20px;
-  border: 1px solid rgba(234, 179, 8, 0.42);
-  border-left: 3px solid rgba(250, 204, 21, 0.92);
+  border: 1px solid rgb(var(--niuu-rgb-warning, 234 179 8) / 0.42);
+  border-left: 3px solid rgb(var(--niuu-rgb-warning, 250 204 21) / 0.92);
   border-radius: 12px;
-  background: rgba(55, 48, 34, 0.74);
+  background: rgb(var(--niuu-rgb-line, 55 48 34) / 0.74);
 }
 
 .ting-research-detail__challenge-title {
-  color: rgba(250, 204, 21, 0.98);
+  color: rgb(var(--niuu-rgb-warning, 250 204 21) / 0.98);
   font-size: 15px;
   font-weight: 650;
 }
@@ -441,7 +445,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  color: rgba(252, 211, 77, 0.96);
+  color: rgb(var(--niuu-rgb-warning, 252 211 77) / 0.96);
   font-size: 16px;
 }
 
@@ -449,7 +453,7 @@
   display: flex;
   flex-direction: column;
   gap: 18px;
-  border-left: 1px solid rgba(63, 63, 70, 0.76);
+  border-left: 1px solid rgb(var(--niuu-rgb-line, 63 63 70) / 0.76);
   padding-left: 26px;
 }
 
@@ -463,17 +467,17 @@
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.16em;
-  color: rgba(113, 113, 122, 0.88);
+  color: rgb(var(--niuu-rgb-muted, 113 113 122) / 0.88);
 }
 
 .ting-research-detail__hero-meta-value {
-  color: rgba(250, 250, 250, 0.98);
+  color: rgb(var(--niuu-rgb-mist, 250 250 250) / 0.98);
   font-size: 18px;
   font-weight: 600;
 }
 
 .ting-research-detail__hero-meta-value.is-stage {
-  color: rgba(191, 219, 254, 0.98);
+  color: rgb(var(--niuu-rgb-signal, 191 219 254) / 0.98);
 }
 
 .ting-research-detail__hero-meta-value.is-mono {
@@ -499,18 +503,18 @@
 .ting-research-detail__popover {
   width: 360px;
   padding: 16px;
-  border: 1px solid rgba(82, 82, 91, 0.82);
+  border: 1px solid rgb(var(--niuu-rgb-muted, 82 82 91) / 0.82);
   border-radius: 16px;
-  background: rgba(24, 24, 27, 0.98);
+  background: rgb(var(--niuu-rgb-raised, 24 24 27) / 0.98);
   box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42);
 }
 
 .ting-research-detail__popover.is-critique {
-  border-color: rgba(248, 113, 113, 0.36);
+  border-color: rgb(var(--niuu-rgb-danger, 248 113 113) / 0.36);
 }
 
 .ting-research-detail__popover-eyebrow {
-  color: rgba(191, 219, 254, 0.92);
+  color: rgb(var(--niuu-rgb-signal, 191 219 254) / 0.92);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 11px;
   text-transform: uppercase;
@@ -526,7 +530,7 @@
 
 .ting-research-detail__popover-meta {
   margin-top: 10px;
-  color: rgba(161, 161, 170, 0.92);
+  color: rgb(var(--niuu-rgb-muted, 161 161 170) / 0.92);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 11px;
 }
@@ -534,8 +538,8 @@
 .ting-research-detail__popover-quote {
   margin-top: 16px;
   padding-left: 14px;
-  border-left: 2px solid rgba(191, 219, 254, 0.92);
-  color: rgba(228, 228, 231, 0.92);
+  border-left: 2px solid rgb(var(--niuu-rgb-signal, 191 219 254) / 0.92);
+  color: rgb(var(--niuu-rgb-mist, 228 228 231) / 0.92);
   font-size: 16px;
   line-height: 1.48;
 }
@@ -566,18 +570,18 @@
 
 .ting-research-detail__annotation-card {
   padding: 14px;
-  border: 1px solid rgba(82, 82, 91, 0.74);
+  border: 1px solid rgb(var(--niuu-rgb-muted, 82 82 91) / 0.74);
   border-left-width: 3px;
   border-radius: 14px;
-  background: rgba(17, 17, 20, 0.82);
+  background: rgb(var(--niuu-rgb-ink, 17 17 20) / 0.82);
 }
 
 .ting-research-detail__annotation-card.is-source {
-  border-left-color: rgba(125, 211, 252, 0.92);
+  border-left-color: rgb(var(--niuu-rgb-signal, 125 211 252) / 0.92);
 }
 
 .ting-research-detail__annotation-card.is-critique {
-  border-left-color: rgba(248, 113, 113, 0.9);
+  border-left-color: rgb(var(--niuu-rgb-danger, 248 113 113) / 0.9);
 }
 
 .ting-research-detail__annotation-title,
@@ -588,14 +592,14 @@
   font-size: 17px;
   line-height: 1.32;
   font-weight: 650;
-  color: rgba(250, 250, 250, 0.98);
+  color: rgb(var(--niuu-rgb-mist, 250 250 250) / 0.98);
 }
 
 .ting-research-detail__annotation-body,
 .ting-research-detail__lf-body {
   margin-top: 8px;
   font-size: 14px;
-  color: rgba(212, 212, 216, 0.88);
+  color: rgb(var(--niuu-rgb-mist, 212 212 216) / 0.88);
 }
 
 .ting-research-detail__annotation-action,
@@ -606,7 +610,7 @@
 }
 
 .ting-research-detail__section {
-  border-top: 1px solid rgba(39, 39, 42, 0.92);
+  border-top: 1px solid rgb(var(--niuu-rgb-raised, 39 39 42) / 0.92);
   padding-top: 18px;
   margin-top: 18px;
 }
@@ -626,7 +630,7 @@
   background: none;
   padding: 0;
   cursor: pointer;
-  color: rgba(250, 250, 250, 0.98);
+  color: rgb(var(--niuu-rgb-mist, 250 250 250) / 0.98);
 }
 
 .ting-research-detail__section-title {
@@ -635,7 +639,7 @@
 }
 
 .ting-research-detail__section-caret {
-  color: rgba(161, 161, 170, 0.9);
+  color: rgb(var(--niuu-rgb-muted, 161 161 170) / 0.9);
   font-size: 16px;
 }
 
@@ -650,7 +654,7 @@
 }
 
 .ting-research-detail__table {
-  border: 1px solid rgba(63, 63, 70, 0.72);
+  border: 1px solid rgb(var(--niuu-rgb-line, 63 63 70) / 0.72);
   border-radius: 18px;
   overflow: hidden;
 }
@@ -665,8 +669,8 @@
 }
 
 .ting-research-detail__table-head {
-  background: rgba(24, 24, 27, 0.98);
-  color: rgba(113, 113, 122, 0.94);
+  background: rgb(var(--niuu-rgb-raised, 24 24 27) / 0.98);
+  color: rgb(var(--niuu-rgb-muted, 113 113 122) / 0.94);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 10px;
   text-transform: uppercase;
@@ -674,9 +678,9 @@
 }
 
 .ting-research-detail__table-row {
-  border-top: 1px solid rgba(39, 39, 42, 0.92);
-  background: rgba(17, 17, 20, 0.72);
-  color: rgba(244, 244, 245, 0.96);
+  border-top: 1px solid rgb(var(--niuu-rgb-raised, 39 39 42) / 0.92);
+  background: rgb(var(--niuu-rgb-ink, 17 17 20) / 0.72);
+  color: rgb(var(--niuu-rgb-mist, 244 244 245) / 0.96);
   cursor: pointer;
   text-align: left;
 }
@@ -688,9 +692,9 @@
   width: fit-content;
   padding: 6px 9px;
   border-radius: 10px;
-  border: 1px solid rgba(82, 82, 91, 0.78);
-  background: rgba(30, 41, 59, 0.92);
-  color: rgba(219, 234, 254, 0.98);
+  border: 1px solid rgb(var(--niuu-rgb-muted, 82 82 91) / 0.78);
+  background: rgb(var(--niuu-rgb-raised, 30 41 59) / 0.92);
+  color: rgb(var(--niuu-rgb-mist, 219 234 254) / 0.98);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 11px;
 }
@@ -705,7 +709,7 @@
 }
 
 .ting-research-detail__row-open {
-  color: rgba(191, 219, 254, 0.92);
+  color: rgb(var(--niuu-rgb-signal, 191 219 254) / 0.92);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 11px;
 }
@@ -720,11 +724,11 @@
   width: 8px;
   height: 8px;
   border-radius: 999px;
-  background: rgba(63, 63, 70, 0.86);
+  background: rgb(var(--niuu-rgb-line, 63 63 70) / 0.86);
 }
 
 .ting-research-detail__quality-dot.is-filled {
-  background: rgba(191, 219, 254, 0.98);
+  background: rgb(var(--niuu-rgb-signal, 191 219 254) / 0.98);
 }
 
 .ting-research-detail__critique-list {
@@ -735,23 +739,23 @@
 .ting-research-detail__critique-card {
   padding: 16px 18px;
   border-radius: 16px;
-  border: 1px solid rgba(82, 82, 91, 0.74);
+  border: 1px solid rgb(var(--niuu-rgb-muted, 82 82 91) / 0.74);
   border-left-width: 3px;
-  background: rgba(17, 17, 20, 0.8);
+  background: rgb(var(--niuu-rgb-ink, 17 17 20) / 0.8);
   text-align: left;
   cursor: pointer;
 }
 
 .ting-research-detail__critique-card.is-high {
-  border-left-color: rgba(248, 113, 113, 0.92);
+  border-left-color: rgb(var(--niuu-rgb-danger, 248 113 113) / 0.92);
 }
 
 .ting-research-detail__critique-card.is-med {
-  border-left-color: rgba(251, 191, 36, 0.92);
+  border-left-color: rgb(var(--niuu-rgb-warning, 251 191 36) / 0.92);
 }
 
 .ting-research-detail__critique-card.is-low {
-  border-left-color: rgba(148, 163, 184, 0.92);
+  border-left-color: rgb(var(--niuu-rgb-muted, 148 163 184) / 0.92);
 }
 
 .ting-research-detail__critique-top {
@@ -766,39 +770,39 @@
   align-items: center;
   padding: 7px 12px;
   border-radius: 999px;
-  border: 1px solid rgba(82, 82, 91, 0.74);
+  border: 1px solid rgb(var(--niuu-rgb-muted, 82 82 91) / 0.74);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 11px;
   text-transform: lowercase;
 }
 
 .ting-research-detail__severity-pill.is-high {
-  color: rgba(254, 202, 202, 0.98);
-  border-color: rgba(248, 113, 113, 0.48);
+  color: rgb(var(--niuu-rgb-danger, 254 202 202) / 0.98);
+  border-color: rgb(var(--niuu-rgb-danger, 248 113 113) / 0.48);
   background: rgba(69, 10, 10, 0.28);
 }
 
 .ting-research-detail__severity-pill.is-med {
-  color: rgba(253, 230, 138, 0.98);
-  border-color: rgba(251, 191, 36, 0.46);
+  color: rgb(var(--niuu-rgb-warning, 253 230 138) / 0.98);
+  border-color: rgb(var(--niuu-rgb-warning, 251 191 36) / 0.46);
   background: rgba(69, 26, 3, 0.26);
 }
 
 .ting-research-detail__severity-pill.is-low {
-  color: rgba(203, 213, 225, 0.98);
-  background: rgba(30, 41, 59, 0.46);
+  color: rgb(var(--niuu-rgb-mist, 203 213 225) / 0.98);
+  background: rgb(var(--niuu-rgb-raised, 30 41 59) / 0.46);
 }
 
 .ting-research-detail__critique-against {
   margin-top: 12px;
-  color: rgba(161, 161, 170, 0.92);
+  color: rgb(var(--niuu-rgb-muted, 161 161 170) / 0.92);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 12px;
 }
 
 .ting-research-detail__critique-note {
   margin-top: 10px;
-  color: rgba(228, 228, 231, 0.92);
+  color: rgb(var(--niuu-rgb-mist, 228 228 231) / 0.92);
   font-size: 16px;
   line-height: 1.5;
 }
@@ -817,7 +821,7 @@
 
 .ting-research-detail__lf-heading,
 .ting-research-detail__memory-heading {
-  color: rgba(191, 219, 254, 0.92);
+  color: rgb(var(--niuu-rgb-signal, 191 219 254) / 0.92);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 11px;
   text-transform: uppercase;
@@ -830,9 +834,9 @@
 .ting-research-detail__drawer-linked-item,
 .ting-research-detail__activity-item {
   padding: 14px 16px;
-  border: 1px solid rgba(63, 63, 70, 0.72);
+  border: 1px solid rgb(var(--niuu-rgb-line, 63 63 70) / 0.72);
   border-radius: 14px;
-  background: rgba(17, 17, 20, 0.76);
+  background: rgb(var(--niuu-rgb-ink, 17 17 20) / 0.76);
 }
 
 .ting-research-detail__memory-group {
@@ -853,8 +857,8 @@
 }
 
 .ting-research-detail__memory-card.is-published {
-  border-color: rgba(56, 189, 248, 0.38);
-  background: rgba(8, 47, 73, 0.34);
+  border-color: rgb(var(--niuu-rgb-signal, 56 189 248) / 0.38);
+  background: rgb(var(--niuu-rgb-deep, 8 47 73) / 0.34);
 }
 
 .ting-research-detail__memory-card.is-review {
@@ -871,7 +875,7 @@
 
 .ting-research-detail__memory-details summary {
   cursor: pointer;
-  color: rgba(161, 161, 170, 0.9);
+  color: rgb(var(--niuu-rgb-muted, 161 161 170) / 0.9);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 11px;
 }
@@ -922,13 +926,13 @@
 
 .ting-research-detail__markdown-table th,
 .ting-research-detail__markdown-table td {
-  border: 1px solid rgba(63, 63, 70, 0.72);
+  border: 1px solid rgb(var(--niuu-rgb-line, 63 63 70) / 0.72);
   padding: 10px 12px;
   text-align: left;
 }
 
 .ting-research-detail__markdown-table th {
-  color: rgba(191, 219, 254, 0.92);
+  color: rgb(var(--niuu-rgb-signal, 191 219 254) / 0.92);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 11px;
   text-transform: uppercase;
@@ -939,16 +943,16 @@
   align-items: center;
   padding: 0.14em 0.4em;
   border-radius: 7px;
-  background: rgba(39, 39, 42, 0.96);
-  color: rgba(226, 232, 240, 0.98);
+  background: rgb(var(--niuu-rgb-raised, 39 39 42) / 0.96);
+  color: rgb(var(--niuu-rgb-mist, 226 232 240) / 0.98);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 0.92em;
 }
 
 .ting-research-detail__markdown-link {
-  color: rgba(125, 211, 252, 0.98);
+  color: rgb(var(--niuu-rgb-signal, 125 211 252) / 0.98);
   text-decoration: underline;
-  text-decoration-color: rgba(125, 211, 252, 0.42);
+  text-decoration-color: rgb(var(--niuu-rgb-signal, 125 211 252) / 0.42);
 }
 
 .ting-research-detail__citation-anchor,
@@ -963,9 +967,9 @@
   justify-content: center;
   padding: 4px 7px;
   border-radius: 8px;
-  border: 1px solid rgba(82, 82, 91, 0.78);
-  background: rgba(30, 41, 59, 0.8);
-  color: rgba(219, 234, 254, 0.98);
+  border: 1px solid rgb(var(--niuu-rgb-muted, 82 82 91) / 0.78);
+  background: rgb(var(--niuu-rgb-raised, 30 41 59) / 0.8);
+  color: rgb(var(--niuu-rgb-mist, 219 234 254) / 0.98);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 11px;
   cursor: pointer;
@@ -973,14 +977,14 @@
 
 .ting-research-detail__citation.is-critique {
   background: rgba(69, 10, 10, 0.28);
-  color: rgba(254, 202, 202, 0.98);
-  border-color: rgba(248, 113, 113, 0.38);
+  color: rgb(var(--niuu-rgb-danger, 254 202 202) / 0.98);
+  border-color: rgb(var(--niuu-rgb-danger, 248 113 113) / 0.38);
 }
 
 .ting-research-detail__citation.is-active {
   box-shadow:
-    0 0 0 1px rgba(186, 230, 253, 0.56),
-    0 0 12px rgba(125, 211, 252, 0.24);
+    0 0 0 1px rgb(var(--niuu-rgb-signal, 186 230 253) / 0.56),
+    0 0 12px rgb(var(--niuu-rgb-signal, 125 211 252) / 0.24);
 }
 
 .ting-research-detail__drawer {
@@ -989,8 +993,8 @@
   right: 0;
   bottom: 24px;
   width: min(620px, 46vw);
-  border-left: 1px solid rgba(63, 63, 70, 0.78);
-  background: rgba(24, 24, 27, 0.98);
+  border-left: 1px solid rgb(var(--niuu-rgb-line, 63 63 70) / 0.78);
+  background: rgb(var(--niuu-rgb-raised, 24 24 27) / 0.98);
   box-shadow: -18px 0 48px rgba(0, 0, 0, 0.34);
   z-index: 18;
   display: flex;
@@ -1002,13 +1006,13 @@
   justify-content: space-between;
   gap: 16px;
   padding: 18px 18px 14px;
-  border-bottom: 1px solid rgba(39, 39, 42, 0.92);
+  border-bottom: 1px solid rgb(var(--niuu-rgb-raised, 39 39 42) / 0.92);
 }
 
 .ting-research-detail__drawer-close {
   border: none;
   background: none;
-  color: rgba(161, 161, 170, 0.92);
+  color: rgb(var(--niuu-rgb-muted, 161 161 170) / 0.92);
   cursor: pointer;
   font-size: 22px;
 }
@@ -1016,13 +1020,13 @@
 .ting-research-detail__drawer-slug {
   margin-top: 4px;
   font-size: 12px;
-  color: rgba(113, 113, 122, 0.92);
+  color: rgb(var(--niuu-rgb-muted, 113 113 122) / 0.92);
 }
 
 .ting-research-detail__drawer-tabs,
 .ting-research-detail__operator-tabs {
   display: flex;
-  border-bottom: 1px solid rgba(39, 39, 42, 0.92);
+  border-bottom: 1px solid rgb(var(--niuu-rgb-raised, 39 39 42) / 0.92);
 }
 
 .ting-research-detail__drawer-tabs button,
@@ -1031,7 +1035,7 @@
   padding: 12px 14px;
   border: none;
   background: none;
-  color: rgba(161, 161, 170, 0.9);
+  color: rgb(var(--niuu-rgb-muted, 161 161 170) / 0.9);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 11px;
   cursor: pointer;
@@ -1039,8 +1043,8 @@
 
 .ting-research-detail__drawer-tabs button.is-active,
 .ting-research-detail__operator-tabs button.is-active {
-  color: rgba(240, 249, 255, 0.98);
-  box-shadow: inset 0 -2px 0 rgba(56, 189, 248, 0.98);
+  color: rgb(var(--niuu-rgb-mist, 240 249 255) / 0.98);
+  box-shadow: inset 0 -2px 0 rgb(var(--niuu-rgb-signal, 56 189 248) / 0.98);
 }
 
 .ting-research-detail__drawer-body {
@@ -1062,16 +1066,16 @@
   gap: 10px;
   padding: 14px 16px;
   overflow-x: auto;
-  border-bottom: 1px solid rgba(39, 39, 42, 0.92);
+  border-bottom: 1px solid rgb(var(--niuu-rgb-raised, 39 39 42) / 0.92);
 }
 
 .ting-research-detail__file-chip {
   flex: none;
   padding: 8px 12px;
   border-radius: 10px;
-  border: 1px solid rgba(82, 82, 91, 0.74);
-  background: rgba(17, 24, 39, 0.92);
-  color: rgba(212, 212, 216, 0.92);
+  border: 1px solid rgb(var(--niuu-rgb-muted, 82 82 91) / 0.74);
+  background: rgb(var(--niuu-rgb-raised, 17 24 39) / 0.92);
+  color: rgb(var(--niuu-rgb-mist, 212 212 216) / 0.92);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 11px;
   cursor: pointer;
@@ -1079,8 +1083,8 @@
 
 .ting-research-detail__file-chip.is-active,
 .ting-research-detail__file-chip.is-published {
-  border-color: rgba(56, 189, 248, 0.44);
-  color: rgba(224, 242, 254, 0.98);
+  border-color: rgb(var(--niuu-rgb-signal, 56 189 248) / 0.44);
+  color: rgb(var(--niuu-rgb-mist, 224 242 254) / 0.98);
 }
 
 .ting-research-detail__drawer-file {
@@ -1102,7 +1106,7 @@
 .ting-research-detail__drawer-file-path {
   margin-top: 6px;
   font-size: 11px;
-  color: rgba(113, 113, 122, 0.92);
+  color: rgb(var(--niuu-rgb-muted, 113 113 122) / 0.92);
 }
 
 .ting-research-detail__drawer-split {
@@ -1113,7 +1117,7 @@
 
 .ting-research-detail__drawer-master {
   overflow-y: auto;
-  border-bottom: 1px solid rgba(39, 39, 42, 0.92);
+  border-bottom: 1px solid rgb(var(--niuu-rgb-raised, 39 39 42) / 0.92);
 }
 
 .ting-research-detail__master-row {
@@ -1123,28 +1127,28 @@
   align-items: center;
   gap: 12px;
   padding: 12px 18px;
-  border-bottom: 1px solid rgba(39, 39, 42, 0.7);
+  border-bottom: 1px solid rgb(var(--niuu-rgb-raised, 39 39 42) / 0.7);
   background: transparent;
-  color: rgba(228, 228, 231, 0.96);
+  color: rgb(var(--niuu-rgb-mist, 228 228 231) / 0.96);
   cursor: pointer;
   text-align: left;
 }
 
 .ting-research-detail__master-row.is-active {
-  background: rgba(30, 41, 59, 0.42);
+  background: rgb(var(--niuu-rgb-raised, 30 41 59) / 0.42);
 }
 
 .ting-research-detail__master-citation {
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 11px;
-  color: rgba(191, 219, 254, 0.98);
+  color: rgb(var(--niuu-rgb-signal, 191 219 254) / 0.98);
 }
 
 .ting-research-detail__master-quality {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: rgba(161, 161, 170, 0.9);
+  color: rgb(var(--niuu-rgb-muted, 161 161 170) / 0.9);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 11px;
 }
@@ -1169,7 +1173,7 @@
 
 .ting-research-detail__drawer-meta-card span {
   display: block;
-  color: rgba(113, 113, 122, 0.92);
+  color: rgb(var(--niuu-rgb-muted, 113 113 122) / 0.92);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 10px;
   text-transform: uppercase;
@@ -1182,7 +1186,7 @@
   gap: 8px;
   margin-top: 8px;
   font-size: 16px;
-  color: rgba(250, 250, 250, 0.98);
+  color: rgb(var(--niuu-rgb-mist, 250 250 250) / 0.98);
 }
 
 .ting-research-detail__drawer-subheading {
@@ -1193,7 +1197,7 @@
 
 .ting-research-detail__drawer-quote {
   padding-left: 16px;
-  border-left: 2px solid rgba(191, 219, 254, 0.92);
+  border-left: 2px solid rgb(var(--niuu-rgb-signal, 191 219 254) / 0.92);
   font-size: 16px;
 }
 
@@ -1205,7 +1209,7 @@
 .ting-research-detail__drawer-linked-item {
   text-align: left;
   cursor: pointer;
-  color: rgba(228, 228, 231, 0.96);
+  color: rgb(var(--niuu-rgb-mist, 228 228 231) / 0.96);
   font-family: var(--font-mono, 'IBM Plex Mono', monospace);
   font-size: 12px;
 }
@@ -1225,8 +1229,8 @@
 }
 
 .ting-research-detail__operator-actions button.is-danger {
-  border-color: rgba(248, 113, 113, 0.38);
-  color: rgba(254, 202, 202, 0.98);
+  border-color: rgb(var(--niuu-rgb-danger, 248 113 113) / 0.38);
+  color: rgb(var(--niuu-rgb-danger, 254 202 202) / 0.98);
   background: rgba(69, 10, 10, 0.24);
 }
 
@@ -1252,7 +1256,7 @@
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: rgba(113, 113, 122, 0.92);
+  color: rgb(var(--niuu-rgb-muted, 113 113 122) / 0.92);
 }
 
 .ting-research-detail__activity-body {
@@ -1268,9 +1272,9 @@
 
 .ting-research-detail__operator-grid div {
   padding: 14px 16px;
-  border: 1px solid rgba(63, 63, 70, 0.72);
+  border: 1px solid rgb(var(--niuu-rgb-line, 63 63 70) / 0.72);
   border-radius: 14px;
-  background: rgba(17, 17, 20, 0.76);
+  background: rgb(var(--niuu-rgb-ink, 17 17 20) / 0.76);
 }
 
 .ting-research-detail__operator-grid strong {
@@ -1306,7 +1310,7 @@
 
   .ting-research-detail__hero-side {
     border-left: none;
-    border-top: 1px solid rgba(63, 63, 70, 0.76);
+    border-top: 1px solid rgb(var(--niuu-rgb-line, 63 63 70) / 0.76);
     padding-left: 0;
     padding-top: 22px;
   }

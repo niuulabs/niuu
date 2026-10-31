@@ -405,6 +405,16 @@
   --niuu-critical: var(--color-critical);
   --niuu-warn: var(--state-warn);
   --niuu-ok: var(--state-ok);
+  --niuu-rgb-ink: 11 23 34;
+  --niuu-rgb-raised: 24 43 56;
+  --niuu-rgb-line: 43 67 81;
+  --niuu-rgb-muted: 120 144 157;
+  --niuu-rgb-mist: 237 244 247;
+  --niuu-rgb-signal: 134 208 232;
+  --niuu-rgb-deep: 29 90 115;
+  --niuu-rgb-success: 118 191 167;
+  --niuu-rgb-warning: 228 189 126;
+  --niuu-rgb-danger: 231 141 148;
   --niuu-backdrop-centre: #0b1722;
   --niuu-backdrop-edge: #071019;
 }

@@ -49,10 +49,10 @@
   display: flex;
   gap: 14px;
   padding: 6px 10px;
-  border: 1px solid rgb(147 197 253 / 16%);
+  border: 1px solid rgb(var(--niuu-rgb-signal, 147 197 253) / 16%);
   border-radius: 6px;
-  background: rgb(9 9 11 / 76%);
-  color: rgb(186 230 253 / 62%);
+  background: rgb(var(--niuu-rgb-ink, 9 9 11) / 76%);
+  color: rgb(var(--niuu-rgb-signal, 186 230 253) / 62%);
   font-family: var(--font-mono, monospace);
   font-size: 10px;
   letter-spacing: 0.04em;
