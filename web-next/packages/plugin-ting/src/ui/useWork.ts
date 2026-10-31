@@ -58,6 +58,15 @@ export function useReviews() {
   });
 }
 
+export function useReviewWidget(module: string, name: string) {
+  const service = useService<IWorkService>('ting.work');
+  return useQuery({
+    queryKey: ['ting', 'work', 'review-widget', module, name],
+    queryFn: () => service.reviewWidget(module, name),
+    retry: false,
+  });
+}
+
 export function useTicketReviews(projectId: string, issueId: string) {
   const service = useService<IWorkService>('ting.work');
   return useQuery({

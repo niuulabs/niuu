@@ -43,6 +43,7 @@ const PAGE_BRIDGE = `(() => {
       quote: (text) => call('quote', { text }),
       ask: (text) => call('ask', { text }),
       file: (name) => call('file', { name }),
+      source: () => call('source'),
     },
   };
 })();`;
@@ -95,6 +96,8 @@ export interface SandboxedPageProps {
   /** Files the workflow declared; anything else is refused. */
   files: readonly string[];
   readFile: (name: string) => Promise<ArrayBuffer>;
+  /** What this panel was pointed at: text, a file's bytes, or nothing. */
+  readSource?: () => Promise<string | ArrayBuffer | null>;
   /** Puts text in front of the person, who decides whether to send it. */
   onQuote?: (text: string) => void;
   onAsk?: (text: string) => void;
@@ -115,6 +118,7 @@ export function SandboxedPage({
   context,
   files,
   readFile,
+  readSource,
   onQuote,
   onAsk,
 }: SandboxedPageProps) {
@@ -142,6 +146,8 @@ export function SandboxedPage({
           if (!files.includes(name)) throw new Error(`This workflow did not declare ${name}`);
           return readFile(name);
         }
+        case 'source':
+          return readSource ? readSource() : null;
         default:
           throw new Error(`Unknown request: ${String(request.type)}`);
       }
@@ -171,7 +177,7 @@ export function SandboxedPage({
 
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [context, files, onAsk, onQuote, readFile]);
+  }, [context, files, onAsk, onQuote, readFile, readSource]);
 
   return (
     <div className="niuu-sandboxed-page">

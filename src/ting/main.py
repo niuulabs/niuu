@@ -23,6 +23,7 @@ from niuu.observability import enable_trace_log_correlation
 from niuu.ports.delivery import EvidenceAuthenticator
 from niuu.ports.integrations import IntegrationRepository
 from niuu.ports.workload_identity import WorkloadTokenIssuer
+from niuu.review_widgets import load_review_widgets
 from niuu.service_runtime import (
     _get_auth_mode,
     _validate_identity_adapter_class,
@@ -644,6 +645,10 @@ def create_app(
         )
 
     app.state.settings = settings
+    app.state.review_widgets = load_review_widgets(
+        settings.review_widgets.module_manifest_files,
+        max_bytes=settings.review_widgets.max_page_bytes,
+    )
     _ting_identity_cls = import_class(settings.auth.adapter)
     _validate_identity_adapter_class(_ting_identity_cls, _get_auth_mode(settings))
     app.state.identity = _ting_identity_cls(**settings.auth.kwargs)

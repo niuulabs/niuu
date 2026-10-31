@@ -162,6 +162,11 @@ data:
       {{- end }}
     {{- end }}
 
+    {{- with .Values.reviewWidgets.moduleManifestFiles }}
+    review_widgets:
+      module_manifest_files: {{ . | toJson }}
+    {{- end }}
+
     {{- if or .Values.a2a.agentName .Values.a2a.agentDescription .Values.a2a.cardMaxAgeSeconds .Values.a2a.launchLeaseSeconds .Values.a2a.inlineArtifactMaxChars .Values.a2a.extraArtifactFiles .Values.a2a.publicBaseUrl .Values.a2a.pushAuth.adapter }}
     a2a:
       {{- if .Values.a2a.agentName }}

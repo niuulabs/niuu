@@ -16,6 +16,8 @@ describe('Work HTTP read adapter', () => {
     await adapter.ticketReviews('project/1', 'issue 1');
 
     expect(http.get).toHaveBeenCalledWith('/work/reviews');
+    await adapter.reviewWidget('acme-print', 'quality');
+    expect(http.get).toHaveBeenCalledWith('/work/review-widgets/acme-print/quality');
     expect(http.get).toHaveBeenCalledWith('/work/project/project%2F1/tasks/issue%201/reviews');
   });
 

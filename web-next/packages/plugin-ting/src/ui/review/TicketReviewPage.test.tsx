@@ -1,11 +1,11 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { frameDocument, type IFileSystemPort } from '@niuulabs/ui';
 import type { IWorkService } from '../../ports';
 import type { ReviewRevision, RunReview, TicketReviews } from '../../domain/review';
-import type { WorkDetail, WorkTask } from '../../domain/work';
+import type { ReviewPanel, WorkDetail, WorkTask } from '../../domain/work';
 import { TicketReviewPage } from './TicketReviewPage';
 import { ReviewPanelSlot } from './reviewPanels';
 
@@ -363,6 +363,111 @@ describe('TicketReviewPage', () => {
     );
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Forge is down');
+  });
+});
+
+describe('module widgets', () => {
+  function renderWidget(
+    reviewWidget: IWorkService['reviewWidget'],
+    panel: Partial<ReviewPanel> = {},
+    filesystem?: IFileSystemPort,
+  ) {
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ServicesProvider services={{ 'ting.work': { reviewWidget } as unknown as IWorkService }}>
+          <ReviewPanelSlot
+            panel={{ widget: 'acme-print/quality', title: 'Quality', ...panel }}
+            revision={revision({ fields: { inspection: 'Unit 17 strings' } })}
+            compareWith={null}
+            pullRequestUrl={null}
+            sessionId="run-1"
+            filesystem={filesystem}
+            pageContext={{ ticket: 'FAB-88' }}
+          />
+        </ServicesProvider>
+      </QueryClientProvider>,
+    );
+  }
+
+  function askForSource(frame: HTMLElement) {
+    const child = { postMessage: vi.fn() };
+    Object.defineProperty(frame, 'contentWindow', { value: child });
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          source: child as unknown as MessageEventSource,
+          data: { channel: 'niuu.review', id: 1, type: 'source' },
+        }),
+      );
+    });
+    return child;
+  }
+
+  it('runs an installed widget in the same sandbox as a page', async () => {
+    const reviewWidget = vi.fn().mockResolvedValue({ html: '<p>Stills</p>' });
+    renderWidget(reviewWidget);
+
+    const frame = await screen.findByTitle('Quality');
+
+    expect(reviewWidget).toHaveBeenCalledWith('acme-print', 'quality');
+    expect(frame).toHaveAttribute('sandbox', 'allow-scripts');
+    expect(frame.getAttribute('srcdoc')).toBe(frameDocument('<p>Stills</p>'));
+  });
+
+  it('gives a widget the outcome field the workflow pointed it at', async () => {
+    renderWidget(vi.fn().mockResolvedValue({ html: '' }), {
+      source: { kind: 'outcome', value: 'inspection' },
+    });
+
+    const child = askForSource(await screen.findByTitle('Quality'));
+
+    await waitFor(() =>
+      expect(child.postMessage.mock.calls[0]?.[0].result).toBe('Unit 17 strings'),
+    );
+  });
+
+  it('gives a widget a URL as it was declared', async () => {
+    renderWidget(vi.fn().mockResolvedValue({ html: '' }), {
+      source: { kind: 'url', value: 'https://printer.example/cam' },
+    });
+
+    const child = askForSource(await screen.findByTitle('Quality'));
+
+    await waitFor(() =>
+      expect(child.postMessage.mock.calls[0]?.[0].result).toBe('https://printer.example/cam'),
+    );
+  });
+
+  it('gives a widget the bytes of a declared file', async () => {
+    const bytes = new ArrayBuffer(8);
+    const downloadFile = vi.fn().mockResolvedValue({ arrayBuffer: () => bytes });
+    renderWidget(
+      vi.fn().mockResolvedValue({ html: '' }),
+      { source: { kind: 'file', value: 'stills/unit-17.jpg' } },
+      { downloadFile } as unknown as IFileSystemPort,
+    );
+
+    const child = askForSource(await screen.findByTitle('Quality'));
+
+    await waitFor(() =>
+      expect(downloadFile).toHaveBeenCalledWith('run-1', '/workspace/stills/unit-17.jpg'),
+    );
+    await waitFor(() => expect(child.postMessage.mock.calls[0]?.[0].result).toBe(bytes));
+  });
+
+  it('says a widget without a source has nothing to read', async () => {
+    renderWidget(vi.fn().mockResolvedValue({ html: '' }));
+
+    const child = askForSource(await screen.findByTitle('Quality'));
+
+    await waitFor(() => expect(child.postMessage).toHaveBeenCalled());
+    expect(child.postMessage.mock.calls[0]?.[0].result).toBeNull();
+  });
+
+  it('says when a widget is not installed here', async () => {
+    renderWidget(vi.fn().mockRejectedValue(new Error('acme-print/quality is not installed')));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('not installed');
   });
 });
 

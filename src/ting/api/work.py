@@ -365,6 +365,13 @@ class ReviewListResponse(_ResponseModel):
     items: list[ReviewItemResponse]
 
 
+class ReviewWidgetResponse(_ResponseModel):
+    module: str
+    name: str
+    title: str
+    html: str
+
+
 async def resolve_work_execution_repo(
     request: Request,
 ) -> WorkflowExecutionRepository | None:
@@ -759,6 +766,22 @@ def create_work_router() -> APIRouter:
         sagas = await saga_repo.list_sagas(owner_id=principal.user_id)
         return ReviewListResponse.model_validate({"items": review_list(campaigns, sagas)})
 
+    @router.get("/review-widgets/{module}/{name}", response_model=ReviewWidgetResponse)
+    async def read_review_widget(
+        module: str,
+        name: str,
+        request: Request,
+        _principal: Principal = Depends(extract_principal),
+    ) -> ReviewWidgetResponse:
+        """A widget's page as data: it only ever runs inside the review's sandbox."""
+        widget = request.app.state.review_widgets.get(f"{module}/{name}")
+        if widget is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Review widget {module}/{name} is not installed on this deployment",
+            )
+        return ReviewWidgetResponse.model_validate(widget)
+
     @router.get("/{kind}/{work_id}", response_model=WorkDetailResponse)
     async def get_work(
         kind: Literal["project", "campaign", "execution"],
@@ -1059,6 +1082,7 @@ __all__ = [
     "ReviewItemResponse",
     "ReviewListResponse",
     "ReviewPanelResponse",
+    "ReviewWidgetResponse",
     "ReviewRevisionResponse",
     "ReviewSourceResponse",
     "RunReviewResponse",

@@ -56,6 +56,7 @@ nav:
       - Inspect workflows and runs: get-started/workflows-and-teams-step.md
       - Direct agents and residents: get-started/direct-and-resident-assistants.md
       - Discovery and topology: get-started/shared-discovery-and-topology.md
+      - Build a review for a workflow: get-started/build-a-review.md
   - Understand Niuu:
       - Architecture and composability: concepts/platform-model.md
       - Toward an operating system: concepts/operating-system.md

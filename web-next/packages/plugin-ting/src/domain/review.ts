@@ -57,6 +57,20 @@ export interface ReviewList {
   items: ReviewItem[];
 }
 
+/** A widget a module package installed on this deployment. */
+export interface ReviewWidget {
+  module: string;
+  name: string;
+  title: string;
+  html: string;
+}
+
+/** A module's widget is named `module/name`; stock widgets have no slash. */
+export function moduleWidgetRef(widget: string): { module: string; name: string } | null {
+  const [module, name, ...rest] = widget.split('/');
+  return module && name && rest.length === 0 ? { module, name } : null;
+}
+
 /** Where a review lives: a ticket's review page, or its project plan's. */
 export function reviewPath(item: ReviewItem): string {
   return item.kind === 'ticket' && item.projectId && item.issueId

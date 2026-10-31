@@ -19,6 +19,7 @@ from ting.domain.workflow_board import (
     ReviewSource,
     WorkflowBoardError,
     board_from_snapshot,
+    module_widgets_of,
     parse_workflow_board,
     place_on_project,
     place_ticket,
@@ -151,6 +152,65 @@ def test_a_page_cannot_reach_past_its_workspace(panel: dict[str, Any], reason: s
 
     with pytest.raises(WorkflowBoardError, match=reason):
         parse_workflow_board(graph)
+
+
+def test_a_workflow_can_name_a_module_widget_with_any_source() -> None:
+    graph = _graph()
+    _gate_column(graph)["panels"] = [
+        {
+            "widget": "acme-print/print-quality",
+            "title": "Quality",
+            "source": {"outcome": "inspection"},
+            "files": ["stills/unit-17.jpg"],
+        },
+        {"widget": "acme-print/slicer", "title": "Slicer"},
+    ]
+
+    board = parse_workflow_board(graph)
+
+    assert board is not None
+    assert board.columns[1].panels == (
+        ReviewPanel(
+            widget="acme-print/print-quality",
+            title="Quality",
+            source=ReviewSource(kind="outcome", value="inspection"),
+            files=("stills/unit-17.jpg",),
+        ),
+        ReviewPanel(widget="acme-print/slicer", title="Slicer"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("panel", "reason"),
+    [
+        ({"widget": "Acme/Print", "title": "Q"}, "module/name"),
+        ({"widget": "a/b/c", "title": "Q"}, "module/name"),
+        ({"widget": "a/b", "title": "Q", "source": "plan"}, "source must be one of"),
+        ({"widget": "a/b", "title": "Q", "source": {"gate": "x"}}, "source must be one of"),
+        ({"widget": "a/b", "title": "Q", "source": {"file": "/etc/passwd"}}, "inside the work"),
+        ({"widget": "a/b", "title": "Q", "source": {"url": "ftp://x"}}, "http or https"),
+    ],
+)
+def test_a_module_widget_keeps_the_same_rules(panel: dict[str, Any], reason: str) -> None:
+    graph = _graph()
+    _gate_column(graph)["panels"] = [panel]
+
+    with pytest.raises(WorkflowBoardError, match=reason):
+        parse_workflow_board(graph)
+
+
+def test_a_board_says_which_module_widgets_it_needs() -> None:
+    graph = _graph()
+    _gate_column(graph)["panels"] = [
+        {"widget": "acme-print/print-quality", "title": "Quality"},
+        {"widget": "summary", "title": "Result"},
+    ]
+    board = parse_workflow_board(graph)
+    assert board is not None
+
+    project = ProjectBoard(workflows=(BoardWorkflow(id="w1", name="Print", board=board),))
+
+    assert module_widgets_of(project) == {"acme-print/print-quality"}
 
 
 def test_panels_need_a_gate() -> None:

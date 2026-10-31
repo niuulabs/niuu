@@ -137,6 +137,16 @@ describe('SandboxedPage', () => {
     );
   });
 
+  it('answers with what its panel was pointed at', async () => {
+    const { child } = renderPage({ readSource: vi.fn().mockResolvedValue('Unit 17 strings') });
+
+    request(child, { type: 'source' });
+
+    await waitFor(() =>
+      expect(child.postMessage.mock.calls[0]?.[0]).toMatchObject({ result: 'Unit 17 strings' }),
+    );
+  });
+
   it('refuses a file the workflow did not declare', async () => {
     const { child, props } = renderPage();
 

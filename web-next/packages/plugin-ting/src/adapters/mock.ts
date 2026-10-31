@@ -53,7 +53,7 @@ import type {
   WorkSummary,
   WorkTask,
 } from '../domain/work';
-import type { ReviewList, TicketReviews } from '../domain/review';
+import type { ReviewList, ReviewWidget, TicketReviews } from '../domain/review';
 import { serializePortableWorkflow } from '../domain/workflowPortable';
 
 // ---------------------------------------------------------------------------
@@ -2440,6 +2440,9 @@ export function createMockWorkService(): IWorkService {
     },
     async reviews() {
       return mockReviewList(tasks);
+    },
+    async reviewWidget(module, name): Promise<ReviewWidget> {
+      throw new Error(`Review widget ${module}/${name} is not installed on this deployment`);
     },
     async ticketReviews(_projectId, issueId) {
       return mockTicketReviews(tasks.find((entry) => entry.source.issueId === issueId));

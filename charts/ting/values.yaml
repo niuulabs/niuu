@@ -211,6 +211,11 @@ planner:
   # -- Prompt injected when the user clicks "Finalize Plan". Leave empty for built-in default.
   finalizePrompt: ""
 
+# Review widgets from external module packages. Mount each package with
+# extraVolumes and extraVolumeMounts, then list its niuu-module.yaml here.
+reviewWidgets:
+  moduleManifestFiles: []
+
 # A2A protocol surface (agent card + task endpoint)
 a2a:
   # -- Agent name advertised on the A2A agent card. Leave empty for built-in default.

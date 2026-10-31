@@ -16,6 +16,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from niuu.review_widgets import ReviewWidget
 from ting.api.research import resolve_workflow_campaign_repo
 from ting.api.sagas import resolve_saga_repo
 from ting.api.work import create_work_router, resolve_work_trackers
@@ -1444,3 +1445,23 @@ def test_a_ticket_review_names_the_plan_its_project_came_from() -> None:
     client = _client(saga, issues=[_issue()], runs=[], adapter=adapter, campaigns=[])
 
     assert _reviews(client, saga).json()["planSlug"] == "plan-1"
+
+
+def test_a_widget_page_is_served_as_data_only_when_installed() -> None:
+    saga = _planned_saga()
+    client = _client(saga, issues=[_issue()], runs=[], adapter=_adapter([]))
+    client.app.state.review_widgets = {
+        "acme-print/quality": ReviewWidget(
+            module="acme-print", name="quality", title="Quality", html="<p>Stills</p>"
+        )
+    }
+    url = "/api/v1/ting/work/review-widgets"
+
+    response = client.get(f"{url}/acme-print/quality", headers=HEADERS)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["html"] == "<p>Stills</p>"
+    missing = client.get(f"{url}/acme-print/other", headers=HEADERS)
+    assert missing.status_code == 404
+    assert "not installed" in missing.json()["detail"]

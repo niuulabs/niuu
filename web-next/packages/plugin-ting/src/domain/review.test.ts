@@ -3,6 +3,7 @@ import {
   addQuoteToNote,
   diffLines,
   isPending,
+  moduleWidgetRef,
   openingReview,
   questionAboutQuote,
   quotesFromMessages,
@@ -144,5 +145,19 @@ describe('reviewPath', () => {
 
   it('opens a project plan on its plan page', () => {
     expect(reviewPath({ ...item, kind: 'projectPlan', issueId: null })).toBe('/ting/plan/a2a-1');
+  });
+});
+
+describe('moduleWidgetRef', () => {
+  it('reads a module widget name', () => {
+    expect(moduleWidgetRef('acme-print/quality')).toEqual({
+      module: 'acme-print',
+      name: 'quality',
+    });
+  });
+
+  it('leaves stock widgets alone', () => {
+    expect(moduleWidgetRef('document')).toBeNull();
+    expect(moduleWidgetRef('a/b/c')).toBeNull();
   });
 });

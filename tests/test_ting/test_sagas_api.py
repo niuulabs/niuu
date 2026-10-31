@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
@@ -736,6 +737,23 @@ class TestBoardWorkflows:
         )
 
         assert response.status_code == 422
+
+    def test_a_board_needing_a_widget_not_installed_is_refused(
+        self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        planning = self._bundled("Ticket Planning Flow")[0]
+        graph = deepcopy(planning.graph)
+        column = next(item for item in graph["board"]["columns"] if item.get("gate"))
+        column["panels"] = [{"widget": "acme-print/print-quality", "title": "Quality"}]
+        client = self._client(mock_tracker, saga_repo, [replace(planning, graph=graph)])
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/board-workflows",
+            json={"workflow_ids": [str(planning.id)]},
+        )
+
+        assert response.status_code == 422
+        assert "acme-print/print-quality" in response.json()["detail"]
 
     def test_a_workflow_with_a_run_stays_on_the_board(
         self, mock_tracker: MockTracker, saga_repo: MockSagaRepo

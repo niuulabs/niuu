@@ -1,8 +1,9 @@
-import { useLayoutEffect, useRef, type ComponentType } from 'react';
+import { useCallback, useLayoutEffect, useRef, type ComponentType } from 'react';
 import { ExternalLink } from 'lucide-react';
 import {
   ExternalLinkPreview,
   MarkdownContent,
+  SandboxedPage,
   SessionDiffs,
   SessionFilePreview,
   SessionFilesWorkspace,
@@ -10,8 +11,9 @@ import {
   type IFileSystemPort,
   type ReviewControls,
 } from '@niuulabs/ui';
-import { diffLines, type ReviewRevision } from '../../domain/review';
+import { diffLines, moduleWidgetRef, type ReviewRevision } from '../../domain/review';
 import type { ReviewPanel } from '../../domain/work';
+import { useReviewWidget } from '../useWork';
 import { markQuotes } from './markQuotes';
 
 const NO_MARKS: readonly string[] = [];
@@ -176,6 +178,61 @@ function PagePanel({
   );
 }
 
+function ModuleWidgetPanel({
+  module,
+  name,
+  panel,
+  revision,
+  filesystem,
+  sessionId,
+  pageContext,
+  onQuote,
+  onAsk,
+}: ReviewPanelProps & { module: string; name: string }) {
+  const widget = useReviewWidget(module, name);
+  const source = panel.source;
+  const download = useCallback(
+    async (path: string) => {
+      if (!filesystem?.downloadFile || !sessionId) {
+        throw new Error('This app has no file browser connected.');
+      }
+      const blob = await filesystem.downloadFile(sessionId, `${WORKSPACE_ROOT}/${path}`);
+      return blob.arrayBuffer();
+    },
+    [filesystem, sessionId],
+  );
+  const readSource = useCallback(async () => {
+    if (!source) return null;
+    if (source.kind === 'file') return download(source.value);
+    if (source.kind === 'outcome') return revision.fields[source.value] ?? null;
+    return source.value;
+  }, [download, revision.fields, source]);
+
+  if (widget.isLoading) return <p role="status">Loading widget…</p>;
+  if (!widget.data) {
+    return (
+      <p role="alert" className="ting-review-panel__missing">
+        {widget.error instanceof Error
+          ? widget.error.message
+          : `Review widget ${module}/${name} could not be read.`}
+      </p>
+    );
+  }
+  return (
+    <SandboxedPage
+      key={revision.number}
+      title={panel.title}
+      html={widget.data.html}
+      context={pageContext ?? NO_CONTEXT}
+      files={panel.files ?? NO_FILES}
+      readFile={download}
+      readSource={readSource}
+      onQuote={onQuote}
+      onAsk={onAsk}
+    />
+  );
+}
+
 function PullRequestPanel({ pullRequestUrl, revision }: ReviewPanelProps) {
   return (
     <>
@@ -195,7 +252,7 @@ function SummaryPanel({ revision }: ReviewPanelProps) {
   return <p>{revision.summary || 'This step left no summary.'}</p>;
 }
 
-/** Panels a workflow can declare; a plugin adds a kind of review by adding one here. */
+/** The stock panels. Anything else a workflow names comes from a module. */
 export const REVIEW_WIDGETS: Readonly<Record<string, ComponentType<ReviewPanelProps>>> = {
   document: DocumentPanel,
   diff: DiffPanel,
@@ -209,11 +266,14 @@ export const REVIEW_WIDGETS: Readonly<Record<string, ComponentType<ReviewPanelPr
 
 export function ReviewPanelSlot(props: ReviewPanelProps) {
   const Widget = REVIEW_WIDGETS[props.panel.widget];
+  const moduleRef = moduleWidgetRef(props.panel.widget);
   return (
     <section className="ting-review-panel" aria-label={props.panel.title}>
       <h2>{props.panel.title}</h2>
       {Widget ? (
         <Widget {...props} />
+      ) : moduleRef ? (
+        <ModuleWidgetPanel {...props} {...moduleRef} />
       ) : (
         <p role="alert" className="ting-review-panel__missing">
           This workflow needs a {props.panel.widget} panel, which this app does not have.

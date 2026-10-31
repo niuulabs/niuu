@@ -62,7 +62,7 @@ from ting.domain.tracker_routing import (
     select_tracker_for_saga,
 )
 from ting.domain.utils import _session_name, _slugify
-from ting.domain.workflow_board import WorkflowBoardError, project_board
+from ting.domain.workflow_board import WorkflowBoardError, module_widgets_of, project_board
 from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_name_from_snapshot
 from ting.ports.git import GitPort
 from ting.ports.llm import LLMPort
@@ -1877,12 +1877,22 @@ def create_sagas_router() -> APIRouter:
             ]
         )
         try:
-            project_board(replace(saga, board_workflows=pins))
+            board = project_board(replace(saga, board_workflows=pins))
         except WorkflowBoardError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
+        installed = getattr(request.app.state, "review_widgets", {})
+        missing = sorted(module_widgets_of(board) - installed.keys()) if board else []
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"This board needs review widgets this deployment has not installed: "
+                    f"{', '.join(missing)}. Add their module to review_widgets."
+                ),
+            )
         await _refuse_removing_active_workflows(
             saga,
             {pin.workflow_id for pin in pins} or {saga.workflow_id},

@@ -20,6 +20,7 @@ one without waits there until someone starts it.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -62,6 +63,10 @@ _WIDGET_SOURCES: Mapping[str, str | None] = {
     WIDGET_SUMMARY: None,
 }
 _WEB_SCHEMES = ("https://", "http://")
+# A widget a module installed, named `module/name`. Whether it is installed is the
+# deployment's to answer: a pinned run must still parse after a module is removed.
+_MODULE_WIDGET = re.compile(r"^[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_-]*$")
+_SOURCE_KINDS = frozenset({SOURCE_OUTCOME, SOURCE_FILE, SOURCE_URL})
 _WORK_NODE_KINDS = frozenset({"stage", "wait", "subworkflow", "gate"})
 _CLOSED_STATUS_TYPES = frozenset({"completed", "canceled"})
 _STOPPED_RUN_STATUSES = frozenset({RunStatus.FAILED, RunStatus.ESCALATED})
@@ -536,10 +541,10 @@ def _parse_panel(raw: object, column_id: str) -> ReviewPanel:
     if unknown:
         raise WorkflowBoardError(f"Unknown review panel field(s): {', '.join(sorted(unknown))}")
     widget = raw.get("widget")
-    if widget not in _WIDGET_SOURCES:
+    if widget not in _WIDGET_SOURCES and not is_module_widget(widget):
         raise WorkflowBoardError(
             f"Board column {column_id!r} panel widget must be one of "
-            f"{', '.join(sorted(_WIDGET_SOURCES))}"
+            f"{', '.join(sorted(_WIDGET_SOURCES))}, or a module's as module/name"
         )
     title = _required_text(raw.get("title"), f"{column_id} panel title")
     return ReviewPanel(
@@ -550,10 +555,25 @@ def _parse_panel(raw: object, column_id: str) -> ReviewPanel:
     )
 
 
+def is_module_widget(widget: object) -> bool:
+    return isinstance(widget, str) and _MODULE_WIDGET.match(widget) is not None
+
+
+def module_widgets_of(board: ProjectBoard) -> frozenset[str]:
+    """The module widgets a board needs a deployment to have installed."""
+    return frozenset(
+        panel.widget
+        for workflow in board.workflows
+        for column in workflow.board.columns
+        for panel in column.panels
+        if is_module_widget(panel.widget)
+    )
+
+
 def _parse_files(raw: object, widget: str, title: str) -> tuple[str, ...]:
     if raw is None:
         return ()
-    if widget != WIDGET_PAGE:
+    if widget != WIDGET_PAGE and not is_module_widget(widget):
         raise WorkflowBoardError(f"Review panel {title!r} takes no files; only a page does")
     if not isinstance(raw, list):
         raise WorkflowBoardError(f"Review panel {title!r} files must be a list")
@@ -568,7 +588,20 @@ def _require_workspace_path(path: str, title: str) -> None:
         raise WorkflowBoardError(f"Review panel {title!r} must name a file inside the workspace")
 
 
+def _parse_module_source(raw: object, title: str) -> ReviewSource | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping) or len(raw) != 1 or not set(raw) <= _SOURCE_KINDS:
+        raise WorkflowBoardError(
+            f"Review panel {title!r} source must be one of {', '.join(sorted(_SOURCE_KINDS))}"
+        )
+    kind, value = next(iter(raw.items()))
+    return _checked_source(str(kind), value, title)
+
+
 def _parse_source(raw: object, widget: str, title: str) -> ReviewSource | None:
+    if is_module_widget(widget):
+        return _parse_module_source(raw, title)
     kind = _WIDGET_SOURCES[widget]
     if kind is None:
         if raw is not None:
@@ -576,7 +609,11 @@ def _parse_source(raw: object, widget: str, title: str) -> ReviewSource | None:
         return None
     if not isinstance(raw, Mapping) or set(raw) != {kind}:
         raise WorkflowBoardError(f"Review panel {title!r} needs source {{{kind}: ...}}")
-    value = _required_text(raw[kind], f"{title} source")
+    return _checked_source(kind, raw[kind], title)
+
+
+def _checked_source(kind: str, raw: object, title: str) -> ReviewSource:
+    value = _required_text(raw, f"{title} source")
     if kind == SOURCE_FILE:
         _require_workspace_path(value, title)
     if kind == SOURCE_URL and not value.startswith(_WEB_SCHEMES):
