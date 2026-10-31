@@ -35,7 +35,7 @@ home:
       - Persistent
       - Observable
       - Self-hosted
-    tagline: Continuity / not a session
+    tagline: Continuity / not just a session
   principle:
     label: 01 / The principle
     title:
