@@ -76,11 +76,10 @@ def test_a_ticket_run_waits_on_the_gate_its_campaign_records() -> None:
 
 
 def test_a_run_with_no_open_gate_is_running() -> None:
-    (item,) = review_list([_campaign(_ticket())], [])
+    (item,) = review_list([_campaign(_ticket())], [_saga()])
 
     assert item.state == ReviewState.RUNNING
     assert item.gate_label == ""
-    assert item.project_name is None
 
 
 def test_finished_and_failed_runs_say_so() -> None:
@@ -93,7 +92,7 @@ def test_finished_and_failed_runs_say_so() -> None:
                 updated_at=NOW - timedelta(hours=1),
             ),
         ],
-        [],
+        [_saga()],
     )
 
     assert done.state == ReviewState.DONE
@@ -119,6 +118,19 @@ def test_a_project_plan_is_listed_and_names_its_project_once_committed() -> None
     assert committed.project_name == "Platform reliability"
 
 
+def test_a_ticket_whose_project_was_deleted_is_not_listed() -> None:
+    gate = {"label": "Plan review"}
+
+    assert review_list([_campaign(_ticket(pending_workflow_gates=[gate]))], []) == ()
+
+
+def test_a_committed_plan_stays_listed_after_its_project_is_deleted() -> None:
+    (item,) = review_list([_campaign({"surface": "ting.plan", "saga_id": str(SAGA_ID)})], [])
+
+    assert item.kind == ReviewKind.PROJECT_PLAN
+    assert item.project_name is None
+
+
 def test_other_runs_are_not_reviews() -> None:
     assert review_list([_campaign({}, workflow_name="Research Campaign")], []) == ()
 
@@ -127,11 +139,14 @@ def test_the_newest_comes_first() -> None:
     older = _campaign(_ticket(), updated_at=NOW - timedelta(days=1))
     newer = _campaign(_ticket(), updated_at=NOW)
 
-    assert [item.updated_at for item in review_list([older, newer], [])] == [NOW, older.updated_at]
+    assert [item.updated_at for item in review_list([older, newer], [_saga()])] == [
+        NOW,
+        older.updated_at,
+    ]
 
 
 def test_an_unusable_gate_record_is_not_a_waiting_gate() -> None:
-    (item,) = review_list([_campaign(_ticket(pending_workflow_gates=["gate"]))], [])
+    (item,) = review_list([_campaign(_ticket(pending_workflow_gates=["gate"]))], [_saga()])
 
     assert item.state == ReviewState.RUNNING
 
@@ -140,6 +155,6 @@ def test_a_ticket_run_shows_the_ticket_title_it_recorded() -> None:
     metadata = _ticket()
     metadata["ticket"]["title"] = "Trace queue wait time"
 
-    (item,) = review_list([_campaign(metadata)], [])
+    (item,) = review_list([_campaign(metadata)], [_saga()])
 
     assert item.title == "Trace queue wait time"
