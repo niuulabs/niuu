@@ -457,6 +457,21 @@ def _build_resident_wakefulness(
     from ravn.valkyrie_evolution.wakefulness import ResidentWakefulness  # noqa: PLC0415
 
     cfg = settings.resident_wakefulness
+    evolution_reporter = None
+    if tool_curator is not None:
+        from ravn.cli.runtime_builders import build_decision_port  # noqa: PLC0415
+        from ravn.valkyrie_evolution.evolution_report import EvolutionReporter  # noqa: PLC0415
+
+        evolution_reporter = EvolutionReporter(
+            inventory=tool_curator.inventory,
+            valkyrie_id=resident_learning_runtime.identity.valkyrie_id,
+            window_seconds=cfg.evolution_window_seconds,
+            decisions=(
+                build_decision_port(settings)
+                if settings.decision.evolution_headline.enabled
+                else None
+            ),
+        )
     return ResidentWakefulness(
         identity=resident_learning_runtime.identity,
         skills=resident_learning_runtime.skills,
@@ -467,6 +482,7 @@ def _build_resident_wakefulness(
         learning_curator=learning_curator,
         self_improvement=self_improvement,
         tool_curator=tool_curator,
+        evolution_reporter=evolution_reporter,
         tick_interval_seconds=cfg.tick_interval_seconds,
         wakeful_window_seconds=cfg.wakeful_window_seconds,
         dream_interval_seconds=cfg.dream_interval_seconds,

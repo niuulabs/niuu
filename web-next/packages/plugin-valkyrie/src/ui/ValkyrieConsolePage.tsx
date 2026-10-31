@@ -3,21 +3,18 @@ import type { ReactNode } from 'react';
 import {
   Activity,
   AlertTriangle,
-  Brain,
   ChevronDown,
   ChevronRight,
-  GraduationCap,
   Inbox,
   Mail,
   MessageSquare,
-  Moon,
   Settings2,
   Shield,
   Sparkles,
   Users,
-  Zap,
 } from 'lucide-react';
 import { Meter } from '@niuulabs/ui';
+import { EvolutionFold, EvolutionPanel } from './EvolutionPanel';
 import {
   autonomyModeForLevel,
   collapseDecisionsByCorrelation,
@@ -92,6 +89,7 @@ import {
 const PANEL =
   'niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary';
 const PANEL_PAD = `${PANEL} niuu:p-4`;
+const FOLD_BODY = 'niuu:pt-3';
 const MUTED = 'niuu:text-text-muted';
 
 const AUTONOMY_MODES: AutonomyMode[] = ['guarded', 'autonomous', 'yolo'];
@@ -1291,13 +1289,7 @@ function LearningPanel({
   );
 
   return (
-    <section className={PANEL_PAD} data-testid="valkyrie-learning">
-      <div className="niuu:flex niuu:items-center niuu:gap-2">
-        <Brain size={15} className="niuu:text-brand" aria-hidden="true" />
-        <h2 className="niuu:text-base niuu:font-semibold niuu:text-text-primary">
-          Learning & tools
-        </h2>
-      </div>
+    <section className={FOLD_BODY} data-testid="valkyrie-learning">
       <div
         data-testid="learning-scope-filters"
         className="niuu:mt-3 niuu:flex niuu:flex-wrap niuu:gap-1.5"
@@ -1386,14 +1378,8 @@ function LearnedSkillStrip({
   if (learned.length === 0) return null;
   const skillNames = skills.map((skill) => skill.skillName);
   return (
-    <section className={PANEL_PAD} data-testid="valkyrie-learned-activity">
-      <div className="niuu:flex niuu:items-center niuu:gap-2">
-        <Zap size={15} className="niuu:text-brand" aria-hidden="true" />
-        <h2 className="niuu:text-base niuu:font-semibold niuu:text-text-primary">
-          Recent learned-skill activity
-        </h2>
-      </div>
-      <div className="niuu:mt-4 niuu:grid niuu:gap-3 niuu:md:grid-cols-2">
+    <section className={FOLD_BODY} data-testid="valkyrie-learned-activity">
+      <div className="niuu:grid niuu:gap-3 niuu:md:grid-cols-2">
         {learned.slice(0, 4).map((decision) => {
           const skillName = referencedSkillName(decision, skillNames);
           return (
@@ -1436,19 +1422,8 @@ function LearnedSkillsPanel({
   onViewSkill: (name: string) => void;
 }) {
   return (
-    <section className={PANEL_PAD} data-testid="valkyrie-learned-skills">
-      <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
-        <div className="niuu:flex niuu:items-center niuu:gap-2">
-          <GraduationCap size={15} className="niuu:text-brand" aria-hidden="true" />
-          <h2 className="niuu:text-base niuu:font-semibold niuu:text-text-primary">
-            Learned skills
-          </h2>
-        </div>
-        {skills.length > 0 ? (
-          <span className={`niuu:text-xs ${MUTED}`}>{skills.length}</span>
-        ) : null}
-      </div>
-      <div className="niuu:mt-4 niuu:flex niuu:flex-col niuu:gap-2">
+    <section className={FOLD_BODY} data-testid="valkyrie-learned-skills">
+      <div className="niuu:flex niuu:flex-col niuu:gap-2">
         {isLoading ? <p className={`niuu:text-sm ${MUTED}`}>Loading learned skills...</p> : null}
         {error ? (
           <p
@@ -1578,14 +1553,8 @@ export function DreamPanel({ valkyrie }: { valkyrie: ValkyrieResident }) {
   const status = dream ? dreamStatusCopy(dream.status) : null;
   const failed = dream?.status === 'failed';
   return (
-    <section className={PANEL_PAD} data-testid="valkyrie-last-dream">
-      <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
-        <div className="niuu:flex niuu:items-center niuu:gap-2">
-          <Moon size={15} className="niuu:text-brand" aria-hidden="true" />
-          <h2 className="niuu:text-base niuu:font-semibold niuu:text-text-primary">
-            Last consolidation dream
-          </h2>
-        </div>
+    <section className={FOLD_BODY} data-testid="valkyrie-last-dream">
+      <div className="niuu:flex niuu:items-center niuu:justify-end niuu:gap-2">
         {dream && status ? (
           <span
             data-testid="dream-status"
@@ -1755,6 +1724,11 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
 
   if (!selected) return <EmptyConsole />;
 
+  const selectResident = (valkyrieId: string) => {
+    setSelectedId(valkyrieId);
+    setViewedSkillName(null);
+    setViewedLearningId(null);
+  };
   const skills = skillsQuery.data ?? [];
   const grantsKnown = realmExists && grantsQuery.isSuccess;
   const buildGrant = grantsKnown ? latestBuildGrant(grantsQuery.data ?? []) : null;
@@ -1790,15 +1764,7 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
 
   return (
     <div className="niuu:grid niuu:h-full niuu:min-h-0 niuu:grid-cols-[320px_minmax(0,1fr)] niuu:bg-bg-primary">
-      <Roster
-        dashboard={dashboard}
-        selectedId={selected.id}
-        onSelect={(valkyrieId) => {
-          setSelectedId(valkyrieId);
-          setViewedSkillName(null);
-          setViewedLearningId(null);
-        }}
-      />
+      <Roster dashboard={dashboard} selectedId={selected.id} onSelect={selectResident} />
       <main className="niuu:min-h-0 niuu:overflow-auto niuu:p-5">
         <div className="niuu:mb-4 niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:text-xs niuu:text-text-muted">
           <div className="niuu:font-mono">
@@ -1824,12 +1790,41 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
             <Timeline events={environmentEvents} />
             <AuthorityPanel valkyrie={selected} severities={severities} governance={governance} />
           </div>
-          <LearnedSkillStrip
-            decisions={decisions}
-            skills={skills}
+          <EvolutionPanel
+            dashboard={dashboard}
+            valkyrie={selected}
             onViewSkill={setViewedSkillName}
-          />
-          <DreamPanel valkyrie={selected} />
+            onSelectResident={selectResident}
+          >
+            <EvolutionFold id="tools" label={`All tools · ${skills.length}`}>
+              <LearnedSkillsPanel
+                skills={skills}
+                skillStats={skillStatsQuery.data ?? []}
+                isLoading={skillsQuery.isLoading}
+                error={skillsQuery.error}
+                onViewSkill={setViewedSkillName}
+              />
+              <LearnedSkillStrip
+                decisions={decisions}
+                skills={skills}
+                onViewSkill={setViewedSkillName}
+              />
+            </EvolutionFold>
+            <EvolutionFold id="lessons" label="Lessons and tool gaps">
+              <LearningPanel
+                dashboard={dashboard}
+                valkyrie={selected}
+                onOpenLearning={setViewedLearningId}
+              />
+            </EvolutionFold>
+            <EvolutionFold
+              id="dream"
+              label="Last dream"
+              defaultOpen={selected.lastDream?.status === 'failed'}
+            >
+              <DreamPanel valkyrie={selected} />
+            </EvolutionFold>
+          </EvolutionPanel>
           <div className="niuu:grid niuu:gap-4 niuu:xl:grid-cols-[minmax(0,1fr)_360px]">
             <div className="niuu:flex niuu:flex-col niuu:gap-4">
               <section className={PANEL_PAD}>
@@ -1880,18 +1875,6 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
               <PendingReviewsPanel
                 environmentId={selected.environmentId}
                 valkyrieId={selected.id}
-              />
-              <LearnedSkillsPanel
-                skills={skills}
-                skillStats={skillStatsQuery.data ?? []}
-                isLoading={skillsQuery.isLoading}
-                error={skillsQuery.error}
-                onViewSkill={setViewedSkillName}
-              />
-              <LearningPanel
-                dashboard={dashboard}
-                valkyrie={selected}
-                onOpenLearning={setViewedLearningId}
               />
             </div>
           </div>

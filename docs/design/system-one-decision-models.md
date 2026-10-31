@@ -405,6 +405,7 @@ decision-model work.
 | §3.1 attention gate (built, **off**) | `ResidentSlotAttention.select` and `decision.resident_first_opinion.gate` |
 | §5 step 2 offline calibration | `ravn resident attention-calibrate`, [resident_attention_calibration.py](../../src/ravn/resident_attention_calibration.py) |
 | Learned-tool matching for `build_tool` and curation (`decision.capability_matching`, off by default): an embedding shortlist, then one Noul per candidate | `SystemOneCapabilityMatcher` in [capability_matching.py](../../src/ravn/adapters/reflection/capability_matching.py), `_build_capability_matcher` in [runtime_builders.py](../../src/ravn/cli/runtime_builders.py) |
+| Evolution headline (`decision.evolution_headline`, off by default): code writes one true sentence per change and a Choice picks one | [evolution_report.py](../../src/ravn/valkyrie_evolution/evolution_report.py) |
 | Config (`decision:` in ravn `Settings`) and composition | `DecisionConfig` in [config.py](../../src/ravn/config.py), `build_decision_port` in [runtime_builders.py](../../src/ravn/cli/runtime_builders.py) |
 
 ### Turning it on

@@ -91,9 +91,12 @@ _RAVN_COMMAND = [
         "sys.exit(proc.wait())\n"
     ),
 ]
-_RAVN_CONFIG_MOUNT_PATH = "/etc/ravn/config.yaml"
-_RAVN_CONFIG_VOLUME_PREFIX = "ravn-cfg"
 _RAVN_CONFIG_DIR = "/etc/ravn"
+_RAVN_CONFIG_FILE = "config.yaml"
+_RAVN_CONFIG_MOUNT_PATH = f"{_RAVN_CONFIG_DIR}/{_RAVN_CONFIG_FILE}"
+_RAVN_CONFIG_VOLUME_PREFIX = "ravn-cfg"
+_INIT_WRITER_NAME = "write-ravn-cfg"
+_INIT_WRITER_ENV_PREFIX = "RAVN_CFG_"
 _INIT_WRITER_IMAGE = "busybox:latest"
 _INIT_WRITER_SECURITY_CONTEXT = {
     "runAsUser": 1000,
@@ -1474,7 +1477,9 @@ class RavnFlockContributor(SessionContributor):
         # Ravn sidecar containers (indices 1..N)
         extra_containers: list[dict] = []
         config_volumes: list[dict] = []
-        init_containers: list[dict] = []
+        config_writes: list[str] = []
+        config_write_env: list[dict] = []
+        config_write_mounts: list[dict] = []
         openshell_workloads: list[dict[str, Any]] = []
         openshell_files: dict[str, str] = {}
 
@@ -1517,20 +1522,15 @@ class RavnFlockContributor(SessionContributor):
             cfg_vol_name = f"{_RAVN_CONFIG_VOLUME_PREFIX}-{persona}"
             config_volumes.append({"name": cfg_vol_name, "emptyDir": {}})
 
-            # Init container writes YAML into the volume
-            heredoc = (
-                f"cat > {_RAVN_CONFIG_MOUNT_PATH} <<'__RAVN_EOF__'\n{config_yaml}__RAVN_EOF__\n"
-            )
-            init_containers.append(
-                {
-                    "name": f"write-ravn-cfg-{persona}",
-                    "image": self._init_writer_image,
-                    "command": ["sh", "-c", heredoc],
-                    "securityContext": _INIT_WRITER_SECURITY_CONTEXT.copy(),
-                    "volumeMounts": [
-                        {"name": cfg_vol_name, "mountPath": _RAVN_CONFIG_DIR},
-                    ],
-                }
+            # The init container writes every persona's YAML into its volume. Each
+            # config travels in its own variable: a flock's configs together are far
+            # larger than the kernel accepts as a single exec argument (128 KiB).
+            cfg_write_dir = f"{_RAVN_CONFIG_DIR}/{persona}"
+            cfg_env_name = f"{_INIT_WRITER_ENV_PREFIX}{len(config_writes)}"
+            config_write_mounts.append({"name": cfg_vol_name, "mountPath": cfg_write_dir})
+            config_write_env.append({"name": cfg_env_name, "value": config_yaml})
+            config_writes.append(
+                f"printf '%s' \"${cfg_env_name}\" > {cfg_write_dir}/{_RAVN_CONFIG_FILE}\n"
             )
 
             ravn_env: list[dict] = [
@@ -1645,6 +1645,22 @@ class RavnFlockContributor(SessionContributor):
                     }
                 )
 
+        # One container, not one per persona: init containers run in series and
+        # each costs about a second of session boot.
+        init_containers: tuple[dict, ...] = ()
+        if config_writes:
+            init_containers = (
+                {
+                    "name": _INIT_WRITER_NAME,
+                    "image": self._init_writer_image,
+                    "imagePullPolicy": "IfNotPresent",
+                    "command": ["sh", "-ec", "".join(config_writes)],
+                    "env": config_write_env,
+                    "securityContext": _INIT_WRITER_SECURITY_CONTEXT.copy(),
+                    "volumeMounts": config_write_mounts,
+                },
+            )
+
         pod_volumes: list[dict[str, Any]] = [*config_volumes, *persona_source_volumes]
         if requires_local_mimir_mount:
             pod_volumes.insert(0, {"name": _MIMIR_VOLUME_NAME, "emptyDir": {}})
@@ -1662,7 +1678,7 @@ class RavnFlockContributor(SessionContributor):
                 else {}
             ),
             extra_containers=tuple(extra_containers),
-            init_containers=tuple(init_containers),
+            init_containers=init_containers,
         )
 
         values: dict[str, Any] = {

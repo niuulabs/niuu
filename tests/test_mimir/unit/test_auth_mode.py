@@ -252,7 +252,7 @@ class TestWriteRoleGateScopedToOidc:
                 "/page",
                 headers={
                     "x-auth-user-id": "keycloak-user",
-                    "x-auth-tenant": "tenant-a",
+                    "x-auth-tenant": "default",
                     "x-auth-roles": "developer",  # raw claim, unmapped
                 },
                 json={"path": "x.md", "content": "hi"},
@@ -284,7 +284,7 @@ class TestWriteRoleGateScopedToOidc:
         respx.get(JWKS_URI).mock(return_value=Response(200, json={"keys": [PUBLIC_JWK]}))
         mapped_adapter = _jwks_adapter_with_role_mapping()
         app = self._app(tmp_path, auth=mapped_adapter, auth_mode="oidc")
-        token = _bearer_token(roles="developer")  # raw claim, as Keycloak sends it
+        token = _bearer_token(roles="developer", tenant_id="default")  # as Keycloak sends it
         with TestClient(app) as client:
             resp = client.put(
                 "/page",
@@ -562,7 +562,7 @@ class TestAppLevelOidcGate:
         distinct from the anonymous case which never reaches MCP dispatch.
         """
         respx.get(JWKS_URI).mock(return_value=Response(200, json={"keys": [PUBLIC_JWK]}))
-        token = _bearer_token(roles="volundr:developer")
+        token = _bearer_token(roles="volundr:developer", tenant_id="default")
         with TestClient(self._app(tmp_path)) as client:
             resp = client.post(
                 "/mcp",

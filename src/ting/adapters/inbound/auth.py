@@ -17,9 +17,17 @@ from niuu.adapters.inbound.auth_context import (
     extract_bearer_token as extract_bearer_token,
 )
 from niuu.domain.models import Principal
+from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 
 #: Roles that may change settings shared by every org on this Ting.
 SHARED_SETTINGS_ROLES = frozenset({"admin", "ting:admin", "volundr:admin"})
+
+
+def is_platform_admin(principal: Principal, *, platform_tenant_id: str) -> bool:
+    """Whether *principal* administers the org that runs this deployment."""
+    return principal.tenant_id == platform_tenant_id and not SHARED_SETTINGS_ROLES.isdisjoint(
+        role.strip() for role in principal.roles
+    )
 
 
 async def extract_principal(request: Request) -> Principal:
@@ -87,13 +95,20 @@ async def extract_principal(request: Request) -> Principal:
     )
 
 
+def platform_tenant_id(request: Request) -> str:
+    """The org that runs this deployment, from the app's settings."""
+    settings = getattr(request.app.state, "settings", None)
+    return settings.auth.platform_tenant_id if settings else DEFAULT_PLATFORM_TENANT_ID
+
+
 async def require_shared_settings_admin(
+    request: Request,
     principal: Principal = Depends(extract_principal),
 ) -> Principal:
-    """Refuse a caller who may not change settings shared by every org."""
-    if SHARED_SETTINGS_ROLES.isdisjoint(role.strip() for role in principal.roles):
+    """Refuse a caller who does not administer the org running this deployment."""
+    if not is_platform_admin(principal, platform_tenant_id=platform_tenant_id(request)):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Changing shared Ting settings requires an admin role",
+            detail="Shared Ting settings are limited to the admins of the platform org",
         )
     return principal

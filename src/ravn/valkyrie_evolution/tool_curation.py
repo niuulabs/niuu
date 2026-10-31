@@ -846,13 +846,17 @@ class LearnedToolCurator:
         self._load_refusal = load_refusal
         self._refusals: dict[str, str] = {}
 
-    async def plan(self) -> CurationPlan:
-        everything = tool_inventory(
+    def inventory(self) -> list[ToolEntry]:
+        """Every learned tool this resident holds, retired ones included."""
+        return tool_inventory(
             tools_dir=self._tools_dir,
             artifacts_dir=self._artifacts_dir,
             skills=self._skills,
             include_retired=True,
         )
+
+    async def plan(self) -> CurationPlan:
+        everything = self.inventory()
         installed = [entry for entry in everything if not entry.retired]
         plan = CurationPlan(installed=len(installed), window=first_use_window(everything))
         installed = await self._backfill_capabilities(installed, plan)

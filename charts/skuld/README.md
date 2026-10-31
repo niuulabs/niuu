@@ -463,6 +463,7 @@ Alternative to Ingress for session routing. When enabled, creates an `HTTPRoute`
 | `securityContext.runAsNonRoot` | bool | `true` | Run as non-root user |
 | `securityContext.runAsUser` | int | `1000` | Run as user ID |
 | `securityContext.fsGroup` | int | `1000` | Filesystem group ID |
+| `securityContext.fsGroupChangePolicy` | string | `"OnRootMismatch"` | When the kubelet re-owns mounted volumes. `Always` walks every file on each pod start, which took over two minutes on a user home of 250k files. |
 
 ## Container Architecture
 

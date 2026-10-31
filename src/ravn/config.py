@@ -46,6 +46,7 @@ from pydantic_settings import (
 from bifrost.config import PricingOverride
 from niuu.config_models import WorkloadIdentityVerifierConfig
 from niuu.domain.observability import ObservabilityConfig
+from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE, MeshNatsConfig
 from ravn.domain.permission_mode import (
     PermissionMode,
@@ -656,6 +657,18 @@ class DecisionCapabilityMatchingConfig(BaseModel):
         return self
 
 
+class DecisionEvolutionHeadlineConfig(BaseModel):
+    """Let the decision model pick the sentence that sums up a resident's recent changes."""
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Ask the decision model which true sentence best sums up the period. Off, the "
+            "first sentence is shown. A failed decision fails the dream that asked."
+        ),
+    )
+
+
 class DecisionConfig(BaseModel):
     """System One decision model (TypeSafe Jev, Cloudflare Clef, Ollama ``/v1/systemone``).
 
@@ -691,6 +704,9 @@ class DecisionConfig(BaseModel):
     )
     capability_matching: DecisionCapabilityMatchingConfig = Field(
         default_factory=DecisionCapabilityMatchingConfig,
+    )
+    evolution_headline: DecisionEvolutionHeadlineConfig = Field(
+        default_factory=DecisionEvolutionHeadlineConfig,
     )
 
 
@@ -3750,6 +3766,14 @@ class ResidentWakefulnessConfig(BaseModel):
             "promoted to environment scope during a dream, policy permitting."
         ),
     )
+    evolution_window_seconds: float = Field(
+        default=604800.0,
+        gt=0,
+        description=(
+            "How far back a dream's evolution report looks when it lists what changed in the "
+            "resident's learned tools. The default is a week."
+        ),
+    )
     dream_snapshot_interval_seconds: float = Field(
         default=300.0,
         gt=0,
@@ -5976,6 +6000,13 @@ class Settings(BaseSettings):
     # Standalone-resident discovery (helm-deployed residents outside Forge).
     resident_discovery: ResidentDiscoveryConfig = Field(default_factory=ResidentDiscoveryConfig)
     resident_logs: ResidentLogsConfig = Field(default_factory=ResidentLogsConfig)
+    platform_tenant_id: str = Field(
+        default=DEFAULT_PLATFORM_TENANT_ID,
+        description=(
+            "The org that runs this deployment. It owns anything that names no org, "
+            "and it alone may use the Valkyrie dashboard API."
+        ),
+    )
 
     # NIU-435: cascade coordinator / flock delegation / ephemeral spawn
     cascade: CascadeConfig = Field(default_factory=CascadeConfig)

@@ -82,6 +82,7 @@ spec:
       securityContext:
         runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
         fsGroup: {{ .Values.securityContext.fsGroup }}
+        fsGroupChangePolicy: {{ .Values.securityContext.fsGroupChangePolicy }}
       {{- include "skuld.imagePullSecrets" . | nindent 6 }}
       {{- if or .Values.git.repoUrl .Values.homeVolume.enabled .Values.extraInitContainers (and .Values.localServices.enabled .Values.persistence.enabled) }}
       initContainers:

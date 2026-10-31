@@ -59,6 +59,7 @@ def _directory(
     ).mock(side_effect=resident_response)
     return ResidentDirectory(
         platform=HttpPlatformRuntimeAdapter(base_url=_BASE),
+        platform_tenant_id="tenant-a",
         discovery=discovery,
         logs=logs,
     )

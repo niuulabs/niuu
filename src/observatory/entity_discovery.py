@@ -2980,6 +2980,10 @@ def _entity_to_node(
     # node id and its placement, which is a corrupted graph rather than a
     # cosmetic clash.
     node.update({k: v for k, v in entity.metadata.items() if k not in _RESERVED_NODE_KEYS})
+    if not node.get("tenantId"):
+        owner_tenant = entity.annotations.get("niuu.world/tenant-id")
+        if owner_tenant:
+            node["tenantId"] = owner_tenant
     return node
 
 

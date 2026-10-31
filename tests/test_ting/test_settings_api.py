@@ -141,7 +141,14 @@ class TestSettingsAPI:
             "/api/v1/ting/settings/flock",
             json={"flock_name": "Core Platform"},
         )
-        runtime_response = client.get("/api/v1/ting/flock/config")
+        runtime_response = client.get(
+            "/api/v1/ting/flock/config",
+            headers={
+                "x-auth-user-id": "dev-user",
+                "x-auth-tenant": "default",
+                "x-auth-roles": "volundr:admin",
+            },
+        )
 
         assert patch_response.status_code == 200
         assert runtime_response.status_code == 200

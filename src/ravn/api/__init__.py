@@ -249,6 +249,7 @@ def create_app(
         discovery=standalone_discovery,
         roster=resident_roster,
         logs=resident_logs,
+        platform_tenant_id=loaded_settings.platform_tenant_id,
     )
     trigger_store = build_trigger_store(loaded_settings.trigger_store)
     budget_ledger = build_budget_ledger(loaded_settings.budget_ledger)
@@ -1439,6 +1440,17 @@ def create_app(
 
     app.router.lifespan_context = lifespan
 
+    async def require_platform_org(
+        principal: Principal = Depends(extract_principal),
+    ) -> None:
+        """Keep the operator's Valkyrie fleet, and control of it, with the operator."""
+        if principal.tenant_id != loaded_settings.platform_tenant_id:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail="The Valkyrie API is limited to the org running this deployment",
+            )
+
+    platform_org_only = [Depends(require_platform_org)]
     app.include_router(
         create_valkyrie_router(
             valkyrie_projection,
@@ -1446,10 +1458,17 @@ def create_app(
             room_client=build_skuld_room_client_from_env(loaded_settings.valkyrie.room),
             review_service=odin_review_service,
             history_service=valkyrie_history,
-        )
+        ),
+        dependencies=platform_org_only,
     )
-    app.include_router(create_valkyrie_skills_router(valkyrie_skills))
-    app.include_router(create_valkyrie_metrics_router(valkyrie_skills, valkyrie_history))
+    app.include_router(
+        create_valkyrie_skills_router(valkyrie_skills),
+        dependencies=platform_org_only,
+    )
+    app.include_router(
+        create_valkyrie_metrics_router(valkyrie_skills, valkyrie_history),
+        dependencies=platform_org_only,
+    )
     app.include_router(
         create_odin_review_router(
             odin_review_service,
