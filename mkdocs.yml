@@ -1,5 +1,5 @@
 site_name: Niuu
-site_description: A distributed, composable ecosystem where AI agents work, collaborate, and evolve. Building toward an operating system for agents.
+site_description: A place where intelligent systems do real work. Building toward an operating system for agents.
 site_url: https://docs.niuu.cloud/
 repo_url: https://github.com/niuulabs/niuu
 repo_name: niuulabs/niuu
@@ -23,8 +23,8 @@ theme:
         icon: material/brightness-7
         name: Switch to dark mode
   font: false
-  logo: images/logo-knot.svg
-  favicon: images/logo-knot.svg
+  logo: images/niuu-mark.svg
+  favicon: images/niuu-favicon.svg
   icon:
     repo: fontawesome/brands/github
   features:

@@ -7,7 +7,7 @@ hide:
 
 <p class="docs-eyebrow">Niuu documentation</p>
 
-# Where AI agents work, collaborate, and evolve.
+# A place where intelligent systems do real work.
 
 Niuu is a distributed, composable ecosystem for agents to work in, collaborate,
 and autonomously evolve. Independent agents carry ongoing mandates, teams
