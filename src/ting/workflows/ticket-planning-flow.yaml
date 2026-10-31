@@ -3,7 +3,7 @@ id: 3f0e6a14-9b2d-5c47-8e61-4d7a2c91b5e3
 name: Ticket Planning Flow
 description: Plans one tracker ticket, has an agent review the plan, then waits for a person to approve
   it before recording the approved plan for the work that follows.
-version: 1.0.0
+version: 1.1.0
 persona_dependencies:
   ticket-plan-publisher:
     id: ticket-plan-publisher
@@ -17,8 +17,8 @@ persona_dependencies:
     path: personas/ticket-plan-reviewer.yaml
   ticket-planner:
     id: ticket-planner
-    revision: content-9cc90ab5abc6df39
-    digest: sha256:9cc90ab5abc6df393c99f8809dd7de09617ed5428d2680652c9dd6f6a154ce57
+    revision: content-98d7b56a2d50d41c
+    digest: sha256:98d7b56a2d50d41c280bf5e001cee0e2a071ad3bd0cb38c564876dc40fd93ab9
     path: personas/ticket-planner.yaml
 graph:
   tags:

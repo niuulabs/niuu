@@ -13,6 +13,7 @@ import type { SessionInfo } from './domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from './domain/tracker';
 import type { Workflow } from './domain/workflow';
 import type { GateDecision, WorkCollection, WorkDetail, WorkResourceKind } from './domain/work';
+import type { TicketReviews } from './domain/review';
 
 export interface IWorkService {
   list(options?: { executionLimit?: number; executionCursor?: string }): Promise<WorkCollection>;
@@ -20,6 +21,8 @@ export interface IWorkService {
   decideGate(projectId: string, issueId: string, decision: GateDecision): Promise<void>;
   /** Hands a ticket to its coordinator, which starts the workflow beginning at this column. */
   startTicket(projectId: string, issueId: string, columnId?: string): Promise<void>;
+  /** What this ticket's runs have put in front of a person, read from their session logs. */
+  ticketReviews(projectId: string, issueId: string): Promise<TicketReviews>;
 }
 import type {
   WorkflowExecutionTrace,

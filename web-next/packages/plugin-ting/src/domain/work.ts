@@ -94,11 +94,19 @@ export interface TicketWorkflowRun {
   prUrl?: string | null;
 }
 
+/** One thing a person reviews at a gate, as the workflow declares it. */
+export interface ReviewPanel {
+  widget: string;
+  title: string;
+  field?: string | null;
+}
+
 export interface WorkBoardColumn {
   id: string;
   title: string;
   kind: 'tracker' | 'work' | 'gate';
   review: 'plan' | 'code' | 'output' | null;
+  panels?: ReviewPanel[];
   approveColumnId: string | null;
   changesColumnId: string | null;
   /** The workflow that declares this column; the tracker's own columns have none. */
@@ -125,6 +133,7 @@ export interface WorkTask {
     statusType: string;
   };
   title: string;
+  description?: string;
   operationalRun: {
     id: string;
     status: string;

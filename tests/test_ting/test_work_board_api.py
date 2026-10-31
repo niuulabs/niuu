@@ -36,6 +36,7 @@ from ting.domain.workflow_board import SESSION_GONE_REASON
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.ticket_coordinator_repository import TicketCoordinatorRepository
 from ting.ports.tracker import TrackerPort, TrackerResolution
+from ting.ports.volundr import PublicSessionLogEntry, PublicSessionLogPage
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.system_workflows import load_system_workflows
 
@@ -1304,3 +1305,101 @@ def test_a_connection_that_no_longer_resolves_is_unreadable_never_gone() -> None
     assert body["tasks"][0]["board"]["reason"] != SESSION_GONE_REASON
     assert _coverage(body, "workflowGates")["error"]["code"] == "sourceReadFailed"
     other.get_session.assert_not_awaited()
+
+
+def _reviews(client: TestClient, saga: Saga, issue_id: str = "issue-1") -> httpx.Response:
+    return client.get(
+        f"/api/v1/ting/work/project/{saga.id}/tasks/{issue_id}/reviews",
+        headers={**HEADERS, "authorization": "Bearer token"},
+    )
+
+
+def _log(*frames: tuple[str, dict[str, Any]]) -> PublicSessionLogPage:
+    return PublicSessionLogPage(
+        entries=tuple(
+            PublicSessionLogEntry(
+                session_id="run-session", seq=seq, kind=kind, payload=payload, ts=NOW
+            )
+            for seq, (kind, payload) in enumerate(frames, start=1)
+        ),
+        scanned_through=len(frames),
+        has_more=False,
+    )
+
+
+def test_a_ticket_review_is_read_back_from_its_runs_log() -> None:
+    saga = _planned_saga()
+    adapter = _adapter([])
+    adapter.get_public_session_log_page = AsyncMock(
+        return_value=_log(
+            ("room_outcome", {"fields": {"plan": "Trace every tick"}}),
+            ("workflow_gate", {"gate": _plan_gate()}),
+        )
+    )
+    run = _run_of(saga, PLANNING, WorkflowCampaignStatus.BLOCKED)
+    client = _client(saga, issues=[_issue()], runs=[], adapter=adapter, campaigns=[run])
+
+    response = _reviews(client, saga)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["unreadableRuns"] == []
+    (review,) = body["reviews"]
+    assert review["columnId"] == "plan-review"
+    assert review["taskId"] == "a2a-run"
+    assert review["panels"] == [{"widget": "document", "title": "Plan", "field": "plan"}]
+    assert review["revisions"][0]["fields"] == {"plan": "Trace every tick"}
+    assert review["revisions"][0]["status"] == "pending"
+
+
+def test_another_tickets_runs_are_not_this_tickets_review() -> None:
+    saga = _planned_saga()
+    adapter = _adapter([])
+    adapter.get_public_session_log_page = AsyncMock(return_value=_log())
+    run = _run_of(saga, PLANNING, WorkflowCampaignStatus.BLOCKED)
+    client = _client(saga, issues=[_issue()], runs=[], adapter=adapter, campaigns=[run])
+
+    response = _reviews(client, saga, issue_id="issue-2")
+
+    assert response.json() == {"reviews": [], "unreadableRuns": []}
+    adapter.get_public_session_log_page.assert_not_awaited()
+
+
+def test_a_run_whose_session_is_gone_is_named_not_dropped() -> None:
+    saga = _planned_saga()
+    adapter = _adapter([])
+    adapter.get_session = AsyncMock(return_value=None)
+    run = _run_of(saga, PLANNING, WorkflowCampaignStatus.COMPLETED)
+    client = _client(saga, issues=[_issue()], runs=[], adapter=adapter, campaigns=[run])
+
+    assert _reviews(client, saga).json() == {
+        "reviews": [],
+        "unreadableRuns": ["Ticket Planning Flow"],
+    }
+
+
+def test_a_forge_that_cannot_be_asked_stays_loud() -> None:
+    saga = _planned_saga()
+    adapter = _adapter([])
+    adapter.get_session = AsyncMock(side_effect=httpx.ConnectError("down"))
+    run = _run_of(saga, PLANNING, WorkflowCampaignStatus.BLOCKED)
+    client = _client(saga, issues=[_issue()], runs=[], adapter=adapter, campaigns=[run])
+
+    assert _reviews(client, saga).status_code == 503
+
+
+def test_reviews_need_a_forge() -> None:
+    saga = _planned_saga()
+    client = _client(saga, issues=[_issue()], runs=[], adapter=None)
+
+    assert _reviews(client, saga).status_code == 503
+
+
+def test_board_columns_carry_their_panels() -> None:
+    saga = _planned_saga()
+    client = _client(saga, issues=[_issue()], runs=[], adapter=_adapter([]))
+
+    board = client.get(f"/api/v1/ting/work/project/{saga.id}", headers=HEADERS).json()["board"]
+
+    column = next(item for item in board["columns"] if item["id"] == "plan-review")
+    assert column["panels"] == [{"widget": "document", "title": "Plan", "field": "plan"}]

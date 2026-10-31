@@ -1,17 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import { ExternalLink } from 'lucide-react';
 import { ApiClientError } from '@niuulabs/query';
-import { useOptionalService } from '@niuulabs/plugin-sdk';
-import { SessionChat, type ISessionHistoryLocator, useSkuldChat } from '@niuulabs/ui';
-import type {
-  BoardDecision,
-  TicketCoordinatorRef,
-  WorkBoardColumn,
-  WorkBoardLayout,
-  WorkTask,
-} from '../domain/work';
+import type { BoardDecision, WorkBoardColumn, WorkBoardLayout, WorkTask } from '../domain/work';
 import { BOARD_STATE_LABEL } from '../domain/workBoard';
+import { CoordinatorChat } from './CoordinatorChat';
 import { useGateDecision } from './useWork';
 
 const QUESTION: Record<NonNullable<WorkBoardColumn['review']>, string> = {
@@ -24,78 +17,11 @@ export type GateIntent = 'approve' | 'requestChanges' | null;
 type PanelTab = 'coordinator' | 'review' | 'workflow';
 
 /** The client's own message is only the status; the reason is in the response detail. */
-function decisionError(error: unknown): string {
+export function decisionError(error: unknown): string {
   if (error instanceof ApiClientError && typeof error.detail === 'string' && error.detail) {
     return error.detail;
   }
   return error instanceof Error ? error.message : 'The decision did not go through';
-}
-
-function LiveCoordinatorChat({ chatEndpoint, name }: { chatEndpoint: string; name: string }) {
-  const historyLocator = useOptionalService<ISessionHistoryLocator>('forge.history');
-  const historyEndpoint = useMemo(
-    () => historyLocator?.historyEndpoint(chatEndpoint) ?? null,
-    [chatEndpoint, historyLocator],
-  );
-  const chat = useSkuldChat(chatEndpoint, { historyMode: 'session', historyEndpoint });
-  return (
-    <div className="ting-board-chat" data-testid="ticket-coordinator-chat">
-      <SessionChat
-        messages={chat.messages}
-        streamingContent={chat.streamingContent}
-        streamingParts={chat.streamingParts}
-        streamingModel={chat.streamingModel}
-        connected={chat.connected}
-        historyLoaded={chat.historyLoaded}
-        historyError={chat.historyError}
-        onRetryHistory={chat.retryHistory}
-        hasOlderHistory={chat.hasOlderHistory}
-        loadingOlderHistory={chat.loadingOlderHistory}
-        olderHistoryError={chat.olderHistoryError}
-        onLoadOlderHistory={chat.loadOlderHistory}
-        pendingPermissions={chat.pendingPermissions}
-        pendingInputRequests={chat.pendingInputRequests}
-        availableCommands={chat.availableCommands}
-        capabilities={chat.capabilities}
-        chatEndpoint={chatEndpoint}
-        historyEndpoint={historyEndpoint}
-        sessionName={name}
-        showDisplayControls={false}
-        onSend={chat.sendMessage}
-        onSendDirected={chat.sendDirectedMessages}
-        onPublishEvent={chat.publishEvent}
-        onStop={chat.sendInterrupt}
-        onPermissionRespond={chat.respondToPermission}
-        onInputRespond={chat.respondToInput}
-        onSetInternalVisibility={chat.sendSetInternalVisibility}
-      />
-    </div>
-  );
-}
-
-function CoordinatorTab({
-  coordinator,
-  name,
-}: {
-  coordinator: TicketCoordinatorRef | null | undefined;
-  name: string;
-}) {
-  if (!coordinator) {
-    return (
-      <p className="ting-board-panel__text">
-        No coordinator yet. One starts when this ticket enters a workflow.
-      </p>
-    );
-  }
-  if (coordinator.status === 'closed') {
-    return (
-      <p className="ting-board-panel__text">This ticket is closed, and so is its coordinator.</p>
-    );
-  }
-  if (!coordinator.chatEndpoint) {
-    return <p className="ting-board-panel__text">The coordinator is starting up.</p>;
-  }
-  return <LiveCoordinatorChat chatEndpoint={coordinator.chatEndpoint} name={name} />;
 }
 
 const DECISION_LABEL: Record<string, string> = {
@@ -134,6 +60,17 @@ function PullRequestLink({ task }: { task: WorkTask }) {
   );
 }
 
+function OpenReview({ projectId, task }: { projectId: string; task: WorkTask }) {
+  if (!task.workflowRun) return null;
+  return (
+    <div className="ting-board-panel__links">
+      <Link to={`/ting/review/${projectId}/${task.source.issueId}` as never}>
+        Open the full review
+      </Link>
+    </div>
+  );
+}
+
 function ReviewTab({
   board,
   projectId,
@@ -165,6 +102,7 @@ function ReviewTab({
   if (!gate) {
     return (
       <>
+        <OpenReview projectId={projectId} task={task} />
         {lastDecision ? <DecisionRecord decision={lastDecision} /> : null}
         <PullRequestLink task={task} />
       </>
@@ -206,6 +144,7 @@ function ReviewTab({
           Changes go back to {changes?.title} in the same run. A new review needs a new decision.
         </p>
       </div>
+      <OpenReview projectId={projectId} task={task} />
       {gate.instructions ? <p className="ting-board-panel__text">{gate.instructions}</p> : null}
       {gate.summary ? <p className="ting-board-panel__text">{gate.summary}</p> : null}
       {lastDecision ? <DecisionRecord decision={lastDecision} /> : null}
@@ -342,7 +281,7 @@ export function TicketPanel({
         ))}
       </div>
       {tab === 'coordinator' ? (
-        <CoordinatorTab coordinator={task.coordinator} name={task.source.identifier} />
+        <CoordinatorChat coordinator={task.coordinator} name={task.source.identifier} />
       ) : null}
       {tab === 'review' && column ? (
         <ReviewTab

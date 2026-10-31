@@ -11,6 +11,7 @@ import { TingTopbar } from './ui/TingTopbar';
 import { TingFooter } from './ui/TingFooter';
 import { PlanWizard } from './ui/PlanWizard';
 import { PlanDetailPage } from './ui/PlanDetailPage';
+import { TicketReviewPage } from './ui/review/TicketReviewPage';
 import { TingSubnav } from './ui/TingSubnav';
 import { ResearchCenterPage } from './ui/ResearchCenterPage';
 import { ResearchNewPage } from './ui/ResearchNewPage';
@@ -27,6 +28,7 @@ export {
 export { buildWorkHttpAdapter } from './adapters/workHttp';
 export type { IWorkService, IWorkflowExecutionService, IDeliveryExecutionService } from './ports';
 export type * from './domain/work';
+export type * from './domain/review';
 export { WorkflowExecutionGraph } from './ui/WorkflowExecutionGraph';
 export type { WorkflowExecutionGraphProps } from './ui/WorkflowExecutionGraph';
 export type * from './domain/workflowExecutionGraph';
@@ -91,6 +93,11 @@ export const tingPlugin = definePlugin({
       getParentRoute: () => rootRoute,
       path: '/ting/work/$workId',
       component: WorkPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/review/$projectId/$issueId',
+      component: TicketReviewPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,

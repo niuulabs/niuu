@@ -17,6 +17,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+import httpx
 import jwt
 import pytest
 from fastapi import FastAPI
@@ -47,7 +48,14 @@ from ting.domain.models import (
 )
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.domain.workflow_snapshot import build_workflow_snapshot
-from ting.ports.volundr import ActivityEvent, SpawnRequest, VolundrPort, VolundrSession
+from ting.ports.volundr import (
+    ActivityEvent,
+    PublicSessionLogEntry,
+    PublicSessionLogPage,
+    SpawnRequest,
+    VolundrPort,
+    VolundrSession,
+)
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
 from ting.system_workflows import load_system_workflows
@@ -2057,7 +2065,7 @@ class TestGetTask:
             }
         ]
 
-    def test_working_task_carries_no_pending_gates(self) -> None:
+    def test_working_task_shows_a_gate_that_opened_before_its_status_caught_up(self) -> None:
         campaign = _make_campaign(status=WorkflowCampaignStatus.RUNNING)
         port = RecordingVolundrPort()
         port.gates = [{"id": "gate-1", "node_id": "n", "status": "pending"}]
@@ -2068,7 +2076,82 @@ class TestGetTask:
 
         response = _rpc(client, "GetTask", {"id": campaign.slug})
 
+        task = response.json()["result"]
+        assert task["status"]["state"] == "TASK_STATE_WORKING"
+        assert [gate["gateId"] for gate in task["metadata"]["pendingGates"]] == ["gate-1"]
+
+    def test_working_task_with_no_open_gate_carries_none(self) -> None:
+        campaign = _make_campaign(status=WorkflowCampaignStatus.RUNNING)
+        port = RecordingVolundrPort()
+        port.gates = [{"id": "gate-1", "node_id": "n", "status": "approved"}]
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+            volundr=port,
+        )
+
+        response = _rpc(client, "GetTask", {"id": campaign.slug})
+
         assert "pendingGates" not in response.json()["result"].get("metadata", {})
+
+    def test_gate_carries_the_document_it_asks_about(self) -> None:
+        workflow = next(
+            item for item in load_system_workflows() if item.name == "Ticket Planning Flow"
+        )
+        campaign = replace(
+            _make_campaign(status=WorkflowCampaignStatus.BLOCKED),
+            workflow_snapshot={"name": workflow.name, "graph": workflow.graph},
+        )
+        port = RecordingVolundrPort()
+        gate = {"id": "gate-1", "node_id": "plan-review-gate", "status": "pending"}
+        port.gates = [gate]
+        port.get_public_session_log_page = AsyncMock(
+            return_value=PublicSessionLogPage(
+                entries=(
+                    _log_entry(1, "room_outcome", {"fields": {"plan": "## Approach\nTrace ticks"}}),
+                    _log_entry(2, "workflow_gate", {"gate": gate}),
+                ),
+                scanned_through=2,
+                has_more=False,
+            )
+        )
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+            volundr=port,
+        )
+
+        response = _rpc(client, "GetTask", {"id": campaign.slug})
+
+        artifacts = response.json()["result"]["artifacts"]
+        assert [artifact["name"] for artifact in artifacts] == ["Plan"]
+        assert artifacts[0]["parts"][0]["text"] == "## Approach\nTrace ticks"
+
+    def test_unreadable_gate_document_is_said_and_the_gate_still_shows(self) -> None:
+        workflow = next(
+            item for item in load_system_workflows() if item.name == "Ticket Planning Flow"
+        )
+        campaign = replace(
+            _make_campaign(status=WorkflowCampaignStatus.BLOCKED),
+            workflow_snapshot={"name": workflow.name, "graph": workflow.graph},
+        )
+        port = RecordingVolundrPort()
+        port.gates = [{"id": "gate-1", "node_id": "plan-review-gate", "status": "pending"}]
+        port.get_public_session_log_page = AsyncMock(side_effect=httpx.ConnectError("down"))
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+            volundr=port,
+        )
+
+        response = _rpc(client, "GetTask", {"id": campaign.slug})
+
+        task = response.json()["result"]
+        assert task["metadata"]["pendingGates"]
+        assert "unreadable" in task["metadata"]["artifacts_error"]
+
+
+def _log_entry(seq: int, kind: str, payload: dict[str, Any]) -> PublicSessionLogEntry:
+    return PublicSessionLogEntry(
+        session_id="session-1", seq=seq, kind=kind, payload=payload, ts=datetime.now(UTC)
+    )
 
 
 class TestCancelTask:

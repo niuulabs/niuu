@@ -30,6 +30,7 @@ from ting.domain.services.ticket_coordinator import (
     TicketWorkflow,
     coordinator_ravn_config,
 )
+from ting.domain.services.ticket_review import RunReview, campaign_reviews
 from ting.domain.services.work_read import (
     CoverageError,
     CoverageStatus,
@@ -45,7 +46,7 @@ from ting.domain.services.work_read import (
     WorkSummary,
     WorkTask,
 )
-from ting.domain.ticket_coordinator import TicketCoordinatorStatus
+from ting.domain.ticket_coordinator import TicketCoordinatorStatus, ticket_of
 from ting.domain.workflow_board import (
     BACKLOG_COLUMN_ID,
     SESSION_GONE_REASON,
@@ -236,6 +237,7 @@ class TicketWorkflowRunResponse(_ResponseModel):
 class WorkTaskResponse(_ResponseModel):
     source: TrackerIssueRefResponse
     title: str
+    description: str = ""
     operational_run: OperationalRunRefResponse | None
     dispatch: DispatchRefResponse | None
     actions: list[str]
@@ -244,11 +246,18 @@ class WorkTaskResponse(_ResponseModel):
     workflow_run: TicketWorkflowRunResponse | None = None
 
 
+class ReviewPanelResponse(_ResponseModel):
+    widget: str
+    title: str
+    field: str | None = None
+
+
 class BoardColumnResponse(_ResponseModel):
     id: str
     title: str
     kind: BoardColumnKind
     review: str | None = None
+    panels: list[ReviewPanelResponse] = []
     approve_column_id: str | None = None
     changes_column_id: str | None = None
     workflow_id: str | None = None
@@ -298,6 +307,35 @@ class TicketStartRequest(BaseModel):
 class TicketStartResponse(_ResponseModel):
     status: Literal["coordinating"]
     session_id: str
+
+
+class ReviewRevisionResponse(_ResponseModel):
+    number: int
+    gate_id: str
+    activation_id: str
+    requested_at: str
+    status: str
+    summary: str
+    decided_by: str
+    notes: str
+    decided_at: str
+    fields: dict[str, str]
+
+
+class RunReviewResponse(_ResponseModel):
+    column_id: str
+    title: str
+    review: str | None
+    workflow_name: str
+    task_id: str
+    session_id: str
+    panels: list[ReviewPanelResponse]
+    revisions: list[ReviewRevisionResponse]
+
+
+class TicketReviewsResponse(_ResponseModel):
+    reviews: list[RunReviewResponse]
+    unreadable_runs: list[str]
 
 
 async def resolve_work_execution_repo(
@@ -520,6 +558,15 @@ class _ForgeSessions:
     def forge_of(self, session_id: str) -> VolundrPort | None:
         """The Forge a session was found on while the board was read."""
         return self._located.get(session_id)
+
+    async def locate(self, session_id: str, connection_id: str | None) -> VolundrPort | None:
+        """The Forge holding a session, or None once every Forge says it is gone."""
+        if connection_id:
+            adapter = await self._forge_for(connection_id)
+            session = await self._get_session(adapter, session_id)
+            return adapter if session is not None else None
+        adapter, session = await self._locate(session_id)
+        return adapter if session is not None else None
 
     async def read(self, session_id: str, connection_id: str | None) -> SessionProgress:
         if connection_id:
@@ -836,6 +883,59 @@ def create_work_router() -> APIRouter:
             ) from exc
         return GateDecisionResponse(status="resolved", session_id=session_id, gate_id=gate.id)
 
+    @router.get(
+        "/project/{saga_id}/tasks/{issue_id}/reviews",
+        response_model=TicketReviewsResponse,
+    )
+    async def ticket_reviews(
+        saga_id: UUID,
+        issue_id: str,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+        saga_repo: SagaRepository = Depends(resolve_saga_repo),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+    ) -> TicketReviewsResponse:
+        """Everything this ticket's runs have put in front of a person, oldest first."""
+        sessions = _forge_sessions(request, principal)
+        if sessions is None:
+            raise HTTPException(status_code=503, detail="No Forge connection is available")
+        saga = await saga_repo.get_saga(saga_id, owner_id=principal.user_id)
+        if saga is None:
+            raise HTTPException(status_code=404, detail=f"Project work not found: {saga_id}")
+        campaigns = await campaign_repo.list_ticket_campaigns(
+            owner_id=principal.user_id, saga_id=saga_id
+        )
+        runs = [
+            campaign
+            for campaign in campaigns
+            if campaign.session_id
+            and (ticket := ticket_of(campaign.metadata)) is not None
+            and ticket[1] == issue_id
+        ]
+        reviews: list[RunReview] = []
+        unreadable: list[str] = []
+        page_size = request.app.state.settings.workflow_execution.list_page_size
+        for campaign in runs:
+            try:
+                forge = await sessions.locate(campaign.session_id, campaign.connection_id)
+            except ForgeSessionUnreadableError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            if forge is None:
+                unreadable.append(campaign.workflow_name)
+                continue
+            reviews.extend(
+                await campaign_reviews(
+                    forge,
+                    campaign,
+                    page_size=page_size,
+                    auth_token=extract_bearer_token(request),
+                    principal=principal,
+                )
+            )
+        return TicketReviewsResponse.model_validate(
+            {"reviews": reviews, "unreadable_runs": unreadable}
+        )
+
     @router.post(
         "/project/{saga_id}/tasks/{issue_id}/start",
         response_model=TicketStartResponse,
@@ -913,8 +1013,12 @@ __all__ = [
     "GateDecisionResponse",
     "OperationalRunRefResponse",
     "RawWorkStateResponse",
+    "ReviewPanelResponse",
+    "ReviewRevisionResponse",
+    "RunReviewResponse",
     "SessionRefResponse",
     "SourceCoverageResponse",
+    "TicketReviewsResponse",
     "TicketStartRequest",
     "TrackerIssueRefResponse",
     "TrackerProjectRefResponse",

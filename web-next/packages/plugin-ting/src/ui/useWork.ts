@@ -6,6 +6,8 @@ import type { GateDecision, WorkCollection, WorkResourceKind } from '../domain/w
 const EXECUTION_PAGE_SIZE = 50;
 /** A board follows runs it does not drive, so it refreshes while it is on screen. */
 const BOARD_REFRESH_MS = 5000;
+/** A review reads a run's whole session log, so it refreshes more slowly than the board. */
+const REVIEW_REFRESH_MS = 15000;
 
 export function useWorkCollection() {
   const service = useService<IWorkService>('ting.work');
@@ -44,6 +46,15 @@ export function useWorkDetail(kind: WorkResourceKind | null, id: string | null) 
     queryFn: () => service.get(kind as WorkResourceKind, id as string),
     enabled: Boolean(kind && id),
     refetchInterval: (query) => (query.state.data?.board ? BOARD_REFRESH_MS : false),
+  });
+}
+
+export function useTicketReviews(projectId: string, issueId: string) {
+  const service = useService<IWorkService>('ting.work');
+  return useQuery({
+    queryKey: ['ting', 'work', 'reviews', projectId, issueId],
+    queryFn: () => service.ticketReviews(projectId, issueId),
+    refetchInterval: REVIEW_REFRESH_MS,
   });
 }
 

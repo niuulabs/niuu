@@ -8,6 +8,10 @@ where an answer sends a ticket is derived from the gate's own edges.
 A workflow without ``graph.board`` has no board. That is an authoring choice
 and the expected state of most workflows, not a degraded one.
 
+A gate column also says what a person reviews there, as panels. ``review`` names
+the kind of decision and brings that kind's usual panels; ``panels`` replaces them
+when a workflow reviews something else. The review page around them never changes.
+
 A project's board runs one or more such workflows in order. Each keeps its own
 columns and gates, and leaving one workflow leads to the first column of the
 next. A ticket with a coordinator starts it by itself (see ``ticket_advance``);
@@ -35,6 +39,11 @@ OFF_BOARD_REASON = "This ticket's run does not match the workflows on this board
 
 _RESERVED_COLUMN_IDS = frozenset({BACKLOG_COLUMN_ID, DONE_COLUMN_ID})
 _REVIEW_KINDS = frozenset({"plan", "code", "output"})
+WIDGET_DOCUMENT = "document"
+WIDGET_PULL_REQUEST = "pullRequest"
+WIDGET_SUMMARY = "summary"
+# Only a document reads an outcome field; the others show what the gate already holds.
+_REVIEW_WIDGETS = frozenset({WIDGET_DOCUMENT, WIDGET_PULL_REQUEST, WIDGET_SUMMARY})
 _WORK_NODE_KINDS = frozenset({"stage", "wait", "subworkflow", "gate"})
 _CLOSED_STATUS_TYPES = frozenset({"completed", "canceled"})
 _STOPPED_RUN_STATUSES = frozenset({RunStatus.FAILED, RunStatus.ESCALATED})
@@ -63,6 +72,22 @@ class BoardTicketState(StrEnum):
 
 
 @dataclass(frozen=True)
+class ReviewPanel:
+    """One thing a person reviews at a gate."""
+
+    widget: str
+    title: str
+    field: str | None = None
+
+
+_KIND_PANELS: Mapping[str, tuple[ReviewPanel, ...]] = {
+    "plan": (ReviewPanel(widget=WIDGET_DOCUMENT, title="Plan", field="plan"),),
+    "code": (ReviewPanel(widget=WIDGET_PULL_REQUEST, title="Pull request"),),
+    "output": (ReviewPanel(widget=WIDGET_SUMMARY, title="Result"),),
+}
+
+
+@dataclass(frozen=True)
 class BoardColumn:
     id: str
     title: str
@@ -70,6 +95,7 @@ class BoardColumn:
     node_ids: tuple[str, ...] = ()
     gate_node_id: str | None = None
     review: str | None = None
+    panels: tuple[ReviewPanel, ...] = ()
     approve_column_id: str | None = None
     changes_column_id: str | None = None
     workflow_id: str | None = None
@@ -401,7 +427,7 @@ def _nodes_by_id(graph: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
 def _parse_column(raw: object, nodes: Mapping[str, Mapping[str, Any]]) -> BoardColumn:
     if not isinstance(raw, Mapping):
         raise WorkflowBoardError("Each graph.board column must be a mapping")
-    unknown = set(raw) - {"id", "title", "nodes", "gate", "review"}
+    unknown = set(raw) - {"id", "title", "nodes", "gate", "review", "panels"}
     if unknown:
         raise WorkflowBoardError(f"Unknown board column field(s): {', '.join(sorted(unknown))}")
     column_id = _required_text(raw.get("id"), "id")
@@ -412,7 +438,7 @@ def _parse_column(raw: object, nodes: Mapping[str, Mapping[str, Any]]) -> BoardC
         raise WorkflowBoardError(f"Board column {column_id!r} needs exactly one of nodes or gate")
     if "gate" in raw:
         return _parse_gate_column(raw, column_id, title, nodes)
-    if "review" in raw:
+    if "review" in raw or "panels" in raw:
         raise WorkflowBoardError(f"Board column {column_id!r} sets review without a gate")
     return BoardColumn(
         id=column_id,
@@ -448,6 +474,44 @@ def _parse_gate_column(
         kind=BoardColumnKind.GATE,
         gate_node_id=gate_id,
         review=str(review),
+        panels=_review_panels(raw, column_id, str(review)),
+    )
+
+
+def _review_panels(
+    raw: Mapping[str, Any],
+    column_id: str,
+    review: str,
+) -> tuple[ReviewPanel, ...]:
+    if "panels" not in raw:
+        return _KIND_PANELS[review]
+    panels = raw["panels"]
+    if not isinstance(panels, list) or not panels:
+        raise WorkflowBoardError(f"Board column {column_id!r} panels must be a non-empty list")
+    return tuple(_parse_panel(item, column_id) for item in panels)
+
+
+def _parse_panel(raw: object, column_id: str) -> ReviewPanel:
+    if not isinstance(raw, Mapping):
+        raise WorkflowBoardError(f"Each panel of board column {column_id!r} must be a mapping")
+    unknown = set(raw) - {"widget", "title", "field"}
+    if unknown:
+        raise WorkflowBoardError(f"Unknown review panel field(s): {', '.join(sorted(unknown))}")
+    widget = raw.get("widget")
+    if widget not in _REVIEW_WIDGETS:
+        raise WorkflowBoardError(
+            f"Board column {column_id!r} panel widget must be one of "
+            f"{', '.join(sorted(_REVIEW_WIDGETS))}"
+        )
+    title = _required_text(raw.get("title"), f"{column_id} panel title")
+    if widget != WIDGET_DOCUMENT:
+        if "field" in raw:
+            raise WorkflowBoardError(f"Review panel {title!r} reads no outcome field")
+        return ReviewPanel(widget=str(widget), title=title)
+    return ReviewPanel(
+        widget=WIDGET_DOCUMENT,
+        title=title,
+        field=_required_text(raw.get("field"), f"{column_id} panel field"),
     )
 
 
@@ -501,12 +565,8 @@ def _with_gate_routes(
             continue
         gate = nodes[column.gate_node_id]
         routed.append(
-            BoardColumn(
-                id=column.id,
-                title=column.title,
-                kind=column.kind,
-                gate_node_id=column.gate_node_id,
-                review=column.review,
+            replace(
+                column,
                 approve_column_id=_route(gate, "approvalEvent", graph, nodes, by_node),
                 changes_column_id=_route(gate, "changesRequestedEvent", graph, nodes, by_node),
             )

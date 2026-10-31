@@ -15,6 +15,7 @@ from ting.domain.workflow_board import (
     BoardTicketState,
     BoardWorkflow,
     ProjectBoard,
+    ReviewPanel,
     WorkflowBoardError,
     board_from_snapshot,
     parse_workflow_board,
@@ -23,6 +24,60 @@ from ting.domain.workflow_board import (
 )
 from ting.domain.workflow_document import load_workflow_document
 from ting.system_workflows import BUNDLED_SYSTEM_WORKFLOWS_PATH, load_system_workflows
+
+
+def _gate_column(graph: dict[str, Any]) -> dict[str, Any]:
+    return graph["board"]["columns"][1]
+
+
+def test_a_review_kind_brings_its_usual_panels() -> None:
+    board = parse_workflow_board(_graph())
+
+    assert board is not None
+    assert board.columns[1].panels == (ReviewPanel(widget="pullRequest", title="Pull request"),)
+
+
+def test_a_workflow_declares_its_own_panels() -> None:
+    graph = _graph()
+    _gate_column(graph)["panels"] = [
+        {"widget": "document", "title": "Design", "field": "design"},
+        {"widget": "summary", "title": "Checks"},
+    ]
+
+    board = parse_workflow_board(graph)
+
+    assert board is not None
+    assert board.columns[1].panels == (
+        ReviewPanel(widget="document", title="Design", field="design"),
+        ReviewPanel(widget="summary", title="Checks"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("panels", "reason"),
+    [
+        ([], "non-empty list"),
+        (["document"], "must be a mapping"),
+        ([{"widget": "hologram", "title": "Nope"}], "widget must be one of"),
+        ([{"widget": "document", "title": "Plan"}], "panel field"),
+        ([{"widget": "summary", "title": "Result", "field": "plan"}], "reads no outcome field"),
+        ([{"widget": "summary", "title": "Result", "colour": "red"}], "Unknown review panel"),
+    ],
+)
+def test_a_panel_that_cannot_be_shown_is_refused(panels: Any, reason: str) -> None:
+    graph = _graph()
+    _gate_column(graph)["panels"] = panels
+
+    with pytest.raises(WorkflowBoardError, match=reason):
+        parse_workflow_board(graph)
+
+
+def test_panels_need_a_gate() -> None:
+    graph = _graph()
+    graph["board"]["columns"][0]["panels"] = [{"widget": "summary", "title": "Result"}]
+
+    with pytest.raises(WorkflowBoardError, match="without a gate"):
+        parse_workflow_board(graph)
 
 
 def _graph() -> dict[str, Any]:
