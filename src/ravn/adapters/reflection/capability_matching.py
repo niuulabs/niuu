@@ -78,17 +78,28 @@ _REVISION_SAME = (
     "adds to it: an extra output field, an extra option, a filter, or a related "
     "count or summary."
 )
-_STAND_IN_QUESTION = (
-    "Is `candidate` the same capability as the tool in `request`? Same means a "
-    "caller that needs that tool could use the candidate instead, or a fixed or "
-    "extended version of it, because both answer the same question about the "
-    "same thing."
-)
-_STAND_IN_SAME = "The candidate does this, or does strictly more and includes all of it."
-_DIFFERENT = (
+_REVISION_DIFFERENT = (
     "They only share a topic or a technology. Listing pods and reading pod logs "
     "are different capabilities, and so are logs since a time and logs of the "
     "previous container."
+)
+#: Clean-up keeps whichever tool of a group was used most, so a "same" here must
+#: hold both ways. "Can this one stand in for that one" has a direction and let
+#: a tool with its own job be retired.
+_DUPLICATE_QUESTION = (
+    "Is `candidate` a duplicate of the tool in `request`? A duplicate does the "
+    "same job: someone reading both would say they are the same tool built "
+    "twice, even if they connect differently or return somewhat different fields."
+)
+_DUPLICATE_SAME = (
+    "The same tool built twice: same job and same kind of input. Only the "
+    "connection method, the naming or some output fields differ."
+)
+_DUPLICATE_DIFFERENT = (
+    "Each tool has its own job, even if they read the same resource: a filter or "
+    "lookup input the other lacks, a check it performs, or a different resource "
+    "or time range. Listing pods and reading pod logs are different tools, and so "
+    "are logs since a time and logs of the previous container."
 )
 
 
@@ -267,12 +278,12 @@ class SystemOneCapabilityMatcher:
     def _question(self, item: CapabilityDescriptor, *, as_revision: bool) -> NoulQuestion:
         return NoulQuestion(
             instructions={
-                "question": _REVISION_QUESTION if as_revision else _STAND_IN_QUESTION,
+                "question": _REVISION_QUESTION if as_revision else _DUPLICATE_QUESTION,
                 "candidate": self._view(item),
             },
             criteria={
-                "true": _REVISION_SAME if as_revision else _STAND_IN_SAME,
-                "false": _DIFFERENT,
+                "true": _REVISION_SAME if as_revision else _DUPLICATE_SAME,
+                "false": _REVISION_DIFFERENT if as_revision else _DUPLICATE_DIFFERENT,
             },
         )
 

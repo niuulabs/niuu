@@ -404,7 +404,7 @@ decision-model work.
 | Observe-only opinion per inbox slot, taken when a home turn selects it, compared with the turn after | [resident_attention.py](../../src/ravn/resident_attention.py), called from `ResidentRuntime.next_home_task` / `handle_completed_turn` |
 | §3.1 attention gate (built, **off**) | `ResidentSlotAttention.select` and `decision.resident_first_opinion.gate` |
 | §5 step 2 offline calibration | `ravn resident attention-calibrate`, [resident_attention_calibration.py](../../src/ravn/resident_attention_calibration.py) |
-| Duplicate check at the `build_tool` gate (`decision.capability_matching`, off by default): an embedding shortlist, then one Noul per candidate | `SystemOneCapabilityMatcher` in [capability_matching.py](../../src/ravn/adapters/reflection/capability_matching.py), `_build_tool_gate_matcher` in [runtime_builders.py](../../src/ravn/cli/runtime_builders.py) |
+| Learned-tool matching for `build_tool` and curation (`decision.capability_matching`, off by default): an embedding shortlist, then one Noul per candidate | `SystemOneCapabilityMatcher` in [capability_matching.py](../../src/ravn/adapters/reflection/capability_matching.py), `_build_capability_matcher` in [runtime_builders.py](../../src/ravn/cli/runtime_builders.py) |
 | Config (`decision:` in ravn `Settings`) and composition | `DecisionConfig` in [config.py](../../src/ravn/config.py), `build_decision_port` in [runtime_builders.py](../../src/ravn/cli/runtime_builders.py) |
 
 ### Turning it on
@@ -433,8 +433,8 @@ exists. `capability_matching` also fails startup while `decision` is off, or
 without `reflection.matching.mode: semantic` and embeddings, because it keeps
 the embedding shortlist. While running, a failed decision request fails that
 resident task before its model turn starts, with the error on the
-`ravn.decision` span. A failed decision at the `build_tool` gate fails the build
-instead, and nothing is built.
+`ravn.decision` span. A failed decision about learned tools fails that build or
+curation pass instead, and nothing is built or retired.
 
 ### Per slot, not per turn
 

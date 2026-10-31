@@ -71,7 +71,6 @@ async def _run_daemon(
     memory = _with_mimir_fact_capture(memory, daemon_mimir)
     learning_consolidation = _build_learning_consolidation(settings, llm)
     capability_matcher = _build_capability_matcher(settings, learning_consolidation)
-    tool_gate_matcher = _build_tool_gate_matcher(settings, learning_consolidation)
     friction_ledger = _build_friction_ledger(
         settings, mimir=daemon_mimir, consolidation=learning_consolidation
     )
@@ -419,7 +418,7 @@ async def _run_daemon(
                 if resident_learning_runtime is not None
                 else None
             ),
-            capability_matcher=tool_gate_matcher,
+            capability_matcher=capability_matcher,
             skill_manager=(
                 resident_learning_runtime.skills if resident_learning_runtime is not None else None
             ),

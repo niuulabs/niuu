@@ -80,7 +80,9 @@ class SessionProgress:
     away_reason: str | None = None
 
 
-SessionGateReader = Callable[[str], Awaitable[SessionProgress]]
+#: Reads one session given its id and the Forge connection it was launched on,
+#: which is None when only the session id is known (a dispatched run).
+SessionGateReader = Callable[[str, str | None], Awaitable[SessionProgress]]
 
 
 class WorkKind(StrEnum):
@@ -534,7 +536,7 @@ class WorkReadService:
         gates_by_session: dict[str, SessionProgress] = {}
         if board is not None:
             gates_by_session, gate_coverage = await self._read_session_gates(
-                _live_session_ids(issue_runs, coordinators, ticket_runs)
+                _live_sessions(issue_runs, coordinators, ticket_runs)
             )
             coverage.extend(gate_coverage)
         tasks = tuple(
@@ -606,8 +608,9 @@ class WorkReadService:
 
     async def _read_session_gates(
         self,
-        session_ids: list[str],
+        sessions: dict[str, str | None],
     ) -> tuple[dict[str, SessionProgress], tuple[SourceCoverage, ...]]:
+        session_ids = list(sessions)
         if not session_ids:
             return {}, (
                 SourceCoverage(
@@ -627,7 +630,7 @@ class WorkReadService:
                 ),
             )
         results = await asyncio.gather(
-            *(self._session_gates(session_id) for session_id in session_ids),
+            *(self._session_gates(session_id, sessions[session_id]) for session_id in session_ids),
             return_exceptions=True,
         )
         gates: dict[str, SessionProgress] = {}
@@ -1058,28 +1061,31 @@ def _operational_run_index(runs: list[Run]) -> dict[str, Run]:
     return index
 
 
-def _live_session_ids(
+def _live_sessions(
     issue_runs: list[tuple[TrackerIssue, Run | None]],
     coordinators: dict[str, TicketCoordinator],
     ticket_runs: dict[str, WorkflowCampaign],
-) -> list[str]:
-    """Sessions whose state decides where a ticket sits."""
-    session_ids = {
-        run.session_id
-        for _, run in issue_runs
-        if run is not None and run.session_id and run.status != RunStatus.MERGED
-    }
-    session_ids.update(
-        coordinator.session_id
-        for coordinator in coordinators.values()
-        if coordinator.status == TicketCoordinatorStatus.ACTIVE
-    )
-    session_ids.update(
-        campaign.session_id
-        for campaign in ticket_runs.values()
-        if campaign.session_id and campaign.status != WorkflowCampaignStatus.COMPLETED
-    )
-    return sorted(session_ids)
+) -> dict[str, str | None]:
+    """Sessions whose state decides where a ticket sits, each with its Forge connection.
+
+    A connection is None when only the session id is known. Where one session
+    is named both ways, the known connection wins so it is read from one Forge.
+    """
+    sessions: dict[str, str | None] = {}
+
+    def add(session_id: str, connection_id: str | None) -> None:
+        sessions[session_id] = connection_id or sessions.get(session_id)
+
+    for _, run in issue_runs:
+        if run is not None and run.session_id and run.status != RunStatus.MERGED:
+            add(run.session_id, None)
+    for coordinator in coordinators.values():
+        if coordinator.status == TicketCoordinatorStatus.ACTIVE:
+            add(coordinator.session_id, coordinator.connection_id)
+    for campaign in ticket_runs.values():
+        if campaign.session_id and campaign.status != WorkflowCampaignStatus.COMPLETED:
+            add(campaign.session_id, campaign.connection_id)
+    return dict(sorted(sessions.items()))
 
 
 def _coordinator_ref(

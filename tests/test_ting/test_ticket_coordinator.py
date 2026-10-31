@@ -85,6 +85,7 @@ def _service(*, current: TicketCoordinator | None, session_status: str = "runnin
     volundr.start_session = AsyncMock()
     volundr.stop_session = AsyncMock()
     volundr.api_base_url = "https://forge.test/"
+    volundr.target_id = "forge-target"
     service = TicketCoordinatorService(
         repo=repo,
         volundr=volundr,
@@ -142,6 +143,7 @@ async def test_a_coordinator_reaches_the_forge_that_launched_it() -> None:
     assert platform["workload_exchange_url"] == (
         "https://forge.test/api/v1/tokens/workload/exchange"
     )
+    assert platform["a2a_default_connection_id"] == "forge-target"
 
 
 def test_a_coordinator_inherits_the_deployments_platform_settings() -> None:

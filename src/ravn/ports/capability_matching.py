@@ -63,8 +63,8 @@ class CapabilityMatcherPort(Protocol):
         ``as_revision`` asks whether the subject is a *next version* of a
         candidate, so a request that extends a tool (an extra field, an extra
         option) belongs to that tool's lineage. Without it the question is
-        whether the candidate can stand in for the subject, which is what
-        retiring duplicates needs.
+        whether the two are the same tool built twice, which is what retiring
+        duplicates needs.
 
         Candidates below the adapter's similarity threshold are distinct
         without a model call and get no verdict. A judge that cannot answer

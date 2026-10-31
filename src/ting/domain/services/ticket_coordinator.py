@@ -288,6 +288,9 @@ class TicketCoordinatorService:
                     "enabled": True,
                     "base_url": forge,
                     "workload_exchange_url": f"{forge}{WORKLOAD_EXCHANGE_PATH}",
+                    # Ting otherwise places each workflow on a random Forge; a ticket's
+                    # sessions stay together so the coordinator can reach their rooms.
+                    "a2a_default_connection_id": self._volundr.target_id,
                     "a2a_default_metadata": metadata,
                     "a2a_gate_decisions": False,
                     "anonymous_dev_mode": self._anonymous_platform,
