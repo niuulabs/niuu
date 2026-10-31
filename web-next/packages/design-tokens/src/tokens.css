@@ -8,6 +8,12 @@
 /* --- Fonts --- */
 @font-face {
   font-family: 'Inter';
+  src: url('./fonts/Inter-Light.woff2') format('woff2');
+  font-weight: 300;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
   src: url('./fonts/Inter-Regular.ttf') format('truetype');
   font-weight: 400;
   font-display: swap;

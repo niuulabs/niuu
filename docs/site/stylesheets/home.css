@@ -2,6 +2,12 @@
  * Every rule is scoped to .niuu-home, because this file loads on all docs pages.
  * Copy lives in docs/site/index.md; the markup is docs/overrides/home.html. */
 
+/* All three weights are needed: with Light alone, body text would render Light.
+ * This file loads on every docs page, so these also serve niuu.css. */
+@font-face { font-family: Inter; src: url('../fonts/Inter-Light.woff2') format('woff2'); font-weight: 300; font-display: swap; }
+@font-face { font-family: Inter; src: url('../fonts/Inter-Regular.ttf') format('truetype'); font-weight: 400; font-display: swap; }
+@font-face { font-family: Inter; src: url('../fonts/Inter-Medium.ttf') format('truetype'); font-weight: 500; font-display: swap; }
+
 /* Material's chrome stays in the DOM for instant navigation, hidden on this page. */
 body:has(.niuu-home) { background: #071019; }
 body:has(.niuu-home) .md-header, body:has(.niuu-home) .md-main { display: none; }

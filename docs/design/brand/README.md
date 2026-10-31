@@ -48,6 +48,12 @@ their own colours, so a brand change belongs in the `niuu` block and never in `:
 Only the logo strokes are shared. Hard-coded colours outside the tokens are written as `var(--niuu-x, #original)`: only `niuu` defines those names, so every other
 theme falls back to the original.
 
+## Fonts
+
+`Inter-Light.woff2` is `inter-latin-300-normal.woff2` from `@fontsource/inter` 5.3.0
+(SIL Open Font License 1.1). It holds Latin only, and the package's `Inter Display`
+is not shipped, so headlines use Inter Light.
+
 ## Additions to the package
 
 The v0.4 package did not ship these; they are built from its masters.
