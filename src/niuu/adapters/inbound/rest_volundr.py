@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import Counter
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Literal
@@ -54,7 +55,6 @@ from niuu.adapters.inbound.remote_urls import (
 from niuu.adapters.inbound.remote_urls import (
     forward_websocket_identity_headers as _forward_websocket_headers,
 )
-from niuu.adapters.inbound.session_owners import SessionOwners
 from niuu.adapters.inbound.source_health import (
     SourceFailure,
     describe_remote_failure,
@@ -81,6 +81,7 @@ from niuu.domain.presented_files import (
 from niuu.domain.services.forge_session_policy import policy_refusal
 from niuu.domain.services.instances import InstanceService
 from niuu.domain.services.token_scope import FORGE_SESSION_TOKEN_USE
+from niuu.domain.session_owners import SessionOwners
 from niuu.forge_mcp.credentials import token_scopes
 from niuu.ports.instances import InvalidInstanceIdError
 
@@ -1889,9 +1890,14 @@ def create_volundr_router(
                     merged[f"{item.get('instance_id')}:{item['id']}"] = item
         sessions = [item for item in merged.values() if item.get("id")]
         if session_owners is not None:
+            # A session id listed by two nodes is ambiguous: leave it to the full search.
+            seen = Counter(str(item["id"]) for item in sessions)
             session_owners.learn(
-                (str(item["id"]), str(item.get("instance_id") or "")) for item in sessions
+                (str(item["id"]), str(item.get("instance_id") or ""))
+                for item in sessions
+                if seen[str(item["id"])] == 1
             )
+            await _with_parent_guild_ids(request, principal, sessions)
         sessions.sort(
             key=lambda item: _normalize_timestamp(
                 item.get("last_active") or item.get("lastActive") or item.get("last_activity_at")
@@ -3926,6 +3932,76 @@ def create_volundr_router(
     session_owners = (
         SessionOwners(session_owner_ttl_seconds) if session_owner_ttl_seconds is not None else None
     )
+    #: Each node's projects-domain id ("thor", "mini-m6"), which session coordination stores
+    #: for a parent: Guild id -> (projects id or None, monotonic expiry).
+    projects_ids: dict[str, tuple[str | None, float]] = {}
+
+    async def _projects_id_map(
+        request: Request, instances: list[RegisteredInstance]
+    ) -> dict[str, str]:
+        """Projects-domain id -> Guild id for the given nodes, asked once per TTL each."""
+        if session_owner_ttl_seconds is None:
+            return {}
+        now = time.monotonic()
+        stale = [i for i in instances if projects_ids.get(i.id, (None, 0.0))[1] <= now]
+
+        async def ask(instance: RegisteredInstance) -> str | None:
+            embedded = _uses_embedded_transport(instance)
+            response = await _request_remote(
+                instance,
+                request,
+                method="GET",
+                path="/instance",
+                embedded_app=embedded_forge_app,
+                node_relay=not embedded,
+                timeout=OWNER_HINT_TIMEOUT_SECONDS,
+            )
+            if response.status_code != status.HTTP_200_OK:
+                return None  # an older Forge without /instance: nothing to map
+            payload = response.json()
+            value = payload.get("instance_id") if isinstance(payload, dict) else None
+            return value if isinstance(value, str) and value else None
+
+        answers = await asyncio.gather(*(ask(i) for i in stale), return_exceptions=True)
+        for instance, answer in zip(stale, answers, strict=True):
+            if isinstance(answer, httpx.RequestError | HTTPException | ValueError):
+                logger.warning(
+                    "Cannot read Forge instance %s's projects id: %s",
+                    instance.id,
+                    describe_remote_failure(answer),
+                )
+                continue  # not cached: asked again on the next read
+            if isinstance(answer, BaseException):
+                raise answer
+            projects_ids[instance.id] = (answer, now + session_owner_ttl_seconds)
+        return {
+            projects_id: guild_id
+            for guild_id, (projects_id, _) in projects_ids.items()
+            if projects_id is not None
+        }
+
+    async def _with_parent_guild_ids(
+        request: Request, principal: Principal, items: list[dict[str, Any]]
+    ) -> None:
+        """Add ``guild_instance_id`` to each item's parent; the stored id stays as it is."""
+        parents = [
+            parent
+            for item in items
+            if isinstance(item.get("coordination"), dict)
+            and isinstance(parent := item["coordination"].get("parent"), dict)
+            and isinstance(parent.get("instance_id"), str)
+            and "guild_instance_id" not in parent
+        ]
+        if not parents:
+            return
+        instances = await _visible_instances(service, principal)
+        guild_ids = {instance.id for instance in instances}
+        mapping = await _projects_id_map(request, instances)
+        for parent in parents:
+            stored = parent["instance_id"]
+            guild_id = stored if stored in guild_ids else mapping.get(stored)
+            if guild_id is not None:
+                parent["guild_instance_id"] = guild_id
 
     #: Nodes known to lack a notification route: (route, instance id) -> monotonic recheck
     #: time. Per route, so one route missing never hides another the node does serve.
@@ -3992,14 +4068,28 @@ def create_volundr_router(
     ) -> tuple[RegisteredInstance, dict[str, Any]]:
         remembered = await _remembered_owner(service, principal, request, session_id)
         if remembered is not None:
+            remembered_instance, visible = remembered
             try:
-                return await _find_session_owner_anywhere(
-                    service, principal, request, session_id, candidates=[remembered], **kwargs
+                instance, payload = await _find_session_owner_anywhere(
+                    service,
+                    principal,
+                    request,
+                    session_id,
+                    candidates=[remembered_instance],
+                    **kwargs,
                 )
             except HTTPException as exc:
-                if exc.status_code != status.HTTP_404_NOT_FOUND:
-                    raise  # the owner's own failure is the answer
-                session_owners.forget(session_id)  # moved or gone: search again
+                # Not there, or not answering: the full search decides, as without the
+                # memory. A node that said "not here" is not asked again.
+                session_owners.forget(session_id, remembered_instance.id)
+                if exc.status_code == status.HTTP_404_NOT_FOUND:
+                    others = [i for i in visible if i is not remembered_instance]
+                    if others:  # a lone node is simply asked again by the usual search
+                        kwargs["candidates"] = others
+            else:
+                session_owners.learn([(session_id, instance.id)])
+                await _with_parent_guild_ids(request, principal, [payload])
+                return instance, payload
         try:
             instance, payload = await _find_session_owner_anywhere(
                 service, principal, request, session_id, **kwargs
@@ -4022,12 +4112,14 @@ def create_volundr_router(
             ) from exc
         if session_owners is not None:
             session_owners.learn([(session_id, instance.id)])
+            await _with_parent_guild_ids(request, principal, [payload])
         return instance, payload
 
     async def _remembered_owner(
         service: InstanceService, principal: Principal, request: Request, session_id: str
-    ) -> RegisteredInstance | None:
-        """The node remembered owning a session, if the caller may reach it there."""
+    ) -> tuple[RegisteredInstance, list[RegisteredInstance]] | None:
+        """The node remembered owning a session, if the caller may reach it, with the
+        nodes the caller sees."""
         if session_owners is None or "instance_id" in request.query_params:
             return None
         if _local_session_scope(request):
@@ -4036,7 +4128,8 @@ def create_volundr_router(
         if owner is None:
             return None
         visible = await _visible_instances(service, principal)
-        return next((instance for instance in visible if instance.id == owner), None)
+        found = next((instance for instance in visible if instance.id == owner), None)
+        return (found, visible) if found is not None else None
 
     async def _guild_session_listing(
         request: Request,
