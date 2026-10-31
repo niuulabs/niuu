@@ -423,6 +423,7 @@ async def _run_daemon(
             skill_manager=(
                 resident_learning_runtime.skills if resident_learning_runtime is not None else None
             ),
+            peer_tools=resident_learning_runtime,
         )
 
     tasks: list[asyncio.Task] = []

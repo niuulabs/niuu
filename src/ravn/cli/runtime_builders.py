@@ -74,6 +74,7 @@ def _attach_agent_build_tool(
     installed_artifact_recorder: Any | None = None,
     capability_matcher: Any | None = None,
     skill_manager: Any | None = None,
+    peer_tools: Any | None = None,
 ) -> Any:
     """Attach build_tool when the active persona explicitly allows it."""
     if not enabled:
@@ -160,6 +161,10 @@ def _attach_agent_build_tool(
             installed_artifact_recorder=installed_artifact_recorder,
             capability_matcher=capability_matcher,
             skill_manager=skill_manager,
+            peer_tools=peer_tools,
+            peer_prior_art_probability=(
+                settings.decision.capability_matching.peer_prior_art_probability
+            ),
         )
     except TypeError:
         logger.debug("build_tool not attached: executor does not support dynamic tools")

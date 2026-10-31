@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import UTC, datetime
@@ -31,12 +32,14 @@ from ravn.odin.review import (
     item_targets,
     review_resolved_event,
 )
+from ravn.ports.peer_tools import PeerAdoption, PeerTool
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
     LearnedToolRunner,
     LocalLearnedToolRunner,
+    backend_load_refusal,
     learned_tool_artifact_path,
     learned_tool_path,
     learned_tool_storage,
@@ -56,6 +59,11 @@ from ravn.valkyrie_evolution.models import (
     LearnedToolManifest,
     OperationalSignal,
     ReviewResult,
+)
+from ravn.valkyrie_evolution.peer_tools import (
+    PeerToolCatalog,
+    PeerToolError,
+    peer_tool_from_inventory,
 )
 from ravn.valkyrie_evolution.ports import EvolutionReviewPort
 from ravn.valkyrie_evolution.tool_curation import (
@@ -108,6 +116,11 @@ SKILL_INVENTORY_STATUS_PRESENT = "present"
 #: How often the resident republishes its full skill inventory (seconds).
 DEFAULT_SKILL_INVENTORY_INTERVAL_SECONDS = 300.0
 
+#: How often the whole inventory crosses to flock peers (seconds). The heartbeat
+#: above stays on the resident's own cluster: at its rate the flock's tools would
+#: outrun the flock streams many times over. A change crosses when it happens.
+DEFAULT_FLOCK_INVENTORY_INTERVAL_SECONDS = 3600.0
+
 #: Consecutive implementation failures before a skill is auto-rolled-back.
 #: A regressed tool must fail repeatedly, never once — transient failures
 #: (timeouts, odd payloads) must not destroy adopted learning.
@@ -145,6 +158,7 @@ _SUBSCRIBED_EVENT_TYPES = [
     registry.FLOCK_LEARNING_REJECTED,
     registry.FLOCK_LEARNING_ROLLED_BACK,
     registry.ODIN_REVIEW_DECIDED,
+    EVOLUTION_SKILL_INVENTORY_EVENT,
 ]
 
 #: The only autonomy modes a resident accepts (shared with AutonomyPolicy).
@@ -291,6 +305,8 @@ class ResidentLearningRuntime:
         skill_inventory_interval_seconds: float = DEFAULT_SKILL_INVENTORY_INTERVAL_SECONDS,
         learned_tool_runner: LearnedToolRunner | None = None,
         operator_answerer: Callable[..., Awaitable[dict[str, Any]]] | None = None,
+        peer_catalog: PeerToolCatalog | None = None,
+        flock_inventory_interval_seconds: float = DEFAULT_FLOCK_INVENTORY_INTERVAL_SECONDS,
     ) -> None:
         self.identity = identity
         self._skills = skills
@@ -315,6 +331,11 @@ class ResidentLearningRuntime:
         self._review_requester = review_requester
         self._operator_answerer = operator_answerer
         self._skill_inventory_interval_seconds = skill_inventory_interval_seconds
+        self._peer_catalog = peer_catalog
+        self._flock_inventory_interval_seconds = flock_inventory_interval_seconds
+        #: What each learned tool last crossed to the flock as, by name.
+        self._crossed_to_flock: dict[str, str] = {}
+        self._flock_swept_at: float | None = None
         self._subscription: Subscription | None = None
         self._inventory_task: asyncio.Task[None] | None = None
         self._decisions: list[ResidentLearningDecision] = []
@@ -407,18 +428,36 @@ class ResidentLearningRuntime:
         in the resident registry, builds a full enriched record for each, and
         publishes an :data:`EVOLUTION_SKILL_INVENTORY_EVENT` so the dashboard
         mirror reflects the resident's live inventory. A single bad skill is
-        logged and skipped — it must never abort the whole snapshot. Returns
-        the number of inventory events published.
+        logged and skipped — it must never abort the whole snapshot. Learned
+        tools that changed, and all of them on the flock sweep, also cross to
+        flock peers (see :class:`~ravn.valkyrie_evolution.peer_tools.PeerToolCatalog`).
+        Returns the number of inventory events published.
         """
         published = 0
         seen: set[str] = set()
-        for record in self._iter_learned_tool_inventory():
+        learned = self._iter_learned_tool_inventory()
+        crossing = self._tools_crossing_to_flock(learned)
+        inventory = sorted(record["skill_name"] for record in learned)
+        for record in learned:
             name = record["skill_name"]
             if name in seen:
                 continue
             seen.add(name)
-            if await self._publish_skill_inventory_record(record):
+            crosses = name in crossing
+            flock_fields = (
+                {
+                    "inventory": inventory,
+                    "additional_nats_subjects": [
+                        _flock_nats_subject(self.identity, EVOLUTION_SKILL_INVENTORY_EVENT)
+                    ],
+                }
+                if crosses
+                else {}
+            )
+            if await self._publish_skill_inventory_record(record, extra=flock_fields):
                 published += 1
+                if crosses:
+                    self._crossed_to_flock[name] = record["learning_id"]
         for record in await self._iter_managed_skill_inventory():
             name = record["skill_name"]
             if name in seen:
@@ -427,6 +466,22 @@ class ResidentLearningRuntime:
             if await self._publish_skill_inventory_record(record):
                 published += 1
         return published
+
+    def _tools_crossing_to_flock(self, records: Sequence[dict[str, Any]]) -> set[str]:
+        """The learned tools this snapshot carries to flock peers."""
+        if self._flock_inventory_interval_seconds <= 0 or not self.identity.flock_ids:
+            return set()
+        now = time.monotonic()
+        swept_at = self._flock_swept_at
+        sweep = swept_at is None or now - swept_at >= self._flock_inventory_interval_seconds
+        if sweep:
+            self._flock_swept_at = now
+            return {record["skill_name"] for record in records}
+        return {
+            record["skill_name"]
+            for record in records
+            if self._crossed_to_flock.get(record["skill_name"]) != record["learning_id"]
+        }
 
     async def _refresh_skill_inventory(self) -> None:
         """Opportunistically republish the inventory; never raise into a caller.
@@ -463,9 +518,18 @@ class ResidentLearningRuntime:
             manifest = artifact.manifest
             if self._skills.status(manifest.name) == "archived":
                 continue
+            verification = artifact.provenance.get("verification")
+            lifecycle = self._skills.lifecycle_metadata(manifest.name) or {}
             records.append(
                 {
                     "skill_name": manifest.name,
+                    "verified": (isinstance(verification, dict) and verification.get("ok") is True),
+                    "capability_id": artifact.source_gap_id,
+                    "canary_sample": dict(artifact.provenance.get("canary_input") or {}),
+                    "usage": {
+                        "runs": int(lifecycle.get("run_count") or 0),
+                        "successes": int(lifecycle.get("success_count") or 0),
+                    },
                     "skill_content": _agent_tool_content(
                         ResidentLearningArtifact(
                             learning_id=artifact.artifact_id,
@@ -604,7 +668,12 @@ class ResidentLearningRuntime:
             )
             return ""
 
-    async def _publish_skill_inventory_record(self, record: dict[str, Any]) -> bool:
+    async def _publish_skill_inventory_record(
+        self,
+        record: dict[str, Any],
+        *,
+        extra: Mapping[str, Any] | None = None,
+    ) -> bool:
         """Publish one inventory event; log and swallow a per-skill failure."""
         source_valkyrie_id = str(record.get("source_valkyrie_id") or "")
         learning_source = str(record.get("learning_source") or "")
@@ -637,6 +706,13 @@ class ResidentLearningRuntime:
                         ),
                         "source_environment_id": record.get("source_environment_id") or "",
                         "source_valkyrie_id": source_valkyrie_id,
+                        "flock_ids": list(self.identity.flock_ids),
+                        "verified": bool(record.get("verified")),
+                        "capability_id": record.get("capability_id") or "",
+                        "canary_sample": dict(record.get("canary_sample") or {}),
+                        "usage": dict(record.get("usage") or {}),
+                        "reported_at": datetime.now(UTC).isoformat(),
+                        **(extra or {}),
                     },
                     summary=(
                         f"{self.identity.valkyrie_id} has installed skill {record['skill_name']}"
@@ -653,6 +729,49 @@ class ResidentLearningRuntime:
             )
             return False
         return True
+
+    def peer_tools(self) -> list[PeerTool]:
+        """Every verified tool heard from a peer in a shared flock."""
+        return self._peer_catalog.tools() if self._peer_catalog is not None else []
+
+    async def adopt_peer_tool(self, tool: PeerTool) -> PeerAdoption:
+        """Install a peer's tool here through the resident install pipeline.
+
+        Review, re-verification and the canary all run on this resident, which
+        is what decides whether a tool built for one cluster's reach and egress
+        works on this one. What is known to fail is refused before that: nothing
+        is recorded against the tool, so a later version can still be adopted.
+        """
+        refusal = self._peer_adoption_refusal(tool)
+        if refusal:
+            return PeerAdoption("refused", refusal, attempted=False)
+        decision = await self.evaluate_and_apply(_artifact_from_peer_tool(tool, self.identity))
+        self._decisions.append(decision)
+        if decision.action == "adopted":
+            return PeerAdoption("adopted", decision.rationale, decision.installed_skill_name)
+        if decision.action == "held":
+            return PeerAdoption("held", decision.rationale)
+        return PeerAdoption("refused", decision.rationale)
+
+    def _peer_adoption_refusal(self, tool: PeerTool) -> str:
+        """Why *tool* cannot be adopted here, before any of the pipeline runs."""
+        if not tool.test_code.strip():
+            return (
+                f"{tool.name!r} has no test_code, so this resident could not re-verify it "
+                "and would refuse to run it"
+            )
+        if not getattr(self._learned_tool_runner, "supports_verify", False):
+            return "this resident's execution backend cannot verify a peer's tool"
+        refusal = backend_load_refusal(
+            manifest=LearnedToolManifest.from_dict(tool.manifest),
+            tool_code=tool.tool_code,
+            runner=self._learned_tool_runner,
+        )
+        if refusal is not None:
+            return f"this resident's execution backend would refuse it: {refusal}"
+        if self._is_declined(tool.artifact_id):
+            return f"this resident already declined {tool.name!r} in this version"
+        return ""
 
     def _evolution_dedupe_key(self, capability: str) -> str:
         return f"{ReviewKind.EVOLUTION_BUILD.value}:{self.identity.environment_id}:{capability}"
@@ -1025,7 +1144,43 @@ class ResidentLearningRuntime:
             declared_reach=artifact.manifest.declared_reach,
         )
 
+    def _record_peer_inventory(self, event: SleipnirEvent) -> None:
+        """Note a tool a flock peer reports; it is judged only when a build asks.
+
+        The heartbeat of every resident on this cluster lands here too, this
+        resident's own included, so most events are dropped on sight.
+        """
+        payload = event.payload
+        if self._peer_catalog is None:
+            return
+        if str(payload.get("valkyrie_id") or "") == self.identity.valkyrie_id:
+            return
+        if not any(
+            _flock_matches(str(flock_id), self.identity.flock_ids)
+            for flock_id in payload.get("flock_ids") or ()
+        ):
+            return
+        try:
+            tool = peer_tool_from_inventory(payload)
+        except PeerToolError as exc:
+            get_observability().event(
+                "ravn.resident_learning.peer_inventory.declined",
+                attributes={"ravn.resident_learning.peer": str(payload.get("valkyrie_id") or "")},
+                content={"reason": str(exc)},
+            )
+            logger.warning("resident_learning: declined peer inventory record: %s", exc)
+            return
+        if tool is None:
+            self._peer_catalog.forget(
+                str(payload.get("valkyrie_id") or ""), str(payload.get("skill_name") or "")
+            )
+            return
+        self._peer_catalog.record(tool, inventory=payload.get("inventory") or ())
+
     async def _handle_learning_event(self, event: SleipnirEvent) -> None:
+        if event.event_type == EVOLUTION_SKILL_INVENTORY_EVENT:
+            self._record_peer_inventory(event)
+            return
         if event.event_type == registry.ODIN_REVIEW_DECIDED:
             await self._handle_review_decision(event)
             return
@@ -2480,6 +2635,44 @@ def _artifact_from_proposal(
         causation_id=event.event_id,
         correlation_id=event.correlation_id or event.event_id,
         builder_evidence=dict(proposal.builder_evidence),
+    )
+
+
+def _artifact_from_peer_tool(
+    tool: PeerTool,
+    identity: ResidentLearningIdentity,
+) -> ResidentLearningArtifact:
+    """A peer's reported tool as the artifact a flock proposal would have carried.
+
+    The source is the peer that reported it, whoever built it first: that keeps
+    it a peer artifact, so it is re-verified here.
+    """
+    return ResidentLearningArtifact(
+        learning_id=tool.artifact_id,
+        title=tool.name,
+        summary=tool.description or tool.name,
+        content="",
+        artifact_type="agent_tool",
+        scope="flock",
+        confidence=0.0,
+        source_environment_id=tool.environment_id,
+        source_valkyrie_id=tool.valkyrie_id,
+        promotion_id=tool.artifact_id,
+        flock_id=_normalise_flock_id(identity.flock_ids[0]) if identity.flock_ids else "",
+        domain=identity.domain,
+        redaction_status=UNSCRUBBED_STATUS,
+        tool_code=tool.tool_code,
+        tool_entry_point=str(tool.manifest.get("entry_point") or "run"),
+        learned_tool_manifest=dict(tool.manifest),
+        test_code=tool.test_code,
+        requirements=list(tool.requirements),
+        canary_sample=dict(tool.canary_sample),
+        correlation_id=tool.artifact_id,
+        builder_evidence={
+            "reported_by": tool.valkyrie_id,
+            "runs": tool.runs,
+            "successes": tool.successes,
+        },
     )
 
 

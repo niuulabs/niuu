@@ -622,6 +622,16 @@ class DecisionCapabilityMatchingConfig(BaseModel):
             "Too low blocks new tools; too high lets duplicates through."
         ),
     )
+    peer_prior_art_probability: float = Field(
+        default=0.4,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "P(same capability) at or above which a flock peer's tool is handed to the builder "
+            "as prior art. Lower than min_same_probability because it blocks nothing: the "
+            "build still runs, and a wrong match costs a few lines in its brief."
+        ),
+    )
 
 
 class DecisionConfig(BaseModel):
@@ -3962,6 +3972,18 @@ class ResidentEvolutionConfig(BaseModel):
             "rollback) is what keeps the mirror populated with the skills a "
             "resident actively uses. 0 disables the heartbeat (startup and "
             "opportunistic snapshots still fire)."
+        ),
+    )
+    flock_inventory_interval_seconds: float = Field(
+        default=3600.0,
+        ge=0.0,
+        description=(
+            "How often the whole learned-tool inventory crosses to flock peers, on "
+            "flock.<domain>.<environment>.valkyrie.evolution.skill_inventory, so the "
+            "build_tool gate can see what they run. A changed tool crosses when it "
+            "changes, whatever this is. Every event carries the tool's code, so the "
+            "sweep has to stay small against the flock stream's byte limit. 0 keeps the "
+            "inventory on this cluster, and peers then never hear of this resident's tools."
         ),
     )
     learned_tool_execution_backend: Literal[

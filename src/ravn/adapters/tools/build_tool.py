@@ -18,6 +18,7 @@ from ravn.adapters.reflection.lesson_judge import LessonJudgeError
 from ravn.domain.models import ToolResult
 from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
 from ravn.ports.capability_matching import CapabilityMatcherPort, CapabilityMatchError
+from ravn.ports.peer_tools import PeerAdoption, PeerToolPort
 from ravn.ports.tool import ToolPort
 from ravn.ports.tool_build_backend import (
     ToolBuildError,
@@ -60,8 +61,11 @@ from ravn.valkyrie_evolution.tool_curation import (
     CAPABILITY_MATCHED_KEY,
     RETIRED_UNRUNNABLE,
     LineageMatch,
+    PeerCapabilities,
+    PeerMatch,
     capability_matched_marker,
     find_installed_capability,
+    find_peer_capability,
     lineage_problems,
     reactivate_rolled_back_tool,
     restore_learned_tool,
@@ -133,6 +137,8 @@ class BuildTool(ToolPort):
         installed_artifact_recorder: InstalledArtifactRecorder | None = None,
         capability_matcher: CapabilityMatcherPort | None = None,
         skill_manager: Any | None = None,
+        peer_tools: PeerToolPort | None = None,
+        peer_prior_art_probability: float | None = None,
     ) -> None:
         self._tools_dir = Path(tools_dir)
         self._artifacts_dir = (
@@ -163,6 +169,9 @@ class BuildTool(ToolPort):
         # The lifecycle registry: usage and rolled-back status for lineage,
         # and the record a retirement or restore is written to.
         self._skill_manager = skill_manager
+        # What flock peers run, asked only when nothing here serves a request.
+        self._peer_tools = peer_tools
+        self._peer_prior_art_probability = peer_prior_art_probability
 
     def _investigation_prompt(self) -> str:
         """The investigation prompt that drove this build, for review provenance."""
@@ -994,30 +1003,44 @@ class BuildTool(ToolPort):
         name = str(manifest.get("name") or "").strip()
         schema = manifest.get("input_schema")
         properties = schema.get("properties") if isinstance(schema, dict) else None
+        request = {
+            "capability_id": str(input.get("capability_id") or ""),
+            "name": name,
+            "description": str(manifest.get("description") or ""),
+            "inputs": tuple(sorted(properties)) if isinstance(properties, dict) else (),
+            "matcher": self._capability_matcher,
+        }
+        storage = {
+            "tools_dir": self._tools_dir,
+            "artifacts_dir": self._artifacts_dir,
+            "skills": self._skill_manager,
+        }
+        peer_tools = self._peer_tools
         try:
-            match = await find_installed_capability(
-                tools_dir=self._tools_dir,
-                artifacts_dir=self._artifacts_dir,
-                skills=self._skill_manager,
-                capability_id=str(input.get("capability_id") or ""),
-                name=name,
-                description=str(manifest.get("description") or ""),
-                inputs=tuple(sorted(properties)) if isinstance(properties, dict) else (),
-                matcher=self._capability_matcher,
-            )
+            match = await find_installed_capability(**storage, **request)
+            peers = PeerCapabilities()
+            if match is None and peer_tools is not None:
+                peers = await find_peer_capability(
+                    **storage,
+                    **request,
+                    peer_tools=peer_tools.peer_tools(),
+                    near_probability=self._peer_prior_art_probability,
+                )
         except (LessonJudgeError, CapabilityMatchError) as exc:
             raise LearnedToolError(
                 "could not decide whether an installed tool already serves this "
                 f"capability, so nothing was built: {exc}"
             ) from exc
         if match is None:
-            if self._capability_matcher is None:
+            if self._capability_matcher is not None:
+                # Judged against every tool and found new: record that, so the
+                # dream's capability backfill does not judge it again.
+                provenance = dict(input.get("provenance") or {})
+                provenance[CAPABILITY_MATCHED_KEY] = capability_matched_marker(by="build_tool")
+                input = {**input, "provenance": provenance}  # noqa: A001
+            if peer_tools is None or not peers:
                 return None, input
-            # Judged against every tool and found new: record that, so the
-            # dream's capability backfill does not judge it again.
-            provenance = dict(input.get("provenance") or {})
-            provenance[CAPABILITY_MATCHED_KEY] = capability_matched_marker(by="build_tool")
-            return None, {**input, "provenance": provenance}
+            return await self._resolve_peer_capability(input, peers, peer_tools)
 
         telemetry = get_observability()
         entry = match.entry
@@ -1077,6 +1100,70 @@ class BuildTool(ToolPort):
                 input,
             )
         return None, _repair_input(input, entry.artifact, match=match, problems=problems)
+
+    async def _resolve_peer_capability(
+        self,
+        input: dict,  # noqa: A002
+        peers: PeerCapabilities,
+        peer_tools: PeerToolPort,
+    ) -> tuple[ToolResult | None, dict]:
+        """Decide what a peer's tool changes about a build nothing here serves.
+
+        A peer's tool of the same capability is installed here if it passes this
+        resident's own review, verification and canary, and then nothing is
+        built. A tool that fails them answers "does it work here?" with no, so
+        the build goes ahead starting from that tool and the reason. A tool that
+        is only close never stops a build: it is handed to the builder.
+
+        Matches are tried best first, and the first that reaches the pipeline
+        decides: a verification costs a job, and failing one is recorded. A tool
+        refused on sight costs nothing, so it does not end the search.
+        """
+        refused: dict[str, str] = {}
+        settled: tuple[PeerMatch, PeerAdoption] | None = None
+        for match in peers.same:
+            adoption = await peer_tools.adopt_peer_tool(match.tool)
+            if adoption.outcome != "refused":
+                settled = (match, adoption)
+                break
+            refused[match.tool.name] = adoption.detail
+            if adoption.attempted:
+                break
+        requested = _manifest_name(input)
+        outcome = (
+            settled[1].outcome if settled is not None else "refused" if refused else "prior_art"
+        )
+        shown = settled[0] if settled is not None else peers.best
+        telemetry = get_observability()
+        telemetry.event(
+            "ravn.tool_build.peer.resolved",
+            attributes={
+                "ravn.tool_build.peer.outcome": outcome,
+                "ravn.tool_build.peer.matched_by": shown.matched_by,
+                "ravn.tool_build.peer.tool": shown.tool.name,
+                "ravn.tool_build.peer.valkyrie": shown.tool.valkyrie_id,
+                "ravn.tool_build.name": requested,
+            },
+            content={
+                "reason": shown.reason,
+                "detail": settled[1].detail if settled is not None else refused,
+                "near": [match.tool.name for match in peers.near],
+            },
+        )
+        telemetry.count(
+            "ravn.tool_build.peer.operations",
+            attributes={"ravn.tool_build.peer.outcome": outcome},
+            description="Build requests that met a flock peer's tool, by outcome.",
+        )
+        if settled is None:
+            return None, _peer_seeded_input(input, peers, refused=refused)
+        match, adoption = settled
+        summary = (
+            _peer_adopted_summary(requested, match, adoption)
+            if adoption.outcome == "adopted"
+            else _peer_held_summary(requested, match, adoption)
+        )
+        return ToolResult(tool_call_id="", content=summary), input
 
     async def _maybe_commission(self, input: dict) -> dict:  # noqa: A002
         """Commission a build backend when the agent asked for one.
@@ -2000,6 +2087,8 @@ def attach_build_tool(
     installed_artifact_recorder: InstalledArtifactRecorder | None = None,
     capability_matcher: CapabilityMatcherPort | None = None,
     skill_manager: Any | None = None,
+    peer_tools: PeerToolPort | None = None,
+    peer_prior_art_probability: float | None = None,
 ) -> BuildTool:
     """Attach build_tool to an agent supporting register_tool()."""
     registrar = getattr(agent, "register_tool", None)
@@ -2028,6 +2117,8 @@ def attach_build_tool(
         installed_artifact_recorder=installed_artifact_recorder,
         capability_matcher=capability_matcher,
         skill_manager=skill_manager,
+        peer_tools=peer_tools,
+        peer_prior_art_probability=peer_prior_art_probability,
     )
     registrar(tool, replace=replace)
     return tool
@@ -2139,6 +2230,11 @@ def _artifact_from_input(input: dict) -> LearnedToolArtifact:  # noqa: A002
     provenance = input.get("provenance")
     if provenance is not None and not isinstance(provenance, dict):
         raise ValueError("provenance must be an object when provided")
+    provenance = dict(provenance or {})
+    canary_input = input.get("canary_input")
+    if isinstance(canary_input, dict) and canary_input:
+        # Peers run their canary on this: without it they call the tool with {}.
+        provenance["canary_input"] = canary_input
     artifact_id = str(input.get("artifact_id") or "").strip()
     if not artifact_id:
         artifact_id = f"learned-tool:{manifest.name}:{uuid4().hex[:12]}"
@@ -2151,7 +2247,7 @@ def _artifact_from_input(input: dict) -> LearnedToolArtifact:  # noqa: A002
         tool_code=tool_code,
         test_code=test_code,
         requirements=requirements,
-        provenance=dict(provenance or {}),
+        provenance=provenance,
         # What need this build serves, as distinct from what it is called. The
         # version chain keys on this when present, so renaming a tool no longer
         # starts a fresh lineage that hides the version it replaced.
@@ -2370,6 +2466,124 @@ def _already_serves_summary(
             "retired_at": restored.archived_at,
         }
     return json.dumps(payload, indent=2)
+
+
+def _peer_adopted_summary(requested: str, match: PeerMatch, adoption: PeerAdoption) -> str:
+    """Tell the resident a peer's tool is installed here, so nothing was built."""
+    tool = match.tool
+    name = adoption.tool_name or tool.name
+    return json.dumps(
+        {
+            "status": "adopted_from_peer",
+            "tool_name": name,
+            "artifact_id": tool.artifact_id,
+            "adopted_from": tool.valkyrie_id,
+            "requested_name": requested,
+            "matched_by": match.matched_by,
+            "match_reason": match.reason,
+            "description": tool.description,
+            "peer_usage": {"runs": tool.runs, "successes": tool.successes},
+            "detail": (
+                f"No build was commissioned: {tool.valkyrie_id} already runs this capability "
+                f"as {name!r}, and it passed verification and its canary here. Run it with "
+                "learned_tool_run, and use capability_list with names=[...] for its input "
+                "schema. If it is genuinely inadequate, re-request with replace=true and say "
+                "what behaviour must change: that builds its next version in place."
+            ),
+        },
+        indent=2,
+    )
+
+
+def _peer_held_summary(requested: str, match: PeerMatch, adoption: PeerAdoption) -> str:
+    """Tell the resident a peer's tool waits on review, so nothing was built."""
+    tool = match.tool
+    return json.dumps(
+        {
+            "status": "held_for_review",
+            "tool_name": tool.name,
+            "held_from": tool.valkyrie_id,
+            "requested_name": requested,
+            "matched_by": match.matched_by,
+            "match_reason": match.reason,
+            "detail": (
+                f"No build was commissioned: {tool.valkyrie_id} already runs this capability "
+                f"as {tool.name!r}, and installing it here waits on operator review: "
+                f"{adoption.detail}"
+            ),
+        },
+        indent=2,
+    )
+
+
+def _peer_seeded_input(
+    input: dict,  # noqa: A002
+    peers: PeerCapabilities,
+    *,
+    refused: Mapping[str, str],
+) -> dict:
+    """Carry what the flock already has into a build that goes ahead.
+
+    The build keeps its requested name. A proposal under the peer's name would
+    install over the peer's working copy; the provenance is what links them.
+    """
+    best = peers.best
+    tool = best.tool
+    seeded = dict(input)
+    provenance = dict(input.get("provenance") or {})
+    provenance["peer_capability"] = {
+        "tool": tool.name,
+        "artifact_id": tool.artifact_id,
+        "valkyrie_id": tool.valkyrie_id,
+        "matched_by": best.matched_by,
+        "match_reason": best.reason,
+        "probability": best.probability,
+        "same": bool(peers.same),
+        "adoption_refused": dict(refused),
+    }
+    seeded["provenance"] = provenance
+    if peers.same and not str(input.get("capability_id") or "").strip():
+        seeded["capability_id"] = tool.capability_id
+    commissioned = bool(str(input.get("build_request") or "").strip()) and not bool(
+        str(input.get("tool_code") or "").strip()
+    )
+    if commissioned:
+        brief = _peer_prior_art_brief(peers, refused=refused)
+        context = str(input.get("signal_context") or "")
+        seeded["signal_context"] = f"{context}\n\n{brief}" if context else brief
+    return seeded
+
+
+def _peer_prior_art_brief(peers: PeerCapabilities, *, refused: Mapping[str, str]) -> str:
+    """What the builder needs in order to start from a peer's tool."""
+    best = peers.best
+    tool = best.tool
+    verdict = (
+        f"provides the same capability, but could not be installed here: {refused[tool.name]}"
+        if tool.name in refused
+        else "is close to this request"
+    )
+    others = [match for match in (*peers.same, *peers.near) if match is not best]
+    related = "".join(
+        f"\n- {match.tool.name} ({match.tool.valkyrie_id}): {match.tool.description}"
+        + (f" Not installed here: {refused[match.tool.name]}" if match.tool.name in refused else "")
+        for match in others
+    )
+    related_note = f"\nOther related tools in the flock:{related}" if related else ""
+    tests = f"Its tests:\n```python\n{tool.test_code}\n```\n" if tool.test_code.strip() else ""
+    return (
+        f"PRIOR ART: {tool.valkyrie_id} runs a learned tool, {tool.name!r}, that {verdict}. "
+        f"It has {tool.successes} successful runs of {tool.runs} there. Start from it rather "
+        "than from nothing, and keep what already works. It was built for another cluster, "
+        "so declare the reach it needs on this one and do not assume its hosts or service "
+        "accounts exist here. If it does not fit this request, say why and build what the "
+        "request needs.\n"
+        f"Manifest:\n{json.dumps(tool.manifest, indent=2, sort_keys=True)}\n"
+        f"Implementation:\n```python\n{tool.tool_code}\n```\n"
+        f"{tests}"
+        f"Requirements: {json.dumps(list(tool.requirements))}"
+        f"{related_note}"
+    )
 
 
 def _repair_input(
