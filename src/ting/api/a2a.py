@@ -93,7 +93,7 @@ from ting.domain.services.workflow_campaign_lifecycle import (
     stop_terminal_campaign_session,
     terminal_session_cleanup_needed,
 )
-from ting.domain.ticket_coordinator import TICKET_METADATA_KEY, ticket_of
+from ting.domain.ticket_coordinator import PENDING_GATES_KEY, TICKET_METADATA_KEY, ticket_of
 from ting.domain.utils import _session_name
 from ting.domain.workflow_board import board_from_snapshot, project_board
 from ting.domain.workflow_document import workflow_document_revision
@@ -1159,12 +1159,18 @@ class WorkflowTaskHandler(RequestHandler):
         )
 
         # Optimistically report the task back in WORKING; the campaign
-        # projector re-syncs the real session state on its next tick.
+        # projector re-syncs the real session state on its next tick. Nothing
+        # else clears the gate: the projector skips a status it already holds.
         now = datetime.now(UTC)
         updated = WorkflowCampaign(
             **{
                 **campaign.__dict__,
                 "status": WorkflowCampaignStatus.RUNNING,
+                "metadata": {
+                    key: value
+                    for key, value in campaign.metadata.items()
+                    if key != PENDING_GATES_KEY
+                },
                 "updated_at": now,
                 "last_activity_at": now,
             }

@@ -65,7 +65,11 @@ def _saga() -> Saga:
 def test_a_ticket_run_waits_on_the_gate_its_campaign_records() -> None:
     gate = {"label": "Plan review", "node_id": "plan-review-gate"}
 
-    (item,) = review_list([_campaign(_ticket(pending_workflow_gates=[gate]))], [_saga()])
+    blocked = _campaign(
+        _ticket(pending_workflow_gates=[gate]), status=WorkflowCampaignStatus.BLOCKED
+    )
+
+    (item,) = review_list([blocked], [_saga()])
 
     assert item.kind == ReviewKind.TICKET
     assert item.state == ReviewState.WAITING
@@ -170,10 +174,20 @@ def test_a_run_a_person_started_needs_no_note_of_who_did() -> None:
         "pending_workflow_gates": [{"node_id": "gate"}],
     }
 
-    (item,) = review_list([_campaign(metadata)], [])
+    (item,) = review_list([_campaign(metadata, status=WorkflowCampaignStatus.BLOCKED)], [])
 
     assert item.started_by is None
     assert item.title == "Plan the ticket"
+
+
+def test_a_gate_already_answered_is_not_waiting_while_the_run_carries_on() -> None:
+    gate = {"node_id": "plan-review-gate"}
+
+    (ticket,) = review_list([_campaign(_ticket(pending_workflow_gates=[gate]))], [_saga()])
+
+    assert ticket.state == ReviewState.RUNNING
+    assert ticket.gate_label == ""
+    assert review_list([_campaign({"pending_workflow_gates": [gate]})], []) == ()
 
 
 def test_a_run_with_no_ticket_leaves_the_list_once_nothing_waits() -> None:
@@ -230,7 +244,14 @@ def test_the_newest_comes_first() -> None:
 
 
 def test_an_unusable_gate_record_is_not_a_waiting_gate() -> None:
-    (item,) = review_list([_campaign(_ticket(pending_workflow_gates=["gate"]))], [_saga()])
+    (item,) = review_list(
+        [
+            _campaign(
+                _ticket(pending_workflow_gates=["gate"]), status=WorkflowCampaignStatus.BLOCKED
+            )
+        ],
+        [_saga()],
+    )
 
     assert item.state == ReviewState.RUNNING
 

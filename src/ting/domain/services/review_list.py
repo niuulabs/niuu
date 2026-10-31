@@ -117,7 +117,11 @@ def _state(campaign: WorkflowCampaign, gate_label: str | None) -> ReviewState:
         return ReviewState.DONE
     if campaign.status == WorkflowCampaignStatus.FAILED:
         return ReviewState.FAILED
-    return ReviewState.WAITING if gate_label is not None else ReviewState.RUNNING
+    # A gate is only waiting while it holds the run. Recording one blocks the campaign,
+    # so a running campaign that still names a gate has already been answered.
+    if campaign.status == WorkflowCampaignStatus.BLOCKED and gate_label is not None:
+        return ReviewState.WAITING
+    return ReviewState.RUNNING
 
 
 def _item(campaign: WorkflowCampaign, saga_names: Mapping[str, str]) -> ReviewItem | None:

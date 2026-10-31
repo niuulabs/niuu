@@ -1643,6 +1643,23 @@ class TestGateContinuation:
         assert result["status"]["state"] == "TASK_STATE_WORKING"
         assert port.resolved_gates == [("session-123", "gate-1", "APPROVE", "LGTM", "a2a")]
 
+    def test_answering_a_gate_stops_the_task_recording_it_as_waiting(self) -> None:
+        campaign = _make_campaign(
+            status=WorkflowCampaignStatus.BLOCKED,
+            metadata={"pending_workflow_gates": [{"id": "gate-1"}], "repo": "niuu"},
+        )
+        repo = InMemoryCampaignRepository([campaign])
+        port = RecordingVolundrPort()
+        port.gates = [{"id": "gate-1", "nodeId": "review", "status": "pending"}]
+        client, _, _ = _make_client(campaign_repo=repo, volundr=port)
+
+        _rpc(client, "SendMessage", self._reply_params(campaign.slug))
+
+        saved = repo._campaigns[campaign.id]
+        assert saved.status == WorkflowCampaignStatus.RUNNING
+        assert "pending_workflow_gates" not in saved.metadata
+        assert saved.metadata["repo"] == "niuu"
+
     def test_request_changes_sends_notes(self) -> None:
         client, campaign, port = self._blocked_client()
 
