@@ -39,15 +39,27 @@ OFF_BOARD_REASON = "This ticket's run does not match the workflows on this board
 
 _RESERVED_COLUMN_IDS = frozenset({BACKLOG_COLUMN_ID, DONE_COLUMN_ID})
 _REVIEW_KINDS = frozenset({"plan", "code", "output"})
+SOURCE_OUTCOME = "outcome"
+SOURCE_FILE = "file"
+SOURCE_URL = "url"
 WIDGET_DOCUMENT = "document"
+WIDGET_FILE = "file"
+WIDGET_LINK = "link"
 WIDGET_DIFF = "diff"
 WIDGET_FILES = "files"
 WIDGET_PULL_REQUEST = "pullRequest"
 WIDGET_SUMMARY = "summary"
-# Only a document reads an outcome field; the others show the run's own session and gate.
-_REVIEW_WIDGETS = frozenset(
-    {WIDGET_DOCUMENT, WIDGET_DIFF, WIDGET_FILES, WIDGET_PULL_REQUEST, WIDGET_SUMMARY}
-)
+# Where each widget reads from; None shows the run's own session and gate.
+_WIDGET_SOURCES: Mapping[str, str | None] = {
+    WIDGET_DOCUMENT: SOURCE_OUTCOME,
+    WIDGET_FILE: SOURCE_FILE,
+    WIDGET_LINK: SOURCE_URL,
+    WIDGET_DIFF: None,
+    WIDGET_FILES: None,
+    WIDGET_PULL_REQUEST: None,
+    WIDGET_SUMMARY: None,
+}
+_WEB_SCHEMES = ("https://", "http://")
 _WORK_NODE_KINDS = frozenset({"stage", "wait", "subworkflow", "gate"})
 _CLOSED_STATUS_TYPES = frozenset({"completed", "canceled"})
 _STOPPED_RUN_STATUSES = frozenset({RunStatus.FAILED, RunStatus.ESCALATED})
@@ -76,16 +88,30 @@ class BoardTicketState(StrEnum):
 
 
 @dataclass(frozen=True)
+class ReviewSource:
+    """Where a panel's content comes from: an outcome field, a workspace file or a URL."""
+
+    kind: str
+    value: str
+
+
+@dataclass(frozen=True)
 class ReviewPanel:
     """One thing a person reviews at a gate."""
 
     widget: str
     title: str
-    field: str | None = None
+    source: ReviewSource | None = None
 
 
 _KIND_PANELS: Mapping[str, tuple[ReviewPanel, ...]] = {
-    "plan": (ReviewPanel(widget=WIDGET_DOCUMENT, title="Plan", field="plan"),),
+    "plan": (
+        ReviewPanel(
+            widget=WIDGET_DOCUMENT,
+            title="Plan",
+            source=ReviewSource(kind=SOURCE_OUTCOME, value="plan"),
+        ),
+    ),
     "code": (
         ReviewPanel(widget=WIDGET_DIFF, title="Changes"),
         ReviewPanel(widget=WIDGET_FILES, title="Files"),
@@ -502,25 +528,37 @@ def _review_panels(
 def _parse_panel(raw: object, column_id: str) -> ReviewPanel:
     if not isinstance(raw, Mapping):
         raise WorkflowBoardError(f"Each panel of board column {column_id!r} must be a mapping")
-    unknown = set(raw) - {"widget", "title", "field"}
+    unknown = set(raw) - {"widget", "title", "source"}
     if unknown:
         raise WorkflowBoardError(f"Unknown review panel field(s): {', '.join(sorted(unknown))}")
     widget = raw.get("widget")
-    if widget not in _REVIEW_WIDGETS:
+    if widget not in _WIDGET_SOURCES:
         raise WorkflowBoardError(
             f"Board column {column_id!r} panel widget must be one of "
-            f"{', '.join(sorted(_REVIEW_WIDGETS))}"
+            f"{', '.join(sorted(_WIDGET_SOURCES))}"
         )
     title = _required_text(raw.get("title"), f"{column_id} panel title")
-    if widget != WIDGET_DOCUMENT:
-        if "field" in raw:
-            raise WorkflowBoardError(f"Review panel {title!r} reads no outcome field")
-        return ReviewPanel(widget=str(widget), title=title)
     return ReviewPanel(
-        widget=WIDGET_DOCUMENT,
+        widget=str(widget),
         title=title,
-        field=_required_text(raw.get("field"), f"{column_id} panel field"),
+        source=_parse_source(raw.get("source"), str(widget), title),
     )
+
+
+def _parse_source(raw: object, widget: str, title: str) -> ReviewSource | None:
+    kind = _WIDGET_SOURCES[widget]
+    if kind is None:
+        if raw is not None:
+            raise WorkflowBoardError(f"Review panel {title!r} reads no source")
+        return None
+    if not isinstance(raw, Mapping) or set(raw) != {kind}:
+        raise WorkflowBoardError(f"Review panel {title!r} needs source {{{kind}: ...}}")
+    value = _required_text(raw[kind], f"{title} source")
+    if kind == SOURCE_FILE and (value.startswith("/") or ".." in value.split("/")):
+        raise WorkflowBoardError(f"Review panel {title!r} must name a file inside the workspace")
+    if kind == SOURCE_URL and not value.startswith(_WEB_SCHEMES):
+        raise WorkflowBoardError(f"Review panel {title!r} needs an http or https URL")
+    return ReviewSource(kind=kind, value=value)
 
 
 def _work_nodes(

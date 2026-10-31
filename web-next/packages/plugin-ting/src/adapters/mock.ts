@@ -2327,7 +2327,7 @@ function mockTicketReviews(task: WorkTask | undefined): TicketReviews {
         workflowName: 'Ticket Planning Flow',
         taskId: `demo-plan-${task.source.issueId}`,
         sessionId: `demo-plan-session-${task.source.issueId}`,
-        panels: [{ widget: 'document', title: 'Plan', field: 'plan' }],
+        panels: [{ widget: 'document', title: 'Plan', source: { kind: 'outcome', value: 'plan' } }],
         revisions: [
           {
             ...MOCK_PLAN_DECIDED,

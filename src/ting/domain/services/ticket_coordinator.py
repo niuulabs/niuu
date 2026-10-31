@@ -273,6 +273,7 @@ class TicketCoordinatorService:
                 saga_id=saga.id,
                 issue_id=issue.id,
                 identifier=issue.identifier,
+                title=issue.title,
             ),
         }
         gateway = self._ravn_config.get("gateway", {})

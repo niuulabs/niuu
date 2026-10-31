@@ -1307,6 +1307,13 @@ def test_a_connection_that_no_longer_resolves_is_unreadable_never_gone() -> None
     other.get_session.assert_not_awaited()
 
 
+PLAN_PANEL = {
+    "widget": "document",
+    "title": "Plan",
+    "source": {"kind": "outcome", "value": "plan"},
+}
+
+
 def _reviews(client: TestClient, saga: Saga, issue_id: str = "issue-1") -> httpx.Response:
     return client.get(
         f"/api/v1/ting/work/project/{saga.id}/tasks/{issue_id}/reviews",
@@ -1347,7 +1354,7 @@ def test_a_ticket_review_is_read_back_from_its_runs_log() -> None:
     (review,) = body["reviews"]
     assert review["columnId"] == "plan-review"
     assert review["taskId"] == "a2a-run"
-    assert review["panels"] == [{"widget": "document", "title": "Plan", "field": "plan"}]
+    assert review["panels"] == [PLAN_PANEL]
     assert review["revisions"][0]["fields"] == {"plan": "Trace every tick"}
     assert review["revisions"][0]["status"] == "pending"
     assert review["chatEndpoint"] == "ws://forge/s/session/session"
@@ -1404,7 +1411,7 @@ def test_board_columns_carry_their_panels() -> None:
     board = client.get(f"/api/v1/ting/work/project/{saga.id}", headers=HEADERS).json()["board"]
 
     column = next(item for item in board["columns"] if item["id"] == "plan-review")
-    assert column["panels"] == [{"widget": "document", "title": "Plan", "field": "plan"}]
+    assert column["panels"] == [PLAN_PANEL]
 
 
 def test_reviews_list_runs_across_projects_from_their_campaigns() -> None:

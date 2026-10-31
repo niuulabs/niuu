@@ -1,8 +1,10 @@
 import { useLayoutEffect, useRef, type ComponentType } from 'react';
 import { ExternalLink } from 'lucide-react';
 import {
+  ExternalLinkPreview,
   MarkdownContent,
   SessionDiffs,
+  SessionFilePreview,
   SessionFilesWorkspace,
   type IFileSystemPort,
   type ReviewControls,
@@ -12,6 +14,7 @@ import type { ReviewPanel } from '../../domain/work';
 import { markQuotes } from './markQuotes';
 
 const NO_MARKS: readonly string[] = [];
+const WORKSPACE_ROOT = '/workspace';
 
 export interface ReviewPanelProps {
   panel: ReviewPanel;
@@ -54,7 +57,8 @@ function MarkedDocument({
 }
 
 function DocumentPanel({ panel, revision, compareWith, marks, onMarkClick }: ReviewPanelProps) {
-  const text = panel.field ? revision.fields[panel.field] : undefined;
+  const field = panel.source?.value;
+  const text = field ? revision.fields[field] : undefined;
   if (!text) {
     return (
       <p role="alert" className="ting-review-panel__missing">
@@ -62,7 +66,7 @@ function DocumentPanel({ panel, revision, compareWith, marks, onMarkClick }: Rev
       </p>
     );
   }
-  const before = panel.field ? compareWith?.fields[panel.field] : undefined;
+  const before = field ? compareWith?.fields[field] : undefined;
   if (before === undefined) {
     return <MarkedDocument text={text} marks={marks ?? NO_MARKS} onMarkClick={onMarkClick} />;
   }
@@ -107,6 +111,34 @@ function FilesPanel({ filesystem, sessionId, review }: ReviewPanelProps) {
   );
 }
 
+function FilePanel({ panel, filesystem, sessionId }: ReviewPanelProps) {
+  if (!filesystem || !sessionId || !panel.source) {
+    return (
+      <p role="alert" className="ting-review-panel__missing">
+        This app has no file browser connected.
+      </p>
+    );
+  }
+  return (
+    <div className="ting-review-panel__file">
+      <SessionFilePreview
+        sessionId={sessionId}
+        path={`${WORKSPACE_ROOT}/${panel.source.value}`}
+        filesystem={filesystem}
+      />
+    </div>
+  );
+}
+
+function LinkPanel({ panel }: ReviewPanelProps) {
+  if (!panel.source) return null;
+  return (
+    <div className="ting-review-panel__file">
+      <ExternalLinkPreview href={panel.source.value} name={panel.title} />
+    </div>
+  );
+}
+
 function PullRequestPanel({ pullRequestUrl, revision }: ReviewPanelProps) {
   return (
     <>
@@ -131,6 +163,8 @@ export const REVIEW_WIDGETS: Readonly<Record<string, ComponentType<ReviewPanelPr
   document: DocumentPanel,
   diff: DiffPanel,
   files: FilesPanel,
+  file: FilePanel,
+  link: LinkPanel,
   pullRequest: PullRequestPanel,
   summary: SummaryPanel,
 };

@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import { StateDot, type DotState } from '@niuulabs/ui';
 import type { ITingService, PlanRisk, PhaseSpec } from '../ports';
+import { PlanWizard } from './PlanWizard';
 
 /**
  * A single plan, addressable by slug.
@@ -47,6 +48,10 @@ export function PlanDetailPage() {
   }
 
   const plan = session.data;
+  // While a plan is open, its page is its review, on the wizard's own draft step.
+  if (plan.status && !plan.sagaId && RESUMABLE_STATUSES.includes(plan.status.toLowerCase())) {
+    return <PlanWizard resumeSlug={slug} />;
+  }
   const structure = draft.data?.structure ?? null;
   const phases: PhaseSpec[] = structure?.phases ?? [];
   const risks: PlanRisk[] = structure?.risks ?? [];
@@ -68,19 +73,6 @@ export function PlanDetailPage() {
           {plan.status || 'unknown'}
         </span>
       </header>
-
-      {plan.status && RESUMABLE_STATUSES.includes(plan.status.toLowerCase()) ? (
-        <section className="ting-plan-card" aria-label="Waiting">
-          <h2>In the planner</h2>
-          <button
-            type="button"
-            className="ting-plan-detail__back"
-            onClick={() => void navigate({ to: '/ting/plan/new' as never })}
-          >
-            Continue in the planner
-          </button>
-        </section>
-      ) : null}
 
       <section className="ting-plan-card" aria-label="Plan">
         <h2>Plan</h2>

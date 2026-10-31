@@ -247,10 +247,15 @@ class WorkTaskResponse(_ResponseModel):
     workflow_run: TicketWorkflowRunResponse | None = None
 
 
+class ReviewSourceResponse(_ResponseModel):
+    kind: str
+    value: str
+
+
 class ReviewPanelResponse(_ResponseModel):
     widget: str
     title: str
-    field: str | None = None
+    source: ReviewSourceResponse | None = None
 
 
 class BoardColumnResponse(_ResponseModel):
@@ -1054,6 +1059,7 @@ __all__ = [
     "ReviewListResponse",
     "ReviewPanelResponse",
     "ReviewRevisionResponse",
+    "ReviewSourceResponse",
     "RunReviewResponse",
     "SessionRefResponse",
     "SourceCoverageResponse",

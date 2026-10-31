@@ -98,14 +98,16 @@ def _item(campaign: WorkflowCampaign, saga_names: Mapping[str, str]) -> ReviewIt
             **common,
         )
     project_id, issue_id = ticket
-    identifier = campaign.metadata[TICKET_METADATA_KEY].get("identifier")
+    recorded = campaign.metadata[TICKET_METADATA_KEY]
+    identifier = recorded.get("identifier")
+    # Runs started before tickets recorded their title show the run's name.
     return ReviewItem(
         kind=ReviewKind.TICKET,
         project_id=project_id,
         project_name=saga_names.get(project_id),
         issue_id=issue_id,
         identifier=str(identifier) if identifier else issue_id,
-        **common,
+        **{**common, "title": str(recorded.get("title") or campaign.name)},
     )
 
 

@@ -16,7 +16,7 @@ from niuu.domain.models import Principal
 from ting.domain.models import WorkflowCampaign
 from ting.domain.workflow_board import (
     GATE_STATUS_PENDING,
-    WIDGET_DOCUMENT,
+    SOURCE_OUTCOME,
     BoardColumn,
     ReviewPanel,
     WorkflowBoard,
@@ -63,10 +63,13 @@ class RunReview:
     chat_endpoint: str | None = None
 
 
-def _document_fields(column: BoardColumn) -> frozenset[str]:
-    return frozenset(
-        panel.field for panel in column.panels if panel.widget == WIDGET_DOCUMENT and panel.field
-    )
+def _outcome_field(panel: ReviewPanel) -> str | None:
+    source = panel.source
+    return source.value if source is not None and source.kind == SOURCE_OUTCOME else None
+
+
+def _outcome_fields(column: BoardColumn) -> frozenset[str]:
+    return frozenset(field for panel in column.panels if (field := _outcome_field(panel)))
 
 
 def _revision(number: int, gate: Mapping[str, Any], fields: Mapping[str, str]) -> ReviewRevision:
@@ -89,7 +92,7 @@ def column_revisions(
     entries: Iterable[PublicSessionLogEntry],
 ) -> tuple[ReviewRevision, ...]:
     """Pair each opening of a column's gate with the fields that stood at that moment."""
-    wanted = _document_fields(column)
+    wanted = _outcome_fields(column)
     latest: dict[str, str] = {}
     gates: dict[str, Mapping[str, Any]] = {}
     shown: dict[str, dict[str, str]] = {}
@@ -198,10 +201,10 @@ async def campaign_reviews(
 def pending_documents(reviews: Iterable[RunReview]) -> tuple[tuple[str, str], ...]:
     """The (title, text) of each document a person is being asked to decide on now."""
     return tuple(
-        (panel.title, revision.fields[panel.field])
+        (panel.title, revision.fields[field])
         for review in reviews
         for revision in review.revisions
         if revision.pending
         for panel in review.panels
-        if panel.field in revision.fields
+        if (field := _outcome_field(panel)) in revision.fields
     )

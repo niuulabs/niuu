@@ -17,6 +17,12 @@ vi.mock('@tanstack/react-router', () => ({
   ),
 }));
 
+vi.mock('./PlanWizard', () => ({
+  PlanWizard: ({ resumeSlug }: { resumeSlug?: string }) => (
+    <div data-testid="plan-wizard">{resumeSlug}</div>
+  ),
+}));
+
 const plan: PlanSession = {
   sessionId: '0d614987-101e-45e8-acb1-778f41d36b93',
   campaignSlug: 'plan-niu-1104-define-ravnclaw-as-niuu-s-advanced',
@@ -153,16 +159,14 @@ describe('PlanDetailPage', () => {
     );
   });
 
-  it('sends a plan still being planned back to the planner', async () => {
+  it('opens a plan still being planned on its own review step', async () => {
     const svc = {
       getPlanSession: vi.fn().mockResolvedValue({ ...plan, status: 'blocked' }),
       getPlanDraft: vi.fn().mockResolvedValue(draft),
     };
     render(<PlanDetailPage />, { wrapper: wrap(svc) });
 
-    (await screen.findByRole('button', { name: 'Continue in the planner' })).click();
-
-    expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/plan/new' });
+    expect(await screen.findByTestId('plan-wizard')).toHaveTextContent(mockSlug);
   });
 
   it('goes back to the plan list', async () => {

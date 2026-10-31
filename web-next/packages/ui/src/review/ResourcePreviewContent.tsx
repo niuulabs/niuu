@@ -8,7 +8,7 @@ import {
   useCopyFeedback,
   type ConversationResource,
 } from '../chat';
-import { isTextPreview, type PreviewKind } from './filePreview';
+import { classifyPreview, isTextPreview, type PreviewKind } from './filePreview';
 
 export interface LoadedPreview {
   url: string;
@@ -16,6 +16,20 @@ export interface LoadedPreview {
   text?: string;
   kind: PreviewKind;
   language?: string;
+}
+
+const INLINE_TEXT_LIMIT = 2 * 1024 * 1024;
+
+/** Classify downloaded bytes for preview; the caller owns revoking `url`. */
+export async function loadPreview(blob: Blob, name: string, mime?: string): Promise<LoadedPreview> {
+  const { kind, language } = classifyPreview(name, mime || blob.type);
+  const text =
+    isTextPreview(kind) && blob.size <= INLINE_TEXT_LIMIT ? await blob.text() : undefined;
+  const bytes =
+    kind === 'pdf' && blob.type !== 'application/pdf'
+      ? new Blob([blob], { type: 'application/pdf' })
+      : blob;
+  return { url: URL.createObjectURL(bytes), blob, text, kind, language };
 }
 
 export function ResourcePreviewContent({

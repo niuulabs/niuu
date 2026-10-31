@@ -60,7 +60,9 @@ def _ticket_campaign(
         _campaign(saga, status=status),
         session_id=SESSION,
         metadata={
-            "ticket": ticket_metadata(saga_id=saga.id, issue_id="issue-1", identifier="NIU-1"),
+            "ticket": ticket_metadata(
+                saga_id=saga.id, issue_id="issue-1", identifier="NIU-1", title="T"
+            ),
             **metadata,
         },
     )

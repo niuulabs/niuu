@@ -223,8 +223,16 @@
   min-height: 420px;
 }
 
-.ting-review-panel:has(.ting-review-panel__workspace) {
+.ting-review-panel:has(.ting-review-panel__workspace),
+.ting-review-panel:has(.ting-review-panel__file) {
   max-width: none;
+}
+
+.ting-review-panel__file iframe {
+  width: 100%;
+  height: calc(100vh - 300px);
+  min-height: 420px;
+  border: 0;
 }
 
 .ting-review-panel a {

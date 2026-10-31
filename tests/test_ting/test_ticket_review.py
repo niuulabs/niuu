@@ -21,6 +21,7 @@ from ting.domain.workflow_board import (
     BoardColumn,
     BoardColumnKind,
     ReviewPanel,
+    ReviewSource,
     WorkflowBoard,
     board_from_snapshot,
 )
@@ -34,7 +35,11 @@ COLUMN = BoardColumn(
     kind=BoardColumnKind.GATE,
     gate_node_id="plan-review-gate",
     review="plan",
-    panels=(ReviewPanel(widget="document", title="Plan", field="plan"),),
+    panels=(
+        ReviewPanel(
+            widget="document", title="Plan", source=ReviewSource(kind="outcome", value="plan")
+        ),
+    ),
 )
 
 

@@ -10,10 +10,7 @@ import { Dialog, DialogContent } from '../primitives/Dialog';
 import type { IFileSystemPort } from './IFileSystemPort';
 import { resolveSessionResource } from './resourcePaths';
 import './SessionResources.css';
-import { classifyPreview, isTextPreview } from './filePreview';
-import { ResourcePreviewContent, type LoadedPreview } from './ResourcePreviewContent';
-
-const INLINE_TEXT_LIMIT = 2 * 1024 * 1024;
+import { ResourcePreviewContent, loadPreview, type LoadedPreview } from './ResourcePreviewContent';
 
 export function SessionResources({
   sessionId,
@@ -100,17 +97,13 @@ export function SessionResources({
     let url: string | undefined;
     void load(selected, abort.signal)
       .then(async (blob) => {
-        const mime = selected.mime || blob.type;
-        const { kind, language } = classifyPreview(selected.name, mime);
-        const text =
-          isTextPreview(kind) && blob.size <= INLINE_TEXT_LIMIT ? await blob.text() : undefined;
-        if (abort.signal.aborted) return;
-        url = URL.createObjectURL(
-          kind === 'pdf' && blob.type !== 'application/pdf'
-            ? new Blob([blob], { type: 'application/pdf' })
-            : blob,
-        );
-        setPreview({ url, blob, text, kind, language });
+        const loaded = await loadPreview(blob, selected.name, selected.mime);
+        if (abort.signal.aborted) {
+          URL.revokeObjectURL(loaded.url);
+          return;
+        }
+        url = loaded.url;
+        setPreview(loaded);
       })
       .catch((error: unknown) => {
         if (!abort.signal.aborted)

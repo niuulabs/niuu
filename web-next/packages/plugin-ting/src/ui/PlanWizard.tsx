@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { useService } from '@niuulabs/plugin-sdk';
@@ -29,7 +30,7 @@ type RepoCatalogService = {
  * Layout: 2-column on prompt/questions/draft (left: wizard content, right: guidance rail).
  *         Full-width on running and approved (content fills the width).
  */
-export function PlanWizard() {
+export function PlanWizard({ resumeSlug }: { resumeSlug?: string } = {}) {
   const navigate = useNavigate();
   const ting = useService<ITingService>('ting');
   const queryClient = useQueryClient();
@@ -47,6 +48,14 @@ export function PlanWizard() {
     replan,
     saveDraft,
   } = usePlanWizard();
+  const resumed = useRef(false);
+  useEffect(() => {
+    if (!resumeSlug || resumed.current || !ting.getPlanSession) return;
+    resumed.current = true;
+    void ting.getPlanSession(resumeSlug).then((session) => {
+      if (session) void resumePlanSession(session);
+    });
+  }, [resumePlanSession, resumeSlug, ting]);
   const ticketCheck = usePlanTicketCheck(state.repo, state.structure);
   const { data: workflows = [] } = useWorkflows();
   const { data: repos = [] } = useQuery({
@@ -172,6 +181,7 @@ export function PlanWizard() {
               onRemoveRun={removeRun}
               ticketFlags={ticketCheck.flags}
               ticketCheckError={ticketCheck.error}
+              onRequestChanges={(note) => void submitAnswers({ 'draft-feedback': note })}
               onRequestRevision={
                 state.session?.campaignSlug && ting.sendPlanFeedback
                   ? (flags) => void submitAnswers({ 'draft-feedback': buildRevisionRequest(flags) })

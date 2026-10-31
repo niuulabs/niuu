@@ -98,7 +98,8 @@ export interface TicketWorkflowRun {
 export interface ReviewPanel {
   widget: string;
   title: string;
-  field?: string | null;
+  /** Where its content comes from; panels that show the run's own session have none. */
+  source?: { kind: 'outcome' | 'file' | 'url'; value: string } | null;
 }
 
 export interface WorkBoardColumn {

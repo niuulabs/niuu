@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import type { IFileSystemPort } from '@niuulabs/ui';
 import type { IWorkService } from '../../ports';
 import type { ReviewRevision, RunReview, TicketReviews } from '../../domain/review';
 import type { WorkDetail, WorkTask } from '../../domain/work';
@@ -45,7 +46,7 @@ function planReview(revisions: ReviewRevision[] = [revision()]): RunReview {
     workflowName: 'Ticket Planning Flow',
     taskId: 'a2a-1',
     sessionId: 'session-1',
-    panels: [{ widget: 'document', title: 'Plan', field: 'plan' }],
+    panels: [{ widget: 'document', title: 'Plan', source: { kind: 'outcome', value: 'plan' } }],
     revisions,
   };
 }
@@ -380,6 +381,64 @@ describe('ReviewPanelSlot', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('session of this run is stopped');
   });
 
+  it('previews a file the workflow declares from the run workspace', async () => {
+    const downloadFile = vi.fn().mockResolvedValue(new Blob(['# Quality'], { type: 'text/plain' }));
+    render(
+      <ReviewPanelSlot
+        panel={{
+          widget: 'file',
+          title: 'Report',
+          source: { kind: 'file', value: 'report/quality.md' },
+        }}
+        revision={revision()}
+        compareWith={null}
+        pullRequestUrl={null}
+        sessionId="run-1"
+        filesystem={{ downloadFile } as unknown as IFileSystemPort}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(downloadFile.mock.calls[0]?.slice(0, 2)).toEqual([
+        'run-1',
+        '/workspace/report/quality.md',
+      ]),
+    );
+  });
+
+  it('says when a file panel has no file browser', () => {
+    render(
+      <ReviewPanelSlot
+        panel={{ widget: 'file', title: 'Report', source: { kind: 'file', value: 'a.pdf' } }}
+        revision={revision()}
+        compareWith={null}
+        pullRequestUrl={null}
+      />,
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent('no file browser');
+  });
+
+  it('frames a declared link', () => {
+    render(
+      <ReviewPanelSlot
+        panel={{
+          widget: 'link',
+          title: 'Camera',
+          source: { kind: 'url', value: 'https://printer.example/cam' },
+        }}
+        revision={revision()}
+        compareWith={null}
+        pullRequestUrl={null}
+      />,
+    );
+
+    expect(screen.getByTitle('Preview of Camera')).toHaveAttribute(
+      'src',
+      'https://printer.example/cam',
+    );
+  });
+
   it('says when no file browser is connected', () => {
     render(
       <ReviewPanelSlot
@@ -423,7 +482,11 @@ describe('ReviewPanelSlot', () => {
   it('says when the log holds no document', () => {
     render(
       <ReviewPanelSlot
-        panel={{ widget: 'document', title: 'Plan', field: 'plan' }}
+        panel={{
+          widget: 'document',
+          title: 'Plan',
+          source: { kind: 'outcome', value: 'plan' },
+        }}
         revision={revision({ fields: {} })}
         compareWith={null}
         pullRequestUrl={null}

@@ -134,3 +134,12 @@ def test_an_unusable_gate_record_is_not_a_waiting_gate() -> None:
     (item,) = review_list([_campaign(_ticket(pending_workflow_gates=["gate"]))], [])
 
     assert item.state == ReviewState.RUNNING
+
+
+def test_a_ticket_run_shows_the_ticket_title_it_recorded() -> None:
+    metadata = _ticket()
+    metadata["ticket"]["title"] = "Trace queue wait time"
+
+    (item,) = review_list([_campaign(metadata)], [])
+
+    assert item.title == "Trace queue wait time"

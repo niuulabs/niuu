@@ -82,7 +82,9 @@ def _campaign(saga: Saga, name: str = PLANNING, **overrides) -> WorkflowCampaign
         "status": WorkflowCampaignStatus.COMPLETED,
         "created_at": NOW - timedelta(minutes=50),
         "metadata": {
-            "ticket": ticket_metadata(saga_id=saga.id, issue_id=ISSUE, identifier="NIU-1")
+            "ticket": ticket_metadata(
+                saga_id=saga.id, issue_id=ISSUE, identifier="NIU-1", title="T"
+            )
         },
     }
     return SimpleNamespace(**{**fields, **overrides})

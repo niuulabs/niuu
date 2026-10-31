@@ -16,6 +16,7 @@ from ting.domain.workflow_board import (
     BoardWorkflow,
     ProjectBoard,
     ReviewPanel,
+    ReviewSource,
     WorkflowBoardError,
     board_from_snapshot,
     parse_workflow_board,
@@ -44,7 +45,9 @@ def test_a_review_kind_brings_its_usual_panels() -> None:
 def test_a_workflow_declares_its_own_panels() -> None:
     graph = _graph()
     _gate_column(graph)["panels"] = [
-        {"widget": "document", "title": "Design", "field": "design"},
+        {"widget": "document", "title": "Design", "source": {"outcome": "design"}},
+        {"widget": "file", "title": "Report", "source": {"file": "report/quality.pdf"}},
+        {"widget": "link", "title": "Camera", "source": {"url": "https://printer.local/cam"}},
         {"widget": "summary", "title": "Checks"},
     ]
 
@@ -52,7 +55,21 @@ def test_a_workflow_declares_its_own_panels() -> None:
 
     assert board is not None
     assert board.columns[1].panels == (
-        ReviewPanel(widget="document", title="Design", field="design"),
+        ReviewPanel(
+            widget="document",
+            title="Design",
+            source=ReviewSource(kind="outcome", value="design"),
+        ),
+        ReviewPanel(
+            widget="file",
+            title="Report",
+            source=ReviewSource(kind="file", value="report/quality.pdf"),
+        ),
+        ReviewPanel(
+            widget="link",
+            title="Camera",
+            source=ReviewSource(kind="url", value="https://printer.local/cam"),
+        ),
         ReviewPanel(widget="summary", title="Checks"),
     )
 
@@ -63,8 +80,15 @@ def test_a_workflow_declares_its_own_panels() -> None:
         ([], "non-empty list"),
         (["document"], "must be a mapping"),
         ([{"widget": "hologram", "title": "Nope"}], "widget must be one of"),
-        ([{"widget": "document", "title": "Plan"}], "panel field"),
-        ([{"widget": "summary", "title": "Result", "field": "plan"}], "reads no outcome field"),
+        ([{"widget": "document", "title": "Plan"}], "needs source"),
+        ([{"widget": "document", "title": "Plan", "source": {"file": "a.md"}}], "needs source"),
+        ([{"widget": "summary", "title": "Result", "source": {"outcome": "x"}}], "reads no source"),
+        (
+            [{"widget": "file", "title": "Log", "source": {"file": "/etc/passwd"}}],
+            "inside the work",
+        ),
+        ([{"widget": "file", "title": "Log", "source": {"file": "a/../../b"}}], "inside the work"),
+        ([{"widget": "link", "title": "Cam", "source": {"url": "file:///x"}}], "http or https"),
         ([{"widget": "summary", "title": "Result", "colour": "red"}], "Unknown review panel"),
     ],
 )
