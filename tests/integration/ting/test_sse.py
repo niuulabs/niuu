@@ -21,6 +21,7 @@ import pytest_asyncio
 from tests.integration.helpers.sse import SSE_TIMEOUT, collect_sse, start_server
 from tests.integration.ting.conftest import create_ting_test_app
 from ting.adapters.memory_event_bus import InMemoryEventBus
+from ting.config import Settings
 from ting.ports.event_bus import TingEvent
 
 pytestmark = [
@@ -56,6 +57,7 @@ async def sse_ting_app(ting_settings, txn_pool, sse_event_bus):  # noqa: ANN001
 async def test_ting_sse_connects(
     sse_ting_app: object,
     sse_event_bus: InMemoryEventBus,
+    ting_settings: Settings,
 ) -> None:
     """GET /api/v1/ting/events starts streaming with a snapshot event.
 
@@ -65,6 +67,7 @@ async def test_ting_sse_connects(
     snapshot_event = TingEvent(
         event="dispatcher.state",
         data={"status": "idle", "active_runs": 0},
+        owner_id=ting_settings.auth.default_user_id,
     )
     await sse_event_bus.emit(snapshot_event)
 
@@ -89,6 +92,7 @@ async def test_ting_sse_connects(
 async def test_ting_sse_receives_saga_event(
     sse_ting_app: object,
     sse_event_bus: InMemoryEventBus,
+    ting_settings: Settings,
 ) -> None:
     """Connect SSE, emit a saga event, verify it arrives via the stream."""
     server, base_url = await start_server(sse_ting_app)
@@ -97,6 +101,7 @@ async def test_ting_sse_receives_saga_event(
         saga_event = TingEvent(
             event="saga.created",
             data={"id": "saga-123", "name": "Auth Overhaul", "status": "ACTIVE"},
+            owner_id=ting_settings.auth.default_user_id,
         )
 
         async def _emit_event() -> None:
@@ -119,6 +124,43 @@ async def test_ting_sse_receives_saga_event(
         assert data["id"] == "saga-123"
         assert data["name"] == "Auth Overhaul"
         assert data["status"] == "ACTIVE"
+    finally:
+        server.should_exit = True
+        await asyncio.sleep(0.1)
+
+
+async def test_ting_sse_withholds_another_users_event(
+    sse_ting_app: object,
+    sse_event_bus: InMemoryEventBus,
+    ting_settings: Settings,
+) -> None:
+    """Only the caller's own event comes through, whatever was emitted first."""
+    server, base_url = await start_server(sse_ting_app)
+
+    try:
+
+        async def _emit_events() -> None:
+            await asyncio.sleep(0.3)
+            await sse_event_bus.emit(
+                TingEvent(event="saga.created", data={"id": "theirs"}, owner_id="someone-else")
+            )
+            await sse_event_bus.emit(
+                TingEvent(
+                    event="saga.created",
+                    data={"id": "mine"},
+                    owner_id=ting_settings.auth.default_user_id,
+                )
+            )
+
+        emit_task = asyncio.create_task(_emit_events())
+
+        events = await asyncio.wait_for(
+            collect_sse(base_url, SSE_URL, n=1),
+            timeout=SSE_TIMEOUT,
+        )
+        _ = await emit_task
+
+        assert [json.loads(event["data"])["id"] for event in events] == ["mine"]
     finally:
         server.should_exit = True
         await asyncio.sleep(0.1)
