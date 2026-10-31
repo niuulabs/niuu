@@ -25,7 +25,7 @@ from mimir.doctor import DoctorCheck, DoctorReport, run_doctor, run_fixes
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
 from mimir.router import MimirRouter
 from niuu.adapters.search.sqlite import SqliteSearchAdapter
-from niuu.domain.mimir import MimirSource, compute_content_hash
+from niuu.domain.mimir import MimirLintReport, MimirSource, compute_content_hash
 
 #: Headers satisfying both _require_write_auth (tenant + WRITE_ROLES) and
 #: _require_deploy_auth for the default EnvoyHeaderAuthenticationAdapter fixture
@@ -347,6 +347,30 @@ async def test_d06_fail_on_lint_errors(tmp_path: Path) -> None:
     report = await run_doctor(adapter, _root(tmp_path))
     check = _check(report, "D06")
     assert check.status == "fail"
+    assert report.exit_code == 2
+
+
+async def test_d02_and_d06_fail_when_lint_coverage_is_incomplete(
+    tmp_path: Path, monkeypatch
+) -> None:
+    adapter = _adapter(tmp_path)
+
+    async def _incomplete_lint(fix: bool = False) -> MimirLintReport:
+        return MimirLintReport(
+            issues=[],
+            pages_checked=3,
+            mounts_checked=["local"],
+            mount_failures={"mimir-yggdrasil": "501 Not Implemented"},
+        )
+
+    monkeypatch.setattr(adapter, "lint", _incomplete_lint)
+    report = await run_doctor(adapter, _root(tmp_path))
+
+    for check_id in ("D02", "D06"):
+        check = _check(report, check_id)
+        assert check.status == "fail"
+        assert "mimir-yggdrasil: 501 Not Implemented" in check.detail
+        assert "mimir-yggdrasil: 501 Not Implemented" in check.remediation
     assert report.exit_code == 2
 
 

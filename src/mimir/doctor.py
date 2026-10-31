@@ -233,6 +233,18 @@ def _check_index_sync(report: MimirLintReport | None, lint_error: str) -> Doctor
             remediation="fix the underlying lint error, then re-run doctor",
         )
 
+    if not report.complete:
+        failures = _format_mount_failures(report)
+        return DoctorCheck(
+            id=check_id,
+            title=title,
+            status="fail",
+            detail=f"index sync cannot be confirmed: incomplete lint coverage ({failures})",
+            remediation=(
+                f"restore lint coverage for failed mount(s): {failures}; then re-run doctor"
+            ),
+        )
+
     l11 = [issue for issue in report.issues if issue.id == "L11"]
     if l11:
         return DoctorCheck(
@@ -379,7 +391,7 @@ async def _check_registry_mounts(
 
 
 def _check_lint_summary(report: MimirLintReport | None, lint_error: str) -> DoctorCheck:
-    """D06 — lint severity summary: fail on errors, warn on warnings."""
+    """D06 — lint severity summary, including complete mount coverage."""
     check_id, title = "D06", "lint summary"
     if report is None:
         return DoctorCheck(
@@ -396,6 +408,18 @@ def _check_lint_summary(report: MimirLintReport | None, lint_error: str) -> Doct
         f"errors={summary['error']} warnings={summary['warning']} "
         f"info={summary['info']} ({report.pages_checked} pages checked)"
     )
+    if not report.complete:
+        failures = _format_mount_failures(report)
+        return DoctorCheck(
+            id=check_id,
+            title=title,
+            status="fail",
+            detail=f"{detail}; incomplete lint coverage ({failures})",
+            remediation=(
+                f"restore lint coverage for failed mount(s): {failures}; then re-run doctor"
+            ),
+        )
+
     if summary["error"] > 0:
         return DoctorCheck(
             id=check_id,
@@ -417,6 +441,11 @@ def _check_lint_summary(report: MimirLintReport | None, lint_error: str) -> Doct
         )
 
     return DoctorCheck(id=check_id, title=title, status="pass", detail=detail)
+
+
+def _format_mount_failures(report: MimirLintReport) -> str:
+    """Render failed lint mounts for actionable doctor output."""
+    return "; ".join(f"{mount}: {error}" for mount, error in sorted(report.mount_failures.items()))
 
 
 def _check_orphaned_raw_sources(root: Path) -> DoctorCheck:
