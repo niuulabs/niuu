@@ -1,7 +1,8 @@
-# Promotions six to eleven, and Thor's push gateway (2026-10-30/31)
+# Promotions six to twelve, and Thor's push gateway (2026-10-30/31)
 
 This is the record of the promotions that took Thor and mini-m6 from five
-(`e6257217d`) to eleven (`5aac51a5f`), on 2026-10-30 and 2026-10-31. The runbook is
+(`e6257217d`) to twelve (`ec03df0c3`), on 2026-10-30 and 2026-10-31. Thirteen
+(`6ff003fb9`) is staged; its record follows when it is live. The runbook is
 [lexi-promotion-20261026.md](lexi-promotion-20261026.md); the busy-lane rule it uses is
 §1.3a. The push gateway is documented in [lexi-push-gateway.md](lexi-push-gateway.md).
 The cutover artifacts stay with each rollout folder on Thor
@@ -17,6 +18,7 @@ The cutover artifacts stay with each rollout folder on Thor
 | nine | `c42970e6c` | `forge-attn-c42970e6` / `forge-m6-attn-c42970e6` | LEX-1186 part 4 (attention pushes marked for the app's notification extension, with `engine`); `send_message` with `instance_id` relays; push gateway operator doc |
 | ten | `b25aec7f6` | `forge-guild-b25aec7f` / never switched | LEX-1738: a member's lane reaches any Guild session by id (relay through the Guild, owner named on a member read, Guild-scope listing includes other nodes, own node first); Spark's missing feed remembered (`feedless_nodes`) |
 | eleven | `5aac51a5f` | `forge-env-5aac51a5` / `forge-m6-env-5aac51a5` | read-state skips feedless nodes (per-route memory); the release dist stager (`scripts/forge_release_dist.py`); push counts per APNs environment (package 2) |
+| twelve | `ec03df0c3` | `forge-owners-ec03df0c` / `forge-m6-owners-ec03df0c` | a session read goes to the node remembered owning it (learned from Guild listings); `instance_name` in the MCP session summary; a parent's `guild_instance_id` beside its stored projects id; facades never ask each other in a loop (`X-Niuu-Owner-Probe`) |
 
 ## Timeline (UTC)
 
@@ -35,6 +37,9 @@ The cutover artifacts stay with each rollout folder on Thor
 | 10-31 16:08 | Thor | ten, first try: rolled back by its own smoke (`web /: 404`). The release was staged without its web dist (web-next unchanged, build skipped). Nothing else failed. |
 | 10-31 16:13 | Thor | ten: `forge-attn-c42970e6` → `forge-guild-b25aec7f`, with nine's identical dist. PRESERVED (734 sessions). Spark feed requests: 1 in the first minute, against 89 per 8 min before. |
 | 10-31 16:26 | Thor | eleven: → `forge-env-5aac51a5`, dist placed and checked by the new stager. PRESERVED (734 sessions). The mini's ten driver was retired; the mini goes nine → eleven in one window. |
+| 10-31 17:41 | Thor | twelve's first build (`28e97992c`, `forge-owners-28e97992`): rolled back by its smoke. The zero-UUID relay read answered 502 "unreachable during owner lookup": a request loop between the facades (427 requests for one read), live on eleven since 17:16. Thor PRESERVED. |
+| 10-31 18:55 to 18:58 | mini | twelve's window, called at 18:55:00. The gate opened at 18:56:35. Eleven → twelve (`forge-m6-owners-ec03df0c`): dark about 17 s (stop 18:57:32, ready 18:57:49), ledger 140\|44, 15 sessions, six panes verified at 18:58:16. |
+| 10-31 19:02 | Thor | twelve (`forge-owners-ec03df0c`), its GO written automatically at 18:57:52 on the mini's CUTOVER_OK, so both facades run the loop guard. PRESERVED (734 sessions). Zero-UUID probes to the mini: 1; a mini session read: 0 requests to Spark. |
 | 10-31 17:10 to 17:16 | mini | eleven's window, called at 17:10:22. The gate opened at 17:14:53, once lexi-macos's LEX-1741 Mac builds finished. Nine → eleven directly (`forge-m6-env-5aac51a5`): API dark 14 s (stop 17:15:50, ready 17:16:04), ledger 140\|44, 15 sessions before and after, six panes verified at 17:16:31. |
 
 ### Nine on the mini, second by second
@@ -122,6 +127,24 @@ on Thor:
 Left for later: listed items carry `instance_id` but no `instance_name`, and two sessions'
 `coordination.parent` still name the instance by its slug (`thor`) rather than its id.
 
+## Twelve's rollback: the facades' loop
+
+A read of a session id that exists nowhere went: Thor's full search asks the mini; the mini,
+finding nothing, asks the Guild (Thor) who owns it (the LEX-1738 owner hint); Thor's full
+search asks the mini again; and so on until the 5 s timeouts. It was live on eleven from the
+mini's switch at 17:16 to twelve at 19:02. In that time no client re-read an unknown id; the
+only storm was the smoke's own read at 17:41.
+
+The fix (`ec03df0c3`): every owner probe and the owner-hint question carry
+`X-Niuu-Owner-Probe`, and a facade answering one searches only its own store and never asks
+the Guild. It only works once both facades run it (an old facade ignores the marker and asks
+back), so twelve took one window: the mini first, Thor's GO written automatically on the
+mini's CUTOVER_OK.
+
+A lookup in which a node did not answer stays **502** (the node named in its detail and in
+`X-Niuu-Source-Failures`); **404** only when every node answered no. A client may read 404
+as "gone", and a sleeping node must never make a live session vanish.
+
 ## Lessons kept as rules
 
 - Thor switches wait for the coordinator's call (or its explicit go for that promotion),
@@ -131,6 +154,11 @@ Left for later: listed items carry `instance_id` but no `instance_name`, and two
 - Every release carries its web app: `scripts/forge_release_dist.py` places it when web-next
   is unchanged and checks it before any GO (ten's first try rolled back on `web /: 404`).
 - Tooling is never exercised against the release a host is serving; `place` refuses it.
+- A change to how facades talk to each other ships to both hosts in one window, and its
+  smoke runs with both on it; a two-facade test covers the case (no loop with the guard,
+  a fast failure without it).
+- An owner lookup with a node that did not answer is 502, not 404: absence is claimed only
+  when every node answered.
 - Config reads redact every credential-capable field (`dsn`, `url`, `password`, `token`,
   `key`) before printing. A secret that reaches a transcript is rotated the same hour: the
   Spark Forge database password was rotated on 10-31.
