@@ -35,8 +35,8 @@ MODE_COLORS: dict[InputMode, str] = {
 
 # Raw hex fallback used in Rich markup inside widgets.
 MODE_COLORS_HEX: dict[InputMode, str] = {
-    InputMode.NORMAL: "#06b6d4",
-    InputMode.INSERT: "#10b981",
-    InputMode.SEARCH: "#f59e0b",
+    InputMode.NORMAL: "#86d0e8",
+    InputMode.INSERT: "#76bfa7",
+    InputMode.SEARCH: "#e4bd7e",
     InputMode.COMMAND: "#a855f7",
 }

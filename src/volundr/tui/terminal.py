@@ -45,8 +45,8 @@ class TerminalTabBar(Widget):
     DEFAULT_CSS = """
     TerminalTabBar {
         height: 1;
-        background: #18181b;
-        border-bottom: solid #27272a;
+        background: #10212d;
+        border-bottom: solid #182b38;
     }
     """
 
@@ -93,8 +93,8 @@ class TerminalView(Widget):
     TerminalView {
         width: 1fr;
         height: 1fr;
-        background: #09090b;
-        border: round #27272a;
+        background: #071019;
+        border: round #182b38;
         padding: 0 1;
         overflow-y: auto;
     }
@@ -145,7 +145,7 @@ class TerminalPage(Widget):
     DEFAULT_CSS = """
     TerminalPage { width: 1fr; height: 1fr; }
     TerminalPage #term-mode-bar {
-        height: 1; padding: 0 2; background: #18181b;
+        height: 1; padding: 0 2; background: #10212d;
     }
     """
 

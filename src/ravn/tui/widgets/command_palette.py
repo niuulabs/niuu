@@ -57,8 +57,8 @@ class CommandPaletteScreen(ModalScreen[str | None]):
     }
     CommandPaletteScreen #cp-panel {
         width: 68;
-        background: #18181b;
-        border: solid #3f3f46;
+        background: #10212d;
+        border: solid #2b4351;
         layout: vertical;
         height: auto;
     }
@@ -66,24 +66,24 @@ class CommandPaletteScreen(ModalScreen[str | None]):
         height: 1;
         padding: 0 1;
         background: #111113;
-        color: #f59e0b;
+        color: #86d0e8;
     }
     CommandPaletteScreen #cp-filter {
-        background: #18181b;
+        background: #10212d;
         border: none;
-        border-bottom: solid #27272a;
-        color: #fafafa;
+        border-bottom: solid #182b38;
+        color: #edf4f7;
         height: 3;
     }
     CommandPaletteScreen #cp-list {
         height: 15;
-        background: #18181b;
+        background: #10212d;
     }
     CommandPaletteScreen #cp-hint {
         height: 1;
         padding: 0 1;
         background: #111113;
-        color: #52525b;
+        color: #648090;
     }
     """
 
@@ -94,11 +94,11 @@ class CommandPaletteScreen(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Container(id="cp-panel"):
-            yield Static("[bold #f59e0b]  Command Palette[/]", id="cp-header")
+            yield Static("[bold #86d0e8]  Command Palette[/]", id="cp-header")
             yield Input(placeholder="  filter…", id="cp-filter")
             yield RichLog(id="cp-list", markup=True, highlight=False, wrap=False)
             yield Static(
-                "[#3f3f46]  ↑/↓ navigate   enter select   esc close[/]",
+                "[#2b4351]  ↑/↓ navigate   enter select   esc close[/]",
                 id="cp-hint",
             )
 
@@ -147,17 +147,17 @@ class CommandPaletteScreen(ModalScreen[str | None]):
             return
         log.clear()
         if not self._filtered:
-            log.write("[#52525b]  no matches[/]")
+            log.write("[#648090]  no matches[/]")
             return
         for i, (label, cmd) in enumerate(self._filtered):
             sel = i == self._idx
-            accent = "[bold #f59e0b]▌[/]" if sel else " "
+            accent = "[bold #86d0e8]▌[/]" if sel else " "
             if cmd:
                 # Command entry
-                style = "[#fafafa]" if sel else "[#a1a1aa]"
-                prefix = "[#3f3f46]:[/] " if cmd.startswith(":") else "  "
+                style = "[#edf4f7]" if sel else "[#a5b7c1]"
+                prefix = "[#2b4351]:[/] " if cmd.startswith(":") else "  "
             else:
                 # Keybinding reference
-                style = "[#71717a]" if sel else "[#52525b]"
+                style = "[#78909d]" if sel else "[#648090]"
                 prefix = "  "
             log.write(f"{accent}{prefix}{style}{label}[/]")

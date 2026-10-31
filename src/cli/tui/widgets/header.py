@@ -35,8 +35,8 @@ class NiuuHeader(Widget):
     NiuuHeader {
         dock: top;
         height: 1;
-        background: #18181b;
-        color: #fafafa;
+        background: #10212d;
+        color: #edf4f7;
     }
     NiuuHeader .header-content {
         width: 1fr;

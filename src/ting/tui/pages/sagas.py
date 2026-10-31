@@ -43,11 +43,11 @@ class SagaRow(Widget):
     SagaRow {
         height: auto;
         padding: 1 2;
-        border-bottom: solid #27272a;
-        background: #18181b;
+        border-bottom: solid #182b38;
+        background: #10212d;
     }
     SagaRow:hover {
-        background: #27272a;
+        background: #182b38;
     }
     """
 

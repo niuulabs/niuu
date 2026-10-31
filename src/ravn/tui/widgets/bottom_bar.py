@@ -17,7 +17,7 @@ def _kbd(key: str) -> str:
 
 def _lbl(text: str) -> str:
     """Render a hint label in muted text."""
-    return f"[#71717a]{text}[/]"
+    return f"[#78909d]{text}[/]"
 
 
 # Global hints — always shown, matches HTML prototype layout
@@ -43,34 +43,34 @@ _VIEW_HINTS: dict[str, str] = {
         f"{_kbd('^w v')} {_lbl('vsplit')}  "
         f"{_kbd('^w s')} {_lbl('hsplit')}  "
         f"{_kbd('^w q')} {_lbl('close')}  "
-        f"[#3f3f46]│[/]  "
+        f"[#2b4351]│[/]  "
     ),
-    "chat": (f"{_kbd('↵')} {_lbl('send')}  {_kbd('g/G')} {_lbl('scroll')}  [#3f3f46]│[/]  "),
+    "chat": (f"{_kbd('↵')} {_lbl('send')}  {_kbd('g/G')} {_lbl('scroll')}  [#2b4351]│[/]  "),
     "events": (
         f"{_kbd('f')} {_lbl('filter')}  "
         f"{_kbd('G')} {_lbl('bottom')}  "
         f"{_kbd('l')} {_lbl('lock')}  "
-        f"[#3f3f46]│[/]  "
+        f"[#2b4351]│[/]  "
     ),
     "tasks": (
         f"{_kbd('n')} {_lbl('new')}  "
         f"{_kbd('s')} {_lbl('stop')}  "
         f"{_kbd('↵')} {_lbl('expand')}  "
-        f"[#3f3f46]│[/]  "
+        f"[#2b4351]│[/]  "
     ),
     "mimir": (
         f"{_kbd('/')} {_lbl('search')}  "
         f"{_kbd('↵')} {_lbl('open')}  "
         f"{_kbd('⌫')} {_lbl('back')}  "
-        f"[#3f3f46]│[/]  "
+        f"[#2b4351]│[/]  "
     ),
     "cron": (
         f"{_kbd('spc')} {_lbl('toggle')}  "
         f"{_kbd('r')} {_lbl('run')}  "
         f"{_kbd('d')} {_lbl('delete')}  "
-        f"[#3f3f46]│[/]  "
+        f"[#2b4351]│[/]  "
     ),
-    "checkpoints": (f"{_kbd('r')} {_lbl('resume')}  {_kbd('d')} {_lbl('delete')}  [#3f3f46]│[/]  "),
+    "checkpoints": (f"{_kbd('r')} {_lbl('resume')}  {_kbd('d')} {_lbl('delete')}  [#2b4351]│[/]  "),
 }
 
 
@@ -89,7 +89,7 @@ class BottomBar(Widget):
     BottomBar #bb-hints {
         width: 1fr;
         padding: 0 1;
-        color: #52525b;
+        color: #648090;
     }
     """
 
