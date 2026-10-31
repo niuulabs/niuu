@@ -1008,3 +1008,20 @@ sections; B1c and B1d add none.
 11. **`/model` writes the CLI's saved default** in sessions without their own
     `CLAUDE_CONFIG_DIR`; Claude choice display names; whether restart adopts the model in
     effect (B1d.6).
+
+## After Phase B: promotions six to eleven (2026-10-30/31)
+
+Both hosts went from five (`e6257217d`) to eleven (`5aac51a5f`). The full record, with the
+timeline, the mini's dark windows (15 s for nine, 14 s for eleven), ten's web-dist rollback,
+the LEX-1738 live check, the busy-lane gate that now names each
+blocking process, and the smoke results, is
+[docs/operator/lexi-promotion-20261031.md](docs/operator/lexi-promotion-20261031.md).
+
+- **Migration:** one new one, `000096_push_gateway` (Thor 117 → 118 in six; mini 139|44 →
+  140|44 in seven). Its lineage alias adopts the fork branch's `000073_push_gateway`.
+- **Order on the mini:** it skipped six, eight and ten. It went five → seven → nine →
+  eleven, each in a window ios-coordinator called.
+- **Push gateway:** Thor became the Guild's push gateway on 10-31; see
+  [docs/operator/lexi-push-gateway.md](docs/operator/lexi-push-gateway.md).
+- **Upstream:** the fork's delta is planned as 19 PRs against niuulabs `dev` in
+  [docs/operator/upstream-plan.md](docs/operator/upstream-plan.md) (LEX-1705).
