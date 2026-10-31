@@ -272,3 +272,77 @@ class TestNiuuPrincipal:
         headers = {"Authorization": "Bearer opaque", "x-auth-user-id": "alice"}
         body = client.get("/api/v1/niuu/whoami", headers=headers).json()
         assert body["user"] == "alice" and body["token_use"] == ""
+
+
+class TestJoiningAProject:
+    async def test_a_project_not_homed_here_is_refused_with_the_way_round(self) -> None:
+        forge = build_forge_app(projects=True)
+        local = _instance(
+            "local",
+            base_url="embedded://local-forge",
+            tenant_id=TENANT,
+            is_default=True,
+            config={"transport": "embedded"},
+        )
+        app = FastAPI()
+        app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
+        app.include_router(
+            create_volundr_router(StubInstanceService([local]), embedded_forge_app=forge.app)
+        )
+        session = await forge.session(
+            "coordinator", workload_config={"forge_mcp": {"grants": ["lifecycle"]}}
+        )
+        credential = await forge.start(session)
+
+        response = TestClient(app).post(
+            "/api/v1/forge/sessions",
+            json={
+                "name": "worker",
+                "dispatch_id": "6a3f2b1c-0d9e-4f8a-b7c6-5d4e3f2a1b0c",
+                "coordination": {
+                    "project_id": "0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b",
+                    "role": "worker",
+                },
+            },
+            headers=bearer(credential.token),
+        )
+
+        assert response.status_code == 403
+        assert "not homed on this node" in response.json()["detail"]
+        assert "PUT /sessions/{id}/project" in response.json()["detail"]
+
+    async def test_a_project_homed_here_can_be_joined_with_a_session_credential(self) -> None:
+        forge = build_forge_app(projects=True)
+        local = _instance(
+            "local",
+            base_url="embedded://local-forge",
+            tenant_id=TENANT,
+            is_default=True,
+            config={"transport": "embedded"},
+        )
+        app = FastAPI()
+        app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
+        app.include_router(
+            create_volundr_router(StubInstanceService([local]), embedded_forge_app=forge.app)
+        )
+        owner = {"x-auth-user-id": OWNER, "x-auth-tenant": TENANT}
+        project = forge.client.post("/api/v1/forge/projects", json={"name": "Lexi"}, headers=owner)
+        assert project.status_code == 201, project.text
+        session = await forge.session(
+            "coordinator", workload_config={"forge_mcp": {"grants": ["lifecycle"]}}
+        )
+        credential = await forge.start(session)
+
+        response = TestClient(app).post(
+            "/api/v1/forge/sessions",
+            json={
+                "name": "worker",
+                "dispatch_id": "6a3f2b1c-0d9e-4f8a-b7c6-5d4e3f2a1b0c",
+                "coordination": {"project_id": project.json()["id"], "role": "worker"},
+            },
+            headers=bearer(credential.token),
+        )
+
+        # The 403 ios-coordinator hit: the facade's project read was not admitted.
+        assert response.status_code == 201, response.text
+        assert response.json()["coordination"]["project_id"] == project.json()["id"]

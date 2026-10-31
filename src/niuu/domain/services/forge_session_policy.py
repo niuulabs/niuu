@@ -46,11 +46,10 @@ class RoutePolicy:
     binding: Binding
 
 
-#: ``{session_id}`` only matches a UUID, so a sibling route such as
-#: ``/sessions/stream`` can never be mistaken for a session read.
-_PARAM_PATTERNS = {
-    "session_id": r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-}
+_UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+#: ``{session_id}`` and ``{project_id}`` only match a UUID, so a sibling route such as
+#: ``/sessions/stream`` or ``/projects/search`` can never be mistaken for a read of one.
+_PARAM_PATTERNS = {"session_id": _UUID, "project_id": _UUID}
 _ANY_SEGMENT = r"[^/]+"
 
 

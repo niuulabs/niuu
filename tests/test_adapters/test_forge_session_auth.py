@@ -72,7 +72,12 @@ class TestPolicyTable:
             ("GET", "/artifact-bursts/b-1", FORGE_SESSION_READ_SCOPE, Binding.NONE),
             ("POST", "/sessions/S/messages", FORGE_SESSION_MESSAGE_SCOPE, Binding.PEER),
             ("POST", "/sessions", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.NONE),
-            ("GET", "/projects/p-1", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.NONE),
+            (
+                "GET",
+                "/projects/0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b",
+                FORGE_SESSION_LIFECYCLE_SCOPE,
+                Binding.NONE,
+            ),
             ("POST", "/sessions/S/start", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.PEER),
             ("POST", "/sessions/S/stop", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.PEER),
             ("POST", "/sessions/S/log", FORGE_NOTIFY_SCOPE, Binding.OWN),
@@ -117,9 +122,13 @@ class TestPolicyTable:
             ("GET", f"/sessions/S/files/presented/pf_{'a' * 32}"),
             ("GET", "/projects"),
             ("POST", "/projects"),
-            ("PATCH", "/projects/p-1"),
-            ("DELETE", "/projects/p-1"),
-            ("GET", "/projects/p-1/sessions"),
+            ("GET", "/projects/search"),  # a project id is a UUID
+            ("PATCH", "/projects/0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b"),
+            ("DELETE", "/projects/0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b"),
+            ("GET", "/projects/0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b/context"),
+            ("GET", "/projects/0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b/receipts"),
+            ("POST", "/projects/0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b/receipts"),
+            ("GET", "/projects/0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b/export"),
         ],
     )
     def test_everything_else_is_denied(self, method, path) -> None:
@@ -448,16 +457,22 @@ class TestRouteFamilies:
             )
             assert response.status_code == 403, path
 
-    async def test_reading_a_project_to_join_it_needs_the_lifecycle_grant(self, forge) -> None:
+    async def test_reading_a_project_to_join_it_needs_the_lifecycle_grant(self) -> None:
+        forge = build_forge_app(projects=True)
         project = f"{PREFIX}/projects/{uuid.uuid4()}"
         _, _, plain = await self._pair(forge)
         refused = forge.client.get(project, headers=bearer(plain))
         assert refused.status_code == 403
-        assert "may not call" in refused.json()["detail"] or "scope" in refused.json()["detail"]
+        # The allow-list refuses it for the scope (the route is listed, the grant is not held).
+        assert refused.json()["detail"] == (
+            f"Token is missing the required scope: {FORGE_SESSION_LIFECYCLE_SCOPE}"
+        )
 
         _, _, granted = await self._pair(forge, "lifecycle")
-        # Admitted: Volundr answers for the project itself (here: there is none).
-        assert forge.client.get(project, headers=bearer(granted)).status_code != 403
+        # Admitted, and answered by the projects service itself: there is no such project.
+        answer = forge.client.get(project, headers=bearer(granted))
+        assert answer.status_code == 404
+        assert answer.json()["detail"] != "Not Found"  # the service's answer, not a missing route
 
     async def test_lifecycle_with_the_grant(self, forge) -> None:
         own, peer, token = await self._pair(forge, "lifecycle")

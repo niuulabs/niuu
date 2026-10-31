@@ -154,6 +154,7 @@ def build_forge_app(
     mcp_config: ForgeMcpHttpConfig | None = None,
     presented_file_store: Any = None,
     presented_file_quota: Any = None,
+    projects: bool = False,
     **service_kwargs: Any,
 ):
     """The Forge app slice. ``tokens=None`` builds one; pass ``False`` for none."""
@@ -187,12 +188,24 @@ def build_forge_app(
     app.state.session_service = session_service
     app.state.forge_session_tokens = minted
     app.state.settings = SimpleNamespace(local_mounts=SimpleNamespace())
+    project_service = None
+    if projects:
+        from unittest.mock import AsyncMock
+
+        from tests.test_projects.conftest import MemoryProjects
+        from volundr.domain.project_ports import ProjectWorkspace
+        from volundr.domain.services.projects import ProjectService
+
+        project_service = ProjectService(
+            MemoryProjects(), AsyncMock(spec=ProjectWorkspace), session_service, instance_id="thor"
+        )
     app.include_router(
         create_router(
             session_service,
             prefix=PREFIX,
             session_participant_service=make_session_participant_service(session_service),
             presented_file_store=presented_file_store,
+            project_service=project_service,
         )
     )
     if presented_file_store is not None:

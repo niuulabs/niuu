@@ -1597,6 +1597,16 @@ def create_volundr_router(
             return found[0]
         raise HTTPException(404, "Project not found on any Forge host")
 
+    def _session_cannot_reach_home(project_id: str) -> HTTPException:
+        """A session credential stays on its node, so it cannot copy a project from another."""
+        return HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"Project {project_id} is not homed on this node, and a session credential reads "
+            "only its own node, so it cannot bring the project here. Create the session "
+            "standalone and file it with PUT /sessions/{id}/project, or create it through "
+            "the Guild with your own identity.",
+        )
+
     async def _ensure_project_on_instance(
         request: Request,
         principal: Principal,
@@ -1620,6 +1630,8 @@ def create_volundr_router(
             home_id = copy.get("home_instance_id") if isinstance(copy, dict) else None
             if not home_id or home_id == target.id:
                 return copy
+            if _is_session_principal(principal):
+                raise _session_cannot_reach_home(project_id)
             try:
                 home, source = await _locate_project(
                     request, principal, project_id, home_id, target
@@ -1644,6 +1656,8 @@ def create_volundr_router(
             return refreshed.json() if refreshed.status_code == 200 else copy
         if local.status_code != 404:
             _ensure_remote_success(local)
+        if _is_session_principal(principal):
+            raise _session_cannot_reach_home(project_id)
         holder, project = await _locate_project(request, principal, project_id, hint, target)
         if not isinstance(project, dict) or str(project.get("id")) != str(project_id):
             raise HTTPException(502, "Project host returned a different project")
